@@ -90,6 +90,7 @@ class EnvConfig:
     terminate_on_level_change: bool = False
     terminate_on_completion: bool = False
     action_set: str = "simple"
+    env_threads: int = 0
 
 
 class DiscreteMarioActions(gym.ActionWrapper):
@@ -733,11 +734,12 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
             "StableRetroNativeVecEnv supports one homogeneous state per vector env; "
             "use --state instead of --states for native rollouts.",
         )
+    num_threads = config.env_threads if config.env_threads > 0 else min(max(n_envs, 1), 16)
     vec_env = StableRetroNativeVecEnv(
         config.game,
         num_envs=n_envs,
         state=config.state,
-        num_threads=min(max(n_envs, 1), 16),
+        num_threads=num_threads,
         render_mode="rgb_array",
         obs_resize=(config.observation_size, config.observation_size),
         obs_crop=(config.hud_crop_top, 0, 0, 0) if config.hud_crop_top else None,

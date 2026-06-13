@@ -108,6 +108,8 @@ def _latest_checkpoint(run_name: str) -> Path | None:
 def train_remote(
     timesteps: int = 1_000_000,
     n_envs: int = 8,
+    env_threads: int = 0,
+    torch_num_threads: int = 0,
     seed: int = 123,
     run_name: str = "modal_ppo_level1_1",
     state: str = "Level1-1",
@@ -180,6 +182,10 @@ def train_remote(
         str(timesteps),
         "--n-envs",
         str(n_envs),
+        "--env-threads",
+        str(env_threads),
+        "--torch-num-threads",
+        str(torch_num_threads),
         "--seed",
         str(seed),
         "--run-name",
@@ -294,6 +300,8 @@ def train_remote(
         "wandb_enabled": wandb,
         "timesteps": timesteps,
         "n_envs": n_envs,
+        "env_threads": env_threads,
+        "torch_num_threads": torch_num_threads,
     }
 
 
@@ -539,6 +547,8 @@ def upload_roms(rom_dir: str = "~/Desktop/roms") -> None:
 def train(
     timesteps: int = 512,
     n_envs: int = 8,
+    env_threads: int = 0,
+    torch_num_threads: int = 0,
     seed: int = 123,
     run_name: str = "modal_smoke",
     states: str = "",
@@ -591,6 +601,8 @@ def train(
     result = train_remote.with_options(cpu=cpu, memory=memory, gpu=gpu).remote(
         timesteps=timesteps,
         n_envs=n_envs,
+        env_threads=env_threads,
+        torch_num_threads=torch_num_threads,
         seed=seed,
         run_name=run_name,
         states=states,

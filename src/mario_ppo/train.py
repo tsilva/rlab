@@ -34,6 +34,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train PPO on SuperMarioBros-Nes-v0")
     parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--n-envs", type=int, default=8)
+    parser.add_argument(
+        "--env-threads",
+        type=int,
+        default=0,
+        help="Native stable-retro env threads; <=0 keeps min(n_envs, 16).",
+    )
+    parser.add_argument(
+        "--torch-num-threads",
+        type=int,
+        default=0,
+        help="PyTorch CPU intra-op threads; <=0 leaves the torch default.",
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--run-name", default="ppo_level1_1")
     parser.add_argument("--runs-dir", default="runs")
@@ -359,11 +371,17 @@ def main() -> None:
         terminate_on_level_change=args.terminate_on_level_change,
         terminate_on_completion=args.terminate_on_completion,
         action_set=args.action_set,
+        env_threads=args.env_threads,
     )
     wandb_run = init_wandb(args, run_dir, config)
 
     env = make_vec_envs(config=config, n_envs=args.n_envs, seed=args.seed)
     device = resolve_sb3_device(args.device)
+    if args.torch_num_threads > 0:
+        import torch
+
+        torch.set_num_threads(args.torch_num_threads)
+        print(f"Using torch num threads: {torch.get_num_threads()}", flush=True)
     print(f"Using torch device: {device}", flush=True)
 
     if args.resume:
