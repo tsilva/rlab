@@ -8,6 +8,7 @@ from dataclasses import asdict
 import gymnasium as gym
 import numpy as np
 import stable_retro as retro
+from stable_retro import StableRetroSubprocVecEnv
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from mario_ppo.env import (
@@ -18,6 +19,7 @@ from mario_ppo.env import (
     MarioProgressInfo,
     action_names_for_set,
     assert_rom_imported,
+    make_fast_mario_env,
     make_mario_env,
 )
 
@@ -71,11 +73,20 @@ def make_retro_preprocessed_env(seed: int, resize_algorithm: str) -> gym.Env:
     return env
 
 
+def make_fast_preprocessed_env(seed: int) -> gym.Env:
+    config = EnvConfig(max_episode_steps=4500, terminate_on_life_loss=False)
+    env = make_fast_mario_env(config=config, seed=seed)
+    env.reset(seed=seed)
+    return env
+
+
 def make_env(mode: str, seed: int, resize_algorithm: str) -> gym.Env:
     if mode == "python":
         return make_python_preprocessed_env(seed)
     if mode == "retro":
         return make_retro_preprocessed_env(seed, resize_algorithm)
+    if mode == "fast":
+        return make_fast_preprocessed_env(seed)
     return make_raw_env(seed)
 
 
@@ -144,20 +155,26 @@ def bench_vector(
     resize_algorithm: str,
 ) -> dict[str, object]:
     make_vec_env_fn.resize_algorithm = resize_algorithm
-    vec_env = SubprocVecEnv(
+    vec_env_cls = StableRetroSubprocVecEnv if mode == "fast" else SubprocVecEnv
+    vec_env = vec_env_cls(
         [make_vec_env_fn(mode, rank, seed) for rank in range(envs)],
         start_method="fork",
     )
     rng = np.random.default_rng(seed)
     obs = vec_env.reset()
 
-    if mode in {"python", "retro"}:
+    if mode in {"python", "retro", "fast"}:
         action_count = len(action_names_for_set("simple"))
-        make_actions = lambda: rng.integers(0, action_count, size=(envs,))
+
+        def make_actions():
+            return rng.integers(0, action_count, size=(envs,))
+
     else:
         action_shape = vec_env.action_space.shape
         action_dtype = vec_env.action_space.dtype
-        make_actions = lambda: rng.integers(0, 2, size=(envs, *action_shape), dtype=action_dtype)
+
+        def make_actions():
+            return rng.integers(0, 2, size=(envs, *action_shape), dtype=action_dtype)
 
     for _ in range(warmup):
         obs, _, _, _ = vec_env.step(make_actions())
@@ -183,7 +200,7 @@ def bench_vector(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark SuperMarioBros-Nes-v0 env steps/sec.")
-    parser.add_argument("--mode", choices=["raw", "python", "retro"], default="python")
+    parser.add_argument("--mode", choices=["raw", "python", "retro", "fast"], default="python")
     parser.add_argument("--envs", type=int, default=1)
     parser.add_argument("--steps", type=int, default=20_000)
     parser.add_argument("--warmup", type=int, default=1_000)

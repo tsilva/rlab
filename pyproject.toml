@@ -1,12 +1,14 @@
 [project]
 name = "mario-ppo"
 version = "0.1.0"
-description = "PPO training scaffold for SuperMarioBros-Nes-v0 with stable-retro-apple-silicon"
+description = "PPO training scaffold for SuperMarioBros-Nes-v0 with stable-retro-turbo"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "stable-retro-apple-silicon==1.0.0.post20; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64')",
+    "stable-retro-turbo==1.0.0.post3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "stable-retro-turbo==1.0.0.post2; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
+    "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tensorboard>=2.16,<3",
     "wandb>=0.18,<0.23",
 ]
@@ -30,10 +32,17 @@ packages = ["src/mario_ppo"]
 
 [tool.uv]
 exclude-newer = "7 days"
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 constraint-dependencies = [
     "mistralai!=2.4.6",
     "guardrails-ai!=0.10.1",
 ]
+
+[tool.uv.exclude-newer-package]
+stable-retro-turbo = "2026-06-14T23:59:59Z"
 
 [tool.ruff]
 line-length = 100

@@ -126,9 +126,9 @@ def train_remote(
     eval_video_fps: float = 30.0,
     eval_video_scale: int = 4,
     frame_skip: int = 4,
-    max_pool_frames: bool = False,
+    max_pool_frames: bool = True,
     max_episode_steps: int = 4500,
-    hud_crop_top: int = 0,
+    hud_crop_top: int = 32,
     checkpoint_freq: int = 100_000,
     ent_coef: float = 0.01,
     clip_range: float = 0.2,
@@ -244,6 +244,8 @@ def train_remote(
     ]
     if max_pool_frames:
         cmd.append("--max-pool-frames")
+    else:
+        cmd.append("--no-max-pool-frames")
     if target_kl > 0:
         cmd.extend(["--target-kl", str(target_kl)])
     if eval_stochastic:
@@ -316,7 +318,8 @@ def benchmark_env_remote(
             "SuperMarioBros-Nes-v0",
             render_mode="rgb_array",
             obs_resize=(84, 84),
-            obs_resize_algorithm="nearest",
+            obs_crop=(32, 0, 0, 0),
+            obs_resize_algorithm="area",
             obs_grayscale=True,
             frame_skip=4,
             frame_stack=4,
@@ -400,7 +403,8 @@ def benchmark_env_sweep_remote(
             "SuperMarioBros-Nes-v0",
             render_mode="rgb_array",
             obs_resize=(84, 84),
-            obs_resize_algorithm="nearest",
+            obs_crop=(32, 0, 0, 0),
+            obs_resize_algorithm="area",
             obs_grayscale=True,
             frame_skip=4,
             frame_stack=4,
@@ -546,9 +550,9 @@ def train(
     eval_video_fps: float = 30.0,
     eval_video_scale: int = 4,
     frame_skip: int = 4,
-    max_pool_frames: bool = False,
+    max_pool_frames: bool = True,
     max_episode_steps: int = 600,
-    hud_crop_top: int = 0,
+    hud_crop_top: int = 32,
     checkpoint_freq: int = 100_000,
     ent_coef: float = 0.01,
     clip_range: float = 0.2,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import os
 import time
@@ -14,7 +16,8 @@ import pygame
 import torch
 from stable_baselines3 import PPO
 
-from mario_ppo.env import EnvConfig, assert_rom_imported, make_mario_env
+from mario_ppo.device import resolve_sb3_device
+from mario_ppo.env import DEFAULT_HUD_CROP_TOP, EnvConfig, assert_rom_imported, make_mario_env
 
 
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
@@ -70,16 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="runs/smoke_doc/final_model.zip")
     parser.add_argument("--state", default="Level1-1")
     parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action="store_true")
+    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=1200)
     parser.add_argument(
         "--hud-crop-top",
         type=int,
-        default=0,
+        default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
     )
     parser.add_argument("--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--random-seeds", action="store_true", help="Use a fresh random seed each episode")
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--scale", type=int, default=4)
@@ -103,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     assert_rom_imported()
-    model = PPO.load(args.model)
+    model = PPO.load(args.model, device=resolve_sb3_device(args.device))
     config = EnvConfig(
         state=args.state,
         frame_skip=args.frame_skip,

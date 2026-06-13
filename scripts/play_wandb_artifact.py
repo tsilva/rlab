@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", default="runs/wandb_artifacts")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action="store_true")
+    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=1200)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--random-seeds", action="store_true")
@@ -110,8 +110,8 @@ def play_model(model_path: Path, args: argparse.Namespace) -> None:
     ]
     if args.stochastic:
         cmd.append("--stochastic")
-    if args.max_pool_frames:
-        cmd.append("--max-pool-frames")
+    if not args.max_pool_frames:
+        cmd.append("--no-max-pool-frames")
     if args.random_seeds:
         cmd.append("--random-seeds")
     if args.no_terminate_on_life_loss:

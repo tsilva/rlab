@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import json
 import os
 import random
 import re
 import sys
-from collections import deque
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -17,13 +18,15 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 
-from mario_ppo.env import EnvConfig, assert_rom_imported, make_mario_env
+from mario_ppo.device import resolve_sb3_device
+from mario_ppo.env import (
+    DEFAULT_HUD_CROP_TOP,
+    EnvConfig,
+    assert_rom_imported,
+    make_mario_env,
+    make_vec_envs,
+)
 from mario_ppo.eval_metrics import is_level_complete
-
-
-def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
-    # Model was trained with VecFrameStack + VecTransposeImage: (n_env, 4, 84, 84).
-    return np.stack([frame[..., 0] for frame in frames], axis=0)[None, ...]
 
 
 def slug(value: str) -> str:
@@ -98,8 +101,8 @@ def run_episode(
     capture_actions: bool,
 ):
     torch.manual_seed(seed)
-    obs, _ = env.reset(seed=seed)
-    frames: deque[np.ndarray] = deque([obs] * 4, maxlen=4)
+    env.seed(seed)
+    obs = env.reset()
     actions: list[int] = []
     total_reward = 0.0
     max_x = 0
@@ -107,17 +110,17 @@ def run_episode(
     final_info = {}
 
     for step_idx in range(max_steps):
-        action, _ = model.predict(stacked_obs(frames), deterministic=deterministic)
+        action, _ = model.predict(obs, deterministic=deterministic)
         action_int = int(action[0])
         if capture_actions:
             actions.append(action_int)
-        obs, reward, terminated, truncated, info = env.step(action_int)
-        frames.append(obs)
-        total_reward += float(reward)
+        obs, rewards, dones, infos = env.step(action)
+        info = dict(infos[0])
+        total_reward += float(rewards[0])
         max_x = max(max_x, int(info.get("max_x_pos", 0)))
         max_level_x = max(max_level_x, int(info.get("level_max_x_pos", 0)))
-        final_info = dict(info)
-        if terminated or truncated:
+        final_info = info
+        if bool(dones[0]):
             break
     completed = is_level_complete(final_info, max_x, completion_x_threshold=completion_x_threshold)
     died = bool(final_info.get("died", False))
@@ -159,8 +162,12 @@ def performance_key(summary: dict) -> tuple[int, int, float]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run episodes and save the best-reward Mario video")
-    parser.add_argument("run_name", nargs="?", help="Training run name, e.g. modal_right_action_250k_lr1e4_eval50")
+    parser = argparse.ArgumentParser(
+        description="Run episodes and save the best-reward Mario video"
+    )
+    parser.add_argument(
+        "run_name", nargs="?", help="Training run name, e.g. modal_right_action_250k_lr1e4_eval50"
+    )
     parser.add_argument("--model", help="Local PPO .zip model path")
     parser.add_argument("--project", default="tsilva/mario-ppo", help="W&B entity/project")
     parser.add_argument("--artifact", help="Full artifact ref, overriding run_name/kind/project")
@@ -170,20 +177,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--state", default="Level1-1")
     parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action="store_true")
+    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=1200)
     parser.add_argument(
         "--hud-crop-top",
         type=int,
-        default=0,
+        default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
     )
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--scale", type=int, default=4)
     parser.add_argument("--deterministic", action="store_true", help="Use greedy policy actions")
     parser.add_argument("--action-set", choices=["simple", "right"], default="right")
-    parser.add_argument("--reward-mode", choices=["bounded", "additive", "score"], default="bounded")
+    parser.add_argument(
+        "--reward-mode", choices=["bounded", "additive", "score"], default="bounded"
+    )
     parser.add_argument("--progress-reward-cap", type=float, default=30.0)
     parser.add_argument("--progress-reward-scale", type=float, default=1.0)
     parser.add_argument("--terminal-reward", type=float, default=30.0)
@@ -217,7 +227,7 @@ def main() -> None:
 
     assert_rom_imported()
     model_path = resolve_model_path(args)
-    model = PPO.load(model_path)
+    model = PPO.load(model_path, device=resolve_sb3_device(args.device))
     config = EnvConfig(
         state=args.state,
         frame_skip=args.frame_skip,
@@ -237,7 +247,7 @@ def main() -> None:
         terminate_on_level_change=args.terminate_on_level_change,
         terminate_on_completion=args.terminate_on_completion,
     )
-    env = make_mario_env(config=config, seed=args.seed)
+    env = make_vec_envs(config=config, n_envs=1, seed=args.seed)
 
     best_episode = None
     episode_summaries = []
@@ -257,7 +267,9 @@ def main() -> None:
             summary = {"episode": episode_idx + 1, "seed": episode_seed, **result}
             episode_summaries.append(summary)
             print(json.dumps(summary), flush=True)
-            if best_episode is None or performance_key(summary) > performance_key(best_episode["summary"]):
+            if best_episode is None or performance_key(summary) > performance_key(
+                best_episode["summary"]
+            ):
                 best_episode = {"summary": summary, "actions": actions}
     finally:
         env.close()
@@ -268,7 +280,9 @@ def main() -> None:
     output = Path(args.output)
     video_env = make_mario_env(config=config, seed=best_episode["summary"]["seed"])
     try:
-        frames = replay_actions(video_env, best_episode["actions"], seed=best_episode["summary"]["seed"])
+        frames = replay_actions(
+            video_env, best_episode["actions"], seed=best_episode["summary"]["seed"]
+        )
     finally:
         video_env.close()
     write_video(frames, output=output, fps=args.fps, scale=args.scale)

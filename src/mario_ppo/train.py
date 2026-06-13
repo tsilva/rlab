@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import os
 import re
@@ -13,7 +15,14 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.utils import get_schedule_fn, set_random_seed
 
-from mario_ppo.env import EnvConfig, assert_rom_imported, default_run_dir, make_vec_envs
+from mario_ppo.device import resolve_sb3_device
+from mario_ppo.env import (
+    DEFAULT_HUD_CROP_TOP,
+    EnvConfig,
+    assert_rom_imported,
+    default_run_dir,
+    make_vec_envs,
+)
 from mario_ppo.eval_metrics import MarioEvalCallback
 
 
@@ -24,7 +33,7 @@ def parse_states(value: str) -> tuple[str, ...]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train PPO on SuperMarioBros-Nes-v0")
     parser.add_argument("--timesteps", type=int, default=1_000_000)
-    parser.add_argument("--n-envs", type=int, default=4)
+    parser.add_argument("--n-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--run-name", default="ppo_level1_1")
     parser.add_argument("--runs-dir", default="runs")
@@ -37,14 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-skip", type=int, default=4)
     parser.add_argument(
         "--max-pool-frames",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Max-pool over the last two raw frames inside each frame-skip step.",
     )
     parser.add_argument("--max-episode-steps", type=int, default=4500)
     parser.add_argument(
         "--hud-crop-top",
         type=int,
-        default=0,
+        default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize; 32 removes the Mario HUD.",
     )
     parser.add_argument(
@@ -67,8 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument("--learning-rate", type=float, default=2.5e-4)
     parser.add_argument("--n-steps", type=int, default=128)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--n-epochs", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--n-epochs", type=int, default=2)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
@@ -143,6 +153,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         "max_episode_steps": config.max_episode_steps,
         "observation_size": config.observation_size,
         "hud_crop_top": config.hud_crop_top,
+        "obs_resize_algorithm": config.obs_resize_algorithm,
         "use_retro_reward": config.use_retro_reward,
         "reward_mode": config.reward_mode,
         "progress_reward_cap": config.progress_reward_cap,
@@ -339,9 +350,11 @@ def main() -> None:
     wandb_run = init_wandb(args, run_dir, config)
 
     env = make_vec_envs(config=config, n_envs=args.n_envs, seed=args.seed)
+    device = resolve_sb3_device(args.device)
+    print(f"Using torch device: {device}", flush=True)
 
     if args.resume:
-        model = PPO.load(args.resume, env=env, tensorboard_log=run_dir, device=args.device)
+        model = PPO.load(args.resume, env=env, tensorboard_log=run_dir, device=device)
         apply_resume_hyperparameters(model, args)
     else:
         model = PPO(
@@ -357,7 +370,7 @@ def main() -> None:
             clip_range=args.clip_range,
             target_kl=args.target_kl,
             tensorboard_log=run_dir,
-            device=args.device,
+            device=device,
             verbose=1,
         )
 

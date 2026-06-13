@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import json
 import os
@@ -11,7 +13,14 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 from stable_baselines3 import PPO
 
-from mario_ppo.env import EnvConfig, action_names_for_set, assert_rom_imported, make_mario_env, make_vec_envs
+from mario_ppo.device import resolve_sb3_device
+from mario_ppo.env import (
+    DEFAULT_HUD_CROP_TOP,
+    EnvConfig,
+    action_names_for_set,
+    assert_rom_imported,
+    make_vec_envs,
+)
 from mario_ppo.eval_metrics import death_location_histogram, is_level_complete
 
 
@@ -35,7 +44,7 @@ def run_scripted_episode(
     action_names: tuple[str, ...],
     completion_x_threshold: int,
 ):
-    obs, _info = env.reset()
+    obs = env.reset()
     total_reward = 0.0
     max_x = 0
     max_level_x = 0
@@ -45,12 +54,13 @@ def run_scripted_episode(
             action = env.action_space.sample()
         else:
             action = scripted_action(policy, step_idx, action_names)
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += float(reward)
+        obs, rewards, dones, infos = env.step([action])
+        info = dict(infos[0])
+        total_reward += float(rewards[0])
         max_x = max(max_x, int(info.get("max_x_pos", 0)))
         max_level_x = max(max_level_x, int(info.get("level_max_x_pos", 0)))
         final_info = info
-        if terminated or truncated:
+        if bool(dones[0]):
             break
     completed = is_level_complete(final_info, max_x, completion_x_threshold)
     died = bool(final_info.get("died", False))
@@ -70,7 +80,9 @@ def run_scripted_episode(
     }
 
 
-def run_model_episode(env, model: PPO, max_steps: int, deterministic: bool, completion_x_threshold: int):
+def run_model_episode(
+    env, model: PPO, max_steps: int, deterministic: bool, completion_x_threshold: int
+):
     obs = env.reset()
     total_reward = 0.0
     max_x = 0
@@ -111,18 +123,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--state", default="Level1-1")
     parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action="store_true")
+    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=4500)
     parser.add_argument(
         "--hud-crop-top",
         type=int,
-        default=0,
+        default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
     )
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--stochastic", action="store_true", help="Sample from the policy")
     parser.add_argument("--use-retro-reward", action="store_true")
-    parser.add_argument("--reward-mode", choices=["bounded", "additive", "score"], default="bounded")
+    parser.add_argument(
+        "--reward-mode", choices=["bounded", "additive", "score"], default="bounded"
+    )
     parser.add_argument("--progress-reward-cap", type=float, default=30.0)
     parser.add_argument("--progress-reward-scale", type=float, default=1.0)
     parser.add_argument("--terminal-reward", type=float, default=30.0)
@@ -168,7 +183,7 @@ def main() -> None:
         terminate_on_completion=args.terminate_on_completion,
         action_set=args.action_set,
     )
-    model = PPO.load(args.model) if args.model else None
+    model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
 
     if model is not None:
         env = make_vec_envs(config=config, n_envs=1, seed=args.seed)
@@ -185,7 +200,7 @@ def main() -> None:
         env.close()
     else:
         action_names = action_names_for_set(args.action_set)
-        env = make_mario_env(config=config, seed=args.seed)
+        env = make_vec_envs(config=config, n_envs=1, seed=args.seed)
         episodes = [
             run_scripted_episode(
                 env,

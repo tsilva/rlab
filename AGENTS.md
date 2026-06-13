@@ -1,8 +1,8 @@
 # Project Rules
 
-## Upstream Emulator
+## Stable Retro
 
-Treat `../stable-retro-apple-silicon` as an external dependency checkout. Do not edit it from this repo unless the user explicitly asks for upstream package changes.
+Use the PyPI `stable-retro-turbo` package as the stable-retro provider. The runtime import path remains `stable_retro`.
 
 ## Training Runs
 

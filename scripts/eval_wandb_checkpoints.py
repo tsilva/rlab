@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import json
 import os
@@ -15,7 +17,14 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 
-from mario_ppo.env import EnvConfig, assert_rom_imported, make_mario_env
+from mario_ppo.device import resolve_sb3_device
+from mario_ppo.env import (
+    DEFAULT_HUD_CROP_TOP,
+    EnvConfig,
+    assert_rom_imported,
+    make_mario_env,
+    make_vec_envs,
+)
 from mario_ppo.eval_metrics import (
     death_location_histogram,
     episode_rank,
@@ -135,7 +144,7 @@ def evaluate_checkpoint(
     checkpoint_step: int,
     artifact_name: str,
 ) -> tuple[dict[str, Any], Path | None]:
-    model = PPO.load(model_path)
+    model = PPO.load(model_path, device=resolve_sb3_device(args.device))
     config = EnvConfig(
         state=args.state,
         frame_skip=args.frame_skip,
@@ -156,7 +165,7 @@ def evaluate_checkpoint(
         terminate_on_completion=args.terminate_on_completion,
         action_set=args.action_set,
     )
-    eval_env = make_mario_env(config=config, seed=args.seed + checkpoint_step)
+    eval_env = make_vec_envs(config=config, n_envs=1, seed=args.seed + checkpoint_step)
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
     best_episode_actions: list[int] = []
@@ -177,7 +186,9 @@ def evaluate_checkpoint(
             actions = result.pop("actions")
             result = {"episode": episode_idx + 1, "seed": episode_seed, **result}
             episode_results.append(result)
-            if best_episode_result is None or episode_rank(result) > episode_rank(best_episode_result):
+            if best_episode_result is None or episode_rank(result) > episode_rank(
+                best_episode_result
+            ):
                 best_episode_result = result
                 best_episode_actions = actions
                 best_episode_seed = episode_seed
@@ -360,22 +371,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", default="runs/wandb_artifacts")
     parser.add_argument("--eval-dir", default="runs/local_evals")
     parser.add_argument("--max-checkpoints", type=int, default=0)
-    parser.add_argument("--force", action="store_true", help="Re-evaluate checkpoints already logged")
+    parser.add_argument(
+        "--force", action="store_true", help="Re-evaluate checkpoints already logged"
+    )
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--state", default="Level1-1")
     parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action="store_true")
+    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument(
         "--hud-crop-top",
         type=int,
-        default=0,
+        default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
     )
     parser.add_argument("--seed", type=int, default=10007)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--deterministic", action="store_true", help="Use greedy policy actions")
     parser.add_argument("--action-set", choices=["simple", "right"], default="right")
-    parser.add_argument("--reward-mode", choices=["bounded", "additive", "score"], default="bounded")
+    parser.add_argument(
+        "--reward-mode", choices=["bounded", "additive", "score"], default="bounded"
+    )
     parser.add_argument("--progress-reward-cap", type=float, default=30.0)
     parser.add_argument("--progress-reward-scale", type=float, default=1.0)
     parser.add_argument("--terminal-reward", type=float, default=30.0)
@@ -420,9 +436,15 @@ def main() -> None:
 
     try:
         for artifact in artifacts:
-            artifact_name = getattr(artifact, "qualified_name", None) or getattr(artifact, "name", "artifact")
+            artifact_name = getattr(artifact, "qualified_name", None) or getattr(
+                artifact, "name", "artifact"
+            )
             checkpoint_step = checkpoint_step_from_artifact(artifact)
-            if checkpoint_step is not None and checkpoint_step in evaluated_steps and not args.force:
+            if (
+                checkpoint_step is not None
+                and checkpoint_step in evaluated_steps
+                and not args.force
+            ):
                 print(f"Skipping step {checkpoint_step}: already evaluated")
                 continue
 
@@ -437,14 +459,18 @@ def main() -> None:
 
             print(f"Evaluating checkpoint step {checkpoint_step}: {artifact_name}", flush=True)
             previous_best = best_metrics(history)
-            metrics, video_path = evaluate_checkpoint(args, model_path, checkpoint_step, artifact_name)
+            metrics, video_path = evaluate_checkpoint(
+                args, model_path, checkpoint_step, artifact_name
+            )
             append_eval_history(history_path, metrics)
             history.append(metrics)
             evaluated_steps.add(checkpoint_step)
             log_wandb_eval(wandb_run, metrics, video_path)
 
             current_best = best_metrics(history)
-            if current_best is metrics and (previous_best is None or score(metrics) > score(previous_best)):
+            if current_best is metrics and (
+                previous_best is None or score(metrics) > score(previous_best)
+            ):
                 promote_best_artifact(wandb_run, args, metrics, model_path)
                 print(
                     "promoted best "

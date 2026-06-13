@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +8,7 @@ import cv2
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
-from mario_ppo.env import EnvConfig, make_mario_env
-
-
-def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
-    # Model was trained with VecFrameStack + VecTransposeImage: (n_env, 4, 84, 84).
-    return np.stack([frame[..., 0] for frame in frames], axis=0)[None, ...]
+from mario_ppo.env import EnvConfig, make_mario_env, make_vec_envs
 
 
 def write_video(frames: list[np.ndarray], output: Path, fps: float, scale: int) -> None:
@@ -69,8 +63,8 @@ def run_eval_episode(
     completion_x_threshold: int,
     capture_actions: bool = False,
 ) -> dict[str, Any]:
-    obs, _ = env.reset(seed=seed)
-    frames: deque[np.ndarray] = deque([obs] * 4, maxlen=4)
+    env.seed(seed)
+    obs = env.reset()
     actions: list[int] = []
     total_reward = 0.0
     max_x_pos = 0
@@ -80,17 +74,19 @@ def run_eval_episode(
     truncated = False
 
     for step_idx in range(max_steps):
-        action, _ = model.predict(stacked_obs(frames), deterministic=deterministic)
+        action, _ = model.predict(obs, deterministic=deterministic)
         action_int = int(action[0])
         if capture_actions:
             actions.append(action_int)
-        obs, reward, terminated, truncated, info = env.step(action_int)
-        frames.append(obs)
-        total_reward += float(reward)
+        obs, rewards, dones, infos = env.step(action)
+        info = dict(infos[0])
+        terminated = bool(dones[0])
+        truncated = bool(info.get("TimeLimit.truncated", False))
+        total_reward += float(rewards[0])
         max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
         max_level_x_pos = max(max_level_x_pos, int(info.get("level_max_x_pos", 0)))
-        final_info = dict(info)
-        if terminated or truncated:
+        final_info = info
+        if terminated:
             break
 
     completed = is_level_complete(final_info, max_x_pos, completion_x_threshold)
@@ -166,7 +162,7 @@ class MarioEvalCallback(BaseCallback):
         return True
 
     def evaluate(self) -> None:
-        eval_env = make_mario_env(config=self.config, seed=self.seed + self.num_timesteps)
+        eval_env = make_vec_envs(config=self.config, n_envs=1, seed=self.seed + self.num_timesteps)
         episode_results: list[dict[str, Any]] = []
         best_episode_result: dict[str, Any] | None = None
         best_episode_actions: list[int] = []
@@ -186,7 +182,9 @@ class MarioEvalCallback(BaseCallback):
                 actions = result.pop("actions")
                 result = {"episode": episode_idx + 1, **result}
                 episode_results.append(result)
-                if best_episode_result is None or episode_rank(result) > episode_rank(best_episode_result):
+                if best_episode_result is None or episode_rank(result) > episode_rank(
+                    best_episode_result
+                ):
                     best_episode_result = result
                     best_episode_actions = actions
                     best_episode_seed = episode_seed
@@ -236,7 +234,9 @@ class MarioEvalCallback(BaseCallback):
 
         video_path = None
         if self.record_video and best_episode_actions and best_episode_seed is not None:
-            video_path = self.run_dir / "eval_videos" / f"best_episode_{self.num_timesteps}_steps.mp4"
+            video_path = (
+                self.run_dir / "eval_videos" / f"best_episode_{self.num_timesteps}_steps.mp4"
+            )
             video_env = make_mario_env(config=self.config, seed=best_episode_seed)
             try:
                 best_episode_frames = replay_actions_for_video(
@@ -316,5 +316,7 @@ class MarioEvalCallback(BaseCallback):
         if death_x_positions:
             payload["eval/death_x_pos_histogram"] = wandb.Histogram(death_x_positions)
         if video_path is not None and video_path.is_file():
-            payload["eval/best_episode_video"] = wandb.Video(str(video_path), fps=self.video_fps, format="mp4")
+            payload["eval/best_episode_video"] = wandb.Video(
+                str(video_path), fps=self.video_fps, format="mp4"
+            )
         self.wandb_run.log(payload, step=self.num_timesteps)

@@ -1,6 +1,6 @@
 # Mario PPO
 
-PPO training scaffold for `SuperMarioBros-Nes-v0` using `stable-retro-apple-silicon` and Stable-Baselines3.
+PPO training scaffold for `SuperMarioBros-Nes-v0` using `stable-retro-turbo` and Stable-Baselines3.
 
 The goal is to train a CNN PPO policy that moves right through `Level1-1` and improves over random and simple scripted baselines.
 
@@ -12,6 +12,11 @@ uv run python scripts/import_roms.py ~/Desktop/roms
 ```
 
 The ROM import must recognize `SuperMarioBros-Nes-v0`; stable-retro matches by ROM SHA, not by filename.
+
+On Apple Silicon, the project pins PyTorch to `torch==2.11.0` because the `2.12.0`
+macOS arm64 wheel reports MPS unavailable on macOS 26.5.1. Local `--device auto`
+resolves to CUDA, then MPS, then CPU; SB3's built-in `auto` would otherwise pick
+CPU even when MPS is available.
 
 ## Smoke Test
 
@@ -39,7 +44,6 @@ Start with a bounded run:
 ```bash
 uv run python -m mario_ppo.train \
   --timesteps 1000000 \
-  --n-envs 4 \
   --run-name ppo_level1_1_1m
 ```
 
@@ -48,7 +52,6 @@ Longer run:
 ```bash
 uv run python -m mario_ppo.train \
   --timesteps 10000000 \
-  --n-envs 4 \
   --run-name ppo_level1_1_10m
 ```
 
@@ -58,11 +61,23 @@ W&B online run:
 wandb login
 uv run python -m mario_ppo.train \
   --timesteps 10000000 \
-  --n-envs 4 \
   --run-name ppo_level1_1_10m \
   --wandb \
   --wandb-project mario-ppo
 ```
+
+Current local Apple Silicon throughput defaults are tuned for this machine:
+
+```text
+device=auto -> mps
+n_envs=64
+n_steps=128
+batch_size=1024
+n_epochs=2
+```
+
+That collects `8192` env steps per PPO update and runs best with native
+stable-retro preprocessing enabled.
 
 W&B offline smoke run:
 
@@ -151,7 +166,7 @@ UV_CACHE_DIR=.uv-cache uv run python scripts/play_wandb_artifact.py modal_fixed_
 
 ## Modal
 
-Modal runs Linux containers, so the remote image installs upstream `stable-retro` while local Apple Silicon runs use `stable-retro-apple-silicon`.
+Modal runs Linux containers, while local Apple Silicon runs use the same `stable-retro-turbo` package.
 
 Install the local Modal CLI extra and authenticate:
 
@@ -370,5 +385,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
 - The bundled stable-retro scenario rewards only `xscrollLo`, the low byte of scroll position. That byte wraps every 256 pixels, so training ignores that reward by default and uses wrapper-computed global best x-progress instead.
 - Level changes are detected with stable-retro's `levelHi/levelLo` info fields. The wrapper logs both global progress (`max_x_pos`) and within-level progress (`level_max_x_pos`).
 - By default episodes terminate on first life loss so the policy cannot farm repeated early progress after dying.
-- The wrapper adds frame skipping, discrete Mario actions, 84x84 grayscale observations, time limits, true progress reward, and progress metrics.
+- Training rollouts use `StableRetroNativeVecEnv`. The default stable-retro-turbo observation pipeline uses `obs_crop=(32, 0, 0, 0)`, `obs_resize_algorithm="area"`, `obs_resize=(84, 84)`, `obs_grayscale=True`, `frame_skip=4`, `frame_stack=4`, and `maxpool_last_two=True`.
+- Training and model evaluation rollouts use `StableRetroNativeVecEnv`. Python vector wrappers add discrete Mario actions, true progress reward, progress metrics, and SB3's HWC-to-CHW transpose. Image preprocessing, frame skip, frame stack, and max-pool stay in native stable-retro-turbo. Evaluation videos replay selected action traces through the render-capable single-env path for visualization only.
+- `StableRetroNativeVecEnv` autoresets native terminal slots and provides `info["terminal_observation"]` before reset. Python-defined terminal events such as first-life-loss, level-completion termination, and max episode steps save `terminal_observation` before a full-vector reset. Slots reset only because another slot hit a Python terminal are marked `TimeLimit.truncated=True` so SB3 bootstraps from their terminal observation instead of treating the transition as a true terminal.
 - Generated checkpoints and logs stay under `runs/`.

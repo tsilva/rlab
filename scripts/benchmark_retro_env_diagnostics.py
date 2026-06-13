@@ -132,7 +132,8 @@ def run_diagnostics(
             "SuperMarioBros-Nes-v0",
             render_mode="rgb_array",
             obs_resize=(84, 84),
-            obs_resize_algorithm="nearest",
+            obs_crop=(32, 0, 0, 0),
+            obs_resize_algorithm="area",
             obs_grayscale=True,
         )
 
@@ -141,7 +142,8 @@ def run_diagnostics(
             "SuperMarioBros-Nes-v0",
             render_mode="rgb_array",
             obs_resize=(84, 84),
-            obs_resize_algorithm="nearest",
+            obs_crop=(32, 0, 0, 0),
+            obs_resize_algorithm="area",
             obs_grayscale=True,
             frame_skip=4,
             frame_stack=4,
