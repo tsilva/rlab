@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
+
 
 def slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
@@ -14,7 +16,7 @@ def slug(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download a W&B model artifact and play it locally")
     parser.add_argument("run_name", nargs="?", help="Training run name, e.g. modal_gpu_short_improve")
-    parser.add_argument("--project", default="tsilva/mario-ppo", help="W&B entity/project")
+    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
     parser.add_argument("--artifact", help="Full artifact ref, overriding run_name/kind/project")
     parser.add_argument("--kind", choices=["final", "best", "checkpoint"], default="final")
     parser.add_argument("--version", default="latest")
@@ -58,6 +60,8 @@ def artifact_ref(args: argparse.Namespace) -> str:
 
 
 def download_artifact(ref: str, root: Path) -> Path:
+    load_wandb_env()
+
     import wandb
 
     root.mkdir(parents=True, exist_ok=True)

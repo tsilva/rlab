@@ -9,6 +9,8 @@ from pathlib import Path
 
 import modal
 
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT
+
 APP_NAME = "mario-ppo"
 VOLUME_NAME = "mario-ppo-data"
 PROJECT_ROOT = Path("/root/mario-ppo")
@@ -155,7 +157,7 @@ def train_remote(
     auto_resume_latest: bool = False,
     device: str = "cuda",
     wandb: bool = True,
-    wandb_project: str = "mario-ppo",
+    wandb_project: str = DEFAULT_WANDB_PROJECT,
     wandb_mode: str = "online",
 ) -> dict[str, str | int | bool | None]:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -595,7 +597,7 @@ def train(
     resume_artifact: str = "",
     auto_resume_latest: bool = False,
     wandb: bool = False,
-    wandb_project: str = "mario-ppo",
+    wandb_project: str = DEFAULT_WANDB_PROJECT,
     wandb_mode: str = "offline",
 ) -> None:
     result = train_remote.with_options(cpu=cpu, memory=memory, gpu=gpu).remote(

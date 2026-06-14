@@ -27,6 +27,7 @@ from mario_ppo.env import (
     make_vec_envs,
 )
 from mario_ppo.eval_metrics import is_level_complete
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 def slug(value: str) -> str:
@@ -42,6 +43,8 @@ def artifact_ref(args: argparse.Namespace) -> str:
 
 
 def download_artifact(ref: str, root: Path) -> Path:
+    load_wandb_env()
+
     import wandb
 
     root.mkdir(parents=True, exist_ok=True)
@@ -169,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         "run_name", nargs="?", help="Training run name, e.g. modal_right_action_250k_lr1e4_eval50"
     )
     parser.add_argument("--model", help="Local PPO .zip model path")
-    parser.add_argument("--project", default="tsilva/mario-ppo", help="W&B entity/project")
+    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
     parser.add_argument("--artifact", help="Full artifact ref, overriding run_name/kind/project")
     parser.add_argument("--kind", choices=["final", "best", "checkpoint"], default="best")
     parser.add_argument("--version", default="latest")

@@ -63,7 +63,7 @@ uv run python -m mario_ppo.train \
   --timesteps 10000000 \
   --run-name ppo_level1_1_10m \
   --wandb \
-  --wandb-project mario-ppo
+  --wandb-project SuperMarioBros-NES
 ```
 
 Current training defaults mimic the upstream baseline hyperparameters from
@@ -231,7 +231,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --n-envs 4 \
   --run-name modal_ppo_level1_1_10m_wandb \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -245,7 +245,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --max-episode-steps 600 \
   --checkpoint-freq 256 \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -274,7 +274,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --checkpoint-freq 10000 \
   --resume /vol/runs/modal_wandb_artifact_online_smoke_retry/final_model.zip \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -296,7 +296,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --checkpoint-freq 25000 \
   --resume-artifact tsilva/mario-ppo/modal_fixed_reward_gpu_250k_lr1e4_env16-best:latest \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -318,7 +318,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --max-episode-steps 1200 \
   --checkpoint-freq 25000 \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -347,7 +347,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --max-episode-steps 2500 \
   --checkpoint-freq 25000 \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -376,7 +376,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --max-episode-steps 2500 \
   --checkpoint-freq 25000 \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 
@@ -392,7 +392,7 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/mario_ppo/modal_app.py::train \
   --max-episode-steps 1200 \
   --checkpoint-freq 10000 \
   --wandb \
-  --wandb-project mario-ppo \
+  --wandb-project SuperMarioBros-NES \
   --wandb-mode online
 ```
 

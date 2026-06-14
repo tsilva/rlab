@@ -32,6 +32,7 @@ from mario_ppo.eval_metrics import (
     run_eval_episode,
     write_video,
 )
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 def slug(value: str) -> str:
@@ -77,6 +78,8 @@ def artifact_ref(args: argparse.Namespace) -> str:
 
 
 def find_checkpoint_artifacts(args: argparse.Namespace):
+    load_wandb_env()
+
     import wandb
 
     api = wandb.Api()
@@ -278,6 +281,8 @@ def resolve_wandb_run_id(args: argparse.Namespace, artifacts) -> str | None:
 def init_wandb_run(args: argparse.Namespace, artifacts):
     if args.no_wandb_log:
         return None
+    load_wandb_env()
+
     import wandb
 
     run_id = resolve_wandb_run_id(args, artifacts)
@@ -366,7 +371,7 @@ def promote_best_artifact(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate pending W&B Mario PPO checkpoints")
     parser.add_argument("run_name", nargs="?", help="Training run name / artifact prefix")
-    parser.add_argument("--project", default="tsilva/mario-ppo", help="W&B entity/project")
+    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
     parser.add_argument("--artifact", action="append", help="Explicit checkpoint artifact ref")
     parser.add_argument("--root", default="runs/wandb_artifacts")
     parser.add_argument("--eval-dir", default="runs/local_evals")

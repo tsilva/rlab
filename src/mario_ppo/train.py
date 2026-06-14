@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -24,6 +25,7 @@ from mario_ppo.env import (
     make_vec_envs,
 )
 from mario_ppo.eval_metrics import MarioEvalCallback
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT, load_wandb_env
 
 
 def parse_states(value: str) -> tuple[str, ...]:
@@ -83,11 +85,49 @@ def build_parser() -> argparse.ArgumentParser:
         default=3160,
         help="Treat an episode as level-complete if max_x_pos reaches this value; set <=0 to disable.",
     )
-    parser.add_argument("--no-eval-videos", action="store_true", help="Disable best-episode eval videos")
+    parser.add_argument(
+        "--no-eval-videos", action="store_true", help="Disable best-episode eval videos"
+    )
     parser.add_argument("--eval-video-fps", type=float, default=30.0)
     parser.add_argument("--eval-video-scale", type=int, default=4)
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
+    parser.add_argument(
+        "--stop-completion-episode-window",
+        type=int,
+        default=0,
+        help=(
+            "Stop when completion rate over the last N completed training episodes "
+            "reaches --stop-completion-rate-threshold; <=0 disables this early stop."
+        ),
+    )
+    parser.add_argument(
+        "--stop-completion-rate-threshold",
+        type=float,
+        default=0.0,
+        help="Completion-rate threshold over completed training episodes for early stopping.",
+    )
+    parser.add_argument(
+        "--stop-completion-rolling-window",
+        type=int,
+        default=0,
+        help=(
+            "Stop when rolling mean completion events per PPO rollout reaches the "
+            "configured threshold; <=0 disables this early stop."
+        ),
+    )
+    parser.add_argument(
+        "--stop-completion-rolling-threshold",
+        type=float,
+        default=0.0,
+        help="Rolling mean completion-events-per-rollout threshold for early stopping.",
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--learning-rate-final",
+        type=float,
+        default=None,
+        help="If set, linearly decay learning rate from --learning-rate to this value over training.",
+    )
     parser.add_argument("--n-steps", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--n-epochs", type=int, default=10)
@@ -95,6 +135,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamma", type=float, default=0.9)
     parser.add_argument("--gae-lambda", type=float, default=1.0)
     parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument(
+        "--ent-coef-final",
+        type=float,
+        default=None,
+        help="If set, linearly decay entropy coefficient from --ent-coef to this value.",
+    )
+    parser.add_argument(
+        "--ent-coef-schedule-timesteps",
+        type=int,
+        default=0,
+        help=("Timesteps over which to decay entropy coefficient; <=0 decays over --timesteps."),
+    )
     parser.add_argument("--vf-coef", type=float, default=1.0)
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument(
@@ -134,18 +186,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-set", choices=["simple", "right"], default="simple")
     parser.add_argument("--resume", help="Path to an existing PPO .zip checkpoint")
     parser.add_argument("--wandb", action="store_true", help="Log training to Weights & Biases")
-    parser.add_argument("--wandb-project", default="mario-ppo")
+    parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-group")
     parser.add_argument("--wandb-tags", default="", help="Comma-separated W&B tags")
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
-    parser.add_argument("--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads")
+    parser.add_argument(
+        "--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads"
+    )
     return parser
 
 
 def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     if not args.wandb:
         return None
+
+    load_wandb_env()
 
     wandb_dir = os.path.abspath(run_dir)
     wandb_aux_dir = os.path.join(wandb_dir, "wandb")
@@ -305,6 +361,191 @@ class WandbCheckpointArtifactCallback(BaseCallback):
             self.logged_paths.add(resolved_path)
 
 
+class RollingCompletionStopCallback(BaseCallback):
+    def __init__(
+        self,
+        rolling_window: int,
+        threshold: float,
+        run_dir: str,
+        wandb_run=None,
+    ):
+        super().__init__()
+        self.rolling_window = rolling_window
+        self.threshold = threshold
+        self.run_dir = Path(run_dir)
+        self.wandb_run = wandb_run
+        self.rollout_completion_count = 0
+        self.total_completion_count = 0
+        self.rollout_counts: deque[int] = deque(maxlen=rolling_window)
+        self.rolling_mean = 0.0
+        self.stop_requested = False
+
+    def _on_step(self) -> bool:
+        if self.stop_requested:
+            return False
+
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if bool(info.get("completion_event", info.get("level_complete", False))):
+                self.rollout_completion_count += 1
+                self.total_completion_count += 1
+
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self.rollout_counts.append(self.rollout_completion_count)
+        self.rolling_mean = sum(self.rollout_counts) / len(self.rollout_counts)
+        window_full = len(self.rollout_counts) >= self.rolling_window
+
+        self.logger.record("train/completion_events_rollout", self.rollout_completion_count)
+        self.logger.record("train/completion_events_rolling_mean", self.rolling_mean)
+        self.logger.record("train/completion_events_total", self.total_completion_count)
+
+        if self.wandb_run is not None:
+            self.wandb_run.log(
+                {
+                    "train/completion_events_rollout": self.rollout_completion_count,
+                    "train/completion_events_rolling_mean": self.rolling_mean,
+                    "train/completion_events_total": self.total_completion_count,
+                    "global_step": self.num_timesteps,
+                },
+                step=self.num_timesteps,
+            )
+
+        print(
+            "completion rolling: "
+            f"rollout={self.rollout_completion_count} "
+            f"mean={self.rolling_mean:.3f}/{self.threshold:g} "
+            f"window={len(self.rollout_counts)}/{self.rolling_window} "
+            f"total={self.total_completion_count}",
+            flush=True,
+        )
+
+        if window_full and self.rolling_mean >= self.threshold:
+            self.stop_requested = True
+            stop_path = self.run_dir / "early_stop.txt"
+            stop_path.write_text(
+                "\n".join(
+                    [
+                        "reason=rolling_completion_threshold",
+                        f"timesteps={self.num_timesteps}",
+                        f"rolling_window={self.rolling_window}",
+                        f"rolling_mean={self.rolling_mean:.6f}",
+                        f"threshold={self.threshold:.6f}",
+                        f"total_completion_count={self.total_completion_count}",
+                    ],
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            print(
+                "early stop requested: "
+                f"rolling completion mean {self.rolling_mean:.3f} >= {self.threshold:g}",
+                flush=True,
+            )
+
+        self.rollout_completion_count = 0
+
+
+class TrainingCompletionRateStopCallback(BaseCallback):
+    def __init__(
+        self,
+        episode_window: int,
+        rate_threshold: float,
+        run_dir: str,
+        wandb_run=None,
+    ):
+        super().__init__()
+        if not 0.0 < rate_threshold <= 1.0:
+            raise ValueError("rate_threshold must be in (0, 1]")
+        self.episode_window = episode_window
+        self.rate_threshold = rate_threshold
+        self.run_dir = Path(run_dir)
+        self.wandb_run = wandb_run
+        self.completed_episode_outcomes: deque[int] = deque(maxlen=episode_window)
+        self.total_terminal_episodes = 0
+        self.total_completed_episodes = 0
+        self.stop_requested = False
+
+    def _on_step(self) -> bool:
+        if self.stop_requested:
+            return False
+
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+        for done, info in zip(dones, infos, strict=False):
+            if not bool(done) or bool(info.get("global_reset", False)):
+                continue
+
+            completed = bool(info.get("completion_event", info.get("level_complete", False)))
+            self.completed_episode_outcomes.append(int(completed))
+            self.total_terminal_episodes += 1
+            if completed:
+                self.total_completed_episodes += 1
+
+            completion_rate = self.completion_rate
+            self.logger.record("train/completion_episode_rate", completion_rate)
+            self.logger.record(
+                "train/completion_episode_window_size", len(self.completed_episode_outcomes)
+            )
+            self.logger.record("train/completion_episodes_total", self.total_completed_episodes)
+            self.logger.record("train/terminal_episodes_total", self.total_terminal_episodes)
+
+            if self.wandb_run is not None:
+                self.wandb_run.log(
+                    {
+                        "train/completion_episode_rate": completion_rate,
+                        "train/completion_episode_window_size": len(
+                            self.completed_episode_outcomes,
+                        ),
+                        "train/completion_episodes_total": self.total_completed_episodes,
+                        "train/terminal_episodes_total": self.total_terminal_episodes,
+                        "global_step": self.num_timesteps,
+                    },
+                    step=self.num_timesteps,
+                )
+
+            if (
+                len(self.completed_episode_outcomes) >= self.episode_window
+                and completion_rate >= self.rate_threshold
+            ):
+                self.request_stop(completion_rate)
+                return False
+
+        return True
+
+    @property
+    def completion_rate(self) -> float:
+        if not self.completed_episode_outcomes:
+            return 0.0
+        return sum(self.completed_episode_outcomes) / len(self.completed_episode_outcomes)
+
+    def request_stop(self, completion_rate: float) -> None:
+        self.stop_requested = True
+        stop_path = self.run_dir / "early_stop.txt"
+        stop_path.write_text(
+            "\n".join(
+                [
+                    "reason=training_completion_rate_threshold",
+                    f"timesteps={self.num_timesteps}",
+                    f"episode_window={self.episode_window}",
+                    f"completion_rate={completion_rate:.6f}",
+                    f"threshold={self.rate_threshold:.6f}",
+                    f"total_terminal_episodes={self.total_terminal_episodes}",
+                    f"total_completed_episodes={self.total_completed_episodes}",
+                ],
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "early stop requested: "
+            f"training completion rate {completion_rate:.3f} >= {self.rate_threshold:g} "
+            f"over last {self.episode_window} completed episodes",
+            flush=True,
+        )
+
+
 def write_wandb_url(wandb_run, run_dir: str) -> None:
     if wandb_run is None:
         return
@@ -323,9 +564,52 @@ def write_wandb_url(wandb_run, run_dir: str) -> None:
         )
 
 
+def linear_decay_schedule(initial_value: float, final_value: float) -> Callable[[float], float]:
+    def schedule(progress_remaining: float) -> float:
+        progress_remaining = min(max(progress_remaining, 0.0), 1.0)
+        return final_value + (initial_value - final_value) * progress_remaining
+
+    return schedule
+
+
+def learning_rate_schedule(args: argparse.Namespace) -> float | Callable[[float], float]:
+    if args.learning_rate_final is None:
+        return args.learning_rate
+    return linear_decay_schedule(args.learning_rate, args.learning_rate_final)
+
+
+class EntropyCoefficientScheduleCallback(BaseCallback):
+    def __init__(
+        self,
+        initial_value: float,
+        final_value: float,
+        schedule_timesteps: int,
+    ):
+        super().__init__()
+        if schedule_timesteps <= 0:
+            raise ValueError("schedule_timesteps must be positive")
+        self.initial_value = initial_value
+        self.final_value = final_value
+        self.schedule_timesteps = schedule_timesteps
+
+    def _current_value(self) -> float:
+        progress = min(max(self.num_timesteps / self.schedule_timesteps, 0.0), 1.0)
+        return self.initial_value + (self.final_value - self.initial_value) * progress
+
+    def _on_training_start(self) -> None:
+        self.model.ent_coef = self._current_value()
+
+    def _on_step(self) -> bool:
+        ent_coef = self._current_value()
+        self.model.ent_coef = ent_coef
+        self.logger.record("train/ent_coef", ent_coef)
+        return True
+
+
 def apply_resume_hyperparameters(model: PPO, args: argparse.Namespace) -> None:
-    model.learning_rate = args.learning_rate
-    model.lr_schedule = get_schedule_fn(args.learning_rate)
+    lr_schedule = learning_rate_schedule(args)
+    model.learning_rate = lr_schedule
+    model.lr_schedule = get_schedule_fn(lr_schedule)
     model.ent_coef = args.ent_coef
     model.vf_coef = args.vf_coef
     model.n_epochs = args.n_epochs
@@ -384,6 +668,7 @@ def main() -> None:
         print(f"Using torch num threads: {torch.get_num_threads()}", flush=True)
     print(f"Using torch device: {device}", flush=True)
 
+    lr_schedule = learning_rate_schedule(args)
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log=run_dir, device=device)
         apply_resume_hyperparameters(model, args)
@@ -391,7 +676,7 @@ def main() -> None:
         model = PPO(
             "CnnPolicy",
             env,
-            learning_rate=args.learning_rate,
+            learning_rate=lr_schedule,
             n_steps=args.n_steps,
             batch_size=args.batch_size,
             n_epochs=args.n_epochs,
@@ -423,6 +708,34 @@ def main() -> None:
         ),
         artifact_callback,
     ]
+    if args.ent_coef_final is not None:
+        callbacks.append(
+            EntropyCoefficientScheduleCallback(
+                initial_value=args.ent_coef,
+                final_value=args.ent_coef_final,
+                schedule_timesteps=args.ent_coef_schedule_timesteps
+                if args.ent_coef_schedule_timesteps > 0
+                else args.timesteps,
+            ),
+        )
+    if args.stop_completion_episode_window > 0 and args.stop_completion_rate_threshold > 0:
+        callbacks.append(
+            TrainingCompletionRateStopCallback(
+                episode_window=args.stop_completion_episode_window,
+                rate_threshold=args.stop_completion_rate_threshold,
+                run_dir=run_dir,
+                wandb_run=wandb_run,
+            ),
+        )
+    if args.stop_completion_rolling_window > 0 and args.stop_completion_rolling_threshold > 0:
+        callbacks.append(
+            RollingCompletionStopCallback(
+                rolling_window=args.stop_completion_rolling_window,
+                threshold=args.stop_completion_rolling_threshold,
+                run_dir=run_dir,
+                wandb_run=wandb_run,
+            ),
+        )
     if args.eval_freq > 0 and args.eval_episodes > 0:
         callbacks.append(
             MarioEvalCallback(

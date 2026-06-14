@@ -77,6 +77,203 @@ run is another clear example that PPO policy quality is non-monotonic and that
 checkpoint selection should be based on out-of-process evaluation, not final
 timestep alone.
 
+A separate 6M replica run,
+`sky_score_style_simple_maxpool_6m_seed23_20260613_213227`, confirmed that the
+same setup can already produce level-clearing policies before 5M timesteps. A
+GUI playback sample from checkpoint `4,700,000` cleared Level 1-1
+stochastically with `max_x=6232`, `steps=528`, and `died=False`. Treat this as
+evidence that the policy has learned the clearing behavior by about 4.7M, but
+not as a reliability claim; checkpoint evaluation is still needed to measure
+whether it clears often enough.
+
+## Follow-up: Rolling Completion Early Stop
+
+The later RTX 4090 run
+`sky_score_style_simple_maxpool_10m_stop10_seed23_20260614_081635` used the same
+BASELINE2 training setup with a `10M` timestep cap, but added training-loop
+tracking of completion events per PPO rollout. It stopped once the rolling mean
+over `10` rollouts crossed `10` completion events per rollout.
+
+Stop summary:
+
+| Field | Value |
+| --- | ---: |
+| Stop reason | rolling completion threshold |
+| Stop timestep | `6,905,856 / 10,000,000` |
+| Rolling window | `10` PPO rollouts |
+| Final rolling completion mean | `10.5` |
+| Final rollout completion events | `15` |
+| Total training completion events | `1,538` |
+| SkyPilot job duration | `51m 56s` |
+| SB3 reported training elapsed | `3,109s` (`51m 49s`) |
+| Final reported SB3 fps | about `2,221` |
+
+The downloaded final model:
+
+```text
+runs/sky_score_style_simple_maxpool_10m_stop10_seed23_20260614_081635/final_model.zip
+```
+
+SHA256:
+
+```text
+fbffaf832bba06f4236f333962efe29d6f60fbe09ca6ddd16ee338617de8fd42
+```
+
+GUI playback sample from the final model:
+
+```text
+episode=1 seed=7 reward=319.34 max_x=3127 steps=492 status=terminated died=False complete=True
+```
+
+Lesson: the rolling completion signal was a useful training-time guardrail for
+this exact run. It detected a strong policy around `6.9M` timesteps and stopped
+before the kind of late overtraining/regression seen in the original 10M final
+checkpoint. But the specific stop rule used here was completion events per PPO
+rollout, so it is not scale-invariant: changing `n_envs` or `n_steps` changes
+the number of completion opportunities per rollout.
+
+Future BASELINE2-style early stops should instead track completion rate over
+completed training episodes, e.g. stop when the last `100` terminal episodes
+are at least `80%` complete. That criterion is invariant to env count and
+rollout length. This still does not replace out-of-process checkpoint sweeps:
+the final model needs stochastic eval to estimate reliability.
+
+## Follow-up: Completed-Episode Completion-Rate Early Stop
+
+The subsequent RTX 4090 run
+`sky_score_style_simple_maxpool_10m_stop80ep100_seed23_20260614_091939` used
+the same BASELINE2 setup with a `10M` timestep cap, but changed the early stop
+criterion to completion rate over completed training episodes. It stopped when
+the last `100` terminal episodes reached at least `80%` completion.
+
+Stop summary:
+
+| Field | Value |
+| --- | ---: |
+| Stop reason | completed-episode completion-rate threshold |
+| Stop timestep | `5,278,832 / 10,000,000` |
+| Episode window | `100` terminal episodes |
+| Stop completion rate | `0.800` |
+| Threshold | `0.800` |
+| Total terminal episodes | `2,010` |
+| Total completed episodes | `152` |
+| SkyPilot job duration | about `40m` |
+
+The run showed a sharp reliability transition after 5M timesteps. The
+last-100 completion rate was around `0.24` at `5.05M`, then climbed through
+`0.58` at `5.20M`, `0.74` at `5.24M`, and hit the `0.80` stop threshold at
+`5.278M`. This supports using completed-episode completion rate as a practical
+training-time stop signal: it is less sensitive to `n_envs` and rollout length
+than counting completion events per rollout, while still stopping before the
+late-run regression observed in the original 10M baseline.
+
+Downloaded artifacts:
+
+```text
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_seed23_20260614_091939/final_model.zip
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_seed23_20260614_091939/checkpoints/ppo_mario_5200000_steps.zip
+```
+
+SHA256:
+
+```text
+95a8387e955ef7befd3fd8b2a419bc0e8e5c0f8d22424390d218b81d81e9885d  final_model.zip
+40fc56c8501822c7199039f098958a8eb8ca54ea2d112fa73dfe9deedfe26fe7  ppo_mario_5200000_steps.zip
+```
+
+GUI playback samples from the early-stopped final model:
+
+```text
+episode=1 seed=7 reward=229.05 max_x=2359 steps=332 status=terminated died=True complete=False
+episode=2 seed=8 reward=319.74 max_x=6254 steps=528 status=terminated died=False complete=True
+```
+
+Lesson: this stop rule is the preferred in-training early stop for future
+BASELINE2-style runs. It is still a training distribution metric, so final
+promotion should continue to use out-of-process stochastic checkpoint evals,
+but it is a much better budget guardrail than rollout-level completion counts.
+
+## Follow-up: Sample-Efficiency Schedule Ablations
+
+Two follow-up RTX 4090 ablations tested whether schedule changes could reach
+the same completed-episode stop criterion faster. Both used the same BASELINE2
+geometry and the same stop rule: stop when the last `100` terminal training
+episodes are at least `80%` complete.
+
+The two runs were launched concurrently inside one SkyPilot task so they shared
+the same RTX 4090 while keeping separate run directories, logs, checkpoints,
+and W&B-offline runs.
+
+| Ablation | Schedule | Stop timestep | Relative to `5.278M` baseline | Result |
+| --- | --- | ---: | ---: | --- |
+| Entropy decay | `ent_coef: 0.01 -> 0.001` over first `3M` timesteps | `3,979,616` | `24.6%` fewer samples (`1.33x`) | Positive |
+| LR decay | `learning_rate: 1e-4 -> 2e-5` over `10M` timesteps | `6,956,400` | `31.8%` more samples (`0.76x`) | Negative |
+
+Entropy-decay stop summary:
+
+| Field | Value |
+| --- | ---: |
+| Run name | `sky_score_style_simple_maxpool_10m_stop80ep100_entdecay_seed23_20260614_102508` |
+| Stop reason | completed-episode completion-rate threshold |
+| Stop timestep | `3,979,616 / 10,000,000` |
+| Episode window | `100` terminal episodes |
+| Stop completion rate | `0.800` |
+| Total terminal episodes | `1,635` |
+| Total completed episodes | `158` |
+
+Entropy-decay artifacts:
+
+```text
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_entdecay_seed23_20260614_102508/final_model.zip
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_entdecay_seed23_20260614_102508/checkpoints/ppo_mario_3900000_steps.zip
+```
+
+SHA256:
+
+```text
+c6197172192df6d407aa098f128785c8bfcfd5185b3381b7cd366b414ba3a146  final_model.zip
+c9396fe16b3dd341f483db30b0e6ef3f26a4a1b7d826a6c2a66645a2d01d28d0  ppo_mario_3900000_steps.zip
+```
+
+LR-decay stop summary:
+
+| Field | Value |
+| --- | ---: |
+| Run name | `sky_score_style_simple_maxpool_10m_stop80ep100_lrdecay_seed23_20260614_102508` |
+| Stop reason | completed-episode completion-rate threshold |
+| Stop timestep | `6,956,400 / 10,000,000` |
+| Episode window | `100` terminal episodes |
+| Stop completion rate | `0.800` |
+| Total terminal episodes | `2,456` |
+| Total completed episodes | `296` |
+
+LR-decay artifacts:
+
+```text
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_lrdecay_seed23_20260614_102508/final_model.zip
+runs/sky_score_style_simple_maxpool_10m_stop80ep100_lrdecay_seed23_20260614_102508/checkpoints/ppo_mario_6900000_steps.zip
+```
+
+SHA256:
+
+```text
+f09d66361ec30800472c98286fcde23885004cb866ae155452c968ccd13e853e  final_model.zip
+e91ea38f0c7a9a22a466033a328ccd765b4a796fb6b06f724138d6b0fcea1d69  ppo_mario_6900000_steps.zip
+```
+
+Lesson: entropy decay is the best sample-efficiency ablation so far. It
+delayed early completions until roughly the schedule floor, then produced a
+much sharper reliability ramp and hit the stop threshold about `1.30M`
+timesteps earlier than the fixed-entropy completed-episode run. Linear LR
+decay was counterproductive for this goal: it produced some early partial
+success, then collapsed to a low completion rate and only recovered much later.
+Future sample-efficiency runs should explore entropy schedules first, especially
+delayed or less aggressive variants, before spending more runs on LR decay.
+
+This entropy-decay run has been promoted to Baseline 3. See `BASELINE_3.md` for
+the standalone run card and future sample-efficiency comparison target.
+
 ## 5M Checkpoint Details
 
 Evaluation protocol:
@@ -391,10 +588,27 @@ learn a strong Level 1-1 policy on the home RTX 4090. The 5M checkpoint is the
 main practical artifact because it reaches `19/20` clears and looks strong in
 GUI playback. The 8M checkpoint is the formal winner under the promotion rule,
 but the 5M checkpoint is already strong and avoids the later 10M regression.
+The later 6M replica also showed a stochastic GUI clear at 4.7M, reinforcing
+that learning starts before the 5M recommended checkpoint even though the 4.7M
+policy has not been proven reliable.
+
+The rolling-completion early-stop follow-up produced another strong practical
+artifact at about 6.9M timesteps, suggesting this training family benefits from
+stopping on a live completion signal instead of blindly running to a fixed
+timestep budget. A follow-up completed-episode stop reached the stricter
+scale-invariant threshold earlier, at about 5.28M timesteps, after the last 100
+terminal training episodes hit 80% completion. Prefer that completed-episode
+rate criterion for future BASELINE2-style budget guards.
+
+The first sample-efficiency ablations showed that entropy scheduling is the
+highest-ROI next direction. Decaying `ent_coef` from `0.01` to `0.001` over the
+first `3M` timesteps reached the same completed-episode stop at about `3.98M`
+timesteps, while linear LR decay to `2e-5` delayed the stop to about `6.96M`.
 
 The final checkpoint should not be used as the baseline policy. It achieved
 only `4/20` clears in the same eval sweep.
 
 Future runs should keep this exact run card as the comparison target and change
-one thing at a time: reward mode, env count, completion semantics, or PPO
-minibatch geometry.
+one thing at a time. For sample efficiency, prioritize entropy schedule
+variants before reward mode, env count, completion semantics, LR schedules, or
+PPO minibatch geometry.
