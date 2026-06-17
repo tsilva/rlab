@@ -113,10 +113,6 @@ TRAIN_COMMAND_FIELDS = (
 )
 
 
-def parse_states(value: str) -> tuple[str, ...]:
-    return tuple(state.strip() for state in value.split(",") if state.strip())
-
-
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
     cmd = ["python", "-m", "mario_ppo.train"]
     for key, flag in TRAIN_VALUE_OPTIONS.items():
@@ -204,7 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=3160,
         help="Treat an episode as level-complete if max_x_pos reaches this value; set <=0 to disable.",
     )
-    parser.add_argument("--no-eval-videos", action="store_true", help="Disable best-episode eval videos")
+    parser.add_argument(
+        "--no-eval-videos", action="store_true", help="Disable best-episode eval videos"
+    )
     parser.add_argument("--eval-video-fps", type=float, default=30.0)
     parser.add_argument("--eval-video-scale", type=int, default=4)
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
@@ -331,7 +329,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-group")
     parser.add_argument("--wandb-tags", default="", help="Comma-separated W&B tags")
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
-    parser.add_argument("--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads")
+    parser.add_argument(
+        "--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads"
+    )
     parser.add_argument(
         "--wandb-artifact-storage-uri",
         default="",

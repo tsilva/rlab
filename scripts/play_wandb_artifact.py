@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
 
-from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
-
-
-def slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
+from mario_ppo.wandb_artifacts import (
+    artifact_download_dir,
+    download_model_artifact,
+    model_artifact_ref,
+)
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Download a W&B model artifact and play it locally")
-    parser.add_argument("run_name", nargs="?", help="Training run name, e.g. modal_gpu_short_improve")
+    parser = argparse.ArgumentParser(
+        description="Download a W&B model artifact and play it locally"
+    )
+    parser.add_argument(
+        "run_name", nargs="?", help="Training run name, e.g. modal_gpu_short_improve"
+    )
     parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
     parser.add_argument("--artifact", help="Full artifact ref, overriding run_name/kind/project")
     parser.add_argument("--kind", choices=["final", "best", "checkpoint"], default="final")
@@ -61,24 +65,12 @@ def artifact_ref(args: argparse.Namespace) -> str:
         return args.artifact
     if not args.run_name:
         raise SystemExit("run_name is required unless --artifact is provided")
-    return f"{args.project}/{args.run_name}-{args.kind}:{args.version}"
-
-
-def download_artifact(ref: str, root: Path) -> Path:
-    load_wandb_env()
-
-    import wandb
-
-    root.mkdir(parents=True, exist_ok=True)
-    api = wandb.Api()
-    artifact = api.artifact(ref, type="model")
-    path = Path(artifact.download(root=str(root)))
-    zip_files = sorted(path.glob("*.zip"))
-    if not zip_files:
-        raise FileNotFoundError(f"No .zip model file found in downloaded artifact: {path}")
-    if len(zip_files) > 1:
-        print(f"Multiple model files found; using {zip_files[0]}", file=sys.stderr)
-    return zip_files[0]
+    return model_artifact_ref(
+        project=args.project,
+        run_name=args.run_name,
+        kind=args.kind,
+        version=args.version,
+    )
 
 
 def play_model(model_path: Path, args: argparse.Namespace) -> None:
@@ -150,9 +142,9 @@ def play_model(model_path: Path, args: argparse.Namespace) -> None:
 def main() -> None:
     args = build_parser().parse_args()
     ref = artifact_ref(args)
-    download_root = Path(args.root) / slug(ref.replace("/", "_").replace(":", "_"))
+    download_root = artifact_download_dir(Path(args.root), ref)
     print(f"Downloading {ref} to {download_root}")
-    model_path = download_artifact(ref, download_root)
+    model_path = download_model_artifact(ref, download_root)
     print(f"Downloaded model: {model_path}")
     if not args.download_only:
         play_model(model_path, args)

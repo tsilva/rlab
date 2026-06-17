@@ -13,29 +13,18 @@ from typing import Any
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
-import torch
 from stable_baselines3 import PPO
 
 from mario_ppo.device import resolve_sb3_device
-from mario_ppo.env import (
-    DEFAULT_HUD_CROP_TOP,
-    EnvConfig,
-    assert_rom_imported,
-    make_eval_vec_env,
-    make_rendered_replay_env,
-)
-from mario_ppo.eval_metrics import (
-    episode_rank,
-    replay_actions_for_video,
-    run_eval_episode,
-    summarize_episode_results,
-    write_video,
-)
+from mario_ppo.env import DEFAULT_HUD_CROP_TOP, assert_rom_imported
+from mario_ppo.env_config import env_config_from_args
+from mario_ppo.eval_runner import evaluate_model_episodes
+from mario_ppo.wandb_artifacts import model_zip_from_download, safe_artifact_stem
 from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 def slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
+    return safe_artifact_stem(value)
 
 
 def split_project(value: str) -> tuple[str | None, str]:
@@ -101,13 +90,7 @@ def download_artifact(artifact, root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     name = getattr(artifact, "qualified_name", None) or getattr(artifact, "name", "artifact")
     download_root = root / slug(name.replace("/", "_").replace(":", "_"))
-    path = Path(artifact.download(root=str(download_root)))
-    zip_files = sorted(path.glob("*.zip"))
-    if not zip_files:
-        raise FileNotFoundError(f"No .zip model file found in downloaded artifact: {path}")
-    if len(zip_files) > 1:
-        print(f"Multiple model files found; using {zip_files[0]}", file=sys.stderr)
-    return zip_files[0]
+    return model_zip_from_download(Path(artifact.download(root=str(download_root))))
 
 
 def load_eval_history(path: Path) -> list[dict[str, Any]]:
@@ -147,63 +130,24 @@ def evaluate_checkpoint(
     artifact_name: str,
 ) -> tuple[dict[str, Any], Path | None]:
     model = PPO.load(model_path, device=resolve_sb3_device(args.device))
-    config = EnvConfig(
-        game=args.game,
-        state=args.state,
-        frame_skip=args.frame_skip,
-        max_pool_frames=args.max_pool_frames,
-        max_episode_steps=args.max_steps,
-        hud_crop_top=args.hud_crop_top,
-        reward_mode=args.reward_mode,
-        progress_reward_cap=args.progress_reward_cap,
-        progress_reward_scale=args.progress_reward_scale,
-        terminal_reward=args.terminal_reward,
-        reward_scale=args.reward_scale,
-        time_penalty=args.time_penalty,
-        death_penalty=args.death_penalty,
-        completion_reward=args.completion_reward,
-        score_progress_clipped=args.score_progress_clipped,
-        no_progress_timeout_steps=args.no_progress_timeout_steps,
-        no_progress_min_delta=args.no_progress_min_delta,
-        completion_x_threshold=args.completion_x_threshold,
-        terminate_on_life_loss=not args.no_terminate_on_life_loss,
-        terminate_on_level_change=args.terminate_on_level_change,
-        terminate_on_completion=args.terminate_on_completion,
-        action_set=args.action_set,
+    config = env_config_from_args(args, max_episode_steps_attr="max_steps")
+    video_path = (
+        Path(args.eval_dir) / args.run_name / "videos" / f"best_episode_{checkpoint_step}_steps.mp4"
+        if args.record_best_video
+        else None
     )
-    eval_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed + checkpoint_step)
-    episode_results: list[dict[str, Any]] = []
-    best_episode_result: dict[str, Any] | None = None
-    best_episode_actions: list[int] = []
-    best_episode_seed: int | None = None
-    try:
-        for episode_idx in range(args.episodes):
-            episode_seed = args.seed + checkpoint_step + episode_idx
-            torch.manual_seed(episode_seed)
-            result = run_eval_episode(
-                eval_env,
-                model,
-                max_steps=args.max_steps,
-                deterministic=args.deterministic,
-                seed=episode_seed,
-                completion_x_threshold=args.completion_x_threshold,
-                capture_actions=args.record_best_video,
-            )
-            actions = result.pop("actions")
-            result = {"episode": episode_idx + 1, "seed": episode_seed, **result}
-            episode_results.append(result)
-            if best_episode_result is None or episode_rank(result) > episode_rank(
-                best_episode_result
-            ):
-                best_episode_result = result
-                best_episode_actions = actions
-                best_episode_seed = episode_seed
-    finally:
-        eval_env.close()
-
-    metrics = summarize_episode_results(
-        episode_results,
+    metrics, video_path = evaluate_model_episodes(
+        model=model,
+        config=config,
+        episodes=args.episodes,
+        seed=args.seed + checkpoint_step,
+        max_steps=args.max_steps,
         deterministic=args.deterministic,
+        completion_x_threshold=args.completion_x_threshold,
+        capture_best_video=args.record_best_video,
+        video_path=video_path,
+        video_fps=args.video_fps,
+        video_scale=args.video_scale,
         extra={
             "checkpoint_step": checkpoint_step,
             "checkpoint_artifact": artifact_name,
@@ -211,28 +155,6 @@ def evaluate_checkpoint(
             "hud_crop_top": args.hud_crop_top,
         },
     )
-    metrics["best_episode"] = best_episode_result
-
-    video_path = None
-    if args.record_best_video and best_episode_actions and best_episode_seed is not None:
-        video_path = (
-            Path(args.eval_dir)
-            / args.run_name
-            / "videos"
-            / f"best_episode_{checkpoint_step}_steps.mp4"
-        )
-        video_env = make_rendered_replay_env(config=config, seed=best_episode_seed)
-        try:
-            frames = replay_actions_for_video(
-                video_env,
-                actions=best_episode_actions,
-                seed=best_episode_seed,
-            )
-        finally:
-            video_env.close()
-        write_video(frames, video_path, fps=args.video_fps, scale=args.video_scale)
-        metrics["best_episode_video"] = str(video_path)
-
     return metrics, video_path
 
 

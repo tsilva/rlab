@@ -5,8 +5,8 @@ description = "PPO training scaffold for Stable Retro games with stable-retro-tu
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "stable-retro-turbo==1.0.0.post3; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "stable-retro-turbo==1.0.0.post4; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "stable-retro-turbo==1.0.0.post11; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "stable-retro-turbo==1.0.0.post11; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tensorboard>=2.16,<3",
@@ -46,7 +46,7 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-stable-retro-turbo = "2026-06-14T23:59:59Z"
+stable-retro-turbo = "2026-06-17T23:59:59Z"
 
 [tool.ruff]
 line-length = 100

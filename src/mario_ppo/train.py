@@ -23,9 +23,10 @@ from mario_ppo.callbacks import (
     TrainingCompletionRateStopCallback,
     WandbCheckpointArtifactCallback,
 )
-from mario_ppo.cli import apply_preset, build_parser, parse_states
+from mario_ppo.cli import apply_preset, build_parser
 from mario_ppo.device import resolve_sb3_device
-from mario_ppo.env import EnvConfig, assert_rom_imported, default_run_dir, make_training_vec_env
+from mario_ppo.env import assert_rom_imported, default_run_dir, make_training_vec_env
+from mario_ppo.env_config import env_config_from_args
 from mario_ppo.eval_metrics import MarioEvalCallback
 from mario_ppo.schedules import (
     EntropyCoefficientScheduleCallback,
@@ -50,34 +51,7 @@ def main() -> None:
     else:
         print("warning: --run-description is empty", flush=True)
 
-    config = EnvConfig(
-        game=args.game,
-        state=args.state,
-        states=parse_states(args.states),
-        frame_skip=args.frame_skip,
-        max_pool_frames=args.max_pool_frames,
-        max_episode_steps=args.max_episode_steps,
-        hud_crop_top=args.hud_crop_top,
-        use_retro_reward=args.use_retro_reward,
-        clip_rewards=args.clip_rewards,
-        reward_mode=args.reward_mode,
-        progress_reward_cap=args.progress_reward_cap,
-        progress_reward_scale=args.progress_reward_scale,
-        terminal_reward=args.terminal_reward,
-        reward_scale=args.reward_scale,
-        time_penalty=args.time_penalty,
-        death_penalty=args.death_penalty,
-        completion_reward=args.completion_reward,
-        score_progress_clipped=args.score_progress_clipped,
-        no_progress_timeout_steps=args.no_progress_timeout_steps,
-        no_progress_min_delta=args.no_progress_min_delta,
-        completion_x_threshold=args.completion_x_threshold,
-        terminate_on_life_loss=not args.no_terminate_on_life_loss,
-        terminate_on_level_change=args.terminate_on_level_change,
-        terminate_on_completion=args.terminate_on_completion,
-        action_set=args.action_set,
-        env_threads=args.env_threads,
-    )
+    config = env_config_from_args(args, include_states=True, include_env_threads=True)
     wandb_run = init_wandb(args, run_dir, config)
 
     env = make_training_vec_env(config=config, n_envs=args.n_envs, seed=args.seed)

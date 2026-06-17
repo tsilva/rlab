@@ -15,11 +15,11 @@ from stable_baselines3 import PPO
 from mario_ppo.device import resolve_sb3_device
 from mario_ppo.env import (
     DEFAULT_HUD_CROP_TOP,
-    EnvConfig,
     action_names_for_set,
     assert_rom_imported,
     make_eval_vec_env,
 )
+from mario_ppo.env_config import env_config_from_args
 from mario_ppo.eval_metrics import is_level_complete, run_eval_episode, summarize_episode_results
 
 
@@ -136,31 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     assert_rom_imported()
-    config = EnvConfig(
-        game=args.game,
-        state=args.state,
-        frame_skip=args.frame_skip,
-        max_pool_frames=args.max_pool_frames,
-        max_episode_steps=args.max_steps,
-        hud_crop_top=args.hud_crop_top,
-        use_retro_reward=args.use_retro_reward,
-        reward_mode=args.reward_mode,
-        progress_reward_cap=args.progress_reward_cap,
-        progress_reward_scale=args.progress_reward_scale,
-        terminal_reward=args.terminal_reward,
-        reward_scale=args.reward_scale,
-        time_penalty=args.time_penalty,
-        death_penalty=args.death_penalty,
-        completion_reward=args.completion_reward,
-        score_progress_clipped=args.score_progress_clipped,
-        no_progress_timeout_steps=args.no_progress_timeout_steps,
-        no_progress_min_delta=args.no_progress_min_delta,
-        completion_x_threshold=args.completion_x_threshold,
-        terminate_on_life_loss=not args.no_terminate_on_life_loss,
-        terminate_on_level_change=args.terminate_on_level_change,
-        terminate_on_completion=args.terminate_on_completion,
-        action_set=args.action_set,
-    )
+    config = env_config_from_args(args, max_episode_steps_attr="max_steps")
     model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
 
     if model is not None:

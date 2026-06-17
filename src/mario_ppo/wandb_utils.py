@@ -7,9 +7,14 @@ DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-NES"
 DEFAULT_WANDB_PROJECT_PATH = f"{DEFAULT_WANDB_ENTITY}/{DEFAULT_WANDB_PROJECT}"
 
+WANDB_ENV_PREFIXES = ("WANDB_", "AWS_")
+WANDB_ARTIFACT_ENV_KEYS = {
+    "CHECKPOINT_BUCKET_URI",
+}
+
 
 def load_wandb_env(dotenv_path: str | Path = ".env") -> None:
-    """Load W&B env vars from .env without adding a runtime dotenv dependency."""
+    """Load W&B and artifact storage env vars without adding a dotenv dependency."""
     path = Path(dotenv_path)
     if not path.is_file():
         return
@@ -20,7 +25,7 @@ def load_wandb_env(dotenv_path: str | Path = ".env") -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if not key.startswith("WANDB_"):
+        if not key.startswith(WANDB_ENV_PREFIXES) and key not in WANDB_ARTIFACT_ENV_KEYS:
             continue
         value = value.strip().strip("'\"")
         os.environ.setdefault(key, value)

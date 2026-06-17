@@ -17,7 +17,8 @@ import torch
 from stable_baselines3 import PPO
 
 from mario_ppo.device import resolve_sb3_device
-from mario_ppo.env import DEFAULT_HUD_CROP_TOP, EnvConfig, assert_rom_imported, make_rendered_replay_env
+from mario_ppo.env import DEFAULT_HUD_CROP_TOP, assert_rom_imported, make_rendered_replay_env
+from mario_ppo.env_config import env_config_from_args
 from mario_ppo.eval_metrics import single_env_action
 
 
@@ -63,7 +64,9 @@ def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
 
 
 class PygameViewer:
-    def __init__(self, frame_shape: tuple[int, int, int], scale: int, position: tuple[int, int] | None = None):
+    def __init__(
+        self, frame_shape: tuple[int, int, int], scale: int, position: tuple[int, int] | None = None
+    ):
         if scale < 1:
             raise ValueError("--scale must be >= 1")
         height, width, _channels = frame_shape
@@ -120,7 +123,9 @@ class OptionsPanel:
         cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
         if position is not None:
             cv2.moveWindow(self.window_name, position[0], position[1])
-        cv2.createTrackbar("FPS", self.window_name, int(max(0, min(round(fps), 240))), 240, lambda _v: None)
+        cv2.createTrackbar(
+            "FPS", self.window_name, int(max(0, min(round(fps), 240))), 240, lambda _v: None
+        )
         cv2.setMouseCallback(self.window_name, self._on_mouse)
 
     def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param: object) -> None:
@@ -142,8 +147,12 @@ class OptionsPanel:
         rect_x, rect_y, rect_w, rect_h = self.obs_button_rect
         button_color = (40, 130, 70) if self.show_obs_stack else (70, 70, 70)
         border_color = (90, 220, 120) if self.show_obs_stack else (170, 170, 170)
-        self.cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), button_color, -1)
-        self.cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), border_color, 1)
+        self.cv2.rectangle(
+            canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), button_color, -1
+        )
+        self.cv2.rectangle(
+            canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), border_color, 1
+        )
         label = f"Obs stack: {'ON' if self.show_obs_stack else 'OFF'}"
         self.cv2.putText(
             canvas,
@@ -213,7 +222,9 @@ class ObsStackViewer:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Show a PPO checkpoint playing Mario in a GUI window")
+    parser = argparse.ArgumentParser(
+        description="Show a PPO checkpoint playing Mario in a GUI window"
+    )
     parser.add_argument("--model", default="runs/smoke_doc/final_model.zip")
     parser.add_argument("--game", default="SuperMarioBros-Nes-v0")
     parser.add_argument("--state", default="Level1-1")
@@ -226,10 +237,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_HUD_CROP_TOP,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
     )
-    parser.add_argument("--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever")
+    parser.add_argument(
+        "--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever"
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    parser.add_argument("--random-seeds", action="store_true", help="Use a fresh random seed each episode")
+    parser.add_argument(
+        "--random-seeds", action="store_true", help="Use a fresh random seed each episode"
+    )
     parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument("--scale", type=int, default=4)
     parser.add_argument(
@@ -271,30 +286,7 @@ def main() -> None:
     args = build_parser().parse_args()
     assert_rom_imported()
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
-    config = EnvConfig(
-        game=args.game,
-        state=args.state,
-        frame_skip=args.frame_skip,
-        max_pool_frames=args.max_pool_frames,
-        max_episode_steps=args.max_steps,
-        hud_crop_top=args.hud_crop_top,
-        reward_mode=args.reward_mode,
-        progress_reward_cap=args.progress_reward_cap,
-        progress_reward_scale=args.progress_reward_scale,
-        terminal_reward=args.terminal_reward,
-        reward_scale=args.reward_scale,
-        time_penalty=args.time_penalty,
-        death_penalty=args.death_penalty,
-        completion_reward=args.completion_reward,
-        score_progress_clipped=args.score_progress_clipped,
-        no_progress_timeout_steps=args.no_progress_timeout_steps,
-        no_progress_min_delta=args.no_progress_min_delta,
-        completion_x_threshold=args.completion_x_threshold,
-        terminate_on_life_loss=not args.no_terminate_on_life_loss,
-        terminate_on_level_change=args.terminate_on_level_change,
-        terminate_on_completion=args.terminate_on_completion,
-        action_set=args.action_set,
-    )
+    config = env_config_from_args(args, max_episode_steps_attr="max_steps")
     env = make_rendered_replay_env(config=config, seed=args.seed)
     seed_rng = np.random.default_rng() if args.random_seeds else None
 
@@ -305,7 +297,9 @@ def main() -> None:
     obs_stack_position = (40, 240)
     viewer = PygameViewer(first_frame.shape, scale=args.scale, position=game_position)
     obs_viewer = (
-        ObsStackViewer(scale=args.obs_stack_scale, position=obs_stack_position) if args.show_obs_stack else None
+        ObsStackViewer(scale=args.obs_stack_scale, position=obs_stack_position)
+        if args.show_obs_stack
+        else None
     )
     options_panel = (
         OptionsPanel(fps=args.fps, show_obs_stack=args.show_obs_stack, position=controls_position)

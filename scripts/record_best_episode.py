@@ -6,8 +6,6 @@ import argparse
 import json
 import os
 import random
-import re
-import sys
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -18,19 +16,15 @@ import torch
 from stable_baselines3 import PPO
 
 from mario_ppo.device import resolve_sb3_device
-from mario_ppo.env import (
-    DEFAULT_HUD_CROP_TOP,
-    EnvConfig,
-    assert_rom_imported,
-    make_eval_vec_env,
-    make_rendered_replay_env,
+from mario_ppo.env import DEFAULT_HUD_CROP_TOP, assert_rom_imported
+from mario_ppo.env_config import env_config_from_args
+from mario_ppo.eval_runner import evaluate_model_episodes
+from mario_ppo.wandb_artifacts import (
+    artifact_download_dir,
+    download_model_artifact,
+    model_artifact_ref,
 )
-from mario_ppo.eval_metrics import episode_rank, replay_actions_for_video, run_eval_episode, write_video
-from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
-
-
-def slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
+from mario_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH
 
 
 def artifact_ref(args: argparse.Namespace) -> str:
@@ -38,33 +32,21 @@ def artifact_ref(args: argparse.Namespace) -> str:
         return args.artifact
     if not args.run_name:
         raise SystemExit("Provide --model, --artifact, or run_name")
-    return f"{args.project}/{args.run_name}-{args.kind}:{args.version}"
-
-
-def download_artifact(ref: str, root: Path) -> Path:
-    load_wandb_env()
-
-    import wandb
-
-    root.mkdir(parents=True, exist_ok=True)
-    api = wandb.Api()
-    artifact = api.artifact(ref, type="model")
-    path = Path(artifact.download(root=str(root)))
-    zip_files = sorted(path.glob("*.zip"))
-    if not zip_files:
-        raise FileNotFoundError(f"No .zip model file found in downloaded artifact: {path}")
-    if len(zip_files) > 1:
-        print(f"Multiple model files found; using {zip_files[0]}", file=sys.stderr)
-    return zip_files[0]
+    return model_artifact_ref(
+        project=args.project,
+        run_name=args.run_name,
+        kind=args.kind,
+        version=args.version,
+    )
 
 
 def resolve_model_path(args: argparse.Namespace) -> Path:
     if args.model:
         return Path(args.model)
     ref = artifact_ref(args)
-    download_root = Path(args.root) / slug(ref.replace("/", "_").replace(":", "_"))
+    download_root = artifact_download_dir(Path(args.root), ref)
     print(f"Downloading {ref} to {download_root}", flush=True)
-    model_path = download_artifact(ref, download_root)
+    model_path = download_model_artifact(ref, download_root)
     print(f"Downloaded model: {model_path}", flush=True)
     return model_path
 
@@ -142,69 +124,24 @@ def main() -> None:
     assert_rom_imported()
     model_path = resolve_model_path(args)
     model = PPO.load(model_path, device=resolve_sb3_device(args.device))
-    config = EnvConfig(
-        game=args.game,
-        state=args.state,
-        frame_skip=args.frame_skip,
-        max_pool_frames=args.max_pool_frames,
-        max_episode_steps=args.max_steps,
-        hud_crop_top=args.hud_crop_top,
-        action_set=args.action_set,
-        reward_mode=args.reward_mode,
-        progress_reward_cap=args.progress_reward_cap,
-        progress_reward_scale=args.progress_reward_scale,
-        terminal_reward=args.terminal_reward,
-        reward_scale=args.reward_scale,
-        time_penalty=args.time_penalty,
-        death_penalty=args.death_penalty,
-        completion_reward=args.completion_reward,
-        score_progress_clipped=args.score_progress_clipped,
-        no_progress_timeout_steps=args.no_progress_timeout_steps,
-        no_progress_min_delta=args.no_progress_min_delta,
-        completion_x_threshold=args.completion_x_threshold,
-        terminate_on_level_change=args.terminate_on_level_change,
-        terminate_on_completion=args.terminate_on_completion,
-    )
-    env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
-
-    best_episode = None
-    episode_summaries = []
-    try:
-        for episode_idx in range(args.episodes):
-            episode_seed = args.seed + episode_idx
-            torch.manual_seed(episode_seed)
-            result = run_eval_episode(
-                env=env,
-                model=model,
-                max_steps=args.max_steps,
-                deterministic=args.deterministic,
-                seed=episode_seed,
-                completion_x_threshold=args.completion_x_threshold,
-                capture_actions=True,
-            )
-            actions = result.pop("actions")
-            summary = {"episode": episode_idx + 1, "seed": episode_seed, **result}
-            episode_summaries.append(summary)
-            print(json.dumps(summary), flush=True)
-            if best_episode is None or episode_rank(summary) > episode_rank(
-                best_episode["summary"]
-            ):
-                best_episode = {"summary": summary, "actions": actions}
-    finally:
-        env.close()
-
-    if best_episode is None:
-        raise RuntimeError("No episode completed")
-
+    config = env_config_from_args(args, max_episode_steps_attr="max_steps")
     output = Path(args.output)
-    video_env = make_rendered_replay_env(config=config, seed=best_episode["summary"]["seed"])
-    try:
-        frames = replay_actions_for_video(
-            video_env, best_episode["actions"], seed=best_episode["summary"]["seed"]
-        )
-    finally:
-        video_env.close()
-    write_video(frames, output=output, fps=args.fps, scale=args.scale)
+    metrics, video_path = evaluate_model_episodes(
+        model=model,
+        config=config,
+        episodes=args.episodes,
+        seed=args.seed,
+        max_steps=args.max_steps,
+        deterministic=args.deterministic,
+        completion_x_threshold=args.completion_x_threshold,
+        capture_best_video=True,
+        video_path=output,
+        video_fps=args.fps,
+        video_scale=args.scale,
+        extra={"model": str(model_path)},
+    )
+    for episode in metrics["episode_results"]:
+        print(json.dumps(episode), flush=True)
     summary = {
         "model": str(model_path),
         "episodes": args.episodes,
@@ -213,9 +150,9 @@ def main() -> None:
         "deterministic": args.deterministic,
         "action_set": args.action_set,
         "rank_order": ["level_complete", "max_x_pos", "reward"],
-        "best_episode": best_episode["summary"],
-        "episode_results": episode_summaries,
-        "video": str(output),
+        "best_episode": metrics["best_episode"],
+        "episode_results": metrics["episode_results"],
+        "video": str(video_path or output),
     }
     summary_output = Path(args.summary_output)
     summary_output.parent.mkdir(parents=True, exist_ok=True)

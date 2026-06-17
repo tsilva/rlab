@@ -4,30 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 from mario_ppo.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
-
-
-def write_video(frames: list[np.ndarray], output: Path, fps: float, scale: int) -> None:
-    if not frames:
-        raise ValueError("No frames to write")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    first_frame = frames[0]
-    height, width = first_frame.shape[:2]
-    out_size = (width * scale, height * scale)
-    writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, out_size)
-    if not writer.isOpened():
-        raise RuntimeError(f"Could not open video writer for {output}")
-    try:
-        for frame in frames:
-            if scale != 1:
-                frame = cv2.resize(frame, out_size, interpolation=cv2.INTER_NEAREST)
-            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-    finally:
-        writer.release()
+from mario_ppo.video import replay_actions_for_video, write_video
 
 
 def is_level_complete(info: dict[str, Any], max_x_pos: int, completion_x_threshold: int) -> bool:
@@ -170,17 +151,6 @@ def run_eval_episode(
     }
 
 
-def replay_actions_for_video(env, actions: list[Any], seed: int) -> list[np.ndarray]:
-    env.reset(seed=seed)
-    frames = [env.render()]
-    for action in actions:
-        _obs, _reward, terminated, truncated, _info = env.step(action)
-        frames.append(env.render())
-        if terminated or truncated:
-            break
-    return frames
-
-
 class MarioEvalCallback(BaseCallback):
     def __init__(
         self,
@@ -219,7 +189,9 @@ class MarioEvalCallback(BaseCallback):
         return True
 
     def evaluate(self) -> None:
-        eval_env = make_eval_vec_env(config=self.config, n_envs=1, seed=self.seed + self.num_timesteps)
+        eval_env = make_eval_vec_env(
+            config=self.config, n_envs=1, seed=self.seed + self.num_timesteps
+        )
         episode_results: list[dict[str, Any]] = []
         best_episode_result: dict[str, Any] | None = None
         best_episode_actions: list[int] = []
