@@ -17,7 +17,12 @@ import torch
 from stable_baselines3 import PPO
 
 from mario_ppo.device import resolve_sb3_device
-from mario_ppo.env import DEFAULT_HUD_CROP_TOP, assert_rom_imported, make_rendered_replay_env
+from mario_ppo.env import (
+    DEFAULT_HUD_CROP_TOP,
+    assert_rom_imported,
+    make_fast_mario_env,
+    make_rendered_replay_env,
+)
 from mario_ppo.env_config import env_config_from_args
 from mario_ppo.eval_metrics import single_env_action
 
@@ -25,6 +30,26 @@ from mario_ppo.eval_metrics import single_env_action
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
     # Model was trained with VecFrameStack + VecTransposeImage: (n_env, 4, 84, 84).
     return np.stack([frame[..., 0] for frame in frames], axis=0)[None, ...]
+
+
+def fast_env_obs(obs: np.ndarray) -> np.ndarray:
+    # Fast/native envs return stacked grayscale frames as (84, 84, 4).
+    # SB3 models trained behind VecTransposeImage receive (n_env, 4, 84, 84).
+    arr = np.asarray(obs)
+    if arr.ndim == 3 and arr.shape[-1] == 4:
+        return np.transpose(arr, (2, 0, 1))[None, ...]
+    if arr.ndim == 3 and arr.shape[0] == 4:
+        return arr[None, ...]
+    raise ValueError(f"expected fast env obs with 4 stacked frames, got shape {arr.shape}")
+
+
+def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
+    arr = np.asarray(obs)
+    if arr.ndim == 3 and arr.shape[-1] == 4:
+        return deque([arr[..., idx : idx + 1] for idx in range(arr.shape[-1])], maxlen=4)
+    if arr.ndim == 3 and arr.shape[0] == 4:
+        return deque([arr[idx, ..., None] for idx in range(arr.shape[0])], maxlen=4)
+    raise ValueError(f"expected fast env obs with 4 stacked frames, got shape {arr.shape}")
 
 
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
@@ -258,6 +283,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open controls for FPS and the observation framestack diagnostic window.",
     )
+    parser.add_argument(
+        "--policy-env",
+        choices=["fast", "rendered"],
+        default="fast",
+        help=(
+            "Observation path used for the model. 'fast' matches native-vector training "
+            "preprocessing; 'rendered' uses the older manual GUI frame stack."
+        ),
+    )
     parser.add_argument("--stochastic", action="store_true", help="Sample from the policy")
     parser.add_argument(
         "--reward-mode",
@@ -287,11 +321,18 @@ def main() -> None:
     assert_rom_imported()
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
     config = env_config_from_args(args, max_episode_steps_attr="max_steps")
-    env = make_rendered_replay_env(config=config, seed=args.seed)
+    display_env = make_rendered_replay_env(config=config, seed=args.seed)
+    policy_env = (
+        make_fast_mario_env(config=config, seed=args.seed)
+        if args.policy_env == "fast"
+        else display_env
+    )
     seed_rng = np.random.default_rng() if args.random_seeds else None
 
-    obs, _ = env.reset(seed=args.seed)
-    first_frame = env.render()
+    if policy_env is not display_env:
+        policy_env.reset(seed=args.seed)
+    display_env.reset(seed=args.seed)
+    first_frame = display_env.render()
     game_position = (460, 60) if args.control_panel else None
     controls_position = (40, 60)
     obs_stack_position = (40, 240)
@@ -377,8 +418,12 @@ def main() -> None:
                 else args.seed + episode
             )
             torch.manual_seed(episode_seed)
-            obs, _ = env.reset(seed=episode_seed)
-            frame = env.render()
+            policy_obs, _ = policy_env.reset(seed=episode_seed)
+            if policy_env is display_env:
+                display_obs = policy_obs
+            else:
+                display_obs, _ = display_env.reset(seed=episode_seed)
+            frame = display_env.render()
             if not viewer.show(
                 frame,
                 [
@@ -391,22 +436,37 @@ def main() -> None:
             ):
                 break
             throttle()
-            frames: deque[np.ndarray] = deque([obs] * 4, maxlen=4)
+            frames: deque[np.ndarray] = (
+                fast_env_frames(policy_obs)
+                if args.policy_env == "fast"
+                else deque([display_obs] * 4, maxlen=4)
+            )
             if not update_controls(frames):
                 return
             total_reward = 0.0
             max_x_pos = 0
             final_info = {}
             for step_idx in range(args.max_steps):
-                action, _ = model.predict(stacked_obs(frames), deterministic=not args.stochastic)
-                obs, reward, terminated, truncated, info = env.step(single_env_action(action))
-                frames.append(obs)
+                model_obs = (
+                    fast_env_obs(policy_obs)
+                    if args.policy_env == "fast"
+                    else stacked_obs(frames)
+                )
+                action, _ = model.predict(model_obs, deterministic=not args.stochastic)
+                env_action = single_env_action(action)
+                policy_obs, reward, terminated, truncated, info = policy_env.step(env_action)
+                if policy_env is display_env:
+                    display_obs = policy_obs
+                    frames.append(display_obs)
+                else:
+                    display_env.step(env_action)
+                    frames = fast_env_frames(policy_obs)
                 if not update_controls(frames):
                     return
                 total_reward += float(reward)
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
                 final_info = dict(info)
-                frame = env.render()
+                frame = display_env.render()
                 overlay = [
                     f"r_step: {float(reward):.2f}",
                     f"r_total: {total_reward:.2f}",
@@ -452,7 +512,9 @@ def main() -> None:
             obs_viewer.close()
         viewer.close()
         try:
-            env.close()
+            display_env.close()
+            if policy_env is not display_env:
+                policy_env.close()
         except Exception:
             pass
 
