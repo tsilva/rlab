@@ -19,6 +19,10 @@ Before choosing hardware, launching remote training, changing concurrency, or re
 - Do not run robust evals inside remote training by default. Evaluate checkpoints out of process; promote by completion rate, then max x-position, then mean reward.
 - Default Modal shape unless overridden: `cpu=16.0`, `memory=32768`, `gpu=T4`, `n_envs=32`, `env_threads=0`, `torch_num_threads=0`, `n_steps=512`, `batch_size=256`, `n_epochs=10`.
 
+## Autoresearch
+
+When the user gives a game plus target and asks Codex to find a reproducible model-training recipe, use the project-level `$autoresearch` skill in `.codex/skills/autoresearch`. That workflow is RTX4090-only, allows only reward-function and hyperparameter changes by default, and requires three fresh successful seeds before declaring the target solved.
+
 ## Remote Provider Task Retrospective
 
 After remote-provider monitoring, orchestration, benchmarking, or launches, include a short retrospective: avoidable agent-token spend, reproducibility choices worth encoding, and any useful follow-up to ask about.
