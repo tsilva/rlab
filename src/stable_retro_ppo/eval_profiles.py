@@ -118,11 +118,25 @@ MARIO_LEVEL1_VEC8_V1 = replace(
     n_envs=8,
 )
 
+MARIO_LEVEL1_VEC20_V1 = replace(
+    MARIO_LEVEL1_V1,
+    name="mario_level1_vec20_v1",
+    n_envs=20,
+)
+
+MARIO_LEVEL1_VEC24_V1 = replace(
+    MARIO_LEVEL1_V1,
+    name="mario_level1_vec24_v1",
+    n_envs=24,
+)
+
 
 EVAL_PROFILES: dict[str, EvalProfile] = {
     MARIO_LEVEL1_V1.name: MARIO_LEVEL1_V1,
     MARIO_LEVEL1_NO_LIFE_LOSS_V1.name: MARIO_LEVEL1_NO_LIFE_LOSS_V1,
     MARIO_LEVEL1_VEC8_V1.name: MARIO_LEVEL1_VEC8_V1,
+    MARIO_LEVEL1_VEC20_V1.name: MARIO_LEVEL1_VEC20_V1,
+    MARIO_LEVEL1_VEC24_V1.name: MARIO_LEVEL1_VEC24_V1,
 }
 
 

@@ -4,6 +4,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -280,15 +281,23 @@ def eval_artifact_benchmark_remote(
     eval_profile: str = "mario_level1_v1",
     episodes: int = 100,
     seed: int = 10007,
+    n_envs: int = 0,
+    env_threads: int = 0,
     device: str = "cpu",
+    benchmark_cpu: float = 4.0,
+    benchmark_memory_mib: int = 8192,
 ) -> dict[str, Any]:
+    total_started_at = time.monotonic()
     ensure_remote_roms("evaluation benchmark")
     profile = get_eval_profile(eval_profile)
     config = profile.env_config()
+    effective_n_envs = n_envs if n_envs > 0 else profile.n_envs
+    if env_threads > 0:
+        config = replace(config, env_threads=env_threads)
     assert_rom_imported(config.game)
     model_path = download_model_artifact(artifact_ref)
     model = PPO.load(model_path, device=resolve_sb3_device(device))
-    started_at = time.monotonic()
+    eval_started_at = time.monotonic()
     try:
         metrics, _ = evaluate_model_episodes(
             model=model,
@@ -298,7 +307,7 @@ def eval_artifact_benchmark_remote(
             max_steps=profile.max_steps,
             deterministic=profile.deterministic,
             completion_x_threshold=config.completion_x_threshold,
-            n_envs=profile.n_envs,
+            n_envs=effective_n_envs,
             capture_best_video=False,
             extra={
                 "checkpoint_artifact": artifact_ref,
@@ -306,19 +315,28 @@ def eval_artifact_benchmark_remote(
                 "eval_profile_config": profile.metadata(),
                 "eval_seed": seed,
                 "benchmark": True,
+                "benchmark_cpu": benchmark_cpu,
+                "benchmark_memory_mib": benchmark_memory_mib,
+                "benchmark_env_threads": env_threads,
             },
         )
     finally:
+        eval_elapsed_seconds = time.monotonic() - eval_started_at
         volume.commit()
 
-    elapsed_seconds = time.monotonic() - started_at
+    total_elapsed_seconds = time.monotonic() - total_started_at
     return {
         "artifact_ref": artifact_ref,
         "eval_profile": profile.name,
         "episodes": episodes,
-        "n_envs": profile.n_envs,
-        "elapsed_seconds": round(elapsed_seconds, 3),
-        "episodes_per_second": round(episodes / elapsed_seconds, 4),
+        "n_envs": effective_n_envs,
+        "env_threads": env_threads,
+        "cpu": benchmark_cpu,
+        "memory_mib": benchmark_memory_mib,
+        "eval_elapsed_seconds": round(eval_elapsed_seconds, 3),
+        "total_elapsed_seconds": round(total_elapsed_seconds, 3),
+        "eval_episodes_per_second": round(episodes / eval_elapsed_seconds, 4),
+        "total_episodes_per_second": round(episodes / total_elapsed_seconds, 4),
         "completion_rate": float(metrics["completion_rate"]),
         "death_rate": float(metrics["death_rate"]),
         "max_x_max": int(metrics["max_x_max"]),
@@ -332,14 +350,23 @@ def eval_artifact_benchmark(
     eval_profile: str = "mario_level1_v1",
     episodes: int = 100,
     seed: int = 10007,
+    n_envs: int = 0,
+    env_threads: int = 0,
+    cpu: float = 4.0,
+    memory_mib: int = 8192,
     device: str = "cpu",
 ) -> None:
-    result = eval_artifact_benchmark_remote.remote(
+    remote = eval_artifact_benchmark_remote.with_options(cpu=cpu, memory=memory_mib)
+    result = remote.remote(
         artifact_ref=artifact_ref,
         eval_profile=eval_profile,
         episodes=episodes,
         seed=seed,
+        n_envs=n_envs,
+        env_threads=env_threads,
         device=device,
+        benchmark_cpu=cpu,
+        benchmark_memory_mib=memory_mib,
     )
     print(json.dumps(result, sort_keys=True), flush=True)
 
@@ -431,12 +458,15 @@ def eval_queue(
     idle_polls: int = 2,
     idle_sleep_seconds: float = 5.0,
     lease_seconds: int = 1800,
+    cpu: float = 4.0,
+    memory_mib: int = 8192,
     device: str = "cpu",
 ) -> None:
     calls = []
+    remote = eval_worker_remote.with_options(cpu=cpu, memory=memory_mib)
     for index in range(runners):
         worker_name = f"modal-eval-{uuid.uuid4()}-{index + 1}"
-        call = eval_worker_remote.spawn(
+        call = remote.spawn(
             worker_name=worker_name,
             max_jobs=max_jobs_per_runner,
             idle_polls=idle_polls,

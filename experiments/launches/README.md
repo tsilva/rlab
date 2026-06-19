@@ -14,7 +14,7 @@ command, sparsely monitor live launches, and summarize finished child logs.
 
 The example manifest is a template. Replace `game`, optional `state`, and
 `rom_source` before expecting preflight or launch to succeed.
-Default reusable manifests should target `stable-retro-turbo==1.0.0.post12`;
+Default reusable manifests should target `stable-retro-turbo==1.0.0.post14`;
 older runtime versions belong only in explicitly historical repro or comparison
 manifests.
 

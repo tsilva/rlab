@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flush Eval"
+  short_description: "Flush pending Modal eval jobs and report ranked results."
+  default_prompt: "Flush unevaluated checkpoints with the default eval profile and report the results."

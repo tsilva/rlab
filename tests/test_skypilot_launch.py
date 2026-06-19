@@ -94,7 +94,7 @@ class SkyPilotLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "pyproject.toml").write_text(
-                'dependencies = ["stable-retro-turbo==1.0.0.post12"]\n',
+                'dependencies = ["stable-retro-turbo==1.0.0.post14"]\n',
                 encoding="utf-8",
             )
             manifest = sample_manifest()
@@ -110,7 +110,7 @@ class SkyPilotLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "pyproject.toml").write_text(
-                'dependencies = ["stable-retro-turbo==1.0.0.post12"]\n',
+                'dependencies = ["stable-retro-turbo==1.0.0.post14"]\n',
                 encoding="utf-8",
             )
             (repo_root / "rom.bin").write_bytes(b"rom")
@@ -124,7 +124,7 @@ class SkyPilotLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "pyproject.toml").write_text(
-                'dependencies = ["stable-retro-turbo==1.0.0.post12"]\n',
+                'dependencies = ["stable-retro-turbo==1.0.0.post14"]\n',
                 encoding="utf-8",
             )
             (repo_root / "rom.bin").write_bytes(b"rom")
@@ -141,7 +141,7 @@ class SkyPilotLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "pyproject.toml").write_text(
-                'dependencies = ["stable-retro-turbo==1.0.0.post12"]\n',
+                'dependencies = ["stable-retro-turbo==1.0.0.post14"]\n',
                 encoding="utf-8",
             )
             (repo_root / "rom.bin").write_bytes(b"rom")

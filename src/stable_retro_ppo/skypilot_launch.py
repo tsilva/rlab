@@ -25,7 +25,7 @@ REQUIRED_ENV_KEYS = (
     "WANDB_API_KEY",
 )
 DEFAULT_INSTANCE_CONFIG = "experiments/instances.json"
-REQUIRED_STABLE_RETRO_TURBO_VERSION = "1.0.0.post12"
+REQUIRED_STABLE_RETRO_TURBO_VERSION = "1.0.0.post14"
 
 
 @dataclass(frozen=True)

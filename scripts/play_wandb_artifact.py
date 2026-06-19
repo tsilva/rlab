@@ -11,7 +11,32 @@ from stable_retro_ppo.wandb_artifacts import (
     download_model_artifact,
     model_artifact_ref,
 )
-from stable_retro_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH
+from stable_retro_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
+
+
+RUN_CONFIG_ARG_KEYS = {
+    "game": ("game",),
+    "state": ("state",),
+    "frame_skip": ("frame_skip",),
+    "max_pool_frames": ("max_pool_frames",),
+    "max_steps": ("max_steps", "max_episode_steps"),
+    "reward_mode": ("reward_mode",),
+    "progress_reward_cap": ("progress_reward_cap",),
+    "progress_reward_scale": ("progress_reward_scale",),
+    "terminal_reward": ("terminal_reward",),
+    "reward_scale": ("reward_scale",),
+    "time_penalty": ("time_penalty",),
+    "death_penalty": ("death_penalty",),
+    "completion_reward": ("completion_reward",),
+    "score_progress_clipped": ("score_progress_clipped",),
+    "no_progress_timeout_steps": ("no_progress_timeout_steps",),
+    "no_progress_min_delta": ("no_progress_min_delta",),
+    "completion_x_threshold": ("completion_x_threshold",),
+    "terminate_on_life_loss": ("terminate_on_life_loss",),
+    "terminate_on_level_change": ("terminate_on_level_change",),
+    "terminate_on_completion": ("terminate_on_completion",),
+    "action_set": ("action_set",),
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,6 +102,35 @@ def artifact_ref(args: argparse.Namespace) -> str:
         kind=args.kind,
         version=args.version,
     )
+
+
+def apply_artifact_run_config_defaults(
+    args: argparse.Namespace,
+    ref: str,
+    parser_defaults: dict[str, object],
+) -> None:
+    load_wandb_env()
+
+    import wandb
+
+    try:
+        run = wandb.Api().artifact(ref, type="model").logged_by()
+    except Exception as exc:
+        print(f"warning: could not infer playback config from {ref}: {exc}", file=sys.stderr)
+        return
+    if run is None:
+        return
+
+    config = getattr(run, "config", {}) or {}
+    for arg_name, config_keys in RUN_CONFIG_ARG_KEYS.items():
+        current_value = getattr(args, arg_name)
+        default_value = parser_defaults[arg_name]
+        if current_value != default_value and current_value not in ("", None):
+            continue
+        for config_key in config_keys:
+            if config_key in config and config[config_key] is not None:
+                setattr(args, arg_name, config[config_key])
+                break
 
 
 def play_model(model_path: Path, args: argparse.Namespace) -> None:
@@ -148,8 +202,11 @@ def play_model(model_path: Path, args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    parser_defaults = vars(parser.parse_args([]))
+    args = parser.parse_args()
     ref = artifact_ref(args)
+    apply_artifact_run_config_defaults(args, ref, parser_defaults)
     download_root = artifact_download_dir(Path(args.root), ref)
     print(f"Downloading {ref} to {download_root}")
     model_path = download_model_artifact(ref, download_root)

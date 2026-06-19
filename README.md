@@ -1,9 +1,11 @@
-# rlab
+<div align="center">
+  <img src="./logo.png" alt="rlab" width="256" />
 
-rlab is a reinforcement-learning workbench for training PPO agents on imported
-Stable Retro games. It uses `stable-retro-turbo`, Stable-Baselines3, W&B, and
-local or remote runners to move from ROM import to checkpoint evaluation and
-playback.
+  **rlab is a reinforcement-learning workbench for training PPO agents on imported Stable Retro games.**
+</div>
+
+It uses `stable-retro-turbo`, Stable-Baselines3, W&B, and local or remote
+runners to move from ROM import to checkpoint evaluation and playback.
 
 The repo is optimized for experiment iteration: configure a game target, run a
 bounded training job, upload checkpoints, evaluate them out of process, and

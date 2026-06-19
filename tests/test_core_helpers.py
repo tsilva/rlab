@@ -302,17 +302,23 @@ class EvalProfileTests(unittest.TestCase):
         self.assertFalse(config.terminate_on_life_loss)
         self.assertTrue(config.terminate_on_completion)
 
-    def test_mario_level1_vec8_profile_only_changes_env_count(self) -> None:
+    def test_mario_level1_vector_profiles_only_change_env_count(self) -> None:
         baseline = get_eval_profile("mario_level1_v1")
-        profile = get_eval_profile("mario_level1_vec8_v1")
 
-        baseline_metadata = baseline.metadata()
-        profile_metadata = profile.metadata()
-        for key in ("name", "n_envs"):
-            baseline_metadata.pop(key)
-            profile_metadata.pop(key)
-        self.assertEqual(profile_metadata, baseline_metadata)
-        self.assertEqual(profile.n_envs, 8)
+        for profile_name, expected_n_envs in (
+            ("mario_level1_vec8_v1", 8),
+            ("mario_level1_vec20_v1", 20),
+            ("mario_level1_vec24_v1", 24),
+        ):
+            with self.subTest(profile_name=profile_name):
+                profile = get_eval_profile(profile_name)
+                baseline_metadata = baseline.metadata()
+                profile_metadata = profile.metadata()
+                for key in ("name", "n_envs"):
+                    baseline_metadata.pop(key)
+                    profile_metadata.pop(key)
+                self.assertEqual(profile_metadata, baseline_metadata)
+                self.assertEqual(profile.n_envs, expected_n_envs)
 
 
 class ThroughputCallbackTests(unittest.TestCase):
