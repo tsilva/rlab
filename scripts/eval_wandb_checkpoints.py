@@ -23,6 +23,7 @@ from stable_retro_ppo.artifacts import (
 from stable_retro_ppo.device import resolve_sb3_device
 from stable_retro_ppo.env import EnvConfig, assert_rom_imported, resolve_env_config
 from stable_retro_ppo.env_config import env_config_from_args
+from stable_retro_ppo.eval_metrics import flat_numeric_metrics
 from stable_retro_ppo.eval_runner import evaluate_model_episodes
 from stable_retro_ppo.wandb_artifacts import (
     model_zip_from_download,
@@ -261,6 +262,7 @@ def log_wandb_eval(wandb_run, metrics: dict[str, Any], video_path: Path | None) 
         "eval/checkpoint_artifact": metrics["checkpoint_artifact"],
         "eval/hud_crop_top": metrics["hud_crop_top"],
     }
+    payload.update(flat_numeric_metrics(metrics, "eval/"))
     death_x_positions = [
         int(episode["death_x_pos"])
         for episode in metrics["episode_results"]
@@ -307,7 +309,9 @@ def promote_best_artifact(
 
 def build_parser() -> argparse.ArgumentParser:
     defaults = EnvConfig()
-    parser = argparse.ArgumentParser(description="Evaluate pending W&B Stable Retro PPO checkpoints")
+    parser = argparse.ArgumentParser(
+        description="Evaluate pending W&B Stable Retro PPO checkpoints"
+    )
     parser.add_argument("run_name", nargs="?", help="Training run name / artifact prefix")
     parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
     parser.add_argument("--artifact", action="append", help="Explicit checkpoint artifact ref")
@@ -363,7 +367,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--time-penalty", type=float, default=0.0)
     parser.add_argument("--death-penalty", type=float, default=25.0)
     parser.add_argument("--completion-reward", type=float, default=0.0)
-    parser.add_argument("--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
     parser.add_argument("--no-progress-min-delta", type=int, default=0)
     parser.add_argument(
@@ -371,8 +377,12 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--terminate-on-level-change", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--terminate-on-completion", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--terminate-on-level-change", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--terminate-on-completion", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument(
         "--completion-x-threshold",
         type=int,

@@ -23,7 +23,11 @@ from stable_retro_ppo.env import (
     resolve_env_config,
 )
 from stable_retro_ppo.env_config import env_config_from_args
-from stable_retro_ppo.eval_metrics import is_level_complete, run_eval_episode, summarize_episode_results
+from stable_retro_ppo.eval_metrics import (
+    is_level_complete,
+    run_eval_episode,
+    summarize_episode_results,
+)
 
 
 def scripted_action(policy: str, step_idx: int, action_names: tuple[str, ...]) -> int:
@@ -45,6 +49,7 @@ def run_scripted_episode(
     max_steps: int,
     action_names: tuple[str, ...],
     completion_x_threshold: int,
+    default_start_state: str | None = None,
 ):
     obs = env.reset()
     total_reward = 0.0
@@ -70,6 +75,9 @@ def run_scripted_episode(
     if died and death_x_pos is None:
         death_x_pos = max_x
     return {
+        "start_state": final_info.get("start_state")
+        or final_info.get("state")
+        or default_start_state,
         "reward": total_reward,
         "max_x_pos": max_x,
         "max_level_x_pos": max_level_x,
@@ -129,7 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--time-penalty", type=float, default=0.0)
     parser.add_argument("--death-penalty", type=float, default=25.0)
     parser.add_argument("--completion-reward", type=float, default=0.0)
-    parser.add_argument("--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
     parser.add_argument("--no-progress-min-delta", type=int, default=0)
     parser.add_argument(
@@ -137,8 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--terminate-on-level-change", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--terminate-on-completion", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--terminate-on-level-change", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--terminate-on-completion", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--action-set", default=defaults.action_set)
     parser.add_argument(
         "--completion-x-threshold",
@@ -176,6 +190,7 @@ def main() -> None:
                     deterministic=not args.stochastic,
                     seed=args.seed + episode_idx,
                     completion_x_threshold=config.completion_x_threshold,
+                    default_start_state=config.state,
                 )
                 result.pop("actions")
                 episodes.append(result)
@@ -191,6 +206,7 @@ def main() -> None:
                 max_steps=args.max_steps,
                 action_names=action_names,
                 completion_x_threshold=config.completion_x_threshold,
+                default_start_state=config.state,
             )
             for _ in range(args.episodes)
         ]
@@ -199,6 +215,7 @@ def main() -> None:
     summary = summarize_episode_results(
         episodes,
         deterministic=bool(args.model and not args.stochastic),
+        state_metric_root="eval",
         extra={
             "model": args.model,
             "policy": "ppo" if args.model else args.policy,

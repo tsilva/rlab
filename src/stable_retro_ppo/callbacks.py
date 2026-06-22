@@ -11,6 +11,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from stable_retro_ppo.artifacts import checkpoint_step, log_wandb_model_artifact
 from stable_retro_ppo.env import EnvConfig
+from stable_retro_ppo.metric_names import metric_path_segment
 
 
 class WandbCheckpointArtifactCallback(BaseCallback):
@@ -137,9 +138,7 @@ class RolloutDiagnosticsCallback(BaseCallback):
         self.logger.record(f"{prefix}_max", float(np.max(values)))
         self.logger.record(f"{prefix}_abs_mean", float(np.mean(np.abs(values))))
 
-    def _log_wandb_histograms(
-        self, value_predictions: np.ndarray, advantages: np.ndarray
-    ) -> None:
+    def _log_wandb_histograms(self, value_predictions: np.ndarray, advantages: np.ndarray) -> None:
         if self.wandb_run is None or not self.log_histograms:
             return
 
@@ -247,6 +246,7 @@ class TrainingCompletionRateStopCallback(BaseCallback):
         rate_threshold: float,
         run_dir: str,
         wandb_run=None,
+        default_state: str | None = None,
     ):
         super().__init__()
         if not 0.0 < rate_threshold <= 1.0:
@@ -258,6 +258,10 @@ class TrainingCompletionRateStopCallback(BaseCallback):
         self.completed_episode_outcomes: deque[int] = deque(maxlen=episode_window)
         self.total_terminal_episodes = 0
         self.total_completed_episodes = 0
+        self.default_state = default_state
+        self.state_completed_episode_outcomes: dict[str, deque[int]] = {}
+        self.state_total_terminal_episodes: dict[str, int] = {}
+        self.state_total_completed_episodes: dict[str, int] = {}
         self.stop_requested = False
 
     def _on_step(self) -> bool:
@@ -275,6 +279,7 @@ class TrainingCompletionRateStopCallback(BaseCallback):
             self.total_terminal_episodes += 1
             if completed:
                 self.total_completed_episodes += 1
+            state_metric_payload = self.record_state_episode(info, completed)
 
             completion_rate = self.completion_rate
             self.logger.record("train/completion_episode_rate", completion_rate)
@@ -294,6 +299,7 @@ class TrainingCompletionRateStopCallback(BaseCallback):
                         "train/completion_episodes_total": self.total_completed_episodes,
                         "train/terminal_episodes_total": self.total_terminal_episodes,
                         "global_step": self.num_timesteps,
+                        **state_metric_payload,
                     },
                     step=self.num_timesteps,
                 )
@@ -312,6 +318,40 @@ class TrainingCompletionRateStopCallback(BaseCallback):
         if not self.completed_episode_outcomes:
             return 0.0
         return sum(self.completed_episode_outcomes) / len(self.completed_episode_outcomes)
+
+    def record_state_episode(self, info: dict[str, Any], completed: bool) -> dict[str, int | float]:
+        state = info.get("start_state") or info.get("state") or self.default_state
+        if not state:
+            return {}
+
+        state_key = str(state)
+        outcomes = self.state_completed_episode_outcomes.setdefault(
+            state_key,
+            deque(maxlen=self.episode_window),
+        )
+        outcomes.append(int(completed))
+        self.state_total_terminal_episodes[state_key] = (
+            self.state_total_terminal_episodes.get(state_key, 0) + 1
+        )
+        if completed:
+            self.state_total_completed_episodes[state_key] = (
+                self.state_total_completed_episodes.get(state_key, 0) + 1
+            )
+        else:
+            self.state_total_completed_episodes.setdefault(state_key, 0)
+
+        segment = metric_path_segment(state_key)
+        prefix = f"train/{segment}"
+        state_rate = sum(outcomes) / len(outcomes)
+        payload: dict[str, int | float] = {
+            f"{prefix}/completion_episode_rate": state_rate,
+            f"{prefix}/completion_episode_window_size": len(outcomes),
+            f"{prefix}/completion_episodes_total": self.state_total_completed_episodes[state_key],
+            f"{prefix}/terminal_episodes_total": self.state_total_terminal_episodes[state_key],
+        }
+        for key, value in payload.items():
+            self.logger.record(key, value)
+        return payload
 
     def request_stop(self, completion_rate: float) -> None:
         self.stop_requested = True

@@ -91,6 +91,7 @@ def _evaluate_model_episodes_vector(
                         "episode": len(episode_results) + 1,
                         "seed": None,
                         "env_index": int(env_index),
+                        "start_state": info.get("start_state") or info.get("state") or config.state,
                         "reward": float(rewards[env_index]),
                         "max_x_pos": int(max_x_positions[env_index]),
                         "max_level_x_pos": int(max_level_x_positions[env_index]),
@@ -165,6 +166,7 @@ def evaluate_model_episodes(
                     seed=episode_seed,
                     completion_x_threshold=completion_x_threshold,
                     capture_actions=capture_best_video,
+                    default_start_state=config.state,
                 )
                 actions = result.pop("actions")
                 result = {"episode": episode_idx + 1, "seed": episode_seed, **result}
@@ -192,6 +194,7 @@ def evaluate_model_episodes(
     metrics = summarize_episode_results(
         episode_results,
         deterministic=deterministic,
+        state_metric_root="eval",
         extra={"eval_n_envs": n_envs, **(extra or {})},
     )
     metrics["best_episode"] = best_episode_result

@@ -8,6 +8,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 from stable_retro_ppo.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
+from stable_retro_ppo.metric_names import metric_path_segment
 from stable_retro_ppo.video import replay_actions_for_video, write_video
 
 
@@ -22,6 +23,66 @@ def death_location_histogram(death_x_positions: list[int], bin_size: int = 100) 
         key = f"{start}-{start + bin_size - 1}"
         bins[key] = bins.get(key, 0) + 1
     return dict(sorted(bins.items(), key=lambda item: int(item[0].split("-", 1)[0])))
+
+
+def episode_start_state(episode: dict[str, Any]) -> str | None:
+    state = episode.get("start_state") or episode.get("state")
+    final_info = episode.get("final_info")
+    if not state and isinstance(final_info, dict):
+        state = final_info.get("start_state") or final_info.get("state")
+    return str(state) if state else None
+
+
+def state_episode_metrics(
+    episode_results: list[dict[str, Any]],
+    *,
+    metric_root: str,
+) -> dict[str, int | float]:
+    metrics: dict[str, int | float] = {}
+    states = sorted(
+        {state for episode in episode_results if (state := episode_start_state(episode))}
+    )
+    for state in states:
+        state_episodes = [
+            episode for episode in episode_results if episode_start_state(episode) == state
+        ]
+        rewards = np.array([episode["reward"] for episode in state_episodes], dtype=np.float64)
+        max_x_positions = np.array(
+            [episode["max_x_pos"] for episode in state_episodes],
+            dtype=np.float64,
+        )
+        max_level_x_positions = np.array(
+            [episode["max_level_x_pos"] for episode in state_episodes],
+            dtype=np.float64,
+        )
+        completion_count = sum(1 for episode in state_episodes if episode["level_complete"])
+        death_count = sum(1 for episode in state_episodes if episode["died"])
+        prefix = f"{metric_root}/{metric_path_segment(state)}"
+        metrics.update(
+            {
+                f"{prefix}/episodes": len(state_episodes),
+                f"{prefix}/reward_mean": float(rewards.mean()),
+                f"{prefix}/reward_std": float(rewards.std()),
+                f"{prefix}/reward_max": float(rewards.max()),
+                f"{prefix}/max_x_mean": float(max_x_positions.mean()),
+                f"{prefix}/max_x_max": int(max_x_positions.max()),
+                f"{prefix}/max_level_x_mean": float(max_level_x_positions.mean()),
+                f"{prefix}/max_level_x_max": int(max_level_x_positions.max()),
+                f"{prefix}/completion_count": completion_count,
+                f"{prefix}/completion_rate": completion_count / len(state_episodes),
+                f"{prefix}/death_count": death_count,
+                f"{prefix}/death_rate": death_count / len(state_episodes),
+            },
+        )
+    return metrics
+
+
+def flat_numeric_metrics(metrics: dict[str, Any], prefix: str) -> dict[str, int | float]:
+    return {
+        key: value
+        for key, value in metrics.items()
+        if key.startswith(prefix) and isinstance(value, int | float) and not isinstance(value, bool)
+    }
 
 
 def episode_rank(result: dict[str, Any]) -> tuple[int, float, float]:
@@ -46,6 +107,7 @@ def summarize_episode_results(
     episode_results: list[dict[str, Any]],
     *,
     deterministic: bool,
+    state_metric_root: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not episode_results:
@@ -84,6 +146,8 @@ def summarize_episode_results(
         "death_x_histogram": death_location_histogram(death_x_positions),
         "episode_results": episode_results,
     }
+    if state_metric_root:
+        metrics.update(state_episode_metrics(episode_results, metric_root=state_metric_root))
     if extra:
         metrics = {**extra, **metrics}
     return metrics
@@ -97,6 +161,7 @@ def run_eval_episode(
     seed: int,
     completion_x_threshold: int,
     capture_actions: bool = False,
+    default_start_state: str | None = None,
 ) -> dict[str, Any]:
     env.seed(seed)
     obs = env.reset()
@@ -131,6 +196,9 @@ def run_eval_episode(
         death_x_pos = max_x_pos
 
     return {
+        "start_state": final_info.get("start_state")
+        or final_info.get("state")
+        or default_start_state,
         "reward": total_reward,
         "max_x_pos": max_x_pos,
         "max_level_x_pos": max_level_x_pos,
@@ -204,6 +272,7 @@ class RetroEvalCallback(BaseCallback):
                     seed=episode_seed,
                     completion_x_threshold=self.completion_x_threshold,
                     capture_actions=self.record_video,
+                    default_start_state=self.config.state,
                 )
                 actions = result.pop("actions")
                 result = {"episode": episode_idx + 1, **result}
@@ -225,6 +294,7 @@ class RetroEvalCallback(BaseCallback):
         metrics = summarize_episode_results(
             episode_results,
             deterministic=self.deterministic,
+            state_metric_root="eval",
             extra={"timesteps": self.num_timesteps},
         )
         metrics["best_model_score"] = [
@@ -265,6 +335,10 @@ class RetroEvalCallback(BaseCallback):
         self.logger.record("eval/completion_rate", metrics["completion_rate"])
         self.logger.record("eval/death_rate", metrics["death_rate"])
         self.logger.record("eval/death_count", metrics["death_count"])
+        for key, value in flat_numeric_metrics(metrics, "eval/").items():
+            if key in {"eval/completion_rate", "eval/death_rate", "eval/death_count"}:
+                continue
+            self.logger.record(key, value)
         self.logger.record("time/total_timesteps", self.num_timesteps)
         self.logger.dump(self.num_timesteps)
 
@@ -315,6 +389,7 @@ class RetroEvalCallback(BaseCallback):
             "eval/best_episode_reward": metrics["best_episode"]["reward"],
             "eval/best_episode_max_x": metrics["best_episode"]["max_x_pos"],
         }
+        payload.update(flat_numeric_metrics(metrics, "eval/"))
         if death_x_positions:
             payload["eval/death_x_pos_histogram"] = wandb.Histogram(death_x_positions)
         if video_path is not None and video_path.is_file():

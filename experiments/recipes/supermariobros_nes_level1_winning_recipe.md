@@ -1,16 +1,17 @@
 # SuperMarioBros-NES Level 1 Winning Training Recipe
 
-Last updated: 2026-06-19
+Last updated: 2026-06-22
 
 This is the current preferred training recipe for `SuperMarioBros-Nes-v0`
-`Level1-1` screening on the RTX4090. It is based on the B33 target-KL 0.20
-recipe, upgraded to `stable-retro-turbo==1.0.0.post14`, with frame maxpooling
-disabled after B40.
+`Level1-1` screening on the RTX4090. The current incumbent is B55
+`lowkl_lrdecay`, which refined the earlier B33/B40 recipe by lowering PPO update
+pressure and adding late learning-rate decay. It is preferred over the older
+B40 note because both B55 seeds reached the strict `100/100` stop.
 
 ## Recipe
 
 ```text
-stable-retro-turbo: 1.0.0.post14
+stable-retro-turbo: 1.0.0.post16
 game: SuperMarioBros-Nes-v0
 state: Level1-1
 n_envs: 16
@@ -19,12 +20,12 @@ torch_num_threads: 1
 n_steps: 512
 batch_size: 512
 n_epochs: 10
-learning_rate: 1.5e-4 fixed
-ent_coef: 0.01 -> 0.0003 over 2M
+learning_rate: 1.5e-4 -> 1.0e-4 over 4M
+ent_coef: 0.01 -> 0.0001 over 4M
 gamma: 0.9
 gae_lambda: 1.0
 clip_range: 0.15
-target_kl: 0.20
+target_kl: 0.16
 vf_coef: 1.0
 adam_eps: 1e-8
 normalize_advantage: false
@@ -53,10 +54,38 @@ stop_completion_rate_threshold: 1.0
 ```
 
 Use 5 concurrent child trainings on `k8s/rtx4090` for throughput screening.
+Recent recipe-search batches used 6 concurrent child trainings for 3-arm /
+2-seed comparisons; that is acceptable for search continuity, but the measured
+default throughput shape in `INSTANCES.md` remains 5 children.
 Level completion is detected from stable-retro `levelHi`/`levelLo` changes, not
 from an x-position threshold.
 
 ## Evidence
+
+B55 `lowkl_lrdecay`, `stable-retro-turbo==1.0.0.post16`, seeds `108-109`:
+
+```text
+wandb_group: b55-level1-1-recipe-search-lowkl-refine-3arms-2seeds-6parallel-20260621_194855
+seed108 qt3h08mc final 100/100, stop step 4,273,200, total completions 2,622
+seed109 actk7fw5 final 100/100, stop step 4,471,008, total completions 1,506
+mean_stop_step: 4,372,104
+total_completions: 4,128
+```
+
+B57 control repeat of the same B55 recipe, seeds `116-117`, did not beat B55
+but supports that the recipe is strong and still seed-variable:
+
+```text
+wandb_group: b57-b55-level1-1-targetkl-bracket-3arms-2seeds-6parallel-20260622_083007
+seed116 c916vdl6 final 96/100 at 5,005,312, total completions 1,698
+seed117 8j5mlmu0 final 100/100, stop step 4,141,584, total completions 1,981
+```
+
+Decision: B55 `lowkl_lrdecay` is the current incumbent because it has paired
+strict `100/100` success. Rank future recipes by paired `1.0`, then lower mean
+stop step, then higher total completions, then lower seed variance.
+
+## Historical Baseline
 
 B40 no-maxpool, `stable-retro-turbo==1.0.0.post14`, seeds `42-46`:
 
@@ -85,7 +114,5 @@ best_peak: 93/100
 aggregate_fps: 6095
 ```
 
-Decision: use no-maxpool as part of the active training recipe because it is
-faster and produced a strict `100/100` winner. Keep the B39 result in mind:
-maxpooling had the better five-seed average, so this recipe is a winning
-screening recipe, not yet a statistically confirmed population-level baseline.
+B40 was the previous recorded winning screening recipe. It produced one strict
+`100/100` winner, but it was weaker on paired reproducibility than B55.

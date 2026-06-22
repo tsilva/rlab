@@ -26,7 +26,11 @@ from stable_retro_ppo.artifacts import (
     require_training_metadata,
     write_model_metadata,
 )
-from stable_retro_ppo.callbacks import RolloutDiagnosticsCallback, ThroughputCallback
+from stable_retro_ppo.callbacks import (
+    RolloutDiagnosticsCallback,
+    ThroughputCallback,
+    TrainingCompletionRateStopCallback,
+)
 from stable_retro_ppo.cli import build_train_command
 from stable_retro_ppo.env import (
     EnvConfig,
@@ -42,9 +46,14 @@ from stable_retro_ppo.env import (
 from stable_retro_ppo.env_config import env_config_from_args, parse_state_probs, parse_states
 from stable_retro_ppo.eval_metrics import episode_rank, is_level_complete
 from stable_retro_ppo.eval_runner import evaluate_model_episodes
+from stable_retro_ppo.metric_names import metric_path_segment
 from stable_retro_ppo.play import build_parser as build_play_parser
 from stable_retro_ppo.targets import SuperMarioBrosNesV0Target, target_for_game
-from stable_retro_ppo.wandb_artifacts import artifact_download_dir, model_artifact_ref, safe_artifact_stem
+from stable_retro_ppo.wandb_artifacts import (
+    artifact_download_dir,
+    model_artifact_ref,
+    safe_artifact_stem,
+)
 from stable_retro_ppo.wandb_artifacts import metadata_from_wandb_artifact
 from scripts.eval_wandb_checkpoints import eval_seed_for_checkpoint
 
@@ -632,7 +641,9 @@ class CommandAndArtifactTests(unittest.TestCase):
         argv = ["--model", "model.zip", "--max-pool-frames"]
         args = parser.parse_args(argv)
         explicit_dests = explicit_arg_dests(parser, argv)
-        apply_config_defaults(args, env_config_from_metadata(metadata), parser_defaults, explicit_dests)
+        apply_config_defaults(
+            args, env_config_from_metadata(metadata), parser_defaults, explicit_dests
+        )
         self.assertTrue(args.max_pool_frames)
 
     def test_model_metadata_defaults_apply_to_env_parser_args(self) -> None:
@@ -668,7 +679,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertTrue(args.score_progress_clipped)
             self.assertFalse(args.terminate_on_completion)
 
-            config = env_config_from_model_metadata(model_path, fallback=EnvConfig(state="fallback"))
+            config = env_config_from_model_metadata(
+                model_path, fallback=EnvConfig(state="fallback")
+            )
             self.assertIsNotNone(config)
             assert config is not None
             self.assertEqual(config.state, "Level2-1")
@@ -766,6 +779,10 @@ class CommandAndArtifactTests(unittest.TestCase):
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_metric_path_segment_preserves_retro_state_names(self) -> None:
+        self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")
+        self.assertEqual(metric_path_segment("Level 1/2"), "Level_1_2")
+
     def test_episode_rank_prefers_completion_then_progress_then_reward(self) -> None:
         incomplete = {"level_complete": False, "max_x_pos": 4000, "reward": 1000.0}
         complete = {"level_complete": True, "max_x_pos": 100, "reward": -10.0}
@@ -824,6 +841,7 @@ class EvalMetricTests(unittest.TestCase):
                         [
                             {"max_x_pos": 10, "level_max_x_pos": 10},
                             {
+                                "start_state": "Level1-2",
                                 "max_x_pos": 20,
                                 "level_max_x_pos": 20,
                                 "died": True,
@@ -839,6 +857,7 @@ class EvalMetricTests(unittest.TestCase):
                     np.array([True, False]),
                     [
                         {
+                            "start_state": "Level1-1",
                             "max_x_pos": 30,
                             "level_max_x_pos": 30,
                             "level_changed": True,
@@ -871,10 +890,69 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["reward_mean"], 3.0)
         self.assertEqual(metrics["completion_count"], 1)
         self.assertEqual(metrics["death_count"], 1)
+        self.assertEqual(metrics["eval/Level1-1/episodes"], 1)
+        self.assertEqual(metrics["eval/Level1-1/completion_rate"], 1.0)
+        self.assertEqual(metrics["eval/Level1-2/episodes"], 1)
+        self.assertEqual(metrics["eval/Level1-2/completion_rate"], 0.0)
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
+        self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-2")
         self.assertEqual(metrics["episode_results"][0]["reward"], 2.0)
         self.assertEqual(metrics["episode_results"][1]["env_index"], 0)
+        self.assertEqual(metrics["episode_results"][1]["start_state"], "Level1-1")
         self.assertEqual(metrics["episode_results"][1]["reward"], 4.0)
+
+
+class TrainingCompletionRateStopCallbackTests(unittest.TestCase):
+    def test_records_per_state_completion_windows(self) -> None:
+        class FakeLogger:
+            def __init__(self) -> None:
+                self.records: dict[str, int | float] = {}
+
+            def record(self, key: str, value: int | float) -> None:
+                self.records[key] = value
+
+        class FakeModel:
+            def __init__(self) -> None:
+                self.logger = FakeLogger()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            callback = TrainingCompletionRateStopCallback(
+                episode_window=2,
+                rate_threshold=1.0,
+                run_dir=tmp_dir,
+                default_state="Level1-1",
+            )
+            model = FakeModel()
+            callback.model = model  # type: ignore[assignment]
+            callback.num_timesteps = 10
+            callback.locals = {
+                "dones": [True, True, True],
+                "infos": [
+                    {"start_state": "Level1-1", "completion_event": True},
+                    {"start_state": "Level1-2", "completion_event": False},
+                    {"start_state": "Level1-2", "completion_event": True},
+                ],
+            }
+
+            self.assertTrue(callback._on_step())
+
+        self.assertEqual(model.logger.records["train/completion_episode_rate"], 0.5)
+        self.assertEqual(
+            model.logger.records["train/Level1-1/completion_episode_rate"],
+            1.0,
+        )
+        self.assertEqual(
+            model.logger.records["train/Level1-1/completion_episode_window_size"],
+            1,
+        )
+        self.assertEqual(
+            model.logger.records["train/Level1-2/completion_episode_rate"],
+            0.5,
+        )
+        self.assertEqual(
+            model.logger.records["train/Level1-2/completion_episode_window_size"],
+            2,
+        )
 
 
 class ThroughputCallbackTests(unittest.TestCase):
@@ -941,16 +1019,12 @@ class RolloutDiagnosticsCallbackTests(unittest.TestCase):
 
         records = dict(model.logger.records)
         self.assertEqual(records["train/value_pred_mean"], 2.5)
-        self.assertAlmostEqual(
-            records["train/value_pred_std"], float(np.std([1.0, 2.0, 3.0, 4.0]))
-        )
+        self.assertAlmostEqual(records["train/value_pred_std"], float(np.std([1.0, 2.0, 3.0, 4.0])))
         self.assertEqual(records["train/value_pred_min"], 1.0)
         self.assertEqual(records["train/value_pred_max"], 4.0)
         self.assertEqual(records["train/value_pred_abs_mean"], 2.5)
         self.assertEqual(records["train/advantage_mean"], 0.5)
-        self.assertAlmostEqual(
-            records["train/advantage_std"], float(np.std([-1.0, 0.0, 1.0, 2.0]))
-        )
+        self.assertAlmostEqual(records["train/advantage_std"], float(np.std([-1.0, 0.0, 1.0, 2.0])))
         self.assertEqual(records["train/advantage_min"], -1.0)
         self.assertEqual(records["train/advantage_max"], 2.0)
         self.assertEqual(records["train/advantage_abs_mean"], 1.0)

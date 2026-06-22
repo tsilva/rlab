@@ -140,6 +140,7 @@ def main() -> None:
                 rate_threshold=args.stop_completion_rate_threshold,
                 run_dir=run_dir,
                 wandb_run=wandb_run,
+                default_state=config.state,
             ),
         )
     if args.stop_completion_rolling_window > 0 and args.stop_completion_rolling_threshold > 0:
