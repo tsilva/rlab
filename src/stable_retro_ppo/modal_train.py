@@ -13,26 +13,19 @@ from stable_retro_ppo.modal_core import (
     ensure_remote_roms,
     image,
     run_cmd,
-    safe_path_name,
     volume,
     wandb_secret,
 )
+from stable_retro_ppo.wandb_artifacts import artifact_download_dir, download_model_artifact
 from stable_retro_ppo.wandb_utils import DEFAULT_WANDB_PROJECT
 
 
 def _download_wandb_model_artifact(ref: str) -> Path:
-    import wandb
-
-    download_root = RUNS_DIR / "wandb_artifacts" / safe_path_name(ref)
-    download_root.mkdir(parents=True, exist_ok=True)
+    download_root = artifact_download_dir(RUNS_DIR / "wandb_artifacts", ref)
     print(f"Downloading W&B artifact {ref} to {download_root}", flush=True)
-    artifact = wandb.Api().artifact(ref, type="model")
-    artifact_path = Path(artifact.download(root=str(download_root)))
-    zip_files = sorted(artifact_path.glob("*.zip"))
-    if not zip_files:
-        raise FileNotFoundError(f"No .zip model file found in {artifact_path}")
-    print(f"Using resumed model {zip_files[0]}", flush=True)
-    return zip_files[0]
+    model_path = download_model_artifact(ref, download_root)
+    print(f"Using resumed model {model_path}", flush=True)
+    return model_path
 
 
 def _latest_checkpoint(run_name: str) -> Path | None:

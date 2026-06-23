@@ -18,7 +18,7 @@ import numpy as np
 import stable_retro as retro
 from stable_retro import StableRetroNativeVecEnv
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv
-from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecMonitor, VecTransposeImage
+from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from stable_retro_ppo.targets import GenericRetroTarget, target_for_game
 
@@ -558,7 +558,6 @@ def _native_vec_kwargs(
 ) -> dict[str, Any]:
     native_kwargs: dict[str, Any] = {
         "num_envs": n_envs,
-        "state": state or None,
         "num_threads": num_threads,
         "render_mode": "rgb_array",
         "obs_resize": (config.observation_size, config.observation_size),
@@ -570,226 +569,17 @@ def _native_vec_kwargs(
         "maxpool_last_two": config.max_pool_frames,
         "copy_observations": False,
     }
+    if config.states:
+        native_kwargs["state"] = None
+        native_kwargs["states"] = list(config.states)
+        if config.state_probs:
+            native_kwargs["state_probs"] = list(config.state_probs)
+    else:
+        native_kwargs["state"] = state or None
     if native_life_loss_supported:
         native_kwargs["terminate_on_life_loss"] = True
         native_kwargs["life_variable"] = native_life_variable
     return native_kwargs
-
-
-class MixedStateNativeVecEnv(VecEnv):
-    """Compose native vector envs for mixed start-state training.
-
-    The installed native API accepts one initial state per NativeVectorEnv and
-    exposes no per-lane state reset. Fixed per-slot mode groups slots by state
-    to keep batched native stepping. Probability mode uses one native lane per
-    logical slot so a completed slot can be recreated at the newly sampled state.
-    """
-
-    def __init__(
-        self,
-        config: EnvConfig,
-        *,
-        n_envs: int,
-        seed: int,
-        num_threads: int,
-        native_life_variable: str | None,
-        native_life_loss_supported: bool,
-    ):
-        if not config.states:
-            raise ValueError("MixedStateNativeVecEnv requires config.states")
-        self.config = config
-        self.waiting = False
-        self._actions = None
-        self._rng = np.random.default_rng(seed)
-        self._probability_mode = bool(config.state_probs)
-        self._native_life_variable = native_life_variable
-        self._native_life_loss_supported = native_life_loss_supported
-        self._num_threads = num_threads
-        self._slot_states: list[str] = []
-        self._slot_envs: list[StableRetroNativeVecEnv] = []
-        self._groups: list[tuple[str, list[int], StableRetroNativeVecEnv]] = []
-
-        if self._probability_mode:
-            for _ in range(n_envs):
-                state = self._sample_state()
-                self._slot_states.append(state)
-                self._slot_envs.append(self._make_native_env(state, n_envs=1, num_threads=1))
-            first_env = self._slot_envs[0]
-        else:
-            self._slot_states = list(config.states)
-            for state in dict.fromkeys(config.states):
-                indices = [idx for idx, slot_state in enumerate(config.states) if slot_state == state]
-                group_threads = max(1, round(num_threads * len(indices) / max(n_envs, 1)))
-                self._groups.append(
-                    (
-                        state,
-                        indices,
-                        self._make_native_env(
-                            state,
-                            n_envs=len(indices),
-                            num_threads=group_threads,
-                        ),
-                    ),
-                )
-            first_env = self._groups[0][2]
-
-        super().__init__(n_envs, first_env.observation_space, first_env.action_space)
-
-    def _sample_state(self) -> str:
-        index = int(
-            self._rng.choice(
-                len(self.config.states),
-                p=np.asarray(self.config.state_probs, dtype=np.float64),
-            )
-        )
-        return self.config.states[index]
-
-    def _make_native_env(
-        self,
-        state: str,
-        *,
-        n_envs: int,
-        num_threads: int,
-    ) -> StableRetroNativeVecEnv:
-        return StableRetroNativeVecEnv(
-            self.config.game,
-            **_native_vec_kwargs(
-                self.config,
-                n_envs=n_envs,
-                num_threads=num_threads,
-                state=state,
-                native_life_variable=self._native_life_variable,
-                native_life_loss_supported=self._native_life_loss_supported,
-            ),
-        )
-
-    @staticmethod
-    def _annotate_info(info: dict[str, Any], state: str) -> dict[str, Any]:
-        info = dict(info)
-        info["start_state"] = state
-        info["state"] = state
-        return info
-
-    def seed(self, seed: int | None = None):
-        self._rng = np.random.default_rng(seed)
-        return super().seed(seed)
-
-    def reset(self):
-        obs = np.empty((self.num_envs, *self.observation_space.shape), dtype=self.observation_space.dtype)
-        infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
-
-        if self._probability_mode:
-            for index, env in enumerate(self._slot_envs):
-                state = self._sample_state()
-                if state != self._slot_states[index]:
-                    env.close()
-                    env = self._make_native_env(state, n_envs=1, num_threads=1)
-                    self._slot_envs[index] = env
-                    self._slot_states[index] = state
-                if self._seeds and index < len(self._seeds) and self._seeds[index] is not None:
-                    env.seed(int(self._seeds[index]))
-                slot_obs = env.reset()
-                obs[index] = slot_obs[0]
-                reset_info = getattr(env, "reset_infos", [{}])[0]
-                infos[index] = self._annotate_info(reset_info, state)
-        else:
-            for state, indices, env in self._groups:
-                if self._seeds:
-                    seeds = [
-                        self._seeds[index]
-                        for index in indices
-                        if index < len(self._seeds) and self._seeds[index] is not None
-                    ]
-                    if seeds:
-                        env.seed(int(seeds[0]))
-                group_obs = env.reset()
-                group_infos = getattr(env, "reset_infos", [{} for _ in indices])
-                for group_index, env_index in enumerate(indices):
-                    obs[env_index] = group_obs[group_index]
-                    reset_info = group_infos[group_index] if group_index < len(group_infos) else {}
-                    infos[env_index] = self._annotate_info(reset_info, state)
-
-        self.reset_infos = infos
-        self._reset_seeds()
-        self._reset_options()
-        return obs
-
-    def step_async(self, actions):
-        self._actions = np.asarray(actions)
-        self.waiting = True
-
-    def step_wait(self):
-        if self._actions is None:
-            raise RuntimeError("step_async must be called before step_wait")
-        obs = np.empty((self.num_envs, *self.observation_space.shape), dtype=self.observation_space.dtype)
-        rewards = np.zeros(self.num_envs, dtype=np.float32)
-        dones = np.zeros(self.num_envs, dtype=bool)
-        infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
-
-        if self._probability_mode:
-            for index, env in enumerate(self._slot_envs):
-                state = self._slot_states[index]
-                env.step_async(np.asarray([self._actions[index]]))
-                slot_obs, slot_rewards, slot_dones, slot_infos = env.step_wait()
-                info = self._annotate_info(slot_infos[0], state)
-                if bool(slot_dones[0]):
-                    next_state = self._sample_state()
-                    info["next_start_state"] = next_state
-                    if next_state != state:
-                        env.close()
-                        env = self._make_native_env(next_state, n_envs=1, num_threads=1)
-                        self._slot_envs[index] = env
-                        self._slot_states[index] = next_state
-                        slot_obs = env.reset()
-                        self.reset_infos = getattr(self, "reset_infos", [{} for _ in range(self.num_envs)])
-                        self.reset_infos[index] = self._annotate_info(
-                            getattr(env, "reset_infos", [{}])[0],
-                            next_state,
-                        )
-                obs[index] = slot_obs[0]
-                rewards[index] = float(slot_rewards[0])
-                dones[index] = bool(slot_dones[0])
-                infos[index] = info
-        else:
-            for state, indices, env in self._groups:
-                env.step_async(self._actions[indices])
-                group_obs, group_rewards, group_dones, group_infos = env.step_wait()
-                for group_index, env_index in enumerate(indices):
-                    obs[env_index] = group_obs[group_index]
-                    rewards[env_index] = float(group_rewards[group_index])
-                    dones[env_index] = bool(group_dones[group_index])
-                    infos[env_index] = self._annotate_info(group_infos[group_index], state)
-
-        self._actions = None
-        self.waiting = False
-        return obs, rewards, dones, infos
-
-    def close(self):
-        for _, _, env in self._groups:
-            env.close()
-        for env in self._slot_envs:
-            env.close()
-
-    def get_attr(self, attr_name: str, indices=None) -> list[Any]:
-        return [getattr(self, attr_name) for _ in self._get_indices(indices)]
-
-    def set_attr(self, attr_name: str, value: Any, indices=None) -> None:
-        setattr(self, attr_name, value)
-
-    def env_method(
-        self,
-        method_name: str,
-        *method_args,
-        indices=None,
-        **method_kwargs,
-    ) -> list[Any]:
-        method = getattr(self, method_name)
-        return [
-            method(*method_args, **method_kwargs) for _ in self._get_indices(indices)
-        ]
-
-    def env_is_wrapped(self, wrapper_class, indices=None) -> list[bool]:
-        return [False for _ in self._get_indices(indices)]
 
 
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):
@@ -804,25 +594,15 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
     native_life_loss_supported = (
         native_terminates_life_loss and native_vec_env_supports_life_loss()
     )
-    if config.states:
-        vec_env = MixedStateNativeVecEnv(
-            config,
-            n_envs=n_envs,
-            seed=seed,
-            num_threads=num_threads,
-            native_life_variable=native_life_variable,
-            native_life_loss_supported=native_life_loss_supported,
-        )
-    else:
-        native_kwargs = _native_vec_kwargs(
-            config,
-            n_envs=n_envs,
-            num_threads=num_threads,
-            state=config.state,
-            native_life_variable=native_life_variable,
-            native_life_loss_supported=native_life_loss_supported,
-        )
-        vec_env = StableRetroNativeVecEnv(config.game, **native_kwargs)
+    native_kwargs = _native_vec_kwargs(
+        config,
+        n_envs=n_envs,
+        num_threads=num_threads,
+        state=config.state,
+        native_life_variable=native_life_variable,
+        native_life_loss_supported=native_life_loss_supported,
+    )
+    vec_env = StableRetroNativeVecEnv(config.game, **native_kwargs)
     vec_env.seed(seed)
     if target.uses_discrete_actions(config.action_set):
         vec_env = VecDiscreteRetroActions(vec_env, config=config)

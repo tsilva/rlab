@@ -62,17 +62,21 @@ def artifact_download_dir(root: Path, ref: str) -> Path:
     return root / safe_artifact_stem(ref.replace("/", "_").replace(":", "_"))
 
 
+def download_artifact_model(artifact: Any, root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = Path(artifact.download(root=str(root)))
+    model_path = model_zip_from_download(path)
+    write_downloaded_artifact_metadata(model_path, artifact)
+    return model_path
+
+
 def download_model_artifact(ref: str, root: Path) -> Path:
     load_wandb_env()
 
     import wandb
 
-    root.mkdir(parents=True, exist_ok=True)
     artifact = wandb.Api().artifact(ref, type="model")
-    path = Path(artifact.download(root=str(root)))
-    model_path = model_zip_from_download(path)
-    write_downloaded_artifact_metadata(model_path, artifact)
-    return model_path
+    return download_artifact_model(artifact, root)
 
 
 def metadata_from_wandb_artifact(artifact, model_path: Path) -> dict:

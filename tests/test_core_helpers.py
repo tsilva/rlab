@@ -34,7 +34,6 @@ from stable_retro_ppo.callbacks import (
 from stable_retro_ppo.cli import build_train_command
 from stable_retro_ppo.env import (
     EnvConfig,
-    MixedStateNativeVecEnv,
     StickyAction,
     make_eval_vec_env,
     make_rendered_replay_env,
@@ -376,144 +375,53 @@ class StickyActionTests(unittest.TestCase):
         self.assertEqual(env.unwrapped.actions, [1, 1, 1])
 
 
-class MixedStateNativeVecEnvTests(unittest.TestCase):
-    def test_fixed_state_slots_construct_native_groups_and_annotate_reset_infos(self) -> None:
-        created: list[tuple[str, int]] = []
+class NativeMixedStateVecEnvTests(unittest.TestCase):
+    def test_training_vec_env_passes_mixed_states_to_native_vec_env(self) -> None:
+        created: list[dict[str, object]] = []
 
         class FakeNative:
             observation_space = gym.spaces.Box(
                 low=0,
                 high=255,
-                shape=(84, 84, 4),
+                shape=(4, 84, 84),
                 dtype=np.uint8,
             )
             action_space = gym.spaces.MultiBinary(2)
 
-            def __init__(self, game, num_envs, state=None, **kwargs):
+            def __init__(self, game, **kwargs):
                 self.game = game
-                self.num_envs = num_envs
-                self.state = state
-                self.reset_infos = [{} for _ in range(num_envs)]
-                created.append((state, num_envs))
-
-            def seed(self, seed):
-                return [seed + idx for idx in range(self.num_envs)]
-
-            def reset(self):
-                self.reset_infos = [{"native_state": self.state} for _ in range(self.num_envs)]
-                return np.zeros((self.num_envs, 84, 84, 4), dtype=np.uint8)
-
-            def step_async(self, actions):
-                self.actions = actions
-
-            def step_wait(self):
-                return (
-                    np.zeros((self.num_envs, 84, 84, 4), dtype=np.uint8),
-                    np.zeros(self.num_envs, dtype=np.float32),
-                    np.zeros(self.num_envs, dtype=bool),
-                    [{"native_state": self.state} for _ in range(self.num_envs)],
-                )
-
-            def close(self):
-                pass
-
-        config = EnvConfig(
-            game="SuperMarioBros-Nes-v0",
-            states=("Level1-1", "Level1-2", "Level1-1"),
-        )
-        with patch("stable_retro_ppo.env.StableRetroNativeVecEnv", FakeNative):
-            env = MixedStateNativeVecEnv(
-                config,
-                n_envs=3,
-                seed=7,
-                num_threads=3,
-                native_life_variable=None,
-                native_life_loss_supported=False,
-            )
-            env.reset()
-            env.step_async(np.zeros((3, 2), dtype=np.uint8))
-            _, _, _, infos = env.step_wait()
-
-        self.assertEqual(created, [("Level1-1", 2), ("Level1-2", 1)])
-        self.assertEqual(
-            [info["start_state"] for info in env.reset_infos],
-            ["Level1-1", "Level1-2", "Level1-1"],
-        )
-        self.assertEqual(
-            [info["start_state"] for info in infos],
-            ["Level1-1", "Level1-2", "Level1-1"],
-        )
-
-    def test_probability_mode_resamples_on_reset_and_done(self) -> None:
-        created: list[str] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(84, 84, 4),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, num_envs, state=None, **kwargs):
-                self.game = game
-                self.num_envs = num_envs
-                self.state = state
-                self.reset_infos = [{} for _ in range(num_envs)]
-                created.append(state)
+                self.kwargs = kwargs
+                created.append(kwargs)
 
             def seed(self, seed):
                 return [seed]
 
-            def reset(self):
-                self.reset_infos = [{"native_state": self.state}]
-                return np.zeros((1, 84, 84, 4), dtype=np.uint8)
-
-            def step_async(self, actions):
-                self.actions = actions
-
-            def step_wait(self):
-                return (
-                    np.zeros((1, 84, 84, 4), dtype=np.uint8),
-                    np.array([1.0], dtype=np.float32),
-                    np.array([True], dtype=bool),
-                    [{"native_state": self.state}],
-                )
-
-            def close(self):
-                pass
-
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            reward_mode="native",
+            terminate_on_life_loss=False,
             states=("Level1-1", "Level1-2"),
             state_probs=(0.5, 0.5),
         )
         with (
             patch("stable_retro_ppo.env.StableRetroNativeVecEnv", FakeNative),
-            patch.object(
-                MixedStateNativeVecEnv,
-                "_sample_state",
-                side_effect=["Level1-1", "Level1-2", "Level1-1"],
+            patch("stable_retro_ppo.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
+            patch("stable_retro_ppo.env.VecMonitor", side_effect=lambda env: env),
+            patch("stable_retro_ppo.env.maybe_transpose_vec_image", side_effect=lambda env: env),
+            patch(
+                "stable_retro_ppo.env.retro.data.list_states",
+                return_value=["Level1-1", "Level1-2"],
             ),
         ):
-            env = MixedStateNativeVecEnv(
-                config,
-                n_envs=1,
-                seed=7,
-                num_threads=1,
-                native_life_variable=None,
-                native_life_loss_supported=False,
-            )
-            env.reset()
-            env.step_async(np.zeros((1, 2), dtype=np.uint8))
-            _, _, dones, infos = env.step_wait()
+            env = make_training_vec_env(config, n_envs=16, seed=7)
 
-        self.assertEqual(created, ["Level1-1", "Level1-2", "Level1-1"])
-        self.assertTrue(dones[0])
-        self.assertEqual(infos[0]["start_state"], "Level1-2")
-        self.assertEqual(infos[0]["state"], "Level1-2")
-        self.assertEqual(infos[0]["next_start_state"], "Level1-1")
+        self.assertIsInstance(env, FakeNative)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["num_envs"], 16)
+        self.assertIsNone(created[0]["state"])
+        self.assertEqual(created[0]["states"], ["Level1-1", "Level1-2"])
+        self.assertEqual(created[0]["state_probs"], [0.5, 0.5])
 
 
 class CommandAndArtifactTests(unittest.TestCase):

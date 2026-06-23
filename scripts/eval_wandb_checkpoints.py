@@ -19,17 +19,19 @@ from stable_retro_ppo.artifacts import (
     apply_model_config_defaults,
     explicit_arg_dests,
 )
+from stable_retro_ppo.cli_args import add_env_config_args
 from stable_retro_ppo.device import resolve_sb3_device
-from stable_retro_ppo.env import EnvConfig, assert_rom_imported, resolve_env_config
+from stable_retro_ppo.env import assert_rom_imported, resolve_env_config
 from stable_retro_ppo.env_config import env_config_from_args
 from stable_retro_ppo.eval_metrics import flat_numeric_metrics
 from stable_retro_ppo.eval_runner import evaluate_model_episodes
+from stable_retro_ppo.json_utils import json_safe
 from stable_retro_ppo.wandb_artifacts import (
+    artifact_download_dir,
     artifact_qualified_name,
     checkpoint_step_from_artifact,
-    model_zip_from_download,
+    download_artifact_model,
     safe_artifact_stem,
-    write_downloaded_artifact_metadata,
 )
 from stable_retro_ppo.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
@@ -73,12 +75,8 @@ def find_checkpoint_artifacts(args: argparse.Namespace):
 
 
 def download_artifact(artifact, root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
     name = artifact_qualified_name(artifact)
-    download_root = root / slug(name.replace("/", "_").replace(":", "_"))
-    model_path = model_zip_from_download(Path(artifact.download(root=str(download_root))))
-    write_downloaded_artifact_metadata(model_path, artifact)
-    return model_path
+    return download_artifact_model(artifact, artifact_download_dir(root, name))
 
 
 def load_eval_history(path: Path) -> list[dict[str, Any]]:
@@ -95,24 +93,6 @@ def append_eval_history(path: Path, metrics: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(json_safe(metrics)) + "\n")
-
-
-def json_safe(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): json_safe(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [json_safe(item) for item in value]
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    if hasattr(value, "shape") and hasattr(value, "dtype"):
-        return {
-            "array_shape": list(value.shape),
-            "array_dtype": str(value.dtype),
-        }
-    return value
 
 
 def score(metrics: dict[str, Any]) -> tuple[float, int, float]:
@@ -284,7 +264,6 @@ def promote_best_artifact(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    defaults = EnvConfig()
     parser = argparse.ArgumentParser(
         description="Evaluate pending W&B Stable Retro PPO checkpoints"
     )
@@ -298,25 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="Re-evaluate checkpoints already logged"
     )
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--game", default=defaults.game)
-    parser.add_argument("--state", default=defaults.state)
-    parser.add_argument("--frame-skip", type=int, default=4)
-    parser.add_argument("--max-pool-frames", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument(
-        "--sticky-action-prob",
-        type=float,
-        default=defaults.sticky_action_prob,
-        help="Probability of replaying the previous high-level action; 0 disables sticky actions.",
-    )
-    parser.add_argument("--max-steps", type=int, default=2500)
-    parser.add_argument("--observation-size", type=int, default=defaults.observation_size)
-    parser.add_argument(
-        "--hud-crop-top",
-        type=int,
-        default=defaults.hud_crop_top,
-        help="Crop this many pixels from the top of raw frames before grayscale resize.",
-    )
-    parser.add_argument("--obs-resize-algorithm", default=defaults.obs_resize_algorithm)
+    add_env_config_args(parser, max_steps_default=2500)
     parser.add_argument("--seed", type=int, default=10007)
     parser.add_argument(
         "--seed-offset-by-checkpoint-step",
@@ -328,43 +289,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--deterministic", action="store_true", help="Use greedy policy actions")
-    parser.add_argument("--action-set", default=defaults.action_set)
-    parser.add_argument("--use-retro-reward", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--clip-rewards", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument(
-        "--reward-mode",
-        choices=["auto", "baseline", "bounded", "additive", "score", "native"],
-        default=defaults.reward_mode,
-    )
-    parser.add_argument("--progress-reward-cap", type=float, default=30.0)
-    parser.add_argument("--progress-reward-scale", type=float, default=1.0)
-    parser.add_argument("--terminal-reward", type=float, default=50.0)
-    parser.add_argument("--reward-scale", type=float, default=10.0)
-    parser.add_argument("--time-penalty", type=float, default=0.0)
-    parser.add_argument("--death-penalty", type=float, default=25.0)
-    parser.add_argument("--completion-reward", type=float, default=0.0)
-    parser.add_argument(
-        "--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False
-    )
-    parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
-    parser.add_argument("--no-progress-min-delta", type=int, default=0)
-    parser.add_argument(
-        "--terminate-on-life-loss",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    parser.add_argument(
-        "--terminate-on-level-change", action=argparse.BooleanOptionalAction, default=False
-    )
-    parser.add_argument(
-        "--terminate-on-completion", action=argparse.BooleanOptionalAction, default=False
-    )
-    parser.add_argument(
-        "--completion-x-threshold",
-        type=int,
-        default=defaults.completion_x_threshold,
-        help="Deprecated no-op; level completion is detected from stable-retro level changes.",
-    )
     parser.add_argument("--record-best-video", action="store_true")
     parser.add_argument("--video-fps", type=float, default=30.0)
     parser.add_argument("--video-scale", type=int, default=4)

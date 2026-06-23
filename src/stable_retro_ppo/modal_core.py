@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -99,10 +98,6 @@ image = (
 def run_cmd(cmd: list[str], env: dict[str, str] | None = None) -> None:
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=PROJECT_ROOT, env=env, check=True)
-
-
-def safe_path_name(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
 
 
 def ensure_remote_roms(kind: str = "training") -> None:

@@ -155,6 +155,23 @@ favored more children.
   Modal, and SkyPilot training/eval work. The repo dependency pin, lockfile,
   SkyPilot launcher default, and reusable launch manifests are expected to stay
   on post16 unless a future runtime migration is explicitly benchmarked.
+- On 2026-06-23, a short RTX4090 campaign speed gate retried reset-time
+  Level1-1/Level1-2 probability sampling with `state_probs=0.5,0.5`,
+  `stable-retro-turbo==1.0.0.post16`, `n_envs=16`, and one queued child. It
+  was canceled at iteration 3 because actual PPO-loop throughput was not faster
+  than historical B50: `time/fps=174`, `fps_instant=126`, while rollout-only
+  throughput was `726-808 fps`. This measured the current sandbox-sb3 wrapper
+  path, which still routed `config.states` through `MixedStateNativeVecEnv`.
+  Later on 2026-06-23, sandbox-sb3 was changed to pass mixed `states` and
+  optional `state_probs` directly into `StableRetroNativeVecEnv`; rerun the
+  speed gate before using B64 as evidence about the native mixed-state path.
+- Later on 2026-06-23, B65 reran that same short queue speed gate after the
+  native mixed-state change. Train job `38`, W&B run `63smvp1y`, completed
+  262,144 timesteps on `k8s/rtx4090` with final `time/fps=3307`,
+  `time/fps_instant=3286`, and `time/rollout_fps=4200`. Conclusion: native
+  `StableRetroNativeVecEnv` reset-time `states`/`state_probs` sampling is fast
+  enough to use; the B64 slowdown measured sandbox wrapper overhead, not
+  stable-retro-turbo native mixed-state support.
 - The previous default `stable-retro-turbo==1.0.0.post14` was validated for
   native-vector life-loss termination on `SuperMarioBros-Nes-v0` and remains
   useful as a historical baseline for B39/B40/B44 comparisons.

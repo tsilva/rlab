@@ -8,7 +8,7 @@ SkyPilot secrets or environment variables rather than in YAML.
 
 ## Manifest-Driven RTX4090 Launches
 
-Use `scripts/stable_retro_skypilot.py` to turn a JSON experiment matrix into a
+Use `stable-retro-ppo-skypilot` to turn a JSON experiment matrix into a
 SkyPilot task, run preflight checks, print the standard secret-safe launch
 command, sparsely monitor live launches, and summarize finished child logs.
 
@@ -21,7 +21,7 @@ manifests.
 Render a task:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py render \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot render \
   experiments/launches/stable_retro_rtx4090.example.json \
   --output sky_stable_retro_generated_4090.yaml
 ```
@@ -30,14 +30,14 @@ Check env, descriptions, RTX4090 child count, `env_threads`, runtime pin, and RO
 source before launching:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py preflight \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot preflight \
   experiments/launches/stable_retro_rtx4090.example.json
 ```
 
 Print the exact `sky launch` command without running it:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py launch \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot launch \
   experiments/launches/stable_retro_rtx4090.example.json \
   --output sky_stable_retro_generated_4090.yaml
 ```
@@ -45,7 +45,7 @@ UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py launch \
 Actually launch only after the rendered YAML and preflight output look right:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py launch \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot launch \
   experiments/launches/stable_retro_rtx4090.example.json \
   --output sky_stable_retro_generated_4090.yaml \
   --execute \
@@ -59,14 +59,14 @@ after the launch command exits.
 Summarize child logs after completion:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py collect \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot collect \
   logs/stable_retro_example_4090
 ```
 
 Write a machine-readable report from a full SkyPilot launch log:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py report \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot report \
   logs/stable_retro_example_4090.sky.log \
   --output reports/stable_retro_example_4090.report.json
 ```
@@ -74,7 +74,7 @@ UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py report \
 Reproduce a W&B run config without hardcoding the ROM target:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py repro-from-wandb \
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot repro-from-wandb \
   tsilva/SuperMarioBros-NES/lexxixz3 \
   --rom-source roms/your-game.rom \
   --manifest-output experiments/launches/repro_lexxixz3.json \
@@ -86,7 +86,7 @@ Run `doctor-api --execute` if the local SkyPilot CLI is pointed at the wrong API
 server:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python scripts/stable_retro_skypilot.py doctor-api --execute
+UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-skypilot doctor-api --execute
 ```
 
 Machine-readable hardware defaults may live in `experiments/instances.json` when

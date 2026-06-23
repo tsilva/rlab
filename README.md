@@ -113,8 +113,8 @@ UV_CACHE_DIR=.uv-cache uv run modal run src/stable_retro_ppo/modal_app.py::train
 ```
 
 SkyPilot launch manifests live in `experiments/launches/` and are rendered or
-preflighted through `scripts/stable_retro_skypilot.py`. Read `INSTANCES.md`
-before choosing hardware, changing concurrency, or launching remote training.
+preflighted through `stable-retro-ppo-skypilot`. Read `INSTANCES.md` before
+choosing hardware, changing concurrency, or launching remote training.
 
 ## Notes
 

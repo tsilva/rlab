@@ -27,7 +27,8 @@ from stable_retro_ppo.campaign import (
 from stable_retro_ppo.device import resolve_sb3_device
 from stable_retro_ppo.env import EnvConfig, resolve_env_config
 from stable_retro_ppo.eval_runner import evaluate_model_episodes
-from stable_retro_ppo.wandb_artifacts import download_model_artifact
+from stable_retro_ppo.json_utils import json_safe
+from stable_retro_ppo.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
 def normalize_eval_config(job: dict[str, Any]) -> dict[str, Any]:
@@ -54,7 +55,8 @@ def model_ref_for_config(config: dict[str, Any]) -> str:
 def resolve_model_path(config: dict[str, Any], *, artifact_root: Path) -> Path:
     artifact_ref = config.get("artifact_ref") or config.get("model_artifact")
     if artifact_ref:
-        return download_model_artifact(str(artifact_ref), artifact_root)
+        ref = str(artifact_ref)
+        return download_model_artifact(ref, artifact_download_dir(artifact_root, ref))
     model_path = config.get("model_path")
     if not model_path:
         raise ValueError("eval_config must define artifact_ref, model_artifact, or model_path")
@@ -87,26 +89,6 @@ def eval_env_config(config: dict[str, Any], model_path: Path) -> EnvConfig:
         terminate_on_level_change=False,
         terminate_on_completion=False,
     )
-
-
-def json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, dict):
-        return {str(key): json_safe(nested) for key, nested in value.items()}
-    if isinstance(value, list | tuple):
-        return [json_safe(nested) for nested in value]
-    if hasattr(value, "item"):
-        try:
-            return json_safe(value.item())
-        except (TypeError, ValueError):
-            pass
-    if hasattr(value, "tolist"):
-        try:
-            return json_safe(value.tolist())
-        except (TypeError, ValueError):
-            pass
-    return str(value)
 
 
 def write_eval_output(

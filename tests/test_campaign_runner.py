@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 from stable_retro_ppo import campaign
 from stable_retro_ppo.artifacts import wandb_artifact_storage_uri
-from stable_retro_ppo.eval_job_runner import json_safe, normalize_eval_config
+from stable_retro_ppo.eval_job_runner import normalize_eval_config
+from stable_retro_ppo.json_utils import json_safe
 from stable_retro_ppo.train_runner import (
     collect_result_metadata,
     normalize_train_config,
@@ -157,7 +158,13 @@ class TrainRunnerTests(unittest.TestCase):
 
             self.assertEqual(
                 calls,
-                [("entity/project/run-checkpoint:step-5000000", train_runner.RESUME_ARTIFACT_ROOT)],
+                [
+                    (
+                        "entity/project/run-checkpoint:step-5000000",
+                        train_runner.RESUME_ARTIFACT_ROOT
+                        / "entity_project_run-checkpoint_step-5000000",
+                    )
+                ],
             )
             self.assertEqual(config["resume"], "/tmp/downloaded/model.zip")
             self.assertNotIn("resume_artifact", config)
@@ -167,7 +174,13 @@ class TrainRunnerTests(unittest.TestCase):
 
             self.assertEqual(
                 calls,
-                [("entity/project/run-checkpoint:step-5000000", train_runner.RESUME_ARTIFACT_ROOT)],
+                [
+                    (
+                        "entity/project/run-checkpoint:step-5000000",
+                        train_runner.RESUME_ARTIFACT_ROOT
+                        / "entity_project_run-checkpoint_step-5000000",
+                    )
+                ],
             )
             self.assertIn("--resume", command)
             self.assertIn("/tmp/downloaded/model.zip", command)

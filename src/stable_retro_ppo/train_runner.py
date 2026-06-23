@@ -25,7 +25,7 @@ from stable_retro_ppo.campaign import (
     print_status,
 )
 from stable_retro_ppo.cli import build_train_command
-from stable_retro_ppo.wandb_artifacts import download_model_artifact
+from stable_retro_ppo.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
@@ -56,8 +56,12 @@ def normalize_train_config(
         if config.get("resume"):
             raise ValueError("Use only one of resume or resume_artifact in train_config")
         if resolve_resume_artifact:
+            resume_ref = str(resume_artifact)
             config["resume"] = str(
-                download_model_artifact(str(resume_artifact), RESUME_ARTIFACT_ROOT)
+                download_model_artifact(
+                    resume_ref,
+                    artifact_download_dir(RESUME_ARTIFACT_ROOT, resume_ref),
+                )
             )
     return config
 

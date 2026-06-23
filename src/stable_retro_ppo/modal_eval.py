@@ -31,6 +31,7 @@ from stable_retro_ppo.eval_job_runner import (
     normalize_eval_config,
 )
 from stable_retro_ppo.eval_runner import evaluate_model_episodes
+from stable_retro_ppo.json_utils import json_safe
 from stable_retro_ppo.modal_core import (
     RUNS_DIR,
     VOLUME_ROOT,
@@ -38,10 +39,9 @@ from stable_retro_ppo.modal_core import (
     ensure_remote_roms,
     eval_queue_secret,
     image,
-    safe_path_name,
     volume,
 )
-from stable_retro_ppo.wandb_artifacts import model_zip_from_download, write_downloaded_artifact_metadata
+from stable_retro_ppo.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
 LOCAL_ARTIFACT_CACHE_DIR = Path("/tmp/stable-retro-ppo-eval-artifacts")
@@ -71,24 +71,6 @@ def close_quietly(conn) -> None:
         conn.close()
     except Exception:
         pass
-
-
-def json_safe(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): json_safe(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [json_safe(item) for item in value]
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    if hasattr(value, "shape") and hasattr(value, "dtype"):
-        return {
-            "array_shape": list(value.shape),
-            "array_dtype": str(value.dtype),
-        }
-    return value
 
 
 def claim_job(
@@ -173,19 +155,8 @@ def mark_job_failed_with_reconnect(
         return mark_job_failed(conn, job=job, worker_id=worker_id, error=error), conn
 
 
-def download_model_artifact(
-    ref: str,
-    *,
-    base_dir: Path = RUNS_DIR / "wandb_artifacts",
-) -> Path:
-    import wandb
-
-    download_root = base_dir / safe_path_name(ref)
-    download_root.mkdir(parents=True, exist_ok=True)
-    artifact = wandb.Api().artifact(ref, type="model")
-    model_path = model_zip_from_download(Path(artifact.download(root=str(download_root))))
-    write_downloaded_artifact_metadata(model_path, artifact)
-    return model_path
+def cached_model_artifact(ref: str, *, base_dir: Path = RUNS_DIR / "wandb_artifacts") -> Path:
+    return download_model_artifact(ref, artifact_download_dir(base_dir, ref))
 
 
 def prefetch_model_artifact(job: dict[str, Any]) -> PrefetchedArtifact:
@@ -193,7 +164,7 @@ def prefetch_model_artifact(job: dict[str, Any]) -> PrefetchedArtifact:
     config = normalize_eval_config(job)
     artifact_ref = config.get("artifact_ref") or config.get("model_artifact")
     if artifact_ref:
-        model_path = download_model_artifact(
+        model_path = cached_model_artifact(
             str(artifact_ref),
             base_dir=LOCAL_ARTIFACT_CACHE_DIR,
         )
@@ -266,7 +237,7 @@ def eval_artifact_benchmark_remote(
     total_started_at = time.monotonic()
     ensure_remote_roms("evaluation benchmark")
     effective_n_envs = n_envs if n_envs > 0 else 1
-    model_path = download_model_artifact(artifact_ref)
+    model_path = cached_model_artifact(artifact_ref)
     training = require_training_metadata(model_path)
     training_hash = stable_json_hash(training)
     config = require_env_config_from_model_metadata(model_path)
