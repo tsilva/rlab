@@ -56,15 +56,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build metadata
+        id: build_meta
+        run: |
+          echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          echo "uv_lock_sha256=$(sha256sum uv.lock | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "python_image=$(awk -F= '/^ARG PYTHON_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)" >> "$GITHUB_OUTPUT"
+          echo "uv_image=$(awk -F= '/^ARG UV_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse immutable tag reuse
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}"
+          for tag in "git-${GITHUB_SHA}" "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; do
+            if docker buildx imagetools inspect "${image}:${tag}" >/dev/null 2>&1; then
+              echo "::error::Immutable image tag already exists: ${image}:${tag}"
+              exit 1
+            fi
+          done
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha,prefix=git-,format=short
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=git-${{ github.sha }}
+            type=raw,value=ci-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build image
         id: build
@@ -79,15 +98,38 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            BUILD_DATE=${{ github.event.repository.updated_at }}
+            BUILD_DATE=${{ steps.build_meta.outputs.created }}
             VCS_REF=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Print image digest
+      - name: Write image digest artifact
         if: github.event_name != 'pull_request'
         run: |
-          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          echo "digest=${{ steps.build.outputs.digest }}"
-          echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+          cat > rlab-train-image.json <<'JSON'
+          {
+            "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
+            "digest": "${{ steps.build.outputs.digest }}",
+            "runtime_image_ref": "docker:${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}",
+            "source_sha": "${{ github.sha }}",
+            "tags": [
+              "git-${{ github.sha }}",
+              "ci-${{ github.run_id }}-${{ github.run_attempt }}"
+            ],
+            "uv_lock_sha256": "${{ steps.build_meta.outputs.uv_lock_sha256 }}",
+            "base_images": {
+              "python": "${{ steps.build_meta.outputs.python_image }}",
+              "uv": "${{ steps.build_meta.outputs.uv_image }}"
+            },
+            "workflow_run_id": "${{ github.run_id }}",
+            "workflow_run_attempt": "${{ github.run_attempt }}"
+          }
+          JSON
+          python -m json.tool rlab-train-image.json
 
+      - name: Upload image digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlab-train-image
+          path: rlab-train-image.json

@@ -55,12 +55,15 @@ The `.github/workflows/rlab-train-image.yml` workflow builds `linux/amd64` and
 pushes to GitHub Container Registry:
 
 ```text
-ghcr.io/tsilva/rlab/rlab-train:git-<short-sha>
+ghcr.io/tsilva/rlab/rlab-train:git-<full-sha>
+ghcr.io/tsilva/rlab/rlab-train:ci-<run-id>-<attempt>
 ghcr.io/tsilva/rlab/rlab-train@sha256:<digest>
 ```
 
-Use tags for humans and digests for runs. Record both in W&B/campaign metadata
-when launching jobs.
+Use tags for humans and digests for runs. The workflow uploads
+`rlab-train-image.json` with the full `docker:...@sha256:...` runtime ref. Feed
+that file into queue creation with `--runtime-image-ref-file` so jobs do not
+depend on mutable tags.
 
 ## Modal
 
@@ -94,3 +97,18 @@ With `prebuilt_image: true`, the rendered runner YAML skips venv creation,
 Use this mode on backends that actually run the `image_id` as a container, such
 as Kubernetes or RunPod. For SSH node pools, prefer direct `docker run` on the
 host unless that host has been put behind Kubernetes.
+
+## Local Fleet Manager
+
+For `beast-2` and `beast-3`, prefer `rlab-fleet` over SkyPilot. It reconciles
+Docker containers directly over SSH and keeps the queue in charge of scheduling:
+
+```bash
+uv run rlab-fleet plan
+uv run rlab-fleet reconcile --execute
+```
+
+The managed containers are labeled with `rlab.managed=true`,
+`rlab.profile`, `rlab.runtime-image-ref`, `rlab.run-target`, and a config hash.
+They are removed only after there are no pending or running queue jobs for that
+profile/digest/target and no active lease owned by that container's worker id.

@@ -30,6 +30,7 @@ rlab-campaign = "rlab.campaign:main"
 rlab-train-runner = "rlab.train_runner:main"
 rlab-eval-runner = "rlab.eval_job_runner:main"
 rlab-monitor = "rlab.monitoring.server:main"
+rlab-fleet = "rlab.fleet:main"
 
 [build-system]
 requires = ["hatchling"]

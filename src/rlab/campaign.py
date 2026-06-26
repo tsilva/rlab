@@ -12,7 +12,7 @@ import psycopg2
 import psycopg2.extras
 
 from rlab.compute_targets import instance_defaults, load_json_file
-from rlab.runtime_refs import normalize_runtime_image_ref
+from rlab.runtime_refs import normalize_runtime_image_ref, runtime_image_ref_from_file
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -1487,7 +1487,12 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue.add_argument("--goal", required=True, help="Research goal slug")
     enqueue.add_argument("--spec-id", type=int, required=True)
     enqueue.add_argument("--profile", required=True)
-    enqueue.add_argument("--runtime-image-ref", required=True)
+    enqueue.add_argument("--runtime-image-ref")
+    enqueue.add_argument(
+        "--runtime-image-ref-file",
+        type=Path,
+        help="JSON artifact or plain-text file containing the immutable runtime image ref.",
+    )
     enqueue.add_argument("--target", dest="run_target", help="Optional compute target required by this job")
     enqueue.add_argument(
         "--instances",
@@ -1603,6 +1608,13 @@ def cmd_add_spec(args: argparse.Namespace) -> int:
 
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
+    runtime_image_ref = (
+        runtime_image_ref_from_file(args.runtime_image_ref_file)
+        if getattr(args, "runtime_image_ref_file", None)
+        else args.runtime_image_ref
+    )
+    if not runtime_image_ref:
+        raise SystemExit("--runtime-image-ref or --runtime-image-ref-file is required")
     conn = _connect_from_args(args)
     try:
         goal_id = goal_id_from_slug(conn, args.goal)
@@ -1611,7 +1623,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             goal_id=goal_id,
             experiment_spec_id=args.spec_id,
             profile_id=args.profile,
-            runtime_image_ref=args.runtime_image_ref,
+            runtime_image_ref=runtime_image_ref,
             run_target=canonicalize_run_target(args.run_target, instances_path=args.instances),
             train_config=load_json_arg(args.train_config_json, default={}),
             priority=args.priority,

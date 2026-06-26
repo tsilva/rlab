@@ -8,7 +8,11 @@ from pathlib import Path
 
 from rlab.campaign import connect, database_url, enqueue_train_job, goal_id_from_slug, load_json_arg
 from rlab.compute_targets import canonical_target_name
-from rlab.runtime_refs import normalize_runtime_image_ref, runtime_image_digest_slug
+from rlab.runtime_refs import (
+    normalize_runtime_image_ref,
+    runtime_image_digest_slug,
+    runtime_image_ref_from_file,
+)
 from rlab.skypilot_launch import (
     build_launch_command,
     build_runner_launch_command,
@@ -302,7 +306,14 @@ def cmd_queue_train(args: argparse.Namespace) -> int:
     target = target_name(profile, args.target)
     canonical_target = canonical_target_name(instance_config, target)
     instance = instance_defaults(instance_config, target)
-    runtime_image_ref = normalize_runtime_image_ref(args.runtime_image_ref)
+    runtime_image_ref_arg = (
+        runtime_image_ref_from_file(args.runtime_image_ref_file)
+        if getattr(args, "runtime_image_ref_file", None)
+        else args.runtime_image_ref
+    )
+    if not runtime_image_ref_arg:
+        raise SystemExit("--runtime-image-ref or --runtime-image-ref-file is required")
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref_arg)
 
     runner_profile = dict(profile)
     runner_profile["image_id"] = runtime_image_ref
@@ -678,7 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
     queue_train.add_argument("--goal", required=True, help="Research goal slug")
     queue_train.add_argument("--spec-id", type=int, required=True)
     queue_train.add_argument("--train-config-json", required=True)
-    queue_train.add_argument("--runtime-image-ref", required=True)
+    queue_train.add_argument("--runtime-image-ref")
+    queue_train.add_argument(
+        "--runtime-image-ref-file",
+        type=Path,
+        help="JSON artifact or plain-text file containing the immutable runtime image ref.",
+    )
     queue_train.add_argument("--priority", type=int, default=0)
     queue_train.add_argument("--max-attempts", type=int, default=1)
     queue_train.add_argument("--run-name")

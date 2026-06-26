@@ -47,6 +47,12 @@ that without editing JSON. Prefer `rlab-compute` for provider-neutral direct
 launch manifests; keep using `rlab-skypilot` for SkyPilot-only runner profiles
 and low-level SkyPilot utilities.
 
+Local queue runners on `beast-3` and `beast-2` are managed by `rlab-fleet`,
+with host-level defaults in `experiments/fleet.json`. The fleet manager reads
+the campaign queue and reconciles Docker containers over SSH; it does not
+schedule jobs and does not inspect RL config. Use SkyPilot for future ephemeral
+RunPod provisioning, then hand the provisioned host to the Docker reconciler.
+
 Current target names:
 
 | Target | Alias examples | Infra | Default shape |
@@ -79,6 +85,9 @@ UV_CACHE_DIR=.uv-cache uv run rlab-skypilot launch-runner \
   --output sky_train_runner_4090.yaml \
   --execute \
   --detach-run
+
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
 ```
 
 RunPod support requires both the local client and the active SkyPilot API server

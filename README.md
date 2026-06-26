@@ -124,6 +124,40 @@ For queue-backed training, prefer long-lived runner profiles in
 envelope and start `rlab.train_runner`; experiment payloads stay in
 the campaign queue.
 
+For local GPU queue capacity, use the fleet manager instead of SkyPilot. It
+reads pending/running `train_jobs`, groups demand by `profile_id`,
+`runtime_image_ref`, and `run_target`, then reconciles Docker runner containers
+on `beast-3` and `beast-2` over SSH:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
+```
+
+Bootstrap each host once, then install the host-local reconciler so runners keep
+working when the Mac sleeps or disconnects:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+  --host beast-3 \
+  --runtime-image-ref-file rlab-train-image.json \
+  --execute
+
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+  --host beast-2 \
+  --runtime-image-ref-file rlab-train-image.json \
+  --execute
+
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet install-systemd --host beast-3 --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet install-systemd --host beast-2 --execute
+```
+
+The fleet manager does not schedule experiments and does not inspect RL config.
+It only starts, keeps, restarts, or removes runner containers for digest-pinned
+train jobs. It never removes an obsolete container while one of its worker ids
+still owns a running queue lease.
+
 ## Notes
 
 - Python is pinned to `==3.14.*`; dependency resolution is managed by `uv`
@@ -134,6 +168,9 @@ the campaign queue.
 - Every training run should include `--run-description`.
 - Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts`
   is set.
+- Queue-backed train jobs should reference immutable runtime image digests. The
+  train-image CI workflow uploads `rlab-train-image.json`; pass it with
+  `--runtime-image-ref-file` when enqueueing jobs.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or pass `--wandb-artifact-storage-uri`, along with the
   required `AWS_*` credentials.
