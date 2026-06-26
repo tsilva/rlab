@@ -11,6 +11,9 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 
+from rlab.compute_targets import instance_defaults, load_json_file
+from rlab.runtime_refs import normalize_runtime_image_ref
+
 
 SECRET_KEY_FRAGMENTS = (
     "api_key",
@@ -58,6 +61,8 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   goal_id BIGINT NOT NULL REFERENCES research_goals(id) ON DELETE CASCADE,
   experiment_spec_id BIGINT NOT NULL REFERENCES experiment_specs(id) ON DELETE CASCADE,
   profile_id TEXT NOT NULL,
+  runtime_image_ref TEXT,
+  run_target TEXT,
   train_config JSONB NOT NULL,
   priority INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -84,6 +89,8 @@ CREATE TABLE IF NOT EXISTS train_results (
   goal_id BIGINT NOT NULL REFERENCES research_goals(id) ON DELETE CASCADE,
   experiment_spec_id BIGINT NOT NULL REFERENCES experiment_specs(id) ON DELETE CASCADE,
   profile_id TEXT NOT NULL,
+  runtime_image_ref TEXT,
+  run_target TEXT,
   status TEXT NOT NULL,
   exit_code INTEGER,
   run_name TEXT,
@@ -136,6 +143,14 @@ CREATE TABLE IF NOT EXISTS eval_results (
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE IF EXISTS train_jobs
+  ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT,
+  ADD COLUMN IF NOT EXISTS run_target TEXT;
+
+ALTER TABLE IF EXISTS train_results
+  ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT,
+  ADD COLUMN IF NOT EXISTS run_target TEXT;
 
 ALTER TABLE IF EXISTS eval_jobs
   ADD COLUMN IF NOT EXISTS goal_id BIGINT,
@@ -225,6 +240,10 @@ CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (profile_id, status, priority DESC, id)
   WHERE status IN ('pending', 'running');
 
+CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
+  ON train_jobs (profile_id, runtime_image_ref, run_target, status, priority DESC, id)
+  WHERE status IN ('pending', 'running') AND runtime_image_ref IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_id, status);
 
@@ -255,6 +274,8 @@ WITH next_job AS (
   FROM train_jobs
   WHERE
     profile_id = %(profile_id)s
+    AND runtime_image_ref = %(runtime_image_ref)s
+    AND (run_target IS NULL OR run_target = %(run_target)s)
     AND cancel_requested = FALSE
     AND (
       status = 'pending'
@@ -347,6 +368,25 @@ def database_url(use_direct: bool = False) -> str:
             "TRAIN_QUEUE_DATABASE_URL, DATABASE_URL, or DIRECT_DATABASE_URL must be set"
         )
     return value
+
+
+def normalize_run_target(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def canonicalize_run_target(
+    value: str | None,
+    *,
+    instances_path: Path | None = None,
+) -> str | None:
+    target = normalize_run_target(value)
+    if target is None:
+        return None
+    path = instances_path or Path("experiments/instances.json")
+    if not path.is_file():
+        return target
+    return str(instance_defaults(load_json_file(path), target).get("name", target))
 
 
 def connect(url: str):
@@ -550,7 +590,9 @@ def enqueue_train_job(
     goal_id: int,
     experiment_spec_id: int,
     profile_id: str,
+    runtime_image_ref: str,
     train_config: Mapping[str, Any],
+    run_target: str | None = None,
     priority: int = 0,
     max_attempts: int = 1,
     run_name: str | None = None,
@@ -561,18 +603,21 @@ def enqueue_train_job(
 ) -> dict[str, Any]:
     config = dict(train_config)
     assert_no_secrets(config, label="train_config")
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    run_target = normalize_run_target(run_target)
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO train_jobs (
-                  goal_id, experiment_spec_id, profile_id, train_config, priority,
-                  max_attempts, run_name, run_description, wandb_group, wandb_tags,
-                  origin_decision_id
+                  goal_id, experiment_spec_id, profile_id, runtime_image_ref,
+                  run_target, train_config, priority, max_attempts, run_name,
+                  run_description, wandb_group, wandb_tags, origin_decision_id
                 )
                 VALUES (
                   %(goal_id)s, %(experiment_spec_id)s, %(profile_id)s,
-                  %(train_config)s, %(priority)s, %(max_attempts)s, %(run_name)s,
+                  %(runtime_image_ref)s, %(run_target)s, %(train_config)s,
+                  %(priority)s, %(max_attempts)s, %(run_name)s,
                   %(run_description)s, %(wandb_group)s, %(wandb_tags)s,
                   %(origin_decision_id)s
                 )
@@ -582,6 +627,8 @@ def enqueue_train_job(
                     "goal_id": goal_id,
                     "experiment_spec_id": experiment_spec_id,
                     "profile_id": profile_id,
+                    "runtime_image_ref": runtime_image_ref,
+                    "run_target": run_target,
                     "train_config": json_arg(config),
                     "priority": priority,
                     "max_attempts": max_attempts,
@@ -645,15 +692,21 @@ def claim_train_job(
     conn,
     *,
     profile_id: str,
+    runtime_image_ref: str,
+    run_target: str | None,
     worker_id: str,
     lease_seconds: int,
 ) -> dict[str, Any] | None:
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    run_target = normalize_run_target(run_target)
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 CLAIM_TRAIN_JOB_SQL,
                 {
                     "profile_id": profile_id,
+                    "runtime_image_ref": runtime_image_ref,
+                    "run_target": run_target,
                     "worker_id": worker_id,
                     "lease_seconds": lease_seconds,
                 },
@@ -809,17 +862,21 @@ def finish_train_job(
             cur.execute(
                 """
                 INSERT INTO train_results (
-                  train_job_id, goal_id, experiment_spec_id, profile_id, status,
-                  exit_code, run_name, run_dir, final_model_path, wandb_run_id,
-                  wandb_url, artifact_refs, metrics_json, error
+                  train_job_id, goal_id, experiment_spec_id, profile_id,
+                  runtime_image_ref, run_target, status, exit_code, run_name,
+                  run_dir, final_model_path, wandb_run_id, wandb_url,
+                  artifact_refs, metrics_json, error
                 )
                 VALUES (
                   %(train_job_id)s, %(goal_id)s, %(experiment_spec_id)s, %(profile_id)s,
-                  %(status)s, %(exit_code)s, %(run_name)s, %(run_dir)s,
-                  %(final_model_path)s, %(wandb_run_id)s, %(wandb_url)s,
-                  %(artifact_refs)s, %(metrics_json)s, %(error)s
+                  %(runtime_image_ref)s, %(run_target)s, %(status)s, %(exit_code)s,
+                  %(run_name)s, %(run_dir)s, %(final_model_path)s,
+                  %(wandb_run_id)s, %(wandb_url)s, %(artifact_refs)s,
+                  %(metrics_json)s, %(error)s
                 )
                 ON CONFLICT (train_job_id) DO UPDATE SET
+                  runtime_image_ref = EXCLUDED.runtime_image_ref,
+                  run_target = EXCLUDED.run_target,
                   status = EXCLUDED.status,
                   exit_code = EXCLUDED.exit_code,
                   run_name = EXCLUDED.run_name,
@@ -837,6 +894,8 @@ def finish_train_job(
                     "goal_id": job["goal_id"],
                     "experiment_spec_id": job["experiment_spec_id"],
                     "profile_id": job["profile_id"],
+                    "runtime_image_ref": job.get("runtime_image_ref"),
+                    "run_target": job.get("run_target"),
                     "status": status,
                     "exit_code": exit_code,
                     "run_name": result.get("run_name") or job.get("run_name"),
@@ -1428,6 +1487,14 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue.add_argument("--goal", required=True, help="Research goal slug")
     enqueue.add_argument("--spec-id", type=int, required=True)
     enqueue.add_argument("--profile", required=True)
+    enqueue.add_argument("--runtime-image-ref", required=True)
+    enqueue.add_argument("--target", dest="run_target", help="Optional compute target required by this job")
+    enqueue.add_argument(
+        "--instances",
+        type=Path,
+        default=Path("experiments/instances.json"),
+        help="Target config used to canonicalize --target.",
+    )
     enqueue.add_argument("--train-config-json", required=True)
     enqueue.add_argument("--priority", type=int, default=0)
     enqueue.add_argument("--max-attempts", type=int, default=1)
@@ -1544,6 +1611,8 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             goal_id=goal_id,
             experiment_spec_id=args.spec_id,
             profile_id=args.profile,
+            runtime_image_ref=args.runtime_image_ref,
+            run_target=canonicalize_run_target(args.run_target, instances_path=args.instances),
             train_config=load_json_arg(args.train_config_json, default={}),
             priority=args.priority,
             max_attempts=args.max_attempts,
@@ -1555,7 +1624,11 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         )
     finally:
         conn.close()
-    print(f"train_job_id={row['id']} profile={row['profile_id']}")
+    target = row.get("run_target") or "any"
+    print(
+        f"train_job_id={row['id']} profile={row['profile_id']} "
+        f"runtime_image_ref={row['runtime_image_ref']} target={target}"
+    )
     return 0
 
 

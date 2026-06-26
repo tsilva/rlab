@@ -392,7 +392,7 @@ def infer_device_key(kind: str, profile: str, worker: str, config: dict[str, Any
             str(config.get("target") or "").lower(),
         ]
     )
-    if "4090" in text or "beast-3" in text or "k8s/rtx4090" in text:
+    if "4090" in text or "beast-3" in text or "k8s/rtx4090" in text or "k8s/beast-3" in text:
         if "runpod" in text:
             return "runpod-rtx4090"
         return "rtx4090"

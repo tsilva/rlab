@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
+from rlab.campaign import connect, database_url, enqueue_train_job, goal_id_from_slug, load_json_arg
+from rlab.compute_targets import canonical_target_name
+from rlab.runtime_refs import normalize_runtime_image_ref, runtime_image_digest_slug
 from rlab.skypilot_launch import (
     build_launch_command,
     build_runner_launch_command,
@@ -28,6 +32,8 @@ from rlab.skypilot_launch import (
     preflight_runner_profile,
     render_runner_task_yaml,
     render_task_yaml,
+    runner_cluster_name,
+    sanitize_slug,
     shell_join,
     target_name,
     write_launch_report,
@@ -180,6 +186,7 @@ def cmd_launch_runner(args: argparse.Namespace) -> int:
     instance_config = load_instance_config(repo_root, args.instances)
     target = target_name(profile, args.target)
     instance = instance_defaults(instance_config, target)
+    canonical_target = canonical_target_name(instance_config, target)
     task_path = write_rendered_runner_task(
         profile,
         instance_config,
@@ -187,7 +194,19 @@ def cmd_launch_runner(args: argparse.Namespace) -> int:
         args.output,
         target_override=target,
     )
-    cluster = str(args.cluster or profile.get("cluster", profile.get("name", "rlab-runner-4090")))
+    image_id = str(profile.get("image_id", instance.get("image_id", ""))).strip()
+    prebuilt_image = bool(profile.get("prebuilt_image", instance.get("prebuilt_image", False)))
+    runtime_image_ref = normalize_runtime_image_ref(
+        str(profile.get("runtime_image_ref", image_id if prebuilt_image else "")).strip()
+    )
+    cluster = str(
+        args.cluster
+        or runner_cluster_name(
+            profile_id=str(profile["profile_id"]),
+            target=canonical_target,
+            runtime_image_ref=runtime_image_ref,
+        )
+    )
     env = merged_env(repo_root / ".env")
     command = build_runner_launch_command(
         cluster,
@@ -216,6 +235,159 @@ def cmd_launch_runner(args: argparse.Namespace) -> int:
         sparse=args.sparse,
         log_path=args.log_output,
         down_on_complete=args.down_on_complete,
+    )
+
+
+def default_runner_task_path(canonical_target: str, runtime_image_ref: str) -> Path:
+    return Path(
+        f"sky_train_runner_{sanitize_slug(canonical_target)}_"
+        f"{runtime_image_digest_slug(runtime_image_ref)}.yaml"
+    )
+
+
+def _run_sky_inspect_command(
+    command: list[str],
+    *,
+    repo_root: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    process_env = os.environ.copy()
+    process_env.update(env)
+    return subprocess.run(
+        command,
+        cwd=repo_root,
+        env=process_env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+def sky_runner_active(cluster: str, *, repo_root: Path, env: dict[str, str]) -> bool:
+    status_result = _run_sky_inspect_command(
+        ["sky", "status", "--refresh"],
+        repo_root=repo_root,
+        env=env,
+    )
+    if status_result.returncode != 0:
+        print("warning: sky status --refresh failed; assuming runner is absent")
+        if status_result.stdout.strip():
+            print(status_result.stdout.strip())
+        return False
+    if cluster not in status_result.stdout:
+        return False
+
+    queue_result = _run_sky_inspect_command(
+        ["sky", "queue", cluster],
+        repo_root=repo_root,
+        env=env,
+    )
+    if queue_result.returncode != 0:
+        print("warning: sky queue failed; assuming runner is absent")
+        if queue_result.stdout.strip():
+            print(queue_result.stdout.strip())
+        return False
+    active_statuses = ("RUNNING", "PENDING", "INIT", "SUBMITTED")
+    if any(status in queue_result.stdout.upper() for status in active_statuses):
+        return True
+    print(f"runner_cluster_without_active_job: {cluster}")
+    return False
+
+
+def cmd_queue_train(args: argparse.Namespace) -> int:
+    repo_root = repo_root_from_args(args)
+    profile = load_runner_profile(args.profile)
+    instance_config = load_instance_config(repo_root, args.instances)
+    target = target_name(profile, args.target)
+    canonical_target = canonical_target_name(instance_config, target)
+    instance = instance_defaults(instance_config, target)
+    runtime_image_ref = normalize_runtime_image_ref(args.runtime_image_ref)
+
+    runner_profile = dict(profile)
+    runner_profile["image_id"] = runtime_image_ref
+    runner_profile["runtime_image_ref"] = runtime_image_ref
+    runner_profile["prebuilt_image"] = True
+
+    output = args.output or default_runner_task_path(canonical_target, runtime_image_ref)
+    task_path = write_rendered_runner_task(
+        runner_profile,
+        instance_config,
+        repo_root,
+        output,
+        target_override=target,
+    )
+    cluster = str(
+        args.cluster
+        or runner_cluster_name(
+            profile_id=str(profile["profile_id"]),
+            target=canonical_target,
+            runtime_image_ref=runtime_image_ref,
+        )
+    )
+    env = merged_env(repo_root / ".env")
+    launch_command = build_runner_launch_command(
+        cluster,
+        task_path,
+        env=env,
+        infra=launch_infra(instance),
+        detach_run=args.detach_run,
+    )
+    run_target = canonical_target if args.target else None
+
+    print(f"task: {task_path}")
+    print(f"cluster: {cluster}")
+    print(f"profile: {profile['profile_id']}")
+    print(f"runtime_image_ref: {runtime_image_ref}")
+    print(f"job_target: {run_target or 'any'}")
+    print(shell_join(launch_command))
+    if not args.execute:
+        print("dry_run: pass --execute to enqueue the train job")
+        if args.ensure_runner:
+            print("dry_run: --ensure-runner would check sky status and launch the runner if absent")
+        return 0
+
+    conn = connect(database_url(args.direct))
+    try:
+        goal_id = goal_id_from_slug(conn, args.goal)
+        row = enqueue_train_job(
+            conn,
+            goal_id=goal_id,
+            experiment_spec_id=args.spec_id,
+            profile_id=str(profile["profile_id"]),
+            runtime_image_ref=runtime_image_ref,
+            run_target=run_target,
+            train_config=load_json_arg(args.train_config_json, default={}),
+            priority=args.priority,
+            max_attempts=args.max_attempts,
+            run_name=args.run_name,
+            run_description=args.run_description,
+            wandb_group=args.wandb_group,
+            wandb_tags=args.wandb_tag,
+            origin_decision_id=args.origin_decision_id,
+        )
+    finally:
+        conn.close()
+    print(f"train_job_id={row['id']} status={row['status']}")
+
+    if not args.ensure_runner:
+        return 0
+    if sky_runner_active(cluster, repo_root=repo_root, env=env):
+        print(f"runner_active: {cluster}")
+        return 0
+    summary = LaunchSummary(
+        command=launch_command,
+        task_path=task_path,
+        cluster=cluster,
+        wandb_group_prefix=str(profile["profile_id"]),
+    )
+    return execute_launch(
+        summary,
+        repo_root,
+        repo_root / ".env",
+        sparse=args.sparse,
+        log_path=args.log_output,
+        down_on_complete=False,
     )
 
 
@@ -497,6 +669,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the standard sky down cleanup after the launch command exits.",
     )
     launch_runner.set_defaults(func=cmd_launch_runner)
+
+    queue_train = subparsers.add_parser(
+        "queue-train",
+        help="Enqueue a digest-pinned train job and optionally ensure its runner exists",
+    )
+    add_common_runner_args(queue_train)
+    queue_train.add_argument("--goal", required=True, help="Research goal slug")
+    queue_train.add_argument("--spec-id", type=int, required=True)
+    queue_train.add_argument("--train-config-json", required=True)
+    queue_train.add_argument("--runtime-image-ref", required=True)
+    queue_train.add_argument("--priority", type=int, default=0)
+    queue_train.add_argument("--max-attempts", type=int, default=1)
+    queue_train.add_argument("--run-name")
+    queue_train.add_argument("--run-description")
+    queue_train.add_argument("--wandb-group")
+    queue_train.add_argument("--wandb-tag", action="append", default=[])
+    queue_train.add_argument("--origin-decision-id", type=int)
+    queue_train.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
+    queue_train.add_argument("--ensure-runner", action="store_true")
+    queue_train.add_argument("--cluster", help="SkyPilot cluster name; defaults to target/profile/digest")
+    queue_train.add_argument("--output", type=Path, help="Rendered SkyPilot YAML path.")
+    queue_train.add_argument("--execute", action="store_true", help="Actually enqueue and launch if needed")
+    queue_train.add_argument(
+        "--detach-run",
+        action="store_true",
+        help="Submit the SkyPilot job and return without streaming remote logs.",
+    )
+    queue_train.add_argument(
+        "--sparse",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep a full local launch log but print only milestone lines while SkyPilot runs.",
+    )
+    queue_train.add_argument("--log-output", type=Path, help="Full SkyPilot launch log path for --sparse")
+    queue_train.set_defaults(func=cmd_queue_train)
 
     command = subparsers.add_parser("command", help="Print the standard sky launch command")
     command.add_argument("cluster")

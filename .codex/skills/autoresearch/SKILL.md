@@ -1,6 +1,6 @@
 ---
 name: autoresearch
-description: Autonomous RL experiment workflow for sandbox-sb3. Use when the user gives Codex a game and target outcome and asks it to research, launch, monitor, iterate, and find a reproducible model-training recipe that accomplishes the target. The workflow is constrained to RTX4090-only SkyPilot runs, legal reward/hyperparameter changes, and three-seed confirmation before declaring success.
+description: Autonomous RL experiment workflow for rlab. Use when the user gives Codex a game and target outcome and asks it to research, launch, monitor, iterate, and find a reproducible model-training recipe that accomplishes the target. The workflow is constrained to RTX4090-only SkyPilot runs, legal reward/hyperparameter changes, and three-seed confirmation before declaring success.
 ---
 
 # Autoresearch

@@ -99,6 +99,8 @@ TRAIN_VALUE_OPTIONS = {
     "wandb_tags": "--wandb-tags",
     "wandb_mode": "--wandb-mode",
     "wandb_artifact_storage_uri": "--wandb-artifact-storage-uri",
+    "runtime_image_ref": "--runtime-image-ref",
+    "run_target": "--run-target",
 }
 TRAIN_TRUE_FLAGS = {
     "eval_stochastic": "--eval-stochastic",
@@ -383,6 +385,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-group")
     parser.add_argument("--wandb-tags", default="", help="Comma-separated W&B tags")
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
+    parser.add_argument(
+        "--runtime-image-ref",
+        default="",
+        help="Immutable runtime image ref recorded as run metadata; does not affect training.",
+    )
+    parser.add_argument(
+        "--run-target",
+        default="",
+        help="Canonical compute target recorded as run metadata; does not affect training.",
+    )
     parser.add_argument(
         "--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads"
     )

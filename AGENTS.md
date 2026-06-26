@@ -38,7 +38,7 @@ When the user gives a game plus target and asks Codex to find a reproducible mod
 
 ## SkyPilot Mario Monitoring
 
-When the user asks to poll, monitor, summarize, or conditionally continue sandbox-sb3 Mario PPO SkyPilot training jobs, use the project-level `$skypilot-mario-monitor` skill in `.codex/skills/skypilot-mario-monitor`. That workflow standardizes SkyPilot queue checks, W&B per-seed metric collection, success-criterion gating, and avoiding accidental RTX4090 oversubscription.
+When the user asks to poll, monitor, summarize, or conditionally continue rlab Mario PPO SkyPilot training jobs, use the project-level `$skypilot-mario-monitor` skill in `.codex/skills/skypilot-mario-monitor`. That workflow standardizes SkyPilot queue checks, W&B per-seed metric collection, success-criterion gating, and avoiding accidental RTX4090 oversubscription.
 
 ## Eval Queue
 

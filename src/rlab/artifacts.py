@@ -140,6 +140,8 @@ def build_model_metadata(
         "filename": model_path.name,
         "run_name": getattr(args, "run_name", ""),
         "run_description": getattr(args, "run_description", ""),
+        "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
+        "run_target": getattr(args, "run_target", ""),
         "checkpoint_step": checkpoint_step(model_path),
         "env_config": training["env_config"],
         "training_metadata": training,

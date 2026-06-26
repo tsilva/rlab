@@ -1,6 +1,6 @@
 # Security Remediation Todo
 
-Plans for the 2026-06-23 Codex Security audit of `sandbox-sb3`.
+Plans for the 2026-06-23 Codex Security audit of `rlab`.
 
 | ID | Severity | Plan |
 | --- | --- | --- |

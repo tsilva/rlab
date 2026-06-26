@@ -62,6 +62,13 @@ def instance_defaults(
     return resolved
 
 
+def canonical_target_name(
+    instance_config: dict[str, Any],
+    target: str = DEFAULT_COMPUTE_TARGET,
+) -> str:
+    return str(instance_defaults(instance_config, target).get("name", target))
+
+
 def rtx4090_defaults(instance_config: dict[str, Any]) -> dict[str, Any]:
     return instance_defaults(instance_config, DEFAULT_COMPUTE_TARGET)
 

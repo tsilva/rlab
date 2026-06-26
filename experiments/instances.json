@@ -4,7 +4,7 @@
       "aliases": ["beast-3"],
       "label": "beast-3",
       "kind": "skypilot",
-      "infra": "k8s/rtx4090",
+      "infra": "k8s/beast-3",
       "accelerator": "RTX4090",
       "cpus": "12+",
       "memory": "48+",

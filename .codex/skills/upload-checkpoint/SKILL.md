@@ -1,6 +1,6 @@
 ---
 name: upload-checkpoint
-description: Composite sandbox-sb3 release workflow for trained checkpoints. Use when the user asks to upload, publish, release, or promote a checkpoint/model to Hugging Face, especially RL checkpoints with gameplay preview videos. Coordinates Hugging Face model-card publishing with video preview requirements and YouTube upload of the same preview video.
+description: Composite rlab release workflow for trained checkpoints. Use when the user asks to upload, publish, release, or promote a checkpoint/model to Hugging Face, especially RL checkpoints with gameplay preview videos. Coordinates Hugging Face model-card publishing with video preview requirements and YouTube upload of the same preview video.
 ---
 
 # Upload Checkpoint

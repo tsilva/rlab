@@ -1,6 +1,6 @@
 {
   "name": "mario-ppo-post20-task-conditioned-runner-4090",
-  "cluster": "sandbox-sb3-mario-ppo-post20-task-runner",
+  "cluster": "rlab-mario-ppo-post20-task-runner",
   "target": "rtx4090",
   "profile_id": "mario-ppo/post20/rtx4090-task-conditioned-v1",
   "game": "SuperMarioBros-Nes-v0",

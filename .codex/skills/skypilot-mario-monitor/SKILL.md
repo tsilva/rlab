@@ -1,6 +1,6 @@
 ---
 name: skypilot-mario-monitor
-description: Monitor sandbox-sb3 Mario PPO SkyPilot jobs, collect W&B per-seed metrics, decide whether the recipe criterion is met, and conditionally launch prepared follow-up batches without oversubscribing the RTX4090.
+description: Monitor rlab Mario PPO SkyPilot jobs, collect W&B per-seed metrics, decide whether the recipe criterion is met, and conditionally launch prepared follow-up batches without oversubscribing the RTX4090.
 ---
 
 # SkyPilot Mario Monitor
@@ -8,7 +8,7 @@ description: Monitor sandbox-sb3 Mario PPO SkyPilot jobs, collect W&B per-seed m
 ## Contract
 
 Use this skill when the user asks to poll, monitor, summarize, or continue a
-sandbox-sb3 Mario PPO SkyPilot training batch, especially when a follow-up batch
+rlab Mario PPO SkyPilot training batch, especially when a follow-up batch
 should launch only after the active job reaches a terminal state.
 
 The local source of truth is the current repo plus live SkyPilot/W&B state. Do

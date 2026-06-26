@@ -113,7 +113,7 @@ Most important retained facts from the retired experiment history:
 Run SkyPilot jobs on:
 
 ```text
---infra k8s/rtx4090
+--infra k8s/beast-3
 ```
 
 Benchmark-backed scheduling decision for the current `n_envs=16`, `n_steps=512`
@@ -407,7 +407,7 @@ be shut down.
 
 ```text
 task: sky_mario_100of100_screen_batch1_4090.yaml
-cluster: sandbox-sb3-100of100-screen1
+cluster: rlab-100of100-screen1
 wandb_group: 100of100-screen-batch1-20260616_151115
 runtime: stable-retro-turbo==1.0.0.post4
 stage: screen
@@ -438,7 +438,7 @@ concurrent RTX4090 children and the strict `100/100` terminal-episode stop.
 ```text
 task: sky_post12_reliability_screen_b30_4090.yaml
 manifest: experiments/launches/post12_reliability_screen_b30.local.json
-cluster: sandbox-sb3-post12-5seed-followup
+cluster: rlab-post12-5seed-followup
 wandb_group_prefix: b30-post12-reliability-screen
 runtime: stable-retro-turbo==1.0.0.post12
 stage: screen
@@ -485,7 +485,7 @@ RTX4090 children and the strict `100/100` terminal-episode stop.
 ```text
 task: sky_post12_loose_kl_screen_b31_4090.yaml
 manifest: experiments/launches/post12_loose_kl_screen_b31.local.json
-cluster: sandbox-sb3-post12-loose-kl-b31
+cluster: rlab-post12-loose-kl-b31
 wandb_group_prefix: b31-post12-loosekl-screen
 runtime: stable-retro-turbo==1.0.0.post12
 stage: screen
@@ -527,7 +527,7 @@ stopped the batch.
 ```text
 task: sky_post12_clippeddx_kl_screen_b32_4090.yaml
 manifest: experiments/launches/post12_clippeddx_kl_screen_b32.local.json
-cluster: sandbox-sb3-post12-clippeddx-kl-b32
+cluster: rlab-post12-clippeddx-kl-b32
 wandb_group_prefix: b32-post12-clippeddx-kl-screen
 runtime: stable-retro-turbo==1.0.0.post12
 stage: screen
@@ -584,7 +584,7 @@ Interpretation:
 ```text
 task: sky_post12_late_stability_screen_b33_4090.yaml
 manifest: experiments/launches/post12_late_stability_screen_b33.local.json
-cluster: sandbox-sb3-post12-late-stab-b33
+cluster: rlab-post12-late-stab-b33
 wandb_group_prefix: b33-post12-late-stability-screen
 runtime: stable-retro-turbo==1.0.0.post12
 stage: screen
@@ -634,7 +634,7 @@ Interpretation:
 
 ```text
 manifest: experiments/launches/post12_ent1e4_confirm_b34.local.json
-cluster: sandbox-sb3-post12-ent1e4-b34
+cluster: rlab-post12-ent1e4-b34
 runtime: stable-retro-turbo==1.0.0.post12
 stage: confirm
 fresh_seeds: 24,25,26

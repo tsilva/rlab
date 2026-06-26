@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from rlab.skypilot_cli import cmd_launch_runner
+from rlab.skypilot_cli import cmd_launch_runner, cmd_queue_train
 from rlab.skypilot_launch import (
     EndpointCheck,
     REQUIRED_ENV_KEYS,
@@ -23,6 +23,7 @@ from rlab.skypilot_launch import (
     preflight_runner_profile,
     render_runner_task_yaml,
     render_task_yaml,
+    runner_cluster_name,
     sparse_log_events,
     write_launch_report,
 )
@@ -37,7 +38,7 @@ INSTANCE_CONFIG = {
             "cpus": "12+",
             "memory": "48+",
             "image_id": "docker:test",
-            "infra": "k8s/rtx4090",
+            "infra": "k8s/beast-3",
             "max_children": 5,
             "env_threads": 4,
             "api_endpoints": ["http://healthy.example", "http://lan.example"],
@@ -72,6 +73,11 @@ INSTANCE_CONFIG = {
         }
     }
 }
+
+RUNTIME_IMAGE_REF = (
+    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
 
 
 def sample_manifest() -> dict:
@@ -122,7 +128,8 @@ def sample_runner_profile() -> dict:
         "extra_file_mounts": {
             "~/roms/TestGame-Platform/Level1-1.state": "states/Level1-1.state",
         },
-                "stable_retro_turbo_version": "1.0.0.post21",
+        "runtime_image_ref": RUNTIME_IMAGE_REF,
+        "stable_retro_turbo_version": "1.0.0.post21",
         "venv_name": "runner-test-venv",
         "log_dir": "logs/train_runner",
         "workers": 5,
@@ -347,6 +354,78 @@ class SkyPilotLaunchTests(unittest.TestCase):
         self.assertIn("sky launch -c runner-runpod-l4", output.getvalue())
         self.assertIn("--infra runpod", output.getvalue())
 
+    def test_queue_train_dry_run_renders_digest_runner_without_enqueueing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "experiments").mkdir()
+            (repo_root / "experiments" / "instances.json").write_text(
+                json.dumps(INSTANCE_CONFIG),
+                encoding="utf-8",
+            )
+            (repo_root / ".env").write_text(
+                "\n".join(
+                    [
+                        *(f"{key}=value" for key in REQUIRED_ENV_KEYS),
+                        "DATABASE_URL=postgres://example",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (repo_root / "rom.bin").write_bytes(b"rom")
+            (repo_root / "states").mkdir()
+            (repo_root / "states" / "Level1-1.state").write_bytes(b"state")
+            profile_path = repo_root / "profile.json"
+            profile_path.write_text(json.dumps(sample_runner_profile()), encoding="utf-8")
+            output_path = repo_root / "runner.yaml"
+            args = type(
+                "Args",
+                (),
+                {
+                    "profile": profile_path,
+                    "repo_root": str(repo_root),
+                    "instances": None,
+                    "target": "beast-3",
+                    "goal": "mario-goal",
+                    "spec_id": 123,
+                    "train_config_json": '{"timesteps":1024}',
+                    "runtime_image_ref": RUNTIME_IMAGE_REF,
+                    "priority": 0,
+                    "max_attempts": 1,
+                    "run_name": "digest_smoke",
+                    "run_description": "Digest-pinned smoke.",
+                    "wandb_group": None,
+                    "wandb_tag": [],
+                    "origin_decision_id": None,
+                    "direct": False,
+                    "ensure_runner": True,
+                    "cluster": None,
+                    "output": output_path,
+                    "execute": False,
+                    "detach_run": True,
+                    "sparse": True,
+                    "log_output": None,
+                },
+            )()
+
+            expected_cluster = runner_cluster_name(
+                profile_id=sample_runner_profile()["profile_id"],
+                target="rtx4090",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                returncode = cmd_queue_train(args)
+            rendered_exists = output_path.exists()
+
+        self.assertEqual(returncode, 0)
+        text = output.getvalue()
+        self.assertIn(f"cluster: {expected_cluster}", text)
+        self.assertIn(f"runtime_image_ref: {RUNTIME_IMAGE_REF}", text)
+        self.assertIn("job_target: rtx4090", text)
+        self.assertIn("--detach-run", text)
+        self.assertIn("dry_run: pass --execute to enqueue the train job", text)
+        self.assertTrue(rendered_exists)
+
     def test_render_runner_task_claims_profile_without_embedding_train_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -357,6 +436,8 @@ class SkyPilotLaunchTests(unittest.TestCase):
         self.assertIn("stable-retro-turbo==1.0.0.post21", yaml)
         self.assertIn("-m rlab.train_runner", yaml)
         self.assertIn("--profile mario-ppo/post20/rtx4090-task-conditioned-v1", yaml)
+        self.assertIn(f"--runtime-image-ref {RUNTIME_IMAGE_REF}", yaml)
+        self.assertIn("--run-target rtx4090", yaml)
         self.assertIn("--workers 5", yaml)
         self.assertIn("--max-jobs 0", yaml)
         self.assertIn("--status-goal mario-level1-1-1-2-100of100", yaml)
@@ -367,12 +448,12 @@ class SkyPilotLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             profile = sample_runner_profile()
-            profile["image_id"] = "docker:ghcr.io/tsilva/rlab/rlab-train:git-test"
+            profile["image_id"] = RUNTIME_IMAGE_REF
             profile["prebuilt_image"] = True
             yaml = render_runner_task_yaml(profile, INSTANCE_CONFIG, repo_root)
 
         self.assertIn(
-            'image_id: "docker:ghcr.io/tsilva/rlab/rlab-train:git-test"',
+            f'image_id: "{RUNTIME_IMAGE_REF}"',
             yaml,
         )
         self.assertIn("rlab-container-entrypoint rlab-container-smoke", yaml)
@@ -382,6 +463,17 @@ class SkyPilotLaunchTests(unittest.TestCase):
         self.assertNotIn("uv sync", yaml)
         self.assertNotIn("stable-retro-turbo==1.0.0.post21", yaml)
         self.assertNotIn('PY="$HOME/runner-test-venv/bin/python"', yaml)
+
+    def test_render_runner_task_rejects_prebuilt_mutable_image_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            profile = sample_runner_profile()
+            profile["image_id"] = "docker:ghcr.io/tsilva/rlab/rlab-train:git-test"
+            profile["runtime_image_ref"] = profile["image_id"]
+            profile["prebuilt_image"] = True
+
+            with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
+                render_runner_task_yaml(profile, INSTANCE_CONFIG, repo_root)
 
     def test_render_runner_task_resolves_relative_mounts(self) -> None:
         repo_root = Path(".")
@@ -441,6 +533,31 @@ class SkyPilotLaunchTests(unittest.TestCase):
 
         messages = [check.message for check in checks]
         self.assertTrue(any("database URL" in message for message in messages))
+        self.assertTrue(any(check.level == "error" for check in checks))
+
+    def test_preflight_runner_profile_rejects_mutable_runtime_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "pyproject.toml").write_text(
+                'dependencies = ["stable-retro-turbo==1.0.0.post21"]\n',
+                encoding="utf-8",
+            )
+            (repo_root / "rom.bin").write_bytes(b"rom")
+            (repo_root / "states").mkdir()
+            (repo_root / "states" / "Level1-1.state").write_bytes(b"state")
+            env = {key: "value" for key in REQUIRED_ENV_KEYS}
+            env["TRAIN_QUEUE_DATABASE_URL"] = "postgres://example"
+            profile = sample_runner_profile()
+            profile["runtime_image_ref"] = "docker:ghcr.io/tsilva/rlab/rlab-train:latest"
+            checks = preflight_runner_profile(
+                profile,
+                INSTANCE_CONFIG,
+                repo_root,
+                env=env,
+            )
+
+        messages = [check.message for check in checks]
+        self.assertTrue(any("immutable docker digest ref" in message for message in messages))
         self.assertTrue(any(check.level == "error" for check in checks))
 
     def test_preflight_rejects_non_skypilot_target_for_skypilot_launch(self) -> None:

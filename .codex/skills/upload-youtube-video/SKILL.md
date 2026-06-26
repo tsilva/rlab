@@ -1,6 +1,6 @@
 ---
 name: upload-youtube-video
-description: Upload or update YouTube model preview videos from sandbox-sb3, especially RL gameplay previews associated with Hugging Face model cards. Use when the user asks to upload a local video to YouTube, update an existing video description/title/tags/privacy, add a video to a playlist, produce OAuth authorization flow instructions, or ensure model-card preview videos have clean clickable model links.
+description: Upload or update YouTube model preview videos from rlab, especially RL gameplay previews associated with Hugging Face model cards. Use when the user asks to upload a local video to YouTube, update an existing video description/title/tags/privacy, add a video to a playlist, produce OAuth authorization flow instructions, or ensure model-card preview videos have clean clickable model links.
 ---
 
 # Upload YouTube Video

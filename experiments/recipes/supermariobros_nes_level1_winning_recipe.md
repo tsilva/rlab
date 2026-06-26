@@ -49,7 +49,7 @@ checkpoint_freq: 100000
 timesteps: 5,000,000
 ```
 
-Use 5 concurrent child trainings on `k8s/rtx4090` for throughput screening.
+Use 5 concurrent child trainings on `k8s/beast-3` for throughput screening.
 Recent recipe-search batches used 6 concurrent child trainings for 3-arm /
 2-seed comparisons; that is acceptable for search continuity, but the measured
 default throughput shape in `INSTANCES.md` remains 5 children.

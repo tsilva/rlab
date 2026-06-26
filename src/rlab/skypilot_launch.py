@@ -14,6 +14,7 @@ from urllib.request import urlopen
 from rlab.artifacts import artifact_storage_prefix, checkpoint_step, sanitize_artifact_name
 from rlab.cli import TRAIN_COMMAND_FIELDS, build_train_command
 from rlab.compute_targets import (
+    canonical_target_name,
     ensure_skypilot_target,
     instance_defaults,
     instance_label,
@@ -26,6 +27,7 @@ from rlab.compute_targets import (
 from rlab.metric_names import (
     TRAIN_DONE_ALL,
 )
+from rlab.runtime_refs import normalize_runtime_image_ref, runtime_image_digest_slug
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT
 
 
@@ -164,6 +166,18 @@ def sanitize_slug(value: str) -> str:
     return sanitize_artifact_name(value).replace(".", "-").replace("_", "-")
 
 
+def runner_cluster_name(
+    *,
+    profile_id: str,
+    target: str,
+    runtime_image_ref: str,
+) -> str:
+    digest_slug = runtime_image_digest_slug(runtime_image_ref)
+    target_slug = sanitize_slug(target)[:24].strip("-") or "target"
+    profile_slug = sanitize_slug(profile_id)[:48].strip("-") or "profile"
+    return f"rlab-runner-{target_slug}-{profile_slug}-{digest_slug}"
+
+
 def parse_wandb_run_ref(run_ref: str) -> tuple[str, str, str]:
     parts = [part for part in run_ref.strip("/").split("/") if part]
     if len(parts) != 3:
@@ -231,7 +245,7 @@ def manifest_from_wandb_config(
 
     manifest = {
         "name": experiment_slug,
-        "cluster": cluster or f"sandbox-sb3-{experiment_slug}",
+        "cluster": cluster or f"rlab-{experiment_slug}",
         "game": game,
         "state": str(config.get("state", "") or ""),
         "rom_source": str(rom_source_path),
@@ -609,6 +623,7 @@ def render_runner_task_yaml(
     target = target_name(profile, target_override)
     instance = instance_defaults(instance_config, target)
     ensure_skypilot_target(instance)
+    canonical_target = canonical_target_name(instance_config, target)
     game = runner_profile_game(profile)
     profile_id = str(profile["profile_id"]).strip()
     sky_name = str(profile.get("name", sanitize_slug(profile_id)))
@@ -627,6 +642,12 @@ def render_runner_task_yaml(
     status_goal = str(profile.get("status_goal", "")).strip()
     image_id = str(profile.get("image_id", instance.get("image_id", ""))).strip()
     prebuilt_image = bool(profile.get("prebuilt_image", instance.get("prebuilt_image", False)))
+    runtime_image_ref = str(profile.get("runtime_image_ref", image_id if prebuilt_image else "")).strip()
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    if prebuilt_image:
+        if image_id and image_id != runtime_image_ref:
+            raise ValueError("prebuilt runner image_id must match runtime_image_ref when both are set")
+        image_id = runtime_image_ref
     cpus = str(profile.get("cpus", instance.get("cpus", "12+")))
     memory = str(profile.get("memory", instance.get("memory", "48+")))
     accelerator = str(instance.get("accelerator", "RTX4090"))
@@ -804,6 +825,10 @@ PY{smoke_block}"""
         "rlab.train_runner",
         "--profile",
         profile_id,
+        "--runtime-image-ref",
+        runtime_image_ref,
+        "--run-target",
+        canonical_target,
         "--workers",
         str(workers),
         "--max-jobs",
@@ -837,7 +862,8 @@ PY{smoke_block}"""
         [
             f"mkdir -p {shell_quote(log_dir)}",
             f'echo "train_profile={profile_id}"',
-            f'echo "target={target_description} workers={workers} max_jobs={max_jobs}"',
+            f'echo "runtime_image_ref={runtime_image_ref}"',
+            f'echo "target={canonical_target} infra={target_description} workers={workers} max_jobs={max_jobs}"',
             shell_join(command),
         ]
     )
@@ -926,8 +952,15 @@ def preflight_runner_profile(
         checks.append(Check("error", "runner profile must define rom_source"))
     image_id = str(profile.get("image_id", instance.get("image_id", ""))).strip()
     prebuilt_image = bool(profile.get("prebuilt_image", instance.get("prebuilt_image", False)))
+    runtime_image_ref = str(profile.get("runtime_image_ref", image_id if prebuilt_image else "")).strip()
+    try:
+        runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    except ValueError as exc:
+        checks.append(Check("error", str(exc)))
     if prebuilt_image and not image_id:
         checks.append(Check("error", "prebuilt_image=true requires image_id on the profile or target"))
+    if prebuilt_image and image_id and runtime_image_ref and image_id != runtime_image_ref:
+        checks.append(Check("error", "prebuilt runner image_id must match runtime_image_ref"))
     if prebuilt_image and str(instance.get("infra", "")).startswith("ssh/"):
         checks.append(
             Check(

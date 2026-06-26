@@ -49,6 +49,10 @@ def normalize_train_config(
         config["wandb_tags"] = ",".join(str(tag) for tag in tags)
     if isinstance(config.get("wandb_tags"), list):
         config["wandb_tags"] = ",".join(str(tag) for tag in config["wandb_tags"])
+    if job.get("runtime_image_ref"):
+        config["runtime_image_ref"] = job["runtime_image_ref"]
+    if job.get("run_target"):
+        config["run_target"] = job["run_target"]
     if config.get("wandb_artifact_storage_uri") == "${CHECKPOINT_BUCKET_URI}":
         config["wandb_artifact_storage_uri"] = os.environ.get("CHECKPOINT_BUCKET_URI", "")
     resume_artifact = config.pop("resume_artifact", None)
@@ -307,6 +311,8 @@ def worker_loop(args: argparse.Namespace, *, worker_id: str) -> None:
             job = claim_train_job(
                 conn,
                 profile_id=args.profile,
+                runtime_image_ref=args.runtime_image_ref,
+                run_target=args.run_target,
                 worker_id=worker_id,
                 lease_seconds=args.lease_seconds,
             )
@@ -354,6 +360,15 @@ def run_pool(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Drain Codex-authored PPO train jobs.")
     parser.add_argument("--profile", required=True, help="Exact train_jobs.profile_id to claim.")
+    parser.add_argument(
+        "--runtime-image-ref",
+        required=True,
+        help="Exact immutable runtime image ref that claimed train_jobs must require.",
+    )
+    parser.add_argument(
+        "--run-target",
+        help="Canonical compute target this runner is serving; claims targetless jobs too.",
+    )
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--worker-id")
     parser.add_argument("--lease-seconds", type=int, default=1800)

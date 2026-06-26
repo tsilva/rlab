@@ -1,6 +1,6 @@
 ---
 name: flush-eval
-description: Flush sandbox-sb3 campaign eval jobs and report ranked results. Use when the user asks to evaluate unevaluated checkpoints, flush the eval queue, run pending eval jobs, check what checkpoints are not evaluated yet, or produce a post-eval report from the Neon campaign database.
+description: Flush rlab campaign eval jobs and report ranked results. Use when the user asks to evaluate unevaluated checkpoints, flush the eval queue, run pending eval jobs, check what checkpoints are not evaluated yet, or produce a post-eval report from the Neon campaign database.
 ---
 
 # Flush Eval

@@ -18,6 +18,12 @@ from rlab.train_runner import (
 )
 
 
+RUNTIME_IMAGE_REF = (
+    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+
 class FakeCursor:
     def __init__(self, row=None) -> None:
         self.row = row
@@ -59,16 +65,22 @@ class CampaignQueueTests(unittest.TestCase):
         row = campaign.claim_train_job(
             conn,
             profile_id="mario-ppo/post16/rtx4090-screening",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
             worker_id="worker-a",
             lease_seconds=60,
         )
 
         self.assertEqual(row["id"], 7)
         self.assertIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
+        self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
+        self.assertIn("run_target IS NULL OR run_target = %(run_target)s", conn.cursor_obj.executed_sql)
         self.assertEqual(
             conn.cursor_obj.executed_params["profile_id"],
             "mario-ppo/post16/rtx4090-screening",
         )
+        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
 
     def test_secret_like_keys_are_rejected_from_persisted_json(self) -> None:
         with self.assertRaisesRegex(ValueError, "secret-like key"):
@@ -85,6 +97,47 @@ class CampaignQueueTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS eval_results", campaign.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS campaign_decisions", campaign.SCHEMA_SQL)
         self.assertIn("origin_decision_id", campaign.SCHEMA_SQL)
+        self.assertIn("runtime_image_ref TEXT", campaign.SCHEMA_SQL)
+        self.assertIn("run_target TEXT", campaign.SCHEMA_SQL)
+        self.assertIn("train_jobs_runtime_claim_idx", campaign.SCHEMA_SQL)
+
+    def test_enqueue_train_job_persists_runtime_and_target(self) -> None:
+        conn = FakeConnection(
+            row={
+                "id": 9,
+                "profile_id": "mario-ppo/post21/rtx4090",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "run_target": "rtx4090",
+            }
+        )
+
+        row = campaign.enqueue_train_job(
+            conn,
+            goal_id=1,
+            experiment_spec_id=2,
+            profile_id="mario-ppo/post21/rtx4090",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            train_config={"timesteps": 1024},
+        )
+
+        self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertIn("runtime_image_ref", conn.cursor_obj.executed_sql)
+        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
+
+    def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
+        conn = FakeConnection(row={"id": 9})
+
+        with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
+            campaign.enqueue_train_job(
+                conn,
+                goal_id=1,
+                experiment_spec_id=2,
+                profile_id="mario-ppo/post21/rtx4090",
+                runtime_image_ref="docker:ghcr.io/tsilva/rlab/rlab-train:latest",
+                train_config={"timesteps": 1024},
+            )
 
     def test_claim_eval_job_filters_exact_profile(self) -> None:
         conn = FakeConnection(row={"id": 8, "profile_id": "mario-ppo/post16/rtx4090-eval"})
@@ -346,6 +399,8 @@ class TrainRunnerTests(unittest.TestCase):
             "run_description": "Codex-authored smoke job.",
             "wandb_group": "b52",
             "wandb_tags": ["fallback"],
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "run_target": "rtx4090",
         }
 
         config = normalize_train_config(job)
@@ -358,6 +413,10 @@ class TrainRunnerTests(unittest.TestCase):
         self.assertIn("Level1-1,Level1-2", command)
         self.assertIn("--wandb-group", command)
         self.assertIn("b52", command)
+        self.assertIn("--runtime-image-ref", command)
+        self.assertIn(RUNTIME_IMAGE_REF, command)
+        self.assertIn("--run-target", command)
+        self.assertIn("rtx4090", command)
         self.assertIn("--wandb", command)
 
     def test_collect_result_metadata_reads_run_markers_and_artifacts(self) -> None:
