@@ -6,6 +6,7 @@ import json
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -24,6 +25,10 @@ from rlab.runtime_refs import (
 
 DEFAULT_FLEET_CONFIG = Path("experiments/fleet.json")
 DEFAULT_INSTANCES_CONFIG = Path("experiments/instances.json")
+DEFAULT_IMAGE_WORKFLOW = "rlab train image"
+DEFAULT_IMAGE_BRANCH = "main"
+DEFAULT_IMAGE_ARTIFACT = "rlab-train-image"
+DEFAULT_IMAGE_ARTIFACT_FILE = "rlab-train-image.json"
 LABEL_PREFIX = "rlab."
 MANAGED_LABEL = f"{LABEL_PREFIX}managed"
 CONFIG_HASH_LABEL = f"{LABEL_PREFIX}config-hash"
@@ -92,7 +97,7 @@ class ActiveLease:
 @dataclass(frozen=True)
 class DeploymentKey:
     host: str
-    profile_id: str
+    profile_id: str | None
     runtime_image_ref: str
     run_target: str | None
 
@@ -123,8 +128,9 @@ class ExistingContainer:
     def key(self) -> DeploymentKey | None:
         profile_id = self.labels.get(f"{LABEL_PREFIX}profile")
         runtime_image_ref = self.labels.get(f"{LABEL_PREFIX}runtime-image-ref")
-        if not profile_id or not runtime_image_ref:
+        if not runtime_image_ref:
             return None
+        profile_id = profile_id or None
         run_target = self.labels.get(f"{LABEL_PREFIX}run-target") or None
         return DeploymentKey(
             host=self.host,
@@ -288,7 +294,7 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
 
 def deployment_name(key: DeploymentKey) -> str:
     digest = runtime_image_digest_slug(key.runtime_image_ref)
-    profile = sanitize_slug(key.profile_id, limit=44)
+    profile = sanitize_slug(key.profile_id or "any-profile", limit=44)
     target = sanitize_slug(key.run_target or "any", limit=16)
     host = sanitize_slug(key.host, limit=16)
     return f"rlab-{host}-{target}-{profile}-{digest}"[:120].strip("-")
@@ -354,8 +360,6 @@ def build_desired_deployment(
     name = deployment_name(key)
     worker_prefix = name
     command = [
-        "--profile",
-        key.profile_id,
         "--runtime-image-ref",
         key.runtime_image_ref,
         "--run-target",
@@ -367,6 +371,8 @@ def build_desired_deployment(
         "--log-dir",
         host.log_dir_in_container,
     ]
+    if key.profile_id:
+        command = ["--profile", key.profile_id, *command]
     hash_input = {
         "host": host.name,
         "profile_id": key.profile_id,
@@ -384,7 +390,7 @@ def build_desired_deployment(
     labels = {
         MANAGED_LABEL: "true",
         f"{LABEL_PREFIX}host": host.name,
-        f"{LABEL_PREFIX}profile": key.profile_id,
+        f"{LABEL_PREFIX}profile": key.profile_id or "",
         f"{LABEL_PREFIX}runtime-image-ref": key.runtime_image_ref,
         f"{LABEL_PREFIX}runtime-digest": digest,
         f"{LABEL_PREFIX}run-target": key.run_target or "",
@@ -491,6 +497,27 @@ def demand_index(demands: Sequence[QueueDemand]) -> dict[tuple[str, str, str | N
     }
 
 
+def demand_matches_key(demand: QueueDemand, key: DeploymentKey) -> bool:
+    if key.profile_id is not None and demand.profile_id != key.profile_id:
+        return False
+    return demand.runtime_image_ref == key.runtime_image_ref and demand.run_target == key.run_target
+
+
+def container_can_serve_desired(
+    container: ExistingContainer,
+    desired: DesiredDeployment,
+) -> bool:
+    key = container.key
+    if key is None:
+        return False
+    return (
+        key.host == desired.key.host
+        and key.profile_id is None
+        and key.runtime_image_ref == desired.key.runtime_image_ref
+        and key.run_target == desired.key.run_target
+    )
+
+
 def active_prefixes(leases: Sequence[ActiveLease]) -> tuple[str, ...]:
     return tuple(sorted({lease.lease_owner for lease in leases if lease.lease_owner}))
 
@@ -540,6 +567,24 @@ def build_fleet_plan(
         host = config.hosts[desired_item.key.host]
         current = existing_by_name.get(desired_item.name)
         if current is None:
+            wildcard_current = next(
+                (
+                    item
+                    for item in existing
+                    if item.state.lower() == "running" and container_can_serve_desired(item, desired_item)
+                ),
+                None,
+            )
+            if wildcard_current is not None:
+                actions.append(
+                    FleetAction(
+                        kind="keep",
+                        host=host.name,
+                        container=wildcard_current.name,
+                        reason="unprofiled container already serves this profile demand",
+                    )
+                )
+                continue
             actions.append(
                 FleetAction(
                     kind="start",
@@ -596,6 +641,11 @@ def build_fleet_plan(
             if key is not None
             else None
         )
+        if matching_demand is None and key is not None and key.profile_id is None:
+            matching_demand = next(
+                (demand for demand in demands if demand_matches_key(demand, key) and demand.total > 0),
+                None,
+            )
         if matching_demand is not None and matching_demand.total > 0:
             warnings.append(
                 f"{current.name} has demand but was not allocated new capacity; leaving it alone"
@@ -616,6 +666,102 @@ def build_fleet_plan(
 
     return FleetPlan(
         desired=desired,
+        existing=tuple(existing),
+        actions=tuple(actions),
+        warnings=tuple(warnings),
+    )
+
+
+def build_ensure_runner_plan(
+    config: FleetConfig,
+    *,
+    host_name: str,
+    profile_id: str | None,
+    runtime_image_ref: str,
+    run_target: str | None,
+    workers: int | None,
+    existing: Sequence[ExistingContainer],
+    leases: Sequence[ActiveLease],
+) -> FleetPlan:
+    if host_name not in config.hosts:
+        known = ", ".join(sorted(config.hosts))
+        raise ValueError(f"unknown fleet host {host_name!r}; known hosts: {known}")
+    host = config.hosts[host_name]
+    profile_id = profile_id.strip() if profile_id else None
+    target = run_target or host.run_target
+    if target != host.run_target:
+        raise ValueError(
+            f"host {host.name} has run_target={host.run_target!r}; cannot ensure target={target!r}"
+        )
+    worker_count = workers if workers is not None else host.max_workers
+    if worker_count < 1:
+        raise ValueError("--workers must be at least 1")
+    if worker_count > host.max_workers:
+        raise ValueError(f"--workers {worker_count} exceeds {host.name} max_workers={host.max_workers}")
+    key = DeploymentKey(
+        host=host.name,
+        profile_id=profile_id,
+        runtime_image_ref=normalize_runtime_image_ref(runtime_image_ref),
+        run_target=target,
+    )
+    desired = build_desired_deployment(
+        host=host,
+        key=key,
+        workers=worker_count,
+        pending_count=0,
+        running_count=0,
+    )
+    existing_by_name = {item.name: item for item in existing}
+    current = existing_by_name.get(desired.name)
+    warnings: list[str] = []
+    actions: list[FleetAction] = []
+    if current is None:
+        actions.append(
+            FleetAction(
+                kind="start",
+                host=host.name,
+                container=desired.name,
+                reason="explicit ensure-runner request",
+                commands=start_commands(host, desired),
+            )
+        )
+    elif current.state.lower() != "running":
+        if container_has_active_lease(current, leases):
+            warnings.append(f"{current.name} is not running but still owns an active lease")
+        else:
+            actions.append(
+                FleetAction(
+                    kind="restart",
+                    host=host.name,
+                    container=desired.name,
+                    reason=f"container state is {current.state or 'unknown'}",
+                    commands=restart_commands(host, desired),
+                )
+            )
+    elif current.labels.get(CONFIG_HASH_LABEL) != desired.config_hash:
+        if container_has_active_lease(current, leases):
+            warnings.append(f"{current.name} config changed but active lease prevents restart")
+        else:
+            actions.append(
+                FleetAction(
+                    kind="recreate",
+                    host=host.name,
+                    container=desired.name,
+                    reason="managed container config changed",
+                    commands=restart_commands(host, desired),
+                )
+            )
+    else:
+        actions.append(
+            FleetAction(
+                kind="keep",
+                host=host.name,
+                container=desired.name,
+                reason="container already matches desired state",
+            )
+        )
+    return FleetPlan(
+        desired=(desired,),
         existing=tuple(existing),
         actions=tuple(actions),
         warnings=tuple(warnings),
@@ -897,7 +1043,98 @@ def setup_host_script(host: HostConfig, *, runtime_image_ref: str | None = None)
     return "\n".join(lines) + "\n"
 
 
-def image_ref_from_args(args: argparse.Namespace) -> str | None:
+def _run_gh_json(command: Sequence[str]) -> Any:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("gh CLI is required to resolve --latest-image") from exc
+    if result.returncode != 0:
+        output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+        raise RuntimeError(f"gh command failed: {shell_join(command)}\n{output}")
+    return json.loads(result.stdout or "null")
+
+
+def latest_runtime_image_ref(
+    *,
+    workflow: str = DEFAULT_IMAGE_WORKFLOW,
+    branch: str = DEFAULT_IMAGE_BRANCH,
+    artifact_name: str = DEFAULT_IMAGE_ARTIFACT,
+) -> str:
+    runs = _run_gh_json(
+        [
+            "gh",
+            "run",
+            "list",
+            "--workflow",
+            workflow,
+            "--branch",
+            branch,
+            "--status",
+            "success",
+            "--limit",
+            "1",
+            "--json",
+            "databaseId",
+        ]
+    )
+    if not isinstance(runs, list) or not runs:
+        raise RuntimeError(f"no successful {workflow!r} runs found on branch {branch!r}")
+    run_id = str(runs[0].get("databaseId") or "").strip()
+    if not run_id:
+        raise RuntimeError(f"latest {workflow!r} run did not include a databaseId")
+    with tempfile.TemporaryDirectory(prefix="rlab-train-image-") as tmp:
+        result = subprocess.run(
+            [
+                "gh",
+                "run",
+                "download",
+                run_id,
+                "--name",
+                artifact_name,
+                "--dir",
+                tmp,
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+            raise RuntimeError(f"failed to download artifact {artifact_name!r} from run {run_id}\n{output}")
+        return runtime_image_ref_from_file(Path(tmp) / DEFAULT_IMAGE_ARTIFACT_FILE)
+
+
+def image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = False) -> str | None:
+    image = str(getattr(args, "image", "") or "").strip()
+    image_file = getattr(args, "image_file", None)
+    if image_file:
+        return runtime_image_ref_from_file(image_file)
+    if image:
+        if image == "latest":
+            return latest_runtime_image_ref(
+                workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
+                branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
+                artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
+            )
+        return normalize_runtime_image_ref(image)
+    has_explicit_ref = bool(getattr(args, "runtime_image_ref", None))
+    has_ref_file = bool(getattr(args, "runtime_image_ref_file", None))
+    use_latest = bool(getattr(args, "latest_image", False)) or (
+        default_latest and not has_explicit_ref and not has_ref_file
+    )
+    if use_latest:
+        return latest_runtime_image_ref(
+            workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
+            branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
+            artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
+        )
     if getattr(args, "runtime_image_ref_file", None):
         return runtime_image_ref_from_file(args.runtime_image_ref_file)
     value = getattr(args, "runtime_image_ref", None)
@@ -972,7 +1209,7 @@ def format_plan(plan: FleetPlan) -> str:
             lines.append(
                 "  "
                 f"{item.name} host={item.key.host} workers={item.workers} "
-                f"profile={item.key.profile_id} target={item.key.run_target or 'any'} "
+                f"profile={item.key.profile_id or 'any'} target={item.key.run_target or 'any'} "
                 f"digest={runtime_image_digest_slug(item.key.runtime_image_ref)}"
             )
     if plan.actions:
@@ -1048,6 +1285,57 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
+def cmd_ensure_runner(args: argparse.Namespace) -> int:
+    config = filter_config_to_host(_load_config_from_args(args), args.host)
+    host = config.hosts[args.host]
+    runtime_image_ref = image_ref_from_args(args, default_latest=True)
+    if not runtime_image_ref:
+        raise SystemExit("--image, --image-file, --runtime-image-ref, or --runtime-image-ref-file is required")
+    profile_id = str(args.profile).strip() if args.profile else None
+    print(f"runtime_image_ref={runtime_image_ref}")
+    print(f"profile={profile_id or 'any'}")
+    conn = _connect_from_args(args)
+    try:
+        leases = active_leases(conn)
+    finally:
+        conn.close()
+    existing, container_warnings = collect_existing_containers(config, host_filter=None, local=False)
+    plan = build_ensure_runner_plan(
+        config,
+        host_name=host.name,
+        profile_id=profile_id,
+        runtime_image_ref=runtime_image_ref,
+        run_target=args.target,
+        workers=args.workers,
+        existing=existing,
+        leases=leases,
+    )
+    plan = FleetPlan(
+        desired=plan.desired,
+        existing=plan.existing,
+        actions=plan.actions,
+        warnings=(*container_warnings, *plan.warnings),
+    )
+    print(format_plan(plan))
+    if not args.execute:
+        print("dry_run: pass --execute to apply the plan")
+        return 0
+    status = 0
+    for action in plan.actions:
+        if action.kind == "keep":
+            continue
+        result = run_action(config, action, local=False)
+        if result != 0:
+            status = result
+            print(
+                f"action_failed host={action.host} container={action.container} "
+                f"kind={action.kind} exit={result}",
+                file=sys.stderr,
+            )
+            break
+    return status
+
+
 def cmd_setup_host(args: argparse.Namespace) -> int:
     config = _load_config_from_args(args)
     runtime_image_ref = image_ref_from_args(args)
@@ -1083,9 +1371,42 @@ def add_reconcile_args(parser: argparse.ArgumentParser, *, host_required: bool =
     parser.add_argument("--interval", type=float, default=30.0, help="Watch interval in seconds.")
 
 
-def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--runtime-image-ref")
-    parser.add_argument("--runtime-image-ref-file", type=Path)
+def add_runtime_image_args(
+    parser: argparse.ArgumentParser,
+    *,
+    allow_latest: bool = False,
+) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--runtime-image-ref")
+    group.add_argument("--runtime-image-ref-file", type=Path)
+    if allow_latest:
+        group.add_argument(
+            "--latest-image",
+            action="store_true",
+            help="Use the latest successful train-image CI artifact; default for ensure-runner.",
+        )
+        parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
+        parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+        parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
+
+
+def add_ensure_image_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--image",
+        help="'latest' or an immutable docker:...@sha256:... runtime image ref. Defaults to latest.",
+    )
+    group.add_argument(
+        "--image-file",
+        type=Path,
+        help="JSON artifact or plain-text file containing the immutable runtime image ref.",
+    )
+    group.add_argument("--runtime-image-ref", help=argparse.SUPPRESS)
+    group.add_argument("--runtime-image-ref-file", type=Path, help=argparse.SUPPRESS)
+    group.add_argument("--latest-image", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
+    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1105,6 +1426,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(reconcile)
     add_reconcile_args(reconcile)
     reconcile.set_defaults(func=cmd_reconcile)
+
+    ensure = subparsers.add_parser(
+        "ensure-runner",
+        help="Ensure one managed runner exists for a host/profile/image.",
+    )
+    add_common_args(ensure)
+    ensure.add_argument("--host", required=True, help="Fleet host to run the container on.")
+    ensure.add_argument("--profile", help="Optional exact train_jobs.profile_id to claim.")
+    ensure.add_argument("--target", help="Run target; defaults to the host canonical target.")
+    ensure.add_argument("--workers", type=int, help="Workers inside the runner; defaults to host capacity.")
+    ensure.add_argument("--execute", action="store_true")
+    add_ensure_image_args(ensure)
+    ensure.set_defaults(func=cmd_ensure_runner)
 
     setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for runners.")
     add_common_args(setup)

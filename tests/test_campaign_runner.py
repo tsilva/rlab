@@ -72,13 +72,30 @@ class CampaignQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(row["id"], 7)
-        self.assertIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
+        self.assertIn("%(profile_id)s IS NULL OR profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
         self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
         self.assertIn("run_target IS NULL OR run_target = %(run_target)s", conn.cursor_obj.executed_sql)
         self.assertEqual(
             conn.cursor_obj.executed_params["profile_id"],
             "mario-ppo/post16/rtx4090-screening",
         )
+        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
+
+    def test_claim_train_job_allows_any_profile_when_unspecified(self) -> None:
+        conn = FakeConnection(row={"id": 9, "profile_id": "mario-ppo/post21/any-lane"})
+
+        row = campaign.claim_train_job(
+            conn,
+            profile_id=None,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            worker_id="worker-any",
+            lease_seconds=60,
+        )
+
+        self.assertEqual(row["id"], 9)
+        self.assertIsNone(conn.cursor_obj.executed_params["profile_id"])
         self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
 

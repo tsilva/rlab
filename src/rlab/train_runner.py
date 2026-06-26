@@ -359,7 +359,7 @@ def run_pool(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Drain Codex-authored PPO train jobs.")
-    parser.add_argument("--profile", required=True, help="Exact train_jobs.profile_id to claim.")
+    parser.add_argument("--profile", help="Optional exact train_jobs.profile_id to claim.")
     parser.add_argument(
         "--runtime-image-ref",
         required=True,

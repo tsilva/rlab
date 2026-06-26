@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 from rlab import fleet
 from rlab.runtime_refs import runtime_image_ref_from_file
@@ -148,6 +150,55 @@ class FleetQueueTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
                 runtime_image_ref_from_file(path)
 
+    def test_ensure_runner_defaults_to_latest_image_ref(self) -> None:
+        args = Namespace(
+            image=None,
+            image_file=None,
+            runtime_image_ref=None,
+            runtime_image_ref_file=None,
+            latest_image=False,
+            image_workflow="rlab train image",
+            image_branch="main",
+            image_artifact="rlab-train-image",
+        )
+
+        with mock.patch.object(fleet, "latest_runtime_image_ref", return_value=RUNTIME_IMAGE_REF) as latest:
+            self.assertEqual(fleet.image_ref_from_args(args, default_latest=True), RUNTIME_IMAGE_REF)
+
+        latest.assert_called_once_with(
+            workflow="rlab train image",
+            branch="main",
+            artifact_name="rlab-train-image",
+        )
+
+    def test_ensure_runner_image_latest_uses_latest_ref(self) -> None:
+        args = Namespace(
+            image="latest",
+            image_file=None,
+            runtime_image_ref=None,
+            runtime_image_ref_file=None,
+            latest_image=False,
+            image_workflow="rlab train image",
+            image_branch="main",
+            image_artifact="rlab-train-image",
+        )
+
+        with mock.patch.object(fleet, "latest_runtime_image_ref", return_value=RUNTIME_IMAGE_REF) as latest:
+            self.assertEqual(fleet.image_ref_from_args(args, default_latest=True), RUNTIME_IMAGE_REF)
+
+        latest.assert_called_once()
+
+    def test_ensure_runner_image_digest_uses_explicit_ref(self) -> None:
+        args = Namespace(
+            image=RUNTIME_IMAGE_REF,
+            image_file=None,
+            runtime_image_ref=None,
+            runtime_image_ref_file=None,
+            latest_image=False,
+        )
+
+        self.assertEqual(fleet.image_ref_from_args(args, default_latest=True), RUNTIME_IMAGE_REF)
+
 
 class FleetPlanTests(unittest.TestCase):
     def test_start_action_renders_digest_pinned_docker_runner(self) -> None:
@@ -269,6 +320,128 @@ class FleetPlanTests(unittest.TestCase):
         self.assertEqual(warnings, ())
         self.assertEqual(len(desired), 1)
         self.assertEqual(desired[0].key.host, "beast-2")
+
+    def test_ensure_runner_starts_without_queue_demand(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+
+        plan = fleet.build_ensure_runner_plan(
+            config,
+            host_name="beast-3",
+            profile_id=None,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target=None,
+            workers=None,
+            existing=[],
+            leases=[],
+        )
+
+        self.assertEqual(len(plan.desired), 1)
+        self.assertEqual(plan.desired[0].workers, config.hosts["beast-3"].max_workers)
+        self.assertIsNone(plan.desired[0].key.profile_id)
+        self.assertEqual(plan.desired[0].key.run_target, "rtx4090")
+        self.assertEqual(plan.actions[0].kind, "start")
+        self.assertIn("explicit ensure-runner request", plan.actions[0].reason)
+        command_text = "\n".join(plan.actions[0].commands)
+        self.assertIn("docker pull ghcr.io/tsilva/rlab/rlab-train@sha256:", command_text)
+        self.assertNotIn("--profile", command_text)
+
+    def test_ensure_runner_does_not_remove_unrelated_obsolete_container(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        old_desired = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id="mario-ppo/post21/rtx4090-prebuilt-l11-l12-50x50-v2",
+                runtime_image_ref=OTHER_IMAGE_REF,
+                run_target="rtx4090",
+            ),
+            workers=1,
+            pending_count=0,
+            running_count=0,
+        )
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=old_desired.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=old_desired.labels,
+        )
+
+        plan = fleet.build_ensure_runner_plan(
+            config,
+            host_name="beast-3",
+            profile_id=old_desired.key.profile_id,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            workers=1,
+            existing=[existing],
+            leases=[],
+        )
+
+        self.assertTrue(any(action.kind == "start" for action in plan.actions))
+        self.assertFalse(any(action.kind == "remove" for action in plan.actions))
+
+    def test_ensure_runner_keeps_matching_container(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        desired = fleet.build_ensure_runner_plan(
+            config,
+            host_name="beast-3",
+            profile_id="mario-ppo/post21/rtx4090-prebuilt-l11-l12-50x50-v2",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            workers=2,
+            existing=[],
+            leases=[],
+        ).desired[0]
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=desired.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=desired.labels,
+        )
+
+        plan = fleet.build_ensure_runner_plan(
+            config,
+            host_name="beast-3",
+            profile_id=desired.key.profile_id,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            workers=2,
+            existing=[existing],
+            leases=[],
+        )
+
+        self.assertEqual(plan.actions[0].kind, "keep")
+
+    def test_reconcile_keeps_unprofiled_container_for_profile_demand(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        any_profile = fleet.build_ensure_runner_plan(
+            config,
+            host_name="beast-3",
+            profile_id=None,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            workers=5,
+            existing=[],
+            leases=[],
+        ).desired[0]
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=any_profile.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=any_profile.labels,
+        )
+
+        plan = fleet.build_fleet_plan(config, [demand(pending=1)], [existing], [])
+
+        self.assertTrue(any(action.kind == "keep" for action in plan.actions))
+        self.assertFalse(any(action.kind == "start" for action in plan.actions))
+        self.assertFalse(any(action.kind == "remove" for action in plan.actions))
 
 
 class FleetHostSetupTests(unittest.TestCase):

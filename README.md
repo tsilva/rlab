@@ -137,6 +137,25 @@ UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute --watch --interval 30
 ```
 
+To explicitly make a latest-image runner available on a local beast host,
+without waiting for queue demand, use `ensure-runner`. When no image ref is
+provided it resolves the latest successful `rlab train image` artifact on
+`main` through the GitHub CLI and uses the artifact's immutable digest. By
+default this runner does not filter by profile; it claims any train job matching
+the image and host target:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner \
+  --host beast-3 \
+  --image latest \
+  --execute
+```
+
+`--image latest` is the default; pass `--image docker:...@sha256:...` or
+`--image-file rlab-train-image.json` to pin a specific artifact explicitly.
+Pass `--profile <profile-id>` only when you intentionally want a runner locked
+to one queue lane.
+
 Bootstrap each host once so Docker, the NVIDIA runtime, persistent directories,
 the non-secret env-file path, digest pulls, and the container smoke check are
 ready:

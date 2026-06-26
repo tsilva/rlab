@@ -273,7 +273,7 @@ WITH next_job AS (
   SELECT id
   FROM train_jobs
   WHERE
-    profile_id = %(profile_id)s
+    (%(profile_id)s IS NULL OR profile_id = %(profile_id)s)
     AND runtime_image_ref = %(runtime_image_ref)s
     AND (run_target IS NULL OR run_target = %(run_target)s)
     AND cancel_requested = FALSE
@@ -691,12 +691,13 @@ def enqueue_eval_job(
 def claim_train_job(
     conn,
     *,
-    profile_id: str,
+    profile_id: str | None,
     runtime_image_ref: str,
     run_target: str | None,
     worker_id: str,
     lease_seconds: int,
 ) -> dict[str, Any] | None:
+    profile_id = str(profile_id).strip() if profile_id else None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     run_target = normalize_run_target(run_target)
     with conn:
