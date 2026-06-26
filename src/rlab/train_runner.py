@@ -34,6 +34,13 @@ WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
 RESUME_ARTIFACT_ROOT = Path("artifacts/train_resumes")
 
 
+def strip_env_file_quotes(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1]
+    return text
+
+
 def normalize_train_config(
     job: dict[str, Any], *, resolve_resume_artifact: bool = True
 ) -> dict[str, Any]:
@@ -54,7 +61,7 @@ def normalize_train_config(
     if job.get("run_target"):
         config["run_target"] = job["run_target"]
     if config.get("wandb_artifact_storage_uri") == "${CHECKPOINT_BUCKET_URI}":
-        config["wandb_artifact_storage_uri"] = os.environ.get("CHECKPOINT_BUCKET_URI", "")
+        config["wandb_artifact_storage_uri"] = strip_env_file_quotes(os.environ.get("CHECKPOINT_BUCKET_URI", ""))
     resume_artifact = config.pop("resume_artifact", None)
     if resume_artifact:
         if config.get("resume"):

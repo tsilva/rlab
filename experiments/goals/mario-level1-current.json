@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "goal_slug": "mario-level1-100of100",
+  "title": "Sample-efficient SuperMarioBros-NES Level1-1 completion",
+  "status": "active",
+  "updated_at": "2026-06-26",
+  "objective": {
+    "game": "SuperMarioBros-Nes-v0",
+    "states": ["Level1-1"],
+    "algorithm": "PPO",
+    "primary_metric": "eval/done/level_change/rate",
+    "training_stop_metric": "train/done/level_change/from/0-0/ep_window/rate",
+    "success_threshold": 1.0,
+    "success_window_terminal_episodes": 100,
+    "max_train_timesteps": 5000000
+  },
+  "selection_policy": {
+    "source": "out_of_process_eval",
+    "rank_order": [
+      "eval/done/level_change/from_rate/min",
+      "eval/done/level_change/rate",
+      "eval/progress/x/max",
+      "eval/reward/mean"
+    ],
+    "training_metrics_use": "diagnostic_only"
+  },
+  "runtime": {
+    "stable_retro_turbo": "1.0.0.post21",
+    "runtime_image_ref": "digest-pinned GHCR train image from rlab-train-image.json",
+    "python": "3.14",
+    "dependency_lock": "uv.lock"
+  },
+  "seed_protocol": {
+    "screen": [23],
+    "confirm": [23, 24, 25],
+    "same_seed_note": "Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA."
+  },
+  "incumbent": {
+    "recipe_slug": "b55-lowkl-lrdecay",
+    "recipe_file": "experiments/recipes/supermariobros_nes_level1_winning_recipe.md",
+    "evidence_runtime": "stable-retro-turbo==1.0.0.post16",
+    "status": "incumbent recipe evidence; revalidate active launches under post21 runtime",
+    "mean_stop_step": 4372104,
+    "successful_seeds": [108, 109]
+  },
+  "default_train_profile": "mario-ppo/post21/rtx4090-prebuilt-l11-lowkl-lrdecay-v1",
+  "default_eval_profile": "mario-level1-eval/post21/vector-cpu",
+  "capacity_policy_file": "experiments/policies/capacity_policy.json",
+  "notes": [
+    "Use this file as the operator-facing current contract; historical docs keep lineage.",
+    "Do not promote a policy from final checkpoint reward alone.",
+    "Prefer paired confirmation against the incumbent before declaring a new baseline."
+  ]
+}

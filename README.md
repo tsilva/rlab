@@ -85,13 +85,45 @@ UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
 ```bash
 UV_CACHE_DIR=.uv-cache uv sync --frozen
 UV_CACHE_DIR=.uv-cache uv run ruff check .
-UV_CACHE_DIR=.uv-cache uv run pytest
+UV_CACHE_DIR=.uv-cache uv run python -m unittest discover -s tests -v
 
 UV_CACHE_DIR=.uv-cache uv run python -m rlab.train --game <GameId> --preset smoke --run-description "Smoke test"
 UV_CACHE_DIR=.uv-cache uv run python -m rlab.evaluate --game <GameId> --policy random --episodes 2 --max-steps 600
 UV_CACHE_DIR=.uv-cache uv run python scripts/eval_wandb_checkpoints.py <run-name> --game <GameId> --episodes 50 --record-best-video
 UV_CACHE_DIR=.uv-cache uv run python scripts/play_wandb_artifact.py <run-name> --game <GameId> --kind best --stochastic
 ```
+
+## Research Loop
+
+The current Mario Level1-1 contract is machine-readable:
+
+```bash
+cat experiments/goals/mario-level1-current.json
+```
+
+Queue comparable experiments from checked-in spec files instead of ad hoc
+commands:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-campaign add-spec-file \
+  experiments/specs/mario-level1/b55-lowkl-lrdecay-post21-revalidate.json
+
+UV_CACHE_DIR=.uv-cache uv run rlab-campaign enqueue-train-from-spec \
+  experiments/specs/mario-level1/b55-lowkl-lrdecay-post21-revalidate.json \
+  --runtime-image-ref-file rlab-train-image.json
+```
+
+Then keep capacity aligned with the repo policy and queue state:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
+```
+
+Use `rlab-campaign status <goal>` and `rlab-campaign lineage <goal>` for the
+decision view. Status prints eval selection leaders separately; training metrics
+are diagnostic unless out-of-process eval agrees.
 
 ## Remote Runs
 
@@ -132,10 +164,25 @@ Docker engines; they do not poll the queue or run a local fleet service.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute --watch --interval 30
 ```
+
+After publishing a new train image, roll all active beast hosts to the latest
+successful digest with `ensure-latest`:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest --execute
+```
+
+This starts or keeps one unprofiled latest-image runner per selected host. It
+also removes older managed containers when there are no pending/running jobs
+matching that old container's profile, digest, and target, and no active worker
+lease owned by that container. Add `--host beast-3` to limit a rollout, or
+`--watch --interval 30` if you want a long-running local loop that keeps
+checking for newly published latest artifacts.
 
 To explicitly make a latest-image runner available on a local beast host,
 without waiting for queue demand, use `ensure-runner`. When no image ref is

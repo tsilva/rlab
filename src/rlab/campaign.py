@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 import uuid
@@ -12,7 +13,14 @@ import psycopg2
 import psycopg2.extras
 
 from rlab.compute_targets import instance_defaults, load_json_file
-from rlab.runtime_refs import normalize_runtime_image_ref, runtime_image_ref_from_file
+from rlab.runtime_refs import (
+    DEFAULT_IMAGE_ARTIFACT,
+    DEFAULT_IMAGE_BRANCH,
+    DEFAULT_IMAGE_WORKFLOW,
+    latest_runtime_image_ref,
+    normalize_runtime_image_ref,
+    runtime_image_ref_from_file,
+)
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -60,7 +68,7 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   id BIGSERIAL PRIMARY KEY,
   goal_id BIGINT NOT NULL REFERENCES research_goals(id) ON DELETE CASCADE,
   experiment_spec_id BIGINT NOT NULL REFERENCES experiment_specs(id) ON DELETE CASCADE,
-  profile_id TEXT NOT NULL,
+  profile_id TEXT,
   runtime_image_ref TEXT,
   run_target TEXT,
   train_config JSONB NOT NULL,
@@ -88,7 +96,7 @@ CREATE TABLE IF NOT EXISTS train_results (
   train_job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs(id) ON DELETE CASCADE,
   goal_id BIGINT NOT NULL REFERENCES research_goals(id) ON DELETE CASCADE,
   experiment_spec_id BIGINT NOT NULL REFERENCES experiment_specs(id) ON DELETE CASCADE,
-  profile_id TEXT NOT NULL,
+  profile_id TEXT,
   runtime_image_ref TEXT,
   run_target TEXT,
   status TEXT NOT NULL,
@@ -151,6 +159,12 @@ ALTER TABLE IF EXISTS train_jobs
 ALTER TABLE IF EXISTS train_results
   ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT,
   ADD COLUMN IF NOT EXISTS run_target TEXT;
+
+ALTER TABLE IF EXISTS train_jobs
+  ALTER COLUMN profile_id DROP NOT NULL;
+
+ALTER TABLE IF EXISTS train_results
+  ALTER COLUMN profile_id DROP NOT NULL;
 
 ALTER TABLE IF EXISTS eval_jobs
   ADD COLUMN IF NOT EXISTS goal_id BIGINT,
@@ -277,14 +291,7 @@ WITH next_job AS (
     AND runtime_image_ref = %(runtime_image_ref)s
     AND (run_target IS NULL OR run_target = %(run_target)s)
     AND cancel_requested = FALSE
-    AND (
-      status = 'pending'
-      OR (
-        status = 'running'
-        AND lease_expires_at < now()
-        AND attempts < max_attempts
-      )
-    )
+    AND status = 'pending'
   ORDER BY priority DESC, id ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED
@@ -311,14 +318,7 @@ WITH next_job AS (
   WHERE
     profile_id = %(profile_id)s
     AND cancel_requested = FALSE
-    AND (
-      status = 'pending'
-      OR (
-        status = 'running'
-        AND lease_expires_at < now()
-        AND attempts < max_attempts
-      )
-    )
+    AND status = 'pending'
   ORDER BY priority DESC, id ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED
@@ -429,6 +429,137 @@ def load_json_arg(value: str | None, *, default: Any) -> Any:
     path = Path(value)
     text = path.read_text(encoding="utf-8") if path.is_file() else value
     return json.loads(text)
+
+
+def load_spec_document(path: Path) -> dict[str, Any]:
+    document = load_json_arg(str(path), default={})
+    if not isinstance(document, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    if not str(document.get("goal") or document.get("goal_slug") or "").strip():
+        raise ValueError(f"{path} must define goal or goal_slug")
+    if not str(document.get("slug") or "").strip():
+        raise ValueError(f"{path} must define slug")
+    if not isinstance(document.get("train_config"), dict):
+        raise ValueError(f"{path} must define train_config as an object")
+    assert_no_secrets(document, label=f"spec file {path}")
+    return document
+
+
+def spec_goal_slug(document: Mapping[str, Any]) -> str:
+    return str(document.get("goal") or document.get("goal_slug") or "").strip()
+
+
+def experiment_spec_id_from_slug(conn, *, goal_id: int, slug: str) -> int | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id
+            FROM experiment_specs
+            WHERE goal_id = %(goal_id)s AND slug = %(slug)s
+            """,
+            {"goal_id": goal_id, "slug": slug},
+        )
+        row = cur.fetchone()
+    return int(row["id"]) if row else None
+
+
+def create_experiment_spec_from_document(conn, document: Mapping[str, Any]) -> dict[str, Any]:
+    goal_id = goal_id_from_slug(conn, spec_goal_slug(document))
+    parent_spec_id = document.get("parent_spec_id")
+    parent_slug = str(document.get("parent_spec_slug") or "").strip()
+    if parent_spec_id is None and parent_slug:
+        parent_spec_id = experiment_spec_id_from_slug(
+            conn,
+            goal_id=goal_id,
+            slug=parent_slug,
+        )
+        if parent_spec_id is None:
+            raise ValueError(f"unknown parent_spec_slug for goal {goal_id}: {parent_slug}")
+    return create_experiment_spec(
+        conn,
+        goal_id=goal_id,
+        slug=str(document["slug"]),
+        hypothesis=str(document.get("hypothesis") or ""),
+        expected_signal=document.get("expected_signal"),
+        parent_spec_id=int(parent_spec_id) if parent_spec_id is not None else None,
+        train_config=document["train_config"],
+        priority=int(document.get("priority") or 0),
+    )
+
+
+def _utc_stamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _format_seed_template(template: str | None, *, seed: int | None, slug: str, utc: str) -> str | None:
+    if not template:
+        return None
+    return str(template).format(seed="" if seed is None else seed, slug=slug, utc=utc)
+
+
+def _document_seeds(document: Mapping[str, Any], override_seeds: Sequence[int] = ()) -> list[int | None]:
+    if override_seeds:
+        return [int(seed) for seed in override_seeds]
+    seeds = document.get("seeds")
+    if isinstance(seeds, Sequence) and not isinstance(seeds, str):
+        return [int(seed) for seed in seeds]
+    train_config = document.get("train_config")
+    if isinstance(train_config, Mapping) and train_config.get("seed") is not None:
+        return [int(train_config["seed"])]
+    return [None]
+
+
+def enqueue_train_jobs_from_spec_document(
+    conn,
+    *,
+    document: Mapping[str, Any],
+    runtime_image_ref: str,
+    profile_id: str | None = None,
+    run_target: str | None = None,
+    instances_path: Path | None = None,
+    seeds: Sequence[int] = (),
+) -> list[dict[str, Any]]:
+    spec = create_experiment_spec_from_document(conn, document)
+    goal_id = int(spec["goal_id"])
+    spec_id = int(spec["id"])
+    profile = str(profile_id).strip() if profile_id else None
+    canonical_target = canonicalize_run_target(
+        run_target if run_target is not None else document.get("run_target"),
+        instances_path=instances_path,
+    )
+    utc = _utc_stamp()
+    rows = []
+    for seed in _document_seeds(document, seeds):
+        train_config = dict(document["train_config"])
+        if seed is not None:
+            train_config["seed"] = seed
+        row = enqueue_train_job(
+            conn,
+            goal_id=goal_id,
+            experiment_spec_id=spec_id,
+            profile_id=profile,
+            runtime_image_ref=runtime_image_ref,
+            run_target=canonical_target,
+            train_config=train_config,
+            priority=int(document.get("priority") or 0),
+            max_attempts=int(document.get("max_attempts") or 1),
+            run_name=_format_seed_template(
+                document.get("run_name_template"),
+                seed=seed,
+                slug=str(document["slug"]),
+                utc=utc,
+            ),
+            run_description=_format_seed_template(
+                document.get("run_description_template"),
+                seed=seed,
+                slug=str(document["slug"]),
+                utc=utc,
+            ),
+            wandb_group=document.get("wandb_group"),
+            wandb_tags=[str(tag) for tag in document.get("wandb_tags") or []],
+        )
+        rows.append(row)
+    return rows
 
 
 def create_goal(
@@ -589,7 +720,7 @@ def enqueue_train_job(
     *,
     goal_id: int,
     experiment_spec_id: int,
-    profile_id: str,
+    profile_id: str | None,
     runtime_image_ref: str,
     train_config: Mapping[str, Any],
     run_target: str | None = None,
@@ -603,6 +734,7 @@ def enqueue_train_job(
 ) -> dict[str, Any]:
     config = dict(train_config)
     assert_no_secrets(config, label="train_config")
+    profile_id = str(profile_id).strip() if profile_id else None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     run_target = normalize_run_target(run_target)
     with conn:
@@ -1012,6 +1144,35 @@ def _metric_summary(metrics: Mapping[str, Any], keys: Sequence[str]) -> str:
     return " ".join(parts)
 
 
+def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("-inf")) -> float:
+    value = metrics.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float]:
+    """Eval-first policy ranking: completion, then progress, then mean reward."""
+
+    completion = _metric_float(
+        metrics,
+        "eval/done/level_change/from_rate/min",
+        default=_metric_float(
+            metrics,
+            "eval/done/level_change/rate",
+            default=_metric_float(metrics, "completion_rate"),
+        ),
+    )
+    return (
+        completion,
+        _metric_float(metrics, "max_x_max"),
+        _metric_float(metrics, "reward_mean"),
+    )
+
+
 def _decision_label(decision: Mapping[str, Any]) -> str:
     return (
         f"decision {decision['id']} [{decision['decision_type']}] "
@@ -1079,7 +1240,11 @@ def _append_eval_lines(
     decisions_by_id: Mapping[int, Mapping[str, Any]],
     decisions_by_eval: Mapping[int, list[Mapping[str, Any]]],
 ) -> None:
-    for eval_job in eval_jobs:
+    for eval_job in sorted(
+        eval_jobs,
+        key=lambda row: eval_selection_score(row.get("metrics_json") or {}),
+        reverse=True,
+    ):
         label = eval_job.get("candidate_label") or ""
         model_ref = eval_job.get("model_ref") or ""
         parts = [
@@ -1103,9 +1268,11 @@ def _append_eval_lines(
             summary = _metric_summary(
                 metrics,
                 (
+                    "eval/done/level_change/from_rate/min",
+                    "eval/done/level_change/rate",
                     "completion_rate",
-                    "reward_mean",
                     "max_x_max",
+                    "reward_mean",
                     "episodes",
                 ),
             )
@@ -1398,7 +1565,7 @@ def campaign_status(conn, *, goal_slug_or_id: str, recent_decisions: int = 5) ->
         results = [dict(row) for row in cur.fetchall()]
         cur.execute(
             """
-            SELECT id, profile_id, status, candidate_label, model_ref, created_at
+            SELECT id, profile_id, status, candidate_label, model_ref, metrics_json, created_at
             FROM eval_results
             WHERE goal_id = %(goal_id)s
             ORDER BY created_at DESC
@@ -1407,6 +1574,22 @@ def campaign_status(conn, *, goal_slug_or_id: str, recent_decisions: int = 5) ->
             {"goal_id": goal_id},
         )
         eval_results = [dict(row) for row in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT id, profile_id, status, candidate_label, model_ref, metrics_json, created_at
+            FROM eval_results
+            WHERE goal_id = %(goal_id)s
+              AND status = 'succeeded'
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            {"goal_id": goal_id},
+        )
+        eval_selection_leaders = sorted(
+            [dict(row) for row in cur.fetchall()],
+            key=lambda row: eval_selection_score(row.get("metrics_json") or {}),
+            reverse=True,
+        )[:5]
         cur.execute(
             """
             SELECT decision_type, summary, rationale, created_at
@@ -1424,6 +1607,7 @@ def campaign_status(conn, *, goal_slug_or_id: str, recent_decisions: int = 5) ->
         "eval_jobs": eval_jobs,
         "recent_results": results,
         "recent_eval_results": eval_results,
+        "eval_selection_leaders": eval_selection_leaders,
         "decisions": decisions,
     }
 
@@ -1445,10 +1629,33 @@ def print_status(report: Mapping[str, Any]) -> None:
         )
     print("recent_eval_results:")
     for row in report["recent_eval_results"]:
+        metrics = row.get("metrics_json") or {}
+        summary = _metric_summary(metrics, ("completion_rate", "max_x_max", "reward_mean"))
         print(
             "  "
             f"result={row['id']} status={row['status']} profile={row['profile_id']} "
-            f"candidate={row.get('candidate_label') or ''} model={row.get('model_ref') or ''}"
+            f"candidate={row.get('candidate_label') or ''} model={row.get('model_ref') or ''} "
+            f"{summary}"
+        )
+    print("eval_selection_leaders:")
+    for row in report.get("eval_selection_leaders", []):
+        metrics = row.get("metrics_json") or {}
+        score = eval_selection_score(metrics)
+        summary = _metric_summary(
+            metrics,
+            (
+                "eval/done/level_change/from_rate/min",
+                "eval/done/level_change/rate",
+                "completion_rate",
+                "max_x_max",
+                "reward_mean",
+                "episodes",
+            ),
+        )
+        print(
+            "  "
+            f"result={row['id']} score=({score[0]:.3g},{score[1]:.3g},{score[2]:.3g}) "
+            f"candidate={row.get('candidate_label') or ''} {summary}"
         )
     print("recent_decisions:")
     for row in report["decisions"]:
@@ -1484,6 +1691,13 @@ def build_parser() -> argparse.ArgumentParser:
     spec.add_argument("--priority", type=int, default=0)
     spec.set_defaults(func=cmd_add_spec)
 
+    spec_file = subparsers.add_parser(
+        "add-spec-file",
+        help="Create or update an experiment spec from a checked-in JSON spec file.",
+    )
+    spec_file.add_argument("path", type=Path)
+    spec_file.set_defaults(func=cmd_add_spec_file)
+
     enqueue = subparsers.add_parser("enqueue-train", help="Create a concrete train job")
     enqueue.add_argument("--goal", required=True, help="Research goal slug")
     enqueue.add_argument("--spec-id", type=int, required=True)
@@ -1510,6 +1724,28 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue.add_argument("--wandb-tag", action="append", default=[])
     enqueue.add_argument("--origin-decision-id", type=int)
     enqueue.set_defaults(func=cmd_enqueue_train)
+
+    enqueue_spec = subparsers.add_parser(
+        "enqueue-train-from-spec",
+        help="Create/update a spec file and enqueue one train job per configured seed.",
+    )
+    enqueue_spec.add_argument("path", type=Path)
+    enqueue_spec.add_argument("--profile", help="Override spec profile_id.")
+    enqueue_spec.add_argument("--runtime-image-ref")
+    enqueue_spec.add_argument(
+        "--runtime-image-ref-file",
+        type=Path,
+        help="JSON artifact or plain-text file containing the immutable runtime image ref.",
+    )
+    enqueue_spec.add_argument("--target", dest="run_target", help="Override spec run_target.")
+    enqueue_spec.add_argument(
+        "--instances",
+        type=Path,
+        default=Path("experiments/instances.json"),
+        help="Target config used to canonicalize the spec or override target.",
+    )
+    enqueue_spec.add_argument("--seed", type=int, action="append", default=[])
+    enqueue_spec.set_defaults(func=cmd_enqueue_train_from_spec)
 
     enqueue_eval = subparsers.add_parser("enqueue-eval", help="Create a concrete eval job")
     enqueue_eval.add_argument("--goal", required=True, help="Research goal slug")
@@ -1556,6 +1792,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(args.direct))
+
+
+def runtime_image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = False) -> str | None:
+    if getattr(args, "runtime_image_ref_file", None):
+        return runtime_image_ref_from_file(args.runtime_image_ref_file)
+    if getattr(args, "runtime_image_ref", None):
+        return normalize_runtime_image_ref(args.runtime_image_ref)
+    if default_latest or getattr(args, "latest_image", False):
+        return latest_runtime_image_ref(
+            workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
+            branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
+            artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
+        )
+    return None
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1608,6 +1858,17 @@ def cmd_add_spec(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add_spec_file(args: argparse.Namespace) -> int:
+    document = load_spec_document(args.path)
+    conn = _connect_from_args(args)
+    try:
+        row = create_experiment_spec_from_document(conn, document)
+    finally:
+        conn.close()
+    print(f"spec_id={row['id']} slug={row['slug']}")
+    return 0
+
+
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
     runtime_image_ref = (
         runtime_image_ref_from_file(args.runtime_image_ref_file)
@@ -1642,6 +1903,37 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         f"train_job_id={row['id']} profile={row['profile_id']} "
         f"runtime_image_ref={row['runtime_image_ref']} target={target}"
     )
+    return 0
+
+
+def cmd_enqueue_train_from_spec(args: argparse.Namespace) -> int:
+    runtime_image_ref = (
+        runtime_image_ref_from_file(args.runtime_image_ref_file)
+        if getattr(args, "runtime_image_ref_file", None)
+        else args.runtime_image_ref
+    )
+    if not runtime_image_ref:
+        raise SystemExit("--runtime-image-ref or --runtime-image-ref-file is required")
+    document = load_spec_document(args.path)
+    conn = _connect_from_args(args)
+    try:
+        rows = enqueue_train_jobs_from_spec_document(
+            conn,
+            document=document,
+            runtime_image_ref=runtime_image_ref,
+            profile_id=args.profile,
+            run_target=args.run_target,
+            instances_path=args.instances,
+            seeds=args.seed,
+        )
+    finally:
+        conn.close()
+    for row in rows:
+        target = row.get("run_target") or "any"
+        print(
+            f"train_job_id={row['id']} profile={row['profile_id']} "
+            f"run_name={row.get('run_name') or ''} target={target}"
+        )
     return 0
 
 

@@ -150,6 +150,30 @@ class FleetQueueTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
                 runtime_image_ref_from_file(path)
 
+    def test_capacity_policy_formatter_lists_lanes_and_checks(self) -> None:
+        text = fleet.format_capacity_policy(
+            {
+                "schema_version": 1,
+                "updated_at": "2026-06-26",
+                "purpose": "keep queue full",
+                "defaults": {"runtime_image_ref": "digest"},
+                "lanes": [
+                    {
+                        "name": "rtx4090-screening",
+                        "target": "rtx4090",
+                        "manager": "rlab-fleet",
+                        "max_runner_workers": 5,
+                        "env_threads": 4,
+                    }
+                ],
+                "policy_checks": ["promote by eval"],
+            }
+        )
+
+        self.assertIn("capacity_policy schema=1", text)
+        self.assertIn("rtx4090-screening target=rtx4090", text)
+        self.assertIn("promote by eval", text)
+
     def test_ensure_runner_defaults_to_latest_image_ref(self) -> None:
         args = Namespace(
             image=None,
@@ -416,6 +440,121 @@ class FleetPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.actions[0].kind, "keep")
 
+    def test_ensure_latest_starts_latest_on_each_host_and_removes_idle_old_runner(self) -> None:
+        config = sample_config()
+        old = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id=None,
+                runtime_image_ref=OTHER_IMAGE_REF,
+                run_target="rtx4090",
+            ),
+            workers=5,
+            pending_count=0,
+            running_count=0,
+        )
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=old.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=old.labels,
+        )
+
+        plan = fleet.build_ensure_latest_plan(
+            config,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            workers=None,
+            existing=[existing],
+            leases=[],
+            demands=[],
+        )
+
+        starts = [action for action in plan.actions if action.kind == "start"]
+        removes = [action for action in plan.actions if action.kind == "remove"]
+        self.assertEqual({action.host for action in starts}, {"beast-2", "beast-3"})
+        self.assertEqual(removes[0].container, old.name)
+        self.assertIn("not latest baseline", removes[0].reason)
+
+    def test_ensure_latest_keeps_old_runner_with_matching_demand(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        old = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id=None,
+                runtime_image_ref=OTHER_IMAGE_REF,
+                run_target="rtx4090",
+            ),
+            workers=5,
+            pending_count=0,
+            running_count=0,
+        )
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=old.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=old.labels,
+        )
+
+        plan = fleet.build_ensure_latest_plan(
+            config,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            workers=None,
+            existing=[existing],
+            leases=[],
+            demands=[demand(image=OTHER_IMAGE_REF, pending=1)],
+        )
+
+        self.assertFalse(any(action.kind == "remove" for action in plan.actions))
+        self.assertTrue(any("matching pending/running demand" in warning for warning in plan.warnings))
+
+    def test_ensure_latest_keeps_old_runner_with_active_lease(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        old = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id=None,
+                runtime_image_ref=OTHER_IMAGE_REF,
+                run_target="rtx4090",
+            ),
+            workers=5,
+            pending_count=0,
+            running_count=0,
+        )
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=old.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=old.labels,
+        )
+        lease = fleet.ActiveLease(
+            lease_owner=f"{old.worker_prefix}-4-deadbeef",
+            profile_id="mario-ppo/post21/rtx4090",
+            runtime_image_ref=OTHER_IMAGE_REF,
+            run_target="rtx4090",
+            running_count=1,
+        )
+
+        plan = fleet.build_ensure_latest_plan(
+            config,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            workers=None,
+            existing=[existing],
+            leases=[lease],
+            demands=[],
+        )
+
+        self.assertFalse(any(action.kind == "remove" for action in plan.actions))
+        self.assertTrue(any("active lease" in warning for warning in plan.warnings))
+
     def test_reconcile_keeps_unprofiled_container_for_profile_demand(self) -> None:
         config = fleet.filter_config_to_host(sample_config(), "beast-3")
         any_profile = fleet.build_ensure_runner_plan(
@@ -442,6 +581,110 @@ class FleetPlanTests(unittest.TestCase):
         self.assertTrue(any(action.kind == "keep" for action in plan.actions))
         self.assertFalse(any(action.kind == "start" for action in plan.actions))
         self.assertFalse(any(action.kind == "remove" for action in plan.actions))
+
+    def test_format_containers_lists_managed_state_across_hosts(self) -> None:
+        container = fleet.ExistingContainer(
+            host="beast-3",
+            name="rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            state="running",
+            status="Up 5 minutes",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels={
+                "rlab.managed": "true",
+                "rlab.host": "beast-3",
+                "rlab.profile": "",
+                "rlab.run-target": "rtx4090",
+                "rlab.runtime-digest": "cccccccccccc",
+                "rlab.runtime-image-ref": RUNTIME_IMAGE_REF,
+                "rlab.worker-prefix": "rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            },
+        )
+
+        output = fleet.format_containers([container])
+
+        self.assertIn("managed containers:", output)
+        self.assertIn("host=beast-3", output)
+        self.assertIn("state=running", output)
+        self.assertIn("profile=any", output)
+        self.assertIn("target=rtx4090", output)
+        self.assertIn("digest=cccccccccccc", output)
+
+    def test_format_containers_includes_running_jobs_by_worker_prefix(self) -> None:
+        container = fleet.ExistingContainer(
+            host="beast-3",
+            name="rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            state="running",
+            status="Up 5 minutes",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels={
+                "rlab.managed": "true",
+                "rlab.host": "beast-3",
+                "rlab.profile": "",
+                "rlab.run-target": "rtx4090",
+                "rlab.runtime-digest": "cccccccccccc",
+                "rlab.runtime-image-ref": RUNTIME_IMAGE_REF,
+                "rlab.worker-prefix": "rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            },
+        )
+        job = fleet.RunningJob(
+            id=123,
+            lease_owner="rlab-beast-3-rtx4090-any-profile-cccccccccccc-4-56ea2c67",
+            profile_id="mario-ppo/post21/rtx4090-prebuilt-l11-lowkl-lrdecay-v1",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            run_name="b83_l11_lowkl_lrdecay_image_s121_20260626T153508Z",
+            started_at=None,
+            heartbeat_at=None,
+        )
+
+        output = fleet.format_containers([container], [job])
+        job_line = next(line for line in output.splitlines() if "job=123" in line)
+
+        self.assertIn("job=123", job_line)
+        self.assertIn("run=b83_l11_lowkl_lrdecay_image_s121_20260626T153508Z", job_line)
+        self.assertIn("worker=4-56ea2c67", job_line)
+        self.assertNotIn("target=rtx4090", job_line)
+        self.assertNotIn("owner=rlab-beast-3-rtx4090-any-profile-cccccccccccc-4-56ea2c67", job_line)
+
+    def test_format_containers_keeps_mismatched_job_target_visible(self) -> None:
+        container = fleet.ExistingContainer(
+            host="beast-3",
+            name="rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            state="running",
+            status="Up 5 minutes",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels={
+                "rlab.managed": "true",
+                "rlab.host": "beast-3",
+                "rlab.profile": "",
+                "rlab.run-target": "rtx4090",
+                "rlab.runtime-digest": "cccccccccccc",
+                "rlab.runtime-image-ref": RUNTIME_IMAGE_REF,
+                "rlab.worker-prefix": "rlab-beast-3-rtx4090-any-profile-cccccccccccc",
+            },
+        )
+        job = fleet.RunningJob(
+            id=123,
+            lease_owner="rlab-beast-3-rtx4090-any-profile-cccccccccccc-4-56ea2c67",
+            profile_id="mario-ppo/post21/rtx4090-prebuilt-l11-lowkl-lrdecay-v1",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx2060",
+            run_name="b83_l11_lowkl_lrdecay_image_s121_20260626T153508Z",
+            started_at=None,
+            heartbeat_at=None,
+        )
+
+        output = fleet.format_containers([container], [job])
+        job_line = next(line for line in output.splitlines() if "job=123" in line)
+
+        self.assertIn("target=rtx2060", job_line)
+
+    def test_format_containers_reports_empty_and_warnings(self) -> None:
+        output = fleet.format_containers([], warnings=["failed to list managed containers on beast-3"])
+
+        self.assertIn("managed containers: none", output)
+        self.assertIn("warnings:", output)
+        self.assertIn("failed to list managed containers on beast-3", output)
 
 
 class FleetHostSetupTests(unittest.TestCase):
@@ -509,6 +752,7 @@ class FleetHostSetupTests(unittest.TestCase):
     def test_cli_exposes_only_mac_managed_reconciliation(self) -> None:
         help_text = fleet.build_parser().format_help()
 
+        self.assertIn("ps", help_text)
         self.assertIn("reconcile", help_text)
         self.assertIn("setup-host", help_text)
         self.assertNotIn("remote-reconcile", help_text)

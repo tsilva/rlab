@@ -282,9 +282,10 @@ PY
   services, binaries, kube user config, or Kubernetes client commands
   (`kubectl`, `k3s`, `helm`) should remain. Inert root-owned leftovers observed
   after uninstall: `/etc/rancher/node/password` and `/var/lib/rancher`.
-- Docker Engine still needs interactive host setup on `beast-3`; `docker` and
-  `containerd` were inactive after k3s removal, and `sudo -n true` still fails
-  from SSH with `interactive authentication is required`.
+- Docker Engine `docker.io 29.1.3-0ubuntu4.1` is installed and active. The
+  fleet config uses `sudo -n docker` for this host instead of adding `tsilva`
+  to the persistent `docker` group. NVIDIA Container Toolkit is configured, and
+  `docker run --gpus all ... nvidia-smi` succeeds.
 - GPU: NVIDIA GeForce RTX 4090, 24 GB VRAM
 - Observed driver: `595.71.05`, reporting CUDA support up to `13.2`
 
@@ -321,8 +322,12 @@ favored more children.
 
 ### Operational Notes
 
-- `rlab-fleet setup-host --host beast-3 --execute` currently verifies SSH and
-  the GPU, but Docker installation still requires interactive sudo on the host.
+- `rlab-fleet setup-host --host beast-3 --execute` installed Docker after
+  non-interactive sudo was enabled, configured the NVIDIA Docker runtime,
+  created `/home/tsilva/rlab/{runs,logs,fleet}`, `/home/tsilva/roms`, and
+  `/home/tsilva/rlab/.env.runner`, then completed the digest-pinned train image
+  smoke with `rlab_container_smoke=ok` and
+  `torch_cuda_device=NVIDIA GeForce RTX 4090`.
 - If cleaning residual k3s state, remove `/etc/rancher` and
   `/var/lib/rancher` only after Docker Engine is installed/active.
 - Historical note: local SkyPilot `0.12.3.post1` Kubernetes launches from this Mac can hang in
@@ -465,6 +470,7 @@ has Docker Engine `docker.io 29.1.3-0ubuntu4.1`, NVIDIA Container Toolkit
 `docker` group. `rlab-fleet setup-host --host beast-2 --execute` created
 `/home/tsilva/rlab/{runs,logs,fleet}`, `/home/tsilva/roms`, and
 `/home/tsilva/rlab/.env.runner` mode `600`; the digest-pinned train image
+`ghcr.io/tsilva/rlab/rlab-train@sha256:21062924bb7a43c3bb0a2a5ae093bf6f54ed45b6e1da57d3d28b87b605e100b8`
 smoke completed with `rlab_container_smoke=ok` and
 `torch_cuda_device=NVIDIA GeForce RTX 2060`.
 

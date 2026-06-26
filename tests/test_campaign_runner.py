@@ -99,6 +99,23 @@ class CampaignQueueTests(unittest.TestCase):
         self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
 
+    def test_claim_train_job_does_not_reclaim_expired_running_leases(self) -> None:
+        conn = FakeConnection(row=None)
+
+        row = campaign.claim_train_job(
+            conn,
+            profile_id=None,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            worker_id="worker-any",
+            lease_seconds=60,
+        )
+
+        self.assertIsNone(row)
+        self.assertIn("AND status = 'pending'", conn.cursor_obj.executed_sql)
+        self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
+        self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
+
     def test_secret_like_keys_are_rejected_from_persisted_json(self) -> None:
         with self.assertRaisesRegex(ValueError, "secret-like key"):
             campaign.assert_no_secrets(
@@ -172,6 +189,21 @@ class CampaignQueueTests(unittest.TestCase):
             conn.cursor_obj.executed_params["profile_id"],
             "mario-ppo/post16/rtx4090-eval",
         )
+
+    def test_claim_eval_job_does_not_reclaim_expired_running_leases(self) -> None:
+        conn = FakeConnection(row=None)
+
+        row = campaign.claim_eval_job(
+            conn,
+            profile_id="mario-ppo/post16/rtx4090-eval",
+            worker_id="worker-a",
+            lease_seconds=60,
+        )
+
+        self.assertIsNone(row)
+        self.assertIn("AND status = 'pending'", conn.cursor_obj.executed_sql)
+        self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
+        self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
 
     def test_render_lineage_tree_shows_decision_spec_run_and_eval_causality(self) -> None:
         report = {
@@ -273,11 +305,81 @@ class CampaignQueueTests(unittest.TestCase):
         self.assertIn("parent: spec 10 baseline", tree)
         self.assertIn("cause: decision 101 [branch] Try lower KL after baseline plateaued.", tree)
 
+    def test_eval_selection_score_prefers_eval_min_completion_then_progress(self) -> None:
+        weak_pooled = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 0.25,
+            "max_x_max": 4000,
+            "reward_mean": 900.0,
+        }
+        balanced = {
+            "completion_rate": 0.8,
+            "eval/done/level_change/from_rate/min": 0.75,
+            "max_x_max": 3200,
+            "reward_mean": 600.0,
+        }
+
+        self.assertGreater(
+            campaign.eval_selection_score(balanced),
+            campaign.eval_selection_score(weak_pooled),
+        )
+
+    def test_enqueue_train_jobs_from_spec_expands_seed_templates(self) -> None:
+        calls = []
+        old_create = campaign.create_experiment_spec_from_document
+        old_enqueue = campaign.enqueue_train_job
+        old_utc = campaign._utc_stamp
+
+        def fake_create(conn, document):
+            self.assertEqual(document["slug"], "candidate")
+            return {"id": 22, "goal_id": 11}
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {
+                "id": 100 + len(calls),
+                "profile_id": kwargs["profile_id"],
+                "run_name": kwargs["run_name"],
+                "run_target": kwargs["run_target"],
+            }
+
+        campaign.create_experiment_spec_from_document = fake_create
+        campaign.enqueue_train_job = fake_enqueue
+        campaign._utc_stamp = lambda: "20260626T120000Z"
+        try:
+            rows = campaign.enqueue_train_jobs_from_spec_document(
+                object(),
+                document={
+                    "goal": "mario-level1-100of100",
+                    "slug": "candidate",
+                    "profile_id": "mario-ppo/post21/rtx4090",
+                    "run_target": "rtx4090",
+                    "priority": 7,
+                    "seeds": [23, 24],
+                    "wandb_group": "b-test",
+                    "wandb_tags": ["mario", "confirm"],
+                    "run_name_template": "btest_s{seed}_{utc}",
+                    "run_description_template": "candidate seed {seed}",
+                    "train_config": {"game": "SuperMarioBros-Nes-v0", "timesteps": 1024},
+                },
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                instances_path=Path("/tmp/does-not-exist.json"),
+            )
+        finally:
+            campaign.create_experiment_spec_from_document = old_create
+            campaign.enqueue_train_job = old_enqueue
+            campaign._utc_stamp = old_utc
+
+        self.assertEqual([row["run_name"] for row in rows], ["btest_s23_20260626T120000Z", "btest_s24_20260626T120000Z"])
+        self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
+        self.assertEqual(calls[0]["priority"], 7)
+        self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
+
 
 class TrainRunnerTests(unittest.TestCase):
     def test_checkpoint_bucket_placeholder_resolves_before_command_build(self) -> None:
         old_value = os.environ.get("CHECKPOINT_BUCKET_URI")
-        os.environ["CHECKPOINT_BUCKET_URI"] = "s3://bucket/checkpoints"
+        os.environ["CHECKPOINT_BUCKET_URI"] = '"s3://bucket/checkpoints"'
         try:
             job = {
                 "id": 13,
@@ -296,6 +398,7 @@ class TrainRunnerTests(unittest.TestCase):
             self.assertEqual(config["wandb_artifact_storage_uri"], "s3://bucket/checkpoints")
             self.assertIn("--wandb-artifact-storage-uri", command)
             self.assertIn("s3://bucket/checkpoints", command)
+            self.assertNotIn('"s3://bucket/checkpoints"', command)
             self.assertNotIn("${CHECKPOINT_BUCKET_URI}", command)
         finally:
             if old_value is None:
@@ -559,7 +662,7 @@ class TrainRunnerTests(unittest.TestCase):
 class ArtifactConfigTests(unittest.TestCase):
     def test_checkpoint_bucket_placeholder_uses_environment(self) -> None:
         old_value = os.environ.get("CHECKPOINT_BUCKET_URI")
-        os.environ["CHECKPOINT_BUCKET_URI"] = "s3://bucket/from-env"
+        os.environ["CHECKPOINT_BUCKET_URI"] = '"s3://bucket/from-env"'
         try:
             args = SimpleNamespace(wandb_artifact_storage_uri="${CHECKPOINT_BUCKET_URI}")
 
@@ -569,6 +672,11 @@ class ArtifactConfigTests(unittest.TestCase):
                 os.environ.pop("CHECKPOINT_BUCKET_URI", None)
             else:
                 os.environ["CHECKPOINT_BUCKET_URI"] = old_value
+
+    def test_configured_storage_uri_strips_env_file_quotes(self) -> None:
+        args = SimpleNamespace(wandb_artifact_storage_uri='"s3://bucket/from-arg"')
+
+        self.assertEqual(wandb_artifact_storage_uri(args), "s3://bucket/from-arg")
 
 
 class EvalJobRunnerTests(unittest.TestCase):

@@ -9,8 +9,7 @@ Primary stop/score criterion:
 
 ```text
 last 100 completed terminal training episodes are 100/100 completions
---stop-completion-episode-window 100
---stop-completion-rate-threshold 1.0
+train/done/level_change/from/0-0/ep_window/rate = 1.0
 ```
 
 Use completed terminal episodes as the denominator. Do not use rollout-count
@@ -110,11 +109,19 @@ Most important retained facts from the retired experiment history:
 
 ## RTX4090 Execution
 
-Run SkyPilot jobs on:
+Run local RTX4090 queue work through the Mac-managed Docker fleet on `beast-3`,
+not through SkyPilot. The usual flow is:
 
-```text
---infra k8s/beast-3
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner --host beast-3 --image latest --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
 ```
+
+Use SkyPilot only for SkyPilot-backed providers such as RunPod. Keep hardware
+target facts in `INSTANCES.md`, and update that file when fleet capacity,
+runner shape, or host setup changes.
 
 Benchmark-backed scheduling decision for the current `n_envs=16`, `n_steps=512`
 shape:
@@ -135,10 +142,11 @@ confirmation batch should leave more CPU headroom. Refresh the safe limit when
 changing `n_envs`, `n_steps`, model size, deterministic CUDA flags, runtime
 package version, or target node CPU shape.
 
-Use normal SkyPilot task files that start all child runs from the beginning.
-Avoid ad hoc second trainers via `sky exec`; one such run previously collapsed
-to about `140` fps and is not valid for comparison. Backfill finished slots only
-while the next run still has decision value.
+Use queued train jobs and managed runner containers that start child runs from
+the beginning. Avoid ad hoc second trainers via `sky exec`, `docker exec`, or
+manual host shells; one such run previously collapsed to about `140` fps and is
+not valid for comparison. Backfill finished slots only while the next run still
+has decision value.
 
 ## Determinism
 
@@ -159,72 +167,81 @@ If used, mark deterministic CUDA as a separate runtime condition.
 
 ## Current Winning Recipe
 
-The current preferred training recipe for SuperMarioBros-NES `Level1-1`
-screening is tracked in:
+The operator-facing current contract is tracked in:
+
+```text
+experiments/goals/mario-level1-current.json
+```
+
+That JSON file is the first place to check before launching a new comparable
+run. It records the active runtime, promotion metric, seed protocol, capacity
+policy, and incumbent lineage.
+
+The current recipe evidence for SuperMarioBros-NES `Level1-1` screening is
+tracked in:
 
 ```text
 experiments/recipes/supermariobros_nes_level1_winning_recipe.md
 ```
 
-Short form:
+Short form for the active launch template:
 
 ```text
-stable-retro-turbo: 1.0.0.post14
-base: B33 target_kl=0.20 recipe
-learning_rate: 1.5e-4 fixed
-ent_coef: 0.01 -> 0.0003 over 2M
+stable-retro-turbo: 1.0.0.post21 runtime
+base: B55 lowkl_lrdecay recipe migrated from post16 evidence
+learning_rate: 1.5e-4 -> 1.0e-4 over 4M
+ent_coef: 0.01 -> 0.0001 over 4M
 clip_range: 0.15
-target_kl: 0.20
+target_kl: 0.16
 max_pool_frames: false
 stop: 100/100 completed terminal training episodes
 ```
 
-Decision: use no-maxpool for the active winning screening recipe. B40 found a
-strict `100/100` seed and trained faster than B39. B39 still had the stronger
-five-seed average, so no-maxpool is promoted as the active recipe component,
-not yet as a statistically confirmed population-level baseline.
+Decision: use the B55 low-KL late-decay recipe as the current incumbent recipe
+shape, but treat the post21 version as requiring confirmation before declaring a
+new runtime-confirmed baseline. Promote by out-of-process eval first, then
+training stop time among candidates with comparable eval success.
 
 ## Starting Config
 
 Start from this near-best shape unless explicitly ablating one axis:
 
 ```text
-stable-retro-turbo: 1.0.0.post14
+stable-retro-turbo: 1.0.0.post21
 state: Level1-1
 n_envs: 16
 env_threads: 4
+torch_num_threads: 1
 n_steps: 512
 batch_size: 512
 n_epochs: 10
-learning_rate: 1.5e-4 fixed
-ent_coef: 0.01 -> 0.0003 over 2M
+learning_rate: 1.5e-4 -> 1.0e-4 over 4M
+ent_coef: 0.01 -> 0.0001 over 4M
 gamma: 0.9
 gae_lambda: 1.0
 clip_range: 0.15
-target_kl: 0.20
+target_kl: 0.16
 vf_coef: 1.0
 normalize_advantage: false
 adam_eps: 1e-8
 reward_mode: score
 terminal_reward: 50
+death_penalty: 25
 reward_scale: 10
 action_set: simple
 frame_skip: 4
 max_pool_frames: false
 max_episode_steps: 4500
-completion_x_threshold: 3160
-terminate_on_completion: true
-terminate_on_life_loss: true
+completion_x_threshold: 0
+done_on_info_json: {"life_loss":["lives","decrease"],"level_change":[["levelHi","levelLo"],"change"]}
 eval_freq: 0
 eval_episodes: 0
 ```
 
-Always use:
+Always use the active cap and checkpointing in the checked-in spec file:
 
 ```text
---stop-completion-episode-window 100
---stop-completion-rate-threshold 1.0
---timesteps <active cap>
+experiments/specs/mario-level1/b55-lowkl-lrdecay-post21-revalidate.json
 ```
 
 ## Batch Record

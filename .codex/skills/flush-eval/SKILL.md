@@ -13,7 +13,7 @@ Default eval protocol unless the user says otherwise:
 
 - `profile=mario-level1-quick`
 - eval config: `episodes=100`, `seed=10007`, `n_envs=20`, `max_steps=4500`, `stochastic=true`
-- runner: `stable-retro-ppo-eval-runner`
+- runner: `rlab-eval-runner`
 
 This skill is for eval-only work. Do not launch training, upload model cards, publish checkpoints, or mutate candidate selection beyond creating explicitly requested eval jobs.
 
@@ -28,19 +28,19 @@ If the user asks to run remote/provider evals, estimate expected cost first and 
 2. Ensure the campaign schema is current:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-campaign setup
+UV_CACHE_DIR=.uv-cache uv run rlab-campaign setup
 ```
 
 3. Inspect current campaign state:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-campaign status <goal-slug>
+UV_CACHE_DIR=.uv-cache uv run rlab-campaign status <goal-slug>
 ```
 
 If the user asks to add a concrete checkpoint eval job, enqueue it through the campaign table instead of the removed legacy `checkpoint_candidates` queue:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-campaign enqueue-eval \
+UV_CACHE_DIR=.uv-cache uv run rlab-campaign enqueue-eval \
   --goal <goal-slug> \
   --profile mario-level1-quick \
   --candidate-label <label> \
@@ -50,10 +50,11 @@ UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-campaign enqueue-eval \
 4. Run the eval queue until idle:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-eval-runner \
+UV_CACHE_DIR=.uv-cache uv run rlab-eval-runner \
   --profile mario-level1-quick \
   --lease-seconds 1800 \
   --max-jobs 0 \
+  --once \
   --artifact-root runs/eval_artifacts \
   --output-dir logs/eval_runner
 ```
@@ -61,7 +62,7 @@ UV_CACHE_DIR=.uv-cache uv run stable-retro-ppo-eval-runner \
 5. Generate the final report:
 
 ```bash
-python .codex/skills/flush-eval/scripts/eval_report.py \
+UV_CACHE_DIR=.uv-cache uv run python .codex/skills/flush-eval/scripts/eval_report.py \
   --profile mario-level1-quick
 ```
 

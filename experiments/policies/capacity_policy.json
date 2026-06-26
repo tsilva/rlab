@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-06-26",
+  "purpose": "Keep local and paid compute full without mixing incomparable runtime envelopes.",
+  "defaults": {
+    "runtime_image_ref": "digest-pinned GHCR train image from rlab-train-image.json",
+    "queue_reconcile_interval_seconds": 30,
+    "empty_paid_runner_action": "exit_with_once_or_tear_down",
+    "manual_shell_trainers": "forbidden_for_comparable_results"
+  },
+  "lanes": [
+    {
+      "name": "rtx4090-screening",
+      "target": "rtx4090",
+      "host": "beast-3",
+      "manager": "rlab-fleet",
+      "max_runner_workers": 5,
+      "env_threads": 4,
+      "use_for": ["screen", "confirm_when_total_throughput_matters"],
+      "reserve_workers": 0,
+      "notes": "Highest aggregate throughput for the current n_envs=16, n_steps=512 Mario PPO shape."
+    },
+    {
+      "name": "rtx4090-low-contention-confirm",
+      "target": "rtx4090",
+      "host": "beast-3",
+      "manager": "rlab-fleet",
+      "max_runner_workers": 4,
+      "env_threads": 4,
+      "use_for": ["confirm", "debug"],
+      "reserve_workers": 1,
+      "notes": "Use when individual run latency, lower CPU contention, or live debugging matters."
+    },
+    {
+      "name": "rtx2060-screening",
+      "target": "rtx2060",
+      "host": "beast-2",
+      "manager": "rlab-fleet",
+      "max_runner_workers": 4,
+      "env_threads": 2,
+      "use_for": ["cheap_screen", "small_ablation"],
+      "reserve_workers": 0
+    },
+    {
+      "name": "runpod-rtx4090-burst",
+      "target": "runpod-rtx4090",
+      "manager": "rlab-skypilot",
+      "max_runner_workers": 1,
+      "env_threads": 2,
+      "use_for": ["burst_capacity"],
+      "launch_only_when_pending_jobs_match_profile": true,
+      "notes": "Use --once for empty queues so a billable pod does not idle."
+    }
+  ],
+  "policy_checks": [
+    "Do not launch a runner unless a matching pending job exists, except explicit local ensure-runner warm capacity.",
+    "Group capacity by profile_id, runtime_image_ref, and run_target.",
+    "Use digest image refs for comparable runs.",
+    "Backfill finished slots only while the next queued run still has decision value.",
+    "Treat training metrics as diagnostics; promote by out-of-process eval."
+  ]
+}

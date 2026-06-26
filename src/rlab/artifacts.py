@@ -408,14 +408,21 @@ def format_wandb_run_path(run_path) -> str:
     return str(run_path)
 
 
+def strip_env_file_quotes(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1]
+    return text
+
+
 def wandb_artifact_storage_uri(args: argparse.Namespace) -> str:
-    configured_uri = args.wandb_artifact_storage_uri.strip()
+    configured_uri = strip_env_file_quotes(args.wandb_artifact_storage_uri)
     if configured_uri == "${CHECKPOINT_BUCKET_URI}":
         configured_uri = ""
     return (
         configured_uri
-        or os.environ.get("WANDB_ARTIFACT_STORAGE_URI", "").strip()
-        or os.environ.get("CHECKPOINT_BUCKET_URI", "").strip()
+        or strip_env_file_quotes(os.environ.get("WANDB_ARTIFACT_STORAGE_URI", ""))
+        or strip_env_file_quotes(os.environ.get("CHECKPOINT_BUCKET_URI", ""))
     )
 
 
@@ -458,8 +465,18 @@ def upload_s3_artifact(model_path: Path, destination_uri: str) -> None:
 
     import boto3
 
-    endpoint_url = os.environ.get("AWS_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
-    s3_client = boto3.client("s3", endpoint_url=endpoint_url)
+    endpoint_url = strip_env_file_quotes(os.environ.get("AWS_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3", ""))
+    client_kwargs = {"endpoint_url": endpoint_url or None}
+    access_key = strip_env_file_quotes(os.environ.get("AWS_ACCESS_KEY_ID", ""))
+    secret_key = strip_env_file_quotes(os.environ.get("AWS_SECRET_ACCESS_KEY", ""))
+    region = strip_env_file_quotes(os.environ.get("AWS_REGION", ""))
+    if access_key:
+        client_kwargs["aws_access_key_id"] = access_key
+    if secret_key:
+        client_kwargs["aws_secret_access_key"] = secret_key
+    if region:
+        client_kwargs["region_name"] = region
+    s3_client = boto3.client("s3", **client_kwargs)
     s3_client.upload_file(
         str(model_path),
         bucket,

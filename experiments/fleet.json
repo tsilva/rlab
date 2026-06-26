@@ -16,6 +16,7 @@
       "container_rom_dir": "/roms",
       "log_dir_in_container": "/root/rlab/logs/train_runner",
       "gpu_test_image": "nvidia/cuda:12.9.1-base-ubuntu22.04",
+      "docker_command": ["sudo", "-n", "docker"],
       "pull_policy": "always"
     },
     "beast-2": {
