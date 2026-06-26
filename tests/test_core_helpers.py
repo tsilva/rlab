@@ -76,12 +76,40 @@ from rlab.eval import eval_seed_for_checkpoint
 from rlab.eval import score as eval_checkpoint_score
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
+from rlab.train import disable_sb3_human_output_truncation
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     model_artifact_ref,
     safe_artifact_stem,
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
+
+
+class Sb3LoggerTests(unittest.TestCase):
+    def test_human_output_truncation_is_disabled_for_long_outcome_metrics(self) -> None:
+        from stable_baselines3.common.logger import HumanOutputFormat
+
+        key_values = {
+            "train/outcome/level_change/from/0-1/attempts": 1,
+            "train/outcome/level_change/from/0-1/fires": 0,
+        }
+        key_excluded = {key: () for key in key_values}
+
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            HumanOutputFormat(io.StringIO()).write(key_values, key_excluded)
+
+        output_format = HumanOutputFormat(io.StringIO())
+
+        class FakeLogger:
+            output_formats = [output_format]
+
+        class FakeModel:
+            logger = FakeLogger()
+
+        disable_sb3_human_output_truncation(FakeModel())
+
+        output_format.write(key_values, key_excluded)
+        self.assertEqual(output_format.max_length, 512)
 
 
 class EnvConfigFromArgsTests(unittest.TestCase):

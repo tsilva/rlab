@@ -11,6 +11,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.logger import HumanOutputFormat
 from stable_baselines3.common.utils import set_random_seed
 
 from rlab.artifacts import (
@@ -46,6 +47,9 @@ from rlab.schedules import (
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
 
+SB3_HUMAN_OUTPUT_MAX_LENGTH = 512
+
+
 def checkpoint_prefix(game: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", game).strip("_").lower()
     return f"ppo_{slug or 'retro'}"
@@ -79,6 +83,12 @@ def checkpoint_save_frequency(checkpoint_freq: int, n_envs: int) -> int | None:
     if checkpoint_freq <= 0:
         return None
     return max(checkpoint_freq // max(n_envs, 1), 1)
+
+
+def disable_sb3_human_output_truncation(model, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
+    for output_format in getattr(model.logger, "output_formats", ()):
+        if isinstance(output_format, HumanOutputFormat):
+            output_format.max_length = max_length
 
 
 def main() -> None:
@@ -146,6 +156,7 @@ def main() -> None:
             device=device,
             verbose=1,
         )
+    disable_sb3_human_output_truncation(model)
 
     callbacks = [
         ThroughputCallback(),
