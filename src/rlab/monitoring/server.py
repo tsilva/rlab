@@ -90,7 +90,7 @@ def format_monitor_state(state: Mapping[str, Any], *, view: str = "jobs") -> str
     if not isinstance(source, Mapping):
         source = {}
     lines = [
-        f"rlab monitor: {source.get('campaign', 'unknown')} - {source.get('message', '')}",
+        f"rlab monitor: {source.get('queue', 'unknown')} - {source.get('message', '')}",
         f"refreshed_at: {state.get('refreshed_at', '')}",
     ]
     if view in {"jobs", "all"}:
@@ -109,12 +109,12 @@ def format_monitor_state(state: Mapping[str, Any], *, view: str = "jobs") -> str
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Print read-only rlab queue and fleet state.")
     parser.add_argument("--repo-root", type=Path, default=Path("."))
-    parser.add_argument("--goal", help="Optional research_goals.slug filter.")
+    parser.add_argument("--goal", help="Optional queue goal_slug filter.")
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     parser.add_argument(
         "--sample",
         action="store_true",
-        help="Use sample rows instead of connecting to the campaign database.",
+        help="Use sample rows instead of connecting to the queue database.",
     )
     parser.add_argument("--limit", type=int, default=40)
     parser.add_argument("--view", choices=("jobs", "devices", "all"), default="jobs")

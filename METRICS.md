@@ -214,7 +214,7 @@ Reward share metrics compare absolute component magnitudes within a rollout:
 ## Evaluation Metrics
 
 These are logged by the in-training `RetroEvalCallback` when training-loop eval is enabled, and
-by `scripts/eval_wandb_checkpoints.py` when evaluating checkpoint artifacts out of process.
+by `rlab-eval` artifact mode when evaluating checkpoint artifacts out of process.
 Evaluation env construction forces `done_on_info={}`.
 
 | Metric | Meaning |
@@ -239,8 +239,8 @@ Evaluation env construction forces `done_on_info={}`.
 | `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
 | `eval/best/x` | Max global X position of the best eval episode. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
-| `eval/checkpoint/step` | Checkpoint step being evaluated. Logged by `scripts/eval_wandb_checkpoints.py`. |
-| `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated. Logged by `scripts/eval_wandb_checkpoints.py`. |
+| `eval/checkpoint/step` | Checkpoint step being evaluated. Logged by `rlab-eval` artifact mode. |
+| `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated. Logged by `rlab-eval` artifact mode. |
 | `eval/config/hud_crop_top` | HUD crop used for the out-of-process checkpoint eval. |
 
 Per-start-state eval done metrics mirror the training done namespace as

@@ -24,7 +24,7 @@ class MonitoringStateTests(unittest.TestCase):
     def test_monitor_cli_table_is_not_html_dashboard(self) -> None:
         text = format_monitor_state(
             {
-                "source": {"campaign": "sample", "message": "offline sample"},
+                "source": {"queue": "sample", "message": "offline sample"},
                 "refreshed_at": "2026-06-26T12:00:00Z",
                 "jobs": [
                     {
@@ -374,7 +374,7 @@ class MonitoringStateTests(unittest.TestCase):
     def test_sample_state_contains_jobs_and_devices(self) -> None:
         state = collect_state(MonitorOptions(repo_root=Path("."), sample=True))
 
-        self.assertEqual(state["source"]["campaign"], "sample")
+        self.assertEqual(state["source"]["queue"], "sample")
         self.assertGreaterEqual(len(state["jobs"]), 1)
         self.assertGreaterEqual(len(state["devices"]), 1)
 

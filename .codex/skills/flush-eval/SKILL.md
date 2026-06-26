@@ -1,13 +1,13 @@
 ---
 name: flush-eval
-description: Flush rlab campaign eval jobs and report ranked results. Use when the user asks to evaluate unevaluated checkpoints, flush the eval queue, run pending eval jobs, check what checkpoints are not evaluated yet, or produce a post-eval report from the Neon campaign database.
+description: Flush rlab eval queue jobs and report ranked results. Use when the user asks to evaluate unevaluated checkpoints, flush the eval queue, run pending eval jobs, check what checkpoints are not evaluated yet, or produce a post-eval report from the Neon queue database.
 ---
 
 # Flush Eval
 
 ## Contract
 
-Evaluate campaign eval jobs whose artifacts carry current training metadata, then report queue status and ranked results from the campaign eval database.
+Evaluate queue eval jobs whose artifacts carry current training metadata, then report queue status and ranked results from the eval results table.
 
 Default eval protocol unless the user says otherwise:
 
@@ -25,22 +25,22 @@ Use the local eval runner by default. Report expected runtime and hardware assum
    - Confirm no newer project rule overrides the defaults above.
    - Use `.env` for `DATABASE_URL`, `DIRECT_DATABASE_URL`, W&B, and R2 credentials.
 
-2. Ensure the campaign schema is current:
+2. Ensure the queue schema is current:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign setup
+UV_CACHE_DIR=.uv-cache uv run rlab-queue setup
 ```
 
-3. Inspect current campaign state:
+3. Inspect current queue state:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign status <goal-slug>
+UV_CACHE_DIR=.uv-cache uv run rlab-queue status --goal <goal-slug>
 ```
 
-If the user asks to add a concrete checkpoint eval job, enqueue it through the campaign table instead of the removed legacy `checkpoint_candidates` queue:
+If the user asks to add a concrete checkpoint eval job, enqueue it through the queue table instead of the removed legacy `checkpoint_candidates` queue:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign enqueue-eval \
+UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-eval \
   --goal <goal-slug> \
   --profile mario-level1-quick \
   --candidate-label <label> \

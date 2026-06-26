@@ -47,7 +47,7 @@ def fetch_all(cur, query: str, params: dict[str, Any] | None = None) -> list[dic
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Report Neon campaign eval queue results.")
+    parser = argparse.ArgumentParser(description="Report Neon eval queue results.")
     parser.add_argument("--profile", default="mario-level1-quick")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")

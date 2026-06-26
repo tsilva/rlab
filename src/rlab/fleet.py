@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -17,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
-from rlab.campaign import (
+from rlab.job_queue import (
     connect,
     database_url,
     list_stale_train_jobs,
@@ -25,12 +26,21 @@ from rlab.campaign import (
 )
 from rlab.compute_targets import instance_defaults, load_instance_config
 from rlab.json_utils import json_safe
+from rlab.monitoring.state import (
+    DeviceProbe,
+    device_key_from_run_target,
+    devices_from_jobs,
+    infer_device_key,
+    live_device_probes,
+)
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
     latest_runtime_image_ref,
     normalize_runtime_image_ref,
+    RuntimeImageInfo,
+    recent_runtime_images,
     runtime_image_digest_slug,
     runtime_image_ref_from_file,
 )
@@ -213,6 +223,8 @@ class LatestWatchSnapshot:
     leases: tuple[ActiveLease, ...]
     jobs: tuple[RunningJob, ...]
     plan: FleetPlan
+    recent_images: tuple[RuntimeImageInfo, ...] = ()
+    devices: tuple[dict[str, Any], ...] = ()
     stale_train_jobs: tuple[StaleTrainJob, ...] = ()
     down_hosts: tuple[str, ...] = ()
     action_results: tuple[ActionResult, ...] = ()
@@ -1341,6 +1353,43 @@ def image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = Fals
     return normalize_runtime_image_ref(value) if value else None
 
 
+def args_selects_latest_image(args: argparse.Namespace, *, default_latest: bool = False) -> bool:
+    if getattr(args, "image_file", None) or getattr(args, "runtime_image_ref_file", None):
+        return False
+    image = str(getattr(args, "image", "") or "").strip()
+    if image:
+        return image == "latest"
+    if getattr(args, "runtime_image_ref", None):
+        return False
+    return bool(getattr(args, "latest_image", False)) or default_latest
+
+
+def recent_images_from_args(args: argparse.Namespace, *, limit: int = 3) -> tuple[RuntimeImageInfo, ...]:
+    return recent_runtime_images(
+        workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
+        branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
+        artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
+        limit=limit,
+    )
+
+
+def runtime_image_context_from_args(
+    args: argparse.Namespace,
+    *,
+    default_latest: bool = False,
+) -> tuple[str | None, tuple[RuntimeImageInfo, ...], tuple[str, ...]]:
+    recent_images: tuple[RuntimeImageInfo, ...] = ()
+    warnings: list[str] = []
+    selects_latest = args_selects_latest_image(args, default_latest=default_latest)
+    try:
+        recent_images = recent_images_from_args(args, limit=3)
+    except Exception as exc:
+        warnings.append(f"failed to list recent train images: {exc}")
+    if selects_latest and recent_images:
+        return recent_images[0].runtime_image_ref, recent_images, tuple(warnings)
+    return image_ref_from_args(args, default_latest=default_latest), recent_images, tuple(warnings)
+
+
 def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(getattr(args, "direct", False)))
 
@@ -1449,6 +1498,79 @@ def stale_train_jobs_for_watch(
             rows = list_stale_train_jobs(conn, **common)
         stale_jobs.extend(stale_train_job_from_row(host, row, execute=execute) for row in rows)
     return tuple(stale_jobs)
+
+
+def running_job_device_key(job: RunningJob) -> str:
+    return infer_device_key(
+        "train",
+        job.profile_id or "",
+        job.lease_owner,
+        {},
+        run_target=job.run_target,
+    )
+
+
+def config_device_keys(config: FleetConfig) -> set[str]:
+    keys: set[str] = set()
+    for host in config.hosts.values():
+        key = device_key_from_run_target(host.run_target) or host.run_target
+        if key:
+            keys.add(key)
+    return keys
+
+
+def active_watch_device_keys(config: FleetConfig, jobs: Sequence[RunningJob]) -> tuple[str, ...]:
+    configured_keys = config_device_keys(config)
+    keys: list[str] = []
+    for job in jobs:
+        key = running_job_device_key(job)
+        if configured_keys and key not in configured_keys:
+            continue
+        if key not in keys:
+            keys.append(key)
+    return tuple(keys)
+
+
+def watch_monitor_jobs(
+    jobs: Sequence[RunningJob],
+    active_keys: Sequence[str],
+) -> list[dict[str, Any]]:
+    active_key_set = set(active_keys)
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        key = running_job_device_key(job)
+        if key not in active_key_set:
+            continue
+        rows.append(
+            {
+                "id": str(job.id),
+                "state": "running",
+                "device_key": key,
+                "attention": "",
+            }
+        )
+    return rows
+
+
+def collect_active_watch_devices(
+    repo_root: Path,
+    config: FleetConfig,
+    jobs: Sequence[RunningJob],
+    *,
+    probes: Mapping[str, DeviceProbe] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    active_keys = active_watch_device_keys(config, jobs)
+    if not active_keys:
+        return ()
+    live_probes = probes if probes is not None else live_device_probes(list(active_keys))
+    rows = watch_monitor_jobs(jobs, active_keys)
+    devices = devices_from_jobs(repo_root, rows, live_probes)
+    active_key_set = set(active_keys)
+    return tuple(
+        device
+        for device in devices
+        if str(device.get("id")) in active_key_set and device.get("current_jobs")
+    )
 
 
 def build_live_plan(
@@ -1580,6 +1702,25 @@ def format_elapsed_since(value: Any, *, now: datetime | None = None) -> str:
     if hours < 48:
         return f"{hours}h_ago"
     return f"{hours // 24}d_ago"
+
+
+def format_utc_minute(value: Any) -> str:
+    if not value:
+        return "unknown"
+    timestamp: datetime
+    if isinstance(value, datetime):
+        timestamp = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return "unknown"
+        try:
+            timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
 def format_containers(
@@ -1828,8 +1969,9 @@ def build_latest_watch_snapshot(
     *,
     action_results: Sequence[ActionResult] = (),
 ) -> LatestWatchSnapshot:
+    repo_root = repo_root_from_args(args)
     config = filter_config_to_host(_load_config_from_args(args), getattr(args, "host", None))
-    runtime_image_ref = image_ref_from_args(args, default_latest=True)
+    runtime_image_ref, recent_images, image_warnings = runtime_image_context_from_args(args, default_latest=True)
     if not runtime_image_ref:
         raise SystemExit("--image, --image-file, --runtime-image-ref, or --runtime-image-ref-file is required")
     conn = _connect_from_args(args)
@@ -1852,6 +1994,7 @@ def build_latest_watch_snapshot(
         jobs = tuple(running_jobs(conn))
     finally:
         conn.close()
+    devices = collect_active_watch_devices(repo_root, config, jobs)
     existing, container_warnings = collect_existing_containers(config, host_filter=None, local=False)
     down_hosts = tuple(sorted(warning_hosts(config, container_warnings)))
     plan = build_ensure_latest_plan(
@@ -1873,8 +2016,10 @@ def build_latest_watch_snapshot(
             desired=plan.desired,
             existing=plan.existing,
             actions=tuple(action for action in plan.actions if action.host not in down_hosts),
-            warnings=plan.warnings,
+            warnings=(*image_warnings, *plan.warnings),
         ),
+        recent_images=recent_images,
+        devices=devices,
         stale_train_jobs=stale_train_jobs,
         down_hosts=down_hosts,
         action_results=tuple(action_results),
@@ -1901,10 +2046,16 @@ ANSI_STYLES = {
     "bold": "\033[1m",
     "dim": "\033[2m",
     "red": "\033[31m",
+    "bright_red": "\033[1;31m",
     "green": "\033[32m",
+    "bright_green": "\033[1;32m",
     "yellow": "\033[33m",
+    "bright_yellow": "\033[1;33m",
     "blue": "\033[34m",
+    "magenta": "\033[35m",
     "cyan": "\033[36m",
+    "bright_cyan": "\033[1;36m",
+    "white": "\033[37m",
 }
 
 
@@ -1912,6 +2063,69 @@ def colorize(text: str, style: str, *, enabled: bool) -> str:
     if not enabled:
         return text
     return f"{ANSI_STYLES[style]}{text}{ANSI_STYLES['reset']}"
+
+
+def dashboard_divider(width: int, *, color: bool) -> str:
+    return colorize("=" * min(width, 120), "dim", enabled=color)
+
+
+def dashboard_chip(label: str, value: str, style: str, *, color: bool) -> str:
+    return f"{label}={colorize(value, style, enabled=color)}"
+
+
+def section_label(text: str, style: str, *, color: bool) -> str:
+    return colorize(text, style, enabled=color)
+
+
+def highlight_dashboard_text(text: str, *, color: bool) -> str:
+    if not color:
+        return text
+    styles = [
+        (r"\bwould_fail\b", "bright_yellow"),
+        (r"\bfailed\b", "bright_red"),
+        (r"\bexit=\d+\b", "bright_red"),
+        (r"\bdown\b", "bright_red"),
+        (r"\bmissing\b", "yellow"),
+        (r"\bbusy\b", "bright_green"),
+        (r"\bwarning\b", "bright_yellow"),
+        (r"\boffline\b", "bright_red"),
+        (r"\bunreachable\b", "bright_red"),
+        (r"\breachable\b", "bright_green"),
+        (r"\blive\b", "bright_green"),
+        (r"\bok\b", "bright_green"),
+        (r"\bsteady\b", "bright_green"),
+        (r"\bstart\b", "bright_cyan"),
+        (r"\brestart\b", "bright_yellow"),
+        (r"\bremove\b", "bright_yellow"),
+        (r"\bplanned\b", "bright_cyan"),
+        (r"\bnone\b", "dim"),
+        (r"\bunknown\b", "dim"),
+    ]
+    highlighted = text
+    for pattern, style in styles:
+        highlighted = re.sub(
+            pattern,
+            lambda match, style=style: colorize(match.group(0), style, enabled=True),
+            highlighted,
+        )
+    return re.sub(
+        r"\b[0-9a-f]{12}\b",
+        lambda match: colorize(match.group(0), "cyan", enabled=True),
+        highlighted,
+    )
+
+
+def style_table(table: str, *, color: bool) -> str:
+    if not color or not table:
+        return table
+    lines = table.splitlines()
+    if lines:
+        lines[0] = colorize(lines[0], "white", enabled=True)
+    if len(lines) > 1:
+        lines[1] = colorize(lines[1], "dim", enabled=True)
+    for index in range(2, len(lines)):
+        lines[index] = highlight_dashboard_text(lines[index], color=True)
+    return "\n".join(lines)
 
 
 def compact_ref(runtime_image_ref: str) -> str:
@@ -1970,6 +2184,57 @@ def warning_hosts(config: FleetConfig, warnings: Sequence[str]) -> set[str]:
 
 def jobs_for_prefix(jobs: Sequence[RunningJob], prefix: str) -> list[RunningJob]:
     return [job for job in jobs if job.lease_owner.startswith(prefix)]
+
+
+def short_hash(value: str | None, *, length: int = 12) -> str:
+    text = str(value or "").strip()
+    return text[:length] if text else "unknown"
+
+
+def recent_image_dashboard_rows(images: Sequence[RuntimeImageInfo], *, limit: int = 3) -> list[list[str]]:
+    return [
+        [
+            compact_ref(image.runtime_image_ref),
+            short_hash(image.source_sha),
+            format_utc_minute(image.published_at),
+            image.commit_message or "unknown",
+        ]
+        for image in list(images)[:limit]
+    ]
+
+
+def device_detail(device: Mapping[str, Any], key: str) -> str:
+    details = device.get("details")
+    if not isinstance(details, Mapping):
+        return "unknown"
+    value = details.get(key)
+    if value is None or value == "":
+        return "unknown"
+    return str(value)
+
+
+def active_device_dashboard_rows(devices: Sequence[Mapping[str, Any]]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for device in devices:
+        current_jobs = device.get("current_jobs")
+        if isinstance(current_jobs, Sequence) and not isinstance(current_jobs, str):
+            job_count = len(current_jobs)
+        else:
+            job_count = 1 if device.get("current_job") else 0
+        rows.append(
+            [
+                str(device.get("device") or device.get("id") or "unknown"),
+                str(device.get("target") or "unknown"),
+                str(device.get("state") or "unknown"),
+                str(job_count),
+                device_detail(device, "cpu"),
+                device_detail(device, "memory"),
+                device_detail(device, "gpu"),
+                device_detail(device, "vram"),
+                str(device.get("last_check") or "unknown"),
+            ]
+        )
+    return rows
 
 
 def host_dashboard_rows(snapshot: LatestWatchSnapshot) -> list[list[str]]:
@@ -2119,75 +2384,143 @@ def render_latest_watch_dashboard(
         status_style = "green"
         status = "steady"
     mode = "execute" if snapshot.execute else "dry-run"
-    title = colorize("rlab fleet watch", "bold", enabled=color)
+    mode_style = "bright_yellow" if snapshot.execute else "blue"
+    live_count = max(0, len(snapshot.config.hosts) - len(snapshot.down_hosts))
+    down_count = len(snapshot.down_hosts)
+    pending_count = sum(demand.pending_count for demand in snapshot.demands)
+    running_count = sum(demand.running_count for demand in snapshot.demands)
+    title = colorize("rlab fleet watch", "bright_cyan", enabled=color)
     latest = colorize(compact_ref(snapshot.runtime_image_ref), "cyan", enabled=color)
     header = [
         title,
         (
             f"time={snapshot.captured_at.isoformat(timespec='seconds')} "
-            f"mode={mode} interval={snapshot.interval:g}s latest={latest} "
-            f"status={colorize(status, status_style, enabled=color)}"
+            f"{dashboard_chip('mode', mode, mode_style, color=color)} "
+            f"interval={snapshot.interval:g}s latest={latest} "
+            f"{dashboard_chip('status', status, status_style, color=color)}"
         ),
-        "=" * min(width, 120),
+        (
+            f"hosts "
+            f"{dashboard_chip('live', str(live_count), 'bright_green', color=color)} "
+            f"{dashboard_chip('down', str(down_count), 'bright_red' if down_count else 'dim', color=color)} "
+            f"queue "
+            f"{dashboard_chip('pending', str(pending_count), 'bright_cyan' if pending_count else 'dim', color=color)} "
+            f"{dashboard_chip('running', str(running_count), 'bright_green' if running_count else 'dim', color=color)} "
+            f"actions={colorize(str(action_count), 'bright_yellow' if action_count else 'dim', enabled=color)} "
+            f"stale={colorize(str(stale_count), 'bright_yellow' if stale_count else 'dim', enabled=color)}"
+        ),
+        dashboard_divider(width, color=color),
     ]
     sections = ["\n".join(header)]
+    image_rows = recent_image_dashboard_rows(snapshot.recent_images)
     sections.append(
-        format_table(
-            ["host", "target", "live", "runner", "digest", "jobs", "old", "action"],
-            host_dashboard_rows(snapshot),
-            max_width=width,
+        section_label("recent images:", "magenta", color=color)
+        + "\n"
+        + (
+            style_table(
+                format_table(["digest", "hash", "published", "commit"], image_rows, max_width=width),
+                color=color,
+            )
+            if image_rows
+            else highlight_dashboard_text("none", color=color)
+        )
+    )
+    sections.append(
+        style_table(
+            format_table(
+                ["host", "target", "live", "runner", "digest", "jobs", "old", "action"],
+                host_dashboard_rows(snapshot),
+                max_width=width,
+            ),
+            color=color,
+        )
+    )
+    device_rows = active_device_dashboard_rows(snapshot.devices)
+    sections.append(
+        section_label("active devices:", "green", color=color)
+        + "\n"
+        + (
+            style_table(
+                format_table(
+                    ["host", "target", "state", "jobs", "cpu", "ram", "gpu", "vram", "health"],
+                    device_rows,
+                    max_width=width,
+                ),
+                color=color,
+            )
+            if device_rows
+            else highlight_dashboard_text("none", color=color)
         )
     )
     demand_rows = demand_dashboard_rows(snapshot.demands)
     sections.append(
-        "queue demand:\n"
+        section_label("queue demand:", "blue", color=color)
+        + "\n"
         + (
-            format_table(["profile", "target", "pending", "running", "digest"], demand_rows, max_width=width)
+            style_table(
+                format_table(["profile", "target", "pending", "running", "digest"], demand_rows, max_width=width),
+                color=color,
+            )
             if demand_rows
-            else "none"
+            else highlight_dashboard_text("none", color=color)
         )
     )
     action_rows = action_dashboard_rows(snapshot.plan, snapshot.action_results)
     sections.append(
-        "actions:\n"
+        section_label("actions:", "cyan", color=color)
+        + "\n"
         + (
-            format_table(["host", "kind", "status", "container", "reason"], action_rows, max_width=width)
+            style_table(
+                format_table(["host", "kind", "status", "container", "reason"], action_rows, max_width=width),
+                color=color,
+            )
             if action_rows
-            else "none"
+            else highlight_dashboard_text("none", color=color)
         )
     )
     stale_rows = stale_train_job_dashboard_rows(snapshot.stale_train_jobs)
     if stale_rows:
         sections.append(
-            "stale train jobs:\n"
-            + format_table(
-                ["host", "action", "id", "target", "owner", "heartbeat", "run"],
-                stale_rows,
-                max_width=width,
+            section_label("stale train jobs:", "yellow", color=color)
+            + "\n"
+            + style_table(
+                format_table(
+                    ["host", "action", "id", "target", "owner", "heartbeat", "run"],
+                    stale_rows,
+                    max_width=width,
+                ),
+                color=color,
             )
         )
     job_rows = running_job_dashboard_rows(snapshot.jobs)
     sections.append(
-        "running jobs:\n"
+        section_label("running jobs:", "green", color=color)
+        + "\n"
         + (
-            format_table(["id", "target", "digest", "run", "heartbeat"], job_rows, max_width=width)
+            style_table(
+                format_table(["id", "target", "digest", "run", "heartbeat"], job_rows, max_width=width),
+                color=color,
+            )
             if job_rows
-            else "none"
+            else highlight_dashboard_text("none", color=color)
         )
     )
     if snapshot.plan.warnings:
         sections.append(
-            colorize("warnings:", "yellow", enabled=color)
+            section_label("warnings:", "yellow", color=color)
             + "\n"
-            + "\n".join(f"  {warning}" for warning in snapshot.plan.warnings[:8])
+            + "\n".join(highlight_dashboard_text(f"  {warning}", color=color) for warning in snapshot.plan.warnings[:8])
         )
     if failed_results:
-        lines = [colorize("failed actions:", "red", enabled=color)]
+        lines = [section_label("failed actions:", "bright_red", color=color)]
         for result in failed_results[:4]:
             tail = result.output.splitlines()[-1] if result.output else ""
             lines.append(
-                f"  host={result.host} kind={result.kind} container={result.container} "
-                f"exit={result.exit_code} {tail}"
+                highlight_dashboard_text(
+                    f"  host={result.host} kind={result.kind} container={result.container} "
+                    f"exit={result.exit_code} {tail}",
+                    color=color,
+                )
             )
         sections.append("\n".join(lines))
     sections.append(colorize("Ctrl-C to stop.", "dim", enabled=color))
@@ -2227,21 +2560,23 @@ def render_latest_watch_starting_dashboard(
     width = max_width or shutil.get_terminal_size((120, 30)).columns
     width = max(width, 72)
     mode = "execute" if args.execute else "dry-run"
+    mode_style = "bright_yellow" if args.execute else "blue"
     host = args.host or "all"
-    title = colorize("rlab fleet watch", "bold", enabled=color)
-    status = colorize("starting", "cyan", enabled=color)
+    title = colorize("rlab fleet watch", "bright_cyan", enabled=color)
     header = [
         title,
         (
             f"time={datetime.now(UTC).isoformat(timespec='seconds')} "
-            f"mode={mode} interval={args.interval:g}s host={host} "
-            f"latest={requested_image_label(args)} status={status}"
+            f"{dashboard_chip('mode', mode, mode_style, color=color)} "
+            f"interval={args.interval:g}s host={colorize(host, 'cyan', enabled=color)} "
+            f"latest={colorize(requested_image_label(args), 'cyan', enabled=color)} "
+            f"{dashboard_chip('status', 'starting', 'bright_cyan', color=color)}"
         ),
-        "=" * min(width, 120),
+        dashboard_divider(width, color=color),
     ]
     body = [
-        "polling now...",
-        "resolving image, reading queue state, and checking SSH/Docker hosts",
+        colorize("polling now...", "bright_cyan", enabled=color),
+        colorize("resolving image, reading queue state, and checking SSH/Docker hosts", "dim", enabled=color),
         "",
         colorize("Ctrl-C to stop.", "dim", enabled=color),
     ]
@@ -2257,9 +2592,9 @@ def render_watch_latest_lock_busy(
     width = max_width or shutil.get_terminal_size((120, 30)).columns
     width = max(width, 72)
     lines = [
-        colorize("rlab fleet watch", "bold", enabled=color),
-        "=" * min(width, 120),
-        colorize("another watch session already owns the lock", "yellow", enabled=color),
+        colorize("rlab fleet watch", "bright_cyan", enabled=color),
+        dashboard_divider(width, color=color),
+        colorize("another watch session already owns the lock", "bright_yellow", enabled=color),
         f"lock={error.path}",
     ]
     if error.owner:
@@ -2325,12 +2660,13 @@ def cmd_watch_latest(args: argparse.Namespace) -> int:
                 print("\nwatch stopped")
                 return 130
             except Exception as exc:
+                width = args.width or shutil.get_terminal_size((120, 30)).columns
                 message = (
-                    colorize("rlab fleet watch", "bold", enabled=color)
+                    colorize("rlab fleet watch", "bright_cyan", enabled=color)
                     + "\n"
-                    + "=" * min(args.width or shutil.get_terminal_size((120, 30)).columns, 120)
+                    + dashboard_divider(width, color=color)
                     + "\n"
-                    + colorize(f"snapshot failed: {exc}", "red", enabled=color)
+                    + colorize(f"snapshot failed: {exc}", "bright_red", enabled=color)
                     + "\n\nCtrl-C to stop."
                 )
                 write_tui_frame(message, enabled=tui)

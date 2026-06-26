@@ -35,7 +35,7 @@ Affected files:
 
 ## Tests/verification
 
-Add focused unit tests, likely in `tests/test_core_helpers.py` and `tests/test_campaign_runner.py`:
+Add focused unit tests, likely in `tests/test_core_helpers.py` and `tests/test_job_queue_runner.py`:
 
 - `default_run_dir("candidate", tmp_runs)` returns a path under `tmp_runs`.
 - Reject traversal: `../escape`, `a/../b`, `a/b`, `..`, `.`, and empty string.
@@ -47,12 +47,12 @@ Add focused unit tests, likely in `tests/test_core_helpers.py` and `tests/test_c
 Run:
 
 ```bash
-uv run pytest tests/test_core_helpers.py tests/test_campaign_runner.py
+uv run pytest tests/test_core_helpers.py tests/test_job_queue_runner.py
 ```
 
 ## Rollout notes
 
-This may reject historical ad hoc run names containing slashes. That is desirable for training output directories, but check launch manifests and queued campaign jobs before rollout. If legitimate existing run names contain unsupported characters, migrate them to safe slugs in manifests rather than weakening the directory invariant.
+This may reject historical ad hoc run names containing slashes. That is desirable for training output directories, but check launch manifests and queued train jobs before rollout. If legitimate existing run names contain unsupported characters, migrate them to safe slugs in manifests rather than weakening the directory invariant.
 
 Do not auto-move already-created escaped directories in this patch. Treat cleanup as a separate operator task.
 
@@ -60,4 +60,4 @@ Do not auto-move already-created escaped directories in this patch. Treat cleanu
 
 - Should invalid run names be rejected strictly, or slugified automatically?
 - Should the queue store both `display_run_name` and `run_name_slug` long term?
-- Are there pending campaign rows with slash-containing `run_name` values that need migration before deploying validation?
+- Are there pending queue rows with slash-containing `run_name` values that need migration before deploying validation?

@@ -14,8 +14,7 @@ from rlab.artifacts import (
     env_config_from_config_dict,
     env_config_from_model_metadata,
 )
-from rlab.campaign import (
-    campaign_status,
+from rlab.job_queue import (
     claim_eval_job,
     connect,
     database_url,
@@ -23,6 +22,7 @@ from rlab.campaign import (
     heartbeat_eval_job,
     new_worker_id,
     print_status,
+    queue_status,
 )
 from rlab.device import resolve_sb3_device
 from rlab.env import EnvConfig, resolve_env_config
@@ -162,9 +162,9 @@ def run_eval_job(
             capture_best_video=bool(config.get("capture_best_video")),
             video_path=video_path,
             extra={
-                "campaign_eval_job_id": int(job["id"]),
-                "campaign_profile_id": job["profile_id"],
-                "campaign_candidate_label": job.get("candidate_label"),
+                "queue_eval_job_id": int(job["id"]),
+                "queue_profile_id": job["profile_id"],
+                "queue_candidate_label": job.get("candidate_label"),
             },
         )
         safe_metrics = json_safe(metrics)
@@ -261,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     parser.add_argument(
         "--status-goal",
-        help="Print compact campaign status for this goal before starting workers.",
+        help="Print compact queue status for this goal before starting workers.",
     )
     return parser
 
@@ -271,7 +271,7 @@ def main() -> None:
     if args.status_goal:
         conn = connect(database_url(args.direct))
         try:
-            print_status(campaign_status(conn, goal_slug_or_id=args.status_goal))
+            print_status(queue_status(conn, goal_slug=args.status_goal))
         finally:
             conn.close()
     worker_loop(args, worker_id=args.worker_id or new_worker_id("eval-runner"))

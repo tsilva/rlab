@@ -38,7 +38,7 @@ UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
 Evaluate and watch the resulting model:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.evaluate \
+UV_CACHE_DIR=.uv-cache uv run python -m rlab.eval \
   --game <GameId> \
   --model runs/local_smoke/final_model.zip \
   --episodes 2 \
@@ -88,9 +88,9 @@ UV_CACHE_DIR=.uv-cache uv run ruff check .
 UV_CACHE_DIR=.uv-cache uv run python -m unittest discover -s tests -v
 
 UV_CACHE_DIR=.uv-cache uv run python -m rlab.train --game <GameId> --preset smoke --run-description "Smoke test"
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.evaluate --game <GameId> --policy random --episodes 2 --max-steps 600
-UV_CACHE_DIR=.uv-cache uv run python scripts/eval_wandb_checkpoints.py <run-name> --game <GameId> --episodes 50 --record-best-video
-UV_CACHE_DIR=.uv-cache uv run python scripts/play_wandb_artifact.py <run-name> --game <GameId> --kind best --stochastic
+UV_CACHE_DIR=.uv-cache uv run python -m rlab.eval --game <GameId> --policy random --episodes 2 --max-steps 600
+UV_CACHE_DIR=.uv-cache uv run rlab-eval --artifact-run <run-name> --checkpoint-series --game <GameId> --episodes 50 --record-best-video
+UV_CACHE_DIR=.uv-cache uv run rlab-play <entity>/<project>/<run-name>-checkpoint:latest
 ```
 
 ## Research Loop
@@ -105,11 +105,8 @@ Queue comparable experiments from checked-in spec files instead of ad hoc
 commands:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign add-spec-file \
-  experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json
-
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign enqueue-train-from-spec \
-  experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json \
+UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+  --spec-file experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
@@ -121,11 +118,11 @@ UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
 ```
 
-Use `rlab-campaign status <goal>` and `rlab-campaign lineage <goal>` for the
-decision view. Status prints eval selection leaders separately; training metrics
-are diagnostic unless out-of-process eval agrees.
+Use `rlab-queue status --goal <goal>` for operational queue state and compact
+result receipts. Durable research decisions belong in the repo under the goal
+folder; detailed metrics and artifacts belong in W&B.
 
-For a quick terminal monitor over campaign jobs and fleet state:
+For a quick terminal monitor over queue jobs and fleet state:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-monitor --view all
@@ -135,13 +132,13 @@ UV_CACHE_DIR=.uv-cache uv run rlab-monitor --json
 ## Queue Runners
 
 Queue-backed training is the supported GPU workflow. Create train jobs with
-`rlab-campaign`, then run capacity through `rlab-fleet` on `beast-3` and
+`rlab-queue`, then run capacity through `rlab-fleet` on `beast-3` and
 `beast-2`.
 
 For queue-backed training, keep worker capacity in `experiments/fleet.json` and
 `experiments/policies/capacity_policy.json`. `rlab-fleet` starts digest-pinned
 Docker containers running `rlab.train_runner`; experiment payloads stay in the
-campaign queue.
+queue row snapshot loaded from the checked-in spec file.
 
 For local GPU queue capacity, run the fleet manager from the MacBook. It reads
 pending/running `train_jobs`, groups demand by `profile_id`,
@@ -176,8 +173,9 @@ For an operator-friendly live view, prefer `watch`. It continuously
 checks configured fleet hosts, keeps one unprofiled latest-image runner alive on
 each live host, leaves old runners alone while they still own active leases or
 have matching queued/running jobs, marks stale running train jobs failed so they
-can stop blocking the queue, and removes idle stale managed containers. Omit
-`--execute` for a dry-run dashboard.
+can stop blocking the queue, removes idle stale managed containers, and shows
+the last three published train-image digests with their source commit hashes,
+publish times, and commit subjects. Omit `--execute` for a dry-run dashboard.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch --execute
@@ -234,7 +232,7 @@ still owns a running queue lease.
 - Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts`
   is set.
 - Queue-backed train jobs are profileless by default and should reference
-  immutable runtime image digests. `rlab-campaign enqueue-train` resolves the
+  immutable runtime image digests. `rlab-queue enqueue-train` resolves the
   latest successful train-image artifact when no explicit digest/file is given;
   pass `--profile <profile-id>` only for an intentionally profile-locked lane.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set

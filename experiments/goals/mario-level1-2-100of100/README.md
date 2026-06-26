@@ -1,6 +1,6 @@
-# Mario Level1 100/100 Goal
+# Mario Level1-2 100/100 Goal
 
-This folder is the durable capsule for the active `mario-level1-100of100`
+This folder is the durable capsule for the active `mario-level1-2-100of100`
 research objective.
 
 - `goal.json`: current goal contract, metric, seed protocol, cap, runtime, and
@@ -16,6 +16,6 @@ trees unless a goal-local ignored scratch directory is explicitly useful.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
-  --spec-file experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json \
+  --spec-file experiments/goals/mario-level1-2-100of100/specs/b85-b46-post21-five-seed-l12-confirm.json \
   --runtime-image-ref-file rlab-train-image.json
 ```

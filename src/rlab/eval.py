@@ -13,17 +13,25 @@ from typing import Any
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
+import numpy as np
 from stable_baselines3 import PPO
 
-from rlab.artifacts import (
-    apply_model_config_defaults,
-    explicit_arg_dests,
-)
+from rlab.artifacts import apply_model_config_defaults, explicit_arg_dests
 from rlab.cli_args import add_env_config_args
 from rlab.device import resolve_sb3_device
-from rlab.env import assert_rom_imported, resolve_env_config
+from rlab.env import (
+    action_names_for_set,
+    assert_rom_imported,
+    make_eval_vec_env,
+    resolve_env_config,
+)
 from rlab.env_config import env_config_from_args
-from rlab.eval_metrics import flat_numeric_metrics
+from rlab.eval_metrics import (
+    flat_numeric_metrics,
+    is_level_complete,
+    run_eval_episode,
+    summarize_episode_results,
+)
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.json_utils import json_safe
 from rlab.metric_names import (
@@ -50,9 +58,21 @@ from rlab.wandb_artifacts import (
     artifact_qualified_name,
     checkpoint_step_from_artifact,
     download_artifact_model,
+    model_artifact_ref,
     safe_artifact_stem,
 )
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
+
+
+def json_default(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return {
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+        }
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def slug(value: str) -> str:
@@ -66,10 +86,30 @@ def split_project(value: str) -> tuple[str | None, str]:
     return parts[0], parts[1]
 
 
-def artifact_ref(args: argparse.Namespace) -> str:
-    if not args.run_name:
-        raise SystemExit("run_name is required unless --artifact is provided")
-    return f"{args.project}/{slug(args.run_name)}-checkpoint"
+def artifact_eval_name(args: argparse.Namespace) -> str:
+    if args.artifact_run:
+        return slug(args.artifact_run)
+    if args.artifact:
+        leaf = args.artifact[0].split("/")[-1].split(":", 1)[0]
+        for suffix in ("-checkpoint", "-final", "-best"):
+            if suffix in leaf:
+                leaf = leaf.split(suffix, 1)[0]
+                break
+        return slug(leaf)
+    raise ValueError("artifact eval requires --artifact or --artifact-run")
+
+
+def checkpoint_artifact_ref(args: argparse.Namespace) -> str:
+    if not args.artifact_run:
+        raise SystemExit("--artifact-run is required unless --artifact is provided")
+    if args.checkpoint_series:
+        return f"{args.artifact_project}/{slug(args.artifact_run)}-checkpoint"
+    return model_artifact_ref(
+        project=args.artifact_project,
+        run_name=args.artifact_run,
+        kind=args.artifact_kind,
+        version=args.artifact_version,
+    )
 
 
 def find_checkpoint_artifacts(args: argparse.Namespace):
@@ -81,7 +121,10 @@ def find_checkpoint_artifacts(args: argparse.Namespace):
     if args.artifact:
         return [api.artifact(ref, type="model") for ref in args.artifact]
 
-    ref = artifact_ref(args)
+    ref = checkpoint_artifact_ref(args)
+    if not args.checkpoint_series:
+        return [api.artifact(ref, type="model")]
+
     try:
         artifacts = list(api.artifact_versions("model", ref))
     except Exception as exc:
@@ -144,7 +187,10 @@ def evaluate_checkpoint(
     config = resolve_env_config(env_config_from_args(args, max_episode_steps_attr="max_steps"))
     eval_seed = eval_seed_for_checkpoint(args, checkpoint_step)
     video_path = (
-        Path(args.eval_dir) / args.run_name / "videos" / f"best_episode_{checkpoint_step}_steps.mp4"
+        Path(args.eval_dir)
+        / args.eval_run_name
+        / "videos"
+        / f"best_episode_{checkpoint_step}_steps.mp4"
         if args.record_best_video
         else None
     )
@@ -154,7 +200,7 @@ def evaluate_checkpoint(
         episodes=args.episodes,
         seed=eval_seed,
         max_steps=args.max_steps,
-        deterministic=args.deterministic,
+        deterministic=eval_deterministic(args),
         completion_x_threshold=config.completion_x_threshold,
         capture_best_video=args.record_best_video,
         video_path=video_path,
@@ -203,12 +249,12 @@ def init_wandb_run(args: argparse.Namespace, artifacts):
         raise SystemExit(
             "Could not infer the W&B run id. Pass --wandb-run-id or --wandb-run-path.",
         )
-    entity, project = split_project(args.project)
+    entity, project = split_project(args.artifact_project)
     return wandb.init(
         entity=entity,
         project=project,
         id=run_id,
-        name=args.run_name,
+        name=args.eval_run_name,
         resume="allow",
         mode=args.wandb_mode,
     )
@@ -259,10 +305,10 @@ def promote_best_artifact(
     import wandb
 
     artifact = wandb.Artifact(
-        f"{slug(args.run_name)}-best",
+        f"{slug(args.eval_run_name)}-best",
         type="model",
         metadata={
-            "run_name": args.run_name,
+            "run_name": args.eval_run_name,
             "kind": "best",
             "source": "local_checkpoint_eval",
             "checkpoint_step": metrics["checkpoint_step"],
@@ -280,32 +326,118 @@ def promote_best_artifact(
     )
 
 
+def eval_deterministic(args: argparse.Namespace) -> bool:
+    return bool(args.deterministic)
+
+
+def scripted_action(policy: str, step_idx: int, action_names: tuple[str, ...]) -> int:
+    if policy == "random":
+        raise ValueError("random policy is sampled from the env action space")
+    if policy == "noop":
+        return action_names.index("noop")
+    if policy == "right":
+        # Mostly sprint right, with periodic jumps to clear early obstacles.
+        if step_idx % 55 in range(30, 42):
+            return action_names.index("right_a_b")
+        return action_names.index("right_b")
+    raise ValueError(f"unknown policy: {policy}")
+
+
+def run_scripted_episode(
+    env,
+    policy: str,
+    max_steps: int,
+    action_names: tuple[str, ...],
+    completion_x_threshold: int,
+    default_start_state: str | None = None,
+):
+    obs = env.reset()
+    total_reward = 0.0
+    max_x = 0
+    max_level_x = 0
+    final_info = {}
+    for step_idx in range(max_steps):
+        if policy == "random":
+            action = env.action_space.sample()
+        else:
+            action = scripted_action(policy, step_idx, action_names)
+        obs, rewards, dones, infos = env.step([action])
+        info = dict(infos[0])
+        total_reward += float(rewards[0])
+        max_x = max(max_x, int(info.get("max_x_pos", 0)))
+        max_level_x = max(max_level_x, int(info.get("level_max_x_pos", 0)))
+        final_info = info
+        if bool(dones[0]):
+            break
+    completed = is_level_complete(final_info, max_x, completion_x_threshold)
+    died = bool(final_info.get("died", False))
+    death_x_pos = final_info.get("death_x_pos")
+    if died and death_x_pos is None:
+        death_x_pos = max_x
+    return {
+        "start_state": final_info.get("start_state")
+        or final_info.get("state")
+        or default_start_state,
+        "reward": total_reward,
+        "max_x_pos": max_x,
+        "max_level_x_pos": max_level_x,
+        "score": int(final_info.get("score", 0)),
+        "lives": int(final_info.get("lives", 0)),
+        "steps": step_idx + 1,
+        "level_complete": completed,
+        "died": died,
+        "death_x_pos": int(death_x_pos) if death_x_pos is not None else None,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Evaluate pending W&B rlab checkpoints"
+    parser = argparse.ArgumentParser(description="Evaluate PPO or scripted Stable Retro baselines")
+    parser.add_argument("--model", help="Path to PPO .zip model")
+    parser.add_argument(
+        "--artifact",
+        action="append",
+        help="Full W&B model artifact ref to evaluate. May be passed more than once.",
     )
-    parser.add_argument("run_name", nargs="?", help="Training run name / artifact prefix")
-    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT_PATH, help="W&B entity/project")
-    parser.add_argument("--artifact", action="append", help="Explicit checkpoint artifact ref")
-    parser.add_argument("--root", default="runs/wandb_artifacts")
+    parser.add_argument(
+        "--artifact-run",
+        help="Training run name used to build a W&B checkpoint artifact ref.",
+    )
+    parser.add_argument("--artifact-project", default=DEFAULT_WANDB_PROJECT_PATH)
+    parser.add_argument(
+        "--artifact-kind",
+        choices=["final", "best", "checkpoint"],
+        default="checkpoint",
+    )
+    parser.add_argument("--artifact-version", default="latest")
+    parser.add_argument("--artifact-root", default="runs/wandb_artifacts")
+    parser.add_argument(
+        "--checkpoint-series",
+        action="store_true",
+        help="With --artifact-run, evaluate every checkpoint version instead of one version.",
+    )
     parser.add_argument("--eval-dir", default="runs/local_evals")
     parser.add_argument("--max-checkpoints", type=int, default=0)
     parser.add_argument(
-        "--force", action="store_true", help="Re-evaluate checkpoints already logged"
+        "--force", action="store_true", help="Re-evaluate checkpoint steps already logged locally."
     )
+    parser.add_argument("--policy", choices=["random", "right", "noop"], default="random")
     parser.add_argument("--episodes", type=int, default=20)
-    add_env_config_args(parser, max_steps_default=2500)
-    parser.add_argument("--seed", type=int, default=10007)
+    add_env_config_args(parser, max_steps_default=4500)
+    parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
         "--seed-offset-by-checkpoint-step",
         action="store_true",
         help=(
             "Use the legacy eval seed schedule of --seed + checkpoint_step. "
-            "By default, all checkpoints use the same eval seed schedule for fair comparison."
+            "By default, checkpoint artifacts use the same eval seed schedule for fair comparison."
         ),
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    parser.add_argument("--deterministic", action="store_true", help="Use greedy policy actions")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Use deterministic argmax actions instead of stochastic policy sampling.",
+    )
     parser.add_argument("--record-best-video", action="store_true")
     parser.add_argument("--video-fps", type=float, default=30.0)
     parser.add_argument("--video-scale", type=int, default=4)
@@ -314,28 +446,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     parser.add_argument("--no-wandb-log", action="store_true")
     parser.add_argument("--no-promote-best", action="store_true")
+    parser.add_argument("--output", help="Optional JSON output path")
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print one progress line per completed episode to stderr.",
+    )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Omit per-episode details from stdout JSON.",
+    )
     return parser
 
 
-def main() -> None:
-    parser = build_parser()
-    parser_defaults = vars(parser.parse_args([]))
-    explicit_dests = explicit_arg_dests(parser, sys.argv[1:])
-    explicit_dests.add("done_on_info_json")
-    args = parser.parse_args()
+def run_checkpoint_artifact_eval(
+    args: argparse.Namespace,
+    parser_defaults: dict[str, object],
+    explicit_dests: set[str],
+) -> None:
     if args.episodes < 1:
         raise SystemExit("--episodes must be >= 1")
-    if not args.run_name and args.artifact:
-        args.run_name = slug(args.artifact[0].split("/")[-1].split("-checkpoint", 1)[0])
-    if not args.run_name:
-        raise SystemExit("run_name is required")
-
+    args.eval_run_name = artifact_eval_name(args)
     artifacts = find_checkpoint_artifacts(args)
     if not artifacts:
         print("No checkpoint artifacts found")
         return
 
-    history_path = Path(args.eval_dir) / args.run_name / "checkpoint_eval_metrics.jsonl"
+    history_path = Path(args.eval_dir) / args.eval_run_name / "checkpoint_eval_metrics.jsonl"
     history = load_eval_history(history_path)
     evaluated_steps = {int(row["checkpoint_step"]) for row in history}
     wandb_run = init_wandb_run(args, artifacts)
@@ -354,7 +493,7 @@ def main() -> None:
                 print(f"Skipping step {checkpoint_step}: already evaluated")
                 continue
 
-            model_path = download_artifact(artifact, Path(args.root))
+            model_path = download_artifact(artifact, Path(args.artifact_root))
             checkpoint_step = checkpoint_step or checkpoint_step_from_artifact(artifact, model_path)
             if checkpoint_step is None:
                 print(f"Skipping {artifact_name}: cannot infer checkpoint step", file=sys.stderr)
@@ -408,6 +547,92 @@ def main() -> None:
     finally:
         if wandb_run is not None:
             wandb_run.finish()
+
+
+def main() -> None:
+    parser = build_parser()
+    parser_defaults = vars(parser.parse_args([]))
+    explicit_dests = explicit_arg_dests(parser, sys.argv[1:])
+    explicit_dests.add("done_on_info_json")
+    args = parser.parse_args()
+    if args.artifact or args.artifact_run:
+        run_checkpoint_artifact_eval(args, parser_defaults, explicit_dests)
+        return
+    if args.model:
+        apply_model_config_defaults(args, Path(args.model), parser_defaults, explicit_dests)
+    assert_rom_imported(args.game)
+    config = resolve_env_config(
+        env_config_from_args(
+            args,
+            max_episode_steps_attr="max_steps",
+            include_states=True,
+        )
+    )
+    model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
+
+    if model is not None:
+        env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+        try:
+            episodes = []
+            for episode_idx in range(args.episodes):
+                result = run_eval_episode(
+                    env,
+                    model=model,
+                    max_steps=args.max_steps,
+                    deterministic=eval_deterministic(args),
+                    seed=args.seed + episode_idx,
+                    completion_x_threshold=config.completion_x_threshold,
+                    default_start_state=config.state,
+                )
+                result.pop("actions")
+                episodes.append(result)
+                if args.progress:
+                    print(
+                        "eval_episode="
+                        f"{episode_idx + 1}/{args.episodes} "
+                        f"state={result.get('start_state')} "
+                        f"complete={bool(result.get('level_complete'))} "
+                        f"max_x={int(result.get('max_x_pos', 0))} "
+                        f"steps={int(result.get('steps', 0))}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+        finally:
+            env.close()
+    else:
+        action_names = action_names_for_set(args.action_set, game=args.game)
+        env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+        episodes = [
+            run_scripted_episode(
+                env,
+                policy=args.policy,
+                max_steps=args.max_steps,
+                action_names=action_names,
+                completion_x_threshold=config.completion_x_threshold,
+                default_start_state=config.state,
+            )
+            for _ in range(args.episodes)
+        ]
+        env.close()
+
+    summary = summarize_episode_results(
+        episodes,
+        deterministic=bool(args.model and eval_deterministic(args)),
+        extra={
+            "model": args.model,
+            "policy": "ppo" if args.model else args.policy,
+            "hud_crop_top": args.hud_crop_top,
+        },
+    )
+    if args.summary_only:
+        summary.pop("episode_results", None)
+    print(json.dumps(summary, indent=2, default=json_default))
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(
+            json.dumps(summary, indent=2, default=json_default) + "\n",
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

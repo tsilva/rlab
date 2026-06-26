@@ -4,10 +4,12 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from rlab import campaign
+from rlab import job_queue
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.eval_job_runner import normalize_eval_config
 from rlab.json_utils import json_safe
@@ -32,6 +34,8 @@ class FakeCursor:
         self.rows = rows if rows is not None else []
         self.executed_sql = ""
         self.executed_params = {}
+        self.executed_sqls = []
+        self.executed_params_list = []
 
     def __enter__(self):
         return self
@@ -42,6 +46,8 @@ class FakeCursor:
     def execute(self, sql, params=None) -> None:
         self.executed_sql = sql
         self.executed_params = params or {}
+        self.executed_sqls.append(sql)
+        self.executed_params_list.append(params or {})
 
     def fetchone(self):
         return self.row
@@ -64,11 +70,11 @@ class FakeConnection:
         return self.cursor_obj
 
 
-class CampaignQueueTests(unittest.TestCase):
+class JobQueueTests(unittest.TestCase):
     def test_claim_train_job_filters_exact_profile(self) -> None:
         conn = FakeConnection(row={"id": 7, "profile_id": "mario-ppo/post16/rtx4090-screening"})
 
-        row = campaign.claim_train_job(
+        row = job_queue.claim_train_job(
             conn,
             profile_id="mario-ppo/post16/rtx4090-screening",
             runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -91,7 +97,7 @@ class CampaignQueueTests(unittest.TestCase):
     def test_claim_train_job_allows_any_profile_when_unspecified(self) -> None:
         conn = FakeConnection(row={"id": 9, "profile_id": "mario-ppo/post21/any-lane"})
 
-        row = campaign.claim_train_job(
+        row = job_queue.claim_train_job(
             conn,
             profile_id=None,
             runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -108,7 +114,7 @@ class CampaignQueueTests(unittest.TestCase):
     def test_claim_train_job_does_not_reclaim_expired_running_leases(self) -> None:
         conn = FakeConnection(row=None)
 
-        row = campaign.claim_train_job(
+        row = job_queue.claim_train_job(
             conn,
             profile_id=None,
             runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -124,33 +130,36 @@ class CampaignQueueTests(unittest.TestCase):
 
     def test_secret_like_keys_are_rejected_from_persisted_json(self) -> None:
         with self.assertRaisesRegex(ValueError, "secret-like key"):
-            campaign.assert_no_secrets(
+            job_queue.assert_no_secrets(
                 {"learning_rate": 0.0001, "WANDB_API_KEY": "do-not-store"},
                 label="train_config",
             )
 
-    def test_schema_defines_research_campaign_tables(self) -> None:
-        self.assertIn("CREATE TABLE IF NOT EXISTS research_goals", campaign.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS experiment_specs", campaign.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", campaign.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS eval_jobs", campaign.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS eval_results", campaign.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS campaign_decisions", campaign.SCHEMA_SQL)
-        self.assertIn("origin_decision_id", campaign.SCHEMA_SQL)
-        self.assertIn("runtime_image_ref TEXT", campaign.SCHEMA_SQL)
-        self.assertIn("run_target TEXT", campaign.SCHEMA_SQL)
-        self.assertIn("ALTER COLUMN profile_id DROP NOT NULL", campaign.SCHEMA_SQL)
-        self.assertIn("train_jobs_runtime_claim_idx", campaign.SCHEMA_SQL)
+    def test_schema_defines_queue_tables(self) -> None:
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS research_goals", job_queue.SCHEMA_SQL)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS experiment_specs", job_queue.SCHEMA_SQL)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS campaign_decisions", job_queue.SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", job_queue.SCHEMA_SQL)
+        self.assertIn("goal_slug TEXT NOT NULL", job_queue.SCHEMA_SQL)
+        self.assertIn("spec_payload_json JSONB", job_queue.SCHEMA_SQL)
+        self.assertIn("spec_sha256 TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS eval_jobs", job_queue.SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS eval_results", job_queue.SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS job_events", job_queue.SCHEMA_SQL)
+        self.assertNotIn("origin_decision_id", job_queue.SCHEMA_SQL)
+        self.assertIn("runtime_image_ref TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("run_target TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("train_jobs_runtime_claim_idx", job_queue.SCHEMA_SQL)
 
     def test_record_running_train_result_upserts_wandb_url(self) -> None:
         conn = FakeConnection()
 
-        campaign.record_running_train_result(
+        job_queue.record_running_train_result(
             conn,
             job={
                 "id": 12,
-                "goal_id": 1,
-                "experiment_spec_id": 2,
+                "goal_slug": "goal",
+                "spec_slug": "spec",
                 "profile_id": None,
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
                 "run_target": "rtx4090",
@@ -190,7 +199,7 @@ class CampaignQueueTests(unittest.TestCase):
             ]
         )
 
-        rows = campaign.list_stale_train_jobs(
+        rows = job_queue.list_stale_train_jobs(
             conn,
             run_target="rtx2060",
             lease_owner_prefix="rlab-beast-2-",
@@ -212,7 +221,7 @@ class CampaignQueueTests(unittest.TestCase):
     def test_mark_stale_train_jobs_failed_updates_job_and_result(self) -> None:
         conn = FakeConnection(rows=[{"id": 12, "stale_lease_owner": "rlab-beast-2-x"}])
 
-        rows = campaign.mark_stale_train_jobs_failed(
+        rows = job_queue.mark_stale_train_jobs_failed(
             conn,
             job_ids=[12],
             run_target="rtx2060",
@@ -234,10 +243,10 @@ class CampaignQueueTests(unittest.TestCase):
         )
 
     def test_mark_stale_failed_execute_requires_scope_or_all(self) -> None:
-        args = campaign.build_parser().parse_args(["mark-stale-failed", "--execute"])
+        args = job_queue.build_parser().parse_args(["mark-stale-failed", "--execute"])
 
         with self.assertRaisesRegex(SystemExit, "refusing unscoped"):
-            campaign.cmd_mark_stale_failed(args)
+            job_queue.cmd_mark_stale_failed(args)
 
     def test_enqueue_train_job_persists_runtime_and_target(self) -> None:
         conn = FakeConnection(
@@ -249,10 +258,10 @@ class CampaignQueueTests(unittest.TestCase):
             }
         )
 
-        row = campaign.enqueue_train_job(
+        row = job_queue.enqueue_train_job(
             conn,
-            goal_id=1,
-            experiment_spec_id=2,
+            goal_slug="goal",
+            spec_slug="spec",
             profile_id="mario-ppo/post21/rtx4090",
             runtime_image_ref=RUNTIME_IMAGE_REF,
             run_target="rtx4090",
@@ -260,9 +269,13 @@ class CampaignQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertIn("runtime_image_ref", conn.cursor_obj.executed_sql)
-        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
+        all_sql = "\n".join(conn.cursor_obj.executed_sqls)
+        self.assertIn("runtime_image_ref", all_sql)
+        insert_params = conn.cursor_obj.executed_params_list[0]
+        self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertEqual(insert_params["run_target"], "rtx4090")
+        self.assertEqual(insert_params["goal_slug"], "goal")
+        self.assertEqual(insert_params["spec_slug"], "spec")
 
     def test_enqueue_train_job_allows_profileless_digest_locked_jobs(self) -> None:
         conn = FakeConnection(
@@ -274,10 +287,10 @@ class CampaignQueueTests(unittest.TestCase):
             }
         )
 
-        row = campaign.enqueue_train_job(
+        row = job_queue.enqueue_train_job(
             conn,
-            goal_id=1,
-            experiment_spec_id=2,
+            goal_slug="goal",
+            spec_slug="spec",
             profile_id=None,
             runtime_image_ref=RUNTIME_IMAGE_REF,
             run_target="rtx4090",
@@ -285,15 +298,16 @@ class CampaignQueueTests(unittest.TestCase):
         )
 
         self.assertIsNone(row["profile_id"])
-        self.assertIsNone(conn.cursor_obj.executed_params["profile_id"])
-        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        insert_params = conn.cursor_obj.executed_params_list[0]
+        self.assertIsNone(insert_params["profile_id"])
+        self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
 
     def test_enqueue_train_job_rejects_legacy_event_launch_config(self) -> None:
         with self.assertRaisesRegex(ValueError, "legacy event key.*done_on_info_json"):
-            campaign.enqueue_train_job(
+            job_queue.enqueue_train_job(
                 FakeConnection(),
-                goal_id=1,
-                experiment_spec_id=2,
+                goal_slug="goal",
+                spec_slug="spec",
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
@@ -307,10 +321,10 @@ class CampaignQueueTests(unittest.TestCase):
 
     def test_enqueue_train_job_requires_done_events_to_be_info_events(self) -> None:
         with self.assertRaisesRegex(ValueError, "references unconfigured info event"):
-            campaign.enqueue_train_job(
+            job_queue.enqueue_train_job(
                 FakeConnection(),
-                goal_id=1,
-                experiment_spec_id=2,
+                goal_slug="goal",
+                spec_slug="spec",
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
@@ -325,10 +339,10 @@ class CampaignQueueTests(unittest.TestCase):
         conn = FakeConnection(row={"id": 9})
 
         with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
-            campaign.enqueue_train_job(
+            job_queue.enqueue_train_job(
                 conn,
-                goal_id=1,
-                experiment_spec_id=2,
+                goal_slug="goal",
+                spec_slug="spec",
                 profile_id="mario-ppo/post21/rtx4090",
                 runtime_image_ref="docker:ghcr.io/tsilva/rlab/rlab-train:latest",
                 train_config={"timesteps": 1024},
@@ -343,21 +357,21 @@ class CampaignQueueTests(unittest.TestCase):
             image_branch="main",
             image_artifact="artifact",
         )
-        original = campaign.latest_runtime_image_ref
+        original = job_queue.latest_runtime_image_ref
         calls = []
 
         def fake_latest_runtime_image_ref(**kwargs):
             calls.append(kwargs)
             return RUNTIME_IMAGE_REF
 
-        campaign.latest_runtime_image_ref = fake_latest_runtime_image_ref
+        job_queue.latest_runtime_image_ref = fake_latest_runtime_image_ref
         try:
             self.assertEqual(
-                campaign.runtime_image_ref_from_args(args, default_latest=True),
+                job_queue.runtime_image_ref_from_args(args, default_latest=True),
                 RUNTIME_IMAGE_REF,
             )
         finally:
-            campaign.latest_runtime_image_ref = original
+            job_queue.latest_runtime_image_ref = original
         self.assertEqual(
             calls,
             [{"workflow": "workflow", "branch": "main", "artifact_name": "artifact"}],
@@ -366,7 +380,7 @@ class CampaignQueueTests(unittest.TestCase):
     def test_claim_eval_job_filters_exact_profile(self) -> None:
         conn = FakeConnection(row={"id": 8, "profile_id": "mario-ppo/post16/rtx4090-eval"})
 
-        row = campaign.claim_eval_job(
+        row = job_queue.claim_eval_job(
             conn,
             profile_id="mario-ppo/post16/rtx4090-eval",
             worker_id="worker-a",
@@ -383,7 +397,7 @@ class CampaignQueueTests(unittest.TestCase):
     def test_claim_eval_job_does_not_reclaim_expired_running_leases(self) -> None:
         conn = FakeConnection(row=None)
 
-        row = campaign.claim_eval_job(
+        row = job_queue.claim_eval_job(
             conn,
             profile_id="mario-ppo/post16/rtx4090-eval",
             worker_id="worker-a",
@@ -395,105 +409,33 @@ class CampaignQueueTests(unittest.TestCase):
         self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
         self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
 
-    def test_render_lineage_tree_shows_decision_spec_run_and_eval_causality(self) -> None:
-        report = {
-            "goal": {
-                "id": 1,
-                "slug": "mario-level1",
-                "title": "Solve Mario Level 1",
-                "status": "active",
-                "objective_json": {"target": "completion"},
-                "constraints_json": {},
-            },
-            "specs": [
-                {
-                    "id": 10,
-                    "slug": "baseline",
-                    "hypothesis": "Known reward shape is a viable baseline.",
-                    "expected_signal": "Some completions by 5M steps.",
-                    "parent_spec_id": None,
-                    "origin_decision_id": 100,
-                    "priority": 0,
-                    "status": "active",
-                },
-                {
-                    "id": 11,
-                    "slug": "lower-kl",
-                    "hypothesis": "Lower KL should stabilize late policy updates.",
-                    "expected_signal": "Higher completion rate than baseline.",
-                    "parent_spec_id": 10,
-                    "origin_decision_id": None,
-                    "priority": 1,
-                    "status": "active",
-                },
-            ],
-            "train_jobs": [
-                {
-                    "id": 20,
-                    "experiment_spec_id": 10,
-                    "profile_id": "rtx4090-screening",
-                    "status": "succeeded",
-                    "priority": 0,
-                    "run_name": "baseline_s1",
-                    "run_description": "Baseline seed.",
-                    "origin_decision_id": 100,
-                    "metrics_json": {"completion_rate": "0.20", "total_timesteps": 5000000},
-                    "wandb_url": "https://wandb.ai/e/p/runs/abc",
-                    "error": None,
-                    "result_error": None,
-                }
-            ],
-            "eval_jobs": [
-                {
-                    "id": 30,
-                    "experiment_spec_id": 10,
-                    "train_job_id": 20,
-                    "profile_id": "level1-eval",
-                    "status": "succeeded",
-                    "priority": 0,
-                    "candidate_label": "baseline-step-5m",
-                    "origin_decision_id": None,
-                    "model_ref": "entity/project/baseline-checkpoint:v50",
-                    "metrics_json": {"completion_rate": 0.2, "episodes": 100},
-                    "error": None,
-                    "result_error": None,
-                }
-            ],
-            "decisions": [
-                {
-                    "id": 100,
-                    "decision_type": "launch",
-                    "summary": "Start from the known baseline.",
-                    "rationale": "Previous evals showed enough signal to justify a control.",
-                    "affected_spec_ids": [10],
-                    "affected_train_job_ids": [20],
-                    "affected_eval_job_ids": [],
-                    "metadata_json": {},
-                },
-                {
-                    "id": 101,
-                    "decision_type": "branch",
-                    "summary": "Try lower KL after baseline plateaued.",
-                    "rationale": "Baseline eval completed some episodes but late updates were unstable.",
-                    "affected_spec_ids": [11],
-                    "affected_train_job_ids": [],
-                    "affected_eval_job_ids": [30],
-                    "metadata_json": {},
-                },
-            ],
-        }
+    def test_parser_removed_research_db_commands(self) -> None:
+        parser = job_queue.build_parser()
+        for command in (
+            "create-goal",
+            "add-spec",
+            "add-spec-file",
+            "enqueue-train-from-spec",
+            "decision",
+            "lineage",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                    parser.parse_args([command])
 
-        tree = campaign.render_lineage_tree(report)
+    def test_parser_uses_spec_file_for_train_enqueue(self) -> None:
+        args = job_queue.build_parser().parse_args(
+            [
+                "enqueue-train",
+                "--spec-file",
+                "experiments/goals/example/specs/candidate.json",
+                "--runtime-image-ref-file",
+                "rlab-train-image.json",
+            ]
+        )
 
-        self.assertIn("goal 1: mario-level1 [active]", tree)
-        self.assertIn("- spec 10 baseline [active]", tree)
-        self.assertIn("cause: decision 100 [launch] Start from the known baseline.", tree)
-        self.assertIn("run 20 [succeeded] profile=rtx4090-screening name=baseline_s1", tree)
-        self.assertIn("eval 30 [succeeded] profile=level1-eval", tree)
-        self.assertIn("result: completion_rate=0.2 episodes=100", tree)
-        self.assertIn("- spec 11 lower-kl [active]", tree)
-        self.assertIn("parent: spec 10 baseline", tree)
-        self.assertIn("cause: decision 101 [branch] Try lower KL after baseline plateaued.", tree)
+        self.assertEqual(args.command, "enqueue-train")
+        self.assertEqual(args.spec_file, Path("experiments/goals/example/specs/candidate.json"))
 
     def test_eval_selection_score_prefers_eval_min_completion_then_progress(self) -> None:
         weak_pooled = {
@@ -510,19 +452,14 @@ class CampaignQueueTests(unittest.TestCase):
         }
 
         self.assertGreater(
-            campaign.eval_selection_score(balanced),
-            campaign.eval_selection_score(weak_pooled),
+            job_queue.eval_selection_score(balanced),
+            job_queue.eval_selection_score(weak_pooled),
         )
 
     def test_enqueue_train_jobs_from_spec_expands_seed_templates(self) -> None:
         calls = []
-        old_create = campaign.create_experiment_spec_from_document
-        old_enqueue = campaign.enqueue_train_job
-        old_utc = campaign._utc_stamp
-
-        def fake_create(conn, document):
-            self.assertEqual(document["slug"], "candidate")
-            return {"id": 22, "goal_id": 11}
+        old_enqueue = job_queue.enqueue_train_job
+        old_utc = job_queue._utc_stamp
 
         def fake_enqueue(conn, **kwargs):
             calls.append(kwargs)
@@ -533,11 +470,10 @@ class CampaignQueueTests(unittest.TestCase):
                 "run_target": kwargs["run_target"],
             }
 
-        campaign.create_experiment_spec_from_document = fake_create
-        campaign.enqueue_train_job = fake_enqueue
-        campaign._utc_stamp = lambda: "20260626T120000Z"
+        job_queue.enqueue_train_job = fake_enqueue
+        job_queue._utc_stamp = lambda: "20260626T120000Z"
         try:
-            rows = campaign.enqueue_train_jobs_from_spec_document(
+            rows = job_queue.enqueue_train_jobs_from_spec_document(
                 object(),
                 document={
                     "goal": "mario-level1-100of100",
@@ -561,12 +497,15 @@ class CampaignQueueTests(unittest.TestCase):
                     },
                 },
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                spec_path="experiments/goals/mario/specs/candidate.json",
+                spec_sha256="abc123",
+                repo_git_commit="deadbeef",
+                repo_dirty=True,
                 instances_path=Path("/tmp/does-not-exist.json"),
             )
         finally:
-            campaign.create_experiment_spec_from_document = old_create
-            campaign.enqueue_train_job = old_enqueue
-            campaign._utc_stamp = old_utc
+            job_queue.enqueue_train_job = old_enqueue
+            job_queue._utc_stamp = old_utc
 
         self.assertEqual([row["run_name"] for row in rows], ["btest_s23_20260626T120000Z", "btest_s24_20260626T120000Z"])
         self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
@@ -581,6 +520,12 @@ class CampaignQueueTests(unittest.TestCase):
         self.assertNotIn("done_on_info_json", calls[0]["train_config"])
         self.assertEqual(calls[0]["priority"], 7)
         self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
+        self.assertEqual(calls[0]["goal_slug"], "mario-level1-100of100")
+        self.assertEqual(calls[0]["spec_slug"], "candidate")
+        self.assertEqual(calls[0]["spec_path"], "experiments/goals/mario/specs/candidate.json")
+        self.assertEqual(calls[0]["spec_sha256"], "abc123")
+        self.assertEqual(calls[0]["repo_git_commit"], "deadbeef")
+        self.assertTrue(calls[0]["repo_dirty"])
 
 
 class TrainRunnerTests(unittest.TestCase):

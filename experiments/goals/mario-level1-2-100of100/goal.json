@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "goal_slug": "mario-level1-2-100of100",
+  "title": "Sample-efficient SuperMarioBros-NES Level1-2 completion",
+  "status": "active",
+  "updated_at": "2026-06-26",
+  "goal_dir": "experiments/goals/mario-level1-2-100of100",
+  "objective": {
+    "game": "SuperMarioBros-Nes-v0",
+    "states": ["Level1-2"],
+    "algorithm": "PPO",
+    "primary_metric": "eval/done/level_change/rate",
+    "primary_metric_note": "For single-state Level1-2 evals, pooled completion should match eval/done/level_change/from/Level1-2/rate when that per-start metric is present.",
+    "training_stop_metric": "train/outcome/level_change/from/0-1/attempt_window/rate",
+    "success_threshold": 1.0,
+    "success_window_attempts": 100,
+    "max_train_timesteps": 5000000,
+    "attempt_denominator": "Source-level Level1-2 attempts. In terminal-on-level-change runs this is equivalent to completed terminal episodes; in continued multi-level runs it also counts non-terminal natural level transitions.",
+    "forbidden_stop_rules": [
+      "Do not use rollout-count completion stops because their meaning changes with n_envs, n_steps, and rollout cadence."
+    ]
+  },
+  "constraints": {
+    "curriculum": "none",
+    "training_path": "native_vector_env",
+    "wandb_project": "SuperMarioBros-NES",
+    "wandb_logging_required": true,
+    "run_description_required": true
+  },
+  "selection_policy": {
+    "source": "out_of_process_eval",
+    "rank_order": [
+      "eval/done/level_change/from_rate/min",
+      "eval/done/level_change/from/Level1-2/rate",
+      "eval/done/level_change/rate",
+      "eval/progress/x/max",
+      "eval/reward/mean"
+    ],
+    "training_metrics_use": "diagnostic_only",
+    "fixed_budget_completion_timesteps": [2000000, 3000000, 4000000, 5000000],
+    "confirmation_tie_breakers": [
+      "higher success count across confirmation seeds",
+      "lower median time_to_100_of_100",
+      "lower worst successful seed time",
+      "higher completion rate at fixed budgets",
+      "higher external checkpoint eval completion rate"
+    ]
+  },
+  "runtime": {
+    "stable_retro_turbo": "1.0.0.post21",
+    "runtime_image_ref": "digest-pinned GHCR train image from rlab-train-image.json",
+    "python": "3.14",
+    "dependency_lock": "uv.lock"
+  },
+  "seed_protocol": {
+    "screen": [60],
+    "confirm": [60, 61, 62, 63, 64],
+    "same_seed_note": "Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA."
+  },
+  "cap_policy": {
+    "active_cap_timesteps": 5000000,
+    "ratchet_rule": "If a confirmed baseline succeeds on all confirmation seeds below the active cap, lower future caps to the slowest successful seed rounded up to the next 100k.",
+    "increase_rule": "Do not increase the cap unless the goal changes or an infrastructure bug invalidates the baseline."
+  },
+  "search_protocol": {
+    "screen": "Run screen seeds first. Reject obvious negatives. Advance candidates that reach the success window, materially improve fixed-budget completion metrics, or look promising enough to justify confirmation.",
+    "confirm": "Promote only if success count is at least as good as the incumbent, median time_to_100_of_100 is better, there is no severe reliability regression, and all runs either stop by the success window or reach the cap.",
+    "baseline_definition": "A baseline is the best confirmed config, not the best single run. Single lucky runs generate hypotheses; they do not replace the baseline."
+  },
+  "incumbent": {
+    "recipe_slug": "b46-b44-same-hparams-level1-2",
+    "recipe_file": "experiments/goals/mario-level1-2-100of100/recipes/supermariobros_nes_level1_2_teacher_recipe.md",
+    "evidence_runtime": "stable-retro-turbo==1.0.0.post14-era recipe evidence",
+    "status": "single-seed teacher evidence; not a confirmed baseline; revalidate active launches under post21 runtime",
+    "mean_stop_step": null,
+    "successful_seeds": [60],
+    "wandb_run_id": "5fpk7ki3",
+    "wandb_run_name": "b46_b44_level1_2_same_hparams_5m_stop100ep100_seed60_20260620_124408"
+  },
+  "default_train_spec_file": "experiments/goals/mario-level1-2-100of100/specs/b85-b46-post21-five-seed-l12-confirm.json",
+  "default_train_profile": null,
+  "default_train_profile_note": "Queue-backed launches are profileless by default; use the spec run_target plus a digest-pinned runtime image.",
+  "default_eval_profile": "mario-level1-eval/post21/vector-cpu",
+  "capacity_policy_file": "experiments/policies/capacity_policy.json",
+  "execution": {
+    "queue_manager": "rlab-fleet",
+    "primary_train_target": "rtx4090",
+    "primary_train_host": "beast-3",
+    "hardware_config_file": "experiments/instances.json",
+    "fleet_config_file": "experiments/fleet.json",
+    "manual_trainers": "Avoid ad hoc second trainers through sky exec, docker exec, or manual host shells for comparable runs.",
+    "backfill_rule": "Backfill finished slots only while the next queued run still has decision value."
+  },
+  "determinism": {
+    "default": "Measure the real training distribution. Do not enable deterministic CUDA flags by default because they can slow training and alter the optimizer/kernel path.",
+    "debug_only": {
+      "environment": ["CUBLAS_WORKSPACE_CONFIG=:4096:8"],
+      "torch_settings": [
+        "torch.backends.cudnn.benchmark = False",
+        "torch.backends.cudnn.deterministic = True",
+        "torch.use_deterministic_algorithms(True, warn_only=True)"
+      ],
+      "note": "If used, mark deterministic CUDA as a separate runtime condition."
+    }
+  },
+  "batch_record_fields": [
+    "hypothesis",
+    "config_delta",
+    "stage",
+    "active_cap",
+    "seeds",
+    "wandb_group",
+    "runs",
+    "aggregate",
+    "decision",
+    "baseline_update"
+  ],
+  "historical_context": [
+    "Level1-2 was previously useful as a single-level teacher for Level1-1/Level1-2 distillation, but that is not the same as a confirmed five-seed baseline.",
+    "The old completed-episode stop flags are retired from new launches; use attempt-window metrics from configured info events instead.",
+    "Historical BASELINE names are retired. In this repo, baseline means a config confirmed under the current 100/100 protocol."
+  ],
+  "notes": [
+    "Use this file as the operator-facing current contract; goal-owned specs and recipe evidence live beside it under this goal directory.",
+    "Do not promote a policy from final checkpoint reward alone.",
+    "Prefer paired confirmation against the incumbent before declaring a new baseline."
+  ]
+}

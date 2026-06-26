@@ -97,7 +97,6 @@ TRAIN_VALUE_OPTIONS = {
     "run_target": "--run-target",
 }
 TRAIN_TRUE_FLAGS = {
-    "eval_stochastic": "--eval-stochastic",
     "no_eval_videos": "--no-eval-videos",
     "task_conditioning": "--task-conditioning",
     "use_retro_reward": "--use-retro-reward",
@@ -107,6 +106,7 @@ TRAIN_TRUE_FLAGS = {
     "no_wandb_artifacts": "--no-wandb-artifacts",
 }
 TRAIN_BOOLEAN_OPTIONS = {
+    "eval_stochastic": ("--eval-stochastic", "--no-eval-stochastic"),
     "max_pool_frames": ("--max-pool-frames", "--no-max-pool-frames"),
     "normalize_advantage": ("--normalize-advantage", "--no-normalize-advantage"),
 }
@@ -331,7 +331,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Training-loop eval frequency. Keep 0 to evaluate checkpoints out of process.",
     )
     parser.add_argument("--eval-episodes", type=int, default=0)
-    parser.add_argument("--eval-stochastic", action="store_true")
+    parser.add_argument(
+        "--eval-stochastic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Sample from the policy during training-loop eval; "
+            "use --no-eval-stochastic for deterministic eval."
+        ),
+    )
     parser.add_argument(
         "--completion-x-threshold",
         type=int,

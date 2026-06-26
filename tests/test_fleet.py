@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from rlab import fleet
+from rlab import fleet, runtime_refs
 from rlab.runtime_refs import runtime_image_ref_from_file
 
 
@@ -219,6 +219,62 @@ class FleetQueueTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
                 runtime_image_ref_from_file(path)
+
+    def test_recent_runtime_images_reads_artifact_metadata(self) -> None:
+        runs = [
+            {
+                "databaseId": 101,
+                "headSha": "1111111111111111111111111111111111111111",
+                "displayTitle": "Add fleet watcher provenance",
+                "updatedAt": "2026-06-26T19:07:51Z",
+            },
+            {
+                "databaseId": 100,
+                "headSha": "2222222222222222222222222222222222222222",
+                "displayTitle": "Tune train image",
+                "updatedAt": "2026-06-26T18:41:12Z",
+            },
+        ]
+        payloads = {
+            "101": {
+                "image": "ghcr.io/tsilva/rlab/rlab-train",
+                "digest": "sha256:" + "a" * 64,
+                "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "workflow_run_id": "101",
+            },
+            "100": {
+                "runtime_image_ref": "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "b" * 64,
+                "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "workflow_run_id": "100",
+            },
+        }
+
+        def fake_run(command, **kwargs):
+            if command[:3] == ["gh", "run", "list"]:
+                return mock.Mock(returncode=0, stdout=json.dumps(runs), stderr="")
+            if command[:3] == ["gh", "run", "download"]:
+                run_id = command[3]
+                output_dir = Path(command[command.index("--dir") + 1])
+                (output_dir / "rlab-train-image.json").write_text(
+                    json.dumps(payloads[run_id]),
+                    encoding="utf-8",
+                )
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with mock.patch.object(runtime_refs.subprocess, "run", side_effect=fake_run):
+            images = runtime_refs.recent_runtime_images(
+                workflow="workflow",
+                branch="main",
+                artifact_name="artifact",
+                limit=2,
+            )
+
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0].runtime_image_ref, "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "a" * 64)
+        self.assertEqual(images[0].source_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(images[0].commit_message, "Add fleet watcher provenance")
+        self.assertEqual(images[0].published_at, "2026-06-26T19:07:51Z")
 
     def test_capacity_policy_formatter_lists_lanes_and_checks(self) -> None:
         text = fleet.format_capacity_policy(
@@ -675,6 +731,32 @@ class FleetPlanTests(unittest.TestCase):
                 ),
                 warnings=(),
             ),
+            recent_images=(
+                fleet.RuntimeImageInfo(
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    source_sha="abcdef1234567890abcdef1234567890abcdef12",
+                    commit_message="Add fleet watcher provenance",
+                    published_at="2026-06-26T19:07:51Z",
+                    workflow_run_id="101",
+                ),
+            ),
+            devices=(
+                {
+                    "id": "rtx4090",
+                    "device": "beast-3",
+                    "target": "docker/beast-3",
+                    "state": "busy",
+                    "current_jobs": ["141"],
+                    "current_job": "141",
+                    "last_check": "reachable",
+                    "details": {
+                        "cpu": "33%",
+                        "memory": "20.0/64.0 GB",
+                        "gpu": "91%",
+                        "vram": "15.0/24.0 GB",
+                    },
+                },
+            ),
             execute=True,
             interval=30,
         )
@@ -683,12 +765,98 @@ class FleetPlanTests(unittest.TestCase):
 
         self.assertIn("rlab fleet watch", output)
         self.assertIn("mode=execute", output)
+        self.assertIn("hosts live=1 down=0 queue pending=0 running=1 actions=0 stale=0", output)
         self.assertIn("latest=cccccccccccc", output)
         self.assertNotIn("sha256:cccccccccccc", output)
+        self.assertNotIn("\033[", output)
+        self.assertIn("recent images:", output)
+        self.assertIn("abcdef123456", output)
+        self.assertIn("2026-06-26 19:07Z", output)
+        self.assertIn("Add fleet watcher provenance", output)
         self.assertIn("beast-3", output)
         self.assertIn("live", output)
+        self.assertIn("active devices:", output)
+        self.assertIn("91%", output)
+        self.assertIn("15.0/24.0 GB", output)
+        self.assertIn("20.0/64.0 GB", output)
         self.assertIn("b83_l11_b55post21_s23_20260626T190751Z", output)
         self.assertIn("actions:\nnone", output)
+
+        color_output = fleet.render_latest_watch_dashboard(snapshot, color=True, max_width=120)
+
+        self.assertIn("\033[", color_output)
+        self.assertIn("recent images:", color_output)
+        self.assertIn("Add fleet watcher provenance", color_output)
+
+    def test_watch_latest_snapshot_probes_only_active_devices(self) -> None:
+        args = Namespace(
+            repo_root=".",
+            fleet_config=None,
+            instances=None,
+            direct=False,
+            host=None,
+            workers=None,
+            image="latest",
+            image_file=None,
+            runtime_image_ref=None,
+            runtime_image_ref_file=None,
+            image_workflow="rlab train image",
+            image_branch="main",
+            image_artifact="rlab-train-image",
+            execute=False,
+            interval=5,
+            claim_stale_jobs=True,
+            stale_older_than_seconds=300,
+            stale_limit=50,
+        )
+        fake_conn = mock.Mock()
+        job = fleet.RunningJob(
+            id=141,
+            lease_owner="rlab-beast-3-rtx4090-any-profile-cccccccccccc-0-aabbccdd",
+            profile_id=None,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="rtx4090",
+            run_name="b83_l11_b55post21_s23_20260626T190751Z",
+            started_at=datetime.now(UTC),
+            heartbeat_at=datetime.now(UTC),
+        )
+        probe = fleet.DeviceProbe(
+            ok=True,
+            label="SSH",
+            detail="BEAST-3",
+            metrics={
+                "gpu_util_pct": 75,
+                "vram_used_mib": 12288,
+                "vram_total_mib": 24576,
+                "ram_used_mib": 32768,
+                "ram_total_mib": 65536,
+                "cpu_util_pct": 42,
+            },
+        )
+
+        with (
+            mock.patch.object(fleet, "_load_config_from_args", return_value=sample_config()),
+            mock.patch.object(fleet, "image_ref_from_args", return_value=RUNTIME_IMAGE_REF),
+            mock.patch.object(fleet, "recent_runtime_images", return_value=()),
+            mock.patch.object(fleet, "_connect_from_args", return_value=fake_conn),
+            mock.patch.object(fleet, "list_stale_train_jobs", return_value=[]),
+            mock.patch.object(fleet, "queue_demands", return_value=[]),
+            mock.patch.object(fleet, "active_leases", return_value=[]),
+            mock.patch.object(fleet, "running_jobs", return_value=[job]),
+            mock.patch.object(fleet, "live_device_probes", return_value={"rtx4090": probe}) as probes,
+            mock.patch.object(fleet, "collect_existing_containers", return_value=([], [])),
+        ):
+            snapshot = fleet.build_latest_watch_snapshot(args)
+
+        probes.assert_called_once_with(["rtx4090"])
+        self.assertEqual(len(snapshot.devices), 1)
+        device = snapshot.devices[0]
+        self.assertEqual(device["id"], "rtx4090")
+        self.assertEqual(device["state"], "busy")
+        self.assertEqual(device["details"]["cpu"], "42%")
+        self.assertEqual(device["details"]["memory"], "32.0/64.0 GB")
+        self.assertEqual(device["details"]["gpu"], "75%")
+        self.assertEqual(device["details"]["vram"], "12.0/24.0 GB")
 
     def test_watch_latest_treats_unreachable_host_as_down_not_failed_action(self) -> None:
         args = Namespace(
@@ -713,6 +881,7 @@ class FleetPlanTests(unittest.TestCase):
         with (
             mock.patch.object(fleet, "_load_config_from_args", return_value=sample_config()),
             mock.patch.object(fleet, "image_ref_from_args", return_value=RUNTIME_IMAGE_REF),
+            mock.patch.object(fleet, "recent_runtime_images", return_value=()),
             mock.patch.object(fleet, "_connect_from_args", return_value=fake_conn),
             mock.patch.object(fleet, "list_stale_train_jobs", return_value=[]),
             mock.patch.object(fleet, "queue_demands", return_value=[]),
@@ -779,6 +948,7 @@ class FleetPlanTests(unittest.TestCase):
         with (
             mock.patch.object(fleet, "_load_config_from_args", return_value=sample_config()),
             mock.patch.object(fleet, "image_ref_from_args", return_value=RUNTIME_IMAGE_REF),
+            mock.patch.object(fleet, "recent_runtime_images", return_value=()),
             mock.patch.object(fleet, "_connect_from_args", return_value=fake_conn),
             mock.patch.object(fleet, "list_stale_train_jobs", side_effect=([stale_row], [])) as list_stale,
             mock.patch.object(fleet, "mark_stale_train_jobs_failed") as mark_stale,
@@ -850,6 +1020,7 @@ class FleetPlanTests(unittest.TestCase):
         with (
             mock.patch.object(fleet, "_load_config_from_args", return_value=sample_config()),
             mock.patch.object(fleet, "image_ref_from_args", return_value=RUNTIME_IMAGE_REF),
+            mock.patch.object(fleet, "recent_runtime_images", return_value=()),
             mock.patch.object(fleet, "_connect_from_args", return_value=fake_conn),
             mock.patch.object(fleet, "list_stale_train_jobs") as list_stale,
             mock.patch.object(fleet, "mark_stale_train_jobs_failed", side_effect=fake_mark_stale) as mark_stale,

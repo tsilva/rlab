@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tempfile
@@ -11,10 +12,6 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 
-from scripts.play_wandb_artifact import (
-    append_explicit_env_args,
-    build_parser as build_wandb_play_parser,
-)
 from rlab.artifacts import (
     apply_model_config_defaults,
     apply_config_defaults,
@@ -70,9 +67,13 @@ from rlab.metric_names import (
 )
 from rlab.play import build_parser as build_play_parser
 from rlab.play import model_observation
+from rlab.play import playback_artifact_ref
 from rlab.play import playback_should_end_episode
 from rlab.play import task_conditioning_change_message
 from rlab.play import task_conditioning_start_message
+from rlab.eval import build_parser as build_eval_parser
+from rlab.eval import eval_seed_for_checkpoint
+from rlab.eval import score as eval_checkpoint_score
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
 from rlab.wandb_artifacts import (
@@ -81,8 +82,6 @@ from rlab.wandb_artifacts import (
     safe_artifact_stem,
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
-from scripts.eval_wandb_checkpoints import eval_seed_for_checkpoint
-from scripts.eval_wandb_checkpoints import score as eval_checkpoint_score
 
 
 class EnvConfigFromArgsTests(unittest.TestCase):
@@ -246,6 +245,13 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
         self.assertEqual(args.wandb_tags, "from-json,config-file")
 
+    def test_training_loop_eval_defaults_to_stochastic(self) -> None:
+        parser = build_train_parser()
+
+        self.assertTrue(parser.parse_args([]).eval_stochastic)
+        self.assertTrue(parser.parse_args(["--eval-stochastic"]).eval_stochastic)
+        self.assertFalse(parser.parse_args(["--no-eval-stochastic"]).eval_stochastic)
+
     def test_parse_done_on_info_rejects_invalid_shapes(self) -> None:
         invalid_values = [
             "{",
@@ -264,7 +270,12 @@ class EnvConfigFromArgsTests(unittest.TestCase):
 
     def test_sticky_action_probability_defaults_to_disabled(self) -> None:
         self.assertEqual(build_play_parser().parse_args([]).sticky_action_prob, 0.0)
-        self.assertEqual(build_wandb_play_parser().parse_args(["run"]).sticky_action_prob, 0.0)
+        self.assertEqual(
+            build_play_parser()
+            .parse_args(["tsilva/SuperMarioBros-NES/run-checkpoint:latest"])
+            .sticky_action_prob,
+            0.0,
+        )
 
     def test_sticky_action_probability_parses_for_playback(self) -> None:
         self.assertEqual(
@@ -272,8 +283,14 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             0.25,
         )
         self.assertEqual(
-            build_wandb_play_parser()
-            .parse_args(["run", "--sticky-action-prob", "0.25"])
+            build_play_parser()
+            .parse_args(
+                [
+                    "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
+                    "--sticky-action-prob",
+                    "0.25",
+                ]
+            )
             .sticky_action_prob,
             0.25,
         )
@@ -1256,6 +1273,11 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--wandb", cmd)
         self.assertIn("--no-normalize-advantage", cmd)
 
+    def test_build_train_command_can_request_deterministic_eval(self) -> None:
+        cmd = build_train_command({"eval_stochastic": False})
+
+        self.assertIn("--no-eval-stochastic", cmd)
+
     def test_train_parser_accepts_task_conditioning_and_done_on_info_flags(self) -> None:
         args = build_train_parser().parse_args(
             [
@@ -1638,9 +1660,22 @@ class CommandAndArtifactTests(unittest.TestCase):
     def test_gui_playback_defaults_to_stochastic(self) -> None:
         parser = build_play_parser()
 
-        self.assertTrue(parser.parse_args([]).stochastic)
-        self.assertTrue(parser.parse_args(["--stochastic"]).stochastic)
-        self.assertFalse(parser.parse_args(["--no-stochastic"]).stochastic)
+        self.assertFalse(parser.parse_args([]).deterministic)
+        self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        help_text = parser.format_help()
+        self.assertIn("--deterministic", help_text)
+        self.assertNotIn("--stochastic", help_text)
+        self.assertNotIn("--no-stochastic", help_text)
+
+    def test_eval_defaults_to_stochastic(self) -> None:
+        parser = build_eval_parser()
+
+        self.assertFalse(parser.parse_args([]).deterministic)
+        self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        help_text = parser.format_help()
+        self.assertIn("--deterministic", help_text)
+        self.assertNotIn("--stochastic", help_text)
+        self.assertNotIn("--no-stochastic", help_text)
 
     def test_gui_playback_does_not_end_on_completion_without_env_done(self) -> None:
         self.assertFalse(
@@ -1658,36 +1693,39 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
         )
 
-    def test_wandb_gui_playback_defaults_to_stochastic(self) -> None:
-        parser = build_wandb_play_parser()
+    def test_artifact_gui_playback_defaults_to_stochastic(self) -> None:
+        parser = build_play_parser()
 
-        self.assertTrue(parser.parse_args(["run"]).stochastic)
-        self.assertTrue(parser.parse_args(["run", "--stochastic"]).stochastic)
-        self.assertFalse(parser.parse_args(["run", "--no-stochastic"]).stochastic)
+        ref = "tsilva/SuperMarioBros-NES/run-checkpoint:latest"
 
-    def test_wandb_play_forwards_only_explicit_env_overrides(self) -> None:
-        parser = build_wandb_play_parser()
-        argv = [
-            "run",
-            "--state",
-            "Level2-1",
-            "--no-max-pool-frames",
-            "--done-on-info-json",
-            '{"life_loss":["lives","decrease"]}',
-        ]
+        self.assertFalse(parser.parse_args([ref]).deterministic)
+        self.assertTrue(parser.parse_args([ref, "--deterministic"]).deterministic)
+
+    def test_artifact_playback_ref_uses_positional_artifact_ref(self) -> None:
+        parser = build_play_parser()
+        args = parser.parse_args(["tsilva/SuperMarioBros-NES/run-checkpoint:latest"])
+
+        self.assertEqual(
+            playback_artifact_ref(args),
+            "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
+        )
+
+    def test_artifact_playback_ref_rejects_positional_run_name(self) -> None:
+        parser = build_play_parser()
+
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["run"])
+
+    def test_artifact_playback_ref_uses_explicit_run_kind_and_version(self) -> None:
+        parser = build_play_parser()
+        argv = ["--artifact-run", "run", "--artifact-kind", "best", "--artifact-version", "v8"]
         args = parser.parse_args(argv)
-        explicit_dests = explicit_arg_dests(parser, argv)
-        cmd: list[str] = []
 
-        append_explicit_env_args(cmd, parser, args, explicit_dests)
-
-        self.assertIn("--state", cmd)
-        self.assertIn("Level2-1", cmd)
-        self.assertIn("--no-max-pool-frames", cmd)
-        self.assertIn("--done-on-info-json", cmd)
-        self.assertIn('{"life_loss":["lives","decrease"]}', cmd)
-        self.assertNotIn("--game", cmd)
-        self.assertNotIn("--reward-mode", cmd)
+        self.assertEqual(
+            playback_artifact_ref(args),
+            "tsilva/SuperMarioBros-NES/run-best:v8",
+        )
 
     def test_wandb_artifact_metadata_requires_artifact_training_metadata(self) -> None:
         class FakeRun:

@@ -37,7 +37,7 @@ Accepted resume sources are limited to project-produced model artifacts/checkpoi
    - Require expected metadata fields.
    - Download, write sidecar, validate local path and hash.
    - Reject malformed refs and refs outside the configured project before download where possible.
-4. Wire the trust gate into local campaign workers:
+4. Wire the trust gate into local queue workers:
    - In `normalize_train_config()`, validate existing `resume` values before command construction.
    - Replace the `resume_artifact` branch with the trusted W&B helper.
    - Preserve the existing `resume` versus `resume_artifact` conflict error.
@@ -48,14 +48,14 @@ Accepted resume sources are limited to project-produced model artifacts/checkpoi
 ## Tests/verification
 
 - Add unit tests for the trust module: valid checkpoint plus metadata, missing metadata, bad metadata hash, SHA mismatch, non-zip file, symlink escape, outside-root path, and missing file.
-- Update campaign runner resume tests so `resume_artifact` succeeds only when the mocked download returns a checkpoint accepted by the trust gate.
+- Update queue runner resume tests so `resume_artifact` succeeds only when the mocked download returns a checkpoint accepted by the trust gate.
 - Add tests that `normalize_train_config()` rejects unsafe raw `resume` paths and disallowed W&B refs.
 - Add a light `train.py` test around the new loader helper, monkeypatching `PPO.load()` to prove validation runs first.
 
 Run:
 
 ```bash
-uv run pytest tests/test_campaign_runner.py tests/test_core_helpers.py tests/test_resume_trust.py
+uv run pytest tests/test_job_queue_runner.py tests/test_core_helpers.py tests/test_resume_trust.py
 rg -n "PPO\\.load\\(args\\.resume|download_model_artifact\\(.*resume" src tests
 ```
 
@@ -63,7 +63,7 @@ rg -n "PPO\\.load\\(args\\.resume|download_model_artifact\\(.*resume" src tests
 
 This will likely break resuming from older checkpoints that lack sidecar metadata or hashes. Provide a migration path: re-upload/re-log known-good checkpoints with current metadata, or add a temporary explicit `--allow-legacy-resume` only if the owner accepts the residual pickle risk.
 
-Do not delete existing artifacts during remediation. First validate with a known current checkpoint locally, then enable stricter campaign-worker behavior.
+Do not delete existing artifacts during remediation. First validate with a known current checkpoint locally, then enable stricter queue-worker behavior.
 
 Adjacent `PPO.load()` use in eval/play scripts is visible but outside this issue. Track it separately so the training fix stays small.
 

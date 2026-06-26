@@ -6,7 +6,7 @@ Subagent: Goodall
 
 ## Problem
 
-`rlab-monitor` can be bound to `0.0.0.0` or a LAN address via `--host`, but `/` and `/api/state` are served without auth. `/api/state` calls `collect_state()` and returns live campaign jobs. The DB queries currently expose full `to_jsonb(j)` and `to_jsonb(r)` payloads, so a broad bind can leak raw job/result rows, configs, paths, artifact refs, and possibly secret-like config values.
+`rlab-monitor` can be bound to `0.0.0.0` or a LAN address via `--host`, but `/` and `/api/state` are served without auth. `/api/state` calls `collect_state()` and returns live queue jobs. The DB queries currently expose full `to_jsonb(j)` and `to_jsonb(r)` payloads, so a broad bind can leak raw job/result rows, configs, paths, artifact refs, and possibly secret-like config values.
 
 Affected files:
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Autoresearch"
-  short_description: "RTX4090 RL recipe search until reproducible success"
-  default_prompt: "Use $autoresearch to find a reproducible training recipe for <game> that achieves <target>."
+  short_description: "Goal-driven RL recipe search until reproducible success"
+  default_prompt: "Use $autoresearch to achieve <goal-slug> by iterating checked-in specs, queue runs, evals, and decisions."

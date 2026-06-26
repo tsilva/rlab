@@ -15,8 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from rlab.campaign import (
-    campaign_status,
+from rlab.job_queue import (
     claim_train_job,
     connect,
     database_url,
@@ -24,6 +23,7 @@ from rlab.campaign import (
     heartbeat_train_job,
     new_worker_id,
     print_status,
+    queue_status,
     record_running_train_result,
 )
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
@@ -421,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     parser.add_argument(
         "--status-goal",
-        help="Print compact campaign status for this goal before starting workers.",
+        help="Print compact queue status for this goal before starting workers.",
     )
     return parser
 
@@ -431,7 +431,7 @@ def main() -> None:
     if args.status_goal:
         conn = connect(database_url(args.direct))
         try:
-            print_status(campaign_status(conn, goal_slug_or_id=args.status_goal))
+            print_status(queue_status(conn, goal_slug=args.status_goal))
         finally:
             conn.close()
     raise SystemExit(run_pool(args))

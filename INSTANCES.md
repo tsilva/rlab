@@ -1,7 +1,7 @@
 # GPU Instances
 
 This repo currently supports local Docker fleet runners only. Training jobs are
-created in the campaign DB with `rlab-campaign`; Mac-side `rlab-fleet` reconciles
+created in the queue DB with `rlab-queue`; Mac-side `rlab-fleet` reconciles
 Docker containers on `beast-3` and `beast-2` over SSH. Do not use provider
 launchers for this project while the beast path is being hardened.
 
@@ -21,11 +21,12 @@ and policy checks live in `experiments/policies/capacity_policy.json`.
 
 ## Standard Workflow
 
-Queue work through campaign specs or explicit train jobs:
+Queue work from checked-in goal spec files:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-campaign enqueue-train-from-spec \
-  experiments/goals/<goal-slug>/specs/<spec>.json
+UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+  --spec-file experiments/goals/<goal-slug>/specs/<spec>.json \
+  --runtime-image-ref-file rlab-train-image.json
 ```
 
 Inspect and reconcile local capacity from the MacBook:

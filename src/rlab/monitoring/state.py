@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from rlab.campaign import connect, database_url
+from rlab.job_queue import connect, database_url
 from rlab.compute_targets import FLEET_TARGET_KINDS, instance_label, target_kind
 from rlab.json_utils import json_safe
 from rlab.metric_names import (
@@ -638,16 +638,16 @@ def job_from_eval_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def campaign_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if options.sample:
-        return sample_jobs(), {"campaign": "sample", "message": "sample mode"}
+        return sample_jobs(), {"queue": "sample", "message": "sample mode"}
 
     try:
         url = database_url(options.direct)
     except SystemExit as exc:
-        return sample_jobs(), {"campaign": "sample", "message": str(exc)}
+        return sample_jobs(), {"queue": "sample", "message": str(exc)}
 
-    goal_filter = "AND (%(goal)s IS NULL OR g.slug = %(goal)s)"
+    goal_filter = "AND (%(goal)s IS NULL OR j.goal_slug = %(goal)s)"
     params = {"goal": options.goal, "limit": options.limit}
     try:
         conn = connect(url)
@@ -656,13 +656,11 @@ def campaign_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[s
                 cur.execute(
                     f"""
                     SELECT
-                      j.*, g.slug AS goal_slug, s.slug AS spec_slug,
+                      j.*,
                       r.wandb_url, r.metrics_json, r.artifact_refs,
                       to_jsonb(j) AS job_payload,
                       to_jsonb(r) AS result_payload
                     FROM train_jobs j
-                    JOIN research_goals g ON g.id = j.goal_id
-                    LEFT JOIN experiment_specs s ON s.id = j.experiment_spec_id
                     LEFT JOIN train_results r ON r.train_job_id = j.id
                     WHERE j.status IN ('running', 'pending', 'failed')
                     {goal_filter}
@@ -683,12 +681,11 @@ def campaign_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[s
                 cur.execute(
                     f"""
                     SELECT
-                      j.*, g.slug AS goal_slug,
+                      j.*,
                       r.metrics_json, r.model_ref, r.output_path, r.video_path,
                       to_jsonb(j) AS job_payload,
                       to_jsonb(r) AS result_payload
                     FROM eval_jobs j
-                    JOIN research_goals g ON g.id = j.goal_id
                     LEFT JOIN eval_results r ON r.eval_job_id = j.id
                     WHERE j.status IN ('running', 'pending', 'failed')
                     {goal_filter}
@@ -709,11 +706,11 @@ def campaign_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[s
         finally:
             conn.close()
     except Exception as exc:
-        return sample_jobs(), {"campaign": "sample", "message": f"DB unavailable: {exc}"}
+        return sample_jobs(), {"queue": "sample", "message": f"DB unavailable: {exc}"}
 
     jobs = [job_from_train_row(row) for row in train_rows]
     jobs.extend(job_from_eval_row(row) for row in eval_rows)
-    return jobs, {"campaign": "live", "message": f"{len(jobs)} active jobs"}
+    return jobs, {"queue": "live", "message": f"{len(jobs)} active jobs"}
 
 
 def sample_jobs() -> list[dict[str, Any]]:
@@ -1072,7 +1069,7 @@ def devices_from_jobs(
 
 
 def collect_state(options: MonitorOptions) -> dict[str, Any]:
-    jobs, source = campaign_jobs(options)
+    jobs, source = queue_jobs(options)
     probe_keys = [str(device["id"]) for device in base_devices(options.repo_root)]
     probes = {} if options.sample else live_device_probes(probe_keys)
     devices = devices_from_jobs(options.repo_root, jobs, probes)

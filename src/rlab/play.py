@@ -9,6 +9,7 @@ import time
 from collections import deque
 from itertools import count
 from pathlib import Path
+from typing import Any
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -23,6 +24,7 @@ from rlab.artifacts import (
     env_config_from_metadata,
     explicit_arg_dests,
     load_model_metadata,
+    write_model_metadata,
 )
 from rlab.cli_args import add_env_config_args
 from rlab.device import resolve_sb3_device
@@ -38,6 +40,8 @@ from rlab.env import (
 from rlab.env_config import env_config_from_args
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
+from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact, model_artifact_ref
+from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
@@ -211,6 +215,88 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     # the environment actually terminates or truncates the episode.
     del completed
     return bool(terminated or truncated)
+
+
+def artifact_ref_arg(value: str) -> str:
+    parts = value.split("/")
+    artifact_name = parts[-1] if parts else ""
+    if len(parts) != 3 or ":" not in artifact_name or artifact_name.startswith(":"):
+        raise argparse.ArgumentTypeError(
+            "expected W&B artifact ref like entity/project/run-checkpoint:latest"
+        )
+    return value
+
+
+def playback_artifact_ref(args: argparse.Namespace) -> str | None:
+    if args.artifact:
+        return args.artifact
+    if args.artifact_ref:
+        return args.artifact_ref
+    if not args.artifact_run:
+        return None
+    return model_artifact_ref(
+        project=args.artifact_project,
+        run_name=args.artifact_run,
+        kind=args.artifact_kind,
+        version=args.artifact_version,
+    )
+
+
+def apply_artifact_run_config_defaults(
+    args: argparse.Namespace,
+    ref: str,
+    parser_defaults: dict[str, object],
+    explicit_dests: set[str],
+) -> dict[str, Any]:
+    load_wandb_env()
+
+    import wandb
+
+    try:
+        run = wandb.Api().artifact(ref, type="model").logged_by()
+    except Exception as exc:
+        print(f"warning: could not infer playback config from {ref}: {exc}", file=sys.stderr)
+        return {}
+    if run is None:
+        return {}
+
+    config = getattr(run, "config", {}) or {}
+    apply_config_defaults(args, config, parser_defaults, explicit_dests)
+    return config if isinstance(config, dict) else {}
+
+
+def apply_model_or_artifact_defaults(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    parser_defaults: dict[str, object],
+    explicit_dests: set[str],
+    ref: str | None,
+) -> None:
+    model_path = Path(args.model)
+    saved_config = env_config_from_metadata(load_model_metadata(model_path))
+    if saved_config:
+        apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
+        print(f"loaded playback metadata: {model_path.with_suffix('.metadata.json')}", flush=True)
+        return
+    if ref is None:
+        return
+
+    inferred_config = apply_artifact_run_config_defaults(args, ref, parser_defaults, explicit_dests)
+    if not inferred_config:
+        return
+    metadata_args = parser.parse_args([])
+    apply_config_defaults(metadata_args, inferred_config, parser_defaults, set())
+    metadata_config = resolve_env_config(
+        env_config_from_args(metadata_args, max_episode_steps_attr="max_steps")
+    )
+    metadata_path = write_model_metadata(
+        model_path,
+        args,
+        metadata_config,
+        kind=args.artifact_kind,
+    )
+    if metadata_path is not None:
+        print(f"Wrote playback metadata: {metadata_path}", flush=True)
 
 
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
@@ -411,7 +497,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Show a PPO checkpoint playing a Stable Retro game in a GUI window"
     )
+    parser.add_argument(
+        "artifact_ref",
+        nargs="?",
+        type=artifact_ref_arg,
+        help="Full W&B artifact ref, for example entity/project/run-checkpoint:latest.",
+    )
     parser.add_argument("--model", default="runs/smoke/final_model.zip")
+    parser.add_argument(
+        "--artifact",
+        type=artifact_ref_arg,
+        help="Full W&B model artifact ref, for example entity/project/run-checkpoint:latest.",
+    )
+    parser.add_argument(
+        "--artifact-run",
+        help="Training run name used to build a W&B artifact ref with --artifact-kind/version.",
+    )
+    parser.add_argument("--artifact-project", default=DEFAULT_WANDB_PROJECT_PATH)
+    parser.add_argument(
+        "--artifact-kind",
+        choices=["final", "best", "checkpoint"],
+        default="checkpoint",
+    )
+    parser.add_argument("--artifact-version", default="latest")
+    parser.add_argument("--artifact-root", default="runs/wandb_artifacts")
+    parser.add_argument("--download-only", action="store_true")
     add_env_config_args(parser, max_steps_default=1200)
     parser.add_argument(
         "--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever"
@@ -444,10 +554,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--stochastic",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Sample from the policy; use --no-stochastic for deterministic playback.",
+        "--deterministic",
+        action="store_true",
+        help="Use deterministic argmax actions instead of stochastic policy sampling.",
     )
     return parser
 
@@ -458,11 +567,19 @@ def main() -> None:
     explicit_dests = explicit_arg_dests(parser, sys.argv[1:])
     explicit_dests.add("done_on_info_json")
     args = parser.parse_args()
-    metadata = load_model_metadata(Path(args.model))
-    saved_config = env_config_from_metadata(metadata)
-    if saved_config:
-        apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
-        print(f"loaded playback metadata: {Path(args.model).with_suffix('.metadata.json')}", flush=True)
+    ref = playback_artifact_ref(args)
+    if ref is not None:
+        download_root = artifact_download_dir(Path(args.artifact_root), ref)
+        print(f"Downloading {ref} to {download_root}", flush=True)
+        args.model = str(download_model_artifact(ref, download_root))
+        print(f"Downloaded model: {args.model}", flush=True)
+    apply_model_or_artifact_defaults(args, parser, parser_defaults, explicit_dests, ref)
+    if args.download_only:
+        if ref is None:
+            raise SystemExit(
+                "--download-only requires a positional artifact ref, --artifact, or --artifact-run"
+            )
+        return
     assert_rom_imported(args.game)
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
     config = resolve_env_config(
@@ -655,7 +772,7 @@ def main() -> None:
                     active_task_state=active_task_state,
                     active_info_value=active_info_value,
                 )
-                action, _ = model.predict(model_obs, deterministic=not args.stochastic)
+                action, _ = model.predict(model_obs, deterministic=args.deterministic)
                 env_action = single_env_action(action)
                 policy_obs, reward, terminated, truncated, info = policy_env.step(env_action)
                 if config.task_conditioning_info_vars:
