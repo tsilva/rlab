@@ -22,7 +22,7 @@ from rlab.artifacts import (
 )
 from rlab.callbacks import (
     DoneCounterCallback,
-    OutcomeCounterCallback,
+    LevelCompleteInfoCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
@@ -85,7 +85,9 @@ def checkpoint_save_frequency(checkpoint_freq: int, n_envs: int) -> int | None:
     return max(checkpoint_freq // max(n_envs, 1), 1)
 
 
-def disable_sb3_human_output_truncation(model, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
+def disable_sb3_human_output_truncation(
+    model, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH
+) -> None:
     logger = getattr(model, "_logger", None)
     logger_attr = getattr(type(model), "logger", None)
     if logger is None and not isinstance(logger_attr, property):
@@ -186,7 +188,7 @@ def main() -> None:
                 if name in config.info_events
             },
         ),
-        OutcomeCounterCallback(
+        LevelCompleteInfoCallback(
             wandb_run=wandb_run,
             info_events=config.info_events,
         ),

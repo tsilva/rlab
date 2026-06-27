@@ -3,7 +3,7 @@
   "goal_slug": "mario-level1-2-100of100",
   "title": "Sample-efficient SuperMarioBros-NES Level1-2 completion",
   "status": "active",
-  "updated_at": "2026-06-26",
+  "updated_at": "2026-06-27",
   "goal_dir": "experiments/goals/mario-level1-2-100of100",
   "objective": {
     "game": "SuperMarioBros-Nes-v0",
@@ -11,7 +11,7 @@
     "algorithm": "PPO",
     "primary_metric": "eval/done/level_change/rate",
     "primary_metric_note": "For single-state Level1-2 evals, pooled completion should match eval/done/level_change/from/Level1-2/rate when that per-start metric is present.",
-    "training_stop_metric": "train/outcome/level_change/from/0-1/attempt_window/rate",
+    "training_stop_metric": "train/info/level_complete/from/0-1/rate",
     "success_threshold": 1.0,
     "success_window_attempts": 100,
     "max_train_timesteps": 5000000,

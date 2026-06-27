@@ -25,6 +25,7 @@ Before choosing hardware, launching training, changing concurrency, or recommend
 
 - `METRICS.md` is the source of truth for W&B metric names and semantics.
 - When adding, removing, renaming, or changing the meaning of a logged metric, update `METRICS.md` in the same change.
+- When touching metric logging, dashboards, reports, eval summaries, or answering metric semantics questions, audit the relevant emitted metric names/templates against `METRICS.md` and patch any missing or stale entries before finishing.
 - When the user asks a metric question and the answer is not already clear from `METRICS.md`, improve `METRICS.md` with that clarification before finishing.
 
 ## Model Cards

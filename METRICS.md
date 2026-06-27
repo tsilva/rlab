@@ -11,7 +11,7 @@ videos, and done-count updates.
 ## Naming Conventions
 
 Prefer metric paths shaped as `<phase>/<dimension>/<value-family>/<stat>`, keeping names concise
-but explicit enough to search by phase, info-value, outcome, reward, or progress.
+but explicit enough to search by phase, info-value, reward, or progress.
 
 Use `train` and `eval` as the first path segment. Keep aggregate metrics at the phase level, for example
 `train/done/all` and `eval/reward/mean`.
@@ -19,6 +19,10 @@ Use `train` and `eval` as the first path segment. Keep aggregate metrics at the 
 Use `rate` for fractions in `[0, 1]`, `count` for point-in-time counts, and standard stat suffixes such as
 `mean`, `std`, `min`, `max`, `abs_mean`, and `nonzero_rate` only where a metric family explicitly logs
 distribution statistics. Avoid aliases and alternate names for the same value.
+
+`global_step` is the W&B step axis for training metrics logged directly to W&B and for
+TensorBoard-synced SB3 metrics. Out-of-process checkpoint eval logs use checkpoint step as the W&B
+step value and also log `eval/checkpoint/step`.
 
 ## Selection Metrics
 
@@ -28,14 +32,16 @@ These are the first metrics to check when choosing policies.
 | --- | --- |
 | `train/done/all` | Cumulative count of non-`global_reset` training `done=True` env-slot episode boundaries. This is exhaustive. |
 | `train/done/<reason>` | Cumulative count of done events attributed to `<reason>`, such as `life_loss`, `level_change`, `max_steps`, or `unclassified`. Reason counters are explanatory and do not have to sum to `train/done/all`. |
+| `train/done/max_steps` | Cumulative count of terminal training episodes attributed to max-step truncation. Emitted as `0` before the first max-step episode. |
+| `train/done/unclassified` | Cumulative count of terminal training episodes that had no configured done reason and were not max-step truncations. Emitted as `0` before the first unclassified episode. |
 | `train/done/<reason>/from/<prev>` | Cumulative count of structured done events for `<reason>` whose native payload reported previous value `<prev>`. Multi-key values are joined with `-`, e.g. `0-0`. |
 | `train/done/<reason>/from/<prev>/ep_window/rate` | Fraction of the last 100 non-`global_reset` terminal training episodes whose configured source value for `<reason>` was `<prev>` that ended with that structured done event. Each `<reason>/from/<prev>` has its own 100-episode denominator and emits only after that per-source window is full. |
-| `train/event/<event>` | Cumulative count of observed configured `info_events`, terminal or non-terminal. |
-| `train/outcome/<event>/from/<prev>/attempts` | Cumulative attempts tracked from source value `<prev>` for `<event>`. |
-| `train/outcome/<event>/from/<prev>/fires` | Cumulative attempts from source value `<prev>` where `<event>` fired. |
-| `train/outcome/<event>/from/<prev>/attempt_window/rate` | Fraction of the last 100 attempts from `<prev>` where `<event>` fired. Attempts can end at a non-terminal event, terminal event, life loss, truncation, or episode done. |
-| `train/outcome/<event>/from_rate/min` | Minimum across full per-source `attempt_window/rate` values for `<event>`. For balanced Mario training, use `train/outcome/level_change/from_rate/min` as the live bottleneck metric. |
-| `train/outcome/<event>/from_rate/mean` | Mean across full per-source `attempt_window/rate` values for `<event>`. This is secondary; it can hide one weak level. |
+| `train/done/<reason>/from_rate/min` | Minimum across full per-source terminal episode-window rates for `<reason>`. |
+| `train/done/<reason>/from_rate/mean` | Mean across full per-source terminal episode-window rates for `<reason>`. |
+| `train/info/level_complete` | Root for Mario training level-complete metrics. This is the only `info_events`-derived training metric family. |
+| `train/info/level_complete/from/<prev>/count` | Cumulative clean level clears from native source value `<prev>`, e.g. `0-0` for Level1-1. |
+| `train/info/level_complete/from/<prev>/rate` | Fraction of the last 100 attempts from `<prev>` that produced a clean `level_complete`. Attempts can end at a clean completion, life loss, truncation, or episode done. Emits only after that source has a full 100-attempt window. |
+| `train/info/level_complete/rate_min/last` | Minimum across the latest available `train/info/level_complete/from/<prev>/rate` values. Emits after at least one per-source rate is available and updates whenever any per-source rate updates. |
 | `eval/done/level_change/rate` | Pooled eval episode completion fraction. |
 | `eval/done/level_change/from/<start>/rate` | Eval completion fraction for episodes that started from `<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start eval completion fraction. Use this first when comparing multi-start-state policies. |
@@ -45,9 +51,9 @@ Current training does not log per-rollout done-count distribution stats such as 
 
 ### Selection and Redundancy Notes
 
-Training outcome metrics live under `train/outcome/*` and count attempts, not full episodes. Use
-them for live training bottlenecks when a policy can clear multiple levels inside one episode. Use
-`train/done/*` only to understand what is ending training episodes.
+Training level-complete metrics live under `train/info/level_complete/*` and count attempts, not full
+episodes. Use them for live training clear counts/rates when a policy can clear multiple levels
+inside one episode. Use `train/done/*` only to understand what is ending training episodes.
 
 `eval/done/level_change/from_rate/min` is the eval selection metric for multi-start-state
 policies. The top-level eval metrics are pooled summaries and should be treated as secondary
@@ -55,19 +61,27 @@ when per-start-state eval done metrics exist.
 
 ### Mario Level1-1/Level1-2 Notes
 
-For the current Level1-1/Level1-2 training goal, native level values map to training outcome metrics as:
+For the current Level1-1/Level1-2 training goal, native level values map to training metrics as:
 
-| Level | Training window-rate metric |
-| --- | --- |
-| `Level1-1` | `train/outcome/level_change/from/0-0/attempt_window/rate` |
-| `Level1-2` | `train/outcome/level_change/from/0-1/attempt_window/rate` |
+| Level | Count metric | Rate metric |
+| --- | --- | --- |
+| `Level1-1` | `train/info/level_complete/from/0-0/count` | `train/info/level_complete/from/0-0/rate` |
+| `Level1-2` | `train/info/level_complete/from/0-1/count` | `train/info/level_complete/from/0-1/rate` |
 
-Use `train/outcome/level_change/from_rate/min` as the live training bottleneck: it is the lower
-of the full per-level attempt-window rates at each logging point. For example, `Level1-1 = 0.50` and
-`Level1-2 = 0.40` produces a min of `0.40`, while `Level1-1 = 0.30` and `Level1-2 = 0.80`
-produces a min of `0.30`. The mean is secondary because it can hide one weak level. Once
-checkpoint eval jobs have logged per-start metrics, use `eval/done/level_change/from_rate/min`
-as the balanced eval selection metric.
+For active multi-level training, use `train/info/level_complete/rate_min/last` as the live
+bottleneck. It is the minimum of the most recent full-window per-level rates that have emitted so
+far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate_min/last` is `0.30`. If
+Level1-1 later drops from `1.00` to `0.50` while Level1-2 drops from `0.60` to `0.55`, `rate_min/last`
+is `0.50`. Training intentionally no longer logs generic `train/event/*`, `train/outcome/*`, or
+aggregate training mean clear-rate metrics. Once checkpoint eval jobs have logged per-start metrics,
+use `eval/done/level_change/from_rate/min` as the balanced eval selection metric.
+
+`train/done/level_change/from_rate/min` and `train/done/level_change/from_rate/mean` are terminal
+episode-window diagnostics. Keep them as done-reason diagnostics; for clear counts/rates, prefer
+`train/info/level_complete/from/<prev>/count` and `train/info/level_complete/from/<prev>/rate`
+because they also count non-terminal clears and exclude death or life-loss transitions. For a
+single training selection scalar across source levels, prefer
+`train/info/level_complete/rate_min/last`.
 
 Use current `train/reward_share/*` metrics for reward attribution rather than the older
 `train/reward_component/*` namespace. Shares are based on absolute rollout contribution
@@ -94,11 +108,19 @@ the eval episode when it observes completion, so `eval/done/level_change` and
 `eval/done/level_change/from/<start>` track natural transitions per eval episode. Eval `from` values
 are the configured episode start state, not native `done_on_info` previous-value payloads.
 
-`train/done/*` windows remain terminal-episode metrics. Natural level transitions observed while
-the training env keeps running set `level_complete` / `completion_event`, emit
-`info_events.level_change`, and append to `train/outcome/level_change/from/<prev>/attempt_window/rate`.
-The same outcome path is used when `level_change` is also listed in `--done-on-events`; in that mode
-the event both counts as a successful attempt and ends the episode.
+`train/done/*` windows remain terminal-episode metrics. Natural clean clears observed while the
+training env keeps running set `level_complete` / `completion_event`, increment
+`train/info/level_complete/from/<prev>/count`, and append to that source's
+`train/info/level_complete/from/<prev>/rate` attempt window. This is the metric family to use when
+the question is "did the policy clear this level?"
+
+`level_change` is the generic stable-retro-style info event: it means configured native level
+variables changed. The Mario target wrapper is responsible for deciding whether that raw transition
+was actually a level clear. It sets the per-step `completion_event` / `level_complete` flag only
+when the level changed without a detected death or life loss. The metrics callback then reuses the
+raw `level_change` payload's `prev` value as the source, so a clean transition from `(0, 0)` to
+`(0, 1)` records `train/info/level_complete/from/0-0/count`. `completion_event` is an info flag/alias
+consumed by code; `level_complete` is the semantic event/result name used in W&B metrics.
 
 ## SB3 PPO Metrics
 
@@ -122,6 +144,7 @@ These come from Stable-Baselines3 PPO and `VecMonitor`.
 | `train/loss` | Combined PPO loss for the last update. |
 | `train/n_updates` | Cumulative optimizer update count. |
 | `train/policy_gradient_loss` | PPO policy-gradient loss component. |
+| `train/std` | Mean learned action-distribution standard deviation, logged by SB3 only for policies with `log_std`. Usually absent for discrete-action Mario policies. |
 | `train/value_loss` | PPO value-function loss component. |
 
 ## Throughput Metrics
@@ -188,7 +211,8 @@ Stats:
 | `train/reward/<component>/abs_mean` | Mean absolute component value. |
 | `train/reward/<component>/nonzero_rate` | Fraction of collected values where the component was nonzero. |
 
-Reward share metrics compare absolute component magnitudes within a rollout:
+Reward share metrics compare absolute component magnitudes within a rollout.
+`train/reward_share/<component>` is logged for each share component:
 
 | Metric | Meaning |
 | --- | --- |
@@ -259,6 +283,46 @@ episode start state, for example `Level1-1`, rather than a native previous-value
 | `eval/done/max_steps/from/<start>/rate` | `eval/done/max_steps/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/unclassified/from/<start>` | Eval episodes from `<start>` that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/from/<start>/rate` | `eval/done/unclassified/from/<start> / eval/done/all/from/<start>`. |
+
+## Eval JSON Summary Fields
+
+`rlab-eval` and in-training eval write richer JSON summaries to local files. These fields are
+stored in eval history or stdout JSON; only the `eval/*` subset above is logged to W&B by default.
+
+| Field | Meaning |
+| --- | --- |
+| `episodes` | Number of eval episodes summarized. |
+| `deterministic` | Whether eval used deterministic policy actions. |
+| `reward_mean` | Mean eval episode return before mapping to `eval/reward/mean`. |
+| `reward_std` | Standard deviation of eval episode returns before mapping to `eval/reward/std`. |
+| `reward_max` | Maximum eval episode return before mapping to `eval/reward/max`. |
+| `max_x_mean` | Mean max global X position before mapping to `eval/progress/x/mean`. |
+| `max_x_max` | Maximum global X position before mapping to `eval/progress/x/max`. |
+| `max_level_x_mean` | Mean max level-local X position before mapping to `eval/progress/level_x/mean`. |
+| `max_level_x_max` | Maximum level-local X position before mapping to `eval/progress/level_x/max`. |
+| `completion_count` | Eval episodes that completed by natural level transition. Same count as `eval/done/level_change`. |
+| `completion_rate` | `completion_count / episodes`. Same rate as `eval/done/level_change/rate`. |
+| `death_count` | Eval episodes whose final info indicated death. Same count as `eval/death/count`. |
+| `death_rate` | `death_count / episodes`. Same rate as `eval/death/rate`. |
+| `terminated_count` | Eval episodes that terminated without being marked as max-step truncations. |
+| `terminated_rate` | `terminated_count / episodes`. |
+| `truncated_count` | Eval episodes that hit the max-step limit. Same count as `eval/done/max_steps`. |
+| `truncated_rate` | `truncated_count / episodes`. Same rate as `eval/done/max_steps/rate`. |
+| `unclassified_count` | Eval episodes that ended without level completion or max-step truncation. Same count as `eval/done/unclassified`. |
+| `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/done/unclassified/rate`. |
+| `death_x_histogram` | Local JSON histogram of death X positions. W&B receives `eval/death/x_hist` when death positions exist. |
+| `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
+| `best_episode` | Best episode record ranked by completion first, then max X, then reward. |
+| `best_model_score` | In-training eval ranking tuple: completion metric, max X, reward mean. |
+| `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
+| `timesteps` | Training timestep attached by in-training eval summaries. |
+| `eval_n_envs` | Number of vector env slots used by artifact/local eval summaries. |
+| `checkpoint_step` | Checkpoint step attached by artifact eval summaries. W&B receives `eval/checkpoint/step`. |
+| `checkpoint_artifact` | Checkpoint artifact name attached by artifact eval summaries. W&B receives `eval/checkpoint/artifact`. |
+| `model` | Local model path used by local or artifact eval summaries. |
+| `policy` | Scripted policy name for scripted eval, or `ppo` for model eval. |
+| `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in artifact eval. |
+| `eval_seed` | Seed used for a specific artifact checkpoint eval. |
 
 ## W&B Config And Artifacts
 

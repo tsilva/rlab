@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -20,13 +19,13 @@ from rlab.metric_names import (
     TRAIN_DONE_ALL,
     TRAIN_DONE_MAX_STEPS,
     TRAIN_DONE_UNCLASSIFIED,
-    TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MEAN,
-    TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
     TRAIN_REWARD_COMPONENT_ROOT,
     TRAIN_REWARD_SHARE_ROOT,
     eval_done_value_metric,
     stat_metric,
-    train_outcome_value_metric,
+    train_info_level_complete_count_metric,
+    train_info_level_complete_rate_metric,
 )
 
 try:
@@ -72,11 +71,11 @@ class LevelSpec:
 
     @property
     def count_metric(self) -> str:
-        return train_outcome_value_metric("level_change", "from", self.train_from_value)
+        return train_info_level_complete_count_metric(self.train_from_value)
 
     @property
-    def window_rate_metric(self) -> str:
-        return f"{self.count_metric}/attempt_window/rate"
+    def rate_metric(self) -> str:
+        return train_info_level_complete_rate_metric(self.train_from_value)
 
     @property
     def eval_rate_metric(self) -> str:
@@ -180,121 +179,23 @@ def numeric_summary_value(run: object, metric: str) -> float | None:
     return float(value)
 
 
-def format_rate(value: float | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"{value:.2f}"
+def has_summary_metric(runs: list[object], metric: str) -> bool:
+    return any(numeric_summary_value(run, metric) is not None for run in runs)
 
 
-def format_step(value: float | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"{int(value):,}"
-
-
-def markdown_cell(value: object) -> str:
-    return str(value).replace("\n", " ").replace("|", "\\|")
-
-
-def run_url(entity: str, project: str, run: object) -> str:
-    url = getattr(run, "url", None)
-    if isinstance(url, str) and url:
-        return url
-    return f"https://wandb.ai/{entity}/{project}/runs/{run.id}"
-
-
-def policy_selection_markdown(
-    *,
-    entity: str,
-    project: str,
-    runs: list[object],
-    level_specs: list[LevelSpec],
-) -> str:
-    published_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    rows: list[dict[str, object]] = []
-    for run in runs:
-        rates = [numeric_summary_value(run, spec.window_rate_metric) for spec in level_specs]
-        numeric_rates = [rate for rate in rates if rate is not None]
-        min_rate = min(numeric_rates) if len(numeric_rates) == len(level_specs) else None
-        mean_rate = (
-            sum(numeric_rates) / len(numeric_rates)
-            if len(numeric_rates) == len(level_specs)
-            else None
+def level_has_completion_data(runs: list[object], spec: LevelSpec) -> bool:
+    return any(
+        has_summary_metric(runs, metric)
+        for metric in (
+            spec.count_metric,
+            spec.rate_metric,
         )
-        rows.append(
-            {
-                "run": run,
-                "rates": rates,
-                "min": min_rate,
-                "mean": mean_rate,
-                "step": numeric_summary_value(run, "global_step"),
-            }
-        )
-
-    rows.sort(
-        key=lambda row: (
-            row["min"] is not None,
-            float(row["min"] or -1.0),
-            float(row["step"] or -1.0),
-        ),
-        reverse=True,
     )
 
-    headers = [
-        "Rank",
-        "Run",
-        "Min",
-        *[spec.label for spec in level_specs],
-        "Mean",
-        "Step",
-    ]
-    lines = [
-        "### Current minimum clearance leaderboard",
-        "",
-        (
-            f"Computed at publish time from active W&B run summaries ({published_at}). "
-            "Rank by the `Min` column; it is the lower of the per-level clearance rates."
-        ),
-        "",
-        "| " + " | ".join(headers) + " |",
-        "| " + " | ".join(["---"] * len(headers)) + " |",
-    ]
-    for index, row in enumerate(rows, start=1):
-        run = row["run"]
-        name = markdown_cell(run.name or run.id)
-        rates = row["rates"]
-        values = [
-            str(index),
-            f"[{name}]({run_url(entity, project, run)})",
-            format_rate(row["min"] if isinstance(row["min"], float) else None),
-            *[format_rate(rate) for rate in rates],
-            format_rate(row["mean"] if isinstance(row["mean"], float) else None),
-            format_step(row["step"] if isinstance(row["step"], float) else None),
-        ]
-        lines.append("| " + " | ".join(values) + " |")
 
-    if not rows:
-        empty_values = ["n/a", "No active runs matched the report filters."]
-        empty_values.extend(["n/a"] * (len(headers) - 2))
-        lines.append("| " + " | ".join(empty_values) + " |")
-    return "\n".join(lines)
-
-
-def backfill_min_rate_summary(runs: list[object], level_specs: list[LevelSpec]) -> int:
-    updated = 0
-    for run in runs:
-        rates = [numeric_summary_value(run, spec.window_rate_metric) for spec in level_specs]
-        if any(rate is None for rate in rates):
-            continue
-        numeric_rates = [rate for rate in rates if rate is not None]
-        run.summary[TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN] = min(numeric_rates)
-        run.summary[TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MEAN] = sum(numeric_rates) / len(
-            numeric_rates,
-        )
-        run.summary.update()
-        run.update()
-        updated += 1
-    return updated
+def active_level_specs(level_specs: list[LevelSpec], runs: list[object]) -> list[LevelSpec]:
+    active_specs = [spec for spec in level_specs if level_has_completion_data(runs, spec)]
+    return active_specs or level_specs
 
 
 def line(
@@ -345,6 +246,122 @@ def section_panel(title: str, body: str, *, y: int) -> wr.MarkdownPanel:
     )
 
 
+def policy_selection_panels(level_specs: list[LevelSpec]) -> list[object]:
+    panels: list[object] = [
+        section_panel(
+            "1. Policy selection",
+            (
+                "Start here. Compare the per-level level-complete rates; the weaker source "
+                "level is summarized by the bottleneck rate."
+            ),
+            y=0,
+        ),
+    ]
+    if len(level_specs) >= 2:
+        primary_level = level_specs[0]
+        secondary_level = level_specs[1]
+        level_count_metrics = [spec.count_metric for spec in level_specs]
+        level_rate_metrics = [spec.rate_metric for spec in level_specs]
+        panels.extend(
+            [
+                scalar(
+                    "Bottleneck rate",
+                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    x=0,
+                    y=3,
+                ),
+                scalar(
+                    f"{primary_level.label} rate",
+                    primary_level.rate_metric,
+                    x=6,
+                    y=3,
+                ),
+                scalar(
+                    f"{secondary_level.label} rate",
+                    secondary_level.rate_metric,
+                    x=12,
+                    y=3,
+                ),
+                scalar(
+                    f"{secondary_level.label} clears",
+                    secondary_level.count_metric,
+                    x=18,
+                    y=3,
+                ),
+                line(
+                    "Level-complete bottleneck",
+                    [TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST],
+                    x=0,
+                    y=7,
+                    w=12,
+                    h=7,
+                    ymin=0,
+                    ymax=1.05,
+                ),
+                line(
+                    "Per-level level-complete rates",
+                    level_rate_metrics,
+                    x=12,
+                    y=7,
+                    w=12,
+                    h=7,
+                    ymin=0,
+                    ymax=1.05,
+                ),
+                line(
+                    "Per-level level-complete counts",
+                    level_count_metrics,
+                    x=0,
+                    y=14,
+                    w=12,
+                    h=7,
+                    ymin=0,
+                ),
+            ],
+        )
+        return panels
+
+    level = level_specs[0]
+    panels.extend(
+        [
+            scalar(
+                f"{level.label} clears",
+                level.count_metric,
+                x=0,
+                y=3,
+                w=12,
+            ),
+            scalar(
+                f"{level.label} rate",
+                level.rate_metric,
+                x=12,
+                y=3,
+                w=12,
+            ),
+            line(
+                f"{level.label} clears",
+                [level.count_metric],
+                x=0,
+                y=7,
+                w=12,
+                h=7,
+                ymin=0,
+            ),
+            line(
+                f"{level.label} rate",
+                [level.rate_metric],
+                x=12,
+                y=7,
+                w=12,
+                h=7,
+                ymin=0,
+                ymax=1.05,
+            ),
+        ],
+    )
+    return panels
+
+
 def build_report(
     *,
     entity: str,
@@ -353,17 +370,71 @@ def build_report(
     query: str,
     filters: str,
     level_specs: list[LevelSpec],
-    scoped_runs: list[object],
+    scoped_runs: list[object] | None = None,
     run_colors: dict[str, str] | None = None,
 ) -> wr.Report:
-    primary_level = level_specs[0]
-    secondary_level = level_specs[1]
     level_count_metrics = [spec.count_metric for spec in level_specs]
-    level_window_rate_metrics = [spec.window_rate_metric for spec in level_specs]
+    level_rate_metrics = [spec.rate_metric for spec in level_specs]
     eval_level_rate_metrics = [
         EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
         *[spec.eval_rate_metric for spec in level_specs],
     ]
+    eval_metrics_present = bool(scoped_runs) and any(
+        has_summary_metric(scoped_runs or [], metric) for metric in eval_level_rate_metrics
+    )
+    multi_level = len(level_specs) >= 2
+    selection_bottom_y = 21 if multi_level else 14
+    eval_y = selection_bottom_y
+    done_y = selection_bottom_y + 7 if eval_metrics_present else selection_bottom_y + 3
+    reward_section_y = done_y + 8
+    reward_top_y = reward_section_y + 3
+    reward_share_y = reward_top_y + 7
+    reward_detail_y = reward_share_y + 8
+    reward_event_y = reward_detail_y + 7
+    ppo_section_y = reward_event_y + 7
+    ppo_top_y = ppo_section_y + 3
+    ppo_mid_y = ppo_top_y + 7
+    ppo_value_y = ppo_mid_y + 7
+    ppo_adv_y = ppo_value_y + 7
+    throughput_section_y = ppo_adv_y + 7
+    throughput_y = throughput_section_y + 3
+    selection_metric = (
+        TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST if multi_level else level_specs[0].rate_metric
+    )
+    if multi_level:
+        goal_text = f"""
+        Training monitor for active SuperMarioBros-NES runs. During training,
+        start with the per-level level-complete metrics:
+        `{level_specs[0].rate_metric}` and `{level_specs[1].rate_metric}`.
+        The runset sorts by `{TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}`, the minimum of the latest
+        available per-level rolling rates.
+        The runset is softcoded to W&B
+        `State = 'running'` by default, so it follows current active runs instead of a fixed
+        batch. For the Reward component share panel, select one run in the run table before
+        reading the component fractions.
+        """
+        decision_rule = f"""
+        During active training, rank by `{TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}` and inspect
+        `{level_specs[0].rate_metric}` and `{level_specs[1].rate_metric}` to see which level is
+        limiting progress.
+        Once out-of-process checkpoint eval exists, rank by
+        `{EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN}`, then mean reward, then max x-position.
+        """
+    else:
+        active_level = level_specs[0]
+        goal_text = f"""
+        Training monitor for active SuperMarioBros-NES runs. The current active runset only has
+        completion data for `{active_level.label}`, so this report ranks by
+        `{active_level.rate_metric}`. The runset is
+        softcoded to W&B `State = 'running'` by default, so it follows current active runs instead
+        of a fixed batch.
+        """
+        decision_rule = f"""
+        This active batch currently has one observed source level: `{active_level.label}`. Use
+        `{active_level.rate_metric}` for this batch. For true Level1-1/Level1-2 batches, compare
+        both per-level rates directly because the weaker level decides the policy-selection
+        objective.
+        """
 
     runset = wr.Runset(
         entity=entity,
@@ -374,7 +445,7 @@ def build_report(
         order=[
             wr.OrderBy(
                 wr.SummaryMetric(
-                    TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN,
+                    selection_metric,
                 ),
                 ascending=False,
             ),
@@ -383,11 +454,10 @@ def build_report(
             "Name",
             "State",
             "group",
-            *[f"summary.{metric}" for metric in level_window_rate_metrics],
-            f"summary.{TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN}",
-            f"summary.{TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MEAN}",
+            *([f"summary.{TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}"] if multi_level else []),
+            *[f"summary.{metric}" for metric in level_rate_metrics],
             *[f"summary.{metric}" for metric in level_count_metrics],
-            f"summary.{EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN}",
+            *([f"summary.{EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN}"] if eval_metrics_present else []),
             f"summary.{TRAIN_DONE_ALL}",
             f"summary.{TRAIN_DONE_LEVEL_CHANGE}",
             f"summary.{TRAIN_DONE_LIFE_LOSS}",
@@ -425,92 +495,34 @@ def build_report(
         title=title,
         description=(
             "Training-focused view for active SuperMarioBros-NES runs. It prioritizes "
-            "the current running W&B runset, minimum per-level clearance rate, "
-            "per-level 100-attempt completion windows, reward attribution, "
+            "the current running W&B runset, per-level level-complete count/rate metrics, "
+            "reward attribution, "
             "rollout diagnostics, and PPO health."
         ),
         width="fluid",
         blocks=[
             wr.H1("Goal"),
-            wr.MarkdownBlock(
-                f"""
-                Training monitor for active SuperMarioBros-NES runs. During training,
-                start with the per-level 100-attempt window rates:
-                `{primary_level.window_rate_metric}` and `{secondary_level.window_rate_metric}`.
-                The top metric is the current minimum per-level clearance rate: the lower of the
-                per-level rates for each active run. New training code also logs
-                `{TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN}` directly. The runset is softcoded to W&B
-                `State = 'running'` by default, so it follows current active runs instead of a fixed
-                batch. For the Reward component share panel, select one run in the run table before
-                reading the component fractions.
-                """,
-            ),
+            wr.MarkdownBlock(goal_text),
             wr.PanelGrid(
                 runsets=[runset],
                 custom_run_colors=run_colors or {},
                 panels=[
-                    section_panel(
-                        "1. Policy selection",
-                        (
-                            "Start here. The winner is the run with the highest minimum "
-                            "per-level clearance rate, not the highest average."
-                        ),
-                        y=0,
-                    ),
-                    wr.MarkdownPanel(
-                        markdown=policy_selection_markdown(
-                            entity=entity,
-                            project=project,
-                            runs=scoped_runs,
-                            level_specs=level_specs,
-                        ),
-                        layout=wr.Layout(x=0, y=3, w=24, h=5),
-                    ),
-                    scalar(
-                        f"{primary_level.label} window rate",
-                        primary_level.window_rate_metric,
-                        x=0,
-                        y=8,
-                        w=12,
-                    ),
-                    scalar(
-                        f"{secondary_level.label} window rate",
-                        secondary_level.window_rate_metric,
-                        x=12,
-                        y=8,
-                        w=12,
-                    ),
-                    line(
-                        "Per-level clearance rates (bottleneck is the lower trace)",
+                    *policy_selection_panels(level_specs),
+                    *(
                         [
-                            *level_window_rate_metrics,
-                            TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN,
-                        ],
-                        x=0,
-                        y=12,
-                        w=24,
-                        h=8,
-                        ymin=0,
-                        ymax=1.05,
-                    ),
-                    line(
-                        "Per-level clear counts",
-                        level_count_metrics,
-                        x=0,
-                        y=20,
-                        w=12,
-                        h=7,
-                        ymin=0,
-                    ),
-                    line(
-                        "Eval balanced completion if present",
-                        eval_level_rate_metrics,
-                        x=12,
-                        y=20,
-                        w=12,
-                        h=7,
-                        ymin=0,
-                        ymax=1.05,
+                            line(
+                                "Eval balanced completion",
+                                eval_level_rate_metrics,
+                                x=12,
+                                y=eval_y,
+                                w=12,
+                                h=7,
+                                ymin=0,
+                                ymax=1.05,
+                            ),
+                        ]
+                        if eval_metrics_present
+                        else []
                     ),
                     line(
                         "Done reason counts",
@@ -521,7 +533,7 @@ def build_report(
                             TRAIN_DONE_UNCLASSIFIED,
                         ],
                         x=0,
-                        y=27,
+                        y=done_y,
                         w=24,
                         h=7,
                         ymin=0,
@@ -533,13 +545,13 @@ def build_report(
                             "or from side effects. Reward shares use absolute magnitude, so "
                             "negative penalties are visible instead of canceling out."
                         ),
-                        y=35,
+                        y=reward_section_y,
                     ),
                     line(
                         "Episode reward mean",
                         ["rollout/ep_rew_mean"],
                         x=0,
-                        y=38,
+                        y=reward_top_y,
                         w=12,
                         h=7,
                     ),
@@ -547,7 +559,7 @@ def build_report(
                         "Episode length mean",
                         ["rollout/ep_len_mean"],
                         x=12,
-                        y=38,
+                        y=reward_top_y,
                         w=12,
                         h=7,
                         ymin=0,
@@ -563,7 +575,7 @@ def build_report(
                             f"{TRAIN_REWARD_SHARE_ROOT}/native",
                         ],
                         x=0,
-                        y=45,
+                        y=reward_share_y,
                         w=24,
                         h=8,
                         ymin=0,
@@ -575,7 +587,7 @@ def build_report(
                             f"{TRAIN_REWARD_COMPONENT_ROOT}/shaped/mean",
                         ],
                         x=0,
-                        y=53,
+                        y=reward_detail_y,
                         w=12,
                         h=7,
                     ),
@@ -585,7 +597,7 @@ def build_report(
                             f"{TRAIN_REWARD_COMPONENT_ROOT}/prog_x/mean",
                         ],
                         x=12,
-                        y=53,
+                        y=reward_detail_y,
                         w=12,
                         h=7,
                     ),
@@ -595,7 +607,7 @@ def build_report(
                             f"{TRAIN_REWARD_COMPONENT_ROOT}/death/nonzero_rate",
                         ],
                         x=0,
-                        y=60,
+                        y=reward_event_y,
                         w=12,
                         h=7,
                         ymin=0,
@@ -607,7 +619,7 @@ def build_report(
                             f"{TRAIN_REWARD_COMPONENT_ROOT}/prog_x/max",
                         ],
                         x=12,
-                        y=60,
+                        y=reward_event_y,
                         w=12,
                         h=7,
                     ),
@@ -617,20 +629,20 @@ def build_report(
                             "Use this section to catch destructive updates: KL/clip spikes, "
                             "value-function collapse, entropy trends, and rollout-buffer drift."
                         ),
-                        y=67,
+                        y=ppo_section_y,
                     ),
-                    line("Approx KL", ["train/approx_kl"], x=0, y=70),
-                    line("Clip fraction", ["train/clip_fraction"], x=12, y=70, ymin=0),
-                    line("Entropy loss", ["train/entropy_loss"], x=0, y=77),
+                    line("Approx KL", ["train/approx_kl"], x=0, y=ppo_top_y),
+                    line("Clip fraction", ["train/clip_fraction"], x=12, y=ppo_top_y, ymin=0),
+                    line("Entropy loss", ["train/entropy_loss"], x=0, y=ppo_mid_y),
                     line(
                         "Explained variance",
                         ["train/explained_variance"],
                         x=12,
-                        y=77,
+                        y=ppo_mid_y,
                         ymin=-0.1,
                         ymax=1.05,
                     ),
-                    line("Value loss", ["train/value_loss"], x=0, y=84, ymin=0),
+                    line("Value loss", ["train/value_loss"], x=0, y=ppo_value_y, ymin=0),
                     line(
                         "Rollout value and advantage magnitude",
                         [
@@ -638,7 +650,7 @@ def build_report(
                             stat_metric(ROLLOUT_ADVANTAGE, "abs_mean"),
                         ],
                         x=12,
-                        y=84,
+                        y=ppo_value_y,
                         w=12,
                         h=7,
                         ymin=0,
@@ -650,7 +662,7 @@ def build_report(
                             "train/adv/task1/std_pre",
                         ],
                         x=0,
-                        y=91,
+                        y=ppo_adv_y,
                         w=12,
                         h=7,
                         ymin=0,
@@ -662,7 +674,7 @@ def build_report(
                             "train/adv/task1/std_post",
                         ],
                         x=12,
-                        y=91,
+                        y=ppo_adv_y,
                         w=12,
                         h=7,
                         ymin=0,
@@ -673,23 +685,14 @@ def build_report(
                             "Use throughput after policy quality checks. Low throughput can explain "
                             "slow learning, but it is not itself a policy-selection metric."
                         ),
-                        y=98,
+                        y=throughput_section_y,
                     ),
-                    line("Loop FPS", [THROUGHPUT_LOOP_FPS], x=0, y=101, ymin=0),
-                    line("Rollout FPS", [THROUGHPUT_ROLLOUT_FPS], x=12, y=101, ymin=0),
+                    line("Loop FPS", [THROUGHPUT_LOOP_FPS], x=0, y=throughput_y, ymin=0),
+                    line("Rollout FPS", [THROUGHPUT_ROLLOUT_FPS], x=12, y=throughput_y, ymin=0),
                 ],
             ),
             wr.H2("Decision Rule"),
-            wr.MarkdownBlock(
-                f"""
-                During active training, rank runs by the current minimum per-level clearance rate.
-                That value is the lower of the per-level 100-attempt clearance rates;
-                the mean can look good while one level is failing, so it is secondary. New runs log
-                `{TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN}` directly for history panels. Once
-                out-of-process checkpoint eval exists, rank by
-                `{EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN}`, then mean reward, then max x-position.
-                """,
-            ),
+            wr.MarkdownBlock(decision_rule),
         ],
     )
 
@@ -727,14 +730,6 @@ def main() -> None:
     parser.add_argument("--url", help="Existing W&B report URL to update in place")
     parser.add_argument("--draft", action="store_true")
     parser.add_argument(
-        "--backfill-min-summary",
-        action="store_true",
-        help=(
-            "Best-effort update of scoped run summaries with the current min/mean per-level "
-            "window rates. Active W&B clients may overwrite this before training logs the metric."
-        ),
-    )
-    parser.add_argument(
         "--no-run-colors",
         action="store_true",
         help="Do not assign deterministic report colors to the active runs.",
@@ -742,7 +737,7 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv(Path(".env"))
-    level_specs = parse_level_specs(args.levels)
+    configured_level_specs = parse_level_specs(args.levels)
     run_state = None if args.all_states else args.run_state
     query, filters, scoped_runs = report_scope(
         entity=args.entity,
@@ -750,9 +745,9 @@ def main() -> None:
         query=args.query,
         run_state=run_state,
     )
-    if args.backfill_min_summary:
-        updated = backfill_min_rate_summary(scoped_runs, level_specs)
-        print(f"attempted_min_summary_backfill={updated}")
+    level_specs = active_level_specs(configured_level_specs, scoped_runs)
+    if len(level_specs) != len(configured_level_specs):
+        print("active_level_specs=" + ",".join(spec.label for spec in level_specs))
     colors = {} if args.no_run_colors else run_colors(scoped_runs)
     report = build_report(
         entity=args.entity,

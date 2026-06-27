@@ -12,6 +12,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 
+import rlab.metric_names as metric_names
 from rlab.artifacts import (
     apply_model_config_defaults,
     apply_config_defaults,
@@ -28,7 +29,7 @@ from rlab.artifacts import (
 )
 from rlab.callbacks import (
     DoneCounterCallback,
-    OutcomeCounterCallback,
+    LevelCompleteInfoCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
@@ -86,12 +87,12 @@ from rlab.wandb_artifacts import metadata_from_wandb_artifact
 
 
 class Sb3LoggerTests(unittest.TestCase):
-    def test_human_output_truncation_is_disabled_for_long_outcome_metrics(self) -> None:
+    def test_human_output_truncation_is_disabled_for_long_level_complete_metrics(self) -> None:
         from stable_baselines3.common.logger import HumanOutputFormat
 
         key_values = {
-            "train/outcome/level_change/from/0-1/attempts": 1,
-            "train/outcome/level_change/from/0-1/fires": 0,
+            "train/info/level_complete/from/Level1-2_bonus_room_checkpoint/count": 1,
+            "train/info/level_complete/from/Level1-2_bonus_room_checkpoint/rate": 0.0,
         }
         key_excluded = {key: () for key in key_values}
 
@@ -135,6 +136,35 @@ class Sb3LoggerTests(unittest.TestCase):
         callback._on_training_start()
 
         self.assertEqual(output_format.max_length, 256)
+
+
+class MetricsDocumentationTests(unittest.TestCase):
+    def test_metrics_reference_mentions_metric_name_constants_and_core_templates(self) -> None:
+        metrics_doc = Path(__file__).resolve().parents[1] / "METRICS.md"
+        content = metrics_doc.read_text(encoding="utf-8")
+
+        constant_values = sorted(
+            value
+            for name, value in vars(metric_names).items()
+            if name.isupper() and isinstance(value, str)
+        )
+        missing_constants = [value for value in constant_values if value not in content]
+        self.assertEqual(missing_constants, [])
+
+        required_templates = [
+            "train/done/<reason>/from/<prev>",
+            "train/done/<reason>/from/<prev>/ep_window/rate",
+            "train/done/<reason>/from_rate/min",
+            "train/done/<reason>/from_rate/mean",
+            "train/info/level_complete/from/<prev>/count",
+            "train/info/level_complete/from/<prev>/rate",
+            "train/info/level_complete/rate_min/last",
+            "train/reward/<component>/<stat>",
+            "train/reward_share/<component>",
+            "eval/done/<reason>/from/<start>",
+        ]
+        missing_templates = [template for template in required_templates if template not in content]
+        self.assertEqual(missing_templates, [])
 
 
 class EnvConfigFromArgsTests(unittest.TestCase):
@@ -184,8 +214,9 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            with patch("rlab.artifacts.load_wandb_env"), patch.dict(
-                sys.modules, {"wandb": fake_wandb}
+            with (
+                patch("rlab.artifacts.load_wandb_env"),
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
             ):
                 run = init_wandb(args, tmp_dir, EnvConfig())
 
@@ -972,7 +1003,9 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
         self.assertIsInstance(env, FakeNative)
         self.assertEqual(created[0]["done_on_info"], {"life_loss": ("lives", "decrease")})
 
-    def test_training_vec_env_requires_native_done_on_info_support_when_rules_requested(self) -> None:
+    def test_training_vec_env_requires_native_done_on_info_support_when_rules_requested(
+        self,
+    ) -> None:
         class FakeNative:
             observation_space = gym.spaces.Box(
                 low=0,
@@ -1127,7 +1160,12 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
                 pass
 
             def step_wait(self):
-                return self.reset(), np.zeros(4, dtype=np.float32), np.zeros(4, dtype=bool), [{}, {}, {}, {}]
+                return (
+                    self.reset(),
+                    np.zeros(4, dtype=np.float32),
+                    np.zeros(4, dtype=bool),
+                    [{}, {}, {}, {}],
+                )
 
         env = VecTaskConditioning(FakeVec())
         obs = env.reset()
@@ -1217,9 +1255,12 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
                 pass
 
             def step_wait(self):
-                return self.reset(), np.zeros(1, dtype=np.float32), np.zeros(1, dtype=bool), [
-                    {"level_id": "0-1"}
-                ]
+                return (
+                    self.reset(),
+                    np.zeros(1, dtype=np.float32),
+                    np.zeros(1, dtype=bool),
+                    [{"level_id": "0-1"}],
+                )
 
         env = VecTaskConditioning(FakeVec())
         env.reset()
@@ -1256,9 +1297,12 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
                 pass
 
             def step_wait(self):
-                return self.reset(), np.zeros(1, dtype=np.float32), np.zeros(1, dtype=bool), [
-                    {"levelHi": 0, "levelLo": 1, "level_id": "not-used"}
-                ]
+                return (
+                    self.reset(),
+                    np.zeros(1, dtype=np.float32),
+                    np.zeros(1, dtype=bool),
+                    [{"levelHi": 0, "levelLo": 1, "level_id": "not-used"}],
+                )
 
         env = VecTaskConditioning(
             FakeVec(),
@@ -1677,8 +1721,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 task_index=0,
                 task_count=3,
             ),
-            "task_conditioning_start episode=1 step=0 task=(0, 0) "
-            "index=0 one_hot=[1, 0, 0]",
+            "task_conditioning_start episode=1 step=0 task=(0, 0) index=0 one_hot=[1, 0, 0]",
         )
 
     def test_playback_eval_defaults_block_training_done_on_info_metadata(self) -> None:
@@ -2117,7 +2160,7 @@ class DoneCounterCallbackTests(unittest.TestCase):
         )
         self.assertFalse(any("/to/" in key for key in model.logger.records))
         self.assertFalse(any(key.startswith("train/state/") for key in model.logger.records))
-        self.assertNotIn("train/outcome/pooled_rate", model.logger.records)
+        self.assertFalse(any(key.startswith("train/info/") for key in model.logger.records))
 
     def test_multiple_done_reasons_share_one_all_count(self) -> None:
         class FakeLogger:
@@ -2346,7 +2389,7 @@ class DoneCounterCallbackTests(unittest.TestCase):
         self.assertEqual(run.payloads[0][0]["train/done/life_loss"], 1)
 
 
-class OutcomeCounterCallbackTests(unittest.TestCase):
+class LevelCompleteInfoCallbackTests(unittest.TestCase):
     class FakeLogger:
         def __init__(self) -> None:
             self.records: dict[str, int | float] = {}
@@ -2356,19 +2399,47 @@ class OutcomeCounterCallbackTests(unittest.TestCase):
 
     class FakeModel:
         def __init__(self) -> None:
-            self.logger = OutcomeCounterCallbackTests.FakeLogger()
+            self.logger = LevelCompleteInfoCallbackTests.FakeLogger()
 
-    def make_callback(self) -> tuple[OutcomeCounterCallback, FakeModel]:
+    def make_callback(self) -> tuple[LevelCompleteInfoCallback, FakeModel]:
         model = self.FakeModel()
-        callback = OutcomeCounterCallback(
+        callback = LevelCompleteInfoCallback(
             info_events={"level_change": (("levelHi", "levelLo"), "change")},
         )
         callback.model = model  # type: ignore[assignment]
         return callback, model
 
-    def test_records_nonterminal_level_change_attempt_fires(self) -> None:
+    def assert_no_generic_info_metrics(self, records: dict[str, int | float]) -> None:
+        self.assertFalse(any(key.startswith(("train/event/", "train/outcome/")) for key in records))
+
+    def test_ignores_raw_level_change_without_completion(self) -> None:
         callback, model = self.make_callback()
 
+        for step, source in enumerate(((0, 0), (0, 1)), start=1):
+            callback.num_timesteps = step
+            callback.locals = {
+                "dones": [False],
+                "infos": [
+                    {
+                        "levelHi": source[0],
+                        "levelLo": source[1] + 1,
+                        "info_events": {
+                            "level_change": {
+                                "op": "change",
+                                "keys": ("levelHi", "levelLo"),
+                                "prev": source,
+                                "next": (source[0], source[1] + 1),
+                            },
+                        },
+                    },
+                ],
+            }
+            self.assertTrue(callback._on_step())
+
+        self.assertEqual(model.logger.records, {})
+
+    def test_records_level_complete_count_from_completion_event(self) -> None:
+        callback, model = self.make_callback()
         callback.num_timesteps = 1
         callback.locals = {
             "dones": [False],
@@ -2376,6 +2447,8 @@ class OutcomeCounterCallbackTests(unittest.TestCase):
                 {
                     "levelHi": 0,
                     "levelLo": 1,
+                    "completion_event": True,
+                    "level_complete": True,
                     "info_events": {
                         "level_change": {
                             "op": "change",
@@ -2387,21 +2460,40 @@ class OutcomeCounterCallbackTests(unittest.TestCase):
                 },
             ],
         }
+
         self.assertTrue(callback._on_step())
 
-        callback.num_timesteps = 2
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/count"], 1)
+        self.assertNotIn("train/info/level_complete/from/0-0/rate", model.logger.records)
+        self.assert_no_generic_info_metrics(model.logger.records)
+
+    def test_death_level_change_does_not_count_as_level_complete(self) -> None:
+        callback, model = self.make_callback()
+        callback.ep_window_size = 1
+
+        callback.num_timesteps = 1
         callback.locals = {
-            "dones": [False],
+            "dones": [True],
             "infos": [
                 {
                     "levelHi": 0,
-                    "levelLo": 2,
+                    "levelLo": 1,
+                    "died": True,
+                    "life_loss": True,
+                    "completion_event": False,
+                    "level_complete": False,
                     "info_events": {
                         "level_change": {
                             "op": "change",
                             "keys": ("levelHi", "levelLo"),
-                            "prev": (0, 1),
-                            "next": (0, 2),
+                            "prev": (0, 0),
+                            "next": (0, 1),
+                        },
+                        "life_loss": {
+                            "op": "decrease",
+                            "keys": ("lives",),
+                            "prev": 3,
+                            "next": 2,
                         },
                     },
                 },
@@ -2409,28 +2501,13 @@ class OutcomeCounterCallbackTests(unittest.TestCase):
         }
         self.assertTrue(callback._on_step())
 
-        self.assertEqual(model.logger.records["train/event/level_change"], 2)
-        self.assertEqual(model.logger.records["train/event/level_change/from/0-0"], 1)
-        self.assertEqual(model.logger.records["train/event/level_change/from/0-1"], 1)
-        self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-0/attempts"],
-            1,
-        )
-        self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-0/fires"],
-            1,
-        )
-        self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-1/attempts"],
-            1,
-        )
-        self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-1/fires"],
-            1,
-        )
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/count"], 0)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 0.0)
+        self.assert_no_generic_info_metrics(model.logger.records)
 
     def test_records_current_source_failure_on_life_loss(self) -> None:
         callback, model = self.make_callback()
+        callback.ep_window_size = 1
         callback.num_timesteps = 1
         callback.locals = {
             "dones": [False],
@@ -2460,45 +2537,118 @@ class OutcomeCounterCallbackTests(unittest.TestCase):
         self.assertTrue(callback._on_step())
 
         self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-1/attempts"],
-            1,
-        )
-        self.assertEqual(
-            model.logger.records["train/outcome/level_change/from/0-1/fires"],
+            model.logger.records["train/info/level_complete/from/0-1/count"],
             0,
         )
+        self.assertEqual(
+            model.logger.records["train/info/level_complete/from/0-1/rate"],
+            0.0,
+        )
+        self.assert_no_generic_info_metrics(model.logger.records)
 
-    def test_attempt_window_rates_cover_terminal_and_nonterminal_events(self) -> None:
+    def test_level_complete_rate_uses_rolling_attempt_window(self) -> None:
         callback, model = self.make_callback()
-        callback.ep_window_size = 2
+        callback.ep_window_size = 4
 
-        for step, done in enumerate((False, True), start=1):
+        completions = (True, False, True, False)
+        for step, completed in enumerate(completions, start=1):
+            info_events = {}
+            info = {
+                "levelHi": 0,
+                "levelLo": 1 if completed else 0,
+                "reset_info": {"levelHi": 0, "levelLo": 0},
+            }
+            if completed:
+                info["completion_event"] = True
+                info["level_complete"] = True
+                info_events["level_change"] = {
+                    "op": "change",
+                    "keys": ("levelHi", "levelLo"),
+                    "prev": (0, 0),
+                    "next": (0, 1),
+                }
+            else:
+                info["died"] = True
+                info["life_loss"] = True
+                info_events["life_loss"] = {
+                    "op": "decrease",
+                    "keys": ("lives",),
+                    "prev": 3,
+                    "next": 2,
+                }
+            info["info_events"] = info_events
             callback.num_timesteps = step
             callback.locals = {
-                "dones": [done],
-                "infos": [
-                    {
-                        "levelHi": 0,
-                        "levelLo": 1,
-                        "info_events": {
-                            "level_change": {
-                                "op": "change",
-                                "keys": ("levelHi", "levelLo"),
-                                "prev": (0, 0),
-                                "next": (0, 1),
-                            },
-                        },
-                    },
-                ],
+                "dones": [True],
+                "infos": [info],
             }
             self.assertTrue(callback._on_step())
 
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/count"], 2)
         self.assertEqual(
-            model.logger.records[
-                "train/outcome/level_change/from/0-0/attempt_window/rate"
-            ],
-            1.0,
+            model.logger.records["train/info/level_complete/from/0-0/rate"],
+            0.5,
         )
+        self.assertEqual(model.logger.records["train/info/level_complete/rate_min/last"], 0.5)
+        self.assert_no_generic_info_metrics(model.logger.records)
+
+    def test_rate_min_last_uses_latest_available_source_rates(self) -> None:
+        callback, model = self.make_callback()
+        callback.ep_window_size = 2
+
+        def record_attempt(step: int, source: tuple[int, int], completed: bool) -> None:
+            info_events: dict[str, object] = {}
+            info = {
+                "levelHi": source[0],
+                "levelLo": source[1],
+                "reset_info": {"levelHi": source[0], "levelLo": source[1]},
+            }
+            if completed:
+                info["completion_event"] = True
+                info["level_complete"] = True
+                info["levelLo"] = source[1] + 1
+                info_events["level_change"] = {
+                    "op": "change",
+                    "keys": ("levelHi", "levelLo"),
+                    "prev": source,
+                    "next": (source[0], source[1] + 1),
+                }
+            else:
+                info["died"] = True
+                info["life_loss"] = True
+                info_events["life_loss"] = {
+                    "op": "decrease",
+                    "keys": ("lives",),
+                    "prev": 3,
+                    "next": 2,
+                }
+            info["info_events"] = info_events
+            callback.num_timesteps = step
+            callback.locals = {
+                "dones": [True],
+                "infos": [info],
+            }
+            self.assertTrue(callback._on_step())
+
+        record_attempt(1, (0, 0), True)
+        self.assertNotIn("train/info/level_complete/rate_min/last", model.logger.records)
+
+        record_attempt(2, (0, 0), True)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate_min/last"], 1.0)
+
+        record_attempt(3, (0, 0), False)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate_min/last"], 0.5)
+
+        record_attempt(4, (0, 1), True)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate_min/last"], 0.5)
+
+        record_attempt(5, (0, 1), False)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-1/rate"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate_min/last"], 0.5)
+        self.assert_no_generic_info_metrics(model.logger.records)
 
 
 class ThroughputCallbackTests(unittest.TestCase):
@@ -2565,12 +2715,16 @@ class RolloutDiagnosticsCallbackTests(unittest.TestCase):
 
         records = dict(model.logger.records)
         self.assertEqual(records["rollout/value_pred/mean"], 2.5)
-        self.assertAlmostEqual(records["rollout/value_pred/std"], float(np.std([1.0, 2.0, 3.0, 4.0])))
+        self.assertAlmostEqual(
+            records["rollout/value_pred/std"], float(np.std([1.0, 2.0, 3.0, 4.0]))
+        )
         self.assertEqual(records["rollout/value_pred/min"], 1.0)
         self.assertEqual(records["rollout/value_pred/max"], 4.0)
         self.assertEqual(records["rollout/value_pred/abs_mean"], 2.5)
         self.assertEqual(records["rollout/advantage/mean"], 0.5)
-        self.assertAlmostEqual(records["rollout/advantage/std"], float(np.std([-1.0, 0.0, 1.0, 2.0])))
+        self.assertAlmostEqual(
+            records["rollout/advantage/std"], float(np.std([-1.0, 0.0, 1.0, 2.0]))
+        )
         self.assertEqual(records["rollout/advantage/min"], -1.0)
         self.assertEqual(records["rollout/advantage/max"], 2.0)
         self.assertEqual(records["rollout/advantage/abs_mean"], 1.0)

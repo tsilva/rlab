@@ -21,10 +21,8 @@ TRAIN_DONE_UNCLASSIFIED = "train/done/unclassified"
 TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "train/done/level_change/from_rate/min"
 TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN = "train/done/level_change/from_rate/mean"
 
-TRAIN_EVENT_ROOT = "train/event"
-TRAIN_OUTCOME_ROOT = "train/outcome"
-TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MIN = "train/outcome/level_change/from_rate/min"
-TRAIN_OUTCOME_LEVEL_CHANGE_FROM_RATE_MEAN = "train/outcome/level_change/from_rate/mean"
+TRAIN_INFO_LEVEL_COMPLETE_ROOT = "train/info/level_complete"
+TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate_min/last"
 
 EVAL_DONE_ALL = "eval/done/all"
 EVAL_DONE_LEVEL_CHANGE = "eval/done/level_change"
@@ -86,24 +84,16 @@ def train_done_from_rate_metric(reason: object, stat: str) -> str:
     return f"{train_done_reason_metric(reason)}/from_rate/{metric_path_segment(stat)}"
 
 
-def train_event_reason_metric(reason: object) -> str:
-    return f"{TRAIN_EVENT_ROOT}/{metric_path_segment(reason)}"
+def train_info_level_complete_from_metric(value: object) -> str:
+    return f"{TRAIN_INFO_LEVEL_COMPLETE_ROOT}/from/{metric_value_segment(value)}"
 
 
-def train_event_value_metric(reason: object, direction: str, value: object) -> str:
-    return f"{train_event_reason_metric(reason)}/{metric_path_segment(direction)}/{metric_value_segment(value)}"
+def train_info_level_complete_count_metric(value: object) -> str:
+    return f"{train_info_level_complete_from_metric(value)}/count"
 
 
-def train_outcome_reason_metric(reason: object) -> str:
-    return f"{TRAIN_OUTCOME_ROOT}/{metric_path_segment(reason)}"
-
-
-def train_outcome_value_metric(reason: object, direction: str, value: object) -> str:
-    return f"{train_outcome_reason_metric(reason)}/{metric_path_segment(direction)}/{metric_value_segment(value)}"
-
-
-def train_outcome_from_rate_metric(reason: object, stat: str) -> str:
-    return f"{train_outcome_reason_metric(reason)}/from_rate/{metric_path_segment(stat)}"
+def train_info_level_complete_rate_metric(value: object) -> str:
+    return f"{train_info_level_complete_from_metric(value)}/rate"
 
 
 def eval_done_reason_metric(reason: object) -> str:

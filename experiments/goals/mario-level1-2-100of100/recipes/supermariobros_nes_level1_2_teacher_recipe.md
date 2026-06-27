@@ -56,7 +56,7 @@ the legacy `done_on_info_json` key in new launch specs.
 
 Level completion is detected from stable-retro `levelHi`/`levelLo` changes, not
 from an x-position threshold. For Level1-2, the training stop metric is
-`train/outcome/level_change/from/0-1/attempt_window/rate`.
+`train/info/level_complete/from/0-1/rate`.
 
 ## Evidence
 
