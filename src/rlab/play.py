@@ -38,6 +38,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
     single_model_artifact_ref,
 )
+from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START
 
 
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
@@ -422,7 +423,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever"
     )
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_EVAL_SEED,
+        help=(
+            "Base playback seed. The default lives in the eval/play-reserved seed "
+            f"range >= {EVAL_SEED_START}; override only for legacy replay comparisons."
+        ),
+    )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument(
         "--random-seeds", action="store_true", help="Use a fresh random seed each episode"

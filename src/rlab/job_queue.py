@@ -23,6 +23,7 @@ from rlab.runtime_refs import (
     normalize_runtime_image_ref,
     runtime_image_ref_from_file,
 )
+from rlab.seeds import validate_training_seed
 from rlab.spec_schema import validate_train_spec_schema
 
 
@@ -527,6 +528,20 @@ def validate_launch_event_config(train_config: Mapping[str, Any], *, label: str 
         )
 
 
+def validate_launch_seed_config(
+    train_config: Mapping[str, Any],
+    *,
+    seed: int | None = None,
+    label: str = "train_config",
+) -> None:
+    config_seed = train_config.get("seed")
+    seed_span = train_config.get("n_envs", 1)
+    if _non_empty_config_value(config_seed):
+        validate_training_seed(config_seed, label=f"{label}.seed", seed_span=seed_span)
+    if seed is not None:
+        validate_training_seed(seed, label="seed", seed_span=seed_span)
+
+
 def spec_goal_slug(document: Mapping[str, Any]) -> str:
     return str(document.get("goal") or document.get("goal_slug") or "").strip()
 
@@ -581,6 +596,11 @@ def enqueue_train_jobs_from_spec_document(
     for seed in _document_seeds(document, seeds):
         train_config = dict(document["train_config"])
         if seed is not None:
+            validate_training_seed(
+                seed,
+                label="spec seed",
+                seed_span=train_config.get("n_envs", 1),
+            )
             train_config["seed"] = seed
         row = enqueue_train_job(
             conn,
@@ -674,6 +694,7 @@ def enqueue_train_job(
     config = dict(train_config)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(spec_payload or {}, label="spec_payload")
+    validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
     profile_id = str(profile_id).strip() if profile_id else None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)

@@ -34,6 +34,7 @@ def _evaluate_model_episodes_vector(
     vec_config = replace(
         config,
         done_on_info={},
+        done_on_events=(),
         max_episode_steps=0,
         no_progress_timeout_steps=0,
     )
@@ -44,6 +45,10 @@ def _evaluate_model_episodes_vector(
     steps = np.zeros(n_envs, dtype=np.int64)
     max_x_positions = np.zeros(n_envs, dtype=np.int64)
     max_level_x_positions = np.zeros(n_envs, dtype=np.int64)
+    completed = np.zeros(n_envs, dtype=bool)
+    died_flags = np.zeros(n_envs, dtype=bool)
+    death_x_positions: list[Any | None] = [None] * n_envs
+    start_states: list[str | None] = [None] * n_envs
     active = np.ones(n_envs, dtype=bool)
 
     try:
@@ -57,6 +62,10 @@ def _evaluate_model_episodes_vector(
                 steps[:] = 0
                 max_x_positions[:] = 0
                 max_level_x_positions[:] = 0
+                completed[:] = False
+                died_flags[:] = False
+                death_x_positions = [None] * n_envs
+                start_states = [None] * n_envs
 
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, step_rewards, dones, infos = eval_env.step(action)
@@ -68,6 +77,10 @@ def _evaluate_model_episodes_vector(
                 info = dict(info_obj)
                 rewards[env_index] += float(step_rewards[env_index])
                 steps[env_index] += 1
+                if start_states[env_index] is None:
+                    start_states[env_index] = (
+                        info.get("start_state") or info.get("state") or config.state
+                    )
                 max_x_positions[env_index] = max(
                     max_x_positions[env_index],
                     int(info.get("max_x_pos", 0)),
@@ -77,23 +90,31 @@ def _evaluate_model_episodes_vector(
                     int(info.get("level_max_x_pos", 0)),
                 )
 
-                completed = is_level_complete(
+                completed[env_index] = bool(completed[env_index]) or is_level_complete(
                     info,
                     int(max_x_positions[env_index]),
                     completion_x_threshold,
                 )
+                if bool(info.get("died", False)):
+                    died_flags[env_index] = True
+                    if death_x_positions[env_index] is None:
+                        death_x_positions[env_index] = info.get("death_x_pos")
+                        if death_x_positions[env_index] is None:
+                            death_x_positions[env_index] = int(max_x_positions[env_index])
                 timed_out = steps[env_index] >= max_steps
-                if bool(dones[env_index]) or completed or timed_out:
-                    died = bool(info.get("died", False))
-                    death_x_pos = info.get("death_x_pos")
-                    if died and death_x_pos is None:
-                        death_x_pos = int(max_x_positions[env_index])
+                if bool(dones[env_index]) or timed_out:
+                    result_completed = bool(completed[env_index])
+                    result_died = bool(died_flags[env_index])
+                    death_x_pos = death_x_positions[env_index]
 
                     result = {
                         "episode": len(episode_results) + 1,
                         "seed": None,
                         "env_index": int(env_index),
-                        "start_state": info.get("start_state") or info.get("state") or config.state,
+                        "start_state": start_states[env_index]
+                        or info.get("start_state")
+                        or info.get("state")
+                        or config.state,
                         "reward": float(rewards[env_index]),
                         "max_x_pos": int(max_x_positions[env_index]),
                         "max_level_x_pos": int(max_level_x_positions[env_index]),
@@ -101,10 +122,10 @@ def _evaluate_model_episodes_vector(
                         "lives": int(info.get("lives", 0)),
                         "time": int(info.get("time", 0)),
                         "steps": int(steps[env_index]),
-                        "terminated": bool(dones[env_index]) or completed,
+                        "terminated": bool(dones[env_index]),
                         "truncated": timed_out or bool(info.get("TimeLimit.truncated", False)),
-                        "level_complete": completed,
-                        "died": died,
+                        "level_complete": result_completed,
+                        "died": result_died,
                         "death_x_pos": int(death_x_pos) if death_x_pos is not None else None,
                         "final_info": serializable_info(info),
                     }
@@ -120,6 +141,10 @@ def _evaluate_model_episodes_vector(
                     steps[env_index] = 0
                     max_x_positions[env_index] = 0
                     max_level_x_positions[env_index] = 0
+                    completed[env_index] = False
+                    died_flags[env_index] = False
+                    death_x_positions[env_index] = None
+                    start_states[env_index] = None
                     active[env_index] = False
 
                     if len(episode_results) >= episodes:
@@ -166,7 +191,14 @@ def evaluate_model_episodes(
         leave=True,
     ) as progress_bar:
         if n_envs == 1:
-            eval_env = make_eval_vec_env(config=config, n_envs=1, seed=seed)
+            eval_config = replace(
+                config,
+                done_on_info={},
+                done_on_events=(),
+                max_episode_steps=0,
+                no_progress_timeout_steps=0,
+            )
+            eval_env = make_eval_vec_env(config=eval_config, n_envs=1, seed=seed)
             try:
                 for episode_idx in range(episodes):
                     episode_seed = seed + episode_idx
@@ -179,7 +211,7 @@ def evaluate_model_episodes(
                         seed=episode_seed,
                         completion_x_threshold=completion_x_threshold,
                         capture_actions=capture_best_video,
-                        default_start_state=config.state,
+                        default_start_state=eval_config.state,
                     )
                     actions = result.pop("actions")
                     result = {"episode": episode_idx + 1, "seed": episode_seed, **result}

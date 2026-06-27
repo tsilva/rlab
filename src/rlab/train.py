@@ -48,6 +48,7 @@ from rlab.schedules import (
     apply_resume_hyperparameters,
     learning_rate_schedule,
 )
+from rlab.seeds import eval_seed_for_training_seed
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
 
@@ -296,7 +297,7 @@ def main() -> None:
                 eval_freq=max(args.eval_freq // max(args.n_envs, 1), 1),
                 n_eval_episodes=args.eval_episodes,
                 deterministic=not args.eval_stochastic,
-                seed=args.seed + 10_000,
+                seed=eval_seed_for_training_seed(args.seed),
                 completion_x_threshold=config.completion_x_threshold,
                 wandb_run=wandb_run,
                 record_video=not args.no_eval_videos,

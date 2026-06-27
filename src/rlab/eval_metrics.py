@@ -234,6 +234,11 @@ def run_eval_episode(
     final_info: dict[str, Any] = {}
     terminated = False
     truncated = False
+    completed = False
+    died = False
+    death_x_pos: Any | None = None
+    start_state = default_start_state
+    steps_taken = 0
 
     for step_idx in range(max_steps):
         action, _ = model.predict(obs, deterministic=deterministic)
@@ -242,27 +247,34 @@ def run_eval_episode(
             actions.append(action_value)
         obs, rewards, dones, infos = env.step(action)
         info = dict(infos[0])
+        steps_taken = step_idx + 1
         terminated = bool(dones[0])
         truncated = bool(info.get("TimeLimit.truncated", False))
         total_reward += float(rewards[0])
+        if start_state is None:
+            start_state = info.get("start_state") or info.get("state")
         max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
         max_level_x_pos = max(max_level_x_pos, int(info.get("level_max_x_pos", 0)))
         final_info = info
-        completed = is_level_complete(final_info, max_x_pos, completion_x_threshold)
-        if terminated or completed:
-            terminated = terminated or completed
+        completed = completed or is_level_complete(
+            final_info,
+            max_x_pos,
+            completion_x_threshold,
+        )
+        if bool(info.get("died", False)):
+            died = True
+            if death_x_pos is None:
+                death_x_pos = info.get("death_x_pos")
+                if death_x_pos is None:
+                    death_x_pos = max_x_pos
+        if terminated:
             break
     else:
         truncated = True
 
-    completed = is_level_complete(final_info, max_x_pos, completion_x_threshold)
-    died = bool(final_info.get("died", False))
-    death_x_pos = final_info.get("death_x_pos")
-    if died and death_x_pos is None:
-        death_x_pos = max_x_pos
-
     return {
-        "start_state": final_info.get("start_state")
+        "start_state": start_state
+        or final_info.get("start_state")
         or final_info.get("state")
         or default_start_state,
         "reward": total_reward,
@@ -271,7 +283,7 @@ def run_eval_episode(
         "score": int(final_info.get("score", 0)),
         "lives": int(final_info.get("lives", 0)),
         "time": int(final_info.get("time", 0)),
-        "steps": step_idx + 1,
+        "steps": steps_taken,
         "terminated": terminated,
         "truncated": truncated,
         "level_complete": completed,

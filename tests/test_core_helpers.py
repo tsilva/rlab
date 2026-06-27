@@ -59,7 +59,7 @@ from rlab.env_config import (
     parse_state_probs,
     parse_states,
 )
-from rlab.eval_metrics import episode_rank, is_level_complete
+from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
 from rlab.eval_metrics import RetroEvalCallback
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import (
@@ -79,6 +79,7 @@ from rlab.eval import evaluate_checkpoint
 from rlab.eval import log_wandb_eval
 from rlab.eval import main as eval_main
 from rlab.eval import score as eval_checkpoint_score
+from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
 from rlab.train import Sb3HumanOutputFormatCallback, disable_sb3_human_output_truncation
@@ -342,6 +343,28 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertTrue(parser.parse_args([]).eval_stochastic)
         self.assertTrue(parser.parse_args(["--eval-stochastic"]).eval_stochastic)
         self.assertFalse(parser.parse_args(["--no-eval-stochastic"]).eval_stochastic)
+
+    def test_train_parser_defaults_to_sparse_checkpoint_artifacts(self) -> None:
+        args = build_train_parser().parse_args([])
+
+        self.assertEqual(args.checkpoint_freq, 500_000)
+
+    def test_train_parser_rejects_eval_reserved_seed_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reserved for eval"):
+            parse_train_args(["--seed", "10000"])
+
+        with self.assertRaisesRegex(ValueError, "training env slot"):
+            parse_train_args(["--seed", "9999", "--n-envs", "2"])
+
+        self.assertEqual(parse_train_args(["--seed", "9999", "--n-envs", "1"]).seed, 9999)
+
+    def test_train_config_json_rejects_eval_reserved_seed_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(json.dumps({"seed": DEFAULT_EVAL_SEED}) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "reserved for eval"):
+                parse_train_args(["--train-config-json", str(path)])
 
     def test_parse_done_on_info_rejects_invalid_shapes(self) -> None:
         invalid_values = [
@@ -1870,6 +1893,8 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertFalse(parser.parse_args([]).deterministic)
         self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
+        self.assertEqual(parser.parse_args(["--seed", "7"]).seed, 7)
         help_text = parser.format_help()
         self.assertIn("--deterministic", help_text)
         self.assertNotIn("--stochastic", help_text)
@@ -1882,6 +1907,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertFalse(parser.parse_args([]).deterministic)
         self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
         self.assertEqual(parser.parse_args([]).n_envs, 12)
+        self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
         self.assertEqual(parser.parse_args(["--n-envs", "5"]).n_envs, 5)
         help_text = parser.format_help()
         self.assertIn("--deterministic", help_text)
@@ -2195,6 +2221,77 @@ class EvalMetricTests(unittest.TestCase):
             )
         )
 
+    def test_run_eval_episode_does_not_stop_on_completion(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.array([0], dtype=np.int64), None
+
+        class FakeEnv:
+            def __init__(self) -> None:
+                self.step_count = 0
+
+            def seed(self, seed: int) -> None:
+                self.seed_value = seed
+
+            def reset(self):
+                self.step_count = 0
+                return np.zeros((1, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.step_count += 1
+                obs = np.zeros((1, 4, 84, 84), dtype=np.uint8)
+                if self.step_count == 1:
+                    return (
+                        obs,
+                        np.array([1.0], dtype=np.float32),
+                        np.array([False]),
+                        [
+                            {
+                                "start_state": "Level1-1",
+                                "state": "Level1-1",
+                                "max_x_pos": 100,
+                                "level_max_x_pos": 100,
+                                "level_changed": True,
+                                "score": 10,
+                                "lives": 3,
+                                "time": 300,
+                            }
+                        ],
+                    )
+                return (
+                    obs,
+                    np.array([2.0], dtype=np.float32),
+                    np.array([False]),
+                    [
+                        {
+                            "state": "Level1-2",
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                            "score": 20,
+                            "lives": 3,
+                            "time": 299,
+                        }
+                    ],
+                )
+
+        result = run_eval_episode(
+            FakeEnv(),
+            FakeModel(),
+            max_steps=2,
+            deterministic=True,
+            seed=7,
+            completion_x_threshold=0,
+            default_start_state="Level1-1",
+        )
+
+        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["reward"], 3.0)
+        self.assertEqual(result["max_x_pos"], 250)
+        self.assertEqual(result["start_state"], "Level1-1")
+        self.assertTrue(result["level_complete"])
+        self.assertFalse(result["terminated"])
+        self.assertTrue(result["truncated"])
+
     def test_checkpoint_eval_seed_defaults_to_paired_schedule(self) -> None:
         args = argparse.Namespace(seed=10007, seed_offset_by_checkpoint_step=False)
 
@@ -2311,6 +2408,97 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["episode_results"][1]["env_index"], 0)
         self.assertEqual(metrics["episode_results"][1]["start_state"], "Level1-1")
         self.assertEqual(metrics["episode_results"][1]["reward"], 4.0)
+
+    def test_vector_eval_does_not_stop_on_completion(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.zeros(obs.shape[0], dtype=np.int64), None
+
+        class FakeVecEnv:
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.step_count = 0
+
+            def reset(self):
+                self.step_count = 0
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.step_count += 1
+                obs = np.zeros((2, 4, 84, 84), dtype=np.uint8)
+                if self.step_count == 1:
+                    return (
+                        obs,
+                        np.array([1.0, 10.0], dtype=np.float32),
+                        np.array([False, False]),
+                        [
+                            {
+                                "start_state": "Level1-1",
+                                "state": "Level1-1",
+                                "max_x_pos": 100,
+                                "level_max_x_pos": 100,
+                                "level_changed": True,
+                            },
+                            {
+                                "start_state": "Level1-2",
+                                "state": "Level1-2",
+                                "max_x_pos": 110,
+                                "level_max_x_pos": 110,
+                                "level_changed": True,
+                            },
+                        ],
+                    )
+                return (
+                    obs,
+                    np.array([2.0, 20.0], dtype=np.float32),
+                    np.array([False, False]),
+                    [
+                        {
+                            "state": "Level1-2",
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                        },
+                        {
+                            "state": "Level1-3",
+                            "max_x_pos": 260,
+                            "level_max_x_pos": 160,
+                        },
+                    ],
+                )
+
+            def close(self) -> None:
+                pass
+
+        fake_env = FakeVecEnv()
+        config = EnvConfig(game="SuperMarioBros-Nes-v0", completion_x_threshold=25)
+        with patch("rlab.eval_runner.make_eval_vec_env", return_value=fake_env):
+            metrics, video_path = evaluate_model_episodes(
+                model=FakeModel(),
+                config=config,
+                episodes=1,
+                seed=7,
+                max_steps=2,
+                deterministic=True,
+                completion_x_threshold=25,
+                n_envs=2,
+            )
+
+        self.assertIsNone(video_path)
+        self.assertEqual(fake_env.step_count, 2)
+        self.assertEqual(metrics["episodes"], 1)
+        self.assertEqual(metrics["completion_count"], 1)
+        self.assertEqual(metrics["terminated_count"], 0)
+        self.assertEqual(metrics["truncated_count"], 1)
+        self.assertEqual(metrics["eval/done/level_change"], 1)
+        self.assertEqual(metrics["eval/done/max_steps"], 1)
+        self.assertEqual(metrics["episode_results"][0]["steps"], 2)
+        self.assertEqual(metrics["episode_results"][0]["reward"], 3.0)
+        self.assertEqual(metrics["episode_results"][0]["max_x_pos"], 250)
+        self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-1")
+        self.assertTrue(metrics["episode_results"][0]["level_complete"])
+        self.assertFalse(metrics["episode_results"][0]["terminated"])
+        self.assertTrue(metrics["episode_results"][0]["truncated"])
 
     def test_evaluate_model_episodes_updates_progress_bar(self) -> None:
         class FakeEnv:

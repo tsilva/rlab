@@ -63,6 +63,7 @@ from rlab.model_sources import (
     slug,
     split_project,
 )
+from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START
 from rlab.wandb_utils import load_wandb_env
 
 
@@ -364,7 +365,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy", choices=["random", "right", "noop"], default="random")
     parser.add_argument("--episodes", type=int, default=20)
     add_env_config_args(parser, max_steps_default=4500)
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_EVAL_SEED,
+        help=(
+            "Base eval seed. The default lives in the eval-reserved seed range "
+            f">= {EVAL_SEED_START}; override only for legacy replay comparisons."
+        ),
+    )
     parser.add_argument(
         "--seed-offset-by-checkpoint-step",
         action="store_true",

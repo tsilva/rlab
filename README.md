@@ -115,6 +115,12 @@ Train specs are validated against the mandatory queue-backed schema in
 in `spec_payload_json`, but required launch, naming, W&B, seed, selection, and
 minimal train-config fields must be present and well-formed.
 
+Seed ranges are part of the comparability contract. Training seeds must stay in
+`0..9999`, accounting for vector env slots, and seeds `10000+` are reserved for
+eval and playback. `rlab.eval`, eval-queue jobs, and `rlab.play` default to
+seed `10007`; pass `--seed` only when replaying a legacy comparison
+deliberately.
+
 Then keep capacity aligned with the repo policy and queue state:
 
 ```bash

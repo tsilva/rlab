@@ -31,6 +31,7 @@ from rlab.job_queue import (
     record_running_train_result,
 )
 from rlab.runtime_refs import normalize_runtime_image_ref
+from rlab.seeds import validate_training_seed
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
@@ -324,6 +325,12 @@ def normalize_train_config(
         config["wandb_tags"] = ",".join(str(tag) for tag in tags)
     if isinstance(config.get("wandb_tags"), list):
         config["wandb_tags"] = ",".join(str(tag) for tag in config["wandb_tags"])
+    if "seed" in config and config["seed"] is not None:
+        validate_training_seed(
+            config["seed"],
+            label="train_config.seed",
+            seed_span=config.get("n_envs", 1),
+        )
     if job.get("runtime_image_ref"):
         config["runtime_image_ref"] = job["runtime_image_ref"]
     if job.get("run_target"):

@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from string import Formatter
 from typing import Any
 
+from rlab.seeds import TRAIN_SEED_MAX, TRAIN_SEED_MIN, validate_training_seed
+
 
 TRAIN_SPEC_SCHEMA_VERSION = 1
 TRAIN_SPEC_REQUIRED_FIELDS = (
@@ -60,7 +62,7 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
         "seeds": {
             "type": "array",
             "minItems": 1,
-            "items": {"type": "integer"},
+            "items": {"type": "integer", "minimum": TRAIN_SEED_MIN, "maximum": TRAIN_SEED_MAX},
         },
         "run_target": {"type": "string", "minLength": 1},
         "wandb_group": {"type": "string", "minLength": 1},
@@ -254,7 +256,7 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
     _require_int(document, "priority", label=label, minimum=0)
     if "max_attempts" in document:
         _require_int(document, "max_attempts", label=label, minimum=1)
-    _require_int_list(document, "seeds", label=label)
+    seed_values = _require_int_list(document, "seeds", label=label)
     _require_non_empty_string(document, "run_target", label=label)
     _require_non_empty_string(document, "wandb_group", label=label)
     _require_string_list(document, "wandb_tags", label=label)
@@ -283,9 +285,22 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         _require_key(document, "train_config", label=label),
         label=_label_path(label, "train_config"),
     )
+    seed_span = train_config.get("n_envs", 1)
+    for index, seed in enumerate(seed_values):
+        validate_training_seed(
+            seed,
+            label=f"{_label_path(label, 'seeds')}[{index}]",
+            seed_span=seed_span,
+        )
     _require_non_empty_string(train_config, "game", label=_label_path(label, "train_config"))
     _require_non_empty_string(train_config, "state", label=_label_path(label, "train_config"))
     _require_int(train_config, "timesteps", label=_label_path(label, "train_config"), minimum=1)
+    if "seed" in train_config and train_config["seed"] is not None:
+        validate_training_seed(
+            train_config["seed"],
+            label=_label_path(label, "train_config.seed"),
+            seed_span=train_config.get("n_envs", 1),
+        )
     _require_bool(train_config, "wandb", label=_label_path(label, "train_config"))
     wandb_mode = _require_non_empty_string(
         train_config,

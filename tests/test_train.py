@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from rlab.train import GracefulStopCallback, GracefulStopFlag, checkpoint_save_frequency
+from rlab.seeds import eval_seed_for_training_seed
 
 
 class TrainTests(unittest.TestCase):
@@ -11,8 +12,11 @@ class TrainTests(unittest.TestCase):
         self.assertIsNone(checkpoint_save_frequency(-1, 2))
 
     def test_checkpoint_save_frequency_scales_by_vec_envs(self) -> None:
-        self.assertEqual(checkpoint_save_frequency(100_000, 2), 50_000)
+        self.assertEqual(checkpoint_save_frequency(500_000, 2), 250_000)
         self.assertEqual(checkpoint_save_frequency(1, 32), 1)
+
+    def test_in_training_eval_seed_uses_reserved_eval_range(self) -> None:
+        self.assertEqual(eval_seed_for_training_seed(123), 10123)
 
     def test_graceful_stop_callback_stops_after_flag_request(self) -> None:
         stop_flag = GracefulStopFlag()

@@ -118,9 +118,10 @@ for their current `(levelHi, levelLo)` source level. Training intentionally does
 full-transition counters because those multiply metric cardinality quickly. Training does not emit
 initializer-state mirrors under `train/state/<initializer>/done/*`; those labels are not reliable
 for natural level transitions. Evaluation forces `done_on_info={}` and `done_on_events=()` in env
-construction but stops the eval episode when it observes completion, so `eval/done/level_change` and
-`eval/done/level_change/from/<start>` track natural transitions per eval episode. Eval `from` values
-are the configured episode start state, not native `done_on_info` previous-value payloads.
+construction and keeps running after observed level completion, so `eval/done/level_change` and
+`eval/done/level_change/from/<start>` track whether a natural transition was observed during the eval
+horizon. Eval `from` values are the configured episode start state, not native `done_on_info`
+previous-value payloads.
 
 `train/done/*` windows remain terminal-episode metrics. Natural clean clears observed while the
 training env keeps running set `level_complete` / `completion_event`, increment
@@ -282,7 +283,9 @@ Reward share metrics compare absolute component magnitudes within a rollout.
 
 These are logged by the in-training `RetroEvalCallback` when training-loop eval is enabled, and
 by `rlab-eval` artifact mode when evaluating checkpoint artifacts out of process.
-Evaluation env construction forces `done_on_info={}` and `done_on_events=()`.
+Evaluation env construction forces `done_on_info={}` and `done_on_events=()`. The eval loop also
+keeps running after observed life-loss and level-change events; it stops on native env done or the
+configured max-step horizon. Because of that, level-change and max-step eval metrics can overlap.
 
 | Metric | Meaning |
 | --- | --- |
@@ -294,13 +297,13 @@ Evaluation env construction forces `done_on_info={}` and `done_on_events=()`.
 | `eval/progress/level_x/mean` | Mean max level-local X position reached per eval episode. |
 | `eval/progress/level_x/max` | Maximum level-local X position reached by any eval episode. |
 | `eval/done/all` | Number of eval episodes summarized. This is exhaustive. |
-| `eval/done/level_change` | Eval episodes that completed by natural level transition. |
+| `eval/done/level_change` | Eval episodes where a clean natural level transition was observed at least once during the eval horizon. |
 | `eval/done/level_change/rate` | `eval/done/level_change / eval/done/all`. |
-| `eval/done/max_steps` | Eval episodes that hit the max-step limit. |
+| `eval/done/max_steps` | Eval episodes that hit the max-step limit. Can overlap with `eval/done/level_change` when eval continues after completion until the horizon. |
 | `eval/done/max_steps/rate` | `eval/done/max_steps / eval/done/all`. |
 | `eval/done/unclassified` | Eval episodes that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/rate` | `eval/done/unclassified / eval/done/all`. |
-| `eval/death/count` | Eval episodes where the final info indicated death. |
+| `eval/death/count` | Eval episodes where death was observed at least once during the eval horizon. |
 | `eval/death/rate` | `eval/death/count / eval episodes`. |
 | `eval/death/x_hist` | W&B histogram of death X positions. Logged when death positions exist. |
 | `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
@@ -318,13 +321,13 @@ previous-value tuple such as `0-0`.
 | Metric template | Meaning |
 | --- | --- |
 | `eval/done/all/from/<start>` | Number of eval episodes that started from `<start>`. This is the denominator for that start state. |
-| `eval/done/level_change/from/<start>` | Eval episodes from `<start>` that completed by natural level transition. |
+| `eval/done/level_change/from/<start>` | Eval episodes from `<start>` where a clean natural level transition was observed at least once during the eval horizon. |
 | `eval/done/level_change/from/<start>/rate` | `eval/done/level_change/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start-state level-change rate. Use this for balanced multi-state eval ranking. |
 | `eval/done/level_change/from_rate/mean` | Mean per-start-state level-change rate. |
 | `eval/info/level_complete/rate/min/last` | Alias of `eval/done/level_change/from_rate/min`, named to mirror `train/info/level_complete/rate/min/last`. |
 | `eval/info/level_complete/rate/mean/last` | Alias of `eval/done/level_change/from_rate/mean`, named to mirror `train/info/level_complete/rate/mean/last`. |
-| `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. |
+| `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. Can overlap with level-change counts. |
 | `eval/done/max_steps/from/<start>/rate` | `eval/done/max_steps/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/unclassified/from/<start>` | Eval episodes from `<start>` that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/from/<start>/rate` | `eval/done/unclassified/from/<start> / eval/done/all/from/<start>`. |
@@ -345,13 +348,13 @@ stored in eval history or stdout JSON; only the `eval/*` subset above is logged 
 | `max_x_max` | Maximum global X position before mapping to `eval/progress/x/max`. |
 | `max_level_x_mean` | Mean max level-local X position before mapping to `eval/progress/level_x/mean`. |
 | `max_level_x_max` | Maximum level-local X position before mapping to `eval/progress/level_x/max`. |
-| `completion_count` | Eval episodes that completed by natural level transition. Same count as `eval/done/level_change`. |
+| `completion_count` | Eval episodes where a clean natural level transition was observed at least once. Same count as `eval/done/level_change`. |
 | `completion_rate` | `completion_count / episodes`. Same rate as `eval/done/level_change/rate`. |
-| `death_count` | Eval episodes whose final info indicated death. Same count as `eval/death/count`. |
+| `death_count` | Eval episodes where death was observed at least once. Same count as `eval/death/count`. |
 | `death_rate` | `death_count / episodes`. Same rate as `eval/death/rate`. |
-| `terminated_count` | Eval episodes that terminated without being marked as max-step truncations. |
+| `terminated_count` | Eval episodes that hit native env done without being marked as max-step truncations. Completion alone does not increment this. |
 | `terminated_rate` | `terminated_count / episodes`. |
-| `truncated_count` | Eval episodes that hit the max-step limit. Same count as `eval/done/max_steps`. |
+| `truncated_count` | Eval episodes that hit the max-step limit. Same count as `eval/done/max_steps`; can overlap with `completion_count`. |
 | `truncated_rate` | `truncated_count / episodes`. Same rate as `eval/done/max_steps/rate`. |
 | `unclassified_count` | Eval episodes that ended without level completion or max-step truncation. Same count as `eval/done/unclassified`. |
 | `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/done/unclassified/rate`. |
@@ -367,7 +370,7 @@ stored in eval history or stdout JSON; only the `eval/*` subset above is logged 
 | `model` | Local model path used by local or artifact eval summaries. |
 | `policy` | Scripted policy name for scripted eval, or `ppo` for model eval. |
 | `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in artifact eval. |
-| `eval_seed` | Seed used for a specific artifact checkpoint eval. |
+| `eval_seed` | Seed used for a specific artifact checkpoint eval. Default eval runs use `10007` in the eval-reserved `10000+` range; train seeds are forbidden from that range. |
 
 ## W&B Config And Artifacts
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.env import EnvConfig
+from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT
 
 
@@ -204,7 +205,9 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     explicit_dests = explicit_train_arg_dests(parser, argv_list or [])
     args = parser.parse_args(argv_list)
     apply_train_config_json(args, parser, explicit_dests)
-    return apply_preset(args)
+    args = apply_preset(args)
+    validate_training_seed(args.seed, label="--seed", seed_span=args.n_envs)
+    return args
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,7 +237,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="PyTorch CPU intra-op threads; <=0 leaves the torch default.",
     )
-    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_TRAIN_SEED,
+        help=(
+            "Training base seed. The base seed plus vector env slots must stay below "
+            f"{EVAL_SEED_START}; seeds >= {EVAL_SEED_START} are reserved for eval."
+        ),
+    )
     parser.add_argument("--run-name", default="ppo_retro")
     parser.add_argument(
         "--run-description",
@@ -351,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--eval-video-fps", type=float, default=30.0)
     parser.add_argument("--eval-video-scale", type=int, default=4)
-    parser.add_argument("--checkpoint-freq", type=int, default=100_000)
+    parser.add_argument("--checkpoint-freq", type=int, default=500_000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument(
         "--learning-rate-final",

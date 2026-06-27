@@ -46,7 +46,7 @@ info_events_json: '{"life_loss":["lives","decrease"],"level_change":[["levelHi",
 done_on_events: life_loss,level_change
 eval_freq: 0
 eval_episodes: 0
-checkpoint_freq: 100000
+checkpoint_freq: 500000
 timesteps: 5,000,000
 ```
 

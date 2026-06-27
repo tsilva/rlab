@@ -14,6 +14,7 @@ from rlab import job_queue
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.eval_job_runner import normalize_eval_config
 from rlab.json_utils import json_safe
+from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_runner import (
     AutoscaleConfig,
     AutoscaleController,
@@ -445,6 +446,29 @@ class JobQueueTests(unittest.TestCase):
                 },
             )
 
+    def test_enqueue_train_job_rejects_eval_reserved_seed_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reserved for eval"):
+            job_queue.enqueue_train_job(
+                FakeConnection(),
+                goal_slug="goal",
+                spec_slug="spec",
+                profile_id=None,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                run_target="rtx4090",
+                train_config={"timesteps": 1024, "seed": DEFAULT_EVAL_SEED},
+            )
+
+        with self.assertRaisesRegex(ValueError, "training env slot"):
+            job_queue.enqueue_train_job(
+                FakeConnection(),
+                goal_slug="goal",
+                spec_slug="spec",
+                profile_id=None,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                run_target="rtx4090",
+                train_config={"timesteps": 1024, "seed": 9999, "n_envs": 2},
+            )
+
     def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
         conn = FakeConnection(row={"id": 9})
 
@@ -634,6 +658,18 @@ class JobQueueTests(unittest.TestCase):
         del document["schema_version"]
 
         with self.assertRaisesRegex(ValueError, "schema_version"):
+            job_queue.enqueue_train_jobs_from_spec_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                instances_path=Path("/tmp/does-not-exist.json"),
+            )
+
+    def test_enqueue_train_jobs_from_spec_document_rejects_eval_reserved_seed(self) -> None:
+        document = copy.deepcopy(valid_train_spec())
+        document["seeds"] = [DEFAULT_EVAL_SEED]
+
+        with self.assertRaisesRegex(ValueError, "reserved for eval"):
             job_queue.enqueue_train_jobs_from_spec_document(
                 object(),
                 document=document,
@@ -948,6 +984,16 @@ class TrainRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Use only one of resume or resume_artifact"):
             normalize_train_config(job)
 
+    def test_normalize_train_config_rejects_eval_reserved_seed_range(self) -> None:
+        job = {
+            "id": 16,
+            "train_config": {"seed": DEFAULT_EVAL_SEED},
+            "run_name": "bad_seed_candidate",
+        }
+
+        with self.assertRaisesRegex(ValueError, "reserved for eval"):
+            normalize_train_config(job)
+
     def test_train_command_uses_job_profile_config_without_secrets(self) -> None:
         job = {
             "id": 12,
@@ -1134,6 +1180,7 @@ class EvalJobRunnerTests(unittest.TestCase):
 
         self.assertEqual(config["episodes"], 100)
         self.assertEqual(config["n_envs"], 20)
+        self.assertEqual(config["seed"], DEFAULT_EVAL_SEED)
         self.assertTrue(config["stochastic"])
         self.assertFalse(config["capture_best_video"])
 
