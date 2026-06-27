@@ -42,13 +42,11 @@ from rlab.env import (
     resolve_mixed_state_config,
 )
 from rlab.env_config import env_config_from_args
-from rlab.eval_metrics import RetroEvalCallback
 from rlab.schedules import (
     EntropyCoefficientScheduleCallback,
     apply_resume_hyperparameters,
     learning_rate_schedule,
 )
-from rlab.seeds import eval_seed_for_training_seed
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
 
@@ -172,9 +170,7 @@ def main() -> None:
 
     run_dir = default_run_dir(args.run_name, args.runs_dir)
     checkpoint_dir = os.path.join(run_dir, "checkpoints")
-    best_dir = os.path.join(run_dir, "best")
     os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(best_dir, exist_ok=True)
     write_run_description(args, run_dir)
     if args.run_description.strip():
         print(f"run description: {args.run_description.strip()}", flush=True)
@@ -288,25 +284,7 @@ def main() -> None:
                 else args.timesteps,
             ),
         )
-    if args.eval_freq > 0 and args.eval_episodes > 0:
-        callbacks.append(
-            RetroEvalCallback(
-                config=config,
-                run_dir=run_dir,
-                best_model_save_path=best_dir,
-                eval_freq=max(args.eval_freq // max(args.n_envs, 1), 1),
-                n_eval_episodes=args.eval_episodes,
-                deterministic=not args.eval_stochastic,
-                seed=eval_seed_for_training_seed(args.seed),
-                completion_x_threshold=config.completion_x_threshold,
-                wandb_run=wandb_run,
-                record_video=not args.no_eval_videos,
-                video_fps=args.eval_video_fps,
-                video_scale=args.eval_video_scale,
-            ),
-        )
-    else:
-        print("training-loop eval disabled; evaluate checkpoint artifacts out of process")
+    print("training-loop eval disabled; evaluate checkpoint artifacts out of process")
 
     final_model_path = Path(run_dir, "final_model.zip")
     try:
@@ -331,16 +309,6 @@ def main() -> None:
         final_save_seconds = time.perf_counter() - final_save_started_at
         if artifact_callback is not None:
             artifact_callback.log_new_checkpoints()
-        for best_model_path in sorted(Path(best_dir).glob("*.zip")):
-            log_wandb_model_artifact(
-                wandb_run,
-                args,
-                config,
-                best_model_path,
-                kind="best",
-                aliases=["best", "latest"],
-                metric_step=model.num_timesteps,
-            )
         final_aliases = ["final", "latest"]
         if graceful_stop_flag.requested:
             final_aliases.append("interrupted")

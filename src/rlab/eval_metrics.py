@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-from stable_baselines3.common.callbacks import BaseCallback
 
-from rlab.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
 from rlab.metric_names import (
-    EVAL_BEST_REWARD,
-    EVAL_BEST_VIDEO,
-    EVAL_BEST_X,
-    EVAL_DEATH_COUNT,
-    EVAL_DEATH_RATE,
-    EVAL_DEATH_X_HIST,
     EVAL_DONE_ALL,
     EVAL_DONE_LEVEL_CHANGE,
     EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
@@ -26,17 +16,8 @@ from rlab.metric_names import (
     EVAL_DONE_UNCLASSIFIED_RATE,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-    EVAL_PROGRESS_LEVEL_X_MAX,
-    EVAL_PROGRESS_LEVEL_X_MEAN,
-    EVAL_PROGRESS_X_MAX,
-    EVAL_PROGRESS_X_MEAN,
-    EVAL_REWARD_MAX,
-    EVAL_REWARD_MEAN,
-    EVAL_REWARD_STD,
-    GLOBAL_STEP,
     eval_done_value_metric,
 )
-from rlab.video import replay_actions_for_video, write_video
 
 
 def is_level_complete(info: dict[str, Any], max_x_pos: int, completion_x_threshold: int) -> bool:
@@ -292,184 +273,3 @@ def run_eval_episode(
         "final_info": serializable_info(final_info),
         "actions": actions,
     }
-
-
-class RetroEvalCallback(BaseCallback):
-    def __init__(
-        self,
-        config: EnvConfig,
-        run_dir: str,
-        best_model_save_path: str,
-        eval_freq: int,
-        n_eval_episodes: int,
-        deterministic: bool,
-        seed: int,
-        completion_x_threshold: int,
-        wandb_run=None,
-        record_video: bool = True,
-        video_fps: float = 30.0,
-        video_scale: int = 4,
-    ):
-        super().__init__()
-        self.config = config
-        self.run_dir = Path(run_dir)
-        self.best_model_save_path = Path(best_model_save_path)
-        self.eval_freq = eval_freq
-        self.n_eval_episodes = n_eval_episodes
-        self.deterministic = deterministic
-        self.seed = seed
-        self.completion_x_threshold = completion_x_threshold
-        self.wandb_run = wandb_run
-        self.record_video = record_video
-        self.video_fps = video_fps
-        self.video_scale = video_scale
-        self.best_eval_score = (-float("inf"), -float("inf"), -float("inf"))
-
-    def _on_step(self) -> bool:
-        if self.eval_freq <= 0 or self.n_calls % self.eval_freq != 0:
-            return True
-        self.evaluate()
-        return True
-
-    def evaluate(self) -> None:
-        eval_env = make_eval_vec_env(
-            config=self.config, n_envs=1, seed=self.seed + self.num_timesteps
-        )
-        episode_results: list[dict[str, Any]] = []
-        best_episode_result: dict[str, Any] | None = None
-        best_episode_actions: list[int] = []
-        best_episode_seed: int | None = None
-        try:
-            for episode_idx in range(self.n_eval_episodes):
-                episode_seed = self.seed + self.num_timesteps + episode_idx
-                result = run_eval_episode(
-                    eval_env,
-                    self.model,
-                    max_steps=self.config.max_episode_steps,
-                    deterministic=self.deterministic,
-                    seed=episode_seed,
-                    completion_x_threshold=self.completion_x_threshold,
-                    capture_actions=self.record_video,
-                    default_start_state=self.config.state,
-                )
-                actions = result.pop("actions")
-                result = {"episode": episode_idx + 1, **result}
-                episode_results.append(result)
-                if best_episode_result is None or episode_rank(result) > episode_rank(
-                    best_episode_result
-                ):
-                    best_episode_result = result
-                    best_episode_actions = actions
-                    best_episode_seed = episode_seed
-        finally:
-            eval_env.close()
-
-        death_x_positions = [
-            int(episode["death_x_pos"])
-            for episode in episode_results
-            if episode.get("death_x_pos") is not None
-        ]
-        metrics = summarize_episode_results(
-            episode_results,
-            deterministic=self.deterministic,
-            extra={"timesteps": self.num_timesteps},
-        )
-        metrics["best_model_score"] = [
-            metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, metrics["completion_rate"]),
-            metrics["max_x_max"],
-            metrics["reward_mean"],
-        ]
-        metrics["best_episode"] = best_episode_result
-
-        video_path = None
-        if self.record_video and best_episode_actions and best_episode_seed is not None:
-            video_path = (
-                self.run_dir / "eval_videos" / f"best_episode_{self.num_timesteps}_steps.mp4"
-            )
-            video_env = make_rendered_replay_env(config=self.config, seed=best_episode_seed)
-            try:
-                best_episode_frames = replay_actions_for_video(
-                    video_env,
-                    actions=best_episode_actions,
-                    seed=best_episode_seed,
-                )
-            finally:
-                video_env.close()
-            write_video(best_episode_frames, video_path, fps=self.video_fps, scale=self.video_scale)
-            metrics["best_episode_video"] = str(video_path)
-
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        with Path(self.run_dir, "eval_metrics.jsonl").open("a", encoding="utf-8") as file:
-            file.write(json.dumps(metrics) + "\n")
-
-        self.logger.record(EVAL_REWARD_MEAN, metrics["reward_mean"])
-        self.logger.record(EVAL_REWARD_STD, metrics["reward_std"])
-        self.logger.record(EVAL_REWARD_MAX, metrics["reward_max"])
-        self.logger.record(EVAL_PROGRESS_X_MEAN, metrics["max_x_mean"])
-        self.logger.record(EVAL_PROGRESS_X_MAX, metrics["max_x_max"])
-        self.logger.record(EVAL_PROGRESS_LEVEL_X_MEAN, metrics["max_level_x_mean"])
-        self.logger.record(EVAL_PROGRESS_LEVEL_X_MAX, metrics["max_level_x_max"])
-        self.logger.record(EVAL_DEATH_RATE, metrics["death_rate"])
-        self.logger.record(EVAL_DEATH_COUNT, metrics["death_count"])
-        for key, value in flat_numeric_metrics(metrics, "eval/done/").items():
-            self.logger.record(key, value)
-        for key, value in flat_numeric_metrics(metrics, "eval/info/").items():
-            self.logger.record(key, value)
-        self.logger.record("time/total_timesteps", self.num_timesteps)
-        self.logger.dump(self.num_timesteps)
-
-        eval_score = (
-            metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, metrics["completion_rate"]),
-            metrics["max_x_max"],
-            metrics["reward_mean"],
-        )
-        if eval_score > self.best_eval_score:
-            self.best_eval_score = eval_score
-            self.best_model_save_path.mkdir(parents=True, exist_ok=True)
-            self.model.save(self.best_model_save_path / "best_model")
-
-        if self.wandb_run is not None:
-            self.log_wandb(metrics, death_x_positions, video_path)
-
-        print(
-            "Retro eval "
-            f"steps={self.num_timesteps} "
-            f"reward_mean={metrics['reward_mean']:.2f} "
-            f"max_x_mean={metrics['max_x_mean']:.2f} "
-            f"max_x_max={metrics['max_x_max']} "
-            f"completion_rate={metrics['completion_rate']:.3f} "
-            f"death_rate={metrics['death_rate']:.3f}",
-            flush=True,
-        )
-
-    def log_wandb(
-        self,
-        metrics: dict[str, Any],
-        death_x_positions: list[int],
-        video_path: Path | None,
-    ) -> None:
-        import wandb
-
-        payload: dict[str, Any] = {
-            GLOBAL_STEP: self.num_timesteps,
-            EVAL_REWARD_MEAN: metrics["reward_mean"],
-            EVAL_REWARD_STD: metrics["reward_std"],
-            EVAL_REWARD_MAX: metrics["reward_max"],
-            EVAL_PROGRESS_X_MEAN: metrics["max_x_mean"],
-            EVAL_PROGRESS_X_MAX: metrics["max_x_max"],
-            EVAL_PROGRESS_LEVEL_X_MEAN: metrics["max_level_x_mean"],
-            EVAL_PROGRESS_LEVEL_X_MAX: metrics["max_level_x_max"],
-            EVAL_DEATH_COUNT: metrics["death_count"],
-            EVAL_DEATH_RATE: metrics["death_rate"],
-            EVAL_BEST_REWARD: metrics["best_episode"]["reward"],
-            EVAL_BEST_X: metrics["best_episode"]["max_x_pos"],
-        }
-        payload.update(flat_numeric_metrics(metrics, "eval/done/"))
-        payload.update(flat_numeric_metrics(metrics, "eval/info/"))
-        if death_x_positions:
-            payload[EVAL_DEATH_X_HIST] = wandb.Histogram(death_x_positions)
-        if video_path is not None and video_path.is_file():
-            payload[EVAL_BEST_VIDEO] = wandb.Video(
-                str(video_path), fps=self.video_fps, format="mp4"
-            )
-        self.wandb_run.log(payload, step=self.num_timesteps)

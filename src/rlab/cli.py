@@ -52,8 +52,6 @@ TRAIN_VALUE_OPTIONS = {
     "eval_freq": "--eval-freq",
     "eval_episodes": "--eval-episodes",
     "completion_x_threshold": "--completion-x-threshold",
-    "eval_video_fps": "--eval-video-fps",
-    "eval_video_scale": "--eval-video-scale",
     "checkpoint_freq": "--checkpoint-freq",
     "learning_rate": "--learning-rate",
     "learning_rate_final": "--learning-rate-final",
@@ -97,7 +95,6 @@ TRAIN_VALUE_OPTIONS = {
     "run_target": "--run-target",
 }
 TRAIN_TRUE_FLAGS = {
-    "no_eval_videos": "--no-eval-videos",
     "task_conditioning": "--task-conditioning",
     "use_retro_reward": "--use-retro-reward",
     "clip_rewards": "--clip-rewards",
@@ -106,7 +103,6 @@ TRAIN_TRUE_FLAGS = {
     "no_wandb_artifacts": "--no-wandb-artifacts",
 }
 TRAIN_BOOLEAN_OPTIONS = {
-    "eval_stochastic": ("--eval-stochastic", "--no-eval-stochastic"),
     "max_pool_frames": ("--max-pool-frames", "--no-max-pool-frames"),
     "normalize_advantage": ("--normalize-advantage", "--no-normalize-advantage"),
 }
@@ -205,8 +201,17 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv_list)
     apply_train_config_json(args, parser, explicit_dests)
     args = apply_preset(args)
+    validate_training_eval_disabled(args)
     validate_training_seed(args.seed, label="--seed", seed_span=args.n_envs)
     return args
+
+
+def validate_training_eval_disabled(args: argparse.Namespace) -> None:
+    if int(args.eval_freq) != 0 or int(args.eval_episodes) != 0:
+        raise ValueError(
+            "training-loop eval is disabled; keep --eval-freq 0 and "
+            "--eval-episodes 0, then evaluate checkpoints out of process",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -330,17 +335,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--eval-freq",
         type=int,
         default=0,
-        help="Training-loop eval frequency. Keep 0 to evaluate checkpoints out of process.",
+        help="Deprecated training-loop eval setting; must remain 0.",
     )
-    parser.add_argument("--eval-episodes", type=int, default=0)
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=0,
+        help="Deprecated training-loop eval setting; must remain 0.",
+    )
     parser.add_argument(
         "--eval-stochastic",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Sample from the policy during training-loop eval; "
-            "use --no-eval-stochastic for deterministic eval."
-        ),
+        help="Legacy no-op; training never runs eval.",
     )
     parser.add_argument(
         "--completion-x-threshold",
@@ -349,10 +356,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Deprecated no-op; level completion is detected from stable-retro level changes.",
     )
     parser.add_argument(
-        "--no-eval-videos", action="store_true", help="Disable best-episode eval videos"
+        "--no-eval-videos",
+        action="store_true",
+        help="Legacy no-op; training never records eval videos.",
     )
-    parser.add_argument("--eval-video-fps", type=float, default=30.0)
-    parser.add_argument("--eval-video-scale", type=int, default=4)
+    parser.add_argument("--eval-video-fps", type=float, default=30.0, help=argparse.SUPPRESS)
+    parser.add_argument("--eval-video-scale", type=int, default=4, help=argparse.SUPPRESS)
     parser.add_argument("--checkpoint-freq", type=int, default=500_000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument(

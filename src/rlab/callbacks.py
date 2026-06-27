@@ -329,7 +329,7 @@ class DoneCounterCallback(BaseCallback):
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
         for done, info in zip(dones, infos, strict=False):
-            if not bool(done) or bool(info.get("global_reset", False)):
+            if not bool(done):
                 continue
 
             reason_payloads = self.done_reason_payloads(info)
@@ -524,9 +524,6 @@ class LevelCompleteInfoCallback(BaseCallback):
         payload: dict[str, int | float] = {}
 
         for index, info in enumerate(infos):
-            if bool(info.get("global_reset", False)):
-                self.current_sources[index] = None
-                continue
             done = bool(dones[index]) if index < len(dones) else False
             payload.update(self.record_step(index, info, done))
 

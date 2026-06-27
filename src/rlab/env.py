@@ -317,35 +317,6 @@ class StickyAction(gym.Wrapper):
         return self.env.step(effective_action)
 
 
-class VecStickyAction(VecEnvWrapper):
-    """Vectorized sticky actions applied once per SB3 env step."""
-
-    def __init__(self, venv, sticky_action_prob: float, seed: int | None = None):
-        super().__init__(
-            venv,
-            observation_space=venv.observation_space,
-            action_space=venv.action_space,
-        )
-        self.sticky_action_prob = _validate_sticky_action_prob(sticky_action_prob)
-        self.rng = np.random.default_rng(seed)
-        self.last_actions: np.ndarray | None = None
-
-    def reset(self):
-        self.last_actions = None
-        return self.venv.reset()
-
-    def step_async(self, actions):
-        action_array = np.asarray(actions).copy()
-        if self.last_actions is not None and self.sticky_action_prob > 0.0:
-            sticky_mask = self.rng.random(action_array.shape[0]) < self.sticky_action_prob
-            action_array[sticky_mask] = self.last_actions[sticky_mask]
-        self.last_actions = action_array.copy()
-        self.venv.step_async(action_array)
-
-    def step_wait(self):
-        return self.venv.step_wait()
-
-
 def _find_vec_attr(venv, attr_name: str) -> Any:
     current = venv
     while current is not None:
@@ -504,7 +475,12 @@ class VecRetroProgressInfo(VecEnvWrapper):
         super().__init__(venv)
         self.config = config
         target = target_for_game(config.game)
-        self.trackers = [target.create_tracker(config) for _ in range(self.num_envs)]
+        tracker_config = replace(
+            config,
+            max_episode_steps=0,
+            no_progress_timeout_steps=0,
+        )
+        self.trackers = [target.create_tracker(tracker_config) for _ in range(self.num_envs)]
         self.previous_event_values: list[dict[str, Any]] = [
             {} for _ in range(self.num_envs)
         ]
@@ -602,27 +578,16 @@ class VecRetroProgressInfo(VecEnvWrapper):
         dones = np.asarray(dones, dtype=bool)
         infos = [dict(info) for info in infos]
         shaped_rewards = np.zeros(self.num_envs, dtype=np.float32)
-        custom_dones = np.zeros(self.num_envs, dtype=bool)
 
         for index, info in enumerate(infos):
             self.annotate_info_events(index, info)
             progress = self.trackers[index].step(rewards[index], info, dones[index])
             shaped_rewards[index] = progress.reward
-            if progress.done:
-                custom_dones[index] = True
-                if progress.terminal:
-                    info["_custom_terminal"] = True
-                if progress.truncated:
-                    info["_custom_truncated"] = True
-                    info["TimeLimit.truncated"] = True
 
         if self.config.clip_rewards:
             shaped_rewards = np.sign(shaped_rewards).astype(np.float32)
 
-        dones = np.logical_or(dones, custom_dones)
-        native_done_indices = [
-            idx for idx, done in enumerate(dones) if done and not custom_dones[idx]
-        ]
+        native_done_indices = [idx for idx, done in enumerate(dones) if done]
         if native_done_indices:
             reset_infos = [{} for _ in range(self.num_envs)]
             for idx in native_done_indices:
@@ -630,27 +595,6 @@ class VecRetroProgressInfo(VecEnvWrapper):
                 if isinstance(reset_info, dict):
                     reset_infos[idx] = reset_info
             self._reset_tracking(native_done_indices, reset_infos)
-
-        if custom_dones.any():
-            terminal_obs = np.asarray(obs).copy()
-            for index, info in enumerate(infos):
-                info.setdefault("terminal_observation", terminal_obs[index])
-                if custom_dones[index]:
-                    if info.pop("_custom_terminal", False):
-                        info["TimeLimit.truncated"] = False
-                    elif info.pop("_custom_truncated", False):
-                        info["TimeLimit.truncated"] = True
-                    else:
-                        info.setdefault("TimeLimit.truncated", False)
-                else:
-                    # Python-defined terminal conditions still cannot reset one
-                    # native slot. Keep true completion/life-loss termination in
-                    # StableRetroNativeVecEnv via done_on_info when available.
-                    info["global_reset"] = True
-                    info["TimeLimit.truncated"] = True
-            obs = self.venv.reset()
-            dones[:] = True
-            self._reset_tracking(range(self.num_envs), getattr(self.venv, "reset_infos", None))
 
         return obs, shaped_rewards, dones, infos
 
@@ -878,6 +822,7 @@ def _native_vec_kwargs(
         "frame_skip": config.frame_skip,
         "frame_stack": 4,
         "maxpool_last_two": config.max_pool_frames,
+        "sticky_action_prob": config.sticky_action_prob,
         "copy_observations": False,
     }
     if config.states:
@@ -917,8 +862,6 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
     vec_env.seed(seed)
     if target.uses_discrete_actions(config.action_set):
         vec_env = VecDiscreteRetroActions(vec_env, config=config)
-    if config.sticky_action_prob > 0.0:
-        vec_env = VecStickyAction(vec_env, config.sticky_action_prob, seed=seed)
     vec_env = VecRetroProgressInfo(vec_env, config=config)
     vec_env = VecMonitor(vec_env)
     if config.task_conditioning:

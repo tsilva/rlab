@@ -59,7 +59,6 @@ from rlab.env_config import (
     parse_states,
 )
 from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
-from rlab.eval_metrics import RetroEvalCallback
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
@@ -352,12 +351,22 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
         self.assertEqual(args.wandb_tags, "from-json,config-file")
 
-    def test_training_loop_eval_defaults_to_stochastic(self) -> None:
-        parser = build_train_parser()
+    def test_training_loop_eval_settings_must_stay_disabled(self) -> None:
+        args = parse_train_args(["--eval-freq", "0", "--eval-episodes", "0"])
+        self.assertEqual(args.eval_freq, 0)
+        self.assertEqual(args.eval_episodes, 0)
 
-        self.assertTrue(parser.parse_args([]).eval_stochastic)
-        self.assertTrue(parser.parse_args(["--eval-stochastic"]).eval_stochastic)
-        self.assertFalse(parser.parse_args(["--no-eval-stochastic"]).eval_stochastic)
+        with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
+            parse_train_args(["--eval-freq", "1"])
+
+        with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
+            parse_train_args(["--eval-episodes", "1"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(json.dumps({"eval_freq": 1}) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
+                parse_train_args(["--train-config-json", str(path)])
 
     def test_train_parser_defaults_to_sparse_checkpoint_artifacts(self) -> None:
         args = build_train_parser().parse_args([])
@@ -822,6 +831,76 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         )
         self.assertTrue(infos[0]["level_complete"])
 
+    def test_vector_progress_does_not_apply_python_truncation_or_global_reset(self) -> None:
+        class FakeVecEnv:
+            num_envs = 2
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.MultiBinary(2)
+
+            def __init__(self) -> None:
+                self.reset_count = 0
+                self.reset_infos = [
+                    {"lives": 3, "score": 0, "levelHi": 0, "levelLo": 0},
+                    {"lives": 3, "score": 0, "levelHi": 0, "levelLo": 1},
+                ]
+
+            def reset(self):
+                self.reset_count += 1
+                return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8)
+
+            def step_async(self, actions) -> None:
+                self.actions = actions
+
+            def step_wait(self):
+                return (
+                    np.ones((self.num_envs, 4, 84, 84), dtype=np.uint8),
+                    np.array([0.0, 0.0], dtype=np.float32),
+                    np.array([False, False]),
+                    [
+                        {
+                            "lives": 3,
+                            "score": 0,
+                            "levelHi": 0,
+                            "levelLo": 0,
+                            "xscrollHi": 0,
+                            "xscrollLo": 0,
+                        },
+                        {
+                            "lives": 3,
+                            "score": 0,
+                            "levelHi": 0,
+                            "levelLo": 1,
+                            "xscrollHi": 0,
+                            "xscrollLo": 0,
+                        },
+                    ],
+                )
+
+        fake_vec = FakeVecEnv()
+        config = resolve_env_config(
+            EnvConfig(
+                game="SuperMarioBros-Nes-v0",
+                reward_mode="score",
+                max_episode_steps=1,
+                no_progress_timeout_steps=1,
+            )
+        )
+        env = VecRetroProgressInfo(fake_vec, config)
+
+        env.reset()
+        env.step_async(np.array([0, 0], dtype=np.int64))
+        _obs, _rewards, dones, infos = env.step_wait()
+
+        self.assertEqual(fake_vec.reset_count, 1)
+        np.testing.assert_array_equal(dones, np.array([False, False]))
+        self.assertFalse(any(info.get("global_reset") for info in infos))
+        self.assertFalse(any(info.get("TimeLimit.truncated") for info in infos))
+
     def test_channel_first_native_observations_skip_transpose(self) -> None:
         space = gym.spaces.Box(low=0, high=255, shape=(4, 84, 84), dtype=np.uint8)
         self.assertFalse(needs_vec_transpose_image(space))
@@ -945,6 +1024,42 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
         self.assertEqual(created[0]["state"], ["Level1-1", "Level1-2", "Level1-1", "Level1-2"])
         self.assertNotIn("states", created[0])
         self.assertNotIn("state_probs", created[0])
+
+    def test_training_vec_env_passes_sticky_action_prob_to_native_vec_env(self) -> None:
+        created: list[dict[str, object]] = []
+
+        class FakeNative:
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.MultiBinary(2)
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                created.append(kwargs)
+
+            def seed(self, seed):
+                return [seed]
+
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            reward_mode="native",
+            sticky_action_prob=0.25,
+        )
+        with (
+            patch("rlab.env.StableRetroNativeVecEnv", FakeNative),
+            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
+            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
+            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
+        ):
+            env = make_training_vec_env(config, n_envs=4, seed=7)
+
+        self.assertIsInstance(env, FakeNative)
+        self.assertEqual(created[0]["sticky_action_prob"], 0.25)
 
     def test_training_vec_env_passes_configured_native_done_on_info_rules(self) -> None:
         created: list[dict[str, object]] = []
@@ -1428,10 +1543,20 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--wandb", cmd)
         self.assertIn("--no-normalize-advantage", cmd)
 
-    def test_build_train_command_can_request_deterministic_eval(self) -> None:
-        cmd = build_train_command({"eval_stochastic": False})
+    def test_build_train_command_omits_training_loop_eval_toggles(self) -> None:
+        cmd = build_train_command(
+            {
+                "eval_stochastic": False,
+                "no_eval_videos": True,
+                "eval_video_fps": 60,
+                "eval_video_scale": 2,
+            }
+        )
 
-        self.assertIn("--no-eval-stochastic", cmd)
+        self.assertNotIn("--no-eval-stochastic", cmd)
+        self.assertNotIn("--no-eval-videos", cmd)
+        self.assertNotIn("--eval-video-fps", cmd)
+        self.assertNotIn("--eval-video-scale", cmd)
 
     def test_train_parser_accepts_task_conditioning_and_info_event_flags(self) -> None:
         args = build_train_parser().parse_args(
@@ -2106,75 +2231,6 @@ class EvalMetricTests(unittest.TestCase):
 
         self.assertEqual(eval_checkpoint_score(metrics), (0.8, 3200, 1200.0))
 
-    def test_eval_wandb_payload_includes_global_step(self) -> None:
-        class FakeRun:
-            def __init__(self) -> None:
-                self.payload: dict[str, object] | None = None
-                self.step: int | None = None
-
-            def log(self, payload: dict[str, object], *, step: int) -> None:
-                self.payload = payload
-                self.step = step
-
-        callback = RetroEvalCallback(
-            config=EnvConfig(),
-            run_dir=".",
-            best_model_save_path=".",
-            eval_freq=1,
-            n_eval_episodes=1,
-            deterministic=True,
-            seed=0,
-            completion_x_threshold=0,
-            wandb_run=FakeRun(),
-            record_video=False,
-        )
-        callback.num_timesteps = 12345
-        metrics = {
-            "reward_mean": 1.0,
-            "reward_std": 0.0,
-            "reward_max": 2.0,
-            "max_x_mean": 3.0,
-            "max_x_max": 4,
-            "max_level_x_mean": 5.0,
-            "max_level_x_max": 6,
-            "completion_count": 1,
-            "completion_rate": 1.0,
-            "death_count": 0,
-            "death_rate": 0.0,
-            "terminated_count": 1,
-            "terminated_rate": 1.0,
-            "truncated_count": 0,
-            "truncated_rate": 0.0,
-            "eval/done/all": 1,
-            "eval/done/level_change": 1,
-            "eval/done/level_change/rate": 1.0,
-            "eval/done/max_steps": 0,
-            "eval/done/max_steps/rate": 0.0,
-            "eval/done/unclassified": 0,
-            "eval/done/unclassified/rate": 0.0,
-            "eval/info/level_complete/rate/min/last": 1.0,
-            "eval/info/level_complete/rate/mean/last": 1.0,
-            "best_episode": {"reward": 2.0, "max_x_pos": 4},
-        }
-
-        with patch.dict(sys.modules, {"wandb": object()}):
-            callback.log_wandb(metrics, death_x_positions=[], video_path=None)
-
-        assert callback.wandb_run.payload is not None
-        self.assertEqual(callback.wandb_run.payload["global_step"], 12345)
-        self.assertEqual(callback.wandb_run.payload["eval/done/all"], 1)
-        self.assertEqual(callback.wandb_run.payload["eval/done/level_change"], 1)
-        self.assertEqual(callback.wandb_run.payload["eval/done/level_change/rate"], 1.0)
-        self.assertEqual(callback.wandb_run.payload["eval/done/max_steps"], 0)
-        self.assertEqual(callback.wandb_run.payload["eval/info/level_complete/rate/min/last"], 1.0)
-        self.assertEqual(
-            callback.wandb_run.payload["eval/info/level_complete/rate/mean/last"],
-            1.0,
-        )
-        self.assertNotIn("eval/outcome/terminated", callback.wandb_run.payload)
-        self.assertNotIn("eval/outcome/truncated", callback.wandb_run.payload)
-        self.assertEqual(callback.wandb_run.step, 12345)
-
     def test_artifact_eval_wandb_log_does_not_force_retroactive_history_step(self) -> None:
         class FakeRun:
             def __init__(self) -> None:
@@ -2676,7 +2732,7 @@ class DoneCounterCallbackTests(unittest.TestCase):
         callback.model = model  # type: ignore[assignment]
         callback.num_timesteps = 10
         callback.locals = {
-            "dones": [True, True, True, True, False, True],
+            "dones": [True, True, True, True, False],
             "infos": [
                 {
                     "start_state": "Level1-1",
@@ -2703,7 +2759,6 @@ class DoneCounterCallbackTests(unittest.TestCase):
                 {"start_state": "Level1-2", "TimeLimit.truncated": True},
                 {"start_state": "Level1-1"},
                 {"start_state": "Level1-1", "done_on_info": {"life_loss": {}}},
-                {"global_reset": True, "done_on_info": {"life_loss": {}}},
             ],
         }
 
