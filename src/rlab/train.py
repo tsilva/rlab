@@ -10,7 +10,7 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.logger import HumanOutputFormat
 from stable_baselines3.common.utils import set_random_seed
 
@@ -86,9 +86,27 @@ def checkpoint_save_frequency(checkpoint_freq: int, n_envs: int) -> int | None:
 
 
 def disable_sb3_human_output_truncation(model, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
-    for output_format in getattr(model.logger, "output_formats", ()):
+    logger = getattr(model, "_logger", None)
+    logger_attr = getattr(type(model), "logger", None)
+    if logger is None and not isinstance(logger_attr, property):
+        logger = getattr(model, "logger", None)
+    if logger is None:
+        return
+    for output_format in getattr(logger, "output_formats", ()):
         if isinstance(output_format, HumanOutputFormat):
             output_format.max_length = max_length
+
+
+class Sb3HumanOutputFormatCallback(BaseCallback):
+    def __init__(self, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
+        super().__init__()
+        self.max_length = max_length
+
+    def _on_training_start(self) -> None:
+        disable_sb3_human_output_truncation(self.model, max_length=self.max_length)
+
+    def _on_step(self) -> bool:
+        return True
 
 
 def main() -> None:
@@ -156,9 +174,8 @@ def main() -> None:
             device=device,
             verbose=1,
         )
-    disable_sb3_human_output_truncation(model)
-
     callbacks = [
+        Sb3HumanOutputFormatCallback(),
         ThroughputCallback(),
         DoneCounterCallback(
             wandb_run=wandb_run,

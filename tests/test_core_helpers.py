@@ -76,7 +76,7 @@ from rlab.eval import eval_seed_for_checkpoint
 from rlab.eval import score as eval_checkpoint_score
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
-from rlab.train import disable_sb3_human_output_truncation
+from rlab.train import Sb3HumanOutputFormatCallback, disable_sb3_human_output_truncation
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     model_artifact_ref,
@@ -110,6 +110,31 @@ class Sb3LoggerTests(unittest.TestCase):
 
         output_format.write(key_values, key_excluded)
         self.assertEqual(output_format.max_length, 512)
+
+    def test_uninitialized_sb3_logger_is_ignored(self) -> None:
+        class FakeSb3Model:
+            @property
+            def logger(self):
+                raise AttributeError("'FakeSb3Model' object has no attribute '_logger'")
+
+        disable_sb3_human_output_truncation(FakeSb3Model())
+
+    def test_callback_updates_logger_after_training_starts(self) -> None:
+        from stable_baselines3.common.logger import HumanOutputFormat
+
+        output_format = HumanOutputFormat(io.StringIO())
+
+        class FakeLogger:
+            output_formats = [output_format]
+
+        class FakeModel:
+            _logger = FakeLogger()
+
+        callback = Sb3HumanOutputFormatCallback(max_length=256)
+        callback.model = FakeModel()
+        callback._on_training_start()
+
+        self.assertEqual(output_format.max_length, 256)
 
 
 class EnvConfigFromArgsTests(unittest.TestCase):
