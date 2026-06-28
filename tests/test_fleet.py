@@ -58,8 +58,16 @@ def sample_config() -> fleet.FleetConfig:
             json.dumps(
                 {
                     "instances": {
-                        "rtx4090": {"name": "rtx4090", "children": 5, "max_children": 5},
-                        "rtx2060": {"name": "rtx2060", "children": 4, "max_children": 4},
+                        "rtx4090": {
+                            "name": "rtx4090",
+                            "default_workers": 5,
+                            "hardware_max_workers": 5,
+                        },
+                        "rtx2060": {
+                            "name": "rtx2060",
+                            "default_workers": 4,
+                            "hardware_max_workers": 4,
+                        },
                     }
                 }
             ),
@@ -300,7 +308,44 @@ class FleetQueueTests(unittest.TestCase):
 
         self.assertIn("capacity_policy schema=1", text)
         self.assertIn("rtx4090-screening target=rtx4090", text)
+        self.assertIn("max_runner_workers=5", text)
         self.assertIn("promote by eval", text)
+
+    def test_capacity_policy_rejects_lane_above_host_cap(self) -> None:
+        config = sample_config()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_runner_workers=6 exceeds beast-3 max_workers=5",
+        ):
+            fleet.validate_capacity_policy(
+                {
+                    "lanes": [
+                        {
+                            "name": "rtx4090-too-wide",
+                            "host": "beast-3",
+                            "manager": "rlab-fleet",
+                            "max_runner_workers": 6,
+                        }
+                    ]
+                },
+                config,
+            )
+
+    def test_capacity_policy_accepts_lane_at_host_cap(self) -> None:
+        fleet.validate_capacity_policy(
+            {
+                "lanes": [
+                    {
+                        "name": "rtx4090-screening",
+                        "host": "beast-3",
+                        "manager": "rlab-fleet",
+                        "max_runner_workers": 5,
+                    }
+                ]
+            },
+            sample_config(),
+        )
 
     def test_ensure_runner_defaults_to_latest_image_ref(self) -> None:
         args = Namespace(
@@ -1410,6 +1455,42 @@ class FleetHostSetupTests(unittest.TestCase):
         self.assertEqual(config.hosts["beast-2"].run_target, "rtx2060")
         self.assertEqual(config.hosts["beast-2"].max_workers, 4)
         self.assertEqual(config.hosts["beast-2"].docker_command, ("sudo", "-n", "docker"))
+
+    def test_host_capacity_falls_back_to_instance_hardware_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "experiments").mkdir()
+            (root / "experiments" / "instances.json").write_text(
+                json.dumps(
+                    {
+                        "instances": {
+                            "rtx4090": {
+                                "name": "rtx4090",
+                                "default_workers": 3,
+                                "hardware_max_workers": 5,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "experiments" / "fleet.json").write_text(
+                json.dumps(
+                    {
+                        "hosts": {
+                            "beast-3": {
+                                "ssh_target": "tsilva@beast-3",
+                                "run_target": "rtx4090",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = fleet.load_fleet_config(root)
+
+        self.assertEqual(config.hosts["beast-3"].max_workers, 5)
 
     def test_setup_host_script_verifies_docker_nvidia_and_digest_smoke(self) -> None:
         config = sample_config()

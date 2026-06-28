@@ -40,7 +40,7 @@ image resolver because `rlab-train-image.json` was not present at repo root.
 | `95` | `b118_l13_b55complete25_s80_20260628T095550Z` | <https://wandb.ai/tsilva/SuperMarioBros-NES/runs/ctfz60j2> |
 | `96` | `b119_l13_b55slowent_s80_20260628T095605Z` | <https://wandb.ai/tsilva/SuperMarioBros-NES/runs/3dd9af5y> |
 | `97` | `b120_l13_b46style_s80_20260628T095621Z` | <https://wandb.ai/tsilva/SuperMarioBros-NES/runs/pk4cfmcg> |
-| `98` | `b121_l13_b55slowent_complete25_s80_20260628T100401Z` | pending at report update |
+| `98` | `b121_l13_b55slowent_complete25_s80_20260628T100401Z` | <https://wandb.ai/tsilva/SuperMarioBros-NES/runs/7a1mvmtl> |
 
 ## Fleet State
 
@@ -67,3 +67,27 @@ Monitor `train/info/level_complete/from/0-2/rate`,
 and PPO health metrics (`train/approx_kl`, `train/clip_fraction`,
 `train/explained_variance`). Promote only after the goal's confirmation protocol
 and out-of-process eval evidence.
+
+## Pause Snapshot
+
+Checked: `2026-06-28`
+
+The operator intentionally stopped these jobs before the 5M-step screen
+completed. `rlab-queue status --goal mario-level1-3-100of100` now shows
+`train_jobs: {"failed": 5}`, no active train jobs, and no active eval jobs. Treat
+these results as interrupted/stale partial evidence, not as completed recipe
+evidence.
+
+W&B also shows all five runs as `crashed`. None logged a Level1-3 completion:
+
+| Run | W&B state | Global step | Runtime (s) | Level1-3 complete rate | Level1-3 complete count | `rollout/ep_rew_mean` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `b117_l13_b55post21_s80_20260628T095535Z` | `crashed` | `941248` | `604` | `0` | `0` | `643.95` |
+| `b118_l13_b55complete25_s80_20260628T095550Z` | `crashed` | `913920` | `607` | `0` | `0` | `636.756` |
+| `b119_l13_b55slowent_s80_20260628T095605Z` | `crashed` | `864464` | `578` | `0` | `0` | `642.282` |
+| `b120_l13_b46style_s80_20260628T095621Z` | `crashed` | `851968` | `578` | `0` | `0` | `613.74396` |
+| `b121_l13_b55slowent_complete25_s80_20260628T100401Z` | `crashed` | `114064` | `95` | `0` | `0` | `224.74901` |
+
+Resume decision:
+`experiments/goals/mario-level1-3-100of100/decisions/2026-06-28-resume-stale-b117-b121.md`.
+Do not relaunch these jobs until the operator explicitly says to resume.

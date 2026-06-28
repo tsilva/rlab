@@ -837,10 +837,10 @@ def capacity_label(instance: dict[str, Any]) -> str:
     if instance.get("available") is False:
         return "unavailable"
     kind = target_kind(instance)
-    fleet_workers = instance.get("max_workers")
+    fleet_workers = instance.get("max_workers") or instance.get("hardware_max_workers")
     if kind in FLEET_TARGET_KINDS and fleet_workers:
         return f"{fleet_workers} workers"
-    slots = instance.get("max_children") or instance.get("children")
+    slots = instance.get("default_workers")
     if slots:
         try:
             slot_count = int(slots)

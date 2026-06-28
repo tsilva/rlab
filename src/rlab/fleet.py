@@ -331,12 +331,14 @@ def _host_config_from_raw(
 ) -> HostConfig:
     run_target = str(raw.get("run_target") or name).strip()
     instance = instance_defaults(dict(instances), run_target)
-    max_workers = int(
+    max_workers_value = (
         raw.get("max_workers")
-        or instance.get("max_children")
-        or instance.get("children")
-        or 1
+        if raw.get("max_workers") is not None
+        else instance.get("hardware_max_workers", instance.get("default_workers", 1))
     )
+    max_workers = int(max_workers_value)
+    if max_workers < 1:
+        raise ValueError(f"fleet host {name!r} max_workers must be at least 1")
     ssh_target = str(raw.get("ssh_target") or "").strip()
     if not ssh_target:
         raise ValueError(f"fleet host {name!r} must define ssh_target")
@@ -403,6 +405,41 @@ def load_fleet_config(
 
 def load_capacity_policy(repo_root: Path, path: Path | None = None) -> dict[str, Any]:
     return load_json_file(resolve_repo_path(repo_root, path, DEFAULT_CAPACITY_POLICY))
+
+
+def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> None:
+    lanes = policy.get("lanes", [])
+    if not isinstance(lanes, list):
+        raise ValueError("capacity_policy lanes must be a list")
+    for lane in lanes:
+        if not isinstance(lane, Mapping):
+            raise ValueError("capacity_policy lane entries must be objects")
+        name = str(lane.get("name") or "<unnamed>")
+        manager = str(lane.get("manager") or "").strip()
+        host_name = str(lane.get("host") or "").strip()
+        if not host_name:
+            if manager == "rlab-fleet":
+                raise ValueError(f"capacity_policy lane {name!r} uses rlab-fleet but has no host")
+            continue
+        if host_name not in config.hosts:
+            raise ValueError(f"capacity_policy lane {name!r} references unknown host {host_name!r}")
+        max_runner_workers = lane.get("max_runner_workers")
+        if max_runner_workers is None:
+            continue
+        try:
+            runner_limit = int(max_runner_workers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"capacity_policy lane {name!r} max_runner_workers must be an integer"
+            ) from exc
+        if runner_limit < 1:
+            raise ValueError(f"capacity_policy lane {name!r} max_runner_workers must be at least 1")
+        host_limit = config.hosts[host_name].max_workers
+        if runner_limit > host_limit:
+            raise ValueError(
+                f"capacity_policy lane {name!r} max_runner_workers={runner_limit} "
+                f"exceeds {host_name} max_workers={host_limit}"
+            )
 
 
 def resolve_repo_path(repo_root: Path, path: Path | None, default: Path) -> Path:
@@ -1692,7 +1729,7 @@ def format_capacity_policy(policy: Mapping[str, Any]) -> str:
             lines.append(
                 "  "
                 f"{lane.get('name')} target={lane.get('target')} "
-                f"manager={lane.get('manager')} max_workers={lane.get('max_runner_workers')} "
+                f"manager={lane.get('manager')} max_runner_workers={lane.get('max_runner_workers')} "
                 f"env_threads={lane.get('env_threads')}"
             )
     checks = policy.get("policy_checks")
@@ -1893,8 +1930,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_policy(args: argparse.Namespace) -> int:
-    repo_root = Path(args.repo_root)
-    print(format_capacity_policy(load_capacity_policy(repo_root, args.policy)))
+    repo_root = repo_root_from_args(args)
+    config = _load_config_from_args(args)
+    policy = load_capacity_policy(repo_root, args.policy)
+    validate_capacity_policy(policy, config)
+    print(format_capacity_policy(policy))
     return 0
 
 

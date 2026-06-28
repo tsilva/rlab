@@ -54,10 +54,10 @@ Use `info_events_json` to define observed info-variable events and
 `done_on_events` to choose which observed events terminate episodes.
 `done_on_info_json` is no longer accepted in launch specs.
 
-Use 5 fleet-managed Docker runner containers on `beast-3` for throughput screening.
-Recent recipe-search batches used 6 concurrent child trainings for 3-arm /
+Use 5 fleet-managed runner workers on `beast-3` for throughput screening.
+Recent recipe-search batches used 6 concurrent training workers for 3-arm /
 2-seed comparisons; that is acceptable for search continuity, but the measured
-default throughput shape in `INSTANCES.md` remains 5 children.
+default throughput shape in `INSTANCES.md` remains 5 workers.
 Level completion is detected from stable-retro `levelHi`/`levelLo` changes, not
 from an x-position threshold.
 

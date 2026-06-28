@@ -159,10 +159,12 @@ Queue-backed training is the supported GPU workflow. Create train jobs with
 `rlab-queue`, then run capacity through `rlab-fleet` on `beast-3` and
 `beast-2`.
 
-For queue-backed training, keep worker capacity in `experiments/fleet.json` and
-`experiments/policies/capacity_policy.json`. `rlab-fleet` starts digest-pinned
-Docker containers running `rlab.train_runner`; experiment payloads stay in the
-queue row snapshot loaded from the checked-in spec file.
+For queue-backed training, keep the enforced host cap as `max_workers` in
+`experiments/fleet.json`. Lane-specific limits live in
+`experiments/policies/capacity_policy.json`; they are validated against the host
+cap by `rlab-fleet policy`. `rlab-fleet` starts digest-pinned Docker containers
+running `rlab.train_runner`; experiment payloads stay in the queue row snapshot
+loaded from the checked-in spec file.
 
 For local GPU queue capacity, run the fleet manager from the MacBook. It reads
 pending/running `train_jobs`, groups demand by `profile_id`,

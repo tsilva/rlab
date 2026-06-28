@@ -9,15 +9,17 @@ launchers for this project while the beast path is being hardened.
 
 | Use case | Target | Shape |
 | --- | --- | --- |
-| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 5 Docker runner containers, `env_threads=4` |
-| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 Docker runner containers, `env_threads=4` |
-| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 Docker runner containers, `env_threads=2` |
-| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 Docker runner containers, `env_threads=4` |
+| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 5 runner workers, `env_threads=4` |
+| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 runner workers, `env_threads=4` |
+| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 runner workers, `env_threads=2` |
+| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 runner workers, `env_threads=4` |
 | Smoke, debugging, playback | `local-macbook` | direct local CLI |
 
-Machine-readable target defaults live in `experiments/instances.json`. Fleet host
-connection and mount details live in `experiments/fleet.json`. Scheduling lanes
-and policy checks live in `experiments/policies/capacity_policy.json`.
+Machine-readable target defaults live in `experiments/instances.json`; these
+use `default_workers` and `hardware_max_workers` for descriptive capacity.
+Fleet host connection, mount details, and the enforced `max_workers` cap live in
+`experiments/fleet.json`. Scheduling lanes and policy checks live in
+`experiments/policies/capacity_policy.json`.
 
 ## Standard Workflow
 
@@ -97,7 +99,8 @@ queue service and do not schedule experiments.
 - Target: `rtx4090`, alias `beast-3`.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
-- Default capacity: 5 managed Docker runner containers.
+- Enforced fleet capacity: `max_workers=5` in `experiments/fleet.json`.
+- Default operating shape: 5 runner workers.
 - Default runtime shape: `env_threads=4`, `torch_num_threads=1`.
 - Lower-contention shape: 3-4 workers with `env_threads=4`.
 - Current benchmark expectation: about 6200 aggregate wall FPS for the current
@@ -116,7 +119,8 @@ intentionally testing small-GPU behavior.
 - Access: `ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26` until hostname
   resolution is restored.
 - Fleet role: cheaper small ablations, smoke jobs, and RTX2060-specific checks.
-- Default capacity: 4 managed Docker runner containers.
+- Enforced fleet capacity: `max_workers=4` in `experiments/fleet.json`.
+- Default operating shape: 4 runner workers.
 - Default runtime shape: `env_threads=2`, `torch_num_threads=1`.
 - Fast-turnaround shape: 2 workers with `env_threads=4`.
 - Docker command: configured in `experiments/fleet.json`; currently
