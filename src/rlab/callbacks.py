@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -187,6 +188,85 @@ class ThroughputCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         return True
+
+
+class MetricThresholdStopCallback(BaseCallback):
+    OPERATORS = {
+        ">": lambda value, threshold: value > threshold,
+        ">=": lambda value, threshold: value >= threshold,
+        "<": lambda value, threshold: value < threshold,
+        "<=": lambda value, threshold: value <= threshold,
+    }
+
+    def __init__(
+        self,
+        *,
+        metric_name: str,
+        threshold: float,
+        operator: str,
+        marker_path: Path,
+    ) -> None:
+        super().__init__()
+        metric_name = str(metric_name).strip()
+        if not metric_name:
+            raise ValueError("metric_name is required")
+        if operator not in self.OPERATORS:
+            raise ValueError(f"unsupported metric threshold operator: {operator}")
+        if not math.isfinite(float(threshold)):
+            raise ValueError("metric threshold must be finite")
+        self.metric_name = metric_name
+        self.threshold = float(threshold)
+        self.operator = operator
+        self.marker_path = marker_path
+        self.triggered = False
+
+    def _on_step(self) -> bool:
+        value = self.current_metric_value()
+        if value is None:
+            return True
+        if not self.OPERATORS[self.operator](value, self.threshold):
+            return True
+        self.triggered = True
+        self.write_marker(value)
+        print(
+            "early stop: "
+            f"{self.metric_name} {value:.12g} {self.operator} {self.threshold:.12g}; "
+            f"stopping at num_timesteps={self.num_timesteps}",
+            flush=True,
+        )
+        return False
+
+    def current_metric_value(self) -> float | None:
+        logger = getattr(self.model, "logger", None)
+        for attr in ("name_to_value", "records"):
+            values = getattr(logger, attr, None)
+            if not isinstance(values, Mapping) or self.metric_name not in values:
+                continue
+            try:
+                value = float(values[self.metric_name])
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) else None
+        return None
+
+    def write_marker(self, value: float) -> None:
+        self.marker_path.parent.mkdir(parents=True, exist_ok=True)
+        self.marker_path.write_text(
+            "\n".join(
+                [
+                    "early_stop=metric_threshold",
+                    f"early_stop_metric={self.metric_name}",
+                    f"early_stop_operator={self.operator}",
+                    f"early_stop_threshold={self.threshold:.12g}",
+                    f"early_stop_value={value:.12g}",
+                    f"early_stop_timesteps={self.num_timesteps}",
+                    f"{self.metric_name}={value:.12g}",
+                    f"timesteps={self.num_timesteps}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 class RolloutDiagnosticsCallback(BaseCallback):

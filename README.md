@@ -126,7 +126,7 @@ Then keep capacity aligned with the repo policy and queue state:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
 ```
 
 Use `rlab-queue status --goal <goal>` for operational queue state and compact
@@ -174,16 +174,16 @@ Docker engines; they do not poll the queue or run a local fleet service.
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute --watch --interval 30
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --watch --interval 30
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
 ```
 
 After publishing a new train image, roll all active beast hosts to the latest
 successful digest with `ensure-latest`:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest
 ```
 
 This starts or keeps one unprofiled latest-image runner per selected host. It
@@ -199,10 +199,11 @@ each live host, leaves old runners alone while they still own active leases or
 have matching queued/running jobs, marks stale running train jobs failed so they
 can stop blocking the queue, removes idle stale managed containers, and shows
 the last three published train-image digests with their source commit hashes,
-publish times, and commit subjects. Omit `--execute` for a dry-run dashboard.
+publish times, and commit subjects. Pass `--dry-run` for a preview-only
+dashboard.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
 ```
 
 To explicitly make a latest-image runner available on a local beast host,
@@ -215,8 +216,7 @@ the image and host target:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner \
   --host beast-3 \
-  --image latest \
-  --execute
+  --image latest
 ```
 
 `--image latest` is the default; pass `--image docker:...@sha256:...` or
@@ -231,13 +231,11 @@ ready:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
   --host beast-3 \
-  --runtime-image-ref-file rlab-train-image.json \
-  --execute
+  --runtime-image-ref-file rlab-train-image.json
 
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
   --host beast-2 \
-  --runtime-image-ref-file rlab-train-image.json \
-  --execute
+  --runtime-image-ref-file rlab-train-image.json
 ```
 
 The fleet manager does not schedule experiments and does not inspect RL config.

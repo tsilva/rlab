@@ -26,6 +26,7 @@ from rlab.callbacks import (
     CheckpointArtifactTimingState,
     DoneCounterCallback,
     LevelCompleteInfoCallback,
+    MetricThresholdStopCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
@@ -246,6 +247,18 @@ def main() -> None:
         LevelCompleteInfoCallback(
             wandb_run=wandb_run,
             info_events=config.info_events,
+        ),
+        *(
+            [
+                MetricThresholdStopCallback(
+                    metric_name=args.early_stop_metric,
+                    threshold=args.early_stop_threshold,
+                    operator=args.early_stop_operator,
+                    marker_path=Path(run_dir) / "early_stop.txt",
+                )
+            ]
+            if args.early_stop_metric
+            else []
         ),
         RolloutDiagnosticsCallback(wandb_run=wandb_run),
         RewardComponentDiagnosticsCallback(),

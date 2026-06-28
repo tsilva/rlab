@@ -1745,7 +1745,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for JSONL exports; defaults to logs/campaign-db-export-<utc>.",
     )
-    reset.add_argument("--execute", action="store_true", help="Actually reset tables.")
+    add_dry_run_arg(reset)
     reset.set_defaults(func=cmd_reset_schema)
 
     enqueue = subparsers.add_parser("enqueue-train", help="Create train jobs from a spec file")
@@ -1813,14 +1813,24 @@ def build_parser() -> argparse.ArgumentParser:
     stale.add_argument("--older-than-seconds", type=int, default=300)
     stale.add_argument("--limit", type=int, default=50, help="Maximum rows to affect; 0 means no limit.")
     stale.add_argument("--error", help="Failure message to store on job/result rows.")
-    stale.add_argument("--all", action="store_true", help="Allow an unscoped --execute.")
-    stale.add_argument("--execute", action="store_true", help="Apply changes; default is dry-run.")
+    stale.add_argument("--all", action="store_true", help="Allow an unscoped apply.")
+    add_dry_run_arg(stale)
     stale.set_defaults(func=cmd_mark_stale_failed)
 
     status = subparsers.add_parser("status", help="Print compact queue status")
     status.add_argument("--goal", required=True, dest="goal_slug")
     status.set_defaults(func=cmd_status)
     return parser
+
+
+def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(execute=True)
+    parser.add_argument(
+        "--dry-run",
+        dest="execute",
+        action="store_false",
+        help="Preview planned changes without applying them.",
+    )
 
 
 def _connect_from_args(args: argparse.Namespace):
@@ -1859,7 +1869,7 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
     export_dir = args.export_dir or default_export_dir()
     if not args.execute:
         print(f"dry_run: would export queue tables to {export_dir} and reset schema")
-        print("dry_run: pass --execute to apply")
+        print("dry_run: rerun without --dry-run to apply")
         return 0
     conn = _connect_from_args(args)
     try:
@@ -1969,7 +1979,7 @@ def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
         raise SystemExit("--target is only valid for train jobs")
     if args.execute and not args.all and not _stale_scope_selected(args):
         raise SystemExit(
-            "refusing unscoped --execute; pass --job-id, --profile, "
+            "refusing unscoped apply; pass --job-id, --profile, "
             "--target, --lease-owner-prefix, or --all"
         )
     run_target = (
@@ -2008,7 +2018,7 @@ def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
         conn.close()
     _print_stale_rows(rows, job_kind=args.job_kind, execute=args.execute)
     if not args.execute:
-        print("dry_run: pass --execute to mark these stale jobs failed")
+        print("dry_run: rerun without --dry-run to mark these stale jobs failed")
     return 0
 
 

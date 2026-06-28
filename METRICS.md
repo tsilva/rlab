@@ -64,14 +64,16 @@ policies. `eval/info/level_complete/rate/min/last` and
 for dashboards that compare train and eval surfaces side by side. The top-level eval metrics are
 pooled summaries and should be treated as secondary when per-start-state eval done metrics exist.
 
-### Mario Level1-1/Level1-2 Notes
+### Mario Level1-1/Level1-2/Level1-3 Notes
 
-For the current Level1-1/Level1-2 training goal, native level values map to training metrics as:
+For the current Level1 single-level and mixed-level training goals, native level values map to
+training metrics as:
 
 | Level | Count metric | Rate metric |
 | --- | --- | --- |
 | `Level1-1` | `train/info/level_complete/from/0-0/count` | `train/info/level_complete/from/0-0/rate` |
 | `Level1-2` | `train/info/level_complete/from/0-1/count` | `train/info/level_complete/from/0-1/rate` |
+| `Level1-3` | `train/info/level_complete/from/0-2/count` | `train/info/level_complete/from/0-2/rate` |
 
 For active multi-level training, use `train/info/level_complete/rate/min/last` as the live
 bottleneck. It is the minimum of the most recent full-window per-level rates that have emitted so

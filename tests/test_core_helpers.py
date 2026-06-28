@@ -31,6 +31,7 @@ from rlab.artifacts import (
 from rlab.callbacks import (
     DoneCounterCallback,
     LevelCompleteInfoCallback,
+    MetricThresholdStopCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
@@ -63,6 +64,7 @@ from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
     metric_path_segment,
 )
 from rlab.model_sources import (
@@ -350,6 +352,50 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.timesteps, 2048)
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
         self.assertEqual(args.wandb_tags, "from-json,config-file")
+
+    def test_train_config_json_accepts_metric_early_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "early_stop_metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                        "early_stop_threshold": 0.99,
+                        "early_stop_operator": ">",
+                    },
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = parse_train_args(["--train-config-json", str(path)])
+
+        self.assertEqual(args.early_stop_metric, TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST)
+        self.assertEqual(args.early_stop_threshold, 0.99)
+        self.assertEqual(args.early_stop_operator, ">")
+
+    def test_train_config_json_rejects_incomplete_metric_early_stop(self) -> None:
+        with self.assertRaisesRegex(ValueError, "early-stop-metric"):
+            parse_train_args(["--early-stop-metric", TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST])
+
+        with self.assertRaisesRegex(ValueError, "early-stop-metric"):
+            parse_train_args(["--early-stop-threshold", "0.99"])
+
+    def test_build_train_command_includes_metric_early_stop_flags(self) -> None:
+        command = build_train_command(
+            {
+                "early_stop_metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                "early_stop_threshold": 0.99,
+                "early_stop_operator": ">",
+            }
+        )
+
+        self.assertIn("--early-stop-metric", command)
+        self.assertIn(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST, command)
+        self.assertIn("--early-stop-threshold", command)
+        self.assertIn("0.99", command)
+        self.assertIn("--early-stop-operator", command)
+        self.assertIn(">", command)
 
     def test_training_loop_eval_settings_must_stay_disabled(self) -> None:
         args = parse_train_args(["--eval-freq", "0", "--eval-episodes", "0"])
@@ -3357,6 +3403,52 @@ class LevelCompleteInfoCallbackTests(unittest.TestCase):
         self.assertEqual(model.logger.records["train/info/level_complete/rate/min/last"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/last"], 0.75)
         self.assert_no_generic_info_metrics(model.logger.records)
+
+
+class MetricThresholdStopCallbackTests(unittest.TestCase):
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.records: dict[str, int | float] = {}
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.logger = MetricThresholdStopCallbackTests.FakeLogger()
+
+    def make_callback(self, marker_path: Path) -> tuple[MetricThresholdStopCallback, FakeModel]:
+        model = self.FakeModel()
+        callback = MetricThresholdStopCallback(
+            metric_name=TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+            threshold=0.99,
+            operator=">",
+            marker_path=marker_path,
+        )
+        callback.model = model  # type: ignore[assignment]
+        return callback, model
+
+    def test_waits_until_metric_crosses_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            marker_path = Path(tmp) / "run" / "early_stop.txt"
+            callback, model = self.make_callback(marker_path)
+            callback.num_timesteps = 100
+
+            self.assertTrue(callback._on_step())
+            self.assertFalse(marker_path.exists())
+
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.99
+            self.assertTrue(callback._on_step())
+            self.assertFalse(marker_path.exists())
+
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 1.0
+            callback.num_timesteps = 200
+            self.assertFalse(callback._on_step())
+
+            marker = marker_path.read_text(encoding="utf-8")
+            self.assertIn("early_stop=metric_threshold", marker)
+            self.assertIn(f"early_stop_metric={TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}", marker)
+            self.assertIn("early_stop_operator=>", marker)
+            self.assertIn("early_stop_threshold=0.99", marker)
+            self.assertIn("early_stop_value=1", marker)
+            self.assertIn("timesteps=200", marker)
 
 
 class ThroughputCallbackTests(unittest.TestCase):

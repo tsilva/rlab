@@ -1490,7 +1490,7 @@ def acquire_watch_latest_lock(args: argparse.Namespace) -> WatchLatestLock:
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "repo_root": str(repo_root_from_args(args)),
         "host": getattr(args, "host", None) or "all",
-        "mode": "execute" if getattr(args, "execute", False) else "dry-run",
+        "mode": "execute" if getattr(args, "execute", True) else "dry-run",
         "interval": getattr(args, "interval", DEFAULT_WATCH_LATEST_INTERVAL_SECONDS),
     }
     handle.write(json.dumps(owner, sort_keys=True) + "\n")
@@ -1903,7 +1903,7 @@ def _run_reconcile_once(args: argparse.Namespace, *, local: bool = False) -> int
     plan = build_live_plan(args, local=local)
     print(format_plan(plan))
     if not args.execute:
-        print("dry_run: pass --execute to apply the plan")
+        print("dry_run: rerun without --dry-run to apply the plan")
         return 0
     status = 0
     for action in plan.actions:
@@ -1962,7 +1962,7 @@ def cmd_ensure_runner(args: argparse.Namespace) -> int:
     )
     print(format_plan(plan))
     if not args.execute:
-        print("dry_run: pass --execute to apply the plan")
+        print("dry_run: rerun without --dry-run to apply the plan")
         return 0
     status = 0
     for action in plan.actions:
@@ -3057,7 +3057,7 @@ def cmd_ensure_latest(args: argparse.Namespace) -> int:
         print(f"hosts={','.join(sorted(config.hosts))}")
         print(format_plan(plan))
         if not args.execute:
-            print("dry_run: pass --execute to apply the plan")
+            print("dry_run: rerun without --dry-run to apply the plan")
             return 0
         status = run_plan_actions(config, plan, local=False)
         if status != 0 or not args.watch:
@@ -3133,7 +3133,7 @@ def cmd_setup_host(args: argparse.Namespace) -> int:
         print(f"host: {host.name}")
         print(script.rstrip())
         if not args.execute:
-            print("dry_run: pass --execute to run setup over SSH")
+            print("dry_run: rerun without --dry-run to run setup over SSH")
             continue
         result = run_host_script(host, script)
         if result.returncode != 0:
@@ -3197,7 +3197,7 @@ def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
     )
     print_stale_train_rows(rows, execute=args.execute)
     if not args.execute:
-        print("dry_run: pass --execute to mark these stale train jobs failed")
+        print("dry_run: rerun without --dry-run to mark these stale train jobs failed")
     return 0
 
 
@@ -3208,13 +3208,23 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
 
 
+def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(execute=True)
+    parser.add_argument(
+        "--dry-run",
+        dest="execute",
+        action="store_false",
+        help="Preview planned changes without applying them.",
+    )
+
+
 def add_reconcile_args(parser: argparse.ArgumentParser, *, host_required: bool = False) -> None:
     parser.add_argument(
         "--host",
         required=host_required,
         help="Limit reconciliation to one fleet host.",
     )
-    parser.add_argument("--execute", action="store_true", help="Apply changes instead of dry-run.")
+    add_dry_run_arg(parser)
     parser.add_argument("--watch", action="store_true", help="Run repeatedly.")
     parser.add_argument("--interval", type=float, default=30.0, help="Watch interval in seconds.")
 
@@ -3294,7 +3304,7 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--profile", help="Optional exact train_jobs.profile_id to claim.")
     ensure.add_argument("--target", help="Run target; defaults to the host canonical target.")
     ensure.add_argument("--workers", type=int, help="Workers inside the runner; defaults to host capacity.")
-    ensure.add_argument("--execute", action="store_true")
+    add_dry_run_arg(ensure)
     add_ensure_image_args(ensure)
     ensure.set_defaults(func=cmd_ensure_runner)
 
@@ -3305,7 +3315,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(ensure_latest)
     ensure_latest.add_argument("--host", help="Limit rollout to one fleet host.")
     ensure_latest.add_argument("--workers", type=int, help="Workers inside each latest runner; defaults to host capacity.")
-    ensure_latest.add_argument("--execute", action="store_true")
+    add_dry_run_arg(ensure_latest)
     ensure_latest.add_argument("--watch", action="store_true", help="Run repeatedly.")
     ensure_latest.add_argument("--interval", type=float, default=30.0, help="Watch interval in seconds.")
     add_ensure_image_args(ensure_latest)
@@ -3322,7 +3332,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Workers inside each latest runner; defaults to host capacity.",
     )
-    watch_latest.add_argument("--execute", action="store_true", help="Apply actions; omit for dry-run.")
+    add_dry_run_arg(watch_latest)
     watch_latest.add_argument(
         "--interval",
         type=float,
@@ -3373,13 +3383,13 @@ def build_parser() -> argparse.ArgumentParser:
     mark_stale.add_argument("--older-than-seconds", type=int, default=300)
     mark_stale.add_argument("--limit", type=int, default=50, help="Maximum rows to affect; 0 means no limit.")
     mark_stale.add_argument("--error", help="Failure message to store on job/result rows.")
-    mark_stale.add_argument("--execute", action="store_true", help="Apply changes; default is dry-run.")
+    add_dry_run_arg(mark_stale)
     mark_stale.set_defaults(func=cmd_mark_stale_failed)
 
     setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for runners.")
     add_common_args(setup)
     setup.add_argument("--host", required=True, help="Fleet host to set up.")
-    setup.add_argument("--execute", action="store_true")
+    add_dry_run_arg(setup)
     add_runtime_image_args(setup)
     setup.set_defaults(func=cmd_setup_host)
 

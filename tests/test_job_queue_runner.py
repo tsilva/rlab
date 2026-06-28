@@ -15,6 +15,7 @@ from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.dotenv import load_env_file
 from rlab.eval_job_runner import normalize_eval_config
 from rlab.json_utils import json_safe
+from rlab.metric_names import TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_runner import (
     AutoscaleConfig,
@@ -275,6 +276,20 @@ class JobQueueTests(unittest.TestCase):
             with self.subTest(path=str(path)):
                 job_queue.load_spec_document(path)
 
+    def test_level1_3_specs_configure_goal_metric_early_stop(self) -> None:
+        spec_paths = sorted(Path("experiments/goals/mario-level1-3-100of100/specs").glob("*.json"))
+        self.assertGreater(len(spec_paths), 0)
+        for path in spec_paths:
+            with self.subTest(path=str(path)):
+                spec = json.loads(path.read_text(encoding="utf-8"))
+                train_config = spec["train_config"]
+                self.assertEqual(
+                    train_config["early_stop_metric"],
+                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                )
+                self.assertEqual(train_config["early_stop_threshold"], 0.99)
+                self.assertEqual(train_config["early_stop_operator"], ">")
+
     def test_record_running_train_result_upserts_wandb_url(self) -> None:
         conn = FakeConnection()
 
@@ -366,11 +381,18 @@ class JobQueueTests(unittest.TestCase):
             "worker_lost: beast-2 powered off",
         )
 
-    def test_mark_stale_failed_execute_requires_scope_or_all(self) -> None:
-        args = job_queue.build_parser().parse_args(["mark-stale-failed", "--execute"])
+    def test_mark_stale_failed_default_apply_requires_scope_or_all(self) -> None:
+        args = job_queue.build_parser().parse_args(["mark-stale-failed"])
 
         with self.assertRaisesRegex(SystemExit, "refusing unscoped"):
             job_queue.cmd_mark_stale_failed(args)
+
+    def test_dry_run_replaces_execute_flag(self) -> None:
+        args = job_queue.build_parser().parse_args(["mark-stale-failed", "--dry-run"])
+
+        self.assertFalse(args.execute)
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            job_queue.build_parser().parse_args(["mark-stale-failed", "--" + "execute"])
 
     def test_enqueue_train_job_persists_runtime_and_target(self) -> None:
         conn = FakeConnection(

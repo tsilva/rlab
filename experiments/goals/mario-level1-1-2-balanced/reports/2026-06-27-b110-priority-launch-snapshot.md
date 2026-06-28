@@ -97,7 +97,7 @@ was full:
 - Reclaimed about `19.84GB` reported by Docker; post-cleanup `df` showed
   `43G` available and `80%` use.
 - Removed the broken managed runner container, then recreated it with
-  `rlab-fleet reconcile --execute`.
+  `rlab-fleet reconcile`.
 
 The recreated beast-3 runner is on digest `c672be38cd0f` with five workers and
 claimed B110 immediately.

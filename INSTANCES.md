@@ -36,28 +36,28 @@ UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
 ```
 
 For a long-running local reconciliation loop:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute --watch --interval 30
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --watch --interval 30
 ```
 
 For a live terminal dashboard that keeps each reachable beast host on the latest
 successful train image and removes idle old managed containers:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
 ```
 
 After publishing a new train image, roll active hosts to the latest successful
 digest:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest
 ```
 
 To warm a host even before matching queue demand:
@@ -65,8 +65,7 @@ To warm a host even before matching queue demand:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner \
   --host beast-3 \
-  --image latest \
-  --execute
+  --image latest
 ```
 
 Use `--profile <profile-id>` only for an intentionally profile-locked lane.
@@ -81,13 +80,11 @@ image:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
   --host beast-3 \
-  --runtime-image-ref-file rlab-train-image.json \
-  --execute
+  --runtime-image-ref-file rlab-train-image.json
 
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
   --host beast-2 \
-  --runtime-image-ref-file rlab-train-image.json \
-  --execute
+  --runtime-image-ref-file rlab-train-image.json
 ```
 
 The setup command verifies Docker, NVIDIA runtime support, persistent

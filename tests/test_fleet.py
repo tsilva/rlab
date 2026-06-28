@@ -4,7 +4,9 @@ import json
 import tempfile
 import unittest
 from argparse import Namespace
+from contextlib import redirect_stderr
 from datetime import UTC, datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -1152,9 +1154,17 @@ class FleetPlanTests(unittest.TestCase):
         args = fleet.build_parser().parse_args(["watch"])
 
         self.assertEqual(args.interval, 15.0)
+        self.assertTrue(args.execute)
         self.assertTrue(args.claim_stale_jobs)
         self.assertEqual(args.stale_older_than_seconds, 300)
         self.assertEqual(args.stale_limit, 50)
+
+    def test_dry_run_replaces_execute_flag(self) -> None:
+        args = fleet.build_parser().parse_args(["watch", "--dry-run"])
+
+        self.assertFalse(args.execute)
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            fleet.build_parser().parse_args(["watch", "--" + "execute"])
 
     def test_watch_latest_can_disable_stale_job_claims(self) -> None:
         args = fleet.build_parser().parse_args(["watch", "--no-claim-stale-jobs"])

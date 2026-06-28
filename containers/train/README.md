@@ -73,7 +73,7 @@ only need Docker, NVIDIA runtime support, mounts, and the runner env file.
 
 ```bash
 uv run rlab-fleet plan
-uv run rlab-fleet reconcile --execute
+uv run rlab-fleet reconcile
 ```
 
 The managed containers are labeled with `rlab.managed=true`,

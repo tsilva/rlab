@@ -100,8 +100,8 @@ seeds comes from `goal.json`, not from this skill.
    - Inspect and reconcile capacity:
      `UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy`
      `UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan`
-     `UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute`
-   - Use `rlab-fleet watch --execute` only when a long-running reconciliation loop is appropriate.
+     `UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile`
+   - Use `rlab-fleet watch` only when a long-running reconciliation loop is appropriate.
 
 5. Iterate only legal levers.
    - Reward function changes must be documented as hypotheses about real task progress. Include what failure mode they address and why they are not reward hacks.

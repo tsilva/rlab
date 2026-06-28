@@ -30,5 +30,5 @@ Then reconcile beast-3 capacity:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --execute
+UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
 ```

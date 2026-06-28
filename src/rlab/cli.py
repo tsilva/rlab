@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -53,6 +54,9 @@ TRAIN_VALUE_OPTIONS = {
     "eval_episodes": "--eval-episodes",
     "completion_x_threshold": "--completion-x-threshold",
     "checkpoint_freq": "--checkpoint-freq",
+    "early_stop_metric": "--early-stop-metric",
+    "early_stop_threshold": "--early-stop-threshold",
+    "early_stop_operator": "--early-stop-operator",
     "learning_rate": "--learning-rate",
     "learning_rate_final": "--learning-rate-final",
     "learning_rate_schedule_timesteps": "--learning-rate-schedule-timesteps",
@@ -202,6 +206,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     apply_train_config_json(args, parser, explicit_dests)
     args = apply_preset(args)
     validate_training_eval_disabled(args)
+    validate_early_stop_args(args)
     validate_training_seed(args.seed, label="--seed", seed_span=args.n_envs)
     return args
 
@@ -212,6 +217,17 @@ def validate_training_eval_disabled(args: argparse.Namespace) -> None:
             "training-loop eval is disabled; keep --eval-freq 0 and "
             "--eval-episodes 0, then evaluate checkpoints out of process",
         )
+
+
+def validate_early_stop_args(args: argparse.Namespace) -> None:
+    metric = str(getattr(args, "early_stop_metric", "") or "").strip()
+    threshold = getattr(args, "early_stop_threshold", None)
+    args.early_stop_metric = metric
+    if bool(metric) == (threshold is not None):
+        if threshold is not None and not math.isfinite(float(threshold)):
+            raise ValueError("--early-stop-threshold must be finite")
+        return
+    raise ValueError("--early-stop-metric and --early-stop-threshold must be provided together")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -363,6 +379,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-video-fps", type=float, default=30.0, help=argparse.SUPPRESS)
     parser.add_argument("--eval-video-scale", type=int, default=4, help=argparse.SUPPRESS)
     parser.add_argument("--checkpoint-freq", type=int, default=500_000)
+    parser.add_argument(
+        "--early-stop-metric",
+        default="",
+        help="Training metric key that can stop training once it crosses --early-stop-threshold.",
+    )
+    parser.add_argument(
+        "--early-stop-threshold",
+        type=float,
+        default=None,
+        help="Numeric threshold for --early-stop-metric. Provide both or neither.",
+    )
+    parser.add_argument(
+        "--early-stop-operator",
+        choices=[">", ">=", "<", "<="],
+        default=">=",
+        help="Comparison for the early-stop metric threshold.",
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument(
         "--learning-rate-final",
