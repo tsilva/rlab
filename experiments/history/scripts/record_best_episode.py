@@ -43,6 +43,20 @@ def artifact_ref(args: argparse.Namespace) -> str:
     )
 
 
+def json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
 def resolve_model_path(args: argparse.Namespace) -> Path:
     if args.model:
         return Path(args.model)
@@ -115,7 +129,7 @@ def main() -> None:
         extra={"model": str(model_path)},
     )
     for episode in metrics["episode_results"]:
-        print(json.dumps(episode), flush=True)
+        print(json.dumps(json_safe(episode)), flush=True)
     summary = {
         "model": str(model_path),
         "episodes": args.episodes,
@@ -128,6 +142,7 @@ def main() -> None:
         "episode_results": metrics["episode_results"],
         "video": str(video_path or output),
     }
+    summary = json_safe(summary)
     summary_output = Path(args.summary_output)
     summary_output.parent.mkdir(parents=True, exist_ok=True)
     summary_output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

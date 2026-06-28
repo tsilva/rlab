@@ -112,6 +112,7 @@ seeds comes from `goal.json`, not from this skill.
 6. Monitor and analyze.
    - Track the goal's primary metric and training stop metric first, then the metrics in `selection_policy.rank_order`, then reward, task-specific progress, policy entropy, approximate KL, clip fraction, explained variance, fps, and crash/error logs.
    - Use `rlab-queue status --goal <goal>`, `rlab-monitor --view all`, W&B, and `rlab-fleet status/ps/plan` as complementary surfaces. Reconcile disagreements instead of trusting only one surface.
+   - Use `rollout/ep_rew_mean` as a pruning diagnostic only after checking the goal target metric. For mature screen runs, if the target completion count/rate is still zero and the reward tail has clearly flattened, cancel and backfill the slot with a documented legal variant instead of burning the full cap on a known local optimum.
    - Explain what failed runs teach before launching the next batch.
    - Rank and promote using the goal's `selection_policy.rank_order`, not generic reward or final checkpoint quality.
    - Record meaningful decisions as durable summaries under the goal's `decisions/` or `reports/` directory.
