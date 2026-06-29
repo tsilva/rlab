@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b149-lowlr-additive-minprogress-complete500-l13-screen",
   "stage": "screen",
   "hypothesis": "The score-mode arms keep finding shaped-progress local optima with no clean Level1-3 clears. This arm removes score reward, keeps only a very small progress gradient, reduces death pressure, and combines that with low-LR/high-entropy/gamma=0.995 PPO plus a large true-clear bonus.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b166-lowlr-criticwide-survival-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 was the first active Level1-3 screen to produce real clean completions, but it never formed a reliable 100/100 rolling window before the 5M cap. B165 tests whether removing the small survival incentive and adding anti-stall pressure improves that first-clear recipe. This narrower ablation keeps B156's critic-wide architecture, low-pressure PPO, entropy schedule, tiny clipped progress signal, and small survival incentive intact, changing only the true clean-clear bonus from 1500 to 3000 to test whether B156 simply underweighted the sparse completion event.",

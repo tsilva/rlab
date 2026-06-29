@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b239-b191resume-200k-longcredit5000-l13-screen",
   "stage": "screen",
   "hypothesis": "Previous 5000-bonus forks were unstable without B230's longer credit settings. B239 tests whether gamma=0.997 and gae_lambda=0.99 make the larger completion_reward=5000 useful for crossing and preserving the Level1-3 bottleneck.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b91-lowpress-complete25-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "Combining lower PPO update pressure with a modest clean-completion reward should raise true clear rates while reducing late optimizer drift.",

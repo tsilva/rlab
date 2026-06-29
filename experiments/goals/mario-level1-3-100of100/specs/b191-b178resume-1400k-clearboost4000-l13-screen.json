@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b191-b178resume-1400k-clearboost4000-l13-screen",
   "stage": "screen",
   "hypothesis": "The B178 high-window may need more than 400-500k steps of post-discovery consolidation. B191 starts at B178 1.4M with the intermediate completion_reward=4000 conservative recipe, giving 600k steps under the 5M-equivalent cap.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b193-b178resume-1300k-clearboost4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B178 produced the current high-water Level1-3 clean-clear window, while later B178 forks did not consolidate it. B193 resumes earlier at B178 step 1.3M with completion_reward=4000 and gives the policy 700k continuation steps under the effective 5M cap, testing whether the moderate clear bonus needs more runway before the clear behavior is brittle.",

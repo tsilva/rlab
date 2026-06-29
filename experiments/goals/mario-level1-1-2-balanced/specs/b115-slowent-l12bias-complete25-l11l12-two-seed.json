@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b115-slowent-l12bias-complete25-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B93 is the strongest active two-seed direction so far: by 3.3M steps its seeds reached peak min-rates of 0.20 and 0.30, with live Level1-1 competence rising while Level1-2 remains the bottleneck. This arm keeps B93's 40/60 Level1-2 sampling bias and slow entropy decay exactly, and adds the true clean-completion reward that made B91 produce the only strict crossing, testing whether B93's retention plus B91's completion lift can raise both seeds above 0.80.",

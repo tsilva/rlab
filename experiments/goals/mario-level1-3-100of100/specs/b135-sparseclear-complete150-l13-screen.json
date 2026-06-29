@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b135-sparseclear-complete150-l13-screen",
   "stage": "screen",
   "hypothesis": "If even low scaled progress rewards keep optimizing partial x-position rather than real Level1-3 clears, a sparse true-clear reward arm with no progress reward should test whether the current shaping is still distracting from the target.",

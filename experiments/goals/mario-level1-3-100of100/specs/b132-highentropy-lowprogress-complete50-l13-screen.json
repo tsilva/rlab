@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b132-highentropy-lowprogress-complete50-l13-screen",
   "stage": "screen",
   "hypothesis": "If B127-B131 still fail to discover any clean Level1-3 clears, the stronger reward shaping may be reducing exploration too quickly; keeping a higher entropy floor while preserving B127's low-progress survival/clear rewards should make first-clear discovery more likely without changing environment semantics.",

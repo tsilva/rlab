@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b145-b55baseline-terminal300-l13-screen",
   "stage": "screen",
   "hypothesis": "B140's bounded reward and B141's long-credit advantage-normalized baseline arm test non-score rewards, but the confirmed Level1-1 recipe uses short-credit PPO without advantage normalization. This arm combines B55 PPO pressure with baseline/native-score reward and a stronger terminal level-change versus death signal.",

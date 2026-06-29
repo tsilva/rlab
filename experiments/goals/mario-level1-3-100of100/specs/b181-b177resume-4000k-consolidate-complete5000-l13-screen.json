@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b181-b177resume-4000k-consolidate-complete5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B177's critic-XL policy discovered clean Level1-3 clears, but the rolling completion window remained sparse and the shaped reward tail fell after the first clear burst. B181 resumes the B177 4.0M checkpoint with the same stabilization settings as B180, but raises the clean-clear bonus to 5000. This isolates whether the already-discovered post-bottleneck behavior is still underweighted once the policy has crossed the hard initial platform sequence.",

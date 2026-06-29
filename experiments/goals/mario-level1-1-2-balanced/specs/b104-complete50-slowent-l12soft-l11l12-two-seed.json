@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b104-complete50-slowent-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "If completion_reward=50 raises true clears but still collapses after a transient peak, adding the B97/B101 slower entropy schedule and soft Level1-2 sampling bias should preserve exploration and coverage long enough for both levels to cross the balanced threshold.",

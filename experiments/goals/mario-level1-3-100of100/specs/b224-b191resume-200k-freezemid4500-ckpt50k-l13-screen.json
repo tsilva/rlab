@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b224-b191resume-200k-freezemid4500-ckpt50k-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 reliably reaches the best observed Level1-3 training window around 80k continuation steps, but the 100k checkpoint may already be past that useful policy region. B224 repeats the exact B214 recipe while checkpointing every 50k steps, so later forks can resume closer to the observed peak without changing the environment or reward contract.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b189-b178resume-1500k-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B184 showed completion_reward=5000 can recover a 0.05 short continuation rate from the B178 high-window checkpoint, but B185 from 1.6M only reached 0.02. B189 starts at B178 1.5M with the same conservative 5000 clearboost settings to test whether more runway before the final 5M-equivalent cap restores or improves the B184 window.",

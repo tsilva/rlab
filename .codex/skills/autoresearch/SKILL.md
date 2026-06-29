@@ -32,7 +32,7 @@ seeds comes from `goal.json`, not from this skill.
   the user does not provide an exact goal slug.
 - Read the goal's `README.md`, `recipes/`, `specs/`, `reports/`, and
   `decisions/` if present. They are the durable research record for that goal.
-- Use `rlab-queue status --goal <goal>` to orient against the current queue
+- Use `rlab jobs status --goal <goal>` to orient against the current queue
   state before launching more work.
 - If adding or changing game states, verify imported state names from the live
   Stable Retro data before writing specs.
@@ -46,12 +46,12 @@ seeds comes from `goal.json`, not from this skill.
   success metric, cap, seed protocol, runtime, or promotion criteria unless the
   user explicitly asks to revise the goal.
 - Use only queue-backed training jobs. The current repo workflow is
-  `rlab-queue` for train/eval jobs and Mac-side `rlab-fleet` for Docker
+  `rlab jobs` for train/eval jobs and Mac-side `rlab fleet` for Docker
   runner capacity on the beast hosts. Do not use provider launchers, manual host
   shell trainers, `sky exec`, or ad hoc direct Docker training for comparable
   runs.
 - Use the selected goal's `execution.primary_train_target` when present. The
-  default decisive path is RTX4090 queue-backed `rlab-fleet` capacity on
+  default decisive path is RTX4090 queue-backed `rlab fleet` capacity on
   `beast-3`. If the required target is unavailable, do not silently fall back to
   another GPU or local training; report the blocker.
 - Keep queue-backed train jobs profileless by default. Use
@@ -96,12 +96,12 @@ seeds comes from `goal.json`, not from this skill.
 
 4. Enqueue and reconcile through the current repo workflow.
    - Add/update the checked-in spec, then enqueue jobs from it:
-     `UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train --spec-file <spec-path> --runtime-image-ref-file rlab-train-image.json`
+     `UV_CACHE_DIR=.uv-cache uv run rlab train --spec-file <spec-path> --runtime-image-ref-file rlab-train-image.json`
    - Inspect and reconcile capacity:
-     `UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy`
-     `UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan`
-     `UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile`
-   - Use `rlab-fleet watch` only when a long-running reconciliation loop is appropriate.
+     `UV_CACHE_DIR=.uv-cache uv run rlab fleet policy`
+     `UV_CACHE_DIR=.uv-cache uv run rlab fleet plan`
+     `UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile`
+   - Use `rlab fleet watch` only when a long-running reconciliation loop is appropriate.
 
 5. Iterate only legal levers.
    - Reward function changes must be documented as hypotheses about real task progress. Include what failure mode they address and why they are not reward hacks.
@@ -111,7 +111,7 @@ seeds comes from `goal.json`, not from this skill.
 
 6. Monitor and analyze.
    - Track the goal's primary metric and training stop metric first, then the metrics in `selection_policy.rank_order`, then reward, task-specific progress, policy entropy, approximate KL, clip fraction, explained variance, fps, and crash/error logs.
-   - Use `rlab-queue status --goal <goal>`, `rlab-monitor --view all`, W&B, and `rlab-fleet status/ps/plan` as complementary surfaces. Reconcile disagreements instead of trusting only one surface.
+   - Use `rlab jobs status --goal <goal>`, `rlab monitor --view all`, W&B, and `rlab fleet status/ps/plan` as complementary surfaces. Reconcile disagreements instead of trusting only one surface.
    - Use `rollout/ep_rew_mean` as a pruning diagnostic only after checking the goal target metric. For mature screen runs, if the target completion count/rate is still zero and the reward tail has clearly flattened, cancel and backfill the slot with a documented legal variant instead of burning the full cap on a known local optimum.
    - Explain what failed runs teach before launching the next batch.
    - Rank and promote using the goal's `selection_policy.rank_order`, not generic reward or final checkpoint quality.

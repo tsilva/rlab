@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b205-b191resume-200k-complete4500-stable-l13-screen",
   "stage": "screen",
   "hypothesis": "B191's completion_reward=4000 peak and B192's completion_reward=5000 peak are close, suggesting a mid-point bonus may reinforce clean clears without the stronger bonus's instability. B205 resumes B191 at 200k, raises the clear bonus to 4500, and uses a stable low-update PPO continuation.",

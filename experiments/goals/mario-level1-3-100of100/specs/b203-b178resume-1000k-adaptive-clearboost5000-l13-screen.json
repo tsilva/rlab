@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b203-b178resume-1000k-adaptive-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B203 tests the full early adaptive continuation: B178 step 1.0M, completion_reward=5000, and moderate LR/entropy for the full remaining 1M steps. It is exploratory but stays within reward and PPO hyperparameter levers.",

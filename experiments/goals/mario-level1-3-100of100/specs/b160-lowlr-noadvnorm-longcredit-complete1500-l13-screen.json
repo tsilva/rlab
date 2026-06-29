@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b160-lowlr-noadvnorm-longcredit-complete1500-l13-screen",
   "stage": "screen",
   "hypothesis": "B155 crossed the 2.5M-step maturity point with zero clean Level1-3 clears and a nearly flat shaped-reward tail. The confirmed Level1-1 B55 recipe used unnormalized PPO advantages, while most recent Level1-3 low-LR/high-gamma probes normalized advantages. This arm keeps direct Level1-3 training and legal reward/hyperparameter-only changes, but tests the missing quadrant: Level1-style unnormalized PPO update geometry with Level1-3-specific low LR, higher early entropy, longer credit, tiny progress pressure, light death pressure, and a dominant true clean-clear bonus.",

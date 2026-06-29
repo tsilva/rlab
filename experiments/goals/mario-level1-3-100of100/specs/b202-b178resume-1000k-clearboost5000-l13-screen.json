@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b202-b178resume-1000k-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B202 is the strong-bonus pair to B201: completion_reward=5000 from B178 step 1.0M with conservative PPO updates. It tests whether the stronger clean-clear reward only helps when applied early enough in the breakthrough trajectory.",

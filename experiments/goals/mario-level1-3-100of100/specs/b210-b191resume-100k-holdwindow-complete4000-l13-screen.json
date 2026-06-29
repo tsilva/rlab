@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b210-b191resume-100k-holdwindow-complete4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B191's best window appears early and then decays. B210 resumes B191 at 100k, keeps completion_reward=4000, and uses smaller PPO updates than B191 but a little more entropy than the freeze arms, testing whether the clear behavior can be preserved without changing the reward target.",

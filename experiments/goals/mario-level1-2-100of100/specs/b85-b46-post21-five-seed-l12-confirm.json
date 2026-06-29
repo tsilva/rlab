@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-2-100of100",
+  "goal": "Level1-2",
   "slug": "b85-b46-post21-five-seed-l12-confirm",
   "stage": "confirm",
   "hypothesis": "The historical B46 same-hparams Level1-2 teacher recipe can reproduce strict 100/100 completion under the active post21 runtime across a five-seed Beast3 confirmation batch.",

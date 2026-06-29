@@ -388,7 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--record-best-video",
         action="store_true",
-        help="Temporarily disabled for rlab-eval.",
+        help="Temporarily disabled for rlab eval.",
     )
     parser.add_argument("--video-fps", type=float, default=30.0)
     parser.add_argument("--video-scale", type=int, default=4)
@@ -423,7 +423,7 @@ def run_checkpoint_artifact_eval(
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
     if args.record_best_video:
-        raise SystemExit("--record-best-video is temporarily disabled for rlab-eval")
+        raise SystemExit("--record-best-video is temporarily disabled for rlab eval")
     args.eval_run_name = artifact_eval_name(args)
     artifacts = find_model_artifacts(args)
     if not artifacts:
@@ -507,15 +507,16 @@ def run_checkpoint_artifact_eval(
             wandb_run.finish()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
+    argv_list = list(sys.argv[1:] if argv is None else argv)
     parser_defaults = vars(parser.parse_args([]))
-    explicit_dests = explicit_source_arg_dests(parser, sys.argv[1:])
-    args = parser.parse_args()
+    explicit_dests = explicit_source_arg_dests(parser, argv_list)
+    args = parser.parse_args(argv_list)
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
     if args.record_best_video:
-        raise SystemExit("--record-best-video is temporarily disabled for rlab-eval")
+        raise SystemExit("--record-best-video is temporarily disabled for rlab eval")
     if args.artifact or args.artifact_run:
         run_checkpoint_artifact_eval(args, parser, parser_defaults, explicit_dests)
         return

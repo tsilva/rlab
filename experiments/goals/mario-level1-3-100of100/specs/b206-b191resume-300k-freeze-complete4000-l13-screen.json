@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b206-b191resume-300k-freeze-complete4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B191's best window was observed between the 200k and 300k checkpoints. B206 resumes the later 300k checkpoint with the same freeze-style low-update settings as B204, testing whether the policy after the peak is a better starting point for stability.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b211-b192resume-100k-softmid-complete4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B192's completion_reward=5000 branch reached a 0.11 peak but appears less stable, while B205's 4500 midpoint tied B191. B211 resumes B192 earlier at 100k and softens to completion_reward=4500, testing whether the stronger-discovery branch benefits from a midpoint consolidation before decay.",

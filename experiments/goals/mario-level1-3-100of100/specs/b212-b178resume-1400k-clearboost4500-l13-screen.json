@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b212-b178resume-1400k-clearboost4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B191 completion_reward=4000 and B192 completion_reward=5000 from B178 1.4M both reached useful clear windows, and B205 later showed the 4500 midpoint can tie the current 0.12 peak. B212 tests that midpoint directly from the B178 1.4M parent for the full remaining 600k under the 5M cap.",

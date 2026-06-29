@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b184-b178resume-1700k-clearboost-complete5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B178 reached the best rolling Level1-3 completion signal so far, but the policy did not consolidate by the end of its 2M continuation. B184 resumes the same B178 1.7M high-water checkpoint as B182/B183, keeps the original reward scale, and raises completion_reward from 3000 to 5000. This tests whether the high-clear policy still needs a stronger sparse clean-clear signal once it has already crossed the initial bottleneck.",

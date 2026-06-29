@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b198-b178resume-1200k-adaptive-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B198 completes the 1.2M fork set by applying the adaptive completion_reward=5000 continuation from an earlier B178 checkpoint. It tests whether moderate LR/entropy adaptation helps only before the breakthrough policy has narrowed.",

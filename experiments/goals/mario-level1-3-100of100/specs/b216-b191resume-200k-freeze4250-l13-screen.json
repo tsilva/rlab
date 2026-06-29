@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b216-b191resume-200k-freeze4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 improved the Level1-3 training high-water to 0.13 early by combining B191 200k with freeze-style PPO and completion_reward=4500. B216 brackets that bonus downward to 4250, testing whether slightly less sparse clear pressure keeps the new clear window while reducing late collapse.",

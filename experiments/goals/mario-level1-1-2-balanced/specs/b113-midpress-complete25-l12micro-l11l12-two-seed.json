@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b113-midpress-complete25-l12micro-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B91's low-pressure completion-reward recipe learned fast enough for one strict crossing and one near-miss, while B110's gentler PPO pressure is more balanced early but much slower and still collapses on Level1-2. This arm interpolates between them: keep the B112 tiny Level1-2 sampling nudge and completion_reward=25, but use midpoint PPO pressure to test whether some stabilization can improve seed 207 without losing B91's learning speed.",

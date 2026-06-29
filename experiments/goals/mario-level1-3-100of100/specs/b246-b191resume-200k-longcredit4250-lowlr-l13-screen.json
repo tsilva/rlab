@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b246-b191resume-200k-longcredit4250-lowlr-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 reached a new 0.14 high-water but decayed, suggesting completion_reward=4250 is useful while the update path may still be too sharp. B246 starts from the same B191 200k parent with the B236 reward and long-credit settings, but lowers learning rate and entropy pressure across the full 400k continuation.",

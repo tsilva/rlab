@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b192-b178resume-1400k-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B192 pairs the earliest B178 checkpoint in this saturation batch, 1.4M, with the stronger completion_reward=5000 clearboost. It tests whether a longer 600k post-discovery consolidation window can make the sparse clear bonus stick without the late-window decay seen in B178/B184/B185.",

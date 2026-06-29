@@ -116,7 +116,7 @@ TRAIN_COMMAND_FIELDS = (
 
 
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
-    cmd = ["python", "-m", "rlab.train"]
+    cmd = ["rlab", "train", "local"]
     for key, flag in TRAIN_VALUE_OPTIONS.items():
         value = options.get(key)
         if value is None or value == "":

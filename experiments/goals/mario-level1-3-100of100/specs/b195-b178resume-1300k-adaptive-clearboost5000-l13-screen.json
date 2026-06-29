@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b195-b178resume-1300k-adaptive-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "Adaptive clearboost from B178 1.5M and 1.6M may have started too late after the useful exploration window. B195 resumes B178 at 1.3M with completion_reward=5000 and moderately higher LR/entropy to test whether earlier adaptation can turn the breakthrough behavior into repeated clears.",

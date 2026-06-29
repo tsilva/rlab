@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b223-b214erepeatresume-100k-soften4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 repeat 6nmufrl0 is one of the strongest B214 parents by peak and final window. B223 resumes that parent at 100k and softens completion_reward to 4000, testing whether post-discovery reward softening works better from a stronger B214 repeat than from the first B214 parent.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b234-b228resume-300k-freeze4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B228 peaked near its 300k checkpoint region but then decayed by the final summary. B234 resumes B228 at 300k for only the remaining 50k cap with very small freeze updates, testing whether the near-peak checkpoint itself already has a stronger rolling clear window.",

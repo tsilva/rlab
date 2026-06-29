@@ -13,7 +13,7 @@ Default eval protocol unless the user says otherwise:
 
 - `profile=mario-level1-quick`
 - eval config: `episodes=100`, `seed=10007`, `n_envs=20`, `max_steps=4500`, `stochastic=true`
-- runner: `rlab-eval-runner`
+- runner: `rlab eval worker`
 
 This skill is for eval-only work. Do not launch training, upload model cards, publish checkpoints, or mutate candidate selection beyond creating explicitly requested eval jobs.
 
@@ -28,19 +28,19 @@ Use the local eval runner by default. Report expected runtime and hardware assum
 2. Ensure the queue schema is current:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue setup
+UV_CACHE_DIR=.uv-cache uv run rlab jobs setup
 ```
 
 3. Inspect current queue state:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue status --goal <goal-slug>
+UV_CACHE_DIR=.uv-cache uv run rlab jobs status --goal <goal-slug>
 ```
 
 If the user asks to add a concrete checkpoint eval job, enqueue it through the queue table instead of the removed legacy `checkpoint_candidates` queue:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-eval \
+UV_CACHE_DIR=.uv-cache uv run rlab eval enqueue \
   --goal <goal-slug> \
   --profile mario-level1-quick \
   --candidate-label <label> \
@@ -50,7 +50,7 @@ UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-eval \
 4. Run the eval queue until idle:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-eval-runner \
+UV_CACHE_DIR=.uv-cache uv run rlab eval worker \
   --profile mario-level1-quick \
   --lease-seconds 1800 \
   --max-jobs 0 \

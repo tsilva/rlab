@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b227-b224b50k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B224b reached the same 0.12 band as B224a with a later peak near 83k. B227 resumes B224b at 50k with the same ultra-hold continuation as B225, checking whether pre-peak checkpoint quality is repeatable across dense B224 samples.",

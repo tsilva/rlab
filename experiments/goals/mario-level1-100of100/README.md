@@ -1,6 +1,6 @@
 # Mario Level1 100/100 Goal
 
-This folder is the durable capsule for the active `mario-level1-100of100`
+This folder is the durable capsule for the active `Level1-1`
 research objective.
 
 Primary optimization metric: peak
@@ -20,7 +20,7 @@ source control. Prefer the repo-level ignored `runs/`, `logs/`, and `models/`
 trees unless a goal-local ignored scratch directory is explicitly useful.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+UV_CACHE_DIR=.uv-cache uv run rlab train \
   --spec-file experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json \
   --runtime-image-ref-file rlab-train-image.json
 ```

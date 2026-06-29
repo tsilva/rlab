@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b197-b178resume-1200k-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B197 pairs the earliest B178 continuation point in this saturation batch with the stronger completion_reward=5000 signal. This tests whether the high completion bonus needs to influence the still-forming breakthrough behavior rather than being applied after the policy has already narrowed.",

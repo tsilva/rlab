@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b171-b156resume-mounted-stabilize-4500k-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 is the first active Level1-3 run to pass the early bottleneck: deterministic artifact eval moves from the failed-run wall near x=670 to x=1645 at the 4.5M checkpoint, and training clean clears begin shortly before 4M. B169 proved the direct-resume path reaches W&B, but the checkpoint was staged outside the worker container mount. This corrected retry resumes the same checkpoint from the mounted runs/train_resumes path and spends only the remaining 500k cap budget on a conservative low-LR, low-entropy stabilization pass.",

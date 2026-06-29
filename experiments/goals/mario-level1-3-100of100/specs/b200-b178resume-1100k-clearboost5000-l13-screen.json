@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b200-b178resume-1100k-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B200 tests the stronger completion_reward=5000 signal from B178 step 1.1M, before the breakthrough policy has narrowed, while keeping PPO updates conservative. This is the high-bonus pair to B199.",

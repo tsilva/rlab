@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from rlab import job_queue
+from rlab import main as rlab_main
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.dotenv import load_env_file
 from rlab.eval_job_runner import normalize_eval_config
@@ -102,7 +103,7 @@ class FakeConnection:
 def valid_train_spec() -> dict:
     return {
         "schema_version": 1,
-        "goal": "mario-level1-100of100",
+        "goal": "Level1-1",
         "slug": "candidate",
         "stage": "confirm",
         "hypothesis": "Candidate should reproduce the expected completion signal.",
@@ -592,10 +593,9 @@ class JobQueueTests(unittest.TestCase):
                 with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
                     parser.parse_args([command])
 
-    def test_parser_uses_spec_file_for_train_enqueue(self) -> None:
-        args = job_queue.build_parser().parse_args(
+    def test_train_parser_uses_spec_file_for_train_enqueue(self) -> None:
+        args = rlab_main.build_train_enqueue_parser().parse_args(
             [
-                "enqueue-train",
                 "--spec-file",
                 "experiments/goals/example/specs/candidate.json",
                 "--runtime-image-ref-file",
@@ -603,8 +603,17 @@ class JobQueueTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.command, "enqueue-train")
         self.assertEqual(args.spec_file, Path("experiments/goals/example/specs/candidate.json"))
+
+    def test_jobs_parser_no_longer_owns_train_enqueue(self) -> None:
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            job_queue.build_parser().parse_args(
+                [
+                    "enqueue-train",
+                    "--spec-file",
+                    "experiments/goals/example/specs/candidate.json",
+                ]
+            )
 
     def test_eval_selection_score_prefers_eval_min_completion_then_progress(self) -> None:
         weak_pooled = {
@@ -680,7 +689,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertNotIn("done_on_info_json", calls[0]["train_config"])
         self.assertEqual(calls[0]["priority"], 7)
         self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
-        self.assertEqual(calls[0]["goal_slug"], "mario-level1-100of100")
+        self.assertEqual(calls[0]["goal_slug"], "Level1-1")
         self.assertEqual(calls[0]["spec_slug"], "candidate")
         self.assertEqual(calls[0]["spec_path"], "experiments/goals/mario/specs/candidate.json")
         self.assertEqual(calls[0]["spec_sha256"], "abc123")
@@ -737,14 +746,14 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
         self.assertEqual(bounds.min_workers, 4)
         self.assertEqual(bounds.max_workers, 4)
 
-    def test_autoscale_defaults_to_min_one_start_four_max_thirty_two(self) -> None:
+    def test_autoscale_defaults_to_min_one_start_four_max_sixteen(self) -> None:
         args = self.train_runner_args("--autoscale")
 
         bounds = resolve_worker_bounds(args)
 
         self.assertEqual(bounds.starter_workers, 4)
         self.assertEqual(bounds.min_workers, 1)
-        self.assertEqual(bounds.max_workers, 32)
+        self.assertEqual(bounds.max_workers, 16)
 
     def test_autoscale_rejects_invalid_worker_range(self) -> None:
         args = self.train_runner_args(
@@ -1039,6 +1048,7 @@ class TrainRunnerTests(unittest.TestCase):
                 "wandb": True,
                 "wandb_tags": ["screen", "post16"],
             },
+            "goal_slug": "Levels_2_d25102",
             "run_name": "b52_seed23",
             "run_description": "Codex-authored smoke job.",
             "wandb_group": "b52",
@@ -1053,7 +1063,10 @@ class TrainRunnerTests(unittest.TestCase):
             command = train_command_for_job(config_path)
             written_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(config["wandb_tags"], "screen,post16")
+        self.assertEqual(
+            config["wandb_tags"],
+            "screen,post16,goal:Levels_2_d25102,level:Level1-1,level:Level1-2",
+        )
         self.assertEqual(written_config["run_name"], "b52_seed23")
         self.assertEqual(written_config["states"], ["Level1-1", "Level1-2"])
         self.assertEqual(written_config["wandb_group"], "b52")

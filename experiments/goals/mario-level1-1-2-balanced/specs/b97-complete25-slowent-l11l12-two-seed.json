@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b97-complete25-slowent-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89's completion reward produced the best peak so far but then collapsed on Level1-2, so slower entropy decay with a higher entropy floor may preserve the peak behavior longer and make >0.80 crossings more reproducible.",

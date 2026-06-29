@@ -1,6 +1,6 @@
 # Mario Level1-3 100/100 Goal
 
-This folder is the durable capsule for the active `mario-level1-3-100of100`
+This folder is the durable capsule for the active `Level1-3`
 research objective.
 
 Primary optimization metric: peak

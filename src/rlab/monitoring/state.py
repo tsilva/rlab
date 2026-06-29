@@ -853,7 +853,7 @@ def capacity_label(instance: dict[str, Any]) -> str:
 def manager_label(instance: dict[str, Any]) -> str:
     kind = target_kind(instance)
     if kind in FLEET_TARGET_KINDS:
-        return "rlab-fleet"
+        return "rlab fleet"
     if kind == "local":
         return "local"
     return kind or "unknown"
@@ -953,7 +953,7 @@ def merge_fleet_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
                 "available": True,
                 "details": {
                     "target": target_key,
-                    "manager": "rlab-fleet",
+                    "manager": "rlab fleet",
                     **{key: value for key, value in details.items() if value},
                 },
             }

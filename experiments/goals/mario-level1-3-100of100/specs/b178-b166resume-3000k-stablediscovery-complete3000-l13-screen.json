@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b178-b166resume-3000k-stablediscovery-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B166 is the strongest from-scratch Level1-3 discovery run so far: it first cleared at about 3.11M and reached 44 total clean clears by the 5M cap. B175/B176 lowered update pressure from scratch but stayed at zero clears well past B166's first-clear timing, so the conservative-from-start recipe appears to suppress discovery. B178 resumes B166 at 3.0M, just before the first-clear burst, and uses moderate stabilization rather than ultra-low updates so the policy can still discover while reducing late collapse.",

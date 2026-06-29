@@ -411,9 +411,10 @@ class FleetPlanTests(unittest.TestCase):
         self.assertIn("--env-file /home/tsilva/rlab/.env.runner", command_text)
         self.assertIn("--label rlab.managed=true", command_text)
         self.assertIn("--label rlab.runtime-image-ref=", command_text)
-        self.assertIn("rlab-container-entrypoint rlab-train-runner", command_text)
+        self.assertIn("rlab-container-entrypoint rlab train worker", command_text)
         self.assertIn("--runtime-image-ref", command_text)
         self.assertIn(RUNTIME_IMAGE_REF, command_text)
+        self.assertIn("--autoscale --min-workers 1 --max-workers 16", command_text)
         self.assertIn("--worker-id rlab-beast-3-rtx4090", command_text)
 
     def test_running_matching_container_is_kept(self) -> None:
@@ -540,6 +541,7 @@ class FleetPlanTests(unittest.TestCase):
         self.assertIn("explicit ensure-runner request", plan.actions[0].reason)
         command_text = "\n".join(plan.actions[0].commands)
         self.assertIn("docker pull ghcr.io/tsilva/rlab/rlab-train@sha256:", command_text)
+        self.assertIn("--autoscale --min-workers 1 --max-workers 16", command_text)
         self.assertNotIn("--profile", command_text)
 
     def test_ensure_runner_does_not_remove_unrelated_obsolete_container(self) -> None:

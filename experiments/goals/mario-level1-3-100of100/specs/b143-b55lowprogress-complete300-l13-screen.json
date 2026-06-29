@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b143-b55lowprogress-complete300-l13-screen",
   "stage": "screen",
   "hypothesis": "B138/B139/B140 plateaued with zero clean Level1-3 clears, while the Level1-1 B55 recipe remains the strongest confirmed training baseline. This arm returns to B55 short-credit PPO and no advantage normalization, but lowers direct progress pressure, keeps progress clipped, reduces death pressure, and gives true level-change completions a much larger reward.",

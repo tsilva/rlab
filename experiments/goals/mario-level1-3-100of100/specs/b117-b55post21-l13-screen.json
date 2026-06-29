@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b117-b55post21-l13-screen",
   "stage": "screen",
   "hypothesis": "The B55 low-KL late-learning-rate-decay Level1-1 recipe can transfer to single-state Level1-3 under the active post21 runtime without changing environment or evaluation semantics.",

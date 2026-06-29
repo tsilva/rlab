@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b226-b224a50k-soften4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B214/B224's 4500 completion bonus repeatedly discovers clears but the window decays. B226 resumes B224a at 50k, before the high-window region, and softens the post-discovery completion bonus to 4000 with freeze-style updates, testing whether reduced sparse-clear pressure preserves platforming behavior.",

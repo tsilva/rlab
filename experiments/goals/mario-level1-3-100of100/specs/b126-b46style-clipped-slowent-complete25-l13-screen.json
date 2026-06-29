@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b126-b46style-clipped-slowent-complete25-l13-screen",
   "stage": "screen",
   "hypothesis": "If Level1-3 needs broader policy movement than low-KL B55 but B120's raw-progress reward is too dominated by x-progress, a B46-style target_kl=0.20 arm with clipped progress, slow entropy, and completion_reward=25 should test update pressure without the same reward imbalance.",

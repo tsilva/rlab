@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b162-lowlr-fastupdate-antistall-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B157 crossed the 2M-step maturity point with zero clean Level1-3 clears and an essentially flat reward tail. That arm tested high entropy plus fast PPO updates, but it also removed death pressure and used a small survival bonus, so it may have encouraged dithering rather than committing to safe platform traversal. This arm keeps the direct Level1-3 environment and fast-update/high-entropy PPO shape, but replaces the survival bonus with a light anti-stall time penalty, restores small death pressure, slightly strengthens tiny clipped progress, and makes true clean clears overwhelmingly dominant.",

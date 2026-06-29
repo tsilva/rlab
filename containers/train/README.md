@@ -42,7 +42,7 @@ docker run --rm --gpus all \
   -v /home/tsilva/sandbox-runs:/root/rlab/runs \
   ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   rlab-container-entrypoint \
-  rlab-train-runner --profile mario-ppo/post20/rtx2060-task-conditioned-v1
+  rlab train worker --profile mario-ppo/post20/rtx2060-task-conditioned-v1
 ```
 
 `rlab-container-entrypoint` imports ROMs from `RLAB_ROM_DIR` before executing
@@ -67,13 +67,13 @@ depend on mutable tags.
 
 ## Local Fleet Manager
 
-For `beast-2` and `beast-3`, Mac-side `rlab-fleet` reconciles Docker containers
+For `beast-2` and `beast-3`, Mac-side `rlab fleet` reconciles Docker containers
 directly over SSH and keeps the queue in charge of scheduling; the beast hosts
 only need Docker, NVIDIA runtime support, mounts, and the runner env file.
 
 ```bash
-uv run rlab-fleet plan
-uv run rlab-fleet reconcile
+uv run rlab fleet plan
+uv run rlab fleet reconcile
 ```
 
 The managed containers are labeled with `rlab.managed=true`,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b134-advnorm-lowprogress-complete75-l13-screen",
   "stage": "screen",
   "hypothesis": "If high death and completion rewards create unstable advantage scale before first clear discovery, enabling PPO advantage normalization on the B128 reward shape should stabilize updates without changing the Level1-3 objective.",

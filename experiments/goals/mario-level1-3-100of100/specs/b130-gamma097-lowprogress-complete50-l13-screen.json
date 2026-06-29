@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b130-gamma097-lowprogress-complete50-l13-screen",
   "stage": "screen",
   "hypothesis": "Level1-3 may require longer-horizon credit than B125's gamma=0.95 while still needing lower progress dominance; gamma=0.97 with gae_lambda=0.95 should test longer credit assignment without changing environment semantics.",

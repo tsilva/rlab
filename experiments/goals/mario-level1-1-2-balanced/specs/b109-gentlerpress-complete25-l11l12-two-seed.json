@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b109-gentlerpress-complete25-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B91 is learning both levels, but seed 207 lost much of its Level1-2 competence after peaking while seed 206 is still climbing. A gentler PPO update regime should reduce weaker-level drift without changing the task, reward target, or state mix.",

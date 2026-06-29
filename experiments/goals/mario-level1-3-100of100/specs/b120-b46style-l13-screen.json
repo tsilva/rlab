@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b120-b46style-l13-screen",
   "stage": "screen",
   "hypothesis": "A fixed-learning-rate, higher-target-KL single-level recipe from the historical Level1-2 teacher may explore Level1-3 faster than the lower-pressure B55 transfer if the new level needs broader policy movement.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b240-b236resume-200k-ultrahold4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 is the first B230-family run to exceed the previous 0.13 ceiling, reaching 0.14 near 198k continuation steps before decaying. B240 resumes from the B236 200k checkpoint and cuts PPO update pressure further to test whether the discovered bottleneck-crossing policy can be preserved for the remaining 200k steps under the 5M effective cap.",

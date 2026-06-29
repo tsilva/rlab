@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b170-b156resume-direct-clearboost-4500k-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 discovered the post-bottleneck Level1-3 behavior, but the 100-attempt completion window never became reliable. Since the 4.5M checkpoint has the best evaluated x reach and coincides with the training clear burst, this direct-resume retry of B168 resumes the verified beast-3 checkpoint file and changes only the sparse clean-clear incentive from 1500 to 3000 while using conservative continuation optimizer settings.",

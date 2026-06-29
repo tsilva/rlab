@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b159-lowlr-microupdate-entropyburst-complete2500-l13-screen",
   "stage": "screen",
   "hypothesis": "B154 crossed the 2.5M checkpoint with zero clean Level1-3 clears and a very flat reward tail while still spending most reward mass on progress. B152-B154 showed that 512-step fast updates were not enough by themselves. This arm keeps the same Level1-3 environment and action semantics but shortens PPO rollouts further to n_steps=256, keeps high early entropy, removes explicit death pressure, nearly removes x-progress reward, and makes the true clean clear overwhelmingly dominant.",

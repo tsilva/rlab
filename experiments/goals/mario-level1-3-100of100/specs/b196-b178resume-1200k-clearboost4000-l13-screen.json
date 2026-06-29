@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b196-b178resume-1200k-clearboost4000-l13-screen",
   "stage": "screen",
   "hypothesis": "If B178's useful behavior was still forming before 1.3M, an even earlier conservative continuation may give completion shaping enough time to affect the path distribution before the policy narrows. B196 resumes B178 at 1.2M with completion_reward=4000 and 800k continuation steps.",

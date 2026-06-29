@@ -122,8 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     options = MonitorOptions(
         repo_root=args.repo_root.expanduser().resolve(),
         goal=args.goal,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b123-b55clipped-death50-complete25-l13-screen",
   "stage": "screen",
   "hypothesis": "Active Level1-3 runs are ending almost entirely on life loss while death penalty is a small reward share; combining clipped progress with a stronger death penalty should improve survival behavior without changing the environment or target metric.",

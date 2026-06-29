@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b90-lowpress-l12bias-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "Combining lower PPO update pressure with a modest Level1-2 sampling bias should improve the b86 near-miss by helping the bottleneck level without destabilizing the policy late in training.",

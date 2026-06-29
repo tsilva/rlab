@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b218-b191resume-200k-ultrafreeze4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214's early 0.13 peak may still decay because PPO updates move too far after the useful platforming policy appears. B218 keeps B214's completion_reward=4500 but reduces LR, entropy, clip, epochs, and target KL further, testing whether an ultra-low-update continuation can preserve the new high-water behavior.",

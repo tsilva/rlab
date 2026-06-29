@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b139-timepressure-midprogress-complete150-l13-screen",
   "stage": "screen",
   "hypothesis": "B132 and B133 both reached a high shaped-reward plateau with zero clean Level1-3 clears, suggesting the policy can optimize clipped progress without converting it into the true level-change objective. Reducing progress dominance, restoring B55-level death pressure, adding a small time penalty, and making the clean-clear bonus much larger should reward faster conversion instead of safe progress plateaus.",

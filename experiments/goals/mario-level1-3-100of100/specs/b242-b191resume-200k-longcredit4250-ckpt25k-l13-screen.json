@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b242-b191resume-200k-longcredit4250-ckpt25k-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 with completion_reward=4250 is the first run to reach 0.14, but it only saved 100k-spaced checkpoints and collapsed by the final window. B242 repeats the exact B236 recipe with 25k checkpoints to test repeatability and capture checkpoints closer to the 198k high-water region.",

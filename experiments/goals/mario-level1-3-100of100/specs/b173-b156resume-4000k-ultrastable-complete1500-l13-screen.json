@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b173-b156resume-4000k-ultrastable-complete1500-l13-screen",
   "stage": "screen",
   "hypothesis": "B171 and B172 proved that B156 checkpoint forks immediately produce clean Level1-3 clears, but both peaked near a 0.05 rolling rate and then decayed by the 500k continuation cap. This suggests the discovered post-bottleneck policy is being damaged by continued PPO updates. B173 resumes the earlier B156 4.0M checkpoint, which had already crossed the x bottleneck but still has a full 1M budget under the 5M cap, and uses ultra-low LR, low entropy, fewer epochs, narrower clip range, and lower target KL while preserving the original B156 completion_reward=1500 reward shape.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b165-lowlr-criticwide-antistall-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 is the first active Level1-3 screen to produce real clean completions, reaching nonzero train/info/level_complete/from/0-2/count before the 5M cap. That points toward the critic-wide, low-LR, long-credit setup as useful delayed-jump credit support, but B156 still has only a low completion rate and includes a small survival incentive. This arm keeps the B156 critic-wide architecture and low-pressure PPO shape, removes the survival incentive, adds light anti-stall pressure, modestly raises early entropy, and makes true clean clears overwhelmingly dominant.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b209-b191resume-100k-complete4500-stable-l13-screen",
   "stage": "screen",
   "hypothesis": "B205 tied B191's 0.12 peak from the B191 200k checkpoint with completion_reward=4500, but did not widen the final clear window. B209 starts the same midpoint clear bonus earlier, from B191 100k, giving PPO 500k under the 5M effective cap to shape the high-clear behavior before the window decays.",

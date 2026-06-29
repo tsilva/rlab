@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b201-b178resume-1000k-clearboost4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B201 starts completion shaping at B178 step 1.0M, giving the conservative completion_reward=4000 arm the full remaining 1M steps under the 5M effective cap. This tests whether the clean-clear signal must be introduced before the breakthrough behavior is visible in training metrics.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b221-b214resume-100k-soften4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B214's 4500 clear bonus reliably discovers a 0.13 window but the policy decays afterward. B221 resumes the first B214 100k checkpoint and softens completion_reward back to 4000 while keeping freeze-style updates, testing whether less sparse-clear pressure after discovery preserves the platforming behavior better.",

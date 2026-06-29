@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b204-b191resume-200k-freeze-complete4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B191 is the current best Level1-3 training signal, peaking at 0.12 around 250k continuation steps before decaying to 0.07. B204 resumes B191 at 200k and freezes the policy more gently with lower LR, entropy, clip, and KL while keeping completion_reward=4000, testing whether the high-clear window can be preserved and widened under the remaining 400k cap.",

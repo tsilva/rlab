@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b86-b74current-l11l12-latest-five-seed",
   "stage": "confirm",
   "hypothesis": "The B74/B84-style Level1-1/Level1-2 50/50 task-conditioned PPO recipe should reproduce balanced mixed-level completion on the latest digest-backed train image.",

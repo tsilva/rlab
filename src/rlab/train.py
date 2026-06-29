@@ -164,8 +164,8 @@ class GracefulStopCallback(BaseCallback):
         return False
 
 
-def main() -> None:
-    args = parse_train_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_train_args(argv)
     assert_rom_imported(args.game)
     set_random_seed(args.seed)
 

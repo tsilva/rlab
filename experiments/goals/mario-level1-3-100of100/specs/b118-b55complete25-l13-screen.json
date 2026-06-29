@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b118-b55complete25-l13-screen",
   "stage": "screen",
   "hypothesis": "Adding a modest true clean-completion reward to the B55 low-update-pressure recipe should reinforce real Level1-3 clears without changing the target, emulator state, action space, or eval semantics.",

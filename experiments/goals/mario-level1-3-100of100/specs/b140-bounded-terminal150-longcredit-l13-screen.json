@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b140-bounded-terminal150-longcredit-l13-screen",
   "stage": "screen",
   "hypothesis": "The score-mode screens keep finding shaped-progress plateaus with no clean Level1-3 clears. A bounded reward arm with a tighter progress cap and a large terminal clear/life-loss signal should test whether score/progress shaping itself is masking the sparse true-clear objective while preserving the same environment and event contract.",

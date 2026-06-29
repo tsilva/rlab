@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b188-b178resume-1500k-clearboost4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B186's completion_reward=4000 arm was the best B178 1.6M fork, finishing at a 0.04 rolling min rate with less value-loss stress than the 5000 clearboost arms, but it still did not match B178's observed 0.06 high-water window. B188 starts one checkpoint earlier at B178 1.5M with the same completion_reward=4000 conservative continuation, giving 500k steps under the effective 5M cap to test whether extra runway can improve consolidation.",

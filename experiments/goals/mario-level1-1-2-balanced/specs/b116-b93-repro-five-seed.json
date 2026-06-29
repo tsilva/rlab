@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b116-b93-repro-five-seed",
   "stage": "confirm",
   "hypothesis": "The B93 slow-entropy, Level1-2-biased recipe should reproduce its balanced high-watermark performance across five fresh seeds beyond the winning 200/201 pair.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b108-lowpress-complete25-slowent-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B91 is the first active recipe where both seeds are climbing into mid-range balanced competence, but one seed is Level1-1 bottlenecked and the other is Level1-2 bottlenecked. Keeping the B91 50/50 state sampling while slowing entropy decay should preserve more action diversity long enough for both level policies to co-exist instead of specializing.",

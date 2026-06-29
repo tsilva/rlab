@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b110-gentlerpress-complete25-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B91 proved the low-pressure completion-reward recipe can exceed the strict high-watermark on one seed, but both B91 seeds later collapsed on Level1-2 and seed 207 never crossed. Combining B100's soft Level1-2 sampling bias with B109's gentler PPO update pressure should protect the weaker Level1-2 rolling window without changing the task or reward target.",

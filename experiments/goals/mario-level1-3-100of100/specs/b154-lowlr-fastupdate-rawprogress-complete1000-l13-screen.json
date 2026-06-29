@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b154-lowlr-fastupdate-rawprogress-complete1000-l13-screen",
   "stage": "screen",
   "hypothesis": "B149's additive tiny-progress arm crossed 2.4M steps with zero clean Level1-3 clears and a nearly flat reward tail. Removing score reward may have made the first successful platform traversal too sparse. This arm keeps the low-LR, high-entropy, frequent-update, low-death setup from B152, but uses raw x-progress in score mode so successful forward velocity after landing can provide a stronger dense signal while true clean clears still dominate via a large completion bonus.",

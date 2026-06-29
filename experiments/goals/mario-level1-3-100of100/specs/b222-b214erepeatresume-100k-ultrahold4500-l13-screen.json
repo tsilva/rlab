@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b222-b214erepeatresume-100k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 repeat 6nmufrl0 matched the 0.13 high-water and tied the best B214 final window at 0.06 with a high clean count. B222 resumes that repeat at 100k with the ultra-hold continuation, testing whether the strongest B214 repeat parent preserves the discovered policy better than B219/B220.",

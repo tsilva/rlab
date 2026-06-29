@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "goal_slug": "mario-level1-4-100of100",
+  "goal_slug": "Level1-4",
   "title": "Sample-efficient SuperMarioBros-NES World 1-4 completion",
   "status": "active",
-  "updated_at": "2026-06-28",
+  "updated_at": "2026-06-29",
   "goal_dir": "experiments/goals/mario-level1-4-100of100",
   "objective": {
     "game": "SuperMarioBros-Nes-v0",
@@ -78,11 +78,11 @@
     "recipe_slug": null,
     "recipe_file": null,
     "evidence_runtime": null,
-    "status": "no confirmed incumbent yet; use the current Level1-1, Level1-2, and Level1-3 100/100 goal contracts as metric and promotion templates",
+    "status": "B250/B255 reached 100/100 on seeds 90, 92, and 93, but failed the full five-seed confirmation protocol because seed 91 peaked at 0.17 and seed 94 peaked at 0.98. B257 soft-update then reached 100/100 on screen seed 90 and is frozen for B261 confirmation on seeds 91-94.",
     "mean_stop_step": null,
     "successful_seeds": []
   },
-  "default_train_spec_file": null,
+  "default_train_spec_file": "experiments/goals/mario-level1-4-100of100/specs/b261-b257-softupdate-four-seed-l14-confirm.json",
   "default_train_profile": null,
   "default_train_profile_note": "Queue-backed launches are profileless by default; use the spec run_target plus a digest-pinned runtime image.",
   "default_eval_profile": "mario-level1-eval/post21/vector-cpu",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b87-lowpress-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "Lower PPO update pressure should make the transient balanced Level1-1/Level1-2 behavior found by b86 more reproducible across seeds.",

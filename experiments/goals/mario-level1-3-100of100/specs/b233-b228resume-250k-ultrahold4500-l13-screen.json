@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b233-b228resume-250k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B228 matched the 0.13 high-water from a B224e 50k checkpoint and peaked near 285k before decaying. B233 resumes B228 at 250k, just before the observed peak, with ultra-low updates to test whether the high-window behavior can be preserved instead of relearned from an earlier parent.",

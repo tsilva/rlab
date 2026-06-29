@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b175-lowlr-criticwide-survival-steady-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B166 is the strongest from-scratch B156-lineage run so far: it rediscovered clean clears without checkpoint help and reached a higher total clear count than B156/B171/B172, but its completion rate also decayed late in training. B175 keeps B166's critic-wide survival reward shape and completion_reward=3000, but lowers PPO update pressure from the start with lower LR, lower final entropy, fewer epochs, wider batches, a tighter clip range, and lower target KL.",

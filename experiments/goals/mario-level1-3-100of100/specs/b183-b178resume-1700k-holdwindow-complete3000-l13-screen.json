@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b183-b178resume-1700k-holdwindow-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B178 produced the strongest Level1-3 training signal so far, reaching 120 clean clears and an observed 0.06 rolling min rate before decaying to 0.01 at the final checkpoint. B183 resumes B178's 1.7M continuation checkpoint, near the observed high-water window, and keeps the original reward scale while sharply lowering PPO update pressure. This isolates whether B178's decay is an optimizer/consolidation problem rather than a reward-scale problem.",

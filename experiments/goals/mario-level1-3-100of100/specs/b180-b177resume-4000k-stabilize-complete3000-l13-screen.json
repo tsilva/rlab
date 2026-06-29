@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b180-b177resume-4000k-stabilize-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B177 is the first critic-XL run to produce real clean Level1-3 clears: it first cleared near 3.16M, reached 10 clean clears by about 4.0M, and briefly reached a 0.02 rolling source-attempt rate before the shaped reward tail fell. B180 resumes the B177 4.0M checkpoint and lowers PPO update pressure while keeping the B177 critic-XL architecture and completion reward 3000. This tests whether the discovered post-bottleneck behavior can be consolidated without changing environment, action, termination, or eval semantics.",

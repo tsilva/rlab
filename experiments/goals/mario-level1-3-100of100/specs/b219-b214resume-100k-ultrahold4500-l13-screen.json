@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b219-b214resume-100k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 repeatedly reaches the new 0.13 Level1-3 high-water around 80k continuation steps and then decays. B219 resumes the first B214 run at its 100k checkpoint, keeps completion_reward=4500, and uses an ultra-low-update hold policy to test whether the discovered platforming behavior can be preserved under the remaining 300k cap.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b150-lowlr-explore-death0-complete750-l13-screen",
   "stage": "screen",
   "hypothesis": "Level1-3 may be stuck before safe jump timing because pit deaths make exploration too punitive before the policy discovers a successful trajectory. This arm preserves the same Level1-3 environment and action semantics but removes explicit death penalty, uses a tiny clipped progress gradient, holds entropy higher, lowers LR further, lengthens rollout credit, and makes true clean clears dominate with a very large completion bonus.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b163-lowlr-microupdate-antistall-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B159 crossed the 2M-step maturity point with zero clean Level1-3 clears and a nearly flat reward tail. It tested very frequent PPO updates and high entropy, but still had a small survival bonus, zero explicit death pressure, and an extremely tiny progress signal. This arm keeps B159's micro-update cadence while replacing the survival bonus with anti-stall pressure, restoring light death pressure, slightly strengthening tiny clipped progress, and making true clean clears overwhelmingly dominant.",

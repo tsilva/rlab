@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b187-b178resume-1600k-adaptive-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B184's completion_reward=5000 arm reached a useful 0.05 final rolling min rate, but KL and clip fraction were near zero, suggesting the very conservative optimizer mostly preserved rather than improved the policy. B187 resumes B178 at 1.6M with the same clearboost but moderately higher learning pressure, testing whether the discovered high-clear behavior can adapt into a stronger completion window instead of merely being held in place.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b158-sparse-longcredit-survival-complete2000-l13-screen",
   "stage": "screen",
   "hypothesis": "Most Level1-3 screens, including B151-B153, have learned some shaped-return behavior but no clean clears. This suggests even tiny progress shaping may be enough to distract PPO from the delayed platform objective. This arm removes score reward, keeps only a near-zero additive progress gradient plus a small survival bonus, uses a very large clean-clear bonus, and pushes gamma/GAE higher for delayed jump credit while preserving the same environment and termination contract.",

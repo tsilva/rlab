@@ -466,11 +466,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
+    argv_list = list(sys.argv[1:] if argv is None else argv)
     parser_defaults = vars(parser.parse_args([]))
-    explicit_dests = explicit_arg_dests(parser, sys.argv[1:])
-    args = parser.parse_args()
+    explicit_dests = explicit_arg_dests(parser, argv_list)
+    args = parser.parse_args(argv_list)
     ref = single_model_artifact_ref(args)
     if ref is not None:
         print(f"Downloading {ref}", flush=True)

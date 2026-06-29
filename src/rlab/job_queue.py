@@ -1064,7 +1064,7 @@ def mark_stale_train_jobs_failed(
         limit=limit,
         lock=True,
     )
-    error = error or "worker_lost: stale train job marked failed by rlab-queue"
+    error = error or "worker_lost: stale train job marked failed by rlab jobs"
     params["error"] = error
     with conn:
         with conn.cursor() as cur:
@@ -1209,7 +1209,7 @@ def mark_stale_eval_jobs_failed(
         limit=limit,
         lock=True,
     )
-    error = error or "worker_lost: stale eval job marked failed by rlab-queue"
+    error = error or "worker_lost: stale eval job marked failed by rlab jobs"
     params["error"] = error
     with conn:
         with conn.cursor() as cur:
@@ -1748,42 +1748,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(reset)
     reset.set_defaults(func=cmd_reset_schema)
 
-    enqueue = subparsers.add_parser("enqueue-train", help="Create train jobs from a spec file")
-    enqueue.add_argument("--spec-file", type=Path, required=True)
-    enqueue.add_argument("--profile", help="Optional exact train_jobs.profile_id to require.")
-    enqueue.add_argument("--runtime-image-ref")
-    enqueue.add_argument(
-        "--runtime-image-ref-file",
-        type=Path,
-        help="JSON artifact or plain-text file containing the immutable runtime image ref; defaults to latest.",
-    )
-    enqueue.add_argument("--latest-image", action="store_true", help="Resolve the latest successful train image digest.")
-    enqueue.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    enqueue.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
-    enqueue.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    enqueue.add_argument("--target", dest="run_target", help="Optional compute target required by this job")
-    enqueue.add_argument(
-        "--instances",
-        type=Path,
-        default=Path("experiments/instances.json"),
-        help="Target config used to canonicalize --target.",
-    )
-    enqueue.add_argument("--priority", type=int, help="Override the priority stored in the spec file.")
-    enqueue.add_argument("--seed", type=int, action="append", default=[])
-    enqueue.set_defaults(func=cmd_enqueue_train)
-
-    enqueue_eval = subparsers.add_parser("enqueue-eval", help="Create a concrete eval job")
-    enqueue_eval.add_argument("--goal", required=True, help="Research goal slug")
-    enqueue_eval.add_argument("--spec-slug")
-    enqueue_eval.add_argument("--spec-path")
-    enqueue_eval.add_argument("--train-job-id", type=int)
-    enqueue_eval.add_argument("--profile", required=True)
-    enqueue_eval.add_argument("--eval-config-json", required=True)
-    enqueue_eval.add_argument("--priority", type=int, default=0)
-    enqueue_eval.add_argument("--max-attempts", type=int, default=1)
-    enqueue_eval.add_argument("--candidate-label")
-    enqueue_eval.set_defaults(func=cmd_enqueue_eval)
-
     cancel = subparsers.add_parser("cancel-train", help="Request cancellation for a train job")
     cancel.add_argument("job_id", type=int)
     cancel.set_defaults(func=cmd_cancel_train)
@@ -2035,8 +1999,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     raise SystemExit(args.func(args))
 
 

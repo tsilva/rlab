@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b152-lowlr-fastupdate-deathlight-complete1000-l13-screen",
   "stage": "screen",
   "hypothesis": "B147 crossed 3.4M steps with zero clean Level1-3 clears and no meaningful target-rate movement. The current low-LR/high-gamma variants mostly use long rollout horizons, which may be delaying PPO updates while the policy is still searching for the first safe jump timing. This arm keeps the low LR, high entropy, high gamma, low death pressure, and dominant clean-clear bonus, but returns to B55-style frequent PPO updates with n_steps=512 and batch_size=512.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b237-b191resume-200k-longcredit4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B230's longer-credit PPO may be the useful lever, while the 4500 completion bonus may be amplifying post-peak collapse. B237 keeps B230's gamma=0.997 and gae_lambda=0.99 but returns the completion bonus to B191's 4000 level to test whether long-credit alone can preserve the stronger final window.",

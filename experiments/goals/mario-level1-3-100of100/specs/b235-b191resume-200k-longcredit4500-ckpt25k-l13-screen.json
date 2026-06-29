@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b235-b191resume-200k-longcredit4500-ckpt25k-l13-screen",
   "stage": "screen",
   "hypothesis": "B230 is the first B214-family variant to combine repeatable 0.12-0.13 peaks with a stronger final completion window, but its best behavior appears around 78k-83k continuation steps. B235 repeats the exact B230 long-credit recipe with denser 25k checkpoints so future forks can resume from the observed high-window region instead of the later 100k checkpoint.",

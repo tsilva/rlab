@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b103-complete50-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89 shows that a true clean-completion reward can materially raise the balanced high-watermark, while B88 shows that Level1-2 sampling bias alone is insufficient; combining the stronger B98 completion_reward=50 with a soft Level1-2 sampling bias may make the true-clear signal strong enough without starving Level1-1.",

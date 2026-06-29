@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b177-lowlr-criticxl-survival-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "The strongest Level1-3 signal so far came from the B156/B166 family, where the main useful difference from the closest failed control was a wider value network. B166 rediscovered clean clears from scratch but only reached a sparse, unstable rolling completion rate. B177 keeps B166's reward shape and PPO geometry nearly intact, but pushes the value-estimation hypothesis harder with value_net_arch=1024,1024 and vf_coef=0.75 while keeping the small policy head. If delayed platform-jump credit is the bottleneck, the larger critic should improve clear density without changing environment, action, termination, or eval semantics.",

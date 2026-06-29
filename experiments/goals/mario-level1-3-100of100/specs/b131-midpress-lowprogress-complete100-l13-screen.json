@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b131-midpress-lowprogress-complete100-l13-screen",
   "stage": "screen",
   "hypothesis": "If B126's broader update pressure is useful but still too progress-dominated, combining mid/high PPO pressure with reduced progress scale and completion_reward=100 should test whether Level1-3 needs both broader policy movement and a stronger true-clear signal.",

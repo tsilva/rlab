@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b98-complete50-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89's clean completion reward produced the strongest active high-watermark so far, so doubling that true clear bonus may push both per-level rolling clear rates higher without changing the task or rewarding a proxy.",

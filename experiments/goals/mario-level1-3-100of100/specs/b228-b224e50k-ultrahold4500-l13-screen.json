@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b228-b224e50k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B224e reached the B224 0.12 band and had the best live final window among B224 copies before completion. B228 resumes B224e at 50k with ultra-hold PPO, testing whether the stronger late-window dense-checkpoint parent can preserve the pre-peak behavior better than B224a/B224b 50k forks.",

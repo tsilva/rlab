@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b236-b191resume-200k-longcredit4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B230's long-credit settings improved the final completion window, but the 4500 completion bonus still produces unstable post-peak behavior. B236 keeps the long-credit PPO settings and slightly lowers completion_reward to 4250 to test whether the same bottleneck-crossing behavior can be retained with less reward-scale pressure.",

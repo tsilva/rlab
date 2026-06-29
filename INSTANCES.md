@@ -1,7 +1,7 @@
 # GPU Instances
 
 This repo currently supports local Docker fleet runners only. Training jobs are
-created in the queue DB with `rlab-queue`; Mac-side `rlab-fleet` reconciles
+created in the queue DB with `rlab jobs`; Mac-side `rlab fleet` reconciles
 Docker containers on `beast-3` and `beast-2` over SSH. Do not use provider
 launchers for this project while the beast path is being hardened.
 
@@ -26,7 +26,7 @@ Fleet host connection, mount details, and the enforced `max_workers` cap live in
 Queue work from checked-in goal spec files:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+UV_CACHE_DIR=.uv-cache uv run rlab train \
   --spec-file experiments/goals/<goal-slug>/specs/<spec>.json \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -34,38 +34,38 @@ UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
 Inspect and reconcile local capacity from the MacBook:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
+UV_CACHE_DIR=.uv-cache uv run rlab fleet policy
+UV_CACHE_DIR=.uv-cache uv run rlab fleet status
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ps
+UV_CACHE_DIR=.uv-cache uv run rlab fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
 ```
 
 For a long-running local reconciliation loop:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --watch --interval 30
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile --watch --interval 30
 ```
 
 For a live terminal dashboard that keeps each reachable beast host on the latest
 successful train image and removes idle old managed containers:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
 ```
 
 After publishing a new train image, roll active hosts to the latest successful
 digest:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-latest
 ```
 
 To warm a host even before matching queue demand:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-runner \
   --host beast-3 \
   --image latest
 ```
@@ -80,11 +80,11 @@ Bootstrap each host after OS/Docker changes or when validating a new runtime
 image:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
   --host beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
   --host beast-2 \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -145,6 +145,6 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - Do not print DB, W&B, or AWS/R2 secrets.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch
   outputs under ignored paths such as `runs/`, `logs/`, `models/`, and `wandb/`.
-- `rlab-fleet` may remove old managed containers only when there are no
+- `rlab fleet` may remove old managed containers only when there are no
   pending/running jobs for that container's profile/digest/target and no active
   queue lease owned by one of its workers.

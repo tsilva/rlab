@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b142-ultralowdeath-tinyprogress-complete250-l13-screen",
   "stage": "screen",
   "hypothesis": "B137's tiny-progress/high-completion arm escaped the constant death-penalty plateau but still produced zero clean Level1-3 clears by the 2M checkpoint, with death still dominating reward attribution. Lowering death pressure, making the true clear bonus much larger, keeping only a tiny progress gradient, and preserving a high entropy floor should encourage exploration toward the clean level transition instead of settling into survival/death tradeoffs.",

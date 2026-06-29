@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b241-b236resume-200k-rescale4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 found a new 0.14 high-window with completion_reward=4250, but still decayed by the final checkpoint. B241 resumes from B236 200k and keeps the reward shape while increasing reward_scale from 10 to 12, reducing effective reward magnitude to test whether post-peak collapse is partly reward-scale driven.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b232-b191resume-200k-explorehold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214's lower entropy may preserve the discovered behavior briefly but collapse after the high-window region. B232 keeps the B214 reward and clip/LR but uses a slightly higher entropy tail, testing whether maintaining exploration prevents the policy from becoming brittle after the first platforming bottleneck.",

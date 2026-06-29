@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b95-lowpress-slowent-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "A softer 45/55 Level1-2 sampling bias combined with lower update pressure and slower entropy decay should help the historical Level1-2 bottleneck without starving Level1-1 as much as a 40/60 split can.",

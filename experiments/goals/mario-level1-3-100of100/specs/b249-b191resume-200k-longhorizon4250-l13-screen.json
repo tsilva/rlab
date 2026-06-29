@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b249-b191resume-200k-longhorizon4250-l13-screen",
   "stage": "screen",
   "hypothesis": "Level1-3 rewards require long sequences of timed jumps, and B236's 0.14 high-water came from the longest-credit branch tested so far. B249 extends that idea with a longer rollout horizon and gamma=0.999/gae_lambda=1.0 while keeping completion_reward=4250, testing whether still-longer credit assignment helps the tree-platform sequence.",

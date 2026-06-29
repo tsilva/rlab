@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b214-b191resume-200k-freezemid4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B205 tied B191's 0.12 peak with completion_reward=4500 but did not sustain the final clear window, while B204's lower-update freeze shape preserved some signal with completion_reward=4000. B214 combines the 4500 midpoint clear bonus with B204-style lower LR, entropy, clip, and KL from the same B191 200k checkpoint.",

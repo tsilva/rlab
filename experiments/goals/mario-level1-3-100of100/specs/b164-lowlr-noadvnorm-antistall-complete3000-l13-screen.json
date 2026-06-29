@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b164-lowlr-noadvnorm-antistall-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B161 crossed the 2M-step maturity point with zero clean Level1-3 clears and a nearly flat shaped-reward tail, so broader advantage-normalized anti-stall exploration is not enough by itself. B160 is still moving and is the only current Level1-style no-advantage-normalization arm, but it includes a small survival bonus and a weaker clean-clear bonus. This arm keeps direct Level1-3 training and legal reward/hyperparameter-only changes, combines the successful Level1 PPO update geometry with high early entropy and long credit, removes the survival incentive, adds a light anti-stall penalty, and makes true clean clears overwhelmingly dominant.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b230-b191resume-200k-longcredit4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214's B191-200k + completion_reward=4500 recipe is the repeatable high-water, but all post-peak hold forks decay or underperform. B230 keeps the B214 reward/update scale but increases long-horizon credit assignment with gamma=0.997 and gae_lambda=0.99, testing whether later platform sequences need slightly longer temporal credit.",

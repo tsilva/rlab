@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b161-lowlr-wideenv-antistall-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B158 reached the 2M-step maturity point with zero clean Level1-3 clears, a falling reward tail, very long episodes, and reward mass dominated by the survival/time component. That suggests the sparse long-credit survival arm learned a wait/survive attractor rather than safe platform traversal. This arm keeps direct Level1-3 training and legal reward/hyperparameter-only changes, but removes the survival bonus, adds a light anti-stall time penalty, broadens parallel exploration with n_envs=32, keeps low LR and high early entropy, and makes true clean clears overwhelmingly dominant.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b208-b194resume-300k-freeze-complete5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B194 did not match B191's window peak but accumulated 93 clean clears, among the better count signals. B208 resumes B194 at 300k with a low-update freeze while keeping completion_reward=5000, testing whether its higher clear count can become a denser rolling window.",

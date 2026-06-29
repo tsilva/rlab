@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b247-b191resume-200k-noadvnorm4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B236's completion_reward=4250 long-credit branch produced the current 0.14 high-water, but exact B242 repeats mostly fell back to 0.09-0.11. The successful Level1 recipe family used normalize_advantage=false, so B247 tests whether preserving raw advantage scale with a reduced effective reward magnitude can make the 4250 branch discover or preserve stronger Level1-3 clear timing.",

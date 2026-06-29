@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b179-b166resume-3500k-consolidate-complete5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B166 had already begun producing clean clears by the 3.5M checkpoint, but it never consolidated a high rolling completion window. B179 resumes B166 at 3.5M, keeps the useful critic-wide survival setup, raises the clean-clear bonus to 5000, and uses moderate low-pressure PPO settings. This tests whether stronger target-aligned sparse reward can increase clear density once the policy has already crossed the initial bottleneck.",

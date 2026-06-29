@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b186-b178resume-1600k-clearboost-complete4000-l13-screen",
   "stage": "screen",
   "hypothesis": "The B178/B184 lineage suggests a stronger clean-clear reward helps completion density, but completion_reward=5000 also keeps critic diagnostics unhealthy. B186 resumes B178 at 1.6M like B185, but uses an intermediate completion_reward=4000 to test whether a smaller clear boost can retain the higher rolling completion signal with less value-function stress.",

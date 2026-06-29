@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b182-b178resume-1700k-valuerescale-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B178 is the current Level1-3 high-water screen: it produced 120 clean clears and reached an observed rolling min rate of 0.06, but decayed to 0.01 by the end while explained variance stayed near zero and value loss remained very large. B182 resumes B178's 1.7M continuation checkpoint, near the observed high-water window, and keeps the same reward ratios while increasing reward_scale from 10 to 50. This tests whether the discovered policy can consolidate better when the critic target magnitude is reduced, without changing environment, action, termination, or eval semantics.",

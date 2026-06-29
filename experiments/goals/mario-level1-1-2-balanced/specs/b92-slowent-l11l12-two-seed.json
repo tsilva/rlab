@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b92-slowent-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "A slower entropy decay with a higher entropy floor should make the transient balanced competence seen in b86 less likely to collapse late in training.",

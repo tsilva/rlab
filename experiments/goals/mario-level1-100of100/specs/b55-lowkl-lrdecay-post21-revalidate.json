@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-100of100",
+  "goal": "Level1-1",
   "slug": "b55-lowkl-lrdecay-post21-revalidate",
   "stage": "confirm",
   "hypothesis": "The B55 low-KL late-decay recipe remains a strong Level1-1 policy-search baseline under the active post21 runtime.",

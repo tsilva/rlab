@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b167-b156resume-stabilize-4500k-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 is the first active Level1-3 run to pass the early bottleneck: deterministic artifact eval moves from the failed-run wall near x=670 to x=1645 at the 4.5M checkpoint, and training clean clears begin shortly before 4M. This fork resumes the B156 4.5M checkpoint and spends only the remaining 500k cap budget on a conservative low-LR, low-entropy stabilization pass, preserving the exact reward shape that discovered the behavior.",

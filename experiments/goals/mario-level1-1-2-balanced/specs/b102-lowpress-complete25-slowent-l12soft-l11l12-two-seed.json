@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b102-lowpress-complete25-slowent-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89 shows that completion_reward=25 can create a balanced lift, but active runs still collapse on Level1-2; combining completion reward, lower PPO update pressure, slower entropy decay, and a soft Level1-2 sampling bias is the most compact legal anti-collapse bundle queued so far.",

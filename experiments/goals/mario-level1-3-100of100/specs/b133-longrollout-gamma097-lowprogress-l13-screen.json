@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b133-longrollout-gamma097-lowprogress-l13-screen",
   "stage": "screen",
   "hypothesis": "If Level1-3 requires longer-horizon credit than the 512-step B130 screen can capture, a 1024-step rollout with gamma=0.97 and gae_lambda=0.95 should improve credit assignment while keeping the same Level1-3 event contract and reward target.",

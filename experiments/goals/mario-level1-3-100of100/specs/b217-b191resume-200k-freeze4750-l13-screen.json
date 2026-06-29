@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b217-b191resume-200k-freeze4750-l13-screen",
   "stage": "screen",
   "hypothesis": "B214's new 0.13 high-water suggests the freeze-style PPO continuation can exploit a midpoint clear bonus. B217 brackets the same B191 200k recipe upward to completion_reward=4750, testing whether a little more clean-clear pressure widens the early successful window without the instability seen around stronger 5000-bonus branches.",

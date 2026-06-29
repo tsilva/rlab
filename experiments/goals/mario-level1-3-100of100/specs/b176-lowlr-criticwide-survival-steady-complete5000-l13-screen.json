@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b176-lowlr-criticwide-survival-steady-complete5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B166/B171/B172 prove that the critic-wide survival family discovers Level1-3 clears, but the rolling completion rate remains sparse. B176 keeps B175's steadier PPO geometry and raises only the true clean-clear bonus to 5000 to test whether the sparse completion event is still underweighted once PPO update pressure is reduced.",

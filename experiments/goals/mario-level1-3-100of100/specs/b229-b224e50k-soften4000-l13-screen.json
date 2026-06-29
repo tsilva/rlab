@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b229-b224e50k-soften4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B224e was the best dense-checkpoint parent by late-window signal. B229 resumes B224e at 50k and softens completion_reward to 4000, pairing the best B224 parent with the post-discovery softening hypothesis.",

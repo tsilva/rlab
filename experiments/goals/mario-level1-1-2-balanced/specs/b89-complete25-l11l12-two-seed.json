@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b89-complete25-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "Adding a modest clean-completion reward in score mode should make actual level clears more learnable without changing the task or rewarding a proxy.",

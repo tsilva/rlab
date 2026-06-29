@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b243-b236resume-100k-hold4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 peaked near 198k continuation steps, so its 200k checkpoint may already be at or just past the fragile high-window. B243 resumes from the B236 100k checkpoint and applies a moderate hold schedule before the peak to test whether the policy can be guided into a more durable high-completion region.",

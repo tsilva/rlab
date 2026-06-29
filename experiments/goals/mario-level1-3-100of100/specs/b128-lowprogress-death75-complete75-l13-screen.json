@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b128-lowprogress-death75-complete75-l13-screen",
   "stage": "screen",
   "hypothesis": "If B123's death_penalty=50 still leaves policies in life-loss-only churn, a stronger balanced survival/clear signal with progress_reward_scale=0.25, death_penalty=75, and completion_reward=75 should further reduce progress-only optimization pressure.",

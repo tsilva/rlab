@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b231-b191resume-200k-longrollout4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B214 discovers a short high-clear window but PPO update noise may be too coupled to short rollout batches. B231 keeps the B214 reward and low update scale while increasing rollout horizon to n_steps=2048, testing whether longer on-policy batches improve value estimates for the Level1-3 platform sequence.",

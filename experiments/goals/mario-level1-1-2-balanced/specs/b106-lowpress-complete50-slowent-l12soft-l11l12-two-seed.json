@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b106-lowpress-complete50-slowent-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "The strongest legal anti-collapse recipe not yet queued combines the true-clear signal from completion_reward=50, lower PPO update pressure, slower entropy decay, and soft Level1-2 coverage; this should test whether B89-style transient competence needs all three stabilizers to become reproducible across two seeds.",

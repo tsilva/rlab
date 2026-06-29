@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b96-complete25-l11soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89's early completion-reward arm is lifting Level1-2 much faster than Level1-1, so a slight Level1-1 sampling bias may preserve the Level1-2 benefit while raising the bottleneck level.",

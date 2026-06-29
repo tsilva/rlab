@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b88-l12bias-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "A modest Level1-2 sampling bias should raise the bottleneck level without erasing Level1-1 competence, since b86 mostly failed by Level1-2 underperformance.",

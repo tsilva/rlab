@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b93-slowent-l12bias-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "Combining slower entropy decay with a modest Level1-2 sampling bias should preserve exploration while giving the historical bottleneck level more attempts.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b172-b156resume-mounted-clearboost-4500k-l13-screen",
   "stage": "screen",
   "hypothesis": "B156 discovered the post-bottleneck Level1-3 behavior, but the 100-attempt completion window never became reliable. B170 proved the direct-resume path reaches W&B, but the checkpoint was staged outside the worker container mount. This corrected retry resumes the verified B156 4.5M checkpoint from the mounted runs/train_resumes path and changes only the sparse clean-clear incentive from 1500 to 3000 while using conservative continuation optimizer settings.",

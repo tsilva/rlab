@@ -38,6 +38,7 @@ from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
 METRIC_ROW_RE = re.compile(r"\|\s+(?P<key>[A-Za-z0-9_./-]+)\s+\|\s+(?P<value>[^|]+?)\s+\|")
 WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
+LEVEL_STATE_RE = re.compile(r"^Level\d+-\d+$")
 RESUME_ARTIFACT_ROOT = Path("artifacts/train_resumes")
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
 DEFAULT_CANCEL_GRACE_SECONDS = 30 * 60
@@ -46,7 +47,7 @@ DEFAULT_AUTOSCALE_WINDOW_SIZE = 5
 DEFAULT_AUTOSCALE_COOLDOWN_SECONDS = 180.0
 DEFAULT_WORKERS = 4
 DEFAULT_MIN_WORKERS = 1
-DEFAULT_MAX_WORKERS = 32
+DEFAULT_MAX_WORKERS = 16
 AUTOSCALE_SCALE_UP_THRESHOLDS = {
     "cpu_percent": 80.0,
     "memory_percent": 80.0,
@@ -310,6 +311,56 @@ def strip_env_file_quotes(value: str) -> str:
     return text
 
 
+def normalize_wandb_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_tags = value.split(",")
+    elif isinstance(value, list | tuple):
+        raw_tags = value
+    else:
+        raw_tags = []
+
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in raw_tags:
+        tag = str(raw_tag).strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag)
+    return tags
+
+
+def append_unique_wandb_tag(tags: list[str], tag: str) -> list[str]:
+    tag = tag.strip()
+    if tag and tag not in set(tags):
+        tags.append(tag)
+    return tags
+
+
+def normalize_level_states(config: Mapping[str, Any]) -> list[str]:
+    raw_states = config.get("states") or []
+    if isinstance(raw_states, str):
+        candidates = [raw_states]
+    elif isinstance(raw_states, list | tuple):
+        candidates = [str(state) for state in raw_states]
+    else:
+        candidates = []
+
+    state = str(config.get("state") or "").strip()
+    if state:
+        candidates.append(state)
+
+    levels: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        level = candidate.strip()
+        if not LEVEL_STATE_RE.match(level) or level in seen:
+            continue
+        seen.add(level)
+        levels.append(level)
+    return levels
+
+
 def normalize_train_config(
     job: dict[str, Any], *, resolve_resume_artifact: bool = True
 ) -> dict[str, Any]:
@@ -320,11 +371,14 @@ def normalize_train_config(
         config["run_description"] = job["run_description"]
     if job.get("wandb_group"):
         config["wandb_group"] = job["wandb_group"]
-    tags = job.get("wandb_tags") or []
-    if tags and not config.get("wandb_tags"):
-        config["wandb_tags"] = ",".join(str(tag) for tag in tags)
-    if isinstance(config.get("wandb_tags"), list):
-        config["wandb_tags"] = ",".join(str(tag) for tag in config["wandb_tags"])
+    tags = normalize_wandb_tags(config.get("wandb_tags") or job.get("wandb_tags"))
+    goal_slug = str(job.get("goal_slug") or "").strip()
+    if goal_slug:
+        append_unique_wandb_tag(tags, f"goal:{goal_slug}")
+    for level in normalize_level_states(config):
+        append_unique_wandb_tag(tags, f"level:{level}")
+    if tags:
+        config["wandb_tags"] = ",".join(tags)
     if "seed" in config and config["seed"] is not None:
         validate_training_seed(
             config["seed"],
@@ -1170,8 +1224,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if args.status_goal:
         conn = connect(database_url(args.direct))
         try:

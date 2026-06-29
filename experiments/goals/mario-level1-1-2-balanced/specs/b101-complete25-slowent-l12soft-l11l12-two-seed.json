@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b101-complete25-slowent-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89's clean completion reward produced the best active high-watermark but then collapsed on Level1-2; combining that true clear bonus with slower entropy decay and a soft Level1-2 sampling bias may preserve enough exploration and Level1-2 coverage for both levels to cross the strict balanced threshold.",

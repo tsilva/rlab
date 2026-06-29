@@ -21,7 +21,7 @@ Current near-miss baseline:
 Queue new batches with:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+UV_CACHE_DIR=.uv-cache uv run rlab train \
   --spec-file experiments/goals/mario-level1-1-2-balanced/specs/<spec>.json \
   --latest-image
 ```
@@ -29,6 +29,6 @@ UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
 Then reconcile beast-3 capacity:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
 ```

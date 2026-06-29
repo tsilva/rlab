@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen",
   "stage": "screen",
   "hypothesis": "B151/B152/B153 all crossed mature checkpoints with zero clean Level1-3 clears and flat reward tails. Their explained variance was high, but the policies still settled into no-clear timing behavior. This arm keeps the same Level1-3 environment and action semantics, but gives the value head the wider B110-style 512,512 capacity, keeps the policy head compact, and uses tiny clipped progress plus a dominant clean-clear bonus to test whether more value capacity and gentler PPO pressure help delayed platform-jump credit.",

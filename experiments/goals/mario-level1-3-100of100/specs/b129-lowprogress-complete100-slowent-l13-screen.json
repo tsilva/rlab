@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b129-lowprogress-complete100-slowent-l13-screen",
   "stage": "screen",
   "hypothesis": "If the main missing ingredient is reinforcing rare true clears once they occur, a very strong clean-completion reward with reduced progress scale and slow entropy should make the first discovered Level1-3 clear more likely to become repeatable.",

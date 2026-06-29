@@ -1,6 +1,6 @@
 # Mario World 1-4 100/100 Goal
 
-This folder is the durable capsule for the active `mario-level1-4-100of100`
+This folder is the durable capsule for the active `Level1-4`
 research objective.
 
 Primary optimization metric: peak

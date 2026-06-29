@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b125-b55clipped-gamma095-slowent-complete25-l13-screen",
   "stage": "screen",
   "hypothesis": "Level1-3 may need a longer effective credit horizon than the Level1-1 B55 gamma=0.9 recipe; gamma=0.95 with clipped progress, slow entropy, and clean completion reward should better credit survival/path choices that precede the clear.",

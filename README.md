@@ -28,7 +28,7 @@ game id you plan to pass with `--game`.
 Start with a local smoke run:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
+UV_CACHE_DIR=.uv-cache uv run rlab train local \
   --game <GameId> \
   --preset smoke \
   --run-name local_smoke \
@@ -38,13 +38,13 @@ UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
 Evaluate and watch the resulting model:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.eval \
+UV_CACHE_DIR=.uv-cache uv run rlab eval \
   --game <GameId> \
   --model runs/local_smoke/final_model.zip \
   --episodes 2 \
   --max-steps 600
 
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.play \
+UV_CACHE_DIR=.uv-cache uv run rlab play \
   --game <GameId> \
   --model runs/local_smoke/final_model.zip \
   --episodes 3 \
@@ -59,7 +59,7 @@ the current native `state=` constructor argument. Use fixed native env
 slots:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
+UV_CACHE_DIR=.uv-cache uv run rlab train local \
   --game SuperMarioBros-Nes-v0 \
   --states Level1-1,Level1-2 \
   --n-envs 2 \
@@ -71,7 +71,7 @@ Or native reset-time weighted sampling. `--state-probs` values must be positive
 finite weights; training normalizes them before storing metadata and W&B config.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.train \
+UV_CACHE_DIR=.uv-cache uv run rlab train local \
   --game SuperMarioBros-Nes-v0 \
   --states Level1-1,Level1-2 \
   --state-probs 1,3 \
@@ -87,10 +87,10 @@ UV_CACHE_DIR=.uv-cache uv sync --frozen
 UV_CACHE_DIR=.uv-cache uv run ruff check .
 UV_CACHE_DIR=.uv-cache uv run python -m unittest discover -s tests -v
 
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.train --game <GameId> --preset smoke --run-description "Smoke test"
-UV_CACHE_DIR=.uv-cache uv run python -m rlab.eval --game <GameId> --policy random --episodes 2 --max-steps 600
-UV_CACHE_DIR=.uv-cache uv run rlab-eval --artifact-run <run-name> --checkpoint-series --game <GameId> --episodes 50 --record-best-video
-UV_CACHE_DIR=.uv-cache uv run rlab-play <entity>/<project>/<run-name>-checkpoint:latest
+UV_CACHE_DIR=.uv-cache uv run rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
+UV_CACHE_DIR=.uv-cache uv run rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
+UV_CACHE_DIR=.uv-cache uv run rlab eval --artifact-run <run-name> --checkpoint-series --game <GameId> --episodes 50 --record-best-video
+UV_CACHE_DIR=.uv-cache uv run rlab play <entity>/<project>/<run-name>-checkpoint:latest
 ```
 
 ## Research Loop
@@ -105,7 +105,7 @@ Queue comparable experiments from checked-in spec files instead of ad hoc
 commands:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue enqueue-train \
+UV_CACHE_DIR=.uv-cache uv run rlab train \
   --spec-file experiments/goals/mario-level1-100of100/specs/b83-b55-post21-five-seed-l11-confirm.json \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -117,19 +117,19 @@ minimal train-config fields must be present and well-formed.
 
 Seed ranges are part of the comparability contract. Training seeds must stay in
 `0..9999`, accounting for vector env slots, and seeds `10000+` are reserved for
-eval and playback. `rlab.eval`, eval-queue jobs, and `rlab.play` default to
+eval and playback. `rlab eval`, eval-queue jobs, and `rlab play` default to
 seed `10007`; pass `--seed` only when replaying a legacy comparison
 deliberately.
 
 Then keep capacity aligned with the repo policy and queue state:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet policy
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab fleet policy
+UV_CACHE_DIR=.uv-cache uv run rlab fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
 ```
 
-Use `rlab-queue status --goal <goal>` for operational queue state and compact
+Use `rlab jobs status --goal <goal>` for operational queue state and compact
 result receipts. Durable research decisions belong in the repo under the goal
 folder; detailed metrics and artifacts belong in W&B.
 
@@ -137,7 +137,7 @@ To stop a running train job without dropping its latest weights, request a
 queue cancel:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-queue cancel-train <train_job_id>
+UV_CACHE_DIR=.uv-cache uv run rlab jobs cancel-train <train_job_id>
 ```
 
 The train runner relays that request to the leased trainer with `SIGUSR1`. The
@@ -149,21 +149,21 @@ within the runner's cancel grace window, the runner falls back to `SIGTERM`.
 For a quick terminal monitor over queue jobs and fleet state:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-monitor --view all
-UV_CACHE_DIR=.uv-cache uv run rlab-monitor --json
+UV_CACHE_DIR=.uv-cache uv run rlab monitor --view all
+UV_CACHE_DIR=.uv-cache uv run rlab monitor --json
 ```
 
 ## Queue Runners
 
 Queue-backed training is the supported GPU workflow. Create train jobs with
-`rlab-queue`, then run capacity through `rlab-fleet` on `beast-3` and
+`rlab train`, then run capacity through `rlab fleet` on `beast-3` and
 `beast-2`.
 
 For queue-backed training, keep the enforced host cap as `max_workers` in
 `experiments/fleet.json`. Lane-specific limits live in
 `experiments/policies/capacity_policy.json`; they are validated against the host
-cap by `rlab-fleet policy`. `rlab-fleet` starts digest-pinned Docker containers
-running `rlab.train_runner`; experiment payloads stay in the queue row snapshot
+cap by `rlab fleet policy`. `rlab fleet` starts digest-pinned Docker containers
+running `rlab train worker`; experiment payloads stay in the queue row snapshot
 loaded from the checked-in spec file.
 
 For local GPU queue capacity, run the fleet manager from the MacBook. It reads
@@ -173,19 +173,19 @@ on `beast-3` and `beast-2` over SSH. The beast hosts are intentionally just
 Docker engines; they do not poll the queue or run a local fleet service.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet status
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ps
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet reconcile --watch --interval 30
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
+UV_CACHE_DIR=.uv-cache uv run rlab fleet status
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ps
+UV_CACHE_DIR=.uv-cache uv run rlab fleet plan
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile --watch --interval 30
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
 ```
 
 After publishing a new train image, roll all active beast hosts to the latest
 successful digest with `ensure-latest`:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-latest
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-latest
 ```
 
 This starts or keeps one unprofiled latest-image runner per selected host. It
@@ -205,18 +205,18 @@ publish times, and commit subjects. Pass `--dry-run` for a preview-only
 dashboard.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet watch
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
 ```
 
 To explicitly make a latest-image runner available on a local beast host,
 without waiting for queue demand, use `ensure-runner`. When no image ref is
-provided it resolves the latest successful `rlab train image` artifact on
+provided it resolves the latest successful train-image artifact on
 `main` through the GitHub CLI and uses the artifact's immutable digest. By
 default this runner does not filter by profile; it claims any train job matching
 the image and host target:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet ensure-runner \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-runner \
   --host beast-3 \
   --image latest
 ```
@@ -231,11 +231,11 @@ the non-secret env-file path, digest pulls, and the container smoke check are
 ready:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
   --host beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 
-UV_CACHE_DIR=.uv-cache uv run rlab-fleet setup-host \
+UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
   --host beast-2 \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -256,7 +256,7 @@ still owns a running queue lease.
 - Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts`
   is set.
 - Queue-backed train jobs are profileless by default and should reference
-  immutable runtime image digests. `rlab-queue enqueue-train` resolves the
+  immutable runtime image digests. `rlab train` resolves the
   latest successful train-image artifact when no explicit digest/file is given;
   pass `--profile <profile-id>` only for an intentionally profile-locked lane.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b207-b192resume-200k-soften-complete4000-l13-screen",
   "stage": "screen",
   "hypothesis": "B192's completion_reward=5000 run reached a 0.11 peak but decayed more than B191. B207 resumes B192 at 200k and softens the completion bonus back to 4000 with freeze-style PPO updates, testing whether the stronger early reward discovered clears that a softer continuation can stabilize.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b248-b191resume-200k-entropyreheat4250-l13-screen",
   "stage": "screen",
   "hypothesis": "B236 shows the 4250 long-credit branch can cross a higher bottleneck window, but repeated low-entropy continuations usually settle back into the 0.09-0.11 band. B248 keeps the B236 reward and long-credit settings while briefly reheating entropy to test whether additional action diversity around the platform-timing region improves repeatability.",

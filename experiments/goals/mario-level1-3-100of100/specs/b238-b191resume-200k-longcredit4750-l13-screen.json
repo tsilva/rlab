@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b238-b191resume-200k-longcredit4750-l13-screen",
   "stage": "screen",
   "hypothesis": "B230 made the B214 high-window more stable by increasing long-horizon credit, so the completion bonus optimum may shift upward under gamma=0.997 and gae_lambda=0.99. B238 tests completion_reward=4750 while keeping the B230 PPO settings fixed.",

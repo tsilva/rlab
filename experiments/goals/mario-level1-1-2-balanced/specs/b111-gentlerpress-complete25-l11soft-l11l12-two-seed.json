@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b111-gentlerpress-complete25-l11soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B110 shows that adding a soft Level1-2 sampling bias to the B91 completion-reward recipe can start Level1-2 clears, but the early bottleneck shifts to Level1-1. Pairing B109's gentler PPO updates with a soft Level1-1 sampling bias should test the symmetric retention fix: protect Level1-1 without abandoning completion_reward=25 or the real mixed-policy task.",

@@ -72,6 +72,8 @@ DEFAULT_WATCH_STALE_LIMIT = 50
 LABEL_PREFIX = "rlab."
 MANAGED_LABEL = f"{LABEL_PREFIX}managed"
 CONFIG_HASH_LABEL = f"{LABEL_PREFIX}config-hash"
+DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS = 1
+DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -418,8 +420,8 @@ def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> 
         manager = str(lane.get("manager") or "").strip()
         host_name = str(lane.get("host") or "").strip()
         if not host_name:
-            if manager == "rlab-fleet":
-                raise ValueError(f"capacity_policy lane {name!r} uses rlab-fleet but has no host")
+            if manager in {"rlab_fleet", "rlab fleet"}:
+                raise ValueError(f"capacity_policy lane {name!r} uses rlab_fleet but has no host")
             continue
         if host_name not in config.hosts:
             raise ValueError(f"capacity_policy lane {name!r} references unknown host {host_name!r}")
@@ -533,7 +535,7 @@ def docker_run_command(host: HostConfig, desired: DesiredDeployment) -> list[str
         cmd.extend(["--network", host.docker_network])
     for key, value in sorted(desired.labels.items()):
         cmd.extend(["--label", f"{key}={value}"])
-    cmd.extend([image, "rlab-container-entrypoint", "rlab-train-runner"])
+    cmd.extend([image, "rlab-container-entrypoint", "rlab", "train", "worker"])
     cmd.extend(desired.command)
     return cmd
 
@@ -555,6 +557,11 @@ def build_desired_deployment(
         key.run_target or host.run_target,
         "--workers",
         str(workers),
+        "--autoscale",
+        "--min-workers",
+        str(DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS),
+        "--max-workers",
+        str(DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS),
         "--worker-id",
         worker_prefix,
         "--log-dir",
@@ -1566,7 +1573,7 @@ def stale_train_job_from_row(
 
 
 def stale_train_job_error_for_host(host: HostConfig) -> str:
-    return f"worker_lost: stale train job marked failed by rlab-fleet watch host={host.name}"
+    return f"worker_lost: stale train job marked failed by rlab fleet watch host={host.name}"
 
 
 def stale_train_jobs_for_watch(

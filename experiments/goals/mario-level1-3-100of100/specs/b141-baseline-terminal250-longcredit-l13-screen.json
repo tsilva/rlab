@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b141-baseline-terminal250-longcredit-l13-screen",
   "stage": "screen",
   "hypothesis": "B134's advantage-normalized low-progress arm flattened with zero clean Level1-3 clears, and multiple score-mode progress-shaped arms have plateaued without conversion. A baseline reward arm removes direct x-progress shaping and relies on native/score deltas plus a strong terminal clear/life-loss signal, testing whether progress shaping is the local optimum while preserving the same environment and event contract.",

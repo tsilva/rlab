@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b190-b178resume-1500k-adaptive-clearboost5000-l13-screen",
   "stage": "screen",
   "hypothesis": "B187's adaptive 1.6M clearboost arm underperformed, but it may have started too late. B190 tests the same moderate-adaptation idea from B178 1.5M, giving 500k steps to adapt the already clear-producing policy while keeping completion_reward=5000.",

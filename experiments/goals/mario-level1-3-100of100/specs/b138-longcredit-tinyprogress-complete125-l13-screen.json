@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b138-longcredit-tinyprogress-complete125-l13-screen",
   "stage": "screen",
   "hypothesis": "B136's gamma=0.99 advantage-normalized low-progress arm reached a zero-clear reward plateau, while B137 showed that too much death pressure with tiny progress can still be death dominated. A gamma=0.97 long-rollout arm with a tiny but nonzero progress gradient, B55-level death pressure, a larger true-clear bonus, advantage normalization, and a higher entropy floor should keep exploration alive without letting shaped progress dominate the Level1-3 objective.",

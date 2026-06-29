@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-1-2-balanced",
+  "goal": "Levels_2_d25102",
   "slug": "b100-lowpress-complete25-l12soft-l11l12-two-seed",
   "stage": "screen",
   "hypothesis": "B89's completion reward is the only active lever that has materially raised the balanced high-watermark, but it still collapses on Level1-2; combining that true clear bonus with lower PPO update pressure and a soft Level1-2 sampling bias may keep the bottleneck level alive without erasing Level1-1 competence.",

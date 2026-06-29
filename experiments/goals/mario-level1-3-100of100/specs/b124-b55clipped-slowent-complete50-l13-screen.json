@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b124-b55clipped-slowent-complete50-l13-screen",
   "stage": "screen",
   "hypothesis": "If Level1-3 needs longer exploration and a stronger true-clear signal than B121, clipped progress plus slower entropy decay and completion_reward=50 should keep policy search broad while making any clean clear much more reinforcing.",

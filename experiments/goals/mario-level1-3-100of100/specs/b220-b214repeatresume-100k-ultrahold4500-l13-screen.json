@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b220-b214repeatresume-100k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "The first B214 repeat also reached 0.13 and ended with the strongest final window among finished B214-family runs. B220 resumes that repeat at 100k with the same ultra-hold continuation as B219, testing whether B214 checkpoint continuation is repeatable across stochastic runs.",

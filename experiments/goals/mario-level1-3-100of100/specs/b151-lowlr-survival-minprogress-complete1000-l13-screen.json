@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b151-lowlr-survival-minprogress-complete1000-l13-screen",
   "stage": "screen",
   "hypothesis": "B146 crossed the 3M checkpoint with zero clean Level1-3 clears and a nearly flat short reward tail. The live Level1-3 screens have either learned progress-shaped local optima or harsh death-dominated behavior. This arm keeps the same direct Level1-3 environment and action semantics but tests a small survival-after-jump proxy using the existing time reward hook: tiny clipped progress, very small death pressure, a small per-step survival bonus, low LR, high entropy, long rollouts, and a dominant true-clean-clear bonus.",

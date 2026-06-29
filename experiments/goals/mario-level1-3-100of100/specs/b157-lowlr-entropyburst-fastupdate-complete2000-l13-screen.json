@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b157-lowlr-entropyburst-fastupdate-complete2000-l13-screen",
   "stage": "screen",
   "hypothesis": "B152 and B153 tested frequent PPO updates but still settled into zero-clear flat tails. If the remaining blocker is first-pit exploration rather than update cadence, the policy may need a much larger early entropy push while direct x-progress and death penalties stay small. This arm keeps fast updates, raises early entropy, removes explicit death penalty, keeps only a tiny clipped progress signal, and makes the first true clean clear dominate the return.",

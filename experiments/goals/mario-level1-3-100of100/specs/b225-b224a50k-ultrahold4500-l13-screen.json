@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b225-b224a50k-ultrahold4500-l13-screen",
   "stage": "screen",
   "hypothesis": "B224 dense-checkpoint repeats reproduced the B214 high-window band but did not beat 0.13. B224a peaked at 0.12 with the best completed clean count among B224 runs, and its 50k checkpoint is before the observed 78k-83k peak. B225 resumes B224a at 50k with an ultra-low-update hold schedule to test whether the pre-peak policy can be guided into the high window without later collapse.",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b174-b156resume-4000k-ultrastable-complete3000-l13-screen",
   "stage": "screen",
   "hypothesis": "B171/B172 showed that B156 checkpoint forks produce immediate clean clears but fail to consolidate a reliable 100-attempt window. B174 resumes the B156 4.0M checkpoint with the same ultra-low update pressure as B173, but uses completion_reward=3000 to match the B166/B172 sparse-clear weighting that rediscovered more clears than the original B156 recipe.",

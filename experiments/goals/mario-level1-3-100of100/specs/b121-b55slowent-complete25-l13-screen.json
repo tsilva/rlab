@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b121-b55slowent-complete25-l13-screen",
   "stage": "screen",
   "hypothesis": "Combining the B118 clean-completion reward with the B119 slower entropy schedule should help Level1-3 keep exploring long enough to discover clears while making real clean completions more reinforcing once found.",

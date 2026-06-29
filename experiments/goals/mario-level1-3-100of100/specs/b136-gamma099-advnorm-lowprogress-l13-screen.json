@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal": "mario-level1-3-100of100",
+  "goal": "Level1-3",
   "slug": "b136-gamma099-advnorm-lowprogress-l13-screen",
   "stage": "screen",
   "hypothesis": "If Level1-3 needs substantially longer credit assignment than B130's gamma=0.97, gamma=0.99 with advantage normalization and conservative target_kl should test that horizon while keeping the same event contract and target-aligned reward shape.",
