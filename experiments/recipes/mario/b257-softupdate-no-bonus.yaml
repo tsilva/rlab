@@ -1,0 +1,65 @@
+schema_version: 1
+kind: train_recipe
+slug: b257-softupdate-no-bonus
+algorithm: PPO
+description: B257 World 1-4 soft-update recipe with no completion bonus and source-attempt early stop.
+env:
+  game: SuperMarioBros-Nes-v0
+  n_envs: 16
+  env_threads: 4
+  torch_num_threads: 1
+  action_set: simple
+  frame_skip: 4
+  max_pool_frames: false
+  hud_crop_top: 32
+  max_episode_steps: 4500
+  completion_x_threshold: 0
+  info_events_json:
+    life_loss:
+    - lives
+    - decrease
+    level_change:
+    - - levelHi
+      - levelLo
+    - change
+  done_on_events: life_loss,level_change
+train:
+  n_steps: 512
+  batch_size: 512
+  n_epochs: 10
+  learning_rate: 0.00012
+  learning_rate_final: 8.0e-05
+  learning_rate_schedule_timesteps: 4000000
+  ent_coef: 0.01
+  ent_coef_final: 0.0001
+  ent_coef_schedule_timesteps: 4000000
+  gamma: 0.9
+  gae_lambda: 1.0
+  clip_range: 0.12
+  target_kl: 0.1
+  vf_coef: 1.0
+  adam_eps: 1.0e-08
+  normalize_advantage: false
+reward:
+  reward_mode: score
+  progress_reward_cap: 30.0
+  progress_reward_scale: 1.0
+  terminal_reward: 50
+  time_penalty: 0.0
+  death_penalty: 25
+  completion_reward: 0.0
+  reward_scale: 10
+  score_progress_clipped: false
+  no_progress_timeout_steps: 0
+  no_progress_min_delta: 0
+logging:
+  eval_freq: 0
+  eval_episodes: 0
+  checkpoint_freq: 500000
+  early_stop_metric: train/info/level_complete/rate/min/last
+  early_stop_threshold: 0.99
+  early_stop_operator: '>'
+  timesteps: 5000000
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: ${CHECKPOINT_BUCKET_URI}

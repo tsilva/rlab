@@ -106,20 +106,6 @@ search_protocol:
   iterate: 'Change legal recipe levers in small interpretable steps: PPO update pressure, state sampling weights, entropy schedule, value/reward scaling, and true completion reward.'
   # Success rule; requires checked-in specs and raw W&B history, not only summaries.
   success: Declare the goal satisfied only when the same checked-in spec produces two completed runs whose sampled or raw W&B history proves peak train/info/level_complete/rate/min/last > 0.80 for both seeds.
-# Current best known evidence for this mixed-level goal.
-incumbent:
-  # Recipe/spec slug for the current near-miss; anchors comparisons to a concrete checked-in spec.
-  recipe_slug: b86-b74current-l11l12-latest-five-seed
-  # Spec file for the current near-miss; lets operators reproduce or inspect the incumbent.
-  recipe_file: experiments/goals/Levels_2_d25102/specs/b86-b74current-l11l12-latest-five-seed.yaml
-  # Incumbent status; explains why the best known run is not considered solved.
-  status: near-miss; one seed reached exactly 0.80, but no two-seed batch satisfied >0.80 on both seeds
-  # Best W&B run name; links the strongest single run to raw evidence.
-  best_run_name: b86_l11l12_b74current_s195_20260627T091726Z
-  # Best bottleneck peak; records the near-miss value for quick comparison.
-  best_peak_rate_min_last: 0.8
-  # Step of the best bottleneck peak; helps compare sample efficiency and instability.
-  best_peak_step: 4070256
 # Default launch spec for this goal; queue tooling can use it as the current representative run.
 default_train_spec_file: experiments/goals/Levels_2_d25102/specs/b87-lowpress-l11l12-two-seed.yaml
 # Execution overlay for this discovery search.

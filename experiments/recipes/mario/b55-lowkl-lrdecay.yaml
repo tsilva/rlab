@@ -2,7 +2,7 @@
 schema_version: 1
 # Document kind; distinguishes reusable recipes from launch specs and goal contracts.
 kind: train_recipe
-# Stable recipe slug; used by specs and incumbent records to refer to this hyperparameter bundle.
+# Stable recipe slug; used by specs and evidence records to refer to this hyperparameter bundle.
 slug: b55-lowkl-lrdecay
 # Learning algorithm family; keeps this recipe tied to PPO-specific knobs.
 algorithm: PPO

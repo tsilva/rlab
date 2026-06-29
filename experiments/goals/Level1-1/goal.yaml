@@ -51,22 +51,6 @@ seed_protocol:
   - 27
   # Seed interpretation note; avoids claiming bitwise reproducibility from CUDA training.
   same_seed_note: Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA.
-# Current best known evidence for this goal.
-incumbent:
-  # Recipe slug for the incumbent; links current evidence to a reusable recipe name.
-  recipe_slug: b55-lowkl-lrdecay
-  # Human-readable recipe evidence file; preserves context beyond machine-readable specs.
-  recipe_file: experiments/goals/Level1-1/recipes/supermariobros_nes_level1_winning_recipe.md
-  # Runtime used for incumbent evidence; flags that old evidence may need runtime revalidation.
-  evidence_runtime: stable-retro-turbo==1.0.0.post16
-  # Incumbent status; explains whether the recipe is confirmed under the active contract.
-  status: incumbent recipe evidence; revalidate active launches under post21 runtime
-  # Mean stop step for successful historical evidence; summarizes sample efficiency.
-  mean_stop_step: 4372104
-  # Seeds that succeeded historically; records evidence breadth without implying current confirmation.
-  successful_seeds:
-  - 108
-  - 109
 # Default launch spec for this goal; queue tooling can use it as the current representative run.
 default_train_spec_file: experiments/goals/Level1-1/specs/b83-b55-post21-five-seed-l11-confirm.yaml
 # Historical context; keeps old results interpretable without changing the active success contract.

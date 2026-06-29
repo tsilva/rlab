@@ -1,0 +1,29 @@
+# Evidence schema version; lets the mutable evidence registry evolve independently from goal.yaml.
+schema_version: 1
+# Goal this evidence belongs to; must match the parent goal directory.
+goal_slug: Level1-2
+# Current baseline record id; null because this is teacher evidence, not a confirmed baseline.
+current_baseline_id: null
+# Baseline and candidate evidence records; mutable scoreboard state lives here, not in goal.yaml.
+baselines:
+# Historical single-seed teacher evidence; useful context but not a confirmed five-seed baseline.
+- baseline_id: b46-post14-seed60-teacher
+  # Status of this evidence record under the active goal contract.
+  status: needs_revalidation
+  # Recipe slug for the evidence; links to reusable hyperparameters.
+  recipe_slug: b46-b44-same-hparams-level1-2
+  # Human-readable teacher recipe file; preserves why this prior run mattered.
+  recipe_file: experiments/goals/Level1-2/recipes/supermariobros_nes_level1_2_teacher_recipe.md
+  # Runtime used for this evidence; flags that old evidence may need runtime revalidation.
+  evidence_runtime: stable-retro-turbo==1.0.0.post14-era recipe evidence
+  # Mean stop step; null because the current confirmation protocol has not produced one.
+  mean_stop_step: null
+  # Seeds that succeeded historically; records evidence breadth without implying current confirmation.
+  successful_seeds:
+  - 60
+  # W&B run id for the historical teacher; lets operators inspect raw metrics.
+  wandb_run_id: 5fpk7ki3
+  # W&B run name for the historical teacher; useful for search and report links.
+  wandb_run_name: b46_b44_level1_2_same_hparams_5m_stop100ep100_seed60_20260620_124408
+  # Operator note; captures the previous evidence wording without polluting the goal contract.
+  notes: single-seed teacher evidence; not a confirmed baseline; revalidate active launches under post21 runtime

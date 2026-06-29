@@ -55,20 +55,6 @@ seed_protocol:
 cap_policy:
   # Early stop definition; records the strict success stop used by Level1-4 train specs.
   early_stop_rule: Stop training once train/info/level_complete/rate/min/last > 0.99; this is the strict 100/100 source-attempt window for the single Level1-4 start state.
-# Current best known evidence for this goal.
-incumbent:
-  # Recipe slug for the incumbent; null means no confirmed recipe owns the goal yet.
-  recipe_slug: null
-  # Incumbent evidence file; null because no confirmed Level1-4 recipe has been promoted yet.
-  recipe_file: null
-  # Runtime used for incumbent evidence; null because there is no confirmed incumbent yet.
-  evidence_runtime: null
-  # Incumbent status; summarizes the latest near-miss and current confirmation candidate.
-  status: B250/B255 reached 100/100 on seeds 90, 92, and 93, but failed the full five-seed confirmation protocol because seed 91 peaked at 0.17 and seed 94 peaked at 0.98. B257 soft-update then reached 100/100 on screen seed 90 and is frozen for B261 confirmation on seeds 91-94.
-  # Mean stop step; null until confirmation produces successful seeds.
-  mean_stop_step: null
-  # Successful confirmed seeds; empty until a recipe satisfies this goal.
-  successful_seeds: []
 # Default launch spec for this goal; queue tooling can use it as the current representative run.
 default_train_spec_file: experiments/goals/Level1-4/specs/b261-b257-softupdate-four-seed-l14-confirm.yaml
 # Historical context; keeps old results interpretable without changing the active success contract.
@@ -80,5 +66,5 @@ historical_context:
 notes:
 - Use this file as the operator-facing current contract; goal-owned specs and recipe evidence live beside it under this goal directory.
 - Do not promote a policy from final checkpoint reward alone.
-- Prefer paired confirmation against the incumbent before declaring a new baseline.
+- Prefer paired confirmation against the current baseline before declaring a new baseline.
 - The installed SuperMarioBros-Nes-v0 state list was checked on 2026-06-28 and includes Level1-4.

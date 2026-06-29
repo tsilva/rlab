@@ -1,4 +1,8 @@
 schema_version: 1
+kind: train_experiment
+defaults:
+- ../../../recipes/mario/b87-mixed-l11l12-lowpress@_global_
+- _self_
 goal: Levels_2_d25102
 slug: b87-lowpress-l11l12-two-seed
 stage: screen
@@ -34,73 +38,3 @@ selection_gate:
   - max(train/info/level_complete/from/0-0/rate)
   - earlier_peak_step
   training_metrics: selection_high_watermark
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
-  states:
-  - Level1-1
-  - Level1-2
-  state_probs:
-  - 0.5
-  - 0.5
-  n_envs: 16
-  env_threads: 4
-  torch_num_threads: 1
-  n_steps: 512
-  batch_size: 512
-  n_epochs: 10
-  learning_rate: 0.00015
-  learning_rate_final: 0.0001
-  learning_rate_schedule_timesteps: 4000000
-  ent_coef: 0.01
-  ent_coef_final: 0.0003
-  ent_coef_schedule_timesteps: 2000000
-  gamma: 0.9
-  gae_lambda: 1.0
-  clip_range: 0.15
-  clip_range_vf: 0.2
-  target_kl: 0.16
-  vf_coef: 0.5
-  adam_eps: 1.0e-08
-  normalize_advantage: false
-  advantage_normalization: per-task
-  policy_net_arch: 64,64
-  value_net_arch: 512,512
-  reward_mode: score
-  terminal_reward: 50
-  death_penalty: 25
-  reward_scale: 10
-  score_progress_clipped: true
-  action_set: simple
-  frame_skip: 4
-  max_pool_frames: false
-  hud_crop_top: 32
-  max_episode_steps: 4500
-  completion_x_threshold: 0
-  info_events_json:
-    life_loss:
-    - lives
-    - decrease
-    level_change:
-    - - levelHi
-      - levelLo
-    - change
-  done_on_events: life_loss,level_change
-  task_conditioning: true
-  task_conditioning_info_vars:
-  - levelHi
-  - levelLo
-  task_conditioning_info_values:
-  - - 0
-    - 0
-  - - 0
-    - 1
-  - - 0
-    - 2
-  eval_freq: 0
-  eval_episodes: 0
-  checkpoint_freq: 500000
-  timesteps: 5000000
-  wandb: true
-  wandb_mode: online
-  wandb_artifact_storage_uri: ${CHECKPOINT_BUCKET_URI}

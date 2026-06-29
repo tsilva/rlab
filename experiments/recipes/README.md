@@ -22,6 +22,15 @@ Goal specs under `experiments/goals/<goal>/specs/` remain the launchable queue
 documents. A YAML spec may use Hydra `defaults` to compose recipe files, set goal-specific
 fields such as `environment.state`, `seeds`, `run_target`, and W&B naming, then
 use `overrides` for the small delta that defines the candidate.
+Queue-ready recipe fragments may also use `env`, `train`, `reward`, and
+`logging` sections; `rlab` merges those into the final `train_config` before
+validation. Prefer that shape when converting older specs that must preserve the
+exact runner-facing payload.
+
+Keep `experiments/goals/<goal>/goal.yaml` as the stable goal contract. Mutable
+scoreboard state such as current baselines, near-misses, revalidation status,
+and historical run evidence belongs in `experiments/goals/<goal>/evidence.yaml`
+by convention.
 
 At enqueue time, `rlab train --spec-file <path>.yaml` resolves every Hydra
 `defaults` entry, materializes the final `train_config`, validates the existing expanded

@@ -1,0 +1,24 @@
+# Evidence schema version; lets the mutable evidence registry evolve independently from goal.yaml.
+schema_version: 1
+# Goal this evidence belongs to; must match the parent goal directory.
+goal_slug: Levels_2_d25102
+# Current baseline record id; null because the best known evidence is a near-miss, not solved.
+current_baseline_id: null
+# Baseline and candidate evidence records; mutable scoreboard state lives here, not in goal.yaml.
+baselines:
+# Current near-miss record; useful comparison target but not a solved baseline.
+- baseline_id: b86-near-miss-s195
+  # Status of this evidence record under the active mixed-level discovery contract.
+  status: near_miss
+  # Recipe/spec slug for the near-miss; anchors comparisons to a concrete checked-in spec.
+  recipe_slug: b86-b74current-l11l12-latest-five-seed
+  # Spec file for the near-miss; lets operators reproduce or inspect the evidence.
+  recipe_file: experiments/goals/Levels_2_d25102/specs/b86-b74current-l11l12-latest-five-seed.yaml
+  # Best W&B run name; links the strongest single run to raw evidence.
+  best_run_name: b86_l11l12_b74current_s195_20260627T091726Z
+  # Best bottleneck peak; records the near-miss value for quick comparison.
+  best_peak_rate_min_last: 0.8
+  # Step of the best bottleneck peak; helps compare sample efficiency and instability.
+  best_peak_step: 4070256
+  # Operator note; captures why the record is not considered solved.
+  notes: one seed reached exactly 0.80, but no two-seed batch satisfied >0.80 on both seeds

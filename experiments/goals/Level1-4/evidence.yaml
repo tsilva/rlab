@@ -1,0 +1,12 @@
+# Evidence schema version; lets the mutable evidence registry evolve independently from goal.yaml.
+schema_version: 1
+# Goal this evidence belongs to; must match the parent goal directory.
+goal_slug: Level1-4
+# Current baseline record id; null because no confirmed Level1-4 recipe has been promoted yet.
+current_baseline_id: null
+# Baseline and candidate evidence records; empty until a candidate satisfies the active contract.
+baselines: []
+# Operator notes for mutable evidence state; keeps near-miss/current-candidate state out of the contract.
+notes:
+- B250/B255 reached 100/100 on seeds 90, 92, and 93, but failed the full five-seed confirmation protocol because seed 91 peaked at 0.17 and seed 94 peaked at 0.98.
+- B257 soft-update then reached 100/100 on screen seed 90 and is frozen for B261 confirmation on seeds 91-94.

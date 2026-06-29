@@ -1,0 +1,11 @@
+# Evidence schema version; lets the mutable evidence registry evolve independently from goal.yaml.
+schema_version: 1
+# Goal this evidence belongs to; must match the parent goal directory.
+goal_slug: Level1-3
+# Current baseline record id; null because no confirmed recipe owns this goal yet.
+current_baseline_id: null
+# Baseline and candidate evidence records; empty until a candidate satisfies the active contract.
+baselines: []
+# Operator notes for mutable evidence state; keeps "no baseline yet" out of the contract.
+notes:
+- No confirmed baseline yet; use the current Level1-1 and Level1-2 100/100 goal contracts as the metric and promotion templates.

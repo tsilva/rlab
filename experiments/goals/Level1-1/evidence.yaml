@@ -1,0 +1,26 @@
+# Evidence schema version; lets the mutable evidence registry evolve independently from goal.yaml.
+schema_version: 1
+# Goal this evidence belongs to; must match the parent goal directory.
+goal_slug: Level1-1
+# Current baseline record id; points tools and operators at the active evidence entry.
+current_baseline_id: b55-post16-seeds108-109
+# Baseline and candidate evidence records; mutable scoreboard state lives here, not in goal.yaml.
+baselines:
+# Historical B55 evidence; needs revalidation because it predates the active post21 runtime.
+- baseline_id: b55-post16-seeds108-109
+  # Status of this evidence record under the active goal contract.
+  status: needs_revalidation
+  # Recipe slug for the evidence; links to reusable hyperparameters.
+  recipe_slug: b55-lowkl-lrdecay
+  # Human-readable recipe evidence file; preserves context beyond machine-readable specs.
+  recipe_file: experiments/goals/Level1-1/recipes/supermariobros_nes_level1_winning_recipe.md
+  # Runtime used for this evidence; flags that old evidence may need runtime revalidation.
+  evidence_runtime: stable-retro-turbo==1.0.0.post16
+  # Mean stop step for successful historical evidence; summarizes sample efficiency.
+  mean_stop_step: 4372104
+  # Seeds that succeeded historically; records evidence breadth without implying current confirmation.
+  successful_seeds:
+  - 108
+  - 109
+  # Operator note; captures the previous baseline wording without polluting the goal contract.
+  notes: baseline recipe evidence; revalidate active launches under post21 runtime

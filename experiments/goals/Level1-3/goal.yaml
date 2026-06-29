@@ -55,20 +55,6 @@ seed_protocol:
 cap_policy:
   # Early stop definition; records the strict success stop used by Level1-3 train specs.
   early_stop_rule: Stop training once train/info/level_complete/rate/min/last > 0.99; this is the strict 100/100 source-attempt window for the single Level1-3 start state.
-# Current best known evidence for this goal.
-incumbent:
-  # Recipe slug for the incumbent; null means no confirmed recipe owns the goal yet.
-  recipe_slug: null
-  # Incumbent evidence file; null because there is no confirmed incumbent recipe yet.
-  recipe_file: null
-  # Runtime used for incumbent evidence; null because there is no confirmed incumbent yet.
-  evidence_runtime: null
-  # Incumbent status; tells operators to use earlier level contracts as templates, not evidence.
-  status: no confirmed incumbent yet; use the current Level1-1 and Level1-2 100/100 goal contracts as the metric and promotion templates
-  # Mean stop step; null until confirmation produces successful seeds.
-  mean_stop_step: null
-  # Successful confirmed seeds; empty until a recipe satisfies this goal.
-  successful_seeds: []
 # Default launch spec for this goal; queue tooling can use it as the current representative run.
 default_train_spec_file: experiments/goals/Level1-3/specs/b117-b55post21-l13-screen.yaml
 # Historical context; keeps old results interpretable without changing the active success contract.

@@ -44,8 +44,8 @@ cap_policy:
 search_protocol:
   # Screening rule; explains when a candidate deserves more seeds.
   screen: Run screen seeds first. Reject obvious negatives. Advance candidates that reach the success window, materially improve fixed-budget completion metrics, or look promising enough to justify confirmation.
-  # Confirmation rule; defines the evidence needed before replacing an incumbent.
-  confirm: Promote only if success count is at least as good as the incumbent, median time_to_100_of_100 is better, there is no severe reliability regression, and all runs either stop by the success window or reach the cap.
+  # Confirmation rule; defines the evidence needed before replacing the current baseline.
+  confirm: Promote only if success count is at least as good as the current baseline, median time_to_100_of_100 is better, there is no severe reliability regression, and all runs either stop by the success window or reach the cap.
   # Baseline definition; prevents lucky single runs from being treated as solved recipes.
   baseline_definition: A baseline is the best confirmed config, not the best single run. Single lucky runs generate hypotheses; they do not replace the baseline.
 # Execution overlay for single-level searches.
@@ -68,4 +68,4 @@ batch_record_fields:
 notes:
 - Use this file as the operator-facing current contract; goal-owned specs and recipe evidence live beside it under this goal directory.
 - Do not promote a policy from final checkpoint reward alone.
-- Prefer paired confirmation against the incumbent before declaring a new baseline.
+- Prefer paired confirmation against the current baseline before declaring a new baseline.
