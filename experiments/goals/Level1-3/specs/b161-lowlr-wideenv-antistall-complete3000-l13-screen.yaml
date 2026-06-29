@@ -30,12 +30,8 @@ run_name_template: b161_l13_lowlr_wideenv_antistall_complete3000_s{seed}_{utc}
 run_description_template: Single-seed Beast3 screen for Level1-3 100/100, seed {seed}; B158 zero-clear survival-attractor backfill using n_envs=32, n_steps=1024, batch_size=2048, LR 7e-5->4e-5, gamma=0.995, gae_lambda=0.98, ent_coef=0.12->0.02, normalize_advantage=true, clip_range=0.12, target_kl=0.12, progress_reward_cap=5, progress_reward_scale=0.005, death_penalty=1, completion_reward=3000, and time_penalty=0.003 to discourage waiting while preserving broad high-entropy exploration. Primary metric is peak train/info/level_complete/rate/min/last; stop early when train/info/level_complete/rate/min/last > 0.99.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: For this single-source Level1-3 screen, the primary metric should match train/info/level_complete/from/0-2/rate once the rolling source window is full; out-of-process eval remains required before promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
-  - eval/done/level_change/from/Level1-3/rate
-  - eval/progress/x/max
-  - eval/reward/mean
   training_metrics: primary_optimization_signal
 train_config:
   game: SuperMarioBros-Nes-v0

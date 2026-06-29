@@ -10,12 +10,8 @@ goal_slug: Levels_2_d25102
 title: SuperMarioBros-NES Level1-1/Level1-2 mixed-policy high-watermark recipe search
 # Last intentional contract update date; distinguishes current goal text from stale history.
 updated_at: '2026-06-27'
-# Repo path for goal-owned specs and evidence; validators use it to catch moved or mismatched files.
-goal_dir: experiments/goals/Levels_2_d25102
-# Objective fields unique to this mixed-source discovery goal.
+# Objective thresholds unique to this mixed-source discovery goal.
 objective:
-  # Metric semantics note; explains why the min rate, not pooled mean, is the main signal.
-  primary_metric_note: Primary metric to maximize during training. It is the bottleneck across the latest available per-source rolling clear rates; use train/info/level_complete/rate/mean/last only as a companion signal or tiebreaker.
   # Balance guard threshold; requires both source levels to stay useful rather than optimizing only one.
   balance_guard_threshold: 0.8
   # Balance guard comparison; strict greater-than avoids treating exactly 0.80 as solved.
@@ -28,8 +24,6 @@ objective:
   success_window_attempts: 100
   # Full success definition; records that both seeds in a batch must exceed the bottleneck target.
   success_requirement: Maximize peak train/info/level_complete/rate/min/last. A balanced success requires both seeds in the same batch to each reach that bottleneck metric strictly greater than 0.80 within the 5M-step cap.
-  # Attempt denominator note; maps each mixed source state to its metric namespace.
-  attempt_denominator: Per-source rolling 100-attempt windows from train/info/level_complete/from/<prev>/rate. Level1-1 maps to 0-0 and Level1-2 maps to 0-1.
   # Stop rules that are explicitly disallowed; protects against premature or misleading success calls.
   forbidden_stop_rules:
   - Do not early-stop on the first high-watermark crossing; later collapse and recovery can both happen.
@@ -88,8 +82,6 @@ seed_protocol:
     - 205
   - - 206
     - 207
-  # Seed interpretation note; avoids claiming bitwise reproducibility from CUDA training.
-  same_seed_note: Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA.
 # Budget policy for the discovery search.
 cap_policy:
   # Active training budget; every candidate trains to this cap because high-watermarks can recover late.
@@ -106,8 +98,6 @@ search_protocol:
   iterate: 'Change legal recipe levers in small interpretable steps: PPO update pressure, state sampling weights, entropy schedule, value/reward scaling, and true completion reward.'
   # Success rule; requires checked-in specs and raw W&B history, not only summaries.
   success: Declare the goal satisfied only when the same checked-in spec produces two completed runs whose sampled or raw W&B history proves peak train/info/level_complete/rate/min/last > 0.80 for both seeds.
-# Default launch spec for this goal; queue tooling can use it as the current representative run.
-default_train_spec_file: experiments/goals/Levels_2_d25102/specs/b87-lowpress-l11l12-two-seed.yaml
 # Execution overlay for this discovery search.
 execution:
   # Backfill rule; keeps the queue productive while recipe batches still have decision value.

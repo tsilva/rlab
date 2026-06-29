@@ -29,7 +29,6 @@ run_name_template: b86_l11l12_b74current_s{seed}_{utc}
 run_description_template: Five-seed Beast3 profileless B74/B84-style SuperMarioBros-NES Level1-1/Level1-2 50/50 task-conditioned PPO on the latest digest-backed train image, seed {seed}; balanced objective is min per-level completion.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
   - train/info/level_complete/from/0-0/rate

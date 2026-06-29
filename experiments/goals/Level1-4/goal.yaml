@@ -10,14 +10,6 @@ goal_slug: Level1-4
 title: Sample-efficient SuperMarioBros-NES World 1-4 completion
 # Last intentional contract update date; distinguishes current goal text from stale history.
 updated_at: '2026-06-29'
-# Repo path for goal-owned specs and evidence; validators use it to catch moved or mismatched files.
-goal_dir: experiments/goals/Level1-4
-# Goal-specific objective notes; shared numeric thresholds come from the base contract.
-objective:
-  # Metric semantics note; explains the exact per-source metric expected for this single start state.
-  primary_metric_note: Primary metric to maximize during training. For this single-source World 1-4 goal it should match train/info/level_complete/from/0-3/rate once the source window is full; out-of-process eval remains the promotion check.
-  # Attempt denominator note; prevents confusing terminal episodes with source-level attempts.
-  attempt_denominator: Source-level Level1-4 attempts. In terminal-on-level-change runs this is equivalent to completed terminal episodes; in continued multi-level runs it also counts non-terminal natural level transitions.
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
   # State sampling definition; fixes the start state that attempts are counted from.
@@ -28,15 +20,10 @@ environment:
 environment_hash: sha256:a88196dbad0d030cee1b847dd5ecc99e36e6d15fdd527224e28b7aeec622fcc3
 # Goal-specific candidate ranking policy.
 selection_policy:
-  # Ordered ranking metrics; primary bottleneck completion comes first, eval diagnostics follow.
+  # Ordered ranking metrics; primary bottleneck completion comes first, training diagnostics follow.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
-  - eval/done/level_change/from_rate/min
-  - eval/done/level_change/from/Level1-4/rate
-  - eval/done/level_change/rate
-  - eval/progress/x/max
-  - eval/reward/mean
 # Seed protocol; fixes screening and confirmation randomness labels for comparable evidence.
 seed_protocol:
   # First seed used to screen candidate recipes cheaply before confirmation.
@@ -49,14 +36,10 @@ seed_protocol:
   - 92
   - 93
   - 94
-  # Seed interpretation note; avoids claiming bitwise reproducibility from CUDA training.
-  same_seed_note: Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA.
 # Goal-specific budget and stopping policy.
 cap_policy:
   # Early stop definition; records the strict success stop used by Level1-4 train specs.
   early_stop_rule: Stop training once train/info/level_complete/rate/min/last > 0.99; this is the strict 100/100 source-attempt window for the single Level1-4 start state.
-# Default launch spec for this goal; queue tooling can use it as the current representative run.
-default_train_spec_file: experiments/goals/Level1-4/specs/b261-b257-softupdate-four-seed-l14-confirm.yaml
 # Historical context; keeps old results interpretable without changing the active success contract.
 historical_context:
 - This goal uses the same 100/100 rolling source-attempt success criterion as the single-level Level1-1, Level1-2, and Level1-3 goals.

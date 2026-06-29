@@ -27,12 +27,8 @@ run_name_template: b146_l13_lowlr_gamma995_highentropy_complete300_s{seed}_{utc}
 run_description_template: Single-seed Beast3 screen for Level1-3 100/100, seed {seed}; B141 zero-clear plateau backfill using lower LR 7e-5->4e-5, n_steps=2048, gamma=0.995, gae_lambda=0.97, ent_coef=0.03->0.005, normalize_advantage=true, progress_reward_scale=0.10, death_penalty=10, completion_reward=300, and score_progress_clipped=true to improve delayed jump credit and early exploration without changing the Level1-3 environment contract. Primary metric is peak train/info/level_complete/rate/min/last; stop early when train/info/level_complete/rate/min/last > 0.99.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: For this single-source Level1-3 screen, the primary metric should match train/info/level_complete/from/0-2/rate once the rolling source window is full; out-of-process eval remains required before promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
-  - eval/done/level_change/from/Level1-3/rate
-  - eval/progress/x/max
-  - eval/reward/mean
   training_metrics: primary_optimization_signal
 train_config:
   game: SuperMarioBros-Nes-v0

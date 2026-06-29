@@ -32,7 +32,6 @@ run_name_template: b116_l11l12_b93repro_s{seed}_{utc}
 run_description_template: Five-seed Beast3 confirmation/repro batch for the B93 Level1-1/Level1-2 mixed PPO recipe, seed {seed}; same slow entropy, 40/60 Level1-1/Level1-2 sampling, target_kl=0.20, clip_range=0.15, and no completion reward. Judge by peak train/info/level_complete/rate/min/last, with train/info/level_complete/rate/mean/last as a companion signal within 5M steps, not final value or early stopping.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   threshold: 0.8
   threshold_operator: '>'
   tie_breakers:

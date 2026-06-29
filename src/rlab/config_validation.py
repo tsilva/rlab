@@ -281,15 +281,10 @@ def _validate_goal_contract_document(
     goal_slug = _require_non_empty_string(document, "goal_slug", label=label)
     _require_non_empty_string(document, "title", label=label)
     _require_non_empty_string(document, "status", label=label)
-    goal_dir = _require_non_empty_string(document, "goal_dir", label=label)
-    resolved_goal_dir = _resolve_repo_path(repo_root, goal_dir).resolve()
-    if not resolved_goal_dir.is_dir():
-        raise ValueError(f"{_label_path(label, 'goal_dir')} does not exist: {goal_dir}")
-    if resolved_goal_dir != path.parent:
-        raise ValueError(f"{_label_path(label, 'goal_dir')} must match goal file directory: {goal_dir}")
-    if resolved_goal_dir.name != goal_slug:
+    goal_dir = path.parent
+    if goal_dir.name != goal_slug:
         raise ValueError(
-            f"{_label_path(label, 'goal_slug')} must match goal directory name: {resolved_goal_dir.name}"
+            f"{_label_path(label, 'goal_slug')} must match goal directory name: {goal_dir.name}"
         )
 
     objective = _require_mapping(_require_key(document, "objective", label=label), label=f"{label}.objective")
@@ -364,11 +359,6 @@ def _validate_goal_contract_document(
     if "confirm" in seed_protocol:
         for index, seed in enumerate(_require_int_list(seed_protocol, "confirm", label=f"{label}.seed_protocol")):
             validate_training_seed(seed, label=f"{label}.seed_protocol.confirm[{index}]", seed_span=1)
-
-    spec_path = _require_existing_file(repo_root, document, "default_train_spec_file", label=label)
-    if spec_path.suffix.lower() not in YAML_EXTENSIONS:
-        raise ValueError(f"{_label_path(label, 'default_train_spec_file')} must be YAML")
-    load_spec_document(spec_path)
 
     capacity_path = _require_existing_file(repo_root, document, "capacity_policy_file", label=label)
     if capacity_path.suffix.lower() not in YAML_EXTENSIONS:

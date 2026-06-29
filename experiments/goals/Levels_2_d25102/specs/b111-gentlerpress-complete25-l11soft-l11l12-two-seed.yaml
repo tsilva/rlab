@@ -27,7 +27,6 @@ run_name_template: b111_l11l12_gentlerpress_complete25_l11soft_s{seed}_{utc}
 run_description_template: Two-seed Beast3 search batch for Level1-1/Level1-2 mixed PPO high-watermark, seed {seed}; combines B91 completion_reward=25 with B109 gentler PPO updates and 55/45 Level1-1/Level1-2 sampling to counter B110's early Level1-1 bottleneck, primary optimization metric is peak train/info/level_complete/rate/min/last; train/info/level_complete/rate/mean/last is a companion signal.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   threshold: 0.8
   threshold_operator: '>'
   tie_breakers:

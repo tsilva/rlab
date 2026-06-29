@@ -10,14 +10,6 @@ goal_slug: Level1-1
 title: Sample-efficient SuperMarioBros-NES Level1-1 completion
 # Last intentional contract update date; distinguishes current goal text from stale history.
 updated_at: '2026-06-27'
-# Repo path for goal-owned specs and evidence; validators use it to catch moved or mismatched files.
-goal_dir: experiments/goals/Level1-1
-# Goal-specific objective notes; shared numeric thresholds come from the base contract.
-objective:
-  # Metric semantics note; explains the exact per-source metric expected for this single start state.
-  primary_metric_note: Primary metric to maximize during training. For this single-source Level1-1 goal it should match train/info/level_complete/from/0-0/rate once the source window is full; out-of-process eval remains the promotion check.
-  # Attempt denominator note; prevents confusing terminal episodes with source-level attempts.
-  attempt_denominator: Source-level Level1-1 attempts. In terminal-on-level-change runs this is equivalent to completed terminal episodes; in continued multi-level runs it also counts non-terminal natural level transitions.
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
   # State sampling definition; fixes the start state that attempts are counted from.
@@ -28,15 +20,11 @@ environment:
 environment_hash: sha256:ce3af6d41b4ef1c0d953f1c5edcb1734c2846208b16cfada98a22ccefa46764f
 # Goal-specific candidate ranking policy.
 selection_policy:
-  # Ordered ranking metrics; primary bottleneck completion comes first, diagnostics follow as tiebreakers.
+  # Ordered ranking metrics; primary bottleneck completion comes first, training diagnostics follow as tiebreakers.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
   - max(rollout/ep_rew_mean)
-  - eval/done/level_change/from_rate/min
-  - eval/done/level_change/rate
-  - eval/progress/x/max
-  - eval/reward/mean
 # Seed protocol; fixes screening and confirmation randomness labels for comparable evidence.
 seed_protocol:
   # First seed used to screen candidate recipes cheaply before confirmation.
@@ -49,10 +37,6 @@ seed_protocol:
   - 25
   - 26
   - 27
-  # Seed interpretation note; avoids claiming bitwise reproducibility from CUDA training.
-  same_seed_note: Same seed is a controlled randomization label, not bitwise reproducibility under default CUDA.
-# Default launch spec for this goal; queue tooling can use it as the current representative run.
-default_train_spec_file: experiments/goals/Level1-1/specs/b83-b55-post21-five-seed-l11-confirm.yaml
 # Historical context; keeps old results interpretable without changing the active success contract.
 historical_context:
 - The old 80/100 completed-episode target is retired. It helped find promising shapes but is not the current success criterion.

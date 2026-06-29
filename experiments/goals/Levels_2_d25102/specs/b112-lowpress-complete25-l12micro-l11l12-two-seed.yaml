@@ -27,7 +27,6 @@ run_name_template: b112_l11l12_lowpress_complete25_l12micro_s{seed}_{utc}
 run_description_template: Two-seed Beast3 search batch for Level1-1/Level1-2 mixed PPO high-watermark, seed {seed}; preserves B91 target_kl=0.16, clip_range=0.15, and completion_reward=25, with only a 48/52 Level1-1/Level1-2 sampling nudge to lift the B91 Level1-2 bottleneck. Primary optimization metric is peak train/info/level_complete/rate/min/last; train/info/level_complete/rate/mean/last is a companion signal.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   threshold: 0.8
   threshold_operator: '>'
   tie_breakers:

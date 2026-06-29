@@ -23,11 +23,8 @@ run_name_template: b82_l11_b55post21_s{seed}_{utc}
 run_description_template: Post21 revalidation of the B55 low-KL late-decay Level1-1 recipe, confirm seed {seed}.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
-  - eval/progress/x/max
-  - eval/reward/mean
   training_metrics: diagnostic_only
 train_config:
   game: SuperMarioBros-Nes-v0

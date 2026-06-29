@@ -29,7 +29,6 @@ run_name_template: b102_l11l12_lowpress_complete25_slowent_l12soft_s{seed}_{utc}
 run_description_template: Two-seed Beast3 search batch for Level1-1/Level1-2 mixed PPO high-watermark, seed {seed}; combines completion_reward=25, target_kl=0.16 plus late LR decay, slower entropy decay with a higher floor, and 45/55 Level1-1/Level1-2 sampling to reduce B89-style Level1-2 collapse, primary optimization metric is peak train/info/level_complete/rate/min/last; train/info/level_complete/rate/mean/last is a companion signal.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: Primary metric to maximize; use train/info/level_complete/rate/mean/last as a companion signal and external eval for promotion.
   threshold: 0.8
   threshold_operator: '>'
   tie_breakers:

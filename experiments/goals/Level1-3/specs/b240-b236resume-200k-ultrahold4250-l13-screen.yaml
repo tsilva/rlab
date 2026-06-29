@@ -31,12 +31,8 @@ run_name_template: b240_l13_b236resume_200k_ultrahold4250_s{seed}_{utc}
 run_description_template: Single-seed Beast3 checkpoint fork for Level1-3 100/100, seed {seed}; resumes B236 step-200000, equivalent to about 4.8M total B166+B178+B191+B236 steps, leaving 200k under the 5M cap. Keeps completion_reward=4250 and long-credit PPO, but lowers LR/entropy/clip/KL to preserve the new 0.14 high-window. Primary metric is peak train/info/level_complete/rate/min/last.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: For this single-source Level1-3 screen, the primary metric should match train/info/level_complete/from/0-2/rate once the rolling source window is full; out-of-process eval remains required before promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
-  - eval/done/level_change/from/Level1-3/rate
-  - eval/progress/x/max
-  - eval/reward/mean
   training_metrics: primary_optimization_signal
 train_config:
   resume: /root/rlab/runs/b236_l13_b191resume_200k_longcredit4250_s80_20260628T201807Z/checkpoints/ppo_supermariobros-nes-v0_200000_steps

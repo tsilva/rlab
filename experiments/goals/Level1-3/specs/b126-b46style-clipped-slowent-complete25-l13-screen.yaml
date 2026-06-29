@@ -28,12 +28,8 @@ run_name_template: b126_l13_b46style_clipped_slowent_complete25_s{seed}_{utc}
 run_description_template: Single-seed Beast3 screen for Level1-3 100/100, seed {seed}; B46-style fixed-LR target_kl=0.20 recipe with score_progress_clipped=true, slower entropy decay to ent_coef_final=0.001, and clean completion_reward=25. Primary metric is peak train/info/level_complete/rate/min/last, matching train/info/level_complete/from/0-2/rate once the source window is full; stop early when train/info/level_complete/rate/min/last > 0.99.
 selection_gate:
   primary: max(train/info/level_complete/rate/min/last)
-  primary_metric_note: For this single-source Level1-3 screen, the primary metric should match train/info/level_complete/from/0-2/rate once the rolling source window is full; out-of-process eval remains required before promotion.
   tie_breakers:
   - max(train/info/level_complete/rate/mean/last)
-  - eval/done/level_change/from/Level1-3/rate
-  - eval/progress/x/max
-  - eval/reward/mean
   training_metrics: primary_optimization_signal
 train_config:
   game: SuperMarioBros-Nes-v0

@@ -27,7 +27,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["goals"], 5)
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)
 
-    def test_goal_validator_reports_missing_default_spec(self) -> None:
+    def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
@@ -46,7 +46,6 @@ schema_version: 1
 goal_slug: bad
 title: Bad Goal
 status: draft
-goal_dir: experiments/goals/bad
 objective:
   game: SuperMarioBros-Nes-v0
   states: [Level1-1]
@@ -87,7 +86,6 @@ selection_policy:
 seed_protocol:
   screen: [23]
   confirm: [23]
-default_train_spec_file: experiments/goals/bad/specs/missing.yaml
 capacity_policy_file: experiments/policies/capacity_policy.yaml
 execution:
   hardware_config_file: experiments/instances.yaml
@@ -96,8 +94,7 @@ execution:
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "default_train_spec_file.*does not exist"):
-                validate_goal_contract(goal_path, root)
+            validate_goal_contract(goal_path, root)
 
     def test_goal_validator_requires_slug_to_match_goal_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,7 +108,6 @@ schema_version: 1
 goal_slug: stale-short-name
 title: Bad Goal
 status: draft
-goal_dir: experiments/goals/real-goal
 objective: {}
 selection_policy: {}
 seed_protocol: {}
@@ -134,44 +130,13 @@ seed_protocol: {}
                 "schema_version: 1\nlanes: []\n",
                 encoding="utf-8",
             )
-            spec_dir = goal_dir / "specs"
-            spec_dir.mkdir()
-            spec_path = spec_dir / "candidate.yaml"
-            spec_path.write_text(
-                """
-schema_version: 1
-goal: bad
-slug: candidate
-stage: screen
-hypothesis: Candidate should reproduce the expected completion signal.
-expected_signal: Rank by completion rate, then reward.
-parent_spec_slug: null
-priority: 7
-seeds: [23]
-run_target: rtx4090
-wandb_group: b-test
-wandb_tags: [mario]
-run_name_template: btest_s{seed}_{utc}
-run_description_template: candidate seed {seed}
-selection_gate:
-  primary: train/completion_episode_rate
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
-  timesteps: 1024
-  wandb: true
-  wandb_mode: online
-""",
-                encoding="utf-8",
-            )
             goal_path = goal_dir / "goal.yaml"
             goal_path.write_text(
-                f"""
+                """
 schema_version: 1
 goal_slug: bad
 title: Bad Goal
 status: draft
-goal_dir: experiments/goals/bad
 objective:
   game: SuperMarioBros-Nes-v0
   states: [Level1-1]
@@ -198,7 +163,6 @@ selection_policy:
   rank_order: [train/info/level_complete/rate/min/last]
 seed_protocol:
   screen: [23]
-default_train_spec_file: {spec_path.relative_to(root)}
 capacity_policy_file: experiments/policies/capacity_policy.yaml
 execution:
   hardware_config_file: experiments/instances.yaml
@@ -251,6 +215,7 @@ execution:
         document = json.loads(stdout.getvalue())
         self.assertNotIn("extends", document)
         self.assertEqual(document["goal_slug"], "Level1-3")
+        self.assertNotIn("goal_dir", document)
         self.assertEqual(document["environment"]["env_id"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["execution"]["primary_train_target"], "rtx4090")
 
