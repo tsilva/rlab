@@ -28,7 +28,7 @@ from rlab.device import resolve_sb3_device
 from rlab.env import EnvConfig, resolve_env_config
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.json_utils import json_safe
-from rlab.seeds import DEFAULT_EVAL_SEED
+from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
@@ -36,6 +36,7 @@ def normalize_eval_config(job: dict[str, Any]) -> dict[str, Any]:
     config = dict(job.get("eval_config") or {})
     config.setdefault("episodes", 100)
     config.setdefault("seed", DEFAULT_EVAL_SEED)
+    config["seed"] = validate_eval_seed(config["seed"], label="eval_config.seed")
     config.setdefault("n_envs", 20)
     config.setdefault("max_steps", 4500)
     config.setdefault("stochastic", True)

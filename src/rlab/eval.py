@@ -63,7 +63,7 @@ from rlab.model_sources import (
     slug,
     split_project,
 )
-from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START
+from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 from rlab.wandb_utils import load_wandb_env
 
 
@@ -109,7 +109,7 @@ def best_metrics(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def eval_seed_for_checkpoint(args: argparse.Namespace) -> int:
-    return args.seed
+    return validate_eval_seed(args.seed)
 
 
 def default_eval_n_envs() -> int:
@@ -513,6 +513,7 @@ def main(argv: list[str] | None = None) -> None:
     parser_defaults = vars(parser.parse_args([]))
     explicit_dests = explicit_source_arg_dests(parser, argv_list)
     args = parser.parse_args(argv_list)
+    args.seed = validate_eval_seed(args.seed)
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
     if args.record_best_video:

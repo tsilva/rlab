@@ -27,7 +27,7 @@ from rlab.runtime_refs import (
     normalize_runtime_image_ref,
     runtime_image_ref_from_file,
 )
-from rlab.seeds import validate_training_seed
+from rlab.seeds import validate_eval_seed, validate_training_seed
 from rlab.spec_schema import validate_train_spec_schema
 
 
@@ -825,6 +825,8 @@ def enqueue_eval_job(
         raise ValueError("goal_slug is required")
     config = dict(eval_config)
     assert_no_secrets(config, label="eval_config")
+    if _non_empty_config_value(config.get("seed")):
+        validate_eval_seed(config["seed"], label="eval_config.seed")
     with conn:
         with conn.cursor() as cur:
             cur.execute(

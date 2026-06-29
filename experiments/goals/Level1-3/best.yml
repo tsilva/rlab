@@ -1,0 +1,31 @@
+schema_version: 1
+goal_slug: Level1-3
+updated_at: '2026-06-29'
+source_of_truth: wandb
+selection_metric: train/info/level_complete/rate/min/last
+best:
+  id: b236-longcredit4250
+  status: discovery_high_water
+  stage: screen
+  recipe_slug: b236-b191resume-200k-longcredit4250-l13-screen
+  spec: experiments/goals/Level1-3/specs/b236-b191resume-200k-longcredit4250-l13-screen.yaml
+  parent_spec: experiments/goals/Level1-3/specs/b230-b191resume-200k-longcredit4500-l13-screen.yaml
+  summary:
+    decision: B236 is the current checked-in Level1-3 training high-water mark, but it is far below the strict 100/100 stop window and is discovery evidence only.
+    promotion_state: Not promotion-ready; no out-of-process eval launched for this lead.
+  metrics:
+    peak_min_rate: 0.14
+    peak_context: about 198k continuation steps
+    final_min_rate: 0.04
+    max_clean_count: 72
+  runs:
+  - seed: 80
+    wandb_run_id: zqn92qou
+    wandb_run_name: b236_l13_b191resume_200k_longcredit4250_s80_20260628T193715Z
+    checkpoint_ref: tsilva/SuperMarioBros-NES/b236_l13_b191resume_200k_longcredit4250_s80_20260628T193715Z-checkpoint:step-200000
+    metrics:
+      peak_min_rate: 0.14
+      final_min_rate: 0.04
+      max_clean_count: 72
+  notes:
+  - B242 repeat 9fw8vg5z reproduced the 0.14 high-water before the goal was paused, but it failed or stopped after partial progress; keep B236 as the current clean best entry.

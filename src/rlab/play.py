@@ -38,7 +38,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
     single_model_artifact_ref,
 )
-from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START
+from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 
 
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
@@ -429,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_EVAL_SEED,
         help=(
             "Base playback seed. The default lives in the eval/play-reserved seed "
-            f"range >= {EVAL_SEED_START}; override only for explicit comparison reruns."
+            f"range >= {EVAL_SEED_START}; overrides must stay in that range."
         ),
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
@@ -472,6 +472,7 @@ def main(argv: list[str] | None = None) -> None:
     parser_defaults = vars(parser.parse_args([]))
     explicit_dests = explicit_arg_dests(parser, argv_list)
     args = parser.parse_args(argv_list)
+    args.seed = validate_eval_seed(args.seed)
     ref = single_model_artifact_ref(args)
     if ref is not None:
         print(f"Downloading {ref}", flush=True)
@@ -595,7 +596,7 @@ def main(argv: list[str] | None = None) -> None:
         episode_iter = count() if args.episodes <= 0 else range(args.episodes)
         for episode in episode_iter:
             episode_seed = (
-                int(seed_rng.integers(0, np.iinfo(np.int32).max))
+                int(seed_rng.integers(EVAL_SEED_START, np.iinfo(np.int32).max))
                 if seed_rng is not None
                 else args.seed + episode
             )

@@ -42,8 +42,8 @@ cap_policy:
   increase_rule: Do not increase the cap unless the goal changes or an infrastructure bug invalidates the baseline.
 # Search protocol describes how to move from experiments to a baseline.
 search_protocol:
-  # Screening rule; explains when a candidate deserves more seeds.
-  screen: Run screen seeds first. Reject obvious negatives. Advance candidates that reach the success window, materially improve fixed-budget completion metrics, or look promising enough to justify confirmation.
+  # Screening rule; explains when a candidate deserves more runs.
+  screen: Run screen jobs first. Reject obvious negatives. Advance candidates that reach the success window, materially improve fixed-budget completion metrics, or look promising enough to justify confirmation.
   # Confirmation rule; defines the evidence needed before replacing the current baseline.
   confirm: Promote only if success count is at least as good as the current baseline, median time_to_100_of_100 is better, there is no severe reliability regression, and all runs either stop by the success window or reach the cap.
   # Baseline definition; prevents lucky single runs from being treated as solved recipes.

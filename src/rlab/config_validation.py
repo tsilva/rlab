@@ -16,7 +16,6 @@ from rlab.config_loader import YAML_EXTENSIONS, load_composed_mapping, load_mapp
 from rlab.env_identity import environment_hash, environment_identity_from_train_config
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_spec_document
-from rlab.seeds import validate_training_seed
 
 
 GOAL_SCHEMA_VERSION = 1
@@ -133,33 +132,6 @@ def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -
         if not isinstance(item, str) or not item.strip():
             raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-empty string")
         result.append(item.strip())
-    return result
-
-
-def _require_int_list(document: Mapping[str, Any], key: str, *, label: str) -> list[int]:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{_label_path(label, key)} must be a list")
-    if not value:
-        raise ValueError(f"{_label_path(label, key)} must not be empty")
-    result: list[int] = []
-    for index, item in enumerate(value):
-        if not _is_int(item):
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be an integer")
-        result.append(item)
-    return result
-
-
-def _require_int_list_value(value: Any, *, label: str) -> list[int]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{label} must be a list")
-    if not value:
-        raise ValueError(f"{label} must not be empty")
-    result: list[int] = []
-    for index, item in enumerate(value):
-        if not _is_int(item):
-            raise ValueError(f"{label}[{index}] must be an integer")
-        result.append(item)
     return result
 
 
@@ -321,44 +293,6 @@ def _validate_goal_contract_document(
         label=f"{label}.selection_policy",
     )
     _require_string_list(selection_policy, "rank_order", label=f"{label}.selection_policy")
-
-    seed_protocol = _require_mapping(
-        _require_key(document, "seed_protocol", label=label),
-        label=f"{label}.seed_protocol",
-    )
-    has_screen = "screen" in seed_protocol
-    has_screen_pairs = "screen_pairs" in seed_protocol
-    if not has_screen and not has_screen_pairs:
-        raise ValueError(f"{label}.seed_protocol must define screen or screen_pairs")
-    if has_screen:
-        for index, seed in enumerate(_require_int_list(seed_protocol, "screen", label=f"{label}.seed_protocol")):
-            validate_training_seed(seed, label=f"{label}.seed_protocol.screen[{index}]", seed_span=1)
-    if has_screen_pairs:
-        raw_pairs = _require_key(seed_protocol, "screen_pairs", label=f"{label}.seed_protocol")
-        if not isinstance(raw_pairs, Sequence) or isinstance(raw_pairs, str | bytes) or not raw_pairs:
-            raise ValueError(f"{label}.seed_protocol.screen_pairs must be a non-empty list")
-        expected_pair_size = seed_protocol.get("screen_batch_size")
-        if expected_pair_size is not None and not _is_int(expected_pair_size):
-            raise ValueError(f"{label}.seed_protocol.screen_batch_size must be an integer")
-        for pair_index, pair in enumerate(raw_pairs):
-            seeds = _require_int_list_value(
-                pair,
-                label=f"{label}.seed_protocol.screen_pairs[{pair_index}]",
-            )
-            if expected_pair_size is not None and len(seeds) != expected_pair_size:
-                raise ValueError(
-                    f"{label}.seed_protocol.screen_pairs[{pair_index}] "
-                    f"must contain {expected_pair_size} seed(s)"
-                )
-            for seed_index, seed in enumerate(seeds):
-                validate_training_seed(
-                    seed,
-                    label=f"{label}.seed_protocol.screen_pairs[{pair_index}][{seed_index}]",
-                    seed_span=1,
-                )
-    if "confirm" in seed_protocol:
-        for index, seed in enumerate(_require_int_list(seed_protocol, "confirm", label=f"{label}.seed_protocol")):
-            validate_training_seed(seed, label=f"{label}.seed_protocol.confirm[{index}]", seed_span=1)
 
     capacity_path = _require_existing_file(repo_root, document, "capacity_policy_file", label=label)
     if capacity_path.suffix.lower() not in YAML_EXTENSIONS:

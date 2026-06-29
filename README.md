@@ -129,8 +129,10 @@ fleet config, instance config, and capacity policy.
 Seed ranges are part of the comparability contract. Training seeds must stay in
 `0..9999`, accounting for vector env slots, and seeds `10000+` are reserved for
 eval and playback. `rlab eval`, eval-queue jobs, and `rlab play` default to
-seed `10007`; pass `--seed` only when replaying a legacy comparison
-deliberately.
+seed `10007`; eval/play seed overrides must also stay in the `10000+` range.
+For count-based seed requests, rlab uses hardcoded non-overlapping sequences:
+`training_seeds(3)` gives `[1, 2, 3]`, and `eval_seeds(3)` gives
+`[10001, 10002, 10003]`.
 
 Then keep capacity aligned with the repo policy and queue state:
 

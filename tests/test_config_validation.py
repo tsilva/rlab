@@ -83,9 +83,6 @@ environment:
 environment_hash: sha256:ce3af6d41b4ef1c0d953f1c5edcb1734c2846208b16cfada98a22ccefa46764f
 selection_policy:
   rank_order: [train/info/level_complete/rate/min/last]
-seed_protocol:
-  screen: [23]
-  confirm: [23]
 capacity_policy_file: experiments/policies/capacity_policy.yaml
 execution:
   hardware_config_file: experiments/instances.yaml
@@ -110,7 +107,6 @@ title: Bad Goal
 status: draft
 objective: {}
 selection_policy: {}
-seed_protocol: {}
 """,
                 encoding="utf-8",
             )
@@ -161,8 +157,6 @@ environment:
 environment_hash: sha256:deadbeef
 selection_policy:
   rank_order: [train/info/level_complete/rate/min/last]
-seed_protocol:
-  screen: [23]
 capacity_policy_file: experiments/policies/capacity_policy.yaml
 execution:
   hardware_config_file: experiments/instances.yaml
@@ -179,6 +173,9 @@ execution:
 
         self.assertNotIn("extends", document)
         self.assertEqual(document["goal_slug"], "Level1-3")
+        self.assertNotIn("seed_protocol", document)
+        self.assertNotIn("historical_context", document)
+        self.assertNotIn("updated_at", document)
         self.assertEqual(document["objective"]["game"], "SuperMarioBros-Nes-v0")
         self.assertNotIn("states", document["objective"])
         self.assertEqual(document["environment"]["provider"], "stable_retro")
@@ -216,6 +213,9 @@ execution:
         self.assertNotIn("extends", document)
         self.assertEqual(document["goal_slug"], "Level1-3")
         self.assertNotIn("goal_dir", document)
+        self.assertNotIn("seed_protocol", document)
+        self.assertNotIn("historical_context", document)
+        self.assertNotIn("updated_at", document)
         self.assertEqual(document["environment"]["env_id"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["execution"]["primary_train_target"], "rtx4090")
 

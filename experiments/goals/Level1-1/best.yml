@@ -1,0 +1,37 @@
+schema_version: 1
+goal_slug: Level1-1
+updated_at: '2026-06-29'
+source_of_truth: wandb
+selection_metric: train/info/level_complete/rate/min/last
+best:
+  id: b55-lowkl-lrdecay
+  status: needs_revalidation
+  stage: historical_best
+  recipe_slug: b55-lowkl-lrdecay
+  spec: experiments/goals/Level1-1/specs/b83-b55-post21-five-seed-l11-confirm.yaml
+  recipe_file: experiments/goals/Level1-1/recipes/supermariobros_nes_level1_winning_recipe.md
+  wandb_group: b55-level1-1-recipe-search-lowkl-refine-3arms-2seeds-6parallel-20260621_194855
+  summary:
+    decision: Historical B55 low-KL late-decay recipe remains the best recorded Level1-1 recipe, but the checked-in evidence predates the active post21 revalidation batch.
+    promotion_state: Not promoted under the active post21 goal contract.
+  metrics:
+    successful_seeds: [108, 109]
+    mean_stop_step: 4372104
+    total_completions: 4128
+  runs:
+  - seed: 108
+    wandb_run_id: qt3h08mc
+    checkpoint_ref: null
+    metrics:
+      final_success_rate: 1.0
+      stop_step: 4273200
+      completions: 2622
+  - seed: 109
+    wandb_run_id: actk7fw5
+    checkpoint_ref: null
+    metrics:
+      final_success_rate: 1.0
+      stop_step: 4471008
+      completions: 1506
+  notes:
+  - Checkpoint artifact refs were not captured in the checked-in recipe note; use W&B run ids as the raw-run lookup keys.

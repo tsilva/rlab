@@ -2,14 +2,12 @@
 defaults:
 # Shared single-level base; supplies common environment, success criteria, runtime, and search rules.
 - ../_shared/mario-single-level-100of100@_global_
-# Apply this file after the base; lets Level1-2 define its state, seeds, evidence, and defaults.
+# Apply this file after the base; lets Level1-2 define its state, evidence, and defaults.
 - _self_
 # Goal slug; must match the directory so tools can address this contract unambiguously.
 goal_slug: Level1-2
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES Level1-2 completion
-# Last intentional contract update date; distinguishes current goal text from stale history.
-updated_at: '2026-06-27'
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
   # State sampling definition; fixes the start state that attempts are counted from.
@@ -24,20 +22,3 @@ selection_policy:
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
-# Seed protocol; fixes screening and confirmation randomness labels for comparable evidence.
-seed_protocol:
-  # First seed used to screen candidate recipes cheaply before confirmation.
-  screen:
-  - 60
-  # Confirmation seeds; five-seed set guards against promoting a lucky single run.
-  confirm:
-  - 60
-  - 61
-  - 62
-  - 63
-  - 64
-# Historical context; keeps old results interpretable without changing the active success contract.
-historical_context:
-- Level1-2 was previously useful as a single-level teacher for Level1-1/Level1-2 distillation, but that is not the same as a confirmed five-seed baseline.
-- The old completed-episode stop flags are retired from new launches; use attempt-window metrics from configured info events instead.
-- Historical BASELINE names are retired. In this repo, baseline means a config confirmed under the current 100/100 protocol.

@@ -8,8 +8,6 @@ defaults:
 goal_slug: Levels_2_d25102
 # Human-readable title; makes clear this is a mixed Level1-1/Level1-2 recipe search.
 title: SuperMarioBros-NES Level1-1/Level1-2 mixed-policy high-watermark recipe search
-# Last intentional contract update date; distinguishes current goal text from stale history.
-updated_at: '2026-06-27'
 # Objective thresholds unique to this mixed-source discovery goal.
 objective:
   # Balance guard threshold; requires both source levels to stay useful rather than optimizing only one.
@@ -66,22 +64,6 @@ selection_policy:
 runtime:
   # Runtime image policy; uses the latest successful digest-pinned train image by default.
   runtime_image_ref: latest successful digest-pinned GHCR train image from the rlab train image workflow
-# Seed protocol; defines how mixed-level recipe batches are screened.
-seed_protocol:
-  # Number of seeds in each screen batch; two seeds are required to test balanced behavior.
-  screen_batch_size: 2
-  # Paired screen seeds; each pair is evaluated as a recipe batch.
-  screen_pairs:
-  - - 198
-    - 199
-  - - 200
-    - 201
-  - - 202
-    - 203
-  - - 204
-    - 205
-  - - 206
-    - 207
 # Budget policy for the discovery search.
 cap_policy:
   # Active training budget; every candidate trains to this cap because high-watermarks can recover late.

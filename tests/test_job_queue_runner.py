@@ -1455,6 +1455,10 @@ class EvalJobRunnerTests(unittest.TestCase):
         self.assertTrue(config["stochastic"])
         self.assertFalse(config["capture_best_video"])
 
+    def test_normalize_eval_config_rejects_training_seed_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reserved for training"):
+            normalize_eval_config({"id": 4, "eval_config": {"seed": 9999}})
+
     def test_json_safe_converts_nested_non_json_values(self) -> None:
         class Scalar:
             def item(self):

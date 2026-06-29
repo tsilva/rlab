@@ -27,10 +27,13 @@ Queue-ready recipe fragments may also use `env`, `train`, `reward`, and
 validation. Prefer that shape when converting older specs that must preserve the
 exact runner-facing payload.
 
-Keep `experiments/goals/<goal>/goal.yaml` as the stable goal contract. Mutable
-scoreboard state such as current baselines, near-misses, revalidation status,
-and historical run evidence belongs in `experiments/goals/<goal>/evidence.yaml`
-by convention.
+Keep `experiments/goals/<goal>/goal.yaml` as the stable goal contract. The
+curated pointer to the best training recipe so far belongs in
+`experiments/goals/<goal>/best.yml`. Keep `best.yml` small: store the recipe or
+spec identity, W&B run ids/names, relevant decision metrics, checkpoint or final
+artifact refs, status, and a short decision note. W&B remains the source of
+truth for full run history and raw metrics; `best.yml` is only the checked-in
+index of the current best recipe and why it matters.
 
 At enqueue time, `rlab train --spec-file <path>.yaml` resolves every Hydra
 `defaults` entry, materializes the final `train_config`, validates the existing expanded
