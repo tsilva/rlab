@@ -1,11 +1,11 @@
-# Hydra composition list; imports only the common Mario env/runtime base, not the single-level 100/100 overlay.
+# Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared Mario base; supplies common environment, runtime, constraints, and fleet defaults.
-- ../_shared/mario-native-vector-common@_global_
+# Shared Mario base; supplies common environment and success criteria.
+- ../_shared/mario@_global_
 # Apply this file after the base; lets the mixed-level discovery goal define its own objective and protocol.
 - _self_
-# Goal slug; must match the directory so tools can address this contract unambiguously.
-goal_slug: Levels_2_d25102
+# Goal id; must match the directory so tools can address this contract unambiguously.
+goal_id: Levels_2_d25102
 # Human-readable title; makes clear this is a mixed Level1-1/Level1-2 recipe search.
 title: SuperMarioBros-NES Level1-1/Level1-2 mixed-policy high-watermark recipe search
 # Objective thresholds unique to this mixed-source discovery goal.
@@ -20,85 +20,18 @@ objective:
   success_threshold_operator: '>'
   # Rolling attempt window; keeps per-source rates comparable with single-level contracts.
   success_window_attempts: 100
-  # Full success definition; records that both seeds in a batch must exceed the bottleneck target.
-  success_requirement: Maximize peak train/info/level_complete/rate/min/last. A balanced success requires both seeds in the same batch to each reach that bottleneck metric strictly greater than 0.80 within the 5M-step cap.
-  # Stop rules that are explicitly disallowed; protects against premature or misleading success calls.
-  forbidden_stop_rules:
-  - Do not early-stop on the first high-watermark crossing; later collapse and recovery can both happen.
-  - Do not use pooled completion or final checkpoint reward as the success metric.
 # Goal-specific environment overlay; changes the shared single-state contract into a two-state distribution.
 environment:
-  # State sampling definition; fixes which source levels are trained together.
-  state:
-    # Stable Retro state ids; both Level1-1 and Level1-2 contribute to the bottleneck metric.
-    states:
-    - Level1-1
-    - Level1-2
-# Deterministic hash of the fully composed environment; makes exact env equality cheap to compare.
-environment_hash: sha256:ba3c01d68aa454d2fb2eb3f7598d04c2c2ddb867ae1e36a0e16da126502ef9fb
-# Goal-specific constraints; narrows what recipe changes are considered legal.
-constraints:
-  # Default search levers; keeps discovery focused on reward, hyperparameters, and sampling weights.
-  allowed_default_levers:
-  - reward_function
-  - hyperparameters
-  - state_sampling_weights
+  # Stable Retro state ids; both Level1-1 and Level1-2 contribute to the bottleneck metric.
+  states:
+  - Level1-1
+  - Level1-2
 # Candidate ranking policy for the mixed-level discovery search.
 selection_policy:
-  # Evidence source for ranking; training high-watermark is the goal for this discovery contract.
-  source: training_high_watermark
-  # Ordered ranking metrics; bottleneck first, per-source rates and stability diagnostics after.
+  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
   - max(train/info/level_complete/from/0-1/rate)
   - max(train/info/level_complete/from/0-0/rate)
-  - earlier_peak_step
-  - lower_peak_instability_after_crossing
-  - rollout/ep_rew_mean
-  # Eval role; checkpoint eval is useful evidence but not the formal success metric here.
-  checkpoint_eval_use: recommended_after_candidate
-  # Training metrics role; makes the high-watermark history the official selection surface.
-  training_metrics_use: selection_for_this_discovery_goal
-# Runtime override for this discovery goal.
-runtime:
-  # Runtime image policy; uses the latest successful digest-pinned train image by default.
-  runtime_image_ref: latest successful digest-pinned GHCR train image from the rlab train image workflow
-# Budget policy for the discovery search.
-cap_policy:
-  # Active training budget; every candidate trains to this cap because high-watermarks can recover late.
-  active_cap_timesteps: 5000000
-  # Cap increase rule; prevents budget creep while comparing mixed-level recipes.
-  increase_rule: Do not increase the cap for this goal.
-  # Early stop rule; explicitly disables high-watermark early stops for this unstable mixed objective.
-  early_stop_rule: No early stop on train/info/level_complete/rate/min/last or train/info/level_complete/rate/mean/last; train to the cap and select by the peak history.
-# Search protocol describes how to iterate recipe changes and declare success.
-search_protocol:
-  # Screening rule; explains how two-seed batches are launched and ranked.
-  screen: Launch two-seed recipe batches on beast-3. Advance recipes by peak train/info/level_complete/rate/min/last; use train/info/level_complete/rate/mean/last as a companion signal for ties and diagnostics.
-  # Iteration rule; names the legal knobs to change between batches.
-  iterate: 'Change legal recipe levers in small interpretable steps: PPO update pressure, state sampling weights, entropy schedule, value/reward scaling, and true completion reward.'
-  # Success rule; requires checked-in specs and raw W&B history, not only summaries.
-  success: Declare the goal satisfied only when the same checked-in spec produces two completed runs whose sampled or raw W&B history proves peak train/info/level_complete/rate/min/last > 0.80 for both seeds.
-# Execution overlay for this discovery search.
-execution:
-  # Backfill rule; keeps the queue productive while recipe batches still have decision value.
-  backfill_rule: Backfill finished slots while queued recipe batches still have decision value.
-# Expected report fields for batch records; keeps mixed-level search notes consistent.
-batch_record_fields:
-- hypothesis
-- config_delta
-- stage
-- active_cap
-- seeds
-- wandb_group
-- runs
-- peak_rate_mean_last
-- peak_rate_min_last
-- peak_steps
-- decision
-- next_delta
-# Operator notes that clarify how to interpret this discovery goal.
-notes:
-- This is a discovery goal around the training high-watermark requested by the operator; checkpoint eval remains useful for interpreting candidates but is not the success metric.
-- Use W&B history, not only run summary, because run summary stores the final value for train/info/level_complete/rate/mean/last and train/info/level_complete/rate/min/last.
+  - max(rollout/ep_rew_mean)

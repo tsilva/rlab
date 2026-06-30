@@ -32,33 +32,22 @@ class ConfigValidationTests(unittest.TestCase):
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
             goal_dir.mkdir(parents=True)
-            (root / "experiments" / "policies").mkdir(parents=True)
-            (root / "experiments" / "instances.yaml").write_text("instances: {}\n", encoding="utf-8")
-            (root / "experiments" / "fleet.yaml").write_text("hosts: {}\n", encoding="utf-8")
-            (root / "experiments" / "policies" / "capacity_policy.yaml").write_text(
-                "schema_version: 1\nlanes: []\n",
-                encoding="utf-8",
-            )
             goal_path = goal_dir / "goal.yaml"
             goal_path.write_text(
                 """
 schema_version: 1
-goal_slug: bad
+goal_id: bad
 title: Bad Goal
 status: draft
 objective:
-  game: SuperMarioBros-Nes-v0
   states: [Level1-1]
-  algorithm: PPO
   primary_metric: train/info/level_complete/rate/min/last
   success_threshold: 1.0
   success_window_attempts: 100
-  max_train_timesteps: 5000000
 environment:
-  provider: stable_retro
-  env_id: SuperMarioBros-Nes-v0
-  state:
-    state: Level1-1
+  max_train_timesteps: 5000000
+  env_id: stable-retro-turbo:SuperMarioBros-Nes-v0
+  state: Level1-1
   action:
     action_set: simple
   preprocessing:
@@ -80,13 +69,17 @@ environment:
       life_loss: [lives, decrease]
       level_change: [[levelHi, levelLo], change]
     done_on_events: [life_loss, level_change]
-environment_hash: sha256:77e33ea51e95794b67726ea23bbf2879566dfd8c0e5126096679c6adbbf20d5e
 selection_policy:
   rank_order: [train/info/level_complete/rate/min/last]
-capacity_policy_file: experiments/policies/capacity_policy.yaml
-execution:
-  hardware_config_file: experiments/instances.yaml
-  fleet_config_file: experiments/fleet.yaml
+eval_spec:
+  schema_version: 1
+  eval_config:
+    episodes: 100
+    seed: 10007
+    n_envs: 20
+    max_steps: 4500
+    stochastic: true
+    done_on_events: [level_change]
 """,
                 encoding="utf-8",
             )
@@ -102,7 +95,7 @@ execution:
             goal_path.write_text(
                 """
 schema_version: 1
-goal_slug: stale-short-name
+goal_id: stale-short-name
 title: Bad Goal
 status: draft
 objective: {}
@@ -111,41 +104,30 @@ selection_policy: {}
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "goal_slug.*must match goal directory name: real-goal"):
+            with self.assertRaisesRegex(ValueError, "goal_id.*must match goal directory name: real-goal"):
                 validate_goal_contract(goal_path, root)
 
-    def test_goal_validator_rejects_stale_environment_hash(self) -> None:
+    def test_goal_validator_rejects_environment_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
             goal_dir.mkdir(parents=True)
-            (root / "experiments" / "policies").mkdir(parents=True)
-            (root / "experiments" / "instances.yaml").write_text("instances: {}\n", encoding="utf-8")
-            (root / "experiments" / "fleet.yaml").write_text("hosts: {}\n", encoding="utf-8")
-            (root / "experiments" / "policies" / "capacity_policy.yaml").write_text(
-                "schema_version: 1\nlanes: []\n",
-                encoding="utf-8",
-            )
             goal_path = goal_dir / "goal.yaml"
             goal_path.write_text(
                 """
 schema_version: 1
-goal_slug: bad
+goal_id: bad
 title: Bad Goal
 status: draft
 objective:
-  game: SuperMarioBros-Nes-v0
   states: [Level1-1]
-  algorithm: PPO
   primary_metric: train/info/level_complete/rate/min/last
   success_threshold: 1.0
   success_window_attempts: 100
   max_train_timesteps: 5000000
 environment:
-  provider: stable_retro
-  env_id: SuperMarioBros-Nes-v0
-  state:
-    state: Level1-1
+  env_id: stable-retro-turbo:SuperMarioBros-Nes-v0
+  state: Level1-1
   action:
     action_set: simple
   preprocessing:
@@ -157,10 +139,6 @@ environment:
 environment_hash: sha256:deadbeef
 selection_policy:
   rank_order: [train/info/level_complete/rate/min/last]
-capacity_policy_file: experiments/policies/capacity_policy.yaml
-execution:
-  hardware_config_file: experiments/instances.yaml
-  fleet_config_file: experiments/fleet.yaml
 """,
                 encoding="utf-8",
             )
@@ -172,19 +150,36 @@ execution:
         document = load_goal_contract(Path("experiments/goals/Level1-3/goal.yaml"))
 
         self.assertNotIn("extends", document)
-        self.assertEqual(document["goal_slug"], "Level1-3")
+        self.assertEqual(document["goal_id"], "Level1-3")
         self.assertNotIn("seed_protocol", document)
         self.assertNotIn("historical_context", document)
         self.assertNotIn("updated_at", document)
-        self.assertEqual(document["objective"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertNotIn("notes", document)
+        self.assertNotIn("runtime", document)
+        self.assertNotIn("search_protocol", document)
+        self.assertNotIn("batch_record_fields", document)
+        self.assertNotIn("capacity_policy_file", document)
+        self.assertNotIn("cap_policy", document)
+        self.assertNotIn("constraints", document)
+        self.assertNotIn("default_eval_profile", document)
+        self.assertNotIn("default_train_profile", document)
+        self.assertNotIn("environment_hash", document)
+        self.assertNotIn("execution", document)
+        self.assertNotIn("game", document["objective"])
+        self.assertNotIn("algorithm", document["objective"])
         self.assertNotIn("states", document["objective"])
-        self.assertEqual(document["environment"]["provider"], "stable_retro")
-        self.assertEqual(document["environment"]["state"]["state"], "Level1-3")
+        self.assertNotIn("forbidden_stop_rules", document["objective"])
+        self.assertNotIn("max_train_timesteps", document["objective"])
+        self.assertEqual(document["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertEqual(document["environment"]["max_train_timesteps"], 5000000)
+        self.assertEqual(document["environment"]["state"], "Level1-3")
         self.assertNotIn("hud_crop_top", document["environment"]["preprocessing"])
         self.assertEqual(document["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
         self.assertNotIn("observation_size", document["environment"]["preprocessing"])
         self.assertEqual(document["environment"]["preprocessing"]["obs_resize"], [84, 84])
-        self.assertEqual(document["execution"]["primary_train_host"], "beast-3")
+        self.assertEqual(document["eval_spec"]["eval_config"]["episodes"], 100)
+        self.assertEqual(document["eval_spec"]["eval_config"]["done_on_events"], ["level_change"])
+        self.assertEqual(set(document["selection_policy"]), {"rank_order"})
 
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)
@@ -211,13 +206,13 @@ execution:
         self.assertEqual(exit_code, 0)
         document = json.loads(stdout.getvalue())
         self.assertNotIn("extends", document)
-        self.assertEqual(document["goal_slug"], "Level1-3")
+        self.assertEqual(document["goal_id"], "Level1-3")
         self.assertNotIn("goal_dir", document)
         self.assertNotIn("seed_protocol", document)
         self.assertNotIn("historical_context", document)
         self.assertNotIn("updated_at", document)
-        self.assertEqual(document["environment"]["env_id"], "SuperMarioBros-Nes-v0")
-        self.assertEqual(document["execution"]["primary_train_target"], "rtx4090")
+        self.assertEqual(document["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertNotIn("execution", document)
 
 
 if __name__ == "__main__":

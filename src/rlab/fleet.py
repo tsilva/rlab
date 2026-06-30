@@ -44,6 +44,7 @@ from rlab.job_queue import (
     mark_stale_train_jobs_failed,
 )
 from rlab.compute_targets import instance_defaults, load_instance_config
+from rlab.config_loader import load_composed_mapping
 from rlab.json_utils import json_safe
 from rlab.monitoring.state import (
     DeviceProbe,
@@ -76,6 +77,8 @@ MANAGED_LABEL = f"{LABEL_PREFIX}managed"
 CONFIG_HASH_LABEL = f"{LABEL_PREFIX}config-hash"
 DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS = 1
 DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS = 16
+WORKER_KIND_TRAIN = "train"
+WORKER_KIND_EVAL = "eval"
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,7 @@ class ActiveLease:
     runtime_image_ref: str
     run_target: str | None
     running_count: int
+    worker_kind: str = WORKER_KIND_TRAIN
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,24 @@ class DeploymentKey:
     profile_id: str | None
     runtime_image_ref: str
     run_target: str | None
+    worker_kind: str = WORKER_KIND_TRAIN
+    replica: int | None = None
+
+
+@dataclass(frozen=True)
+class EvalRunnerRequirement:
+    goal_slug: str
+    host: str
+    min_replicas: int
+    image: str
+
+
+@dataclass(frozen=True)
+class ResolvedEvalRunnerRequirement:
+    goal_slug: str
+    host: str
+    min_replicas: int
+    runtime_image_ref: str
 
 
 @dataclass(frozen=True)
@@ -201,11 +223,16 @@ class ExistingContainer:
             return None
         profile_id = profile_id or None
         run_target = self.labels.get(f"{LABEL_PREFIX}run-target") or None
+        worker_kind = self.labels.get(f"{LABEL_PREFIX}worker-kind") or WORKER_KIND_TRAIN
+        replica_label = self.labels.get(f"{LABEL_PREFIX}replica")
+        replica = int(replica_label) if replica_label not in (None, "") else None
         return DeploymentKey(
             host=self.host,
             profile_id=profile_id,
             runtime_image_ref=runtime_image_ref,
             run_target=run_target,
+            worker_kind=worker_kind,
+            replica=replica,
         )
 
 
@@ -414,6 +441,86 @@ def load_capacity_policy(repo_root: Path, path: Path | None = None) -> dict[str,
     return load_json_file(resolve_repo_path(repo_root, path, DEFAULT_CAPACITY_POLICY))
 
 
+def goal_contract_path(repo_root: Path, goal_slug: str) -> Path:
+    return repo_root / "experiments" / "goals" / goal_slug / "goal.yaml"
+
+
+def load_goal_document(repo_root: Path, goal_slug: str) -> Mapping[str, Any]:
+    path = goal_contract_path(repo_root, goal_slug)
+    if not path.is_file():
+        raise ValueError(f"unknown goal {goal_slug!r}: {path} does not exist")
+    return load_composed_mapping(path, cycle_label="goal").document
+
+
+def parse_eval_runner_requirements(
+    document: Mapping[str, Any],
+    *,
+    goal_slug: str,
+) -> tuple[EvalRunnerRequirement, ...]:
+    execution = document.get("execution")
+    if not isinstance(execution, Mapping):
+        return ()
+    raw_requirements = execution.get("eval_runner_requirements", [])
+    if raw_requirements is None:
+        return ()
+    if not isinstance(raw_requirements, Sequence) or isinstance(raw_requirements, str | bytes):
+        raise ValueError(f"goal {goal_slug} execution.eval_runner_requirements must be a list")
+    requirements: list[EvalRunnerRequirement] = []
+    for index, raw in enumerate(raw_requirements):
+        label = f"goal {goal_slug} execution.eval_runner_requirements[{index}]"
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{label} must be an object")
+        host = str(raw.get("host") or "").strip()
+        if not host:
+            raise ValueError(f"{label}.host must be a non-empty string")
+        try:
+            min_replicas = int(raw.get("min_replicas"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label}.min_replicas must be an integer") from exc
+        if min_replicas < 0:
+            raise ValueError(f"{label}.min_replicas must be >= 0")
+        image = str(raw.get("image") or "").strip()
+        if not image:
+            raise ValueError(f"{label}.image must be a non-empty string")
+        requirements.append(
+            EvalRunnerRequirement(
+                goal_slug=goal_slug,
+                host=host,
+                min_replicas=min_replicas,
+                image=image,
+            )
+        )
+    return tuple(requirements)
+
+
+def load_goal_eval_runner_requirements(
+    repo_root: Path,
+    goal_slug: str,
+) -> tuple[EvalRunnerRequirement, ...]:
+    return parse_eval_runner_requirements(
+        load_goal_document(repo_root, goal_slug),
+        goal_slug=goal_slug,
+    )
+
+
+def discover_active_goal_slugs(repo_root: Path) -> tuple[str, ...]:
+    goals_dir = repo_root / "experiments" / "goals"
+    if not goals_dir.is_dir():
+        return ()
+    slugs: list[str] = []
+    for path in sorted(goals_dir.glob("*/goal.yaml")):
+        goal_slug = path.parent.name
+        try:
+            document = load_composed_mapping(path, cycle_label="goal").document
+        except Exception:
+            continue
+        if str(document.get("status") or "").strip().lower() != "active":
+            continue
+        if parse_eval_runner_requirements(document, goal_slug=goal_slug):
+            slugs.append(goal_slug)
+    return tuple(slugs)
+
+
 def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> None:
     lanes = policy.get("lanes", [])
     if not isinstance(lanes, list):
@@ -490,9 +597,12 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
 
 def deployment_name(key: DeploymentKey) -> str:
     digest = runtime_image_digest_slug(key.runtime_image_ref)
+    host = sanitize_slug(key.host, limit=16)
+    if key.worker_kind == WORKER_KIND_EVAL:
+        replica = key.replica if key.replica is not None else 0
+        return f"rlab-{host}-eval-{digest}-{replica}"[:120].strip("-")
     profile = sanitize_slug(key.profile_id or "any-profile", limit=44)
     target = sanitize_slug(key.run_target or "any", limit=16)
-    host = sanitize_slug(key.host, limit=16)
     return f"rlab-{host}-{target}-{profile}-{digest}"[:120].strip("-")
 
 
@@ -540,7 +650,7 @@ def docker_run_command(host: HostConfig, desired: DesiredDeployment) -> list[str
         cmd.extend(["--network", host.docker_network])
     for key, value in sorted(desired.labels.items()):
         cmd.extend(["--label", f"{key}={value}"])
-    cmd.extend([image, "rlab-container-entrypoint", "rlab", "train", "worker"])
+    cmd.extend([image, "rlab-container-entrypoint", "rlab", desired.key.worker_kind, "worker"])
     cmd.extend(desired.command)
     return cmd
 
@@ -555,30 +665,44 @@ def build_desired_deployment(
 ) -> DesiredDeployment:
     name = deployment_name(key)
     worker_prefix = name
-    command = [
-        "--runtime-image-ref",
-        key.runtime_image_ref,
-        "--run-target",
-        key.run_target or host.run_target,
-        "--workers",
-        str(workers),
-        "--autoscale",
-        "--min-workers",
-        str(DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS),
-        "--max-workers",
-        str(DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS),
-        "--worker-id",
-        worker_prefix,
-        "--log-dir",
-        host.log_dir_in_container,
-    ]
-    if key.profile_id:
-        command = ["--profile", key.profile_id, *command]
+    if key.worker_kind == WORKER_KIND_EVAL:
+        command = [
+            "--runtime-image-ref",
+            key.runtime_image_ref,
+            "--artifact-root",
+            f"{host.container_runs_dir}/eval_artifacts",
+            "--output-dir",
+            f"{host.container_logs_dir}/eval_runner",
+            "--worker-id",
+            worker_prefix,
+        ]
+    else:
+        command = [
+            "--runtime-image-ref",
+            key.runtime_image_ref,
+            "--run-target",
+            key.run_target or host.run_target,
+            "--workers",
+            str(workers),
+            "--autoscale",
+            "--min-workers",
+            str(DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS),
+            "--max-workers",
+            str(DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS),
+            "--worker-id",
+            worker_prefix,
+            "--log-dir",
+            host.log_dir_in_container,
+        ]
+        if key.profile_id:
+            command = ["--profile", key.profile_id, *command]
     hash_input = {
         "host": host.name,
+        "worker_kind": key.worker_kind,
         "profile_id": key.profile_id,
         "runtime_image_ref": key.runtime_image_ref,
         "run_target": key.run_target,
+        "replica": key.replica,
         "workers": workers,
         "env_file": host.env_file,
         "runs_dir": host.runs_dir,
@@ -595,8 +719,11 @@ def build_desired_deployment(
         f"{LABEL_PREFIX}runtime-image-ref": key.runtime_image_ref,
         f"{LABEL_PREFIX}runtime-digest": digest,
         f"{LABEL_PREFIX}run-target": key.run_target or "",
+        f"{LABEL_PREFIX}worker-kind": key.worker_kind,
         f"{LABEL_PREFIX}worker-prefix": worker_prefix,
     }
+    if key.replica is not None:
+        labels[f"{LABEL_PREFIX}replica"] = str(key.replica)
     labels[CONFIG_HASH_LABEL] = config_hash({**hash_input, "labels": labels})
     return DesiredDeployment(
         key=key,
@@ -699,6 +826,8 @@ def demand_index(demands: Sequence[QueueDemand]) -> dict[tuple[str | None, str, 
 
 
 def demand_matches_key(demand: QueueDemand, key: DeploymentKey) -> bool:
+    if key.worker_kind != WORKER_KIND_TRAIN:
+        return False
     if key.profile_id is not None and demand.profile_id != key.profile_id:
         return False
     return demand.runtime_image_ref == key.runtime_image_ref and demand.run_target == key.run_target
@@ -713,6 +842,7 @@ def container_can_serve_desired(
         return False
     return (
         key.host == desired.key.host
+        and key.worker_kind == desired.key.worker_kind
         and key.profile_id is None
         and key.runtime_image_ref == desired.key.runtime_image_ref
         and key.run_target == desired.key.run_target
@@ -734,6 +864,8 @@ def matching_demand_for_container(
 ) -> QueueDemand | None:
     key = container.key
     if key is None:
+        return None
+    if key.worker_kind != WORKER_KIND_TRAIN:
         return None
     for demand in demands:
         if key.profile_id is None:
@@ -855,6 +987,9 @@ def build_fleet_plan(
         )
 
     for current in existing:
+        key = current.key
+        if key is not None and key.worker_kind != WORKER_KIND_TRAIN:
+            continue
         if current.name in desired_by_name:
             continue
         matching_demand = matching_demand_for_container(current, demands)
@@ -980,6 +1115,177 @@ def build_ensure_runner_plan(
     )
 
 
+def resolve_eval_runner_requirements(
+    requirements: Sequence[EvalRunnerRequirement],
+    *,
+    runtime_image_ref_for_latest: str,
+) -> tuple[ResolvedEvalRunnerRequirement, ...]:
+    resolved: list[ResolvedEvalRunnerRequirement] = []
+    latest_ref = normalize_runtime_image_ref(runtime_image_ref_for_latest)
+    for requirement in requirements:
+        if requirement.image == "latest":
+            runtime_image_ref = latest_ref
+        else:
+            runtime_image_ref = normalize_runtime_image_ref(requirement.image)
+        resolved.append(
+            ResolvedEvalRunnerRequirement(
+                goal_slug=requirement.goal_slug,
+                host=requirement.host,
+                min_replicas=requirement.min_replicas,
+                runtime_image_ref=runtime_image_ref,
+            )
+        )
+    return tuple(resolved)
+
+
+def allocate_eval_runner_deployments(
+    config: FleetConfig,
+    requirements: Sequence[ResolvedEvalRunnerRequirement],
+) -> tuple[tuple[DesiredDeployment, ...], tuple[str, ...]]:
+    aggregated: dict[tuple[str, str], int] = {}
+    warnings: list[str] = []
+    for requirement in requirements:
+        if requirement.host not in config.hosts:
+            warnings.append(
+                f"goal {requirement.goal_slug} eval runner requirement references unavailable host "
+                f"{requirement.host!r}"
+            )
+            continue
+        key = (requirement.host, requirement.runtime_image_ref)
+        aggregated[key] = max(aggregated.get(key, 0), requirement.min_replicas)
+    desired: list[DesiredDeployment] = []
+    for (host_name, runtime_image_ref), replicas in sorted(aggregated.items()):
+        host = config.hosts[host_name]
+        for replica in range(replicas):
+            desired.append(
+                build_desired_deployment(
+                    host=host,
+                    key=DeploymentKey(
+                        host=host.name,
+                        profile_id=None,
+                        runtime_image_ref=runtime_image_ref,
+                        run_target=None,
+                        worker_kind=WORKER_KIND_EVAL,
+                        replica=replica,
+                    ),
+                    workers=1,
+                    pending_count=0,
+                    running_count=0,
+                )
+            )
+    return tuple(desired), tuple(warnings)
+
+
+def build_explicit_desired_plan(
+    config: FleetConfig,
+    desired: Sequence[DesiredDeployment],
+    existing: Sequence[ExistingContainer],
+    leases: Sequence[ActiveLease],
+    *,
+    reason: str,
+) -> FleetPlan:
+    existing_by_name = {item.name: item for item in existing}
+    warnings: list[str] = []
+    actions: list[FleetAction] = []
+    for item in desired:
+        host = config.hosts[item.key.host]
+        current = existing_by_name.get(item.name)
+        if current is None:
+            actions.append(
+                FleetAction(
+                    kind="start",
+                    host=host.name,
+                    container=item.name,
+                    reason=reason,
+                    commands=start_commands(host, item),
+                )
+            )
+            continue
+        if current.state.lower() != "running":
+            if container_has_active_lease(current, leases):
+                warnings.append(f"{current.name} is not running but still owns an active lease")
+                continue
+            actions.append(
+                FleetAction(
+                    kind="restart",
+                    host=host.name,
+                    container=item.name,
+                    reason=f"container state is {current.state or 'unknown'}",
+                    commands=restart_commands(host, item),
+                )
+            )
+            continue
+        if current.labels.get(CONFIG_HASH_LABEL) != item.config_hash:
+            if container_has_active_lease(current, leases):
+                warnings.append(f"{current.name} config changed but active lease prevents restart")
+                continue
+            actions.append(
+                FleetAction(
+                    kind="recreate",
+                    host=host.name,
+                    container=item.name,
+                    reason="managed container config changed",
+                    commands=restart_commands(host, item),
+                )
+            )
+            continue
+        actions.append(
+            FleetAction(
+                kind="keep",
+                host=host.name,
+                container=item.name,
+                reason="container already matches desired state",
+            )
+        )
+    return FleetPlan(
+        desired=tuple(desired),
+        existing=tuple(existing),
+        actions=tuple(actions),
+        warnings=tuple(warnings),
+    )
+
+
+def build_goal_eval_runners_plan(
+    config: FleetConfig,
+    *,
+    repo_root: Path,
+    goal_slugs: Sequence[str],
+    runtime_image_ref_for_latest: str,
+    existing: Sequence[ExistingContainer],
+    leases: Sequence[ActiveLease],
+) -> FleetPlan:
+    requirements: list[EvalRunnerRequirement] = []
+    for goal_slug in goal_slugs:
+        requirements.extend(load_goal_eval_runner_requirements(repo_root, goal_slug))
+    resolved = resolve_eval_runner_requirements(
+        requirements,
+        runtime_image_ref_for_latest=runtime_image_ref_for_latest,
+    )
+    desired, allocation_warnings = allocate_eval_runner_deployments(config, resolved)
+    plan = build_explicit_desired_plan(
+        config,
+        desired,
+        existing,
+        leases,
+        reason="goal-declared eval runner requirement",
+    )
+    return FleetPlan(
+        desired=plan.desired,
+        existing=plan.existing,
+        actions=plan.actions,
+        warnings=(*allocation_warnings, *plan.warnings),
+    )
+
+
+def combine_plans(primary: FleetPlan, secondary: FleetPlan) -> FleetPlan:
+    return FleetPlan(
+        desired=(*primary.desired, *secondary.desired),
+        existing=primary.existing,
+        actions=(*primary.actions, *secondary.actions),
+        warnings=(*primary.warnings, *secondary.warnings),
+    )
+
+
 def build_ensure_latest_plan(
     config: FleetConfig,
     *,
@@ -1070,6 +1376,9 @@ def build_ensure_latest_plan(
         )
 
     for current in existing:
+        key = current.key
+        if key is not None and key.worker_kind != WORKER_KIND_TRAIN:
+            continue
         if current.name in desired_by_name:
             continue
         matching_demand = matching_demand_for_container(current, demands)
@@ -1133,6 +1442,20 @@ ORDER BY lease_owner
 """
 
 
+ACTIVE_EVAL_LEASE_SQL = """
+SELECT
+  lease_owner,
+  runtime_image_ref,
+  COUNT(*) AS running_count
+FROM eval_jobs
+WHERE status = 'running'
+  AND lease_owner IS NOT NULL
+  AND runtime_image_ref IS NOT NULL
+GROUP BY lease_owner, runtime_image_ref
+ORDER BY lease_owner
+"""
+
+
 RUNNING_JOBS_SQL = """
 SELECT
   id,
@@ -1182,9 +1505,31 @@ def active_leases(conn) -> list[ActiveLease]:
             runtime_image_ref=normalize_runtime_image_ref(row["runtime_image_ref"]),
             run_target=str(row["run_target"]) if row["run_target"] else None,
             running_count=int(row["running_count"]),
+            worker_kind=WORKER_KIND_TRAIN,
         )
         for row in rows
     ]
+
+
+def active_eval_leases(conn) -> list[ActiveLease]:
+    with conn.cursor() as cur:
+        cur.execute(ACTIVE_EVAL_LEASE_SQL)
+        rows = cur.fetchall()
+    return [
+        ActiveLease(
+            lease_owner=str(row["lease_owner"]),
+            profile_id=None,
+            runtime_image_ref=normalize_runtime_image_ref(row["runtime_image_ref"]),
+            run_target=None,
+            running_count=int(row["running_count"]),
+            worker_kind=WORKER_KIND_EVAL,
+        )
+        for row in rows
+    ]
+
+
+def active_worker_leases(conn) -> tuple[ActiveLease, ...]:
+    return (*active_leases(conn), *active_eval_leases(conn))
 
 
 def running_jobs(conn) -> list[RunningJob]:
@@ -1762,7 +2107,7 @@ def format_plan(plan: FleetPlan) -> str:
         for item in plan.desired:
             lines.append(
                 "  "
-                f"{item.name} host={item.key.host} workers={item.workers} "
+                f"{item.name} host={item.key.host} kind={item.key.worker_kind} workers={item.workers} "
                 f"profile={item.key.profile_id or 'any'} target={item.key.run_target or 'any'} "
                 f"digest={runtime_image_digest_slug(item.key.runtime_image_ref)}"
             )
@@ -1850,6 +2195,7 @@ def format_containers(
             key = container.key
             profile = key.profile_id if key else None
             target = key.run_target if key else None
+            worker_kind = key.worker_kind if key else "unknown"
             digest = container.labels.get(f"{LABEL_PREFIX}runtime-digest")
             worker_prefix = container.labels.get(f"{LABEL_PREFIX}worker-prefix")
             prefix = worker_prefix or container.name
@@ -1857,6 +2203,7 @@ def format_containers(
                 "  "
                 f"host={container.host} name={container.name} "
                 f"state={container.state or 'unknown'} status={container.status or 'unknown'} "
+                f"kind={worker_kind} "
                 f"profile={profile or 'any'} target={target or 'any'} "
                 f"digest={digest or 'unknown'} worker_prefix={prefix}"
             )
@@ -2049,6 +2396,17 @@ def run_plan_actions(config: FleetConfig, plan: FleetPlan, *, local: bool = Fals
     return status
 
 
+def cmd_ensure_goal_runners(args: argparse.Namespace) -> int:
+    config, runtime_image_ref, plan = build_live_ensure_goal_runners_plan(args)
+    print(f"runtime_image_ref={runtime_image_ref}")
+    print(f"goals={','.join(args.goal or ())}")
+    print(format_plan(plan))
+    if not args.execute:
+        print("dry_run: rerun without --dry-run to apply the plan")
+        return 0
+    return run_plan_actions(config, plan, local=False)
+
+
 def build_live_ensure_latest_plan(args: argparse.Namespace) -> tuple[FleetConfig, str, FleetPlan]:
     config = filter_config_to_host(_load_config_from_args(args), getattr(args, "host", None))
     runtime_image_ref = image_ref_from_args(args, default_latest=True)
@@ -2057,7 +2415,7 @@ def build_live_ensure_latest_plan(args: argparse.Namespace) -> tuple[FleetConfig
     conn = _connect_from_args(args)
     try:
         demands = queue_demands(conn)
-        leases = active_leases(conn)
+        leases = active_worker_leases(conn)
     finally:
         conn.close()
     existing, container_warnings = collect_existing_containers(config, host_filter=None, local=False)
@@ -2068,6 +2426,41 @@ def build_live_ensure_latest_plan(args: argparse.Namespace) -> tuple[FleetConfig
         existing=existing,
         leases=leases,
         demands=demands,
+    )
+    return (
+        config,
+        runtime_image_ref,
+        FleetPlan(
+            desired=plan.desired,
+            existing=plan.existing,
+            actions=plan.actions,
+            warnings=(*container_warnings, *plan.warnings),
+        ),
+    )
+
+
+def build_live_ensure_goal_runners_plan(args: argparse.Namespace) -> tuple[FleetConfig, str, FleetPlan]:
+    repo_root = repo_root_from_args(args)
+    config = filter_config_to_host(_load_config_from_args(args), getattr(args, "host", None))
+    runtime_image_ref = image_ref_from_args(args, default_latest=True)
+    if not runtime_image_ref:
+        raise SystemExit("--image, --image-file, --runtime-image-ref, or --runtime-image-ref-file is required")
+    goal_slugs = tuple(args.goal or ())
+    if not goal_slugs:
+        raise SystemExit("--goal is required")
+    conn = _connect_from_args(args)
+    try:
+        leases = active_worker_leases(conn)
+    finally:
+        conn.close()
+    existing, container_warnings = collect_existing_containers(config, host_filter=None, local=False)
+    plan = build_goal_eval_runners_plan(
+        config,
+        repo_root=repo_root,
+        goal_slugs=goal_slugs,
+        runtime_image_ref_for_latest=runtime_image_ref,
+        existing=existing,
+        leases=leases,
     )
     return (
         config,
@@ -2112,14 +2505,14 @@ def build_latest_watch_snapshot(
             else ()
         )
         demands = tuple(queue_demands(conn))
-        leases = tuple(active_leases(conn))
+        leases = tuple(active_worker_leases(conn))
         jobs = tuple(running_jobs(conn))
     finally:
         conn.close()
     devices = collect_active_watch_devices(repo_root, config, jobs)
     existing, container_warnings = collect_existing_containers(config, host_filter=None, local=False)
     down_hosts = tuple(sorted(warning_hosts(config, container_warnings)))
-    plan = build_ensure_latest_plan(
+    train_plan = build_ensure_latest_plan(
         config,
         runtime_image_ref=runtime_image_ref,
         workers=args.workers,
@@ -2127,6 +2520,16 @@ def build_latest_watch_snapshot(
         leases=leases,
         demands=demands,
     )
+    goal_slugs = tuple(getattr(args, "goal", None) or discover_active_goal_slugs(repo_root))
+    eval_plan = build_goal_eval_runners_plan(
+        config,
+        repo_root=repo_root,
+        goal_slugs=goal_slugs,
+        runtime_image_ref_for_latest=runtime_image_ref,
+        existing=existing,
+        leases=leases,
+    )
+    plan = combine_plans(train_plan, eval_plan)
     return LatestWatchSnapshot(
         captured_at=datetime.now(UTC),
         config=config,
@@ -2426,7 +2829,11 @@ def active_device_dashboard_rows(devices: Sequence[Mapping[str, Any]]) -> list[l
 
 def host_dashboard_rows(snapshot: LatestWatchSnapshot) -> list[list[str]]:
     down_hosts = set(snapshot.down_hosts) | warning_hosts(snapshot.config, snapshot.plan.warnings)
-    desired_by_host = {item.key.host: item for item in snapshot.plan.desired}
+    desired_by_host = {
+        item.key.host: item
+        for item in snapshot.plan.desired
+        if item.key.worker_kind == WORKER_KIND_TRAIN
+    }
     actions_by_host: dict[str, list[FleetAction]] = {}
     for action in snapshot.plan.actions:
         actions_by_host.setdefault(action.host, []).append(action)
@@ -3263,6 +3670,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(execute=True)
     parser.add_argument(
+        "--execute",
+        dest="execute",
+        action="store_true",
+        help="Apply planned changes; this is the default.",
+    )
+    parser.add_argument(
         "--dry-run",
         dest="execute",
         action="store_false",
@@ -3373,6 +3786,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_ensure_image_args(ensure_latest)
     ensure_latest.set_defaults(func=cmd_ensure_latest)
 
+    ensure_goal = subparsers.add_parser(
+        "ensure-goal-runners",
+        help="Ensure goal-declared eval runner containers exist.",
+    )
+    add_common_args(ensure_goal)
+    ensure_goal.add_argument("--goal", action="append", required=True, help="Goal slug to load.")
+    ensure_goal.add_argument("--host", help="Limit rollout to one fleet host.")
+    add_dry_run_arg(ensure_goal)
+    add_ensure_image_args(ensure_goal)
+    ensure_goal.set_defaults(func=cmd_ensure_goal_runners)
+
     watch_latest = subparsers.add_parser(
         "watch",
         help="Run a live TUI that keeps fleet hosts on the latest image and cleans idle old runners.",
@@ -3418,6 +3842,11 @@ def build_parser() -> argparse.ArgumentParser:
     watch_latest.add_argument("--no-tui", action="store_true", help="Do not clear/redraw the terminal.")
     watch_latest.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     watch_latest.add_argument("--width", type=int, help="Override dashboard width.")
+    watch_latest.add_argument(
+        "--goal",
+        action="append",
+        help="Limit goal-declared eval runners to this goal; defaults to active goals.",
+    )
     add_ensure_image_args(watch_latest)
     watch_latest.set_defaults(func=cmd_watch_latest)
 

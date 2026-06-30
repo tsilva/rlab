@@ -1,34 +1,20 @@
-# Hydra composition list; imports the shared single-level 100/100 contract first.
+# Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared single-level base; supplies common environment, success criteria, runtime, and search rules.
-- ../_shared/mario-single-level-100of100@_global_
+# Shared Mario base; supplies common environment and success criteria.
+- ../_shared/mario@_global_
 # Apply this file after the base; lets Level1-4 define its state, evidence, and defaults.
 - _self_
-# Goal slug; must match the directory so tools can address this contract unambiguously.
-goal_slug: Level1-4
+# Goal id; must match the directory so tools can address this contract unambiguously.
+goal_id: Level1-4
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES World 1-4 completion
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
-  # State sampling definition; fixes the start state that attempts are counted from.
-  state:
-    # Stable Retro state id; Level1-4 is the only source for this goal.
-    state: Level1-4
-# Deterministic hash of the fully composed environment; makes exact env equality cheap to compare.
-environment_hash: sha256:bdfa2f233eb98a949d239de7ea0cfd00acbfdd9583cdfa21fd73efd0b7c5cbd4
+  # Stable Retro state id; Level1-4 is the only source for this goal.
+  state: Level1-4
 # Goal-specific candidate ranking policy.
 selection_policy:
-  # Ordered ranking metrics; primary bottleneck completion comes first, training diagnostics follow.
+  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
-# Goal-specific budget and stopping policy.
-cap_policy:
-  # Early stop definition; records the strict success stop used by Level1-4 train specs.
-  early_stop_rule: Stop training once train/info/level_complete/rate/min/last > 0.99; this is the strict 100/100 source-attempt window for the single Level1-4 start state.
-# Operator notes specific to this goal; extends the shared notes with Level1-4 facts.
-notes:
-- Use this file as the operator-facing current contract; goal-owned specs and recipe evidence live beside it under this goal directory.
-- Do not promote a policy from final checkpoint reward alone.
-- Prefer paired confirmation against the current baseline before declaring a new baseline.
-- The installed SuperMarioBros-Nes-v0 state list was checked on 2026-06-28 and includes Level1-4.

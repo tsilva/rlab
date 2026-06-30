@@ -517,7 +517,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sticky_action_prob"):
             resolve_env_config(EnvConfig(game="SuperMarioBros-Nes-v0", sticky_action_prob=-0.1))
 
-    def test_eval_vec_env_clears_done_on_events(self) -> None:
+    def test_eval_vec_env_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -534,7 +534,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIs(env, sentinel)
         passed_config = make_vec_envs.call_args.kwargs["config"]
         self.assertEqual(passed_config.info_events, config.info_events)
-        self.assertEqual(passed_config.done_on_events, ())
+        self.assertEqual(passed_config.done_on_events, ("life_loss", "level_change"))
 
     def test_training_vec_env_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
@@ -552,7 +552,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(passed_config.info_events, {"life_loss": ("lives", "decrease")})
         self.assertEqual(passed_config.done_on_events, ("life_loss",))
 
-    def test_rendered_eval_replay_clears_done_on_events(self) -> None:
+    def test_rendered_eval_replay_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -569,7 +569,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIs(env, sentinel)
         passed_config = make_retro_env.call_args.kwargs["config"]
         self.assertEqual(passed_config.info_events, config.info_events)
-        self.assertEqual(passed_config.done_on_events, ())
+        self.assertEqual(passed_config.done_on_events, ("life_loss", "level_change"))
 
     def test_short_states_requires_one_state_per_env_slot(self) -> None:
         with patch(
@@ -1910,8 +1910,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(metadata["env_config"]["max_pool_frames"], False)
             self.assertEqual(metadata["env_config"]["observation_size"], 96)
             self.assertEqual(metadata["env_config"]["hud_crop_top"], 32)
-            self.assertEqual(metadata["environment"]["provider"], "stable_retro")
-            self.assertEqual(metadata["environment"]["env_id"], "SuperMarioBros-Nes-v0")
+            self.assertEqual(metadata["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
             self.assertEqual(metadata["environment"]["preprocessing"]["frame_stack"], 4)
             self.assertEqual(metadata["training_metadata"]["preprocessing"]["frame_maxpool"], False)
             self.assertEqual(

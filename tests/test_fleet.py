@@ -544,6 +544,62 @@ class FleetPlanTests(unittest.TestCase):
         self.assertIn("--autoscale --min-workers 1 --max-workers 16", command_text)
         self.assertNotIn("--profile", command_text)
 
+    def test_eval_deployment_command_uses_eval_worker(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        desired = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id=None,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                run_target=None,
+                worker_kind=fleet.WORKER_KIND_EVAL,
+                replica=0,
+            ),
+            workers=1,
+            pending_count=0,
+            running_count=0,
+        )
+
+        command_text = fleet.shell_join(fleet.docker_run_command(config.hosts["beast-3"], desired))
+
+        self.assertIn("rlab-container-entrypoint rlab eval worker", command_text)
+        self.assertNotIn("rlab train worker", command_text)
+        self.assertIn("--artifact-root /root/rlab/runs/eval_artifacts", command_text)
+        self.assertIn("--output-dir /root/rlab/logs/eval_runner", command_text)
+        self.assertIn("--worker-id rlab-beast-3-eval-cccccccccccc-0", command_text)
+
+    def test_goal_eval_runners_plan_starts_one_eval_container(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+
+        with mock.patch.object(
+            fleet,
+            "load_goal_eval_runner_requirements",
+            return_value=(
+                fleet.EvalRunnerRequirement(
+                    goal_slug="Level1-1",
+                    host="beast-3",
+                    min_replicas=1,
+                    image="latest",
+                ),
+            ),
+        ):
+            plan = fleet.build_goal_eval_runners_plan(
+                config,
+                repo_root=Path("."),
+                goal_slugs=("Level1-1",),
+                runtime_image_ref_for_latest=RUNTIME_IMAGE_REF,
+                existing=[],
+                leases=[],
+            )
+
+        self.assertEqual(len(plan.desired), 1)
+        self.assertEqual(plan.desired[0].key.worker_kind, fleet.WORKER_KIND_EVAL)
+        self.assertEqual(plan.desired[0].key.host, "beast-3")
+        self.assertEqual(plan.desired[0].key.replica, 0)
+        self.assertEqual(plan.actions[0].kind, "start")
+        self.assertIn("goal-declared eval runner requirement", plan.actions[0].reason)
+
     def test_ensure_runner_does_not_remove_unrelated_obsolete_container(self) -> None:
         config = fleet.filter_config_to_host(sample_config(), "beast-3")
         old_desired = fleet.build_desired_deployment(
@@ -687,6 +743,43 @@ class FleetPlanTests(unittest.TestCase):
 
         self.assertFalse(any(action.kind == "remove" for action in plan.actions))
         self.assertTrue(any("matching pending/running demand" in warning for warning in plan.warnings))
+
+    def test_ensure_latest_ignores_eval_containers(self) -> None:
+        config = fleet.filter_config_to_host(sample_config(), "beast-3")
+        eval_desired = fleet.build_desired_deployment(
+            host=config.hosts["beast-3"],
+            key=fleet.DeploymentKey(
+                host="beast-3",
+                profile_id=None,
+                runtime_image_ref=OTHER_IMAGE_REF,
+                run_target=None,
+                worker_kind=fleet.WORKER_KIND_EVAL,
+                replica=0,
+            ),
+            workers=1,
+            pending_count=0,
+            running_count=0,
+        )
+        existing = fleet.ExistingContainer(
+            host="beast-3",
+            name=eval_desired.name,
+            state="running",
+            status="Up",
+            image="ghcr.io/tsilva/rlab/rlab-train",
+            labels=eval_desired.labels,
+        )
+
+        plan = fleet.build_ensure_latest_plan(
+            config,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            workers=None,
+            existing=[existing],
+            leases=[],
+            demands=[],
+        )
+
+        removes = [action for action in plan.actions if action.kind == "remove"]
+        self.assertEqual(removes, [])
 
     def test_ensure_latest_keeps_old_runner_with_active_lease(self) -> None:
         config = fleet.filter_config_to_host(sample_config(), "beast-3")
@@ -895,6 +988,7 @@ class FleetPlanTests(unittest.TestCase):
             mock.patch.object(fleet, "list_stale_train_jobs", return_value=[]),
             mock.patch.object(fleet, "queue_demands", return_value=[]),
             mock.patch.object(fleet, "active_leases", return_value=[]),
+            mock.patch.object(fleet, "active_eval_leases", return_value=[]),
             mock.patch.object(fleet, "running_jobs", return_value=[job]),
             mock.patch.object(fleet, "live_device_probes", return_value={"rtx4090": probe}) as probes,
             mock.patch.object(fleet, "collect_existing_containers", return_value=([], [])),
@@ -939,6 +1033,7 @@ class FleetPlanTests(unittest.TestCase):
             mock.patch.object(fleet, "list_stale_train_jobs", return_value=[]),
             mock.patch.object(fleet, "queue_demands", return_value=[]),
             mock.patch.object(fleet, "active_leases", return_value=[]),
+            mock.patch.object(fleet, "active_eval_leases", return_value=[]),
             mock.patch.object(fleet, "running_jobs", return_value=[]),
             mock.patch.object(
                 fleet,
@@ -1007,6 +1102,7 @@ class FleetPlanTests(unittest.TestCase):
             mock.patch.object(fleet, "mark_stale_train_jobs_failed") as mark_stale,
             mock.patch.object(fleet, "queue_demands", return_value=[]),
             mock.patch.object(fleet, "active_leases", return_value=[]),
+            mock.patch.object(fleet, "active_eval_leases", return_value=[]),
             mock.patch.object(fleet, "running_jobs", return_value=[]),
             mock.patch.object(fleet, "collect_existing_containers", return_value=([], [])),
         ):
@@ -1079,6 +1175,7 @@ class FleetPlanTests(unittest.TestCase):
             mock.patch.object(fleet, "mark_stale_train_jobs_failed", side_effect=fake_mark_stale) as mark_stale,
             mock.patch.object(fleet, "queue_demands", side_effect=fake_queue_demands),
             mock.patch.object(fleet, "active_leases", return_value=[]),
+            mock.patch.object(fleet, "active_eval_leases", return_value=[]),
             mock.patch.object(fleet, "running_jobs", return_value=[]),
             mock.patch.object(fleet, "collect_existing_containers", return_value=([], [])),
         ):
@@ -1210,8 +1307,8 @@ class FleetPlanTests(unittest.TestCase):
         args = fleet.build_parser().parse_args(["watch", "--dry-run"])
 
         self.assertFalse(args.execute)
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            fleet.build_parser().parse_args(["watch", "--" + "execute"])
+        args = fleet.build_parser().parse_args(["watch", "--dry-run", "--execute"])
+        self.assertTrue(args.execute)
 
     def test_watch_latest_can_disable_stale_job_claims(self) -> None:
         args = fleet.build_parser().parse_args(["watch", "--no-claim-stale-jobs"])

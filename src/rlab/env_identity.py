@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from rlab.env_registry import qualify_env_id, resolve_env_id
+
 
 ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v1"
 
@@ -115,6 +117,22 @@ def _setdefault_section(
         existing.setdefault(key, value)
 
 
+def _setdefault_top_level(environment: dict[str, Any], values: Mapping[str, Any]) -> None:
+    for key, value in values.items():
+        environment.setdefault(key, value)
+
+
+def _normalize_state_identity(identity: dict[str, Any]) -> None:
+    state_value = identity.get("state")
+    if not isinstance(state_value, Mapping):
+        return
+    state_section = dict(state_value)
+    identity.pop("state", None)
+    for key in STATE_KEYS:
+        if key in state_section and state_section[key] is not None:
+            identity.setdefault(key, deepcopy(state_section[key]))
+
+
 def environment_identity_from_train_config(
     train_config: Mapping[str, Any],
     *,
@@ -129,14 +147,30 @@ def environment_identity_from_train_config(
 
     identity = deepcopy(dict(environment or {}))
     identity.setdefault("schema_version", 1)
-    identity.setdefault("provider", "stable_retro")
-    if "env_id" not in identity and train_config.get("game") is not None:
-        identity["env_id"] = deepcopy(train_config["game"])
-    if "env_id" not in identity and identity.get("provider_env_id") is not None:
-        identity["env_id"] = deepcopy(identity["provider_env_id"])
+    legacy_provider = identity.get("env_provider", identity.get("provider"))
+    legacy_provider_env_id = identity.get("provider_env_id")
+    identity.pop("provider", None)
+    identity.pop("env_provider", None)
     identity.pop("provider_env_id", None)
+    if "env_id" not in identity and train_config.get("game") is not None:
+        identity["env_id"] = qualify_env_id("stable-retro-turbo", str(train_config["game"]))
+    elif "env_id" not in identity and legacy_provider_env_id is not None:
+        identity["env_id"] = qualify_env_id(
+            str(legacy_provider or "stable-retro-turbo"),
+            str(legacy_provider_env_id),
+        )
+    elif isinstance(identity.get("env_id"), str):
+        env_id = str(identity["env_id"])
+        if ":" not in env_id:
+            identity["env_id"] = qualify_env_id(
+                str(legacy_provider or "stable-retro-turbo"),
+                env_id,
+            )
+        else:
+            identity["env_id"] = resolve_env_id(env_id).qualified_id
 
-    _setdefault_section(identity, "state", _copy_present(train_config, STATE_KEYS))
+    _normalize_state_identity(identity)
+    _setdefault_top_level(identity, _copy_present(train_config, STATE_KEYS))
     _setdefault_section(identity, "action", _copy_present(train_config, ACTION_KEYS))
     _setdefault_section(
         identity,
@@ -201,9 +235,23 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
     train_config: dict[str, Any] = {}
     env_id = environment.get("env_id", environment.get("provider_env_id"))
     if env_id is not None:
-        train_config["game"] = deepcopy(env_id)
+        env_id_text = str(env_id)
+        if ":" in env_id_text:
+            train_config["game"] = resolve_env_id(env_id_text).provider_env_id
+        else:
+            train_config["game"] = deepcopy(env_id)
+    state_value = environment.get("state")
+    if isinstance(state_value, Mapping):
+        train_config.update(
+            deepcopy({key: state_value[key] for key in STATE_KEYS if key in state_value})
+        )
+    elif state_value is not None:
+        train_config["state"] = deepcopy(state_value)
+    if "states" in environment:
+        train_config["states"] = deepcopy(environment["states"])
+    if "state_probs" in environment:
+        train_config["state_probs"] = deepcopy(environment["state_probs"])
     for section in (
-        "state",
         "action",
         "preprocessing",
         "task_conditioning",

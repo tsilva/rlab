@@ -28,6 +28,12 @@ step value and also log `eval/checkpoint/step`.
 
 These are the first metrics to check when choosing policies.
 
+Queue-backed train specs use `selection_metrics` as an ordered list of training
+signals. Goal-owned eval specs do not define selection metrics; they only define
+the checkpoint measurement protocol. Queued checkpoint eval writes canonical
+`eval/*` metrics to the producing W&B run with `global_step` set to the
+checkpoint timestep, and stores the same metrics in `eval_results.metrics_json`.
+
 | Metric | Meaning |
 | --- | --- |
 | `train/done/all` | Cumulative count of non-`global_reset` training `done=True` env-slot episode boundaries. This is exhaustive. |

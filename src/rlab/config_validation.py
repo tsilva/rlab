@@ -12,15 +12,18 @@ import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
-from rlab.config_loader import YAML_EXTENSIONS, load_composed_mapping, load_mapping_document
-from rlab.env_identity import environment_hash, environment_identity_from_train_config
+from rlab.config_loader import load_composed_mapping, load_mapping_document
+from rlab.env_registry import resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_spec_document
+from rlab.seeds import validate_eval_seed
 
 
 GOAL_SCHEMA_VERSION = 1
+GOAL_EVAL_SPEC_SCHEMA_VERSION = 1
 RECIPE_SCHEMA_VERSION = 1
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
+GOAL_OPERATOR_VALUES = {"<", "<=", "==", ">=", ">"}
 
 
 @dataclass(frozen=True)
@@ -54,13 +57,6 @@ def _display_path(path: Path, repo_root: Path) -> str:
         return str(path.relative_to(repo_root))
     except ValueError:
         return str(path)
-
-
-def _resolve_repo_path(repo_root: Path, value: Any) -> Path:
-    path = Path(str(value))
-    if path.is_absolute():
-        return path
-    return repo_root / path
 
 
 def _label_path(label: str, key: str) -> str:
@@ -121,6 +117,13 @@ def _require_number(
     return number
 
 
+def _require_bool(document: Mapping[str, Any], key: str, *, label: str) -> bool:
+    value = _require_key(document, key, label=label)
+    if not isinstance(value, bool):
+        raise ValueError(f"{_label_path(label, key)} must be a boolean")
+    return value
+
+
 def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -> list[str]:
     value = _require_key(document, key, label=label)
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
@@ -169,32 +172,25 @@ def _require_schema_version(document: Mapping[str, Any], expected: int, *, label
         raise ValueError(f"{_label_path(label, 'schema_version')} must be {expected}")
 
 
-def _require_existing_file(repo_root: Path, document: Mapping[str, Any], key: str, *, label: str) -> Path:
-    value = _require_non_empty_string(document, key, label=label)
-    path = _resolve_repo_path(repo_root, value)
-    if not path.is_file():
-        raise ValueError(f"{_label_path(label, key)} does not exist: {value}")
-    return path
-
-
 def _validate_environment_identity(
     document: Mapping[str, Any],
     *,
     label: str,
-    require_hash: bool,
 ) -> Mapping[str, Any]:
     environment = _require_mapping(
         _require_key(document, "environment", label=label),
         label=f"{label}.environment",
     )
-    _require_non_empty_string(environment, "provider", label=f"{label}.environment")
-    if not (
-        isinstance(environment.get("env_id"), str)
-        and environment["env_id"].strip()
-        or isinstance(environment.get("provider_env_id"), str)
-        and environment["provider_env_id"].strip()
-    ):
-        raise ValueError(f"{label}.environment must define env_id")
+    for old_key in ("provider", "env_provider", "provider_env_id"):
+        if old_key in environment:
+            raise ValueError(
+                f"{label}.environment.{old_key} was replaced by fully-qualified env_id"
+            )
+    env_id = _require_non_empty_string(environment, "env_id", label=f"{label}.environment")
+    try:
+        resolve_env_id(env_id)
+    except ValueError as exc:
+        raise ValueError(f"{label}.environment.env_id is invalid: {exc}") from exc
     action = _require_mapping(
         _require_key(environment, "action", label=f"{label}.environment"),
         label=f"{label}.environment.action",
@@ -210,15 +206,33 @@ def _validate_environment_identity(
         _require_key(environment, "termination", label=f"{label}.environment"),
         label=f"{label}.environment.termination",
     )
-    if require_hash:
-        configured_hash = _require_non_empty_string(document, "environment_hash", label=label)
-        canonical = environment_identity_from_train_config({}, environment=environment)
-        expected_hash = environment_hash(canonical)
-        if configured_hash != expected_hash:
-            raise ValueError(
-                f"{label}.environment_hash must be {expected_hash}, got {configured_hash}"
-            )
     return environment
+
+
+def _validate_goal_eval_spec(document: Mapping[str, Any], *, label: str) -> None:
+    eval_spec = _require_mapping(
+        _require_key(document, "eval_spec", label=label),
+        label=f"{label}.eval_spec",
+    )
+    _require_schema_version(eval_spec, GOAL_EVAL_SPEC_SCHEMA_VERSION, label=f"{label}.eval_spec")
+    eval_config = _require_mapping(
+        _require_key(eval_spec, "eval_config", label=f"{label}.eval_spec"),
+        label=f"{label}.eval_spec.eval_config",
+    )
+    _require_int(eval_config, "episodes", label=f"{label}.eval_spec.eval_config", minimum=1)
+    seed = _require_int(eval_config, "seed", label=f"{label}.eval_spec.eval_config")
+    validate_eval_seed(seed, label=f"{label}.eval_spec.eval_config.seed")
+    _require_int(eval_config, "n_envs", label=f"{label}.eval_spec.eval_config", minimum=1)
+    _require_int(eval_config, "max_steps", label=f"{label}.eval_spec.eval_config", minimum=1)
+    _require_bool(eval_config, "stochastic", label=f"{label}.eval_spec.eval_config")
+    if "done_on_events" in eval_config:
+        _require_string_list(eval_config, "done_on_events", label=f"{label}.eval_spec.eval_config")
+
+
+def _validate_operator(value: str, *, label: str) -> None:
+    if value not in GOAL_OPERATOR_VALUES:
+        allowed = ", ".join(sorted(GOAL_OPERATOR_VALUES))
+        raise ValueError(f"{label} must be one of {allowed}")
 
 
 def load_goal_contract(
@@ -250,34 +264,73 @@ def _validate_goal_contract_document(
 ) -> None:
     label = f"goal file {_display_path(path, repo_root)}"
     _require_schema_version(document, GOAL_SCHEMA_VERSION, label=label)
-    goal_slug = _require_non_empty_string(document, "goal_slug", label=label)
+    narrative_top_level_keys = {
+        "batch_record_fields",
+        "capacity_policy_file",
+        "cap_policy",
+        "constraints",
+        "default_eval_profile",
+        "default_train_profile",
+        "default_train_profile_note",
+        "determinism",
+        "environment_hash",
+        "execution",
+        "notes",
+        "runtime",
+        "search_protocol",
+    }
+    present_narrative_keys = sorted(set(document) & narrative_top_level_keys)
+    if present_narrative_keys:
+        raise ValueError(
+            f"{label} must be script-readable; remove narrative keys: {present_narrative_keys}"
+        )
+    goal_id = _require_non_empty_string(document, "goal_id", label=label)
     _require_non_empty_string(document, "title", label=label)
     _require_non_empty_string(document, "status", label=label)
     goal_dir = path.parent
-    if goal_dir.name != goal_slug:
+    if goal_dir.name != goal_id:
         raise ValueError(
-            f"{_label_path(label, 'goal_slug')} must match goal directory name: {goal_dir.name}"
+            f"{_label_path(label, 'goal_id')} must match goal directory name: {goal_dir.name}"
         )
-
     objective = _require_mapping(_require_key(document, "objective", label=label), label=f"{label}.objective")
-    _require_non_empty_string(objective, "game", label=f"{label}.objective")
-    _require_non_empty_string(objective, "algorithm", label=f"{label}.objective")
     _require_non_empty_string(objective, "primary_metric", label=f"{label}.objective")
+    narrative_objective_keys = {"algorithm", "forbidden_stop_rules", "game", "success_requirement"}
+    present_objective_narrative_keys = sorted(set(objective) & narrative_objective_keys)
+    if present_objective_narrative_keys:
+        raise ValueError(
+            f"{label}.objective must be script-readable; "
+            f"remove narrative keys: {present_objective_narrative_keys}"
+        )
     _require_number(objective, "success_threshold", label=f"{label}.objective")
+    if "success_threshold_operator" in objective:
+        success_operator = _require_non_empty_string(
+            objective,
+            "success_threshold_operator",
+            label=f"{label}.objective",
+        )
+        _validate_operator(success_operator, label=f"{label}.objective.success_threshold_operator")
+    if "balance_guard_threshold_operator" in objective:
+        balance_operator = _require_non_empty_string(
+            objective,
+            "balance_guard_threshold_operator",
+            label=f"{label}.objective",
+        )
+        _validate_operator(balance_operator, label=f"{label}.objective.balance_guard_threshold_operator")
     _require_int(objective, "success_window_attempts", label=f"{label}.objective", minimum=1)
-    _require_int(objective, "max_train_timesteps", label=f"{label}.objective", minimum=1)
 
-    environment = _validate_environment_identity(document, label=label, require_hash=True)
-    state_section = _require_mapping(
-        _require_key(environment, "state", label=f"{label}.environment"),
-        label=f"{label}.environment.state",
-    )
-    if "state" in state_section:
-        environment_states = [str(state_section["state"])]
-    elif "states" in state_section:
-        environment_states = _require_string_list(state_section, "states", label=f"{label}.environment.state")
+    environment = _validate_environment_identity(document, label=label)
+    _require_int(environment, "max_train_timesteps", label=f"{label}.environment", minimum=1)
+    if "state" in environment and "states" in environment:
+        raise ValueError(f"{label}.environment must define only one of state or states")
+    if "state" in environment:
+        state = environment["state"]
+        if not isinstance(state, str) or not state.strip():
+            raise ValueError(f"{label}.environment.state must be a non-empty string")
+        environment_states = [state.strip()]
+    elif "states" in environment:
+        environment_states = _require_string_list(environment, "states", label=f"{label}.environment")
     else:
-        raise ValueError(f"{label}.environment.state must define state or states")
+        raise ValueError(f"{label}.environment must define state or states")
     if "states" in objective:
         objective_states = _require_string_list(objective, "states", label=f"{label}.objective")
     else:
@@ -292,17 +345,15 @@ def _validate_goal_contract_document(
         _require_key(document, "selection_policy", label=label),
         label=f"{label}.selection_policy",
     )
+    allowed_selection_keys = {"rank_order"}
+    extra_selection_keys = sorted(set(selection_policy) - allowed_selection_keys)
+    if extra_selection_keys:
+        raise ValueError(
+            f"{label}.selection_policy must contain only rank_order; "
+            f"unexpected keys: {extra_selection_keys}"
+        )
     _require_string_list(selection_policy, "rank_order", label=f"{label}.selection_policy")
-
-    capacity_path = _require_existing_file(repo_root, document, "capacity_policy_file", label=label)
-    if capacity_path.suffix.lower() not in YAML_EXTENSIONS:
-        raise ValueError(f"{_label_path(label, 'capacity_policy_file')} must be YAML")
-
-    execution = _require_mapping(_require_key(document, "execution", label=label), label=f"{label}.execution")
-    for key in ("hardware_config_file", "fleet_config_file"):
-        config_path = _require_existing_file(repo_root, execution, key, label=f"{label}.execution")
-        if config_path.suffix.lower() not in YAML_EXTENSIONS:
-            raise ValueError(f"{_label_path(f'{label}.execution', key)} must be YAML")
+    _validate_goal_eval_spec(document, label=label)
 
 
 def validate_train_recipe(path: Path) -> None:
@@ -316,7 +367,7 @@ def validate_train_recipe(path: Path) -> None:
     _require_non_empty_string(document, "algorithm", label=label)
     reward = None
     if "environment" in document:
-        environment = _validate_environment_identity(document, label=label, require_hash=False)
+        environment = _validate_environment_identity(document, label=label)
         reward = _require_mapping(
             _require_key(environment, "reward", label=f"{label}.environment"),
             label=f"{label}.environment.reward",

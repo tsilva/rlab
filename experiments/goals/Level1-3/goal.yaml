@@ -1,28 +1,20 @@
-# Hydra composition list; imports the shared single-level 100/100 contract first.
+# Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared single-level base; supplies common environment, success criteria, runtime, and search rules.
-- ../_shared/mario-single-level-100of100@_global_
+# Shared Mario base; supplies common environment and success criteria.
+- ../_shared/mario@_global_
 # Apply this file after the base; lets Level1-3 define its state, evidence, and defaults.
 - _self_
-# Goal slug; must match the directory so tools can address this contract unambiguously.
-goal_slug: Level1-3
+# Goal id; must match the directory so tools can address this contract unambiguously.
+goal_id: Level1-3
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES Level1-3 completion
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
-  # State sampling definition; fixes the start state that attempts are counted from.
-  state:
-    # Stable Retro state id; Level1-3 is the only source for this goal.
-    state: Level1-3
-# Deterministic hash of the fully composed environment; makes exact env equality cheap to compare.
-environment_hash: sha256:75cc881d6b67127a38124ab9888917199890444a9e2957502727adc4441af5e5
+  # Stable Retro state id; Level1-3 is the only source for this goal.
+  state: Level1-3
 # Goal-specific candidate ranking policy.
 selection_policy:
-  # Ordered ranking metrics; primary bottleneck completion comes first, training diagnostics follow.
+  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)
-# Goal-specific budget and stopping policy.
-cap_policy:
-  # Early stop definition; records the strict success stop used by Level1-3 train specs.
-  early_stop_rule: Stop training once train/info/level_complete/rate/min/last > 0.99; this is the strict 100/100 source-attempt window for the single Level1-3 start state.

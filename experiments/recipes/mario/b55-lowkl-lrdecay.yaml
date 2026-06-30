@@ -10,10 +10,8 @@ algorithm: PPO
 description: Current reusable B55 low-KL late-decay Mario PPO recipe.
 # Environment fragment; shared by specs that compose this recipe before adding goal-specific state.
 environment:
-  # Backend environment provider; needed because env ids are only meaningful within a provider.
-  provider: stable_retro
-  # Provider environment id; materializes to the runner's game argument.
-  env_id: SuperMarioBros-Nes-v0
+  # Fully-qualified environment id; materializes to the runner's game argument.
+  env_id: stable-retro-turbo:SuperMarioBros-Nes-v0
   # Action-space fragment; defines which controller buttons the policy can emit.
   action:
     # Named action set from the target; simple keeps the Mario action space small and comparable.

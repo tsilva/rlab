@@ -1,24 +1,20 @@
-# Hydra composition list; imports the shared single-level 100/100 contract first.
+# Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared single-level base; supplies common environment, success criteria, runtime, and search rules.
-- ../_shared/mario-single-level-100of100@_global_
+# Shared Mario base; supplies common environment and success criteria.
+- ../_shared/mario@_global_
 # Apply this file after the base; lets Level1-2 define its state, evidence, and defaults.
 - _self_
-# Goal slug; must match the directory so tools can address this contract unambiguously.
-goal_slug: Level1-2
+# Goal id; must match the directory so tools can address this contract unambiguously.
+goal_id: Level1-2
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES Level1-2 completion
 # Goal-specific environment overlay; only the source state differs from the shared Mario env.
 environment:
-  # State sampling definition; fixes the start state that attempts are counted from.
-  state:
-    # Stable Retro state id; Level1-2 is the only source for this goal.
-    state: Level1-2
-# Deterministic hash of the fully composed environment; makes exact env equality cheap to compare.
-environment_hash: sha256:034523c19fbd43e9e58d0702137e3a5723ad692ddf777b5d94264c93caf8b99b
+  # Stable Retro state id; Level1-2 is the only source for this goal.
+  state: Level1-2
 # Goal-specific candidate ranking policy.
 selection_policy:
-  # Ordered ranking metrics; primary bottleneck completion comes first, training diagnostics follow.
+  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
   rank_order:
   - max(train/info/level_complete/rate/min/last)
   - max(train/info/level_complete/rate/mean/last)

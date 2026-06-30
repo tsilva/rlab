@@ -106,7 +106,11 @@ CREATE TABLE IF NOT EXISTS eval_jobs (
   spec_slug TEXT,
   spec_path TEXT,
   train_job_id BIGINT REFERENCES train_jobs(id) ON DELETE SET NULL,
-  profile_id TEXT NOT NULL,
+  profile_id TEXT,
+  runtime_image_ref TEXT,
+  artifact_ref TEXT,
+  checkpoint_step INTEGER,
+  eval_protocol_hash TEXT,
   eval_config JSONB NOT NULL,
   priority INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -130,12 +134,20 @@ CREATE TABLE IF NOT EXISTS eval_results (
   goal_slug TEXT NOT NULL,
   spec_slug TEXT,
   train_job_id BIGINT REFERENCES train_jobs(id) ON DELETE SET NULL,
-  profile_id TEXT NOT NULL,
+  profile_id TEXT,
+  runtime_image_ref TEXT,
+  artifact_ref TEXT,
+  checkpoint_step INTEGER,
+  eval_protocol_hash TEXT,
   status TEXT NOT NULL,
   candidate_label TEXT,
   model_ref TEXT,
   output_path TEXT,
   video_path TEXT,
+  wandb_run_id TEXT,
+  wandb_logged BOOLEAN,
+  wandb_log_step INTEGER,
+  wandb_log_error TEXT,
   metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -151,20 +163,39 @@ CREATE TABLE IF NOT EXISTS job_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE eval_jobs ALTER COLUMN profile_id DROP NOT NULL;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS artifact_ref TEXT;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS checkpoint_step INTEGER;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS eval_protocol_hash TEXT;
+ALTER TABLE eval_results ALTER COLUMN profile_id DROP NOT NULL;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS artifact_ref TEXT;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS checkpoint_step INTEGER;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS eval_protocol_hash TEXT;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS wandb_logged BOOLEAN;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS wandb_log_step INTEGER;
+ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS wandb_log_error TEXT;
+
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (profile_id, status, priority DESC, id)
   WHERE status IN ('pending', 'running');
 
 CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
-  ON train_jobs (profile_id, runtime_image_ref, run_target, status, priority DESC, id)
+  ON train_jobs (runtime_image_ref, status, priority DESC, id)
   WHERE status IN ('pending', 'running') AND runtime_image_ref IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
 
 CREATE INDEX IF NOT EXISTS eval_jobs_claim_idx
-  ON eval_jobs (profile_id, status, priority DESC, id)
+  ON eval_jobs (runtime_image_ref, status, priority DESC, id)
   WHERE status IN ('pending', 'running');
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_jobs_artifact_protocol_idx
+  ON eval_jobs (artifact_ref, eval_protocol_hash)
+  WHERE artifact_ref IS NOT NULL AND eval_protocol_hash IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS train_jobs_spec_status_idx
   ON train_jobs (goal_slug, spec_slug, status);
@@ -190,9 +221,7 @@ WITH next_job AS (
   SELECT id
   FROM train_jobs
   WHERE
-    (%(profile_id)s IS NULL OR profile_id = %(profile_id)s)
-    AND runtime_image_ref = %(runtime_image_ref)s
-    AND (run_target IS NULL OR run_target = %(run_target)s)
+    runtime_image_ref = %(runtime_image_ref)s
     AND cancel_requested = FALSE
     AND status = 'pending'
   ORDER BY priority DESC, id ASC
@@ -219,7 +248,7 @@ WITH next_job AS (
   SELECT id
   FROM eval_jobs
   WHERE
-    profile_id = %(profile_id)s
+    runtime_image_ref = %(runtime_image_ref)s
     AND cancel_requested = FALSE
     AND status = 'pending'
   ORDER BY priority DESC, id ASC
@@ -461,6 +490,36 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def stable_json_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def goal_path_for_slug(goal_slug: str) -> Path:
+    return Path("experiments/goals") / goal_slug / "goal.yaml"
+
+
+def load_goal_eval_spec(goal_slug: str) -> dict[str, Any]:
+    goal_slug = str(goal_slug).strip()
+    if not goal_slug:
+        raise ValueError("goal_slug is required")
+    path = goal_path_for_slug(goal_slug)
+    if not path.is_file():
+        raise FileNotFoundError(f"goal eval spec not found: {path}")
+    document = load_composed_mapping(path, cycle_label="goal").document
+    eval_spec = document.get("eval_spec")
+    if not isinstance(eval_spec, Mapping):
+        raise ValueError(f"{path} must define eval_spec")
+    eval_config = eval_spec.get("eval_config")
+    if not isinstance(eval_config, Mapping):
+        raise ValueError(f"{path} eval_spec must define eval_config")
+    return {"schema_version": eval_spec.get("schema_version"), "eval_config": dict(eval_config)}
+
+
+def eval_protocol_hash(eval_spec: Mapping[str, Any]) -> str:
+    return stable_json_hash(eval_spec)
+
+
 def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:
     try:
         result = subprocess.run(
@@ -640,11 +699,6 @@ def enqueue_train_jobs_from_spec_document(
     priority_override: int | None = None,
 ) -> list[dict[str, Any]]:
     validate_train_spec_schema(document)
-    profile = str(profile_id).strip() if profile_id else None
-    canonical_target = canonicalize_run_target(
-        run_target if run_target is not None else document.get("run_target"),
-        instances_path=instances_path,
-    )
     goal_slug = spec_goal_slug(document)
     document_slug = spec_slug(document)
     utc = _utc_stamp()
@@ -667,9 +721,9 @@ def enqueue_train_jobs_from_spec_document(
             repo_git_commit=repo_git_commit,
             repo_dirty=repo_dirty,
             spec_payload=document,
-            profile_id=profile,
+            profile_id=None,
             runtime_image_ref=runtime_image_ref,
-            run_target=canonical_target,
+            run_target=None,
             train_config=train_config,
             priority=int(priority_override if priority_override is not None else document.get("priority") or 0),
             max_attempts=int(document.get("max_attempts") or 1),
@@ -752,9 +806,9 @@ def enqueue_train_job(
     assert_no_secrets(spec_payload or {}, label="spec_payload")
     validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
-    profile_id = str(profile_id).strip() if profile_id else None
+    profile_id = None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    run_target = normalize_run_target(run_target)
+    run_target = None
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -811,11 +865,15 @@ def enqueue_eval_job(
     conn,
     *,
     goal_slug: str,
-    profile_id: str,
     eval_config: Mapping[str, Any],
+    runtime_image_ref: str,
     spec_slug: str | None = None,
     spec_path: str | None = None,
     train_job_id: int | None = None,
+    artifact_ref: str | None = None,
+    checkpoint_step: int | None = None,
+    eval_protocol_hash: str | None = None,
+    profile_id: str | None = None,
     priority: int = 0,
     max_attempts: int = 1,
     candidate_label: str | None = None,
@@ -827,19 +885,37 @@ def enqueue_eval_job(
     assert_no_secrets(config, label="eval_config")
     if _non_empty_config_value(config.get("seed")):
         validate_eval_seed(config["seed"], label="eval_config.seed")
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    profile_id = None
+    artifact_ref = str(artifact_ref).strip() if artifact_ref else None
+    eval_protocol_hash = str(eval_protocol_hash).strip() if eval_protocol_hash else None
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO eval_jobs (
                   goal_slug, spec_slug, spec_path, train_job_id, profile_id,
+                  runtime_image_ref, artifact_ref, checkpoint_step, eval_protocol_hash,
                   eval_config, priority, max_attempts, candidate_label
                 )
                 VALUES (
                   %(goal_slug)s, %(spec_slug)s, %(spec_path)s, %(train_job_id)s,
-                  %(profile_id)s, %(eval_config)s, %(priority)s, %(max_attempts)s,
-                  %(candidate_label)s
+                  %(profile_id)s, %(runtime_image_ref)s, %(artifact_ref)s,
+                  %(checkpoint_step)s, %(eval_protocol_hash)s, %(eval_config)s,
+                  %(priority)s, %(max_attempts)s, %(candidate_label)s
                 )
+                ON CONFLICT (artifact_ref, eval_protocol_hash)
+                  WHERE artifact_ref IS NOT NULL AND eval_protocol_hash IS NOT NULL
+                DO UPDATE SET
+                  runtime_image_ref = EXCLUDED.runtime_image_ref,
+                  train_job_id = COALESCE(eval_jobs.train_job_id, EXCLUDED.train_job_id),
+                  spec_slug = COALESCE(eval_jobs.spec_slug, EXCLUDED.spec_slug),
+                  spec_path = COALESCE(eval_jobs.spec_path, EXCLUDED.spec_path),
+                  checkpoint_step = COALESCE(eval_jobs.checkpoint_step, EXCLUDED.checkpoint_step),
+                  eval_config = EXCLUDED.eval_config,
+                  priority = GREATEST(eval_jobs.priority, EXCLUDED.priority),
+                  max_attempts = GREATEST(eval_jobs.max_attempts, EXCLUDED.max_attempts),
+                  candidate_label = COALESCE(eval_jobs.candidate_label, EXCLUDED.candidate_label)
                 RETURNING *
                 """,
                 {
@@ -848,6 +924,10 @@ def enqueue_eval_job(
                     "spec_path": spec_path,
                     "train_job_id": train_job_id,
                     "profile_id": profile_id,
+                    "runtime_image_ref": runtime_image_ref,
+                    "artifact_ref": artifact_ref,
+                    "checkpoint_step": checkpoint_step,
+                    "eval_protocol_hash": eval_protocol_hash,
                     "eval_config": json_arg(config),
                     "priority": priority,
                     "max_attempts": max_attempts,
@@ -869,23 +949,19 @@ def enqueue_eval_job(
 def claim_train_job(
     conn,
     *,
-    profile_id: str | None,
     runtime_image_ref: str,
-    run_target: str | None,
     worker_id: str,
     lease_seconds: int,
+    profile_id: str | None = None,
+    run_target: str | None = None,
 ) -> dict[str, Any] | None:
-    profile_id = str(profile_id).strip() if profile_id else None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    run_target = normalize_run_target(run_target)
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 CLAIM_TRAIN_JOB_SQL,
                 {
-                    "profile_id": profile_id,
                     "runtime_image_ref": runtime_image_ref,
-                    "run_target": run_target,
                     "worker_id": worker_id,
                     "lease_seconds": lease_seconds,
                 },
@@ -897,16 +973,18 @@ def claim_train_job(
 def claim_eval_job(
     conn,
     *,
-    profile_id: str,
+    runtime_image_ref: str,
     worker_id: str,
     lease_seconds: int,
+    profile_id: str | None = None,
 ) -> dict[str, Any] | None:
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 CLAIM_EVAL_JOB_SQL,
                 {
-                    "profile_id": profile_id,
+                    "runtime_image_ref": runtime_image_ref,
                     "worker_id": worker_id,
                     "lease_seconds": lease_seconds,
                 },
@@ -1544,21 +1622,34 @@ def finish_eval_job(
                 """
                 INSERT INTO eval_results (
                   eval_job_id, goal_slug, spec_slug, train_job_id, profile_id,
+                  runtime_image_ref, artifact_ref, checkpoint_step, eval_protocol_hash,
                   status, candidate_label, model_ref, output_path, video_path,
+                  wandb_run_id, wandb_logged, wandb_log_step, wandb_log_error,
                   metrics_json, error
                 )
                 VALUES (
                   %(eval_job_id)s, %(goal_slug)s, %(spec_slug)s,
-                  %(train_job_id)s, %(profile_id)s, %(status)s, %(candidate_label)s,
-                  %(model_ref)s, %(output_path)s, %(video_path)s, %(metrics_json)s,
-                  %(error)s
+                  %(train_job_id)s, %(profile_id)s, %(runtime_image_ref)s,
+                  %(artifact_ref)s, %(checkpoint_step)s, %(eval_protocol_hash)s,
+                  %(status)s, %(candidate_label)s, %(model_ref)s,
+                  %(output_path)s, %(video_path)s,
+                  %(wandb_run_id)s, %(wandb_logged)s, %(wandb_log_step)s,
+                  %(wandb_log_error)s, %(metrics_json)s, %(error)s
                 )
                 ON CONFLICT (eval_job_id) DO UPDATE SET
+                  runtime_image_ref = EXCLUDED.runtime_image_ref,
+                  artifact_ref = EXCLUDED.artifact_ref,
+                  checkpoint_step = EXCLUDED.checkpoint_step,
+                  eval_protocol_hash = EXCLUDED.eval_protocol_hash,
                   status = EXCLUDED.status,
                   candidate_label = EXCLUDED.candidate_label,
                   model_ref = EXCLUDED.model_ref,
                   output_path = EXCLUDED.output_path,
                   video_path = EXCLUDED.video_path,
+                  wandb_run_id = EXCLUDED.wandb_run_id,
+                  wandb_logged = EXCLUDED.wandb_logged,
+                  wandb_log_step = EXCLUDED.wandb_log_step,
+                  wandb_log_error = EXCLUDED.wandb_log_error,
                   metrics_json = EXCLUDED.metrics_json,
                   error = EXCLUDED.error,
                   created_at = now()
@@ -1568,12 +1659,21 @@ def finish_eval_job(
                     "goal_slug": job["goal_slug"],
                     "spec_slug": job.get("spec_slug"),
                     "train_job_id": job.get("train_job_id"),
-                    "profile_id": job["profile_id"],
+                    "profile_id": job.get("profile_id"),
+                    "runtime_image_ref": job.get("runtime_image_ref"),
+                    "artifact_ref": result.get("artifact_ref") or job.get("artifact_ref"),
+                    "checkpoint_step": result.get("checkpoint_step") or job.get("checkpoint_step"),
+                    "eval_protocol_hash": result.get("eval_protocol_hash")
+                    or job.get("eval_protocol_hash"),
                     "status": status,
                     "candidate_label": result.get("candidate_label") or job.get("candidate_label"),
                     "model_ref": result.get("model_ref"),
                     "output_path": result.get("output_path"),
                     "video_path": result.get("video_path"),
+                    "wandb_run_id": result.get("wandb_run_id"),
+                    "wandb_logged": result.get("wandb_logged"),
+                    "wandb_log_step": result.get("wandb_log_step"),
+                    "wandb_log_error": result.get("wandb_log_error"),
                     "metrics_json": json_arg(metrics_json),
                     "error": error,
                 },
@@ -1584,6 +1684,36 @@ def finish_eval_job(
                 job_id=int(job["id"]),
                 event_type=status,
                 message=error,
+            )
+
+
+def record_eval_wandb_status(
+    conn,
+    *,
+    eval_job_id: int,
+    wandb_run_id: str | None,
+    logged: bool,
+    log_step: int | None,
+    error: str | None = None,
+) -> None:
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE eval_results
+                SET wandb_run_id = %(wandb_run_id)s,
+                    wandb_logged = %(wandb_logged)s,
+                    wandb_log_step = %(wandb_log_step)s,
+                    wandb_log_error = %(wandb_log_error)s
+                WHERE eval_job_id = %(eval_job_id)s
+                """,
+                {
+                    "eval_job_id": eval_job_id,
+                    "wandb_run_id": wandb_run_id,
+                    "wandb_logged": logged,
+                    "wandb_log_step": log_step,
+                    "wandb_log_error": error,
+                },
             )
 
 
@@ -1678,8 +1808,9 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
         active_train_jobs = [dict(row) for row in cur.fetchall()]
         cur.execute(
             """
-            SELECT id, goal_slug, spec_slug, train_job_id, profile_id, status,
-                   candidate_label, lease_owner, heartbeat_at, created_at
+            SELECT id, goal_slug, spec_slug, train_job_id, profile_id, runtime_image_ref,
+                   artifact_ref, checkpoint_step, status, candidate_label, lease_owner,
+                   heartbeat_at, created_at
             FROM eval_jobs
             WHERE goal_slug = %(goal_slug)s
               AND status IN ('pending', 'running')
@@ -1706,8 +1837,8 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
         results = [dict(row) for row in cur.fetchall()]
         cur.execute(
             """
-            SELECT id, goal_slug, spec_slug, profile_id, status, candidate_label, model_ref,
-                   metrics_json, created_at
+            SELECT id, goal_slug, spec_slug, profile_id, runtime_image_ref, artifact_ref,
+                   checkpoint_step, status, candidate_label, model_ref, metrics_json, created_at
             FROM eval_results
             WHERE goal_slug = %(goal_slug)s
             ORDER BY created_at DESC
@@ -1718,8 +1849,8 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
         eval_results = [dict(row) for row in cur.fetchall()]
         cur.execute(
             """
-            SELECT id, goal_slug, spec_slug, profile_id, status, candidate_label, model_ref,
-                   metrics_json, created_at
+            SELECT id, goal_slug, spec_slug, profile_id, runtime_image_ref, artifact_ref,
+                   checkpoint_step, status, candidate_label, model_ref, metrics_json, created_at
             FROM eval_results
             WHERE goal_slug = %(goal_slug)s
               AND status = 'succeeded'
@@ -1753,21 +1884,22 @@ def print_status(report: Mapping[str, Any]) -> None:
     for row in report.get("active_train_jobs", []):
         print(
             "  "
-            f"job={row['id']} status={row['status']} profile={row.get('profile_id') or 'any'} "
-            f"target={row.get('run_target') or 'any'} run={row.get('run_name') or ''}"
+            f"job={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
+            f"run={row.get('run_name') or ''}"
         )
     print("active_eval_jobs:")
     for row in report.get("active_eval_jobs", []):
         print(
             "  "
-            f"job={row['id']} status={row['status']} profile={row['profile_id']} "
+            f"job={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
+            f"checkpoint_step={row.get('checkpoint_step') or ''} "
             f"candidate={row.get('candidate_label') or ''}"
         )
     print("recent_results:")
     for row in report["recent_results"]:
         print(
             "  "
-            f"result={row['id']} status={row['status']} profile={row['profile_id']} "
+            f"result={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
             f"run={row.get('run_name') or ''} wandb={row.get('wandb_url') or ''}"
         )
     print("recent_eval_results:")
@@ -1776,7 +1908,8 @@ def print_status(report: Mapping[str, Any]) -> None:
         summary = _metric_summary(metrics, ("completion_rate", "max_x_max", "reward_mean"))
         print(
             "  "
-            f"result={row['id']} status={row['status']} profile={row['profile_id']} "
+            f"result={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
+            f"checkpoint_step={row.get('checkpoint_step') or ''} "
             f"candidate={row.get('candidate_label') or ''} model={row.get('model_ref') or ''} "
             f"{summary}"
         )
@@ -1927,9 +2060,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         rows = enqueue_train_jobs_from_spec_file(
             conn,
             path=args.spec_file,
-            profile_id=args.profile,
             runtime_image_ref=runtime_image_ref,
-            run_target=args.run_target,
             instances_path=args.instances,
             seeds=args.seed,
             priority_override=args.priority,
@@ -1937,15 +2068,30 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     for row in rows:
-        target = row.get("run_target") or "any"
         print(
-            f"train_job_id={row['id']} profile={row['profile_id'] or 'any'} "
-            f"run_name={row.get('run_name') or ''} target={target}"
+            f"train_job_id={row['id']} image={row.get('runtime_image_ref') or ''} "
+            f"run_name={row.get('run_name') or ''}"
         )
     return 0
 
 
 def cmd_enqueue_eval(args: argparse.Namespace) -> int:
+    runtime_image_ref = runtime_image_ref_from_args(args, default_latest=True)
+    if not runtime_image_ref:
+        raise SystemExit("--runtime-image-ref, --runtime-image-ref-file, or latest image resolution is required")
+    goal_eval_spec = load_goal_eval_spec(args.goal)
+    eval_config = dict(goal_eval_spec["eval_config"])
+    eval_config.update(load_json_arg(args.eval_config_json, default={}))
+    if args.artifact_ref:
+        eval_config["artifact_ref"] = args.artifact_ref
+    if args.checkpoint_step is not None:
+        eval_config["checkpoint_step"] = args.checkpoint_step
+    materialized_eval_spec = {
+        "schema_version": goal_eval_spec.get("schema_version"),
+        "eval_config": eval_config,
+    }
+    protocol_hash = args.eval_protocol_hash or eval_protocol_hash(materialized_eval_spec)
+    eval_config["eval_protocol_hash"] = protocol_hash
     conn = _connect_from_args(args)
     try:
         row = enqueue_eval_job(
@@ -1954,15 +2100,21 @@ def cmd_enqueue_eval(args: argparse.Namespace) -> int:
             spec_slug=args.spec_slug,
             spec_path=args.spec_path,
             train_job_id=args.train_job_id,
-            profile_id=args.profile,
-            eval_config=load_json_arg(args.eval_config_json, default={}),
+            runtime_image_ref=runtime_image_ref,
+            artifact_ref=args.artifact_ref,
+            checkpoint_step=args.checkpoint_step,
+            eval_protocol_hash=protocol_hash,
+            eval_config=eval_config,
             priority=args.priority,
             max_attempts=args.max_attempts,
             candidate_label=args.candidate_label,
         )
     finally:
         conn.close()
-    print(f"eval_job_id={row['id']} profile={row['profile_id']}")
+    print(
+        f"eval_job_id={row['id']} image={row.get('runtime_image_ref') or ''} "
+        f"artifact={row.get('artifact_ref') or ''}"
+    )
     return 0
 
 

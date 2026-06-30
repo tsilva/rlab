@@ -33,7 +33,6 @@ def _evaluate_model_episodes_vector(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     vec_config = replace(
         config,
-        done_on_events=(),
         max_episode_steps=0,
         no_progress_timeout_steps=0,
     )
@@ -192,7 +191,6 @@ def evaluate_model_episodes(
         if n_envs == 1:
             eval_config = replace(
                 config,
-                done_on_events=(),
                 max_episode_steps=0,
                 no_progress_timeout_steps=0,
             )

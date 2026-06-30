@@ -40,7 +40,7 @@ lanes:
   reserve_workers: 0
 policy_checks:
 - Do not launch a runner unless a matching pending job exists, except explicit local ensure-runner warm capacity.
-- Group capacity by profile_id, runtime_image_ref, and run_target.
+- Group queue compatibility by runtime_image_ref only; host placement remains an operator/fleet decision.
 - Use digest image refs for comparable runs.
 - Backfill finished slots only while the next queued run still has decision value.
 - Treat training metrics as diagnostics; promote by out-of-process eval.

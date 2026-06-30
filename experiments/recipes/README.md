@@ -20,7 +20,7 @@ those change the training process, not the environment identity.
 
 Goal specs under `experiments/goals/<goal>/specs/` remain the launchable queue
 documents. A YAML spec may use Hydra `defaults` to compose recipe files, set goal-specific
-fields such as `environment.state`, `seeds`, `run_target`, and W&B naming, then
+fields such as `environment.state`, `seeds`, and W&B naming, then
 use `overrides` for the small delta that defines the candidate.
 Queue-ready recipe fragments may also use `env`, `train`, `reward`, and
 `logging` sections; `rlab` merges those into the final `train_config` before
@@ -40,6 +40,6 @@ At enqueue time, `rlab train --spec-file <path>.yaml` resolves every Hydra
 train-spec contract, and stores composition source hashes in `spec_payload_json`.
 The queue still executes a fully expanded immutable payload.
 
-Use `profile` only for queue/eval execution lanes such as profile-locked eval
-workers. Do not use it as a synonym for hyperparameter recipe; use `recipe`,
-`spec`, or `lane` instead.
+Queue compatibility is owned by the immutable `runtime_image_ref`; do not add
+new `profile` or `run_target` fields to train specs unless an explicit migration
+brings those concepts back.

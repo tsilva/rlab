@@ -100,7 +100,7 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     parser.add_argument("--spec-file", type=Path, required=True)
-    parser.add_argument("--profile", help="Optional exact train_jobs.profile_id to require.")
+    parser.add_argument("--profile", help=argparse.SUPPRESS)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(
         "--runtime-image-ref-file",
@@ -118,7 +118,7 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
     parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    parser.add_argument("--target", dest="run_target", help="Optional compute target required by this job")
+    parser.add_argument("--target", dest="run_target", help=argparse.SUPPRESS)
     parser.add_argument(
         "--instances",
         type=Path,
@@ -131,6 +131,8 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
 
 
 def build_eval_enqueue_parser() -> argparse.ArgumentParser:
+    from rlab.runtime_refs import DEFAULT_IMAGE_ARTIFACT, DEFAULT_IMAGE_BRANCH, DEFAULT_IMAGE_WORKFLOW
+
     parser = argparse.ArgumentParser(
         prog="rlab eval enqueue",
         description="Create a concrete queue-backed eval job.",
@@ -140,8 +142,31 @@ def build_eval_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spec-slug")
     parser.add_argument("--spec-path")
     parser.add_argument("--train-job-id", type=int)
-    parser.add_argument("--profile", required=True)
-    parser.add_argument("--eval-config-json", required=True)
+    parser.add_argument("--profile", help=argparse.SUPPRESS)
+    parser.add_argument("--runtime-image-ref")
+    parser.add_argument(
+        "--runtime-image-ref-file",
+        type=Path,
+        help=(
+            "JSON artifact or plain-text file containing the immutable runtime image ref; "
+            "defaults to latest."
+        ),
+    )
+    parser.add_argument(
+        "--latest-image",
+        action="store_true",
+        help="Resolve the latest successful train image digest.",
+    )
+    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
+    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
+    parser.add_argument(
+        "--eval-config-json",
+        help="Optional JSON/file overrides merged onto the goal-owned eval_spec.eval_config.",
+    )
+    parser.add_argument("--artifact-ref")
+    parser.add_argument("--checkpoint-step", type=int)
+    parser.add_argument("--eval-protocol-hash")
     parser.add_argument("--priority", type=int, default=0)
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument("--candidate-label")

@@ -3,18 +3,20 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from rlab import job_queue
 from rlab import main as rlab_main
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.dotenv import load_env_file
-from rlab.eval_job_runner import normalize_eval_config
+from rlab.eval_job_runner import log_eval_to_wandb, normalize_eval_config
 from rlab.json_utils import json_safe
 from rlab.metric_names import TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST
 from rlab.seeds import DEFAULT_EVAL_SEED
@@ -29,6 +31,7 @@ from rlab.train_runner import (
     WorkerSlot,
     build_parser as build_train_runner_parser,
     collect_result_metadata,
+    enqueue_eval_jobs_for_checkpoints,
     mark_surplus_workers_for_retirement,
     matching_pending_train_job_exists,
     normalize_train_config,
@@ -113,15 +116,11 @@ def valid_train_spec() -> dict:
         "parent_spec_slug": None,
         "priority": 7,
         "seeds": [23, 24],
-        "run_target": "rtx4090",
         "wandb_group": "b-test",
         "wandb_tags": ["mario", "confirm"],
         "run_name_template": "btest_s{seed}_{utc}",
         "run_description_template": "candidate seed {seed}",
-        "selection_gate": {
-            "primary": "train/completion_episode_rate",
-            "tie_breakers": ["train/reward/mean"],
-        },
+        "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": {
             "game": "SuperMarioBros-Nes-v0",
             "state": "Level1-1",
@@ -149,7 +148,7 @@ class TrainRunnerSignalTests(unittest.TestCase):
 
 
 class JobQueueTests(unittest.TestCase):
-    def test_claim_train_job_filters_exact_profile(self) -> None:
+    def test_claim_train_job_filters_exact_runtime_image_only(self) -> None:
         conn = FakeConnection(row={"id": 7, "profile_id": "mario-ppo/post16/rtx4090-screening"})
 
         row = job_queue.claim_train_job(
@@ -162,32 +161,10 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(row["id"], 7)
-        self.assertIn("%(profile_id)s IS NULL OR profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
         self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
-        self.assertIn("run_target IS NULL OR run_target = %(run_target)s", conn.cursor_obj.executed_sql)
-        self.assertEqual(
-            conn.cursor_obj.executed_params["profile_id"],
-            "mario-ppo/post16/rtx4090-screening",
-        )
+        self.assertNotIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
+        self.assertNotIn("run_target = %(run_target)s", conn.cursor_obj.executed_sql)
         self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
-
-    def test_claim_train_job_allows_any_profile_when_unspecified(self) -> None:
-        conn = FakeConnection(row={"id": 9, "profile_id": "mario-ppo/post21/any-lane"})
-
-        row = job_queue.claim_train_job(
-            conn,
-            profile_id=None,
-            runtime_image_ref=RUNTIME_IMAGE_REF,
-            run_target="rtx4090",
-            worker_id="worker-any",
-            lease_seconds=60,
-        )
-
-        self.assertEqual(row["id"], 9)
-        self.assertIsNone(conn.cursor_obj.executed_params["profile_id"])
-        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
 
     def test_claim_train_job_does_not_reclaim_expired_running_leases(self) -> None:
         conn = FakeConnection(row=None)
@@ -321,8 +298,7 @@ overrides:
         self.assertEqual(loaded["train_config"]["learning_rate"], 0.0001)
         self.assertEqual(loaded["train_config"]["death_penalty"], 0)
         self.assertEqual(loaded["train_config"]["done_on_events"], ["life_loss", "level_change"])
-        self.assertEqual(loaded["environment"]["provider"], "stable_retro")
-        self.assertEqual(loaded["environment"]["env_id"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
         self.assertEqual(len(loaded["_composition"]["source_files"]), 2)
 
@@ -343,10 +319,8 @@ priority: 7
 seeds: [23]
 run_target: rtx4090
 environment:
-  provider: stable_retro
-  env_id: SuperMarioBros-Nes-v0
-  state:
-    state: Level1-1
+  env_id: stable-retro-turbo:SuperMarioBros-Nes-v0
+  state: Level1-1
   action:
     action_set: simple
   preprocessing:
@@ -387,8 +361,8 @@ logging:
         self.assertEqual(loaded["train_config"]["observation_size"], 84)
         self.assertNotIn("obs_resize", loaded["train_config"])
         self.assertEqual(loaded["train_config"]["death_penalty"], 25)
-        self.assertEqual(loaded["environment"]["env_id"], "SuperMarioBros-Nes-v0")
-        self.assertEqual(loaded["environment"]["state"]["state"], "Level1-1")
+        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertEqual(loaded["environment"]["state"], "Level1-1")
         self.assertNotIn("hud_crop_top", loaded["environment"]["preprocessing"])
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
         self.assertNotIn("observation_size", loaded["environment"]["preprocessing"])
@@ -540,13 +514,13 @@ logging:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             job_queue.build_parser().parse_args(["mark-stale-failed", "--" + "execute"])
 
-    def test_enqueue_train_job_persists_runtime_and_target(self) -> None:
+    def test_enqueue_train_job_persists_runtime_image_only(self) -> None:
         conn = FakeConnection(
             row={
                 "id": 9,
-                "profile_id": "mario-ppo/post21/rtx4090",
+                "profile_id": None,
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "run_target": "rtx4090",
+                "run_target": None,
             }
         )
 
@@ -565,7 +539,8 @@ logging:
         self.assertIn("runtime_image_ref", all_sql)
         insert_params = conn.cursor_obj.executed_params_list[0]
         self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(insert_params["run_target"], "rtx4090")
+        self.assertIsNone(insert_params["profile_id"])
+        self.assertIsNone(insert_params["run_target"])
         self.assertEqual(insert_params["goal_slug"], "goal")
         self.assertEqual(insert_params["spec_slug"], "spec")
 
@@ -575,7 +550,7 @@ logging:
                 "id": 9,
                 "profile_id": None,
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "run_target": "rtx4090",
+                "run_target": None,
             }
         )
 
@@ -692,29 +667,27 @@ logging:
             [{"workflow": "workflow", "branch": "main", "artifact_name": "artifact"}],
         )
 
-    def test_claim_eval_job_filters_exact_profile(self) -> None:
+    def test_claim_eval_job_filters_exact_runtime_image(self) -> None:
         conn = FakeConnection(row={"id": 8, "profile_id": "mario-ppo/post16/rtx4090-eval"})
 
         row = job_queue.claim_eval_job(
             conn,
-            profile_id="mario-ppo/post16/rtx4090-eval",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
             worker_id="worker-a",
             lease_seconds=60,
         )
 
         self.assertEqual(row["id"], 8)
-        self.assertIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
-        self.assertEqual(
-            conn.cursor_obj.executed_params["profile_id"],
-            "mario-ppo/post16/rtx4090-eval",
-        )
+        self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
+        self.assertNotIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
+        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
 
     def test_claim_eval_job_does_not_reclaim_expired_running_leases(self) -> None:
         conn = FakeConnection(row=None)
 
         row = job_queue.claim_eval_job(
             conn,
-            profile_id="mario-ppo/post16/rtx4090-eval",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
             worker_id="worker-a",
             lease_seconds=60,
         )
@@ -723,6 +696,178 @@ logging:
         self.assertIn("AND status = 'pending'", conn.cursor_obj.executed_sql)
         self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
         self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
+
+    def test_enqueue_eval_job_persists_runtime_artifact_and_protocol(self) -> None:
+        conn = FakeConnection(
+            row={
+                "id": 10,
+                "profile_id": None,
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "artifact_ref": "entity/project/model:step-100",
+                "eval_protocol_hash": "abc123",
+            }
+        )
+
+        row = job_queue.enqueue_eval_job(
+            conn,
+            goal_slug="Level1-1",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            artifact_ref="entity/project/model:step-100",
+            checkpoint_step=100,
+            eval_protocol_hash="abc123",
+            eval_config={"episodes": 100, "seed": DEFAULT_EVAL_SEED},
+        )
+
+        self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        sql = conn.cursor_obj.executed_sqls[0]
+        params = conn.cursor_obj.executed_params_list[0]
+        self.assertIn("ON CONFLICT (artifact_ref, eval_protocol_hash)", sql)
+        self.assertIsNone(params["profile_id"])
+        self.assertEqual(params["artifact_ref"], "entity/project/model:step-100")
+        self.assertEqual(params["checkpoint_step"], 100)
+        self.assertEqual(params["eval_protocol_hash"], "abc123")
+
+    def test_record_eval_wandb_status_updates_projection_fields(self) -> None:
+        conn = FakeConnection()
+
+        job_queue.record_eval_wandb_status(
+            conn,
+            eval_job_id=12,
+            wandb_run_id="run-id",
+            logged=True,
+            log_step=500000,
+        )
+
+        self.assertIn("UPDATE eval_results", conn.cursor_obj.executed_sql)
+        self.assertEqual(conn.cursor_obj.executed_params["eval_job_id"], 12)
+        self.assertEqual(conn.cursor_obj.executed_params["wandb_run_id"], "run-id")
+        self.assertTrue(conn.cursor_obj.executed_params["wandb_logged"])
+        self.assertEqual(conn.cursor_obj.executed_params["wandb_log_step"], 500000)
+
+    def test_checkpoint_artifact_upload_enqueues_goal_eval_job(self) -> None:
+        calls: list[dict] = []
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"id": 77, **kwargs}
+
+        job = {
+            "id": 12,
+            "goal_slug": "Level1-1",
+            "spec_slug": "candidate",
+            "spec_path": "experiments/goals/Level1-1/specs/candidate.yaml",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "priority": 7,
+            "run_name": "candidate_run",
+            "train_config": {
+                "run_name": "candidate_run",
+                "wandb_entity": "entity",
+                "wandb_project": "project",
+            },
+        }
+        result = {
+            "artifact_refs": [
+                {
+                    "name": "candidate_run-checkpoint",
+                    "location": "s3://bucket/path/ppo_test_500000_steps.zip",
+                },
+                {"name": "candidate_run-final", "location": "s3://bucket/path/final_model.zip"},
+            ]
+        }
+        eval_spec = {
+            "schema_version": 1,
+            "eval_config": {
+                "episodes": 100,
+                "seed": DEFAULT_EVAL_SEED,
+                "n_envs": 20,
+                "max_steps": 4500,
+                "stochastic": True,
+            },
+        }
+
+        with (
+            patch("rlab.train_runner.load_goal_eval_spec", return_value=eval_spec),
+            patch("rlab.train_runner.enqueue_eval_job", side_effect=fake_enqueue),
+            patch("rlab.train_runner.eval_protocol_hash", return_value="protocol-hash"),
+        ):
+            count = enqueue_eval_jobs_for_checkpoints(FakeConnection(), job, result)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(calls[0]["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertEqual(calls[0]["artifact_ref"], "entity/project/candidate_run-checkpoint:step-500000")
+        self.assertEqual(calls[0]["checkpoint_step"], 500000)
+        self.assertEqual(calls[0]["eval_protocol_hash"], "protocol-hash")
+        self.assertEqual(calls[0]["eval_config"]["artifact_ref"], calls[0]["artifact_ref"])
+
+    def test_log_eval_to_wandb_uses_checkpoint_global_step(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.logged: list[tuple[dict, int | None]] = []
+                self.finished = False
+
+            def log(self, payload: dict, step: int | None = None) -> None:
+                self.logged.append((payload, step))
+
+            def finish(self) -> None:
+                self.finished = True
+
+        class FakeWandb:
+            def __init__(self) -> None:
+                self.run = FakeRun()
+
+            def init(self, **kwargs):
+                self.init_kwargs = kwargs
+                return self.run
+
+        fake_wandb = FakeWandb()
+        metrics = {
+            "reward_mean": 12.5,
+            "reward_std": 1.0,
+            "reward_max": 15.0,
+            "max_x_mean": 300.0,
+            "max_x_max": 500,
+            "max_level_x_mean": 300.0,
+            "max_level_x_max": 500,
+            "death_count": 1,
+            "death_rate": 0.01,
+            "best_episode": {"reward": 15.0, "max_x_pos": 500},
+            "eval/done/level_change/rate": 1.0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "model.zip"
+            model_path.write_bytes(b"zip")
+            model_path.with_suffix(".metadata.json").write_text(
+                json.dumps(
+                    {
+                        "wandb_run_id": "run-id",
+                        "wandb_run_path": "entity/project/runs/run-id",
+                        "checkpoint_step": 500000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
+                patch("rlab.eval_job_runner.load_wandb_env"),
+            ):
+                result = log_eval_to_wandb(
+                    job={"id": 9, "eval_protocol_hash": "protocol"},
+                    config={"artifact_ref": "entity/project/model:step-500000"},
+                    model_path=model_path,
+                    metrics=metrics,
+                    video_path=None,
+                )
+
+        payload, step = fake_wandb.run.logged[0]
+        self.assertTrue(result["wandb_logged"])
+        self.assertEqual(result["wandb_run_id"], "run-id")
+        self.assertEqual(step, 500000)
+        self.assertEqual(payload["global_step"], 500000)
+        self.assertEqual(payload["eval/reward/mean"], 12.5)
+        self.assertEqual(payload["eval/checkpoint/step"], 500000)
+        self.assertEqual(payload["eval/done/level_change/rate"], 1.0)
+        self.assertTrue(fake_wandb.run.finished)
 
     def test_parser_removed_research_db_commands(self) -> None:
         parser = job_queue.build_parser()
@@ -836,6 +981,8 @@ logging:
         self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
         self.assertEqual(calls[0]["goal_slug"], "Level1-1")
         self.assertEqual(calls[0]["spec_slug"], "candidate")
+        self.assertIsNone(calls[0]["profile_id"])
+        self.assertIsNone(calls[0]["run_target"])
         self.assertEqual(calls[0]["spec_path"], "experiments/goals/mario/specs/candidate.yaml")
         self.assertEqual(calls[0]["spec_sha256"], "abc123")
         self.assertEqual(calls[0]["repo_git_commit"], "deadbeef")
@@ -1029,9 +1176,9 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
         self.assertIn("status = 'pending'", conn.cursor_obj.executed_sql)
         self.assertIn("cancel_requested = FALSE", conn.cursor_obj.executed_sql)
         self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
-        self.assertIn("run_target IS NULL OR run_target = %(run_target)s", conn.cursor_obj.executed_sql)
+        self.assertNotIn("run_target", conn.cursor_obj.executed_sql)
+        self.assertNotIn("profile_id", conn.cursor_obj.executed_sql)
         self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
 
 
 class TrainRunnerTests(unittest.TestCase):

@@ -10,7 +10,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Gate promotion of a trained checkpoint against a goal contract."
     )
-    parser.add_argument("--goal", required=True, help="Goal slug or path to goal.yaml.")
+    parser.add_argument("--goal", required=True, help="Goal id or path to goal.yaml.")
     parser.add_argument(
         "--candidate",
         required=True,
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> None:
 
     goal = load_goal_contract(goal_path)
     rank_order = goal.get("selection_policy", {}).get("rank_order", [])
-    print(f"goal={goal.get('goal_slug') or args.goal}")
+    print(f"goal={goal.get('goal_id') or args.goal}")
     print(f"goal_path={goal_path}")
     print(f"candidate={args.candidate}")
     if rank_order:
