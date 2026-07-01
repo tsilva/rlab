@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b221-b214resume-100k-soften4000-l13-screen
-stage: screen
-hypothesis: B214's 4500 clear bonus reliably discovers a 0.13 window but the policy decays afterward. B221 resumes the first B214 100k checkpoint and softens completion_reward back to 4000 while keeping freeze-style updates, testing whether less sparse-clear pressure after discovery preserves the platforming behavior better.
-expected_signal: Seed 80 should preserve a better final clear window than B214 repeats while remaining near the 0.13 peak. If both peak and final window regress, the post-discovery softening is not useful.
+hypothesis: >-
+  B214's 4500 clear bonus reliably discovers a 0.13 window but the policy decays afterward. B221
+  resumes the first B214 100k checkpoint and softens completion_reward back to 4000 while keeping
+  freeze-style updates, testing whether less sparse-clear pressure after discovery preserves the
+  platforming behavior better. Seed 80 should preserve a better final clear window than B214 repeats
+  while remaining near the 0.13 peak. If both peak and final window regress, the post-discovery
+  softening is not useful.
 parent_spec_slug: b214-b191resume-200k-freezemid4500-l13-screen
-priority: 36
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

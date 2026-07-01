@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b116-b93-repro-five-seed
-stage: confirm
-hypothesis: The B93 slow-entropy, Level1-2-biased recipe should reproduce its balanced high-watermark performance across five fresh seeds beyond the winning 200/201 pair.
-expected_signal: Most or all fresh seeds should maximize peak train/info/level_complete/rate/min/last within the 5M cap, with failures analyzed by whether Level1-1 or Level1-2 becomes the bottleneck.
+hypothesis: >-
+  The B93 slow-entropy, Level1-2-biased recipe should reproduce its balanced high-watermark
+  performance across five fresh seeds beyond the winning 200/201 pair. Most or all fresh seeds should
+  maximize peak train/info/level_complete/rate/min/last within the 5M cap, with failures analyzed by
+  whether Level1-1 or Level1-2 becomes the bottleneck.
 parent_spec_slug: b93-slowent-l12bias-l11l12-two-seed
-priority: 95
 seeds:
 - 208
 - 209
@@ -83,7 +86,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

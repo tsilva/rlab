@@ -31,7 +31,6 @@ from rlab.job_queue import (
     new_worker_id,
     print_status,
     queue_status,
-    record_running_train_result,
 )
 from rlab.runtime_refs import normalize_runtime_image_ref
 from rlab.seeds import validate_training_seed
@@ -382,7 +381,17 @@ def normalize_train_config(
     tags = normalize_wandb_tags(config.get("wandb_tags") or job.get("wandb_tags"))
     goal_slug = str(job.get("goal_slug") or "").strip()
     if goal_slug:
+        config["goal_slug"] = goal_slug
         append_unique_wandb_tag(tags, f"goal:{goal_slug}")
+    spec_slug = str(job.get("spec_slug") or "").strip()
+    if spec_slug:
+        config["spec_slug"] = spec_slug
+        append_unique_wandb_tag(tags, f"spec:{spec_slug}")
+    spec_path = str(job.get("spec_path") or "").strip()
+    if spec_path:
+        config["spec_path"] = spec_path
+    if job.get("id") is not None:
+        config["queue_train_job_id"] = int(job["id"])
     for level in normalize_level_states(config):
         append_unique_wandb_tag(tags, f"level:{level}")
     if tags:
@@ -695,7 +704,6 @@ def enqueue_eval_jobs_for_checkpoints(conn, job: dict[str, Any], result: Mapping
             checkpoint_step=step,
             eval_protocol_hash=protocol_hash,
             eval_config=eval_config,
-            priority=int(job.get("priority") or 0),
             max_attempts=1,
             candidate_label=str(job.get("run_name") or ""),
         )
@@ -889,12 +897,6 @@ def run_training_job(
                         drain_after_job = True
                     try:
                         running_result = collect_result_metadata(job, log_path)
-                        if running_result.get("wandb_url"):
-                            record_running_train_result(
-                                conn,
-                                job=job,
-                                result=running_result,
-                            )
                         enqueue_eval_jobs_for_checkpoints(conn, job, running_result)
                     except Exception as exc:
                         if hasattr(conn, "rollback"):

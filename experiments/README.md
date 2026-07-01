@@ -1,6 +1,6 @@
 # Experiments
 
-This directory holds shared fleet config plus goal-scoped experiment capsules.
+This directory holds shared machine and policy config plus goal-scoped experiment capsules.
 Keep broad repo rules in the top-level runbooks:
 
 - `../AGENTS.md` for repo rules and stable-retro runtime cautions.

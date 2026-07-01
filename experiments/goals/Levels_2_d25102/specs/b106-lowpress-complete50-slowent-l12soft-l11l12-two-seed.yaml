@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b106-lowpress-complete50-slowent-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: The strongest legal anti-collapse recipe not yet queued combines the true-clear signal from completion_reward=50, lower PPO update pressure, slower entropy decay, and soft Level1-2 coverage; this should test whether B89-style transient competence needs all three stabilizers to become reproducible across two seeds.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with higher Level1-2 rolling clear rate than B105 and less post-peak collapse than B103/B104.
+hypothesis: >-
+  The strongest legal anti-collapse recipe not yet queued combines the true-clear signal from
+  completion_reward=50, lower PPO update pressure, slower entropy decay, and soft Level1-2 coverage;
+  this should test whether B89-style transient competence needs all three stabilizers to become
+  reproducible across two seeds. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with higher Level1-2 rolling clear rate than B105 and less
+  post-peak collapse than B103/B104.
 parent_spec_slug: b104-complete50-slowent-l12soft-l11l12-two-seed
-priority: 57
 seeds:
 - 202
 - 203
@@ -80,7 +85,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

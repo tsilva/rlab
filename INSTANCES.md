@@ -17,9 +17,10 @@ launchers for this project while the beast path is being hardened.
 
 Machine-readable target defaults live in `experiments/instances.yaml`; these
 use `default_workers` and `hardware_max_workers` for descriptive capacity.
-Fleet host connection, mount details, and the enforced `max_workers` cap live in
-`experiments/fleet.yaml`. Scheduling lanes and policy checks live in
-`experiments/policies/capacity_policy.yaml`.
+Concrete beast host operation lives in `experiments/machines.yaml`: backend,
+SSH/Docker access, payload/output paths, env file, mounts, enforced
+`max_parallel_containers` slot caps, and profile host routing. Scheduling lanes
+and policy checks live in `experiments/policies/capacity_policy.yaml`.
 
 ## Standard Workflow
 
@@ -42,7 +43,36 @@ UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
 UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
 ```
 
-For a long-running local reconciliation loop:
+For recoverable one-job-per-container launches:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run rlab fleet launch \
+  --machine beast-3 \
+  --job-id <train-job-id>
+
+UV_CACHE_DIR=.uv-cache uv run rlab fleet launch-next \
+  --machine beast-3 \
+  --limit 5
+
+UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile \
+  --machine beast-3
+
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch \
+  --machine beast-3
+
+UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd \
+  --machine beast-3 \
+  --limit 5
+```
+
+In the job-container path, `watch --machine` is read-only: it shows machine
+capacity, queued demand, launch rows, labeled containers, result presence, and
+which rows need shepherd action. `shepherd --machine` is the long-running
+mutating orchestrator: it reconciles, claims, launches, finalizes, and streams a
+line-oriented action log. `launch-next` is the manual one-shot dispatcher, and
+`reconcile --machine` is the manual one-shot repair/finalization command.
+
+For managed runner reconciliation, a long-running local loop is:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile --watch --interval 30
@@ -99,13 +129,14 @@ queue service and do not schedule experiments.
 - Target: `rtx4090`, alias `beast-3`.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
-- Enforced fleet capacity: `max_workers=5` in `experiments/fleet.yaml`.
+- Enforced host capacity: `max_parallel_containers=5` in
+  `experiments/machines.yaml`.
 - Default operating shape: 5 runner workers.
 - Default runtime shape: `env_threads=4`, `torch_num_threads=1`.
 - Lower-contention shape: 3-4 workers with `env_threads=4`.
 - Current benchmark expectation: about 6200 aggregate wall FPS for the current
   Mario PPO shape.
-- Docker command: configured in `experiments/fleet.yaml`; currently
+- Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
 - ROM mount root: `/home/tsilva/roms`.
@@ -119,11 +150,12 @@ intentionally testing small-GPU behavior.
 - Access: `ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26` until hostname
   resolution is restored.
 - Fleet role: cheaper small ablations, smoke jobs, and RTX2060-specific checks.
-- Enforced fleet capacity: `max_workers=4` in `experiments/fleet.yaml`.
+- Enforced host capacity: `max_parallel_containers=4` in
+  `experiments/machines.yaml`.
 - Default operating shape: 4 runner workers.
 - Default runtime shape: `env_threads=2`, `torch_num_threads=1`.
 - Fast-turnaround shape: 2 workers with `env_threads=4`.
-- Docker command: configured in `experiments/fleet.yaml`; currently
+- Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
 - ROM mount root: `/home/tsilva/roms`.
@@ -148,3 +180,8 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - `rlab fleet` may remove old managed containers only when there are no
   pending/running jobs for that container's profile/digest/target and no active
   queue lease owned by one of its workers.
+- In the recoverable job-container path, one container is one job attempt. The
+  shepherd/launcher is the only mutating DB actor; the read-only watcher never
+  claims, launches, releases, or finalizes jobs. The container reads a payload,
+  writes `result.json`, uploads W&B/artifacts, and exits. Restarted shepherds
+  reconcile DB launch rows, Docker labels, and durable output directories.

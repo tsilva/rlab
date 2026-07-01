@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-single-level-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b265-b55post22-l21-screen
-stage: screen
-hypothesis: The plain B55/B250 no-completion-bonus recipe may outperform B263's softer PPO update settings on World 2-1 because seed 90 under B257-soft found sparse clears but never retained them.
-expected_signal: Seed 90 should materially exceed B263's final 0.01 rolling Level2-1 clear rate and ideally reach the strict 100/100 source-attempt window before the 5M-step cap.
+hypothesis: >-
+  The plain B55/B250 no-completion-bonus recipe may outperform B263's softer PPO update settings on
+  World 2-1 because seed 90 under B257-soft found sparse clears but never retained them. Seed 90
+  should materially exceed B263's final 0.01 rolling Level2-1 clear rate and ideally reach the strict
+  100/100 source-attempt window before the 5M-step cap.
 parent_spec_slug: b263-b257soft-l21-screen
-priority: 79
 seeds:
 - 90
 run_target: rtx4090

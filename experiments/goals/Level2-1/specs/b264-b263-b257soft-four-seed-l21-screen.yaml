@@ -1,15 +1,18 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b257-softupdate-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b264-b263-b257soft-four-seed-l21-screen
-stage: screen
-hypothesis: The B263/B257-soft Level2-1 transfer should be judged by seed population, not by the first seed alone; running seeds 91-94 in the same recipe family tests whether seed 90 is an unlucky weak trajectory or representative of the recipe on World 2-1.
-expected_signal: At least one of seeds 91-94 should materially exceed seed 90's early near-cap peak of 0.01 on train/info/level_complete/rate/min/last; any seed that reaches strict 100/100 can become the candidate for frozen confirmation, while a uniformly weak batch rejects this recipe family for Level2-1.
+hypothesis: >-
+  The B263/B257-soft Level2-1 transfer should be judged by seed population, not by the first seed
+  alone; running seeds 91-94 in the same recipe family tests whether seed 90 is an unlucky weak
+  trajectory or representative of the recipe on World 2-1. At least one of seeds 91-94 should
+  materially exceed seed 90's early near-cap peak of 0.01 on train/info/level_complete/rate/min/last;
+  any seed that reaches strict 100/100 can become the candidate for frozen confirmation, while a
+  uniformly weak batch rejects this recipe family for Level2-1.
 parent_spec_slug: b263-b257soft-l21-screen
-priority: 80
 seeds:
 - 91
 - 92

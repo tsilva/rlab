@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b185-b178resume-1600k-clearboost-complete5000-l13-screen
-stage: screen
-hypothesis: B184 showed that adding a completion_reward=5000 clear boost from B178's 1.7M high-window checkpoint can preserve a 0.05 rolling Level1-3 rate over a short 300k continuation, while B178 itself decayed to 0.01 by the end. B185 starts one checkpoint earlier at B178 1.6M, giving 400k steps under the 5M total cap, and keeps the conservative clearboost settings. This tests whether the same clearboost has enough runway to hold or improve the completion window before the policy decays.
-expected_signal: Seed 80 should improve on B184's 0.05 final min rate or at least maintain a similar rolling rate for longer. If it decays despite the earlier fork point, clearboost alone is not enough.
+hypothesis: >-
+  B184 showed that adding a completion_reward=5000 clear boost from B178's 1.7M high-window checkpoint
+  can preserve a 0.05 rolling Level1-3 rate over a short 300k continuation, while B178 itself decayed
+  to 0.01 by the end. B185 starts one checkpoint earlier at B178 1.6M, giving 400k steps under the 5M
+  total cap, and keeps the conservative clearboost settings. This tests whether the same clearboost
+  has enough runway to hold or improve the completion window before the policy decays. Seed 80 should
+  improve on B184's 0.05 final min rate or at least maintain a similar rolling rate for longer. If it
+  decays despite the earlier fork point, clearboost alone is not enough.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 43
 seeds:
 - 80
 run_target: rtx4090
@@ -77,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

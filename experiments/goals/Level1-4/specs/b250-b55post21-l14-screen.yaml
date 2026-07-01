@@ -1,15 +1,17 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-single-level-no-bonus@_global_
 - _self_
-goal: Level1-4
 slug: b250-b55post21-l14-screen
-stage: screen
-hypothesis: The B55 low-KL late-learning-rate-decay single-level recipe is the cleanest scratch PPO transfer baseline for World 1-4 because it preserves the current single-level 100/100 contract while changing only the start state.
-expected_signal: Seed 90 should either reach strict 100/100 Level1-4 source-attempt completion or establish whether the no-bonus score/progress recipe can produce nonzero train/info/level_complete/from/0-3/count before the 5M-step cap.
+hypothesis: >-
+  The B55 low-KL late-learning-rate-decay single-level recipe is the cleanest scratch PPO transfer
+  baseline for World 1-4 because it preserves the current single-level 100/100 contract while changing
+  only the start state. Seed 90 should either reach strict 100/100 Level1-4 source-attempt completion
+  or establish whether the no-bonus score/progress recipe can produce nonzero
+  train/info/level_complete/from/0-3/count before the 5M-step cap.
 parent_spec_slug: b117-b55post21-l13-screen
-priority: 70
 seeds:
 - 90
 run_target: rtx4090

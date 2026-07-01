@@ -28,10 +28,6 @@ ENV_PROVIDERS: dict[str, EnvProvider] = {
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
 }
 
-LEGACY_PROVIDER_ALIASES = {
-    "stable_retro": STABLE_RETRO_TURBO_PROVIDER.provider_id,
-}
-
 
 def registered_env_ids() -> tuple[str, ...]:
     return tuple(
@@ -41,18 +37,29 @@ def registered_env_ids() -> tuple[str, ...]:
     )
 
 
-def qualify_env_id(provider_id: str, provider_env_id: str) -> str:
+def resolve_env_provider(provider_id: str) -> EnvProvider:
     provider_id = str(provider_id).strip()
-    provider_env_id = str(provider_env_id).strip()
     if not provider_id:
         raise ValueError("environment provider id is required")
-    if not provider_env_id:
-        raise ValueError("provider environment id is required")
-    provider_id = LEGACY_PROVIDER_ALIASES.get(provider_id, provider_id)
-    if provider_id not in ENV_PROVIDERS:
+    provider = ENV_PROVIDERS.get(provider_id)
+    if provider is None:
         known = ", ".join(sorted(ENV_PROVIDERS))
         raise ValueError(f"unknown environment provider {provider_id!r}; known providers: {known}")
-    return f"{provider_id}:{provider_env_id}"
+    return provider
+
+
+def qualify_env_id(provider_id: str, provider_env_id: str) -> str:
+    provider_env_id = str(provider_env_id).strip()
+    if not provider_env_id:
+        raise ValueError("provider environment id is required")
+    provider = resolve_env_provider(provider_id)
+    if provider_env_id not in provider.env_ids:
+        known = ", ".join(provider.env_ids)
+        raise ValueError(
+            f"provider {provider.provider_id!r} does not register environment {provider_env_id!r}; "
+            f"known envs: {known}"
+        )
+    return f"{provider.provider_id}:{provider_env_id}"
 
 
 def resolve_env_id(env_id: str) -> ResolvedEnvId:
@@ -63,17 +70,14 @@ def resolve_env_id(env_id: str) -> ResolvedEnvId:
             f"got {value!r}"
         )
     provider_id, provider_env_id = value.split(":", 1)
-    provider_id = LEGACY_PROVIDER_ALIASES.get(provider_id.strip(), provider_id.strip())
+    provider_id = provider_id.strip()
     provider_env_id = provider_env_id.strip()
     if not provider_id or not provider_env_id:
         raise ValueError(
             "environment env_id must be fully qualified as <provider>:<env>, "
             f"got {value!r}"
         )
-    provider = ENV_PROVIDERS.get(provider_id)
-    if provider is None:
-        known = ", ".join(sorted(ENV_PROVIDERS))
-        raise ValueError(f"unknown environment provider {provider_id!r}; known providers: {known}")
+    provider = resolve_env_provider(provider_id)
     if provider_env_id not in provider.env_ids:
         known = ", ".join(provider.env_ids)
         raise ValueError(

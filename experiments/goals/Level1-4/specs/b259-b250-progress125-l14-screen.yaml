@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b259-b250-progress125-l14-screen
-stage: screen
-hypothesis: B250's no-bonus score/progress signal learned the route but was not robust on all seeds. A modest progress scale increase keeps the target-aligned dense signal while testing whether late-discovery seeds get enough gradient toward traversal.
-expected_signal: Seed 90 should reach 100/100 with at least comparable clear count and no reward-only exploit signal. If successful, confirm because the change directly targets discovery robustness.
+hypothesis: >-
+  B250's no-bonus score/progress signal learned the route but was not robust on all seeds. A modest
+  progress scale increase keeps the target-aligned dense signal while testing whether late-discovery
+  seeds get enough gradient toward traversal. Seed 90 should reach 100/100 with at least comparable
+  clear count and no reward-only exploit signal. If successful, confirm because the change directly
+  targets discovery robustness.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 76
 seeds:
 - 90
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

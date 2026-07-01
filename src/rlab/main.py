@@ -67,6 +67,18 @@ def _monitor(argv: Sequence[str]) -> int:
     return _run(monitor_main, argv, prog="rlab monitor")
 
 
+def _leaders(argv: Sequence[str]) -> int:
+    from rlab.wandb_leaders import main as leaders_main
+
+    return _run(leaders_main, argv, prog="rlab leaders")
+
+
+def _run_job(argv: Sequence[str]) -> int:
+    from rlab.run_job import main as run_job_main
+
+    return _run(run_job_main, argv, prog="rlab run-job")
+
+
 def _play(argv: Sequence[str]) -> int:
     from rlab.play import main as play_main
 
@@ -125,7 +137,6 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         default=Path("experiments/instances.yaml"),
         help="Target config used to canonicalize --target.",
     )
-    parser.add_argument("--priority", type=int, help="Override the priority stored in the spec file.")
     parser.add_argument("--seed", type=int, action="append", default=[])
     return parser
 
@@ -162,12 +173,11 @@ def build_eval_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
     parser.add_argument(
         "--eval-config-json",
-        help="Optional JSON/file overrides merged onto the goal-owned eval_spec.eval_config.",
+        help="Optional JSON/file overrides merged onto the goal-owned eval policy.",
     )
     parser.add_argument("--artifact-ref")
     parser.add_argument("--checkpoint-step", type=int)
     parser.add_argument("--eval-protocol-hash")
-    parser.add_argument("--priority", type=int, default=0)
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument("--candidate-label")
     return parser
@@ -181,8 +191,10 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "promote": ("gate a candidate checkpoint against a goal contract", _promote),
     "validate": ("validate checked-in YAML experiments, specs, recipes, and ops configs", _validate),
     "jobs": ("manage queue schema, status, cancellation, and stale jobs", _jobs),
+    "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "fleet": ("manage remote runner containers from queue state", _fleet),
     "monitor": ("print read-only queue and fleet state", _monitor),
+    "run-job": ("run one claimed job payload inside a container", _run_job),
 }
 
 

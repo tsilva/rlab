@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b145-b55baseline-terminal300-l13-screen
-stage: screen
-hypothesis: B140's bounded reward and B141's long-credit advantage-normalized baseline arm test non-score rewards, but the confirmed Level1-1 recipe uses short-credit PPO without advantage normalization. This arm combines B55 PPO pressure with baseline/native-score reward and a stronger terminal level-change versus death signal.
-expected_signal: Seed 80 should produce a different learning curve from the score-mode progress plateaus and ideally a first nonzero train/info/level_complete/from/0-2/count.
+hypothesis: >-
+  B140's bounded reward and B141's long-credit advantage-normalized baseline arm test non-score
+  rewards, but the confirmed Level1-1 recipe uses short-credit PPO without advantage normalization.
+  This arm combines B55 PPO pressure with baseline/native-score reward and a stronger terminal
+  level-change versus death signal. Seed 80 should produce a different learning curve from the
+  score-mode progress plateaus and ideally a first nonzero train/info/level_complete/from/0-2/count.
 parent_spec_slug: b141-baseline-terminal250-longcredit-l13-screen
-priority: 55
 seeds:
 - 80
 run_target: rtx4090
@@ -66,7 +70,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

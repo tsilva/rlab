@@ -1,11 +1,18 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b179-b166resume-3500k-consolidate-complete5000-l13-screen
-stage: screen
-hypothesis: B166 had already begun producing clean clears by the 3.5M checkpoint, but it never consolidated a high rolling completion window. B179 resumes B166 at 3.5M, keeps the useful critic-wide survival setup, raises the clean-clear bonus to 5000, and uses moderate low-pressure PPO settings. This tests whether stronger target-aligned sparse reward can increase clear density once the policy has already crossed the initial bottleneck.
-expected_signal: Seed 80 should preserve B166's post-bottleneck behavior and improve clear density over B166's sparse 44-clear cap result. If the stronger clear bonus only increases shaped reward without improving train/info/level_complete/rate/min/last, sparse clear magnitude is not the consolidation lever.
+hypothesis: >-
+  B166 had already begun producing clean clears by the 3.5M checkpoint, but it never consolidated a
+  high rolling completion window. B179 resumes B166 at 3.5M, keeps the useful critic-wide survival
+  setup, raises the clean-clear bonus to 5000, and uses moderate low-pressure PPO settings. This tests
+  whether stronger target-aligned sparse reward can increase clear density once the policy has already
+  crossed the initial bottleneck. Seed 80 should preserve B166's post-bottleneck behavior and improve
+  clear density over B166's sparse 44-clear cap result. If the stronger clear bonus only increases
+  shaped reward without improving train/info/level_complete/rate/min/last, sparse clear magnitude is
+  not the consolidation lever.
 parent_spec_slug: b166-lowlr-criticwide-survival-complete3000-l13-screen
-priority: 36
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

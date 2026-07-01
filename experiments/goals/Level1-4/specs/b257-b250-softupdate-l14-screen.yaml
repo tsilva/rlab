@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b257-softupdate-no-bonus@_global_
 - _self_
-goal: Level1-4
 slug: b257-b250-softupdate-l14-screen
-stage: screen
-hypothesis: B250's successful seeds converged with low KL while failed seeds stayed in weaker local behavior. Slightly lower learning rate, clip range, and target KL test whether softer policy updates improve cross-seed retention without changing reward semantics.
-expected_signal: Seed 90 should reach 100/100 with a smoother KL/clip tail and no loss of sample efficiency large enough to threaten the 5M cap.
+hypothesis: >-
+  B250's successful seeds converged with low KL while failed seeds stayed in weaker local behavior.
+  Slightly lower learning rate, clip range, and target KL test whether softer policy updates improve
+  cross-seed retention without changing reward semantics. Seed 90 should reach 100/100 with a smoother
+  KL/clip tail and no loss of sample efficiency large enough to threaten the 5M cap.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 78
 seeds:
 - 90
 run_target: rtx4090

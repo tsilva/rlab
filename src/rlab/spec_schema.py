@@ -9,14 +9,9 @@ from rlab.seeds import TRAIN_SEED_MAX, TRAIN_SEED_MIN, validate_training_seed
 
 TRAIN_SPEC_SCHEMA_VERSION = 1
 TRAIN_SPEC_REQUIRED_FIELDS = (
-    "schema_version",
+    "goal",
     "slug",
-    "stage",
     "hypothesis",
-    "expected_signal",
-    "parent_spec_slug",
-    "priority",
-    "seeds",
     "wandb_group",
     "wandb_tags",
     "run_name_template",
@@ -25,7 +20,6 @@ TRAIN_SPEC_REQUIRED_FIELDS = (
 )
 TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
     "game",
-    "state",
     "timesteps",
     "wandb",
     "wandb_mode",
@@ -40,22 +34,18 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
     "required": list(TRAIN_SPEC_REQUIRED_FIELDS),
-    "anyOf": [{"required": ["goal"]}, {"required": ["goal_slug"]}],
     "properties": {
         "schema_version": {"const": TRAIN_SPEC_SCHEMA_VERSION},
         "goal": {"type": "string", "minLength": 1},
         "goal_slug": {"type": "string", "minLength": 1},
         "slug": {"type": "string", "minLength": 1},
-        "stage": {"type": "string", "minLength": 1},
         "hypothesis": {"type": "string", "minLength": 1},
-        "expected_signal": {"type": "string", "minLength": 1},
         "parent_spec_slug": {
             "anyOf": [
                 {"type": "string", "minLength": 1},
                 {"type": "null"},
             ],
         },
-        "priority": {"type": "integer", "minimum": 0},
         "max_attempts": {"type": "integer", "minimum": 1},
         "seeds": {
             "type": "array",
@@ -86,6 +76,10 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "selection_policy": {
+            "type": "object",
+            "additionalProperties": True,
+        },
         "train_config": {
             "type": "object",
             "additionalProperties": True,
@@ -93,6 +87,11 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
             "properties": {
                 "game": {"type": "string", "minLength": 1},
                 "state": {"type": "string", "minLength": 1},
+                "states": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "minLength": 1},
+                },
                 "timesteps": {"type": "integer", "minimum": 1},
                 "wandb": {"type": "boolean"},
                 "wandb_mode": {"enum": ["online", "offline", "disabled"]},
@@ -238,27 +237,22 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
     """
 
     _require_mapping(document, label=label)
-    schema_version = _require_int(document, "schema_version", label=label, minimum=1)
-    if schema_version != TRAIN_SPEC_SCHEMA_VERSION:
+    if "schema_version" in document and (
+        schema_version := _require_int(document, "schema_version", label=label, minimum=1)
+    ) != TRAIN_SPEC_SCHEMA_VERSION:
         raise ValueError(
             f"{_label_path(label, 'schema_version')} must be "
             f"{TRAIN_SPEC_SCHEMA_VERSION}, got {schema_version}"
         )
 
-    has_goal = isinstance(document.get("goal"), str) and bool(document["goal"].strip())
-    has_goal_slug = isinstance(document.get("goal_slug"), str) and bool(document["goal_slug"].strip())
-    if not has_goal and not has_goal_slug:
-        raise ValueError(f"{label} must define non-empty goal or goal_slug")
-
+    _require_non_empty_string(document, "goal", label=label)
     _require_non_empty_string(document, "slug", label=label)
-    _require_non_empty_string(document, "stage", label=label)
     _require_non_empty_string(document, "hypothesis", label=label)
-    _require_non_empty_string(document, "expected_signal", label=label)
-    _require_nullable_non_empty_string(document, "parent_spec_slug", label=label)
-    _require_int(document, "priority", label=label, minimum=0)
+    if "parent_spec_slug" in document:
+        _require_nullable_non_empty_string(document, "parent_spec_slug", label=label)
     if "max_attempts" in document:
         _require_int(document, "max_attempts", label=label, minimum=1)
-    seed_values = _require_int_list(document, "seeds", label=label)
+    seed_values = _require_int_list(document, "seeds", label=label) if "seeds" in document else []
     _require_non_empty_string(document, "wandb_group", label=label)
     _require_string_list(document, "wandb_tags", label=label)
     _require_template(
@@ -294,10 +288,16 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
                 "tie_breakers",
                 label=_label_path(label, "selection_gate"),
             )
+    elif "selection_policy" in document:
+        _require_mapping(
+            _require_key(document, "selection_policy", label=label),
+            label=_label_path(label, "selection_policy"),
+        )
     else:
         raise ValueError(
             f"{label} must define selection_metrics "
-            "(selection_gate is accepted only for legacy specs)"
+            "(selection_gate is accepted only for legacy specs; "
+            "goal-owned selection_policy may be inherited)"
         )
 
     train_config = _require_mapping(
@@ -312,7 +312,18 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
             seed_span=seed_span,
         )
     _require_non_empty_string(train_config, "game", label=_label_path(label, "train_config"))
-    _require_non_empty_string(train_config, "state", label=_label_path(label, "train_config"))
+    has_state = isinstance(train_config.get("state"), str) and bool(train_config["state"].strip())
+    states = train_config.get("states")
+    has_states = (
+        isinstance(states, Sequence)
+        and not isinstance(states, str | bytes)
+        and bool(states)
+        and all(isinstance(state, str) and bool(state.strip()) for state in states)
+    )
+    if not has_state and not has_states:
+        raise ValueError(
+            f"{_label_path(label, 'train_config')} must define non-empty state or states"
+        )
     _require_int(train_config, "timesteps", label=_label_path(label, "train_config"), minimum=1)
     if "seed" in train_config and train_config["seed"] is not None:
         validate_training_seed(

@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b91-lowpress-complete25-l11l12-two-seed
-stage: screen
-hypothesis: Combining lower PPO update pressure with a modest clean-completion reward should raise true clear rates while reducing late optimizer drift.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with completion reward share visible but not dominating progress reward.
+hypothesis: >-
+  Combining lower PPO update pressure with a modest clean-completion reward should raise true clear
+  rates while reducing late optimizer drift. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with completion reward share visible but not dominating
+  progress reward.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 72
 seeds:
 - 206
 - 207
@@ -77,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

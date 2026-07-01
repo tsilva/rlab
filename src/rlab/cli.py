@@ -53,7 +53,6 @@ TRAIN_VALUE_OPTIONS = {
     "hud_crop_top": "--hud-crop-top",
     "eval_freq": "--eval-freq",
     "eval_episodes": "--eval-episodes",
-    "completion_x_threshold": "--completion-x-threshold",
     "checkpoint_freq": "--checkpoint-freq",
     "early_stop_metric": "--early-stop-metric",
     "early_stop_threshold": "--early-stop-threshold",
@@ -98,6 +97,10 @@ TRAIN_VALUE_OPTIONS = {
     "wandb_artifact_storage_uri": "--wandb-artifact-storage-uri",
     "runtime_image_ref": "--runtime-image-ref",
     "run_target": "--run-target",
+    "goal_slug": "--goal-slug",
+    "spec_slug": "--spec-slug",
+    "spec_path": "--spec-path",
+    "queue_train_job_id": "--queue-train-job-id",
 }
 TRAIN_TRUE_FLAGS = {
     "task_conditioning": "--task-conditioning",
@@ -275,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--runs-dir", default="runs")
     parser.add_argument(
+        "--env-provider",
+        default=parser_defaults_env.env_provider,
+        help="Environment provider id. Currently supported: stable-retro-turbo.",
+    )
+    parser.add_argument(
         "--game",
         default=parser_defaults_env.game,
         help="Stable Retro game id. Defaults to RETRO_GAME when set.",
@@ -370,12 +378,6 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Legacy no-op; training never runs eval.",
-    )
-    parser.add_argument(
-        "--completion-x-threshold",
-        type=int,
-        default=parser_defaults_env.completion_x_threshold,
-        help="Deprecated no-op; level completion is detected from stable-retro level changes.",
     )
     parser.add_argument(
         "--no-eval-videos",
@@ -522,6 +524,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-target",
         default="",
         help="Canonical compute target recorded as run metadata; does not affect training.",
+    )
+    parser.add_argument("--goal-slug", default="", help="Research goal slug recorded in W&B config.")
+    parser.add_argument("--spec-slug", default="", help="Experiment spec slug recorded in W&B config.")
+    parser.add_argument("--spec-path", default="", help="Experiment spec path recorded in W&B config.")
+    parser.add_argument(
+        "--queue-train-job-id",
+        type=int,
+        default=0,
+        help="Queue train job id recorded in W&B config; 0 means local/unqueued.",
     )
     parser.add_argument(
         "--no-wandb-artifacts", action="store_true", help="Disable W&B model uploads"

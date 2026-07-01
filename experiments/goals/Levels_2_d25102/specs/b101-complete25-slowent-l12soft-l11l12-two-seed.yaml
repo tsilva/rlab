@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b101-complete25-slowent-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: B89's clean completion reward produced the best active high-watermark but then collapsed on Level1-2; combining that true clear bonus with slower entropy decay and a soft Level1-2 sampling bias may preserve enough exploration and Level1-2 coverage for both levels to cross the strict balanced threshold.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 rate staying closer to Level1-1 after the first completion-reward lift and less immediate post-peak collapse than B89.
+hypothesis: >-
+  B89's clean completion reward produced the best active high-watermark but then collapsed on
+  Level1-2; combining that true clear bonus with slower entropy decay and a soft Level1-2 sampling
+  bias may preserve enough exploration and Level1-2 coverage for both levels to cross the strict
+  balanced threshold. Both seeds should maximize peak train/info/level_complete/rate/min/last, with
+  Level1-2 rate staying closer to Level1-1 after the first completion-reward lift and less immediate
+  post-peak collapse than B89.
 parent_spec_slug: b97-complete25-slowent-l11l12-two-seed
-priority: 62
 seeds:
 - 198
 - 199
@@ -79,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

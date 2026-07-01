@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b103-complete50-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: B89 shows that a true clean-completion reward can materially raise the balanced high-watermark, while B88 shows that Level1-2 sampling bias alone is insufficient; combining the stronger B98 completion_reward=50 with a soft Level1-2 sampling bias may make the true-clear signal strong enough without starving Level1-1.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 rate rising earlier than B98 and Level1-1 remaining strong enough that the min-rate improves instead of specializing.
+hypothesis: >-
+  B89 shows that a true clean-completion reward can materially raise the balanced high-watermark,
+  while B88 shows that Level1-2 sampling bias alone is insufficient; combining the stronger B98
+  completion_reward=50 with a soft Level1-2 sampling bias may make the true-clear signal strong enough
+  without starving Level1-1. Both seeds should maximize peak train/info/level_complete/rate/min/last,
+  with Level1-2 rate rising earlier than B98 and Level1-1 remaining strong enough that the min-rate
+  improves instead of specializing.
 parent_spec_slug: b98-complete50-l11l12-two-seed
-priority: 60
 seeds:
 - 204
 - 205
@@ -77,7 +82,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

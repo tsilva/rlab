@@ -71,7 +71,6 @@ def config_from_args(args: argparse.Namespace) -> EnvConfig:
         terminal_reward=50.0,
         reward_scale=10.0,
         action_set="simple",
-        completion_x_threshold=SuperMarioBrosNesV0Target.default_completion_x_threshold,
         info_events={"level_change": (("levelHi", "levelLo"), "change")},
         done_on_events=("level_change",),
         env_threads=args.env_threads,

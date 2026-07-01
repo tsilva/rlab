@@ -1,11 +1,18 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b172-b156resume-mounted-clearboost-4500k-l13-screen
-stage: screen
-hypothesis: B156 discovered the post-bottleneck Level1-3 behavior, but the 100-attempt completion window never became reliable. B170 proved the direct-resume path reaches W&B, but the checkpoint was staged outside the worker container mount. This corrected retry resumes the verified B156 4.5M checkpoint from the mounted runs/train_resumes path and changes only the sparse clean-clear incentive from 1500 to 3000 while using conservative continuation optimizer settings.
-expected_signal: Seed 80 should preserve the B156 4.5M checkpoint's x reach while increasing clean-clear density over the final 500k budget. If B171 preserves x but B172 improves completion rate, sparse clear magnitude was underweighted. If B172 destabilizes x, the stronger completion reward is too abrupt for a checkpoint fork.
+hypothesis: >-
+  B156 discovered the post-bottleneck Level1-3 behavior, but the 100-attempt completion window never
+  became reliable. B170 proved the direct-resume path reaches W&B, but the checkpoint was staged
+  outside the worker container mount. This corrected retry resumes the verified B156 4.5M checkpoint
+  from the mounted runs/train_resumes path and changes only the sparse clean-clear incentive from 1500
+  to 3000 while using conservative continuation optimizer settings. Seed 80 should preserve the B156
+  4.5M checkpoint's x reach while increasing clean-clear density over the final 500k budget. If B171
+  preserves x but B172 improves completion rate, sparse clear magnitude was underweighted. If B172
+  destabilizes x, the stronger completion reward is too abrupt for a checkpoint fork.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 35
 seeds:
 - 80
 run_target: rtx4090
@@ -77,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

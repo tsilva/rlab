@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b115-slowent-l12bias-complete25-l11l12-two-seed
-stage: screen
-hypothesis: 'B93 is the strongest active two-seed direction so far: by 3.3M steps its seeds reached peak min-rates of 0.20 and 0.30, with live Level1-1 competence rising while Level1-2 remains the bottleneck. This arm keeps B93''s 40/60 Level1-2 sampling bias and slow entropy decay exactly, and adds the true clean-completion reward that made B91 produce the only strict crossing, testing whether B93''s retention plus B91''s completion lift can raise both seeds above 0.80.'
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum beat B93's 0.20/0.30 paired high-watermarks without losing Level1-1 retention.
+hypothesis: >-
+  B93 is the strongest active two-seed direction so far: by 3.3M steps its seeds reached peak
+  min-rates of 0.20 and 0.30, with live Level1-1 competence rising while Level1-2 remains the
+  bottleneck. This arm keeps B93's 40/60 Level1-2 sampling bias and slow entropy decay exactly, and
+  adds the true clean-completion reward that made B91 produce the only strict crossing, testing
+  whether B93's retention plus B91's completion lift can raise both seeds above 0.80. Both seeds
+  should maximize peak train/info/level_complete/rate/min/last, or at minimum beat B93's 0.20/0.30
+  paired high-watermarks without losing Level1-1 retention.
 parent_spec_slug: b93-slowent-l12bias-l11l12-two-seed
-priority: 91
 seeds:
 - 200
 - 201
@@ -79,7 +85,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

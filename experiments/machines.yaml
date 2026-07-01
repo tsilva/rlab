@@ -1,0 +1,57 @@
+machines:
+  beast-3:
+    backend: docker_ssh
+    ssh_target: tsilva@beast-3
+    run_target: rtx4090
+    docker:
+      command:
+      - sudo
+      - -n
+      - docker
+      pull_policy: always
+    limits:
+      max_parallel_containers: 5
+      max_train_containers: 5
+      max_eval_containers: 5
+    paths:
+      host_root: /home/tsilva/rlab
+      payloads_dir: /home/tsilva/rlab/payloads
+      outputs_dir: /home/tsilva/rlab/outputs
+      logs_dir: /home/tsilva/rlab/logs
+      roms_dir: /home/tsilva/roms
+      env_file: /home/tsilva/rlab/.env.runner
+      container_payloads_dir: /input/payloads
+      container_outputs_dir: /output
+      container_roms_dir: /roms
+  beast-2:
+    backend: docker_ssh
+    ssh_target: tsilva@192.168.133.26
+    ssh_options:
+    - -o
+    - HostKeyAlias=beast-2
+    run_target: rtx2060
+    docker:
+      command:
+      - sudo
+      - -n
+      - docker
+      pull_policy: always
+    limits:
+      max_parallel_containers: 4
+      max_train_containers: 4
+      max_eval_containers: 4
+    paths:
+      host_root: /home/tsilva/rlab
+      payloads_dir: /home/tsilva/rlab/payloads
+      outputs_dir: /home/tsilva/rlab/outputs
+      logs_dir: /home/tsilva/rlab/logs
+      roms_dir: /home/tsilva/roms
+      env_file: /home/tsilva/rlab/.env.runner
+      container_payloads_dir: /input/payloads
+      container_outputs_dir: /output
+      container_roms_dir: /roms
+profile_policies:
+- profile_id: '*'
+  hosts:
+  - beast-3
+  - beast-2

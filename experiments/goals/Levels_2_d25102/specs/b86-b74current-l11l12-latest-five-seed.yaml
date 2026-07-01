@@ -1,11 +1,13 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b86-b74current-l11l12-latest-five-seed
-stage: confirm
-hypothesis: The B74/B84-style Level1-1/Level1-2 50/50 task-conditioned PPO recipe should reproduce balanced mixed-level completion on the latest digest-backed train image.
-expected_signal: Rank by the weaker of Level1-1 and Level1-2 rolling completion, using mean reward only as a tie-breaker after per-level completion.
+hypothesis: >-
+  The B74/B84-style Level1-1/Level1-2 50/50 task-conditioned PPO recipe should reproduce balanced
+  mixed-level completion on the latest digest-backed train image. Rank by the weaker of Level1-1 and
+  Level1-2 rolling completion, using mean reward only as a tie-breaker after per-level completion.
 parent_spec_slug: b84-l11l12-b74current
-priority: 70
 seeds:
 - 193
 - 194
@@ -77,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

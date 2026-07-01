@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b163-lowlr-microupdate-antistall-complete3000-l13-screen
-stage: screen
-hypothesis: B159 crossed the 2M-step maturity point with zero clean Level1-3 clears and a nearly flat reward tail. It tested very frequent PPO updates and high entropy, but still had a small survival bonus, zero explicit death pressure, and an extremely tiny progress signal. This arm keeps B159's micro-update cadence while replacing the survival bonus with anti-stall pressure, restoring light death pressure, slightly strengthening tiny clipped progress, and making true clean clears overwhelmingly dominant.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count, or show that even micro-update high-entropy PPO with anti-stall pressure cannot discover a clean Level1-3 trajectory under the current legal reward/hyperparameter scope.
+hypothesis: >-
+  B159 crossed the 2M-step maturity point with zero clean Level1-3 clears and a nearly flat reward
+  tail. It tested very frequent PPO updates and high entropy, but still had a small survival bonus,
+  zero explicit death pressure, and an extremely tiny progress signal. This arm keeps B159's
+  micro-update cadence while replacing the survival bonus with anti-stall pressure, restoring light
+  death pressure, slightly strengthening tiny clipped progress, and making true clean clears
+  overwhelmingly dominant. Seed 80 should either produce nonzero
+  train/info/level_complete/from/0-2/count, or show that even micro-update high-entropy PPO with
+  anti-stall pressure cannot discover a clean Level1-3 trajectory under the current legal
+  reward/hyperparameter scope.
 parent_spec_slug: b159-lowlr-microupdate-entropyburst-complete2500-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -71,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

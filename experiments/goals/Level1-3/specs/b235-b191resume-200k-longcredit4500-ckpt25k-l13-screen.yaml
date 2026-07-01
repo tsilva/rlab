@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b235-b191resume-200k-longcredit4500-ckpt25k-l13-screen
-stage: screen
-hypothesis: B230 is the first B214-family variant to combine repeatable 0.12-0.13 peaks with a stronger final completion window, but its best behavior appears around 78k-83k continuation steps. B235 repeats the exact B230 long-credit recipe with denser 25k checkpoints so future forks can resume from the observed high-window region instead of the later 100k checkpoint.
-expected_signal: Seed 80 should reproduce the B230 peak band while producing checkpoints at 75k and 100k continuation steps. If the run reaches at least 0.12 with a usable 75k checkpoint, use that checkpoint for preservation forks.
+hypothesis: >-
+  B230 is the first B214-family variant to combine repeatable 0.12-0.13 peaks with a stronger final
+  completion window, but its best behavior appears around 78k-83k continuation steps. B235 repeats the
+  exact B230 long-credit recipe with denser 25k checkpoints so future forks can resume from the
+  observed high-window region instead of the later 100k checkpoint. Seed 80 should reproduce the B230
+  peak band while producing checkpoints at 75k and 100k continuation steps. If the run reaches at
+  least 0.12 with a usable 75k checkpoint, use that checkpoint for preservation forks.
 parent_spec_slug: b230-b191resume-200k-longcredit4500-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +81,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

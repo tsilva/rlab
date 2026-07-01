@@ -141,7 +141,6 @@ class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
         if progress_delta > config.no_progress_min_delta:
             self.last_progress_step = self.episode_steps
 
-        threshold_complete = False
         completion_event = level_completion_event
         if completion_event:
             self.completed = True
@@ -252,7 +251,6 @@ class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
         info["level_id"] = f"{level[0]}-{level[1]}"
         info["level_changed"] = level_changed
         info["completed_level_count"] = int(self.completed_level_count)
-        info["threshold_complete"] = threshold_complete
         info["level_complete"] = bool(completion_event)
         info["completion_event"] = bool(completion_event)
         info["completion_bonus"] = config.completion_reward if completion_event else 0.0
@@ -296,7 +294,6 @@ class RetroTarget:
     game: ClassVar[str] = ""
     default_state: ClassVar[str] = ""
     default_hud_crop_top: ClassVar[int] = 0
-    default_completion_x_threshold: ClassVar[int] = 0
     default_action_set: ClassVar[str] = "native"
     default_reward_mode: ClassVar[str] = "native"
     native_life_variable: ClassVar[str | None] = None
@@ -336,7 +333,6 @@ class SuperMarioBrosNesV0Target(RetroTarget):
     game = "SuperMarioBros-Nes-v0"
     default_state = "Level1-1"
     default_hud_crop_top = 32
-    default_completion_x_threshold = 0
     default_action_set = "simple"
     default_reward_mode = "baseline"
     native_life_variable = "lives"

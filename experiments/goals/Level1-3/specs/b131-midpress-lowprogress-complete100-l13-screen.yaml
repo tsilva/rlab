@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b131-midpress-lowprogress-complete100-l13-screen
-stage: screen
-hypothesis: If B126's broader update pressure is useful but still too progress-dominated, combining mid/high PPO pressure with reduced progress scale and completion_reward=100 should test whether Level1-3 needs both broader policy movement and a stronger true-clear signal.
-expected_signal: Seed 80 should outperform B126 on first nonzero train/info/level_complete/from/0-2/count or peak train/info/level_complete/from/0-2/rate while keeping approximate KL and clip fraction usable.
+hypothesis: >-
+  If B126's broader update pressure is useful but still too progress-dominated, combining mid/high PPO
+  pressure with reduced progress scale and completion_reward=100 should test whether Level1-3 needs
+  both broader policy movement and a stronger true-clear signal. Seed 80 should outperform B126 on
+  first nonzero train/info/level_complete/from/0-2/count or peak
+  train/info/level_complete/from/0-2/rate while keeping approximate KL and clip fraction usable.
 parent_spec_slug: b126-b46style-clipped-slowent-complete25-l13-screen
-priority: 69
 seeds:
 - 80
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

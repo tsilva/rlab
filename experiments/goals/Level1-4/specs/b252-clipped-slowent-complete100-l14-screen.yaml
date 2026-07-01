@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b252-clipped-slowent-complete100-l14-screen
-stage: screen
-hypothesis: World 1-4 may need broader exploration and less raw score-progress domination than the conservative B55 shape; clipped progress with a slower entropy decay and target_kl=0.20 tests update pressure without changing task semantics.
-expected_signal: Seed 90 should outperform B250/B251 on first nonzero train/info/level_complete/from/0-3/count or peak train/info/level_complete/from/0-3/rate while keeping approximate KL and clip fraction in a usable PPO range.
+hypothesis: >-
+  World 1-4 may need broader exploration and less raw score-progress domination than the conservative
+  B55 shape; clipped progress with a slower entropy decay and target_kl=0.20 tests update pressure
+  without changing task semantics. Seed 90 should outperform B250/B251 on first nonzero
+  train/info/level_complete/from/0-3/count or peak train/info/level_complete/from/0-3/rate while
+  keeping approximate KL and clip fraction in a usable PPO range.
 parent_spec_slug: b126-b46style-clipped-slowent-complete25-l13-screen
-priority: 68
 seeds:
 - 90
 run_target: rtx4090
@@ -69,7 +73,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

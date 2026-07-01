@@ -103,10 +103,10 @@ def load_instances(repo_root: Path) -> dict[str, Any]:
     return load_json_file(path)
 
 
-def load_fleet(repo_root: Path) -> dict[str, Any]:
-    path = repo_root / "experiments" / "fleet.yaml"
+def load_machines(repo_root: Path) -> dict[str, Any]:
+    path = repo_root / "experiments" / "machines.yaml"
     if not path.is_file():
-        return {"hosts": {}}
+        return {"machines": {}}
     return load_json_file(path)
 
 
@@ -390,12 +390,10 @@ def payload_from_row(
     table: str,
     row: dict[str, Any],
     config_key: str,
-    result_table: str,
 ) -> dict[str, Any]:
     payload = row.get("job_payload")
     if not isinstance(payload, dict):
         payload = {key: value for key, value in row.items() if key not in {"job_payload", "result_payload"}}
-    result_payload = row.get("result_payload")
     context = {
         "goal_slug": row.get("goal_slug"),
         "spec_slug": row.get("spec_slug"),
@@ -406,7 +404,6 @@ def payload_from_row(
         "config_key": config_key,
         "job": payload,
         "context": {key: value for key, value in context.items() if value},
-        result_table: result_payload if isinstance(result_payload, dict) else None,
     }
 
 
@@ -505,23 +502,16 @@ def attention_for_row(
 
 def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
     config = dict(row.get("train_config") or {})
-    metrics = dict(row.get("metrics_json") or {})
+    metrics: dict[str, Any] = {}
     status = str(row.get("status") or "")
     worker = str(row.get("lease_owner") or "")
     profile = str(row.get("profile_id") or "")
     run_target = row.get("run_target")
     runtime_image_ref = row.get("runtime_image_ref")
-    wandb_url = str(row.get("wandb_url") or "").strip()
+    wandb_url = str(config.get("wandb_url") or "").strip()
     device_key = infer_device_key("train", profile, worker, config, run_target=run_target)
     device = device_label(device_key)
     container = container_label(worker)
-    artifact_refs = row.get("artifact_refs") or []
-    artifact = ""
-    if artifact_refs:
-        latest = artifact_refs[-1]
-        if isinstance(latest, dict):
-            location = str(latest.get("location") or "")
-            artifact = "R2 ref" if location.startswith("s3://") else "W&B"
     return {
         "id": f"train-{row['id']}",
         "kind": "train",
@@ -556,11 +546,9 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
             "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}"
             if row.get("attempts") is not None and row.get("max_attempts") is not None
             else "",
-            "priority": row.get("priority") if row.get("priority") is not None else "",
             "cancel": "requested" if row.get("cancel_requested") else "",
             "drain": "requested" if row.get("drain_requested") else "",
             "wandb": wandb_url,
-            "artifact": artifact,
             "fps": metric_value(metrics, "time/fps", THROUGHPUT_LOOP_FPS) or "",
             "completion": completion_progress(metrics),
         },
@@ -568,14 +556,13 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
             table="train_jobs",
             row=row,
             config_key="train_config",
-            result_table="train_results",
         ),
     }
 
 
 def job_from_eval_row(row: dict[str, Any]) -> dict[str, Any]:
     config = dict(row.get("eval_config") or {})
-    metrics = dict(row.get("metrics_json") or {})
+    metrics: dict[str, Any] = {}
     status = str(row.get("status") or "")
     worker = str(row.get("lease_owner") or "")
     profile = str(row.get("profile_id") or "")
@@ -617,7 +604,6 @@ def job_from_eval_row(row: dict[str, Any]) -> dict[str, Any]:
             "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}"
             if row.get("attempts") is not None and row.get("max_attempts") is not None
             else "",
-            "priority": row.get("priority") if row.get("priority") is not None else "",
             "cancel": "requested" if row.get("cancel_requested") else "",
             "drain": "requested" if row.get("drain_requested") else "",
             "episodes": config.get("episodes") or "",
@@ -632,7 +618,6 @@ def job_from_eval_row(row: dict[str, Any]) -> dict[str, Any]:
             table="eval_jobs",
             row=row,
             config_key="eval_config",
-            result_table="eval_results",
         ),
     }
 
@@ -656,11 +641,8 @@ def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str,
                     f"""
                     SELECT
                       j.*,
-                      r.wandb_url, r.metrics_json, r.artifact_refs,
-                      to_jsonb(j) AS job_payload,
-                      to_jsonb(r) AS result_payload
+                      to_jsonb(j) AS job_payload
                     FROM train_jobs j
-                    LEFT JOIN train_results r ON r.train_job_id = j.id
                     WHERE j.status IN ('running', 'pending', 'failed')
                     {goal_filter}
                     ORDER BY
@@ -670,7 +652,6 @@ def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str,
                         WHEN 'failed' THEN 2
                         ELSE 3
                       END,
-                      j.priority DESC,
                       j.id DESC
                     LIMIT %(limit)s
                     """,
@@ -681,11 +662,8 @@ def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str,
                     f"""
                     SELECT
                       j.*,
-                      r.metrics_json, r.model_ref, r.output_path, r.video_path,
-                      to_jsonb(j) AS job_payload,
-                      to_jsonb(r) AS result_payload
+                      to_jsonb(j) AS job_payload
                     FROM eval_jobs j
-                    LEFT JOIN eval_results r ON r.eval_job_id = j.id
                     WHERE j.status IN ('running', 'pending', 'failed')
                     {goal_filter}
                     ORDER BY
@@ -695,7 +673,6 @@ def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str,
                         WHEN 'failed' THEN 2
                         ELSE 3
                       END,
-                      j.priority DESC,
                       j.id DESC
                     LIMIT %(limit)s
                     """,
@@ -746,7 +723,6 @@ def sample_jobs() -> list[dict[str, Any]]:
                     "status": "running",
                 },
                 "context": {"goal_slug": "sample"},
-                "train_results": None,
             },
         },
         {
@@ -781,7 +757,6 @@ def sample_jobs() -> list[dict[str, Any]]:
                     "status": "running",
                 },
                 "context": {"goal_slug": "sample"},
-                "eval_results": None,
             },
         },
         {
@@ -907,7 +882,7 @@ def base_devices(repo_root: Path) -> list[dict[str, Any]]:
                 "details": instance_details(str(instance_name), instance),
             }
         )
-    merge_fleet_hosts(repo_root, devices)
+    merge_machine_hosts(repo_root, devices)
     return devices
 
 
@@ -920,34 +895,38 @@ def device_lookup(devices: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return by_key
 
 
-def merge_fleet_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
-    hosts = load_fleet(repo_root).get("hosts", {})
-    if not isinstance(hosts, dict):
+def merge_machine_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
+    machines = load_machines(repo_root).get("machines", {})
+    if not isinstance(machines, dict):
         return
     by_key = device_lookup(devices)
-    for host_name, raw_host in hosts.items():
-        if not isinstance(raw_host, dict):
+    for machine_name, raw_machine in machines.items():
+        if not isinstance(raw_machine, dict):
             continue
-        host = dict(raw_host)
-        run_target = str(host.get("run_target") or "").strip()
-        target_key = device_key_from_run_target(run_target) or run_target or str(host_name)
-        device = by_key.get(target_key) or by_key.get(str(host_name))
-        max_workers = host.get("max_workers")
+        if raw_machine.get("backend") != "docker_ssh":
+            continue
+        machine = dict(raw_machine)
+        run_target = str(machine.get("run_target") or "").strip()
+        target_key = device_key_from_run_target(run_target) or run_target or str(machine_name)
+        device = by_key.get(target_key) or by_key.get(str(machine_name))
+        limits = machine.get("limits") if isinstance(machine.get("limits"), dict) else {}
+        max_workers = limits.get("max_parallel_containers")
         capacity = f"{max_workers} workers" if max_workers else ""
+        docker = machine.get("docker") if isinstance(machine.get("docker"), dict) else {}
         details = {
-            "fleet_host": str(host_name),
+            "machine": str(machine_name),
             "run_target": run_target or "",
-            "ssh": host.get("ssh_target") or "",
+            "ssh": machine.get("ssh_target") or "",
             "runner_capacity": max_workers or "",
-            "docker": " ".join(str(part) for part in host.get("docker_command") or []),
-            "pull_policy": host.get("pull_policy") or "",
+            "docker": " ".join(str(part) for part in docker.get("command") or []),
+            "pull_policy": docker.get("pull_policy") or "",
         }
         if device is None:
             device = {
                 "id": target_key,
-                "aliases": [str(host_name)],
-                "device": str(host_name),
-                "target": f"docker/{host_name}",
+                "aliases": [str(machine_name)],
+                "device": str(machine_name),
+                "target": f"docker/{machine_name}",
                 "capacity": capacity,
                 "available": True,
                 "details": {
@@ -960,8 +939,8 @@ def merge_fleet_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
             by_key[str(device["id"])] = device
         else:
             aliases = list(device.get("aliases") or [])
-            if str(host_name) not in aliases:
-                aliases.append(str(host_name))
+            if str(machine_name) not in aliases:
+                aliases.append(str(machine_name))
             if run_target and run_target not in aliases and run_target != device.get("id"):
                 aliases.append(run_target)
             device["aliases"] = aliases

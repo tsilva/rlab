@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b210-b191resume-100k-holdwindow-complete4000-l13-screen
-stage: screen
-hypothesis: B191's best window appears early and then decays. B210 resumes B191 at 100k, keeps completion_reward=4000, and uses smaller PPO updates than B191 but a little more entropy than the freeze arms, testing whether the clear behavior can be preserved without changing the reward target.
-expected_signal: Seed 80 should improve peak or final train/info/level_complete/rate/min/last over B191/B204. If it underperforms while B209 improves, the reward midpoint rather than update freezing is the useful lever.
+hypothesis: >-
+  B191's best window appears early and then decays. B210 resumes B191 at 100k, keeps
+  completion_reward=4000, and uses smaller PPO updates than B191 but a little more entropy than the
+  freeze arms, testing whether the clear behavior can be preserved without changing the reward target.
+  Seed 80 should improve peak or final train/info/level_complete/rate/min/last over B191/B204. If it
+  underperforms while B209 improves, the reward midpoint rather than update freezing is the useful
+  lever.
 parent_spec_slug: b191-b178resume-1400k-clearboost4000-l13-screen
-priority: 32
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

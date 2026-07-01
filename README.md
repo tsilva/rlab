@@ -13,21 +13,16 @@ The normal workflow is to install the CLI once with `uv tool install .`, then us
 ```bash
 git clone git@github.com:tsilva/rlab.git
 cd rlab
-uv tool install .
+uv --config-file uv-tool.toml tool install --editable .
 ```
 
 If you are reinstalling after local changes:
 
 ```bash
-uv tool install . --editable --force
+uv --config-file uv-tool.toml tool install --editable --force .
 ```
 
-This repo uses uv's seven-day `exclude-newer` protection. If uv filters the pinned `stable-retro-turbo` release during tool installation, pass the repo's package-specific exception explicitly:
-
-```bash
-uv tool install . --editable --force \
-  --exclude-newer-package stable-retro-turbo=2026-06-29T17:00:00Z
-```
+This repo uses uv's seven-day `exclude-newer` protection, with a package-specific exception for the pinned `stable-retro-turbo` release recorded in `uv-tool.toml`, `pyproject.toml`, and `uv.lock`. The explicit `--config-file uv-tool.toml` keeps `uv tool install` on the same exception policy as the project environment.
 
 After installation, run commands as plain `rlab ...`:
 
@@ -79,12 +74,14 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 ## Commands
 
 ```bash
-rlab validate                                      # validate goals, specs, recipes, benchmarks, fleet config, and policies
+rlab validate                                      # validate goals, specs, recipes, benchmarks, machine config, and policies
 rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
 rlab train --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <entity>/<project>/<run-name>-checkpoint:latest --episodes 0 --policy-env fast
 rlab jobs status --goal <goal-slug>
+rlab leaders runs --goal <goal-slug> --min-seeds 3
+rlab leaders checkpoints --goal <goal-slug>
 rlab jobs cancel-train <train_job_id>
 rlab fleet policy
 rlab fleet plan
@@ -102,6 +99,7 @@ The command surface is intentionally one binary:
 - `rlab eval` runs local evaluation, while `rlab eval enqueue` creates eval queue jobs.
 - `rlab play` replays a local model path or W&B checkpoint artifact.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and runner fleet.
+- `rlab leaders` queries W&B for run/spec winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
 ## Research Loop
@@ -110,7 +108,7 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by completion rate first, then mean reward, then max x-position. Robust evals run out of process; remote training should focus on producing checkpoints and metadata.
+Promotion compares checkpoints by completion rate first, then mean reward, then max x-position. W&B is the source of truth for run and eval metrics; the queue database stores operational job state. Robust evals run out of process and log back to W&B.
 
 ## Fleet
 
@@ -125,7 +123,7 @@ rlab fleet reconcile --watch --interval 30
 rlab fleet watch
 ```
 
-Fleet capacity comes from `experiments/fleet.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
+Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
 
 ## Notes
 

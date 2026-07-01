@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b216-b191resume-200k-freeze4250-l13-screen
-stage: screen
-hypothesis: B214 improved the Level1-3 training high-water to 0.13 early by combining B191 200k with freeze-style PPO and completion_reward=4500. B216 brackets that bonus downward to 4250, testing whether slightly less sparse clear pressure keeps the new clear window while reducing late collapse.
-expected_signal: Seed 80 should approach or exceed B214's 0.13 peak and ideally finish with a better train/info/level_complete/rate/min/last. If peak drops while final stability does not improve, the 4500 bonus is the better local setting.
+hypothesis: >-
+  B214 improved the Level1-3 training high-water to 0.13 early by combining B191 200k with
+  freeze-style PPO and completion_reward=4500. B216 brackets that bonus downward to 4250, testing
+  whether slightly less sparse clear pressure keeps the new clear window while reducing late collapse.
+  Seed 80 should approach or exceed B214's 0.13 peak and ideally finish with a better
+  train/info/level_complete/rate/min/last. If peak drops while final stability does not improve, the
+  4500 bonus is the better local setting.
 parent_spec_slug: b191-b178resume-1400k-clearboost4000-l13-screen
-priority: 35
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

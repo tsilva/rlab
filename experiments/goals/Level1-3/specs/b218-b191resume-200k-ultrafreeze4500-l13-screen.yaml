@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b218-b191resume-200k-ultrafreeze4500-l13-screen
-stage: screen
-hypothesis: B214's early 0.13 peak may still decay because PPO updates move too far after the useful platforming policy appears. B218 keeps B214's completion_reward=4500 but reduces LR, entropy, clip, epochs, and target KL further, testing whether an ultra-low-update continuation can preserve the new high-water behavior.
-expected_signal: Seed 80 should sustain a higher final train/info/level_complete/rate/min/last than B214 while staying near its 0.13 peak. If it never reaches the same peak, the update freeze is too strong to improve the policy.
+hypothesis: >-
+  B214's early 0.13 peak may still decay because PPO updates move too far after the useful platforming
+  policy appears. B218 keeps B214's completion_reward=4500 but reduces LR, entropy, clip, epochs, and
+  target KL further, testing whether an ultra-low-update continuation can preserve the new high-water
+  behavior. Seed 80 should sustain a higher final train/info/level_complete/rate/min/last than B214
+  while staying near its 0.13 peak. If it never reaches the same peak, the update freeze is too strong
+  to improve the policy.
 parent_spec_slug: b191-b178resume-1400k-clearboost4000-l13-screen
-priority: 34
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

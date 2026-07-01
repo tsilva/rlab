@@ -20,7 +20,7 @@ from rlab.metric_names import (
 )
 
 
-def is_level_complete(info: dict[str, Any], max_x_pos: int, completion_x_threshold: int) -> bool:
+def is_level_complete(info: dict[str, Any]) -> bool:
     if "completion_event" in info or "level_complete" in info:
         return bool(info.get("completion_event", info.get("level_complete", False)))
     return bool(info.get("level_changed", False)) and not bool(
@@ -202,7 +202,6 @@ def run_eval_episode(
     max_steps: int,
     deterministic: bool,
     seed: int,
-    completion_x_threshold: int,
     capture_actions: bool = False,
     default_start_state: str | None = None,
 ) -> dict[str, Any]:
@@ -237,11 +236,7 @@ def run_eval_episode(
         max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
         max_level_x_pos = max(max_level_x_pos, int(info.get("level_max_x_pos", 0)))
         final_info = info
-        completed = completed or is_level_complete(
-            final_info,
-            max_x_pos,
-            completion_x_threshold,
-        )
+        completed = completed or is_level_complete(final_info)
         if bool(info.get("died", False)):
             died = True
             if death_x_pos is None:

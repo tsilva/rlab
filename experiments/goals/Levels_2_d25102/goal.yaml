@@ -1,37 +1,18 @@
 # Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared Mario base; supplies common environment and success criteria.
-- ../_shared/mario@_global_
-# Apply this file after the base; lets the mixed-level discovery goal define its own objective and protocol.
+# Shared Mario base; composes the reusable env and supplies success/eval defaults.
+- ../_mario@_global_
+# Apply this file after the base; lets the mixed-level discovery goal define its train environment overlay.
 - _self_
 # Goal id; must match the directory so tools can address this contract unambiguously.
 goal_id: Levels_2_d25102
 # Human-readable title; makes clear this is a mixed Level1-1/Level1-2 recipe search.
 title: SuperMarioBros-NES Level1-1/Level1-2 mixed-policy high-watermark recipe search
-# Objective thresholds unique to this mixed-source discovery goal.
-objective:
-  # Balance guard threshold; requires both source levels to stay useful rather than optimizing only one.
-  balance_guard_threshold: 0.8
-  # Balance guard comparison; strict greater-than avoids treating exactly 0.80 as solved.
-  balance_guard_threshold_operator: '>'
-  # Success threshold for the discovery metric; mirrors the balance guard for this goal.
-  success_threshold: 0.8
-  # Success comparison; strict greater-than matches the stated discovery target.
-  success_threshold_operator: '>'
-  # Rolling attempt window; keeps per-source rates comparable with single-level contracts.
-  success_window_attempts: 100
-# Goal-specific environment overlay; changes the shared single-state contract into a two-state distribution.
-environment:
-  # Stable Retro state ids; both Level1-1 and Level1-2 contribute to the bottleneck metric.
-  states:
-  - Level1-1
-  - Level1-2
-# Candidate ranking policy for the mixed-level discovery search.
-selection_policy:
-  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
-  rank_order:
-  - max(train/info/level_complete/rate/min/last)
-  - max(train/info/level_complete/rate/mean/last)
-  - max(train/info/level_complete/from/0-1/rate)
-  - max(train/info/level_complete/from/0-0/rate)
-  - max(rollout/ep_rew_mean)
+# Goal-specific train environment overlay; changes the shared single-state contract into a two-state distribution.
+train:
+  environment:
+    # Stable Retro state ids; both Level1-1 and Level1-2 contribute to the bottleneck metric.
+    env_config:
+      states:
+      - Level1-1
+      - Level1-2

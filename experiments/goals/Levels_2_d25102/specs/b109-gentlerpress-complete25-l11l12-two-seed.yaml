@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b109-gentlerpress-complete25-l11l12-two-seed
-stage: screen
-hypothesis: B91 is learning both levels, but seed 207 lost much of its Level1-2 competence after peaking while seed 206 is still climbing. A gentler PPO update regime should reduce weaker-level drift without changing the task, reward target, or state mix.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with lower post-peak one-level collapse than B91 and B89.
+hypothesis: >-
+  B91 is learning both levels, but seed 207 lost much of its Level1-2 competence after peaking while
+  seed 206 is still climbing. A gentler PPO update regime should reduce weaker-level drift without
+  changing the task, reward target, or state mix. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with lower post-peak one-level collapse than B91 and B89.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 54
 seeds:
 - 206
 - 207
@@ -77,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

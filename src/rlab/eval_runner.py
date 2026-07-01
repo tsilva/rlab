@@ -28,7 +28,6 @@ def _evaluate_model_episodes_vector(
     n_envs: int,
     max_steps: int,
     deterministic: bool,
-    completion_x_threshold: int,
     progress_bar: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     vec_config = replace(
@@ -88,11 +87,7 @@ def _evaluate_model_episodes_vector(
                     int(info.get("level_max_x_pos", 0)),
                 )
 
-                completed[env_index] = bool(completed[env_index]) or is_level_complete(
-                    info,
-                    int(max_x_positions[env_index]),
-                    completion_x_threshold,
-                )
+                completed[env_index] = bool(completed[env_index]) or is_level_complete(info)
                 if bool(info.get("died", False)):
                     died_flags[env_index] = True
                     if death_x_positions[env_index] is None:
@@ -161,7 +156,6 @@ def evaluate_model_episodes(
     seed: int,
     max_steps: int,
     deterministic: bool,
-    completion_x_threshold: int,
     n_envs: int = 1,
     capture_best_video: bool = False,
     video_path: Path | None = None,
@@ -205,7 +199,6 @@ def evaluate_model_episodes(
                         max_steps=max_steps,
                         deterministic=deterministic,
                         seed=episode_seed,
-                        completion_x_threshold=completion_x_threshold,
                         capture_actions=capture_best_video,
                         default_start_state=eval_config.state,
                     )
@@ -230,7 +223,6 @@ def evaluate_model_episodes(
                 n_envs=n_envs,
                 max_steps=max_steps,
                 deterministic=deterministic,
-                completion_x_threshold=completion_x_threshold,
                 progress_bar=progress_bar,
             )
 

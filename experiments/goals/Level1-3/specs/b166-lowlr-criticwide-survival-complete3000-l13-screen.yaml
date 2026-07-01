@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b166-lowlr-criticwide-survival-complete3000-l13-screen
-stage: screen
-hypothesis: B156 was the first active Level1-3 screen to produce real clean completions, but it never formed a reliable 100/100 rolling window before the 5M cap. B165 tests whether removing the small survival incentive and adding anti-stall pressure improves that first-clear recipe. This narrower ablation keeps B156's critic-wide architecture, low-pressure PPO, entropy schedule, tiny clipped progress signal, and small survival incentive intact, changing only the true clean-clear bonus from 1500 to 3000 to test whether B156 simply underweighted the sparse completion event.
-expected_signal: Seed 80 should preserve B156's nonzero clean-clear discovery while improving peak train/info/level_complete/from/0-2/rate or increasing completion count earlier. If it does not improve over B156, the issue is not just sparse-clear bonus magnitude.
+hypothesis: >-
+  B156 was the first active Level1-3 screen to produce real clean completions, but it never formed a
+  reliable 100/100 rolling window before the 5M cap. B165 tests whether removing the small survival
+  incentive and adding anti-stall pressure improves that first-clear recipe. This narrower ablation
+  keeps B156's critic-wide architecture, low-pressure PPO, entropy schedule, tiny clipped progress
+  signal, and small survival incentive intact, changing only the true clean-clear bonus from 1500 to
+  3000 to test whether B156 simply underweighted the sparse completion event. Seed 80 should preserve
+  B156's nonzero clean-clear discovery while improving peak train/info/level_complete/from/0-2/rate or
+  increasing completion count earlier. If it does not improve over B156, the issue is not just
+  sparse-clear bonus magnitude.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 34
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +82,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

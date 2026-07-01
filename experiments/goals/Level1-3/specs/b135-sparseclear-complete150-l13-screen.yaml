@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b135-sparseclear-complete150-l13-screen
-stage: screen
-hypothesis: If even low scaled progress rewards keep optimizing partial x-position rather than real Level1-3 clears, a sparse true-clear reward arm with no progress reward should test whether the current shaping is still distracting from the target.
-expected_signal: Seed 80 may learn more slowly, but any nonzero clean-clear count would be high-value evidence that progress shaping is the wrong search signal for Level1-3.
+hypothesis: >-
+  If even low scaled progress rewards keep optimizing partial x-position rather than real Level1-3
+  clears, a sparse true-clear reward arm with no progress reward should test whether the current
+  shaping is still distracting from the target. Seed 80 may learn more slowly, but any nonzero
+  clean-clear count would be high-value evidence that progress shaping is the wrong search signal for
+  Level1-3.
 parent_spec_slug: b129-lowprogress-complete100-slowent-l13-screen
-priority: 65
 seeds:
 - 80
 run_target: rtx4090
@@ -66,7 +70,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

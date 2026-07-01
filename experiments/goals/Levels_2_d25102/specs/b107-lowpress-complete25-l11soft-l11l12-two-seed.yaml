@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b107-lowpress-complete25-l11soft-l11l12-two-seed
-stage: screen
-hypothesis: B91 shows that low update pressure plus completion_reward=25 can lift Level1-2, but current peaks are often bottlenecked by Level1-1. A gentle Level1-1 sampling tilt should recover the Level1-1 side without abandoning true mixed-policy training or changing the task.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-1 rising above the B91 bottleneck while Level1-2 remains meaningfully learned.
+hypothesis: >-
+  B91 shows that low update pressure plus completion_reward=25 can lift Level1-2, but current peaks
+  are often bottlenecked by Level1-1. A gentle Level1-1 sampling tilt should recover the Level1-1 side
+  without abandoning true mixed-policy training or changing the task. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-1 rising above the B91 bottleneck while
+  Level1-2 remains meaningfully learned.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 56
 seeds:
 - 200
 - 201
@@ -78,7 +82,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

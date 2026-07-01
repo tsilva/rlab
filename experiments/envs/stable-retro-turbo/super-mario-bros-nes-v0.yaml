@@ -1,0 +1,36 @@
+# Reusable Stable Retro Turbo Super Mario Bros EnvConfig fragment.
+# Goals import this file into their desired package path, usually train.environment.env_config.
+# Environment provider id; stable-retro-turbo supplies the stable_retro runtime import.
+env_provider: stable-retro-turbo
+# Stable Retro game id passed to EnvConfig.
+game: SuperMarioBros-Nes-v0
+# Emulator frame skip; fixes action repeat and observation cadence.
+frame_skip: 4
+# Number of preprocessed frames stacked in the returned observation.
+frame_stack: 4
+# Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.
+frame_maxpool: false
+# Random sticky action probability; 0 disables stochastic action repetition for this contract.
+action_sticky_prob: 0.0
+# Resize target for native preprocessing as [width, height].
+obs_resize:
+- 84
+- 84
+# Crop the HUD from the top of the frame before resize as [top, right, bottom, left].
+obs_crop:
+- 32
+- 0
+- 0
+- 0
+# Convert RGB observations to grayscale natively.
+obs_grayscale: true
+# Resize kernel; area downsampling is the expected image resizer for this contract.
+obs_resize_algorithm: area
+# Tensor layout expected by SB3 CNN policies.
+obs_layout: chw
+# Observation ownership mode; safe_view avoids unnecessary memory traffic.
+obs_copy: safe_view
+# Disable random no-op starts for reproducible goal attempts.
+reset_noops: 0
+# Only return full info payloads at terminal transitions.
+info_filter: terminal

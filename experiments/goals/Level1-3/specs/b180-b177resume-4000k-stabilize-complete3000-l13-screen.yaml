@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b180-b177resume-4000k-stabilize-complete3000-l13-screen
-stage: screen
-hypothesis: 'B177 is the first critic-XL run to produce real clean Level1-3 clears: it first cleared near 3.16M, reached 10 clean clears by about 4.0M, and briefly reached a 0.02 rolling source-attempt rate before the shaped reward tail fell. B180 resumes the B177 4.0M checkpoint and lowers PPO update pressure while keeping the B177 critic-XL architecture and completion reward 3000. This tests whether the discovered post-bottleneck behavior can be consolidated without changing environment, action, termination, or eval semantics.'
-expected_signal: Seed 80 should preserve B177's clean-clear behavior immediately after resume and improve peak train/info/level_complete/rate/min/last or clean-clear density during the remaining 1M steps. If it decays like B171-B173, critic-XL discovery still needs a different consolidation lever.
+hypothesis: >-
+  B177 is the first critic-XL run to produce real clean Level1-3 clears: it first cleared near 3.16M,
+  reached 10 clean clears by about 4.0M, and briefly reached a 0.02 rolling source-attempt rate before
+  the shaped reward tail fell. B180 resumes the B177 4.0M checkpoint and lowers PPO update pressure
+  while keeping the B177 critic-XL architecture and completion reward 3000. This tests whether the
+  discovered post-bottleneck behavior can be consolidated without changing environment, action,
+  termination, or eval semantics. Seed 80 should preserve B177's clean-clear behavior immediately
+  after resume and improve peak train/info/level_complete/rate/min/last or clean-clear density during
+  the remaining 1M steps. If it decays like B171-B173, critic-XL discovery still needs a different
+  consolidation lever.
 parent_spec_slug: b177-lowlr-criticxl-survival-complete3000-l13-screen
-priority: 39
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

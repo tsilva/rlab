@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b215-b191resume-200k-softbonus3500-stable-l13-screen
-stage: screen
-hypothesis: B191 and B205 both reached 0.12 but decayed, and larger completion bonuses can lift shaped reward without a durable clear window. B215 resumes B191 at 200k with a softer completion_reward=3500 using the B205 stable PPO shape, testing whether less sparse-clear pressure preserves the platforming behavior after the initial bottleneck.
-expected_signal: Seed 80 should sustain a better final rolling completion window than B191/B205 while remaining competitive on peak train/info/level_complete/rate/min/last. If peak and count fall together, the softer bonus is under-reinforcing clean clears.
+hypothesis: >-
+  B191 and B205 both reached 0.12 but decayed, and larger completion bonuses can lift shaped reward
+  without a durable clear window. B215 resumes B191 at 200k with a softer completion_reward=3500 using
+  the B205 stable PPO shape, testing whether less sparse-clear pressure preserves the platforming
+  behavior after the initial bottleneck. Seed 80 should sustain a better final rolling completion
+  window than B191/B205 while remaining competitive on peak train/info/level_complete/rate/min/last.
+  If peak and count fall together, the softer bonus is under-reinforcing clean clears.
 parent_spec_slug: b191-b178resume-1400k-clearboost4000-l13-screen
-priority: 33
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

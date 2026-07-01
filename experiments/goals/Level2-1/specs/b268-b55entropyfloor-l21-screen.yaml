@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-single-level-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b268-b55entropyfloor-l21-screen
-stage: screen
-hypothesis: World 2-1 may require more persistent route exploration than B263's entropy decay allowed; an entropy floor of 0.001 over the full 5M keeps exploration alive without changing reward semantics.
-expected_signal: Seed 90 should discover clean clears earlier or recover from local plateaus better than B263, with KL and clip fraction remaining controlled.
+hypothesis: >-
+  World 2-1 may require more persistent route exploration than B263's entropy decay allowed; an
+  entropy floor of 0.001 over the full 5M keeps exploration alive without changing reward semantics.
+  Seed 90 should discover clean clears earlier or recover from local plateaus better than B263, with
+  KL and clip fraction remaining controlled.
 parent_spec_slug: b263-b257soft-l21-screen
-priority: 76
 seeds:
 - 90
 run_target: rtx4090

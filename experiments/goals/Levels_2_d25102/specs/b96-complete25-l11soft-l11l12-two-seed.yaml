@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b96-complete25-l11soft-l11l12-two-seed
-stage: screen
-hypothesis: B89's early completion-reward arm is lifting Level1-2 much faster than Level1-1, so a slight Level1-1 sampling bias may preserve the Level1-2 benefit while raising the bottleneck level.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-1 no longer lagging far behind Level1-2 after the completion reward starts producing clears.
+hypothesis: >-
+  B89's early completion-reward arm is lifting Level1-2 much faster than Level1-1, so a slight
+  Level1-1 sampling bias may preserve the Level1-2 benefit while raising the bottleneck level. Both
+  seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-1 no longer lagging
+  far behind Level1-2 after the completion reward starts producing clears.
 parent_spec_slug: b89-complete25-l11l12-two-seed
-priority: 67
 seeds:
 - 206
 - 207
@@ -77,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

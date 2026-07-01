@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b196-b178resume-1200k-clearboost4000-l13-screen
-stage: screen
-hypothesis: If B178's useful behavior was still forming before 1.3M, an even earlier conservative continuation may give completion shaping enough time to affect the path distribution before the policy narrows. B196 resumes B178 at 1.2M with completion_reward=4000 and 800k continuation steps.
-expected_signal: Seed 80 should show earlier or denser clean clears than B193 while avoiding a collapse in train/explained_variance and train/info/level_complete/from/0-2/rate.
+hypothesis: >-
+  If B178's useful behavior was still forming before 1.3M, an even earlier conservative continuation
+  may give completion shaping enough time to affect the path distribution before the policy narrows.
+  B196 resumes B178 at 1.2M with completion_reward=4000 and 800k continuation steps. Seed 80 should
+  show earlier or denser clean clears than B193 while avoiding a collapse in train/explained_variance
+  and train/info/level_complete/from/0-2/rate.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 39
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

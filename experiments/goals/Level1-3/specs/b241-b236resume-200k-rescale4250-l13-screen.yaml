@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b241-b236resume-200k-rescale4250-l13-screen
-stage: screen
-hypothesis: B236 found a new 0.14 high-window with completion_reward=4250, but still decayed by the final checkpoint. B241 resumes from B236 200k and keeps the reward shape while increasing reward_scale from 10 to 12, reducing effective reward magnitude to test whether post-peak collapse is partly reward-scale driven.
-expected_signal: Seed 80 should preserve a higher final train/info/level_complete/rate/min/last than B236 while retaining useful peak rate. If reward and completion both fall, the B236 behavior depends on the stronger original reward scale.
+hypothesis: >-
+  B236 found a new 0.14 high-window with completion_reward=4250, but still decayed by the final
+  checkpoint. B241 resumes from B236 200k and keeps the reward shape while increasing reward_scale
+  from 10 to 12, reducing effective reward magnitude to test whether post-peak collapse is partly
+  reward-scale driven. Seed 80 should preserve a higher final train/info/level_complete/rate/min/last
+  than B236 while retaining useful peak rate. If reward and completion both fall, the B236 behavior
+  depends on the stronger original reward scale.
 parent_spec_slug: b236-b191resume-200k-longcredit4250-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -75,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

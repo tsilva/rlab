@@ -12,8 +12,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 from rlab import job_queue
 from rlab import main as rlab_main
+from rlab import wandb_leaders
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.dotenv import load_env_file
 from rlab.eval_job_runner import log_eval_to_wandb, normalize_eval_config
@@ -63,6 +66,26 @@ class FakeProcess:
         self.sent_signals.append(signum)
 
 
+class FakeWandbRun:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        name: str,
+        config: dict,
+        summary: dict,
+        group: str = "",
+        tags: tuple[str, ...] = (),
+    ) -> None:
+        self.id = run_id
+        self.name = name
+        self.config = config
+        self.summary = summary
+        self.group = group
+        self.tags = tags
+        self.url = f"https://wandb.ai/entity/project/runs/{run_id}"
+
+
 class FakeCursor:
     def __init__(self, row=None, rows=None) -> None:
         self.row = row
@@ -110,11 +133,8 @@ def valid_train_spec() -> dict:
         "schema_version": 1,
         "goal": "Level1-1",
         "slug": "candidate",
-        "stage": "confirm",
-        "hypothesis": "Candidate should reproduce the expected completion signal.",
-        "expected_signal": "Rank by completion rate, then reward.",
+        "hypothesis": "Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.",
         "parent_spec_slug": None,
-        "priority": 7,
         "seeds": [23, 24],
         "wandb_group": "b-test",
         "wandb_tags": ["mario", "confirm"],
@@ -148,6 +168,77 @@ class TrainRunnerSignalTests(unittest.TestCase):
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_wandb_run_leaders_rank_by_worst_seed_then_mean(self) -> None:
+        runs = [
+            FakeWandbRun(
+                run_id="a1",
+                name="a-s1",
+                config={"goal_slug": "Level1-1", "spec_slug": "a", "seed": 1},
+                summary={"info/level_complete/rate/min/last": 1.0},
+            ),
+            FakeWandbRun(
+                run_id="a2",
+                name="a-s2",
+                config={"goal_slug": "Level1-1", "spec_slug": "a", "seed": 2},
+                summary={"info/level_complete/rate/min/last": 0.8},
+            ),
+            FakeWandbRun(
+                run_id="b1",
+                name="b-s1",
+                config={"goal_slug": "Level1-1", "spec_slug": "b", "seed": 1},
+                summary={"info/level_complete/rate/min/last": 0.9},
+            ),
+            FakeWandbRun(
+                run_id="b2",
+                name="b-s2",
+                config={"goal_slug": "Level1-1", "spec_slug": "b", "seed": 2},
+                summary={"info/level_complete/rate/min/last": 0.9},
+            ),
+        ]
+
+        scores = [
+            score
+            for score in (
+                wandb_leaders.run_score(
+                    run,
+                    objective_keys=wandb_leaders.RUN_OBJECTIVE_KEYS,
+                )
+                for run in runs
+            )
+            if score is not None
+        ]
+        leaders = wandb_leaders.rank_run_leaders(scores, min_seeds=2)
+
+        self.assertEqual(leaders[0].spec_slug, "b")
+        self.assertEqual(leaders[0].worst_seed, 0.9)
+        self.assertEqual(leaders[1].spec_slug, "a")
+        self.assertEqual(leaders[1].worst_seed, 0.8)
+
+    def test_wandb_checkpoint_leaders_include_source_run(self) -> None:
+        run = FakeWandbRun(
+            run_id="run-1",
+            name="candidate",
+            config={"goal_slug": "Level1-4", "spec_slug": "b257"},
+            summary={
+                "leader/checkpoint/completion_rate": 1.0,
+                "leader/checkpoint/max_x_max": 4610,
+                "leader/checkpoint/reward_mean": 4200.0,
+                "leader/checkpoint/step": 4500000,
+                "leader/checkpoint/artifact_ref": "entity/project/candidate:step-4500000",
+                "leader/checkpoint/eval_protocol_hash": "abc",
+                "leader/checkpoint/eval_job_id": 12,
+            },
+        )
+
+        leader = wandb_leaders.checkpoint_leader(run)
+
+        self.assertIsNotNone(leader)
+        assert leader is not None
+        self.assertEqual(leader.run_id, "run-1")
+        self.assertEqual(leader.run_name, "candidate")
+        self.assertEqual(leader.checkpoint_step, 4500000)
+        self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
+
     def test_claim_train_job_filters_exact_runtime_image_only(self) -> None:
         conn = FakeConnection(row={"id": 7, "profile_id": "mario-ppo/post16/rtx4090-screening"})
 
@@ -199,7 +290,8 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("spec_payload_json JSONB", job_queue.SCHEMA_SQL)
         self.assertIn("spec_sha256 TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS eval_jobs", job_queue.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS eval_results", job_queue.SCHEMA_SQL)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS train_results", job_queue.SCHEMA_SQL)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS eval_results", job_queue.SCHEMA_SQL)
 
     def test_reset_schema_drops_only_current_queue_tables(self) -> None:
         conn = FakeConnection()
@@ -267,11 +359,8 @@ defaults:
 - _self_
 goal: Level1-1
 slug: candidate
-stage: screen
-hypothesis: Candidate should reproduce the expected completion signal.
-expected_signal: Rank by completion rate, then reward.
+hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
 parent_spec_slug: null
-priority: 7
 seeds: [23, 24]
 run_target: rtx4090
 state: Level1-1
@@ -311,11 +400,8 @@ schema_version: 1
 kind: train_experiment
 goal: Level1-1
 slug: candidate
-stage: screen
-hypothesis: Candidate should reproduce the expected completion signal.
-expected_signal: Rank by completion rate, then reward.
+hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
 parent_spec_slug: null
-priority: 7
 seeds: [23]
 run_target: rtx4090
 environment:
@@ -369,6 +455,147 @@ logging:
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_resize"], [84, 84])
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
 
+    def test_load_spec_document_materializes_env_config_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "candidate.yaml"
+            path.write_text(
+                """
+schema_version: 1
+kind: train_experiment
+goal: Level1-1
+slug: candidate
+hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
+parent_spec_slug: null
+seeds: [23]
+run_target: rtx4090
+wandb_group: b-test
+wandb_tags: [mario, env-config]
+run_name_template: btest_s{seed}_{utc}
+run_description_template: candidate seed {seed}
+selection_gate:
+  primary: train/completion_episode_rate
+train:
+  environment:
+    env_config:
+      env_provider: stable-retro-turbo
+      game: SuperMarioBros-Nes-v0
+      state: Level1-1
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      observation_size: 84
+      hud_crop_top: 32
+      max_episode_steps: 4500
+      info_events:
+        life_loss: [lives, decrease]
+      done_on_events: [life_loss]
+  timesteps: 1024
+logging:
+  wandb: true
+  wandb_mode: online
+""",
+                encoding="utf-8",
+            )
+
+            loaded = job_queue.load_spec_document(path)
+
+        self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(loaded["train_config"]["env_provider"], "stable-retro-turbo")
+        self.assertEqual(loaded["train_config"]["state"], "Level1-1")
+        self.assertNotIn("environment", loaded["train_config"])
+        self.assertEqual(
+            loaded["train_config"]["info_events_json"],
+            {"life_loss": ["lives", "decrease"]},
+        )
+        self.assertEqual(loaded["train_config"]["done_on_events"], ["life_loss"])
+        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertNotIn("env_config", loaded["environment"])
+        self.assertEqual(loaded["environment"]["state"], "Level1-1")
+        self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
+        self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
+
+    def test_load_spec_document_inherits_goal_owned_contract_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "experiments" / "goals" / "Level1-1"
+            specs_dir = goal_dir / "specs"
+            specs_dir.mkdir(parents=True)
+            goal_dir.joinpath("goal.yaml").write_text(
+                """
+goal_id: Level1-1
+title: Level 1-1
+objective:
+  success:
+    metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
+  rank:
+  - metric: train/info/level_complete/rate/min/last
+    aggregation: max
+    direction: maximize
+train:
+  environment:
+    env_config:
+      env_provider: stable-retro-turbo
+      game: SuperMarioBros-Nes-v0
+      state: Level1-1
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      observation_size: 84
+      hud_crop_top: 32
+      max_episode_steps: 4500
+      info_events:
+        life_loss: [lives, decrease]
+      done_on_events: [life_loss]
+""",
+                encoding="utf-8",
+            )
+            spec = specs_dir / "candidate.yaml"
+            spec.write_text(
+                """
+schema_version: 1
+goal: Level1-1
+slug: candidate
+hypothesis: Candidate should inherit the goal contract. The queue materializes env identity and objective from the goal.
+parent_spec_slug: null
+seeds: [23]
+wandb_group: b-test
+wandb_tags: [mario, env-config]
+run_name_template: btest_s{seed}_{utc}
+run_description_template: candidate seed {seed}
+state: WrongState
+train_config:
+  game: WrongGame
+  state: WrongState
+  action_set: complex
+  early_stop_metric: wrong/metric
+  early_stop_threshold: 0.1
+  timesteps: 1024
+  wandb: true
+  wandb_mode: online
+""",
+                encoding="utf-8",
+            )
+
+            source_spec = yaml.safe_load(spec.read_text(encoding="utf-8"))
+            loaded = job_queue.load_spec_document(spec)
+
+        self.assertEqual(loaded["goal"], "Level1-1")
+        self.assertEqual(source_spec["goal"], "Level1-1")
+        self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(loaded["train_config"]["state"], "Level1-1")
+        self.assertEqual(loaded["train_config"]["action_set"], "simple")
+        self.assertEqual(
+            loaded["train_config"]["early_stop_metric"],
+            TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+        )
+        self.assertEqual(loaded["train_config"]["early_stop_threshold"], 0.99)
+        self.assertEqual(loaded["train_config"]["timesteps"], 1024)
+        self.assertIn("selection_policy", loaded)
+        source_paths = [source["path"] for source in loaded["_composition"]["source_files"]]
+        self.assertTrue(any(path.endswith("goal.yaml") for path in source_paths))
+
     def test_load_spec_document_rejects_missing_mandatory_schema_field(self) -> None:
         spec = valid_train_spec()
         del spec["run_description_template"]
@@ -410,38 +637,21 @@ logging:
                 self.assertEqual(train_config["early_stop_threshold"], 0.99)
                 self.assertEqual(train_config["early_stop_operator"], ">")
 
-    def test_record_running_train_result_upserts_wandb_url(self) -> None:
-        conn = FakeConnection()
-
-        job_queue.record_running_train_result(
-            conn,
-            job={
-                "id": 12,
-                "goal_slug": "goal",
-                "spec_slug": "spec",
-                "profile_id": None,
-                "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "run_target": "rtx4090",
-                "run_name": "candidate",
-            },
-            result={
-                "run_name": "candidate",
-                "run_dir": "runs/candidate",
-                "wandb_run_id": "abc123",
-                "wandb_url": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/abc123",
-                "artifact_refs": [],
-                "metrics_json": {"train/done/all": 20},
-            },
+    def test_launch_result_metadata_strips_metrics_json(self) -> None:
+        result = job_queue.launch_result_metadata(
+            {
+                "job_kind": "train",
+                "train": {
+                    "result": {
+                        "run_name": "candidate",
+                        "metrics_json": {"train/done/all": 20},
+                    }
+                },
+            }
         )
 
-        self.assertIn("INSERT INTO train_results", conn.cursor_obj.executed_sql)
-        self.assertIn("ON CONFLICT (train_job_id) DO UPDATE", conn.cursor_obj.executed_sql)
-        self.assertEqual(conn.cursor_obj.executed_params["train_job_id"], 12)
-        self.assertEqual(
-            conn.cursor_obj.executed_params["wandb_url"],
-            "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/abc123",
-        )
-        self.assertEqual(conn.cursor_obj.executed_params["run_target"], "rtx4090")
+        self.assertEqual(result["train"]["result"]["run_name"], "candidate")
+        self.assertNotIn("metrics_json", result["train"]["result"])
 
     def test_list_stale_train_jobs_filters_target_prefix_and_age(self) -> None:
         conn = FakeConnection(
@@ -477,7 +687,7 @@ logging:
         self.assertEqual(conn.cursor_obj.executed_params["older_than_seconds"], 600)
         self.assertEqual(conn.cursor_obj.executed_params["limit"], 25)
 
-    def test_mark_stale_train_jobs_failed_updates_job_and_result(self) -> None:
+    def test_mark_stale_train_jobs_failed_updates_job_only(self) -> None:
         conn = FakeConnection(rows=[{"id": 12, "stale_lease_owner": "rlab-beast-2-x"}])
 
         rows = job_queue.mark_stale_train_jobs_failed(
@@ -493,7 +703,7 @@ logging:
         self.assertIn("WITH candidates AS", conn.cursor_obj.executed_sql)
         self.assertIn("FOR UPDATE SKIP LOCKED", conn.cursor_obj.executed_sql)
         self.assertIn("UPDATE train_jobs AS job", conn.cursor_obj.executed_sql)
-        self.assertIn("INSERT INTO train_results", conn.cursor_obj.executed_sql)
+        self.assertNotIn("INSERT INTO train_results", conn.cursor_obj.executed_sql)
         self.assertIn("status = 'failed'", conn.cursor_obj.executed_sql)
         self.assertEqual(conn.cursor_obj.executed_params["job_ids"], [12])
         self.assertEqual(
@@ -727,23 +937,6 @@ logging:
         self.assertEqual(params["checkpoint_step"], 100)
         self.assertEqual(params["eval_protocol_hash"], "abc123")
 
-    def test_record_eval_wandb_status_updates_projection_fields(self) -> None:
-        conn = FakeConnection()
-
-        job_queue.record_eval_wandb_status(
-            conn,
-            eval_job_id=12,
-            wandb_run_id="run-id",
-            logged=True,
-            log_step=500000,
-        )
-
-        self.assertIn("UPDATE eval_results", conn.cursor_obj.executed_sql)
-        self.assertEqual(conn.cursor_obj.executed_params["eval_job_id"], 12)
-        self.assertEqual(conn.cursor_obj.executed_params["wandb_run_id"], "run-id")
-        self.assertTrue(conn.cursor_obj.executed_params["wandb_logged"])
-        self.assertEqual(conn.cursor_obj.executed_params["wandb_log_step"], 500000)
-
     def test_checkpoint_artifact_upload_enqueues_goal_eval_job(self) -> None:
         calls: list[dict] = []
 
@@ -757,7 +950,6 @@ logging:
             "spec_slug": "candidate",
             "spec_path": "experiments/goals/Level1-1/specs/candidate.yaml",
             "runtime_image_ref": RUNTIME_IMAGE_REF,
-            "priority": 7,
             "run_name": "candidate_run",
             "train_config": {
                 "run_name": "candidate_run",
@@ -803,6 +995,8 @@ logging:
         class FakeRun:
             def __init__(self) -> None:
                 self.logged: list[tuple[dict, int | None]] = []
+                self.config: dict = {}
+                self.summary: dict = {}
                 self.finished = False
 
             def log(self, payload: dict, step: int | None = None) -> None:
@@ -867,6 +1061,12 @@ logging:
         self.assertEqual(payload["eval/reward/mean"], 12.5)
         self.assertEqual(payload["eval/checkpoint/step"], 500000)
         self.assertEqual(payload["eval/done/level_change/rate"], 1.0)
+        self.assertEqual(fake_wandb.run.summary["leader/checkpoint/completion_rate"], 1.0)
+        self.assertEqual(fake_wandb.run.summary["leader/checkpoint/step"], 500000)
+        self.assertEqual(
+            fake_wandb.run.summary["leader/checkpoint/artifact_ref"],
+            "entity/project/model:step-500000",
+        )
         self.assertTrue(fake_wandb.run.finished)
 
     def test_parser_removed_research_db_commands(self) -> None:
@@ -977,7 +1177,6 @@ logging:
         )
         self.assertEqual(calls[0]["train_config"]["done_on_events"], "life_loss,level_change")
         self.assertNotIn("done_on_info_json", calls[0]["train_config"])
-        self.assertEqual(calls[0]["priority"], 7)
         self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
         self.assertEqual(calls[0]["goal_slug"], "Level1-1")
         self.assertEqual(calls[0]["spec_slug"], "candidate")
@@ -989,9 +1188,9 @@ logging:
         self.assertTrue(calls[0]["repo_dirty"])
         self.assertEqual(calls[0]["spec_payload"]["operator_note"], "non-schema metadata persists")
 
-    def test_enqueue_train_jobs_from_spec_document_enforces_schema(self) -> None:
+    def test_enqueue_train_jobs_from_spec_document_rejects_wrong_schema_version(self) -> None:
         document = copy.deepcopy(valid_train_spec())
-        del document["schema_version"]
+        document["schema_version"] = 2
 
         with self.assertRaisesRegex(ValueError, "schema_version"):
             job_queue.enqueue_train_jobs_from_spec_document(
@@ -1341,6 +1540,8 @@ class TrainRunnerTests(unittest.TestCase):
                 "wandb_tags": ["screen", "post16"],
             },
             "goal_slug": "Levels_2_d25102",
+            "spec_slug": "b52",
+            "spec_path": "experiments/goals/Levels_2_d25102/specs/b52.yaml",
             "run_name": "b52_seed23",
             "run_description": "Codex-authored smoke job.",
             "wandb_group": "b52",
@@ -1357,8 +1558,15 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,post16,goal:Levels_2_d25102,level:Level1-1,level:Level1-2",
+            "screen,post16,goal:Levels_2_d25102,spec:b52,level:Level1-1,level:Level1-2",
         )
+        self.assertEqual(written_config["goal_slug"], "Levels_2_d25102")
+        self.assertEqual(written_config["spec_slug"], "b52")
+        self.assertEqual(
+            written_config["spec_path"],
+            "experiments/goals/Levels_2_d25102/specs/b52.yaml",
+        )
+        self.assertEqual(written_config["queue_train_job_id"], 12)
         self.assertEqual(written_config["run_name"], "b52_seed23")
         self.assertEqual(written_config["states"], ["Level1-1", "Level1-2"])
         self.assertEqual(written_config["wandb_group"], "b52")

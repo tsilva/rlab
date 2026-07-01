@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.env_registry import qualify_env_id, resolve_env_id
 
 
@@ -30,7 +31,6 @@ TASK_CONDITIONING_KEYS = (
 )
 TERMINATION_KEYS = (
     "max_episode_steps",
-    "completion_x_threshold",
     "no_progress_timeout_steps",
     "no_progress_min_delta",
     "info_events_json",
@@ -146,14 +146,19 @@ def environment_identity_from_train_config(
     """
 
     identity = deepcopy(dict(environment or {}))
+    identity.pop("env_config", None)
     identity.setdefault("schema_version", 1)
     legacy_provider = identity.get("env_provider", identity.get("provider"))
     legacy_provider_env_id = identity.get("provider_env_id")
     identity.pop("provider", None)
     identity.pop("env_provider", None)
     identity.pop("provider_env_id", None)
+    provider = train_config.get("env_provider", train_config.get("provider", legacy_provider))
     if "env_id" not in identity and train_config.get("game") is not None:
-        identity["env_id"] = qualify_env_id("stable-retro-turbo", str(train_config["game"]))
+        identity["env_id"] = qualify_env_id(
+            str(provider or "stable-retro-turbo"),
+            str(train_config["game"]),
+        )
     elif "env_id" not in identity and legacy_provider_env_id is not None:
         identity["env_id"] = qualify_env_id(
             str(legacy_provider or "stable-retro-turbo"),
@@ -233,11 +238,21 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
     if not isinstance(environment, Mapping):
         return {}
     train_config: dict[str, Any] = {}
+    env_config = environment.get("env_config")
+    if isinstance(env_config, Mapping):
+        train_config.update(
+            normalize_provider_env_config_aliases(
+                env_config,
+                label="environment.env_config",
+            )
+        )
     env_id = environment.get("env_id", environment.get("provider_env_id"))
     if env_id is not None:
         env_id_text = str(env_id)
         if ":" in env_id_text:
-            train_config["game"] = resolve_env_id(env_id_text).provider_env_id
+            resolved = resolve_env_id(env_id_text)
+            train_config["env_provider"] = resolved.provider_id
+            train_config["game"] = resolved.provider_env_id
         else:
             train_config["game"] = deepcopy(env_id)
     state_value = environment.get("state")
@@ -269,6 +284,8 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
             train_config["obs_resize"],
         )
     train_config.pop("obs_resize", None)
+    if "info_events" in train_config and "info_events_json" not in train_config:
+        train_config["info_events_json"] = deepcopy(train_config["info_events"])
     return train_config
 
 

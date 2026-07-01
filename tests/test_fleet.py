@@ -73,21 +73,25 @@ def sample_config() -> fleet.FleetConfig:
             ),
             encoding="utf-8",
         )
-        (root / "experiments" / "fleet.yaml").write_text(
+        (root / "experiments" / "machines.yaml").write_text(
             json.dumps(
                 {
-                    "hosts": {
+                    "machines": {
                         "beast-3": {
+                            "backend": "docker_ssh",
                             "ssh_target": "tsilva@beast-3",
                             "run_target": "rtx4090",
-                            "max_workers": 5,
-                            "rom_dir": "/roms-host",
+                            "docker": {"command": ["sudo", "-n", "docker"]},
+                            "limits": {"max_parallel_containers": 5},
+                            "paths": {"roms_dir": "/roms-host"},
                         },
                         "beast-2": {
+                            "backend": "docker_ssh",
                             "ssh_target": "tsilva@192.168.133.26",
                             "ssh_options": ["-o", "HostKeyAlias=beast-2"],
                             "run_target": "rtx2060",
-                            "max_workers": 4,
+                            "docker": {"command": ["sudo", "-n", "docker"]},
+                            "limits": {"max_parallel_containers": 4},
                         },
                     },
                     "profile_policies": [{"profile_id": "*", "hosts": ["beast-3", "beast-2"]}],
@@ -105,7 +109,6 @@ def demand(
     target: str | None = "rtx4090",
     pending: int = 1,
     running: int = 0,
-    priority: int = 0,
     oldest: int = 10,
 ) -> fleet.QueueDemand:
     return fleet.QueueDemand(
@@ -114,9 +117,39 @@ def demand(
         run_target=target,
         pending_count=pending,
         running_count=running,
-        max_priority=priority,
         oldest_job_id=oldest,
     )
+
+
+class GoalDiscoveryTests(unittest.TestCase):
+    def test_discover_active_goal_slugs_uses_eval_runner_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goals_dir = root / "experiments" / "goals"
+            runnable_goal = goals_dir / "runnable-goal"
+            inert_goal = goals_dir / "inert-goal"
+            runnable_goal.mkdir(parents=True)
+            inert_goal.mkdir(parents=True)
+            runnable_goal.joinpath("goal.yaml").write_text(
+                """
+execution:
+  eval_runner_requirements:
+  - host: beast-3
+    min_replicas: 1
+    image: latest
+""",
+                encoding="utf-8",
+            )
+            inert_goal.joinpath("goal.yaml").write_text(
+                """
+execution: {}
+""",
+                encoding="utf-8",
+            )
+
+            slugs = fleet.discover_active_goal_slugs(root)
+
+        self.assertEqual(slugs, ("runnable-goal",))
 
 
 class FleetQueueTests(unittest.TestCase):
@@ -129,7 +162,6 @@ class FleetQueueTests(unittest.TestCase):
                     "run_target": "rtx4090",
                     "pending_count": 2,
                     "running_count": 1,
-                    "max_priority": 3,
                     "oldest_job_id": 7,
                 }
             ]
@@ -152,7 +184,6 @@ class FleetQueueTests(unittest.TestCase):
                     "run_target": "rtx4090",
                     "pending_count": 2,
                     "running_count": 0,
-                    "max_priority": 3,
                     "oldest_job_id": 7,
                 }
             ]
@@ -498,7 +529,7 @@ class FleetPlanTests(unittest.TestCase):
     def test_capacity_overflow_is_reported_without_queue_mutation(self) -> None:
         config = sample_config()
         demands = [
-            demand(profile=f"profile-{index}", pending=3, priority=10 - index, oldest=index)
+            demand(profile=f"profile-{index}", pending=3, oldest=index)
             for index in range(3)
         ]
 
@@ -937,7 +968,6 @@ class FleetPlanTests(unittest.TestCase):
     def test_watch_latest_snapshot_probes_only_active_devices(self) -> None:
         args = Namespace(
             repo_root=".",
-            fleet_config=None,
             instances=None,
             direct=False,
             host=None,
@@ -1008,7 +1038,6 @@ class FleetPlanTests(unittest.TestCase):
     def test_watch_latest_treats_unreachable_host_as_down_not_failed_action(self) -> None:
         args = Namespace(
             repo_root=".",
-            fleet_config=None,
             instances=None,
             direct=False,
             host=None,
@@ -1064,7 +1093,6 @@ class FleetPlanTests(unittest.TestCase):
     def test_watch_latest_lists_stale_jobs_in_dry_run(self) -> None:
         args = Namespace(
             repo_root=".",
-            fleet_config=None,
             instances=None,
             direct=False,
             host=None,
@@ -1128,7 +1156,6 @@ class FleetPlanTests(unittest.TestCase):
     def test_watch_latest_marks_stale_jobs_failed_before_reading_queue(self) -> None:
         args = Namespace(
             repo_root=".",
-            fleet_config=None,
             instances=None,
             direct=False,
             host=None,
@@ -1543,7 +1570,7 @@ class FleetPlanTests(unittest.TestCase):
 
 
 class FleetHostSetupTests(unittest.TestCase):
-    def test_default_fleet_config_encodes_beast_host_setup(self) -> None:
+    def test_machine_registry_encodes_beast_host_setup(self) -> None:
         config = fleet.load_fleet_config(Path(".").resolve())
 
         self.assertEqual(config.hosts["beast-3"].ssh_target, "tsilva@beast-3")
@@ -1555,7 +1582,7 @@ class FleetHostSetupTests(unittest.TestCase):
         self.assertEqual(config.hosts["beast-2"].max_workers, 4)
         self.assertEqual(config.hosts["beast-2"].docker_command, ("sudo", "-n", "docker"))
 
-    def test_host_capacity_falls_back_to_instance_hardware_workers(self) -> None:
+    def test_host_capacity_comes_from_machine_slot_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "experiments").mkdir()
@@ -1573,13 +1600,15 @@ class FleetHostSetupTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (root / "experiments" / "fleet.yaml").write_text(
+            (root / "experiments" / "machines.yaml").write_text(
                 json.dumps(
                     {
-                        "hosts": {
+                        "machines": {
                             "beast-3": {
+                                "backend": "docker_ssh",
                                 "ssh_target": "tsilva@beast-3",
                                 "run_target": "rtx4090",
+                                "limits": {"max_parallel_containers": 2},
                             }
                         }
                     }
@@ -1589,7 +1618,7 @@ class FleetHostSetupTests(unittest.TestCase):
 
             config = fleet.load_fleet_config(root)
 
-        self.assertEqual(config.hosts["beast-3"].max_workers, 5)
+        self.assertEqual(config.hosts["beast-3"].max_workers, 2)
 
     def test_setup_host_script_verifies_docker_nvidia_and_digest_smoke(self) -> None:
         config = sample_config()
@@ -1616,7 +1645,6 @@ class FleetHostSetupTests(unittest.TestCase):
             run_target="rtx2060",
             pending_count=1,
             running_count=0,
-            max_priority=0,
             oldest_job_id=1,
         )
         plan = fleet.build_fleet_plan(config, [beast2_demand], [], [])

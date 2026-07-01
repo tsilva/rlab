@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-single-level-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b266-b55normadv-l21-screen
-stage: screen
-hypothesis: Advantage normalization may reduce seed sensitivity on World 2-1 while preserving the B55 reward contract, testing whether B263's weak retention is partly update-scale variance rather than reward semantics.
-expected_signal: Seed 90 should produce earlier clean Level2-1 clears than B263 and improve peak train/info/level_complete/rate/min/last without PPO instability.
+hypothesis: >-
+  Advantage normalization may reduce seed sensitivity on World 2-1 while preserving the B55 reward
+  contract, testing whether B263's weak retention is partly update-scale variance rather than reward
+  semantics. Seed 90 should produce earlier clean Level2-1 clears than B263 and improve peak
+  train/info/level_complete/rate/min/last without PPO instability.
 parent_spec_slug: b263-b257soft-l21-screen
-priority: 78
 seeds:
 - 90
 run_target: rtx4090

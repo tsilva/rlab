@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b258-b250-entropyfloor-l14-screen
-stage: screen
-hypothesis: The failed B255 seeds behaved like late local optima, not like PPO blow-ups. Keeping a small entropy floor tests whether more persistent exploration improves route discovery while preserving B250's successful no-bonus reward.
-expected_signal: Seed 90 should still reach 100/100, and entropy/KL should remain controlled. A successful screen would justify confirmation because the change directly targets seed variance.
+hypothesis: >-
+  The failed B255 seeds behaved like late local optima, not like PPO blow-ups. Keeping a small entropy
+  floor tests whether more persistent exploration improves route discovery while preserving B250's
+  successful no-bonus reward. Seed 90 should still reach 100/100, and entropy/KL should remain
+  controlled. A successful screen would justify confirmation because the change directly targets seed
+  variance.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 77
 seeds:
 - 90
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

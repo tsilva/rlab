@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b251-b55complete100-l14-screen
-stage: screen
-hypothesis: A modest clean-completion reward should reinforce true World 1-4 clears once discovered without changing the task, emulator state, action space, observation semantics, or eval protocol.
-expected_signal: Seed 90 should improve first nonzero train/info/level_complete/from/0-3/count or peak train/info/level_complete/from/0-3/rate versus the no-bonus B250 arm, while reward-share diagnostics show the completion bonus does not swamp real progress learning.
+hypothesis: >-
+  A modest clean-completion reward should reinforce true World 1-4 clears once discovered without
+  changing the task, emulator state, action space, observation semantics, or eval protocol. Seed 90
+  should improve first nonzero train/info/level_complete/from/0-3/count or peak
+  train/info/level_complete/from/0-3/rate versus the no-bonus B250 arm, while reward-share diagnostics
+  show the completion bonus does not swamp real progress learning.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 69
 seeds:
 - 90
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

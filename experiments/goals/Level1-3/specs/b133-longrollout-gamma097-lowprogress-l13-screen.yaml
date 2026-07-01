@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b133-longrollout-gamma097-lowprogress-l13-screen
-stage: screen
-hypothesis: If Level1-3 requires longer-horizon credit than the 512-step B130 screen can capture, a 1024-step rollout with gamma=0.97 and gae_lambda=0.95 should improve credit assignment while keeping the same Level1-3 event contract and reward target.
-expected_signal: Seed 80 should improve fixed-budget clean-clear count or produce the first nonzero train/info/level_complete/from/0-2/rate while keeping KL and clip fraction usable.
+hypothesis: >-
+  If Level1-3 requires longer-horizon credit than the 512-step B130 screen can capture, a 1024-step
+  rollout with gamma=0.97 and gae_lambda=0.95 should improve credit assignment while keeping the same
+  Level1-3 event contract and reward target. Seed 80 should improve fixed-budget clean-clear count or
+  produce the first nonzero train/info/level_complete/from/0-2/rate while keeping KL and clip fraction
+  usable.
 parent_spec_slug: b130-gamma097-lowprogress-complete50-l13-screen
-priority: 67
 seeds:
 - 80
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

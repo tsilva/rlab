@@ -90,7 +90,7 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(by_id["rtx4090"]["target"], "docker/beast-3")
         self.assertEqual(by_id["rtx4090"]["capacity"], "5 workers")
         self.assertEqual(by_id["rtx4090"]["details"]["manager"], "rlab fleet")
-        self.assertEqual(by_id["rtx4090"]["details"]["fleet_host"], "beast-3")
+        self.assertEqual(by_id["rtx4090"]["details"]["machine"], "beast-3")
         self.assertEqual(by_id["rtx4090"]["details"]["runner_capacity"], 5)
         self.assertEqual(by_id["local-macbook"]["target"], "local CLI")
         self.assertEqual(by_id["local-macbook"]["details"]["manager"], "local")
@@ -196,8 +196,7 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(job["payload"]["job"]["train_config"]["n_envs"], 32)
         self.assertIn("train_config", job["payload"]["schema"])
 
-    def test_running_train_job_exposes_wandb_url_for_queue_linking(self) -> None:
-        wandb_url = "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/abc123"
+    def test_running_train_job_uses_queue_state_without_result_projection(self) -> None:
         job = job_from_train_row(
             {
                 "id": 12,
@@ -211,9 +210,6 @@ class MonitoringStateTests(unittest.TestCase):
                 "heartbeat_at": None,
                 "lease_expires_at": None,
                 "error": None,
-                "artifact_refs": [],
-                "metrics_json": {},
-                "wandb_url": wandb_url,
                 "run_name": "run-12",
                 "job_payload": {
                     "id": 12,
@@ -221,16 +217,15 @@ class MonitoringStateTests(unittest.TestCase):
                     "train_config": {"game": "SuperMarioBros-Nes-v0", "n_envs": 32},
                     "status": "running",
                 },
-                "result_payload": {"wandb_url": wandb_url},
             }
         )
 
-        self.assertEqual(job["wandb_url"], wandb_url)
+        self.assertEqual(job["wandb_url"], "")
         self.assertEqual(job["device"], "beast-3")
         self.assertEqual(job["container"], "rlab-beast-3-rtx4090-any-profile-aaaaaaaaaaaa")
         self.assertEqual(job["details"]["device"], "beast-3")
         self.assertEqual(job["details"]["container"], "rlab-beast-3-rtx4090-any-profile-aaaaaaaaaaaa")
-        self.assertEqual(job["details"]["wandb"], wandb_url)
+        self.assertEqual(job["details"]["wandb"], "")
         self.assertEqual(job["state"], "running")
 
     def test_running_eval_job_exposes_config_wandb_url_for_queue_linking(self) -> None:
@@ -275,7 +270,6 @@ class MonitoringStateTests(unittest.TestCase):
                 "run_target": "rtx4090",
                 "train_config": {"game": "SuperMarioBros-Nes-v0", "state": "Level1-1"},
                 "status": "pending",
-                "priority": 40,
                 "attempts": 0,
                 "max_attempts": 1,
                 "cancel_requested": True,
@@ -311,7 +305,6 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(job["details"]["run_target"], "rtx4090")
         self.assertEqual(job["details"]["runtime_image"], "sha256:aaaaaaaaaaaa")
         self.assertEqual(job["details"]["attempts"], "0/1")
-        self.assertEqual(job["details"]["priority"], 40)
 
     def test_offline_probe_overrides_idle_device_state(self) -> None:
         devices = devices_from_jobs(

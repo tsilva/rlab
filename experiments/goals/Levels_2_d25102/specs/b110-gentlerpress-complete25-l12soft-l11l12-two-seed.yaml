@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b110-gentlerpress-complete25-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: B91 proved the low-pressure completion-reward recipe can exceed the strict high-watermark on one seed, but both B91 seeds later collapsed on Level1-2 and seed 207 never crossed. Combining B100's soft Level1-2 sampling bias with B109's gentler PPO update pressure should protect the weaker Level1-2 rolling window without changing the task or reward target.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 remaining closer to Level1-1 at the high-watermark and a lower chance of B91-style post-peak Level1-2 collapse.
+hypothesis: >-
+  B91 proved the low-pressure completion-reward recipe can exceed the strict high-watermark on one
+  seed, but both B91 seeds later collapsed on Level1-2 and seed 207 never crossed. Combining B100's
+  soft Level1-2 sampling bias with B109's gentler PPO update pressure should protect the weaker
+  Level1-2 rolling window without changing the task or reward target. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-2 remaining closer to Level1-1 at the
+  high-watermark and a lower chance of B91-style post-peak Level1-2 collapse.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 90
 seeds:
 - 206
 - 207
@@ -78,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

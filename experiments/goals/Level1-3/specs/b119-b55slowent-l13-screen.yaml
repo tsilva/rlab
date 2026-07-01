@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b119-b55slowent-l13-screen
-stage: screen
-hypothesis: Keeping the B55 low-update-pressure recipe but preserving exploration longer may help Level1-3 discover reliable clears if the no-bonus baseline becomes locally competent but brittle.
-expected_signal: Seed 80 should improve late-training train/info/level_complete/from/0-2/rate or peak earlier than B117 without requiring a separate completion reward.
+hypothesis: >-
+  Keeping the B55 low-update-pressure recipe but preserving exploration longer may help Level1-3
+  discover reliable clears if the no-bonus baseline becomes locally competent but brittle. Seed 80
+  should improve late-training train/info/level_complete/from/0-2/rate or peak earlier than B117
+  without requiring a separate completion reward.
 parent_spec_slug: b117-b55post21-l13-screen
-priority: 80
 seeds:
 - 80
 run_target: rtx4090
@@ -67,7 +70,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

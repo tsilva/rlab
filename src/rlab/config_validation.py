@@ -13,17 +13,19 @@ import yaml
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document
-from rlab.env_registry import resolve_env_id
+from rlab.env import EnvConfig
+from rlab.env_config_aliases import STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
+from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_spec_document
 from rlab.seeds import validate_eval_seed
 
 
-GOAL_SCHEMA_VERSION = 1
-GOAL_EVAL_SPEC_SCHEMA_VERSION = 1
 RECIPE_SCHEMA_VERSION = 1
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 GOAL_OPERATOR_VALUES = {"<", "<=", "==", ">=", ">"}
+ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
+ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,29 @@ def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -
     return result
 
 
+def _require_int_list(
+    document: Mapping[str, Any],
+    key: str,
+    *,
+    label: str,
+    length: int,
+    minimum: int | None = None,
+) -> list[int]:
+    value = _require_key(document, key, label=label)
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise ValueError(f"{_label_path(label, key)} must be a list")
+    if len(value) != length:
+        raise ValueError(f"{_label_path(label, key)} must contain {length} integers")
+    result: list[int] = []
+    for index, item in enumerate(value):
+        if not _is_int(item):
+            raise ValueError(f"{_label_path(label, key)}[{index}] must be an integer")
+        if minimum is not None and item < minimum:
+            raise ValueError(f"{_label_path(label, key)}[{index}] must be >= {minimum}")
+        result.append(item)
+    return result
+
+
 def _validate_obs_crop(preprocessing: Mapping[str, Any], *, label: str) -> None:
     if "hud_crop_top" in preprocessing:
         raise ValueError(f"{label}.hud_crop_top is redundant; use obs_crop")
@@ -181,6 +206,11 @@ def _validate_environment_identity(
         _require_key(document, "environment", label=label),
         label=f"{label}.environment",
     )
+    env_config = environment.get("env_config")
+    if isinstance(env_config, Mapping):
+        _validate_env_config(env_config, label=f"{label}.environment.env_config", require_game=True)
+        return environment
+
     for old_key in ("provider", "env_provider", "provider_env_id"):
         if old_key in environment:
             raise ValueError(
@@ -209,30 +239,299 @@ def _validate_environment_identity(
     return environment
 
 
-def _validate_goal_eval_spec(document: Mapping[str, Any], *, label: str) -> None:
-    eval_spec = _require_mapping(
-        _require_key(document, "eval_spec", label=label),
-        label=f"{label}.eval_spec",
+def _validate_env_config(
+    env_config: Mapping[str, Any],
+    *,
+    label: str,
+    require_game: bool,
+    require_provider: bool = True,
+    allowed_extra_keys: set[str] | None = None,
+) -> None:
+    extra_keys = sorted(
+        set(env_config) - ENV_CONFIG_ALLOWED_KEYS - (allowed_extra_keys or set())
     )
-    _require_schema_version(eval_spec, GOAL_EVAL_SPEC_SCHEMA_VERSION, label=f"{label}.eval_spec")
-    eval_config = _require_mapping(
-        _require_key(eval_spec, "eval_config", label=f"{label}.eval_spec"),
-        label=f"{label}.eval_spec.eval_config",
+    if extra_keys:
+        raise ValueError(f"{label} has non-EnvConfig key(s): {extra_keys}")
+    if require_provider:
+        env_provider = _require_non_empty_string(env_config, "env_provider", label=label)
+    elif "env_provider" in env_config:
+        env_provider = _require_non_empty_string(env_config, "env_provider", label=label)
+    else:
+        env_provider = None
+    if require_game:
+        game = _require_non_empty_string(env_config, "game", label=label)
+    elif "game" in env_config:
+        game = _require_non_empty_string(env_config, "game", label=label)
+    else:
+        game = None
+    if game and env_provider:
+        try:
+            qualify_env_id(env_provider, game)
+        except ValueError as exc:
+            raise ValueError(f"{label}.env_provider is invalid: {exc}") from exc
+    if "state" in env_config and "states" in env_config:
+        raise ValueError(f"{label} must define only one of state or states")
+    if "state" in env_config:
+        state = env_config["state"]
+        if not isinstance(state, str) or not state.strip():
+            raise ValueError(f"{label}.state must be a non-empty string")
+    if "states" in env_config:
+        _require_string_list(env_config, "states", label=label)
+    if "action_set" in env_config:
+        _require_non_empty_string(env_config, "action_set", label=label)
+    for key in (
+        "frame_skip",
+        "max_episode_steps",
+        "observation_size",
+        "hud_crop_top",
+        "no_progress_timeout_steps",
+        "no_progress_min_delta",
+    ):
+        if key in env_config:
+            minimum = 1 if key == "frame_skip" else 0
+            _require_int(env_config, key, label=label, minimum=minimum)
+    if "max_pool_frames" in env_config:
+        _require_bool(env_config, "max_pool_frames", label=label)
+    if "sticky_action_prob" in env_config:
+        _require_number(env_config, "sticky_action_prob", label=label)
+    if "obs_resize_algorithm" in env_config:
+        _require_non_empty_string(env_config, "obs_resize_algorithm", label=label)
+    if "info_events" in env_config:
+        _require_mapping(env_config["info_events"], label=f"{label}.info_events")
+    if "info_events_json" in env_config:
+        _require_mapping(env_config["info_events_json"], label=f"{label}.info_events_json")
+    if "done_on_events" in env_config:
+        _require_string_list(env_config, "done_on_events", label=label)
+    if "frame_stack" in env_config:
+        _require_int(env_config, "frame_stack", label=label, minimum=1)
+    if "frame_maxpool" in env_config:
+        _require_bool(env_config, "frame_maxpool", label=label)
+    if "action_sticky_prob" in env_config:
+        _require_number(env_config, "action_sticky_prob", label=label)
+    if "obs_resize" in env_config:
+        _require_int_list(env_config, "obs_resize", label=label, length=2, minimum=1)
+    if "obs_crop" in env_config:
+        _require_int_list(env_config, "obs_crop", label=label, length=4, minimum=0)
+    if "obs_grayscale" in env_config:
+        _require_bool(env_config, "obs_grayscale", label=label)
+    if "obs_layout" in env_config:
+        obs_layout = _require_non_empty_string(env_config, "obs_layout", label=label)
+        if obs_layout not in {"hwc", "chw"}:
+            raise ValueError(f"{label}.obs_layout must be hwc or chw")
+    if "obs_copy" in env_config:
+        obs_copy = _require_non_empty_string(env_config, "obs_copy", label=label)
+        if obs_copy not in {"copy", "safe_view", "unsafe_view"}:
+            raise ValueError(f"{label}.obs_copy must be copy, safe_view, or unsafe_view")
+    if "reset_noops" in env_config:
+        _require_int(env_config, "reset_noops", label=label, minimum=0)
+    if "reward_clip" in env_config:
+        _require_bool(env_config, "reward_clip", label=label)
+    if "info_filter" in env_config and not isinstance(env_config["info_filter"], str | Mapping):
+        raise ValueError(f"{label}.info_filter must be a string or mapping")
+    if "done_on" in env_config:
+        _require_mapping(env_config["done_on"], label=f"{label}.done_on")
+
+
+def _goal_train_section(document: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:
+    return _require_mapping(
+        _require_key(document, "train", label=label),
+        label=f"{label}.train",
     )
-    _require_int(eval_config, "episodes", label=f"{label}.eval_spec.eval_config", minimum=1)
-    seed = _require_int(eval_config, "seed", label=f"{label}.eval_spec.eval_config")
-    validate_eval_seed(seed, label=f"{label}.eval_spec.eval_config.seed")
-    _require_int(eval_config, "n_envs", label=f"{label}.eval_spec.eval_config", minimum=1)
-    _require_int(eval_config, "max_steps", label=f"{label}.eval_spec.eval_config", minimum=1)
-    _require_bool(eval_config, "stochastic", label=f"{label}.eval_spec.eval_config")
-    if "done_on_events" in eval_config:
-        _require_string_list(eval_config, "done_on_events", label=f"{label}.eval_spec.eval_config")
+
+
+def _goal_train_environment(
+    document: Mapping[str, Any],
+    train: Mapping[str, Any],
+    *,
+    label: str,
+) -> Mapping[str, Any]:
+    if "environment" in train:
+        return _require_mapping(train["environment"], label=f"{label}.train.environment")
+    return _require_mapping(
+        _require_key(document, "environment", label=label),
+        label=f"{label}.environment",
+    )
+
+
+def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
+    if "eval_spec" in document:
+        raise ValueError(f"{label}.eval_spec moved to eval")
+    eval_section = _require_mapping(
+        _require_key(document, "eval", label=label),
+        label=f"{label}.eval",
+    )
+    eval_environment = eval_section.get("environment")
+    if isinstance(eval_environment, Mapping):
+        eval_environment_keys = {"env_config"}
+        extra_keys = sorted(set(eval_environment) - eval_environment_keys)
+        if extra_keys:
+            raise ValueError(f"{label}.eval.environment has unexpected keys: {extra_keys}")
+        eval_env_config = _require_mapping(
+            _require_key(eval_environment, "env_config", label=f"{label}.eval.environment"),
+            label=f"{label}.eval.environment.env_config",
+        )
+        _validate_env_config(
+            eval_env_config,
+            label=f"{label}.eval.environment.env_config",
+            require_game=True,
+            allowed_extra_keys={"episodes", "seed", "n_envs", "max_steps"},
+        )
+        _require_int(
+            eval_env_config,
+            "episodes",
+            label=f"{label}.eval.environment.env_config",
+            minimum=1,
+        )
+        seed = _require_int(
+            eval_env_config,
+            "seed",
+            label=f"{label}.eval.environment.env_config",
+        )
+        validate_eval_seed(seed, label=f"{label}.eval.environment.env_config.seed")
+        if "n_envs" in eval_env_config and "num_envs" in eval_env_config:
+            raise ValueError(
+                f"{label}.eval.environment.env_config must define only one of n_envs or num_envs"
+            )
+        n_envs_key = "num_envs" if "num_envs" in eval_env_config else "n_envs"
+        _require_int(eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1)
+        _require_int(
+            eval_env_config,
+            "max_steps",
+            label=f"{label}.eval.environment.env_config",
+            minimum=1,
+        )
+    elif "env_config" in eval_section:
+        eval_env_config = _require_mapping(
+            eval_section["env_config"],
+            label=f"{label}.eval.env_config",
+        )
+        _validate_env_config(
+            eval_env_config,
+            label=f"{label}.eval.env_config",
+            require_game=False,
+        )
+    if "eval_config" in eval_section:
+        raise ValueError(f"{label}.eval.eval_config moved to eval.policy")
+    if "eval" in eval_section:
+        raise ValueError(f"{label}.eval.eval moved to eval.policy")
+    policy = _require_mapping(
+        _require_key(eval_section, "policy", label=f"{label}.eval"),
+        label=f"{label}.eval.policy",
+    )
+    for moved_key in ("episodes", "seed", "n_envs", "max_steps"):
+        if moved_key in policy:
+            raise ValueError(
+                f"{label}.eval.policy.{moved_key} moved to "
+                f"{label}.eval.environment.env_config.{moved_key}"
+            )
+    _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
+    if "done_on_events" in policy:
+        _require_string_list(policy, "done_on_events", label=f"{label}.eval.policy")
 
 
 def _validate_operator(value: str, *, label: str) -> None:
     if value not in GOAL_OPERATOR_VALUES:
         allowed = ", ".join(sorted(GOAL_OPERATOR_VALUES))
         raise ValueError(f"{label} must be one of {allowed}")
+
+
+def _validate_success_criteria(success: Mapping[str, Any], *, label: str) -> None:
+    criteria = success.get("criteria")
+    if criteria is None:
+        if "metric" in success:
+            allowed_keys = {"metric", "operator", "threshold"}
+            extra_keys = sorted(set(success) - allowed_keys)
+            if extra_keys:
+                raise ValueError(f"{label} has unexpected keys: {extra_keys}")
+            _require_non_empty_string(success, "metric", label=label)
+            operator = _require_non_empty_string(success, "operator", label=label)
+            _validate_operator(operator, label=f"{label}.operator")
+            _require_number(success, "threshold", label=label)
+        elif "success_metric" in success:
+            _require_non_empty_string(success, "success_metric", label=label)
+            _require_number(success, "success_threshold", label=label)
+            if "success_threshold_operator" in success:
+                success_operator = _require_non_empty_string(
+                    success,
+                    "success_threshold_operator",
+                    label=label,
+                )
+                _validate_operator(success_operator, label=f"{label}.success_threshold_operator")
+        else:
+            _require_non_empty_string(success, "primary_metric", label=label)
+            _require_number(success, "success_threshold", label=label)
+            if "balance_guard_threshold_operator" in success:
+                balance_operator = _require_non_empty_string(
+                    success,
+                    "balance_guard_threshold_operator",
+                    label=label,
+                )
+                _validate_operator(balance_operator, label=f"{label}.balance_guard_threshold_operator")
+            if "success_window_attempts" in success:
+                _require_int(success, "success_window_attempts", label=label, minimum=1)
+        return
+
+    if not isinstance(criteria, Sequence) or isinstance(criteria, str | bytes) or not criteria:
+        raise ValueError(f"{label}.criteria must be a non-empty list")
+    for index, raw_criterion in enumerate(criteria):
+        criterion_label = f"{label}.criteria[{index}]"
+        criterion = _require_mapping(raw_criterion, label=criterion_label)
+        allowed_keys = {"metric", "operator", "threshold"}
+        extra_keys = sorted(set(criterion) - allowed_keys)
+        if extra_keys:
+            raise ValueError(f"{criterion_label} has unexpected keys: {extra_keys}")
+        _require_non_empty_string(criterion, "metric", label=criterion_label)
+        operator = _require_non_empty_string(criterion, "operator", label=criterion_label)
+        _validate_operator(operator, label=f"{criterion_label}.operator")
+        _require_number(criterion, "threshold", label=criterion_label)
+
+
+def _objective_success_section(objective: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:
+    if "success" in objective:
+        return _require_mapping(objective["success"], label=f"{label}.success")
+    return objective
+
+
+def _validate_objective_success(objective: Mapping[str, Any], *, label: str) -> None:
+    success = _objective_success_section(objective, label=label)
+    _validate_success_criteria(success, label=f"{label}.success" if success is not objective else label)
+
+
+def _validate_rank_order(rank_order: Any, *, label: str) -> None:
+    if not isinstance(rank_order, Sequence) or isinstance(rank_order, str | bytes) or not rank_order:
+        raise ValueError(f"{label} must be a non-empty list")
+    for index, raw_item in enumerate(rank_order):
+        item_label = f"{label}[{index}]"
+        if isinstance(raw_item, str):
+            continue
+        item = _require_mapping(raw_item, label=item_label)
+        allowed_keys = {"metric", "aggregation", "direction"}
+        extra_keys = sorted(set(item) - allowed_keys)
+        if extra_keys:
+            raise ValueError(f"{item_label} has unexpected keys: {extra_keys}")
+        _require_non_empty_string(item, "metric", label=item_label)
+        if "aggregation" in item:
+            _require_non_empty_string(item, "aggregation", label=item_label)
+        if "direction" in item:
+            direction = _require_non_empty_string(item, "direction", label=item_label)
+            if direction not in {"maximize", "minimize"}:
+                raise ValueError(f"{item_label}.direction must be maximize or minimize")
+
+
+def _validate_objective_rank(objective: Mapping[str, Any], *, label: str) -> None:
+    rank = _require_key(objective, "rank", label=label)
+    _validate_rank_order(rank, label=f"{label}.rank")
+
+
+def _validate_selection_policy(selection_policy: Mapping[str, Any], *, label: str) -> None:
+    allowed_selection_keys = {"rank_order"}
+    extra_selection_keys = sorted(set(selection_policy) - allowed_selection_keys)
+    if extra_selection_keys:
+        raise ValueError(
+            f"{label} must contain only rank_order; unexpected keys: {extra_selection_keys}"
+        )
+    rank_order = _require_key(selection_policy, "rank_order", label=label)
+    _validate_rank_order(rank_order, label=f"{label}.rank_order")
 
 
 def load_goal_contract(
@@ -263,7 +562,10 @@ def _validate_goal_contract_document(
     repo_root: Path,
 ) -> None:
     label = f"goal file {_display_path(path, repo_root)}"
-    _require_schema_version(document, GOAL_SCHEMA_VERSION, label=label)
+    if "schema_version" in document:
+        raise ValueError(f"{label}.schema_version is not part of goal contracts")
+    if "status" in document:
+        raise ValueError(f"{label}.status is not part of goal contracts")
     narrative_top_level_keys = {
         "batch_record_fields",
         "capacity_policy_file",
@@ -284,16 +586,16 @@ def _validate_goal_contract_document(
         raise ValueError(
             f"{label} must be script-readable; remove narrative keys: {present_narrative_keys}"
         )
+    if "selection_policy" in document:
+        raise ValueError(f"{label}.selection_policy moved to objective.rank")
     goal_id = _require_non_empty_string(document, "goal_id", label=label)
     _require_non_empty_string(document, "title", label=label)
-    _require_non_empty_string(document, "status", label=label)
     goal_dir = path.parent
     if goal_dir.name != goal_id:
         raise ValueError(
             f"{_label_path(label, 'goal_id')} must match goal directory name: {goal_dir.name}"
         )
     objective = _require_mapping(_require_key(document, "objective", label=label), label=f"{label}.objective")
-    _require_non_empty_string(objective, "primary_metric", label=f"{label}.objective")
     narrative_objective_keys = {"algorithm", "forbidden_stop_rules", "game", "success_requirement"}
     present_objective_narrative_keys = sorted(set(objective) & narrative_objective_keys)
     if present_objective_narrative_keys:
@@ -301,36 +603,28 @@ def _validate_goal_contract_document(
             f"{label}.objective must be script-readable; "
             f"remove narrative keys: {present_objective_narrative_keys}"
         )
-    _require_number(objective, "success_threshold", label=f"{label}.objective")
-    if "success_threshold_operator" in objective:
-        success_operator = _require_non_empty_string(
-            objective,
-            "success_threshold_operator",
-            label=f"{label}.objective",
-        )
-        _validate_operator(success_operator, label=f"{label}.objective.success_threshold_operator")
-    if "balance_guard_threshold_operator" in objective:
-        balance_operator = _require_non_empty_string(
-            objective,
-            "balance_guard_threshold_operator",
-            label=f"{label}.objective",
-        )
-        _validate_operator(balance_operator, label=f"{label}.objective.balance_guard_threshold_operator")
-    _require_int(objective, "success_window_attempts", label=f"{label}.objective", minimum=1)
+    _validate_objective_success(objective, label=f"{label}.objective")
+    _validate_objective_rank(objective, label=f"{label}.objective")
 
-    environment = _validate_environment_identity(document, label=label)
-    _require_int(environment, "max_train_timesteps", label=f"{label}.environment", minimum=1)
-    if "state" in environment and "states" in environment:
-        raise ValueError(f"{label}.environment must define only one of state or states")
-    if "state" in environment:
-        state = environment["state"]
+    train = _goal_train_section(document, label=label)
+    if "training" in document:
+        raise ValueError(f"{label}.training is not part of goal contracts")
+    if "max_train_timesteps" in train:
+        raise ValueError(f"{label}.train.max_train_timesteps is not part of goal contracts")
+    environment = _goal_train_environment(document, train, label=label)
+    _validate_environment_identity({"environment": environment}, label=f"{label}.train")
+    env_config = environment.get("env_config") if isinstance(environment.get("env_config"), Mapping) else environment
+    if "state" in env_config and "states" in env_config:
+        raise ValueError(f"{label}.train.environment.env_config must define only one of state or states")
+    if "state" in env_config:
+        state = env_config["state"]
         if not isinstance(state, str) or not state.strip():
-            raise ValueError(f"{label}.environment.state must be a non-empty string")
+            raise ValueError(f"{label}.train.environment.env_config.state must be a non-empty string")
         environment_states = [state.strip()]
-    elif "states" in environment:
-        environment_states = _require_string_list(environment, "states", label=f"{label}.environment")
+    elif "states" in env_config:
+        environment_states = _require_string_list(env_config, "states", label=f"{label}.train.environment.env_config")
     else:
-        raise ValueError(f"{label}.environment must define state or states")
+        raise ValueError(f"{label}.train.environment.env_config must define state or states")
     if "states" in objective:
         objective_states = _require_string_list(objective, "states", label=f"{label}.objective")
     else:
@@ -341,19 +635,7 @@ def _validate_goal_contract_document(
             f"{environment_states!r} != {objective_states!r}"
         )
 
-    selection_policy = _require_mapping(
-        _require_key(document, "selection_policy", label=label),
-        label=f"{label}.selection_policy",
-    )
-    allowed_selection_keys = {"rank_order"}
-    extra_selection_keys = sorted(set(selection_policy) - allowed_selection_keys)
-    if extra_selection_keys:
-        raise ValueError(
-            f"{label}.selection_policy must contain only rank_order; "
-            f"unexpected keys: {extra_selection_keys}"
-        )
-    _require_string_list(selection_policy, "rank_order", label=f"{label}.selection_policy")
-    _validate_goal_eval_spec(document, label=label)
+    _validate_goal_eval(document, label=label)
 
 
 def validate_train_recipe(path: Path) -> None:
@@ -395,6 +677,14 @@ def validate_train_recipe(path: Path) -> None:
             raise ValueError(f"{label}.logging.wandb_mode must be one of online, offline, disabled")
 
 
+def validate_env_config_file(path: Path) -> None:
+    document = load_mapping_document(path, label=f"env config file {path}")
+    label = f"env config file {path}"
+    _validate_env_config(document, label=label, require_game=True)
+    if "state" in document or "states" in document:
+        raise ValueError(f"{label} must not define state or states")
+
+
 def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
     repo_root = repo_root or Path(".")
     config = load_instance_config(repo_root, path)
@@ -428,6 +718,10 @@ def validate_fleet_and_capacity(repo_root: Path) -> None:
         _require_int(lane, "max_runner_workers", label=label, minimum=1)
         _require_int(lane, "env_threads", label=label, minimum=1)
         _require_string_list(lane, "use_for", label=label)
+
+
+def validate_machine_config(repo_root: Path) -> None:
+    load_fleet_config(repo_root)
 
 
 def validate_benchmark_baselines(path: Path) -> None:
@@ -488,6 +782,12 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     for path in recipes:
         _capture_issue(issues, path, repo_root, lambda path=path: validate_train_recipe(path))
 
+    env_configs_dir = experiments_dir / "envs"
+    env_configs = sorted(env_configs_dir.rglob("*.yaml")) if env_configs_dir.is_dir() else []
+    counts["env_configs"] = len(env_configs)
+    for path in env_configs:
+        _capture_issue(issues, path, repo_root, lambda path=path: validate_env_config_file(path))
+
     instances_path = experiments_dir / "instances.yaml"
     counts["instance_configs"] = int(instances_path.is_file())
     if instances_path.is_file():
@@ -498,17 +798,18 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
             lambda: validate_instance_config(instances_path, repo_root),
         )
 
-    fleet_path = experiments_dir / "fleet.yaml"
+    machines_path = experiments_dir / "machines.yaml"
     capacity_path = experiments_dir / "policies" / "capacity_policy.yaml"
-    counts["fleet_configs"] = int(fleet_path.is_file())
+    counts["machine_configs"] = int(machines_path.is_file())
     counts["capacity_policies"] = int(capacity_path.is_file())
-    if fleet_path.is_file() and capacity_path.is_file():
-        _capture_issue(issues, capacity_path, repo_root, lambda: validate_fleet_and_capacity(repo_root))
+    if machines_path.is_file():
+        _capture_issue(issues, machines_path, repo_root, lambda: validate_machine_config(repo_root))
     else:
-        if not fleet_path.is_file():
-            issues.append(ValidationIssue(path="experiments/fleet.yaml", message="file is required"))
-        if not capacity_path.is_file():
-            issues.append(ValidationIssue(path="experiments/policies/capacity_policy.yaml", message="file is required"))
+        issues.append(ValidationIssue(path="experiments/machines.yaml", message="file is required"))
+    if machines_path.is_file() and capacity_path.is_file():
+        _capture_issue(issues, capacity_path, repo_root, lambda: validate_fleet_and_capacity(repo_root))
+    elif not capacity_path.is_file():
+        issues.append(ValidationIssue(path="experiments/policies/capacity_policy.yaml", message="file is required"))
 
     benchmark_dir = experiments_dir / "benchmarks"
     benchmark_baselines = benchmark_dir / "baselines.yaml"

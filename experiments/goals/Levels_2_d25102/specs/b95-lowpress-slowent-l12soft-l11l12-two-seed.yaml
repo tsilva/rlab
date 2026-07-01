@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b95-lowpress-slowent-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: A softer 45/55 Level1-2 sampling bias combined with lower update pressure and slower entropy decay should help the historical Level1-2 bottleneck without starving Level1-1 as much as a 40/60 split can.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 rates lifting while Level1-1 remains close enough that the min-rate is not immediately Level1-1-limited.
+hypothesis: >-
+  A softer 45/55 Level1-2 sampling bias combined with lower update pressure and slower entropy decay
+  should help the historical Level1-2 bottleneck without starving Level1-1 as much as a 40/60 split
+  can. Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 rates
+  lifting while Level1-1 remains close enough that the min-rate is not immediately Level1-1-limited.
 parent_spec_slug: b90-lowpress-l12bias-l11l12-two-seed
-priority: 68
 seeds:
 - 204
 - 205
@@ -78,7 +81,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

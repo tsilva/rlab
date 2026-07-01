@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b254-longhorizon-complete1000-l14-screen
-stage: screen
-hypothesis: If World 1-4 needs still longer temporal credit than B253, a lower-update-pressure long-horizon PPO arm should preserve exploration while assigning value across the castle sequence. The completion reward still fires only on a true clean level clear.
-expected_signal: Seed 90 should improve peak Level1-4 completion rate, max clean count, or progress over B253 enough to justify a narrower long-horizon follow-up; if throughput drops without signal, prefer the shorter B253 horizon.
+hypothesis: >-
+  If World 1-4 needs still longer temporal credit than B253, a lower-update-pressure long-horizon PPO
+  arm should preserve exploration while assigning value across the castle sequence. The completion
+  reward still fires only on a true clean level clear. Seed 90 should improve peak Level1-4 completion
+  rate, max clean count, or progress over B253 enough to justify a narrower long-horizon follow-up; if
+  throughput drops without signal, prefer the shorter B253 horizon.
 parent_spec_slug: b249-b191resume-200k-longhorizon4250-l13-screen
-priority: 66
 seeds:
 - 90
 run_target: rtx4090
@@ -74,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -146,7 +146,6 @@ def evaluate_checkpoint(
         seed=eval_seed,
         max_steps=args.max_steps,
         deterministic=eval_deterministic(args),
-        completion_x_threshold=config.completion_x_threshold,
         n_envs=args.n_envs,
         capture_best_video=args.record_best_video,
         video_path=video_path,
@@ -300,7 +299,6 @@ def run_scripted_episode(
     policy: str,
     max_steps: int,
     action_names: tuple[str, ...],
-    completion_x_threshold: int,
     default_start_state: str | None = None,
 ):
     obs = env.reset()
@@ -321,7 +319,7 @@ def run_scripted_episode(
         final_info = info
         if bool(dones[0]):
             break
-    completed = is_level_complete(final_info, max_x, completion_x_threshold)
+    completed = is_level_complete(final_info)
     died = bool(final_info.get("died", False))
     death_x_pos = final_info.get("death_x_pos")
     if died and death_x_pos is None:
@@ -547,7 +545,6 @@ def main(argv: list[str] | None = None) -> None:
             seed=args.seed,
             max_steps=args.max_steps,
             deterministic=eval_deterministic(args),
-            completion_x_threshold=config.completion_x_threshold,
             n_envs=args.n_envs,
             progress=args.progress,
             progress_description="eval model",
@@ -566,7 +563,6 @@ def main(argv: list[str] | None = None) -> None:
                 policy=args.policy,
                 max_steps=args.max_steps,
                 action_names=action_names,
-                completion_x_threshold=config.completion_x_threshold,
                 default_start_state=config.state,
             )
             for _ in range(args.episodes)

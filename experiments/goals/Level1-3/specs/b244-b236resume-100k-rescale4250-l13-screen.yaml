@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b244-b236resume-100k-rescale4250-l13-screen
-stage: screen
-hypothesis: B241's early B236-200k reward-scale reduction is competitive, but it starts after the B236 peak window. B244 resumes from B236 100k and raises reward_scale to 12 earlier, testing whether a lower effective reward magnitude can guide the policy through the 198k high-window without the later collapse.
-expected_signal: Seed 80 should preserve useful completion while reducing post-peak collapse. A weaker peak but stronger final window would support reward-scale reduction as a stability lever.
+hypothesis: >-
+  B241's early B236-200k reward-scale reduction is competitive, but it starts after the B236 peak
+  window. B244 resumes from B236 100k and raises reward_scale to 12 earlier, testing whether a lower
+  effective reward magnitude can guide the policy through the 198k high-window without the later
+  collapse. Seed 80 should preserve useful completion while reducing post-peak collapse. A weaker peak
+  but stronger final window would support reward-scale reduction as a stability lever.
 parent_spec_slug: b236-b191resume-200k-longcredit4250-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -75,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

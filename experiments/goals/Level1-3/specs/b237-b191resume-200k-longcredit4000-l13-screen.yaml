@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b237-b191resume-200k-longcredit4000-l13-screen
-stage: screen
-hypothesis: B230's longer-credit PPO may be the useful lever, while the 4500 completion bonus may be amplifying post-peak collapse. B237 keeps B230's gamma=0.997 and gae_lambda=0.99 but returns the completion bonus to B191's 4000 level to test whether long-credit alone can preserve the stronger final window.
-expected_signal: Seed 80 should improve final train/info/level_complete/rate/min/last or max clean count relative to B191/B214 while retaining at least a useful 0.10-0.12 peak. If it underperforms sharply, the 4500 bonus is part of the bottleneck-crossing signal.
+hypothesis: >-
+  B230's longer-credit PPO may be the useful lever, while the 4500 completion bonus may be amplifying
+  post-peak collapse. B237 keeps B230's gamma=0.997 and gae_lambda=0.99 but returns the completion
+  bonus to B191's 4000 level to test whether long-credit alone can preserve the stronger final window.
+  Seed 80 should improve final train/info/level_complete/rate/min/last or max clean count relative to
+  B191/B214 while retaining at least a useful 0.10-0.12 peak. If it underperforms sharply, the 4500
+  bonus is part of the bottleneck-crossing signal.
 parent_spec_slug: b230-b191resume-200k-longcredit4500-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -75,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

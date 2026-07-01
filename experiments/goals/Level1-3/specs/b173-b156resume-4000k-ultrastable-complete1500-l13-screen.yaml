@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b173-b156resume-4000k-ultrastable-complete1500-l13-screen
-stage: screen
-hypothesis: B171 and B172 proved that B156 checkpoint forks immediately produce clean Level1-3 clears, but both peaked near a 0.05 rolling rate and then decayed by the 500k continuation cap. This suggests the discovered post-bottleneck policy is being damaged by continued PPO updates. B173 resumes the earlier B156 4.0M checkpoint, which had already crossed the x bottleneck but still has a full 1M budget under the 5M cap, and uses ultra-low LR, low entropy, fewer epochs, narrower clip range, and lower target KL while preserving the original B156 completion_reward=1500 reward shape.
-expected_signal: Seed 80 should preserve the B156 post-bottleneck behavior longer than B171 and lift peak train/info/level_complete/rate/min/last above 0.05. If clears still decay, the issue is not just excessive late update pressure from the 4.5M checkpoint.
+hypothesis: >-
+  B171 and B172 proved that B156 checkpoint forks immediately produce clean Level1-3 clears, but both
+  peaked near a 0.05 rolling rate and then decayed by the 500k continuation cap. This suggests the
+  discovered post-bottleneck policy is being damaged by continued PPO updates. B173 resumes the
+  earlier B156 4.0M checkpoint, which had already crossed the x bottleneck but still has a full 1M
+  budget under the 5M cap, and uses ultra-low LR, low entropy, fewer epochs, narrower clip range, and
+  lower target KL while preserving the original B156 completion_reward=1500 reward shape. Seed 80
+  should preserve the B156 post-bottleneck behavior longer than B171 and lift peak
+  train/info/level_complete/rate/min/last above 0.05. If clears still decay, the issue is not just
+  excessive late update pressure from the 4.5M checkpoint.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

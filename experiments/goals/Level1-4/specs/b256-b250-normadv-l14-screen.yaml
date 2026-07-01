@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b256-b250-normadv-l14-screen
-stage: screen
-hypothesis: B250 learned World 1-4 on three of five confirmation seeds but had large seed variance. Enabling PPO advantage normalization keeps the same reward and task contract while testing whether more standardized update targets make discovery less seed-sensitive.
-expected_signal: Seed 90 should retain strict 100/100 completion, with healthier early rolling rates than B250 and no PPO instability. If it passes screen, confirm on the goal seed set.
+hypothesis: >-
+  B250 learned World 1-4 on three of five confirmation seeds but had large seed variance. Enabling PPO
+  advantage normalization keeps the same reward and task contract while testing whether more
+  standardized update targets make discovery less seed-sensitive. Seed 90 should retain strict 100/100
+  completion, with healthier early rolling rates than B250 and no PPO instability. If it passes
+  screen, confirm on the goal seed set.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 79
 seeds:
 - 90
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

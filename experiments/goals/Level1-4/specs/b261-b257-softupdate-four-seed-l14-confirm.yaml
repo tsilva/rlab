@@ -1,15 +1,17 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b257-softupdate-no-bonus@_global_
 - _self_
-goal: Level1-4
 slug: b261-b257-softupdate-four-seed-l14-confirm
-stage: confirm
-hypothesis: B257 reached the strict 100/100 World 1-4 screen window with only PPO update-pressure changes from B250. The same frozen soft-update recipe should reduce the seed variance that caused B255 to fail.
-expected_signal: Seeds 91-94 should reach the strict 100/100 Level1-4 source-attempt completion window. Together with B257 seed 90, this completes the goal-defined five-seed train confirmation set before out-of-process eval promotion.
+hypothesis: >-
+  B257 reached the strict 100/100 World 1-4 screen window with only PPO update-pressure changes from
+  B250. The same frozen soft-update recipe should reduce the seed variance that caused B255 to fail.
+  Seeds 91-94 should reach the strict 100/100 Level1-4 source-attempt completion window. Together with
+  B257 seed 90, this completes the goal-defined five-seed train confirmation set before out-of-process
+  eval promotion.
 parent_spec_slug: b257-b250-softupdate-l14-screen
-priority: 82
 seeds:
 - 91
 - 92

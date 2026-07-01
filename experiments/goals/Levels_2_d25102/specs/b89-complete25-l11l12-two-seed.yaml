@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b89-complete25-l11l12-two-seed
-stage: screen
-hypothesis: Adding a modest clean-completion reward in score mode should make actual level clears more learnable without changing the task or rewarding a proxy.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with higher clean level-complete rates rather than only higher progress reward.
+hypothesis: >-
+  Adding a modest clean-completion reward in score mode should make actual level clears more learnable
+  without changing the task or rewarding a proxy. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with higher clean level-complete rates rather than only
+  higher progress reward.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 74
 seeds:
 - 202
 - 203
@@ -76,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

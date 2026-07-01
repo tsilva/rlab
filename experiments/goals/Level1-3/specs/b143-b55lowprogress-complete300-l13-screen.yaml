@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b143-b55lowprogress-complete300-l13-screen
-stage: screen
-hypothesis: B138/B139/B140 plateaued with zero clean Level1-3 clears, while the Level1-1 B55 recipe remains the strongest confirmed training baseline. This arm returns to B55 short-credit PPO and no advantage normalization, but lowers direct progress pressure, keeps progress clipped, reduces death pressure, and gives true level-change completions a much larger reward.
-expected_signal: Seed 80 should avoid the flat high-progress shaped-reward plateau and produce the first nonzero train/info/level_complete/from/0-2/count, or quickly show that B55-shaped low-progress score reward is also a dead end for Level1-3.
+hypothesis: >-
+  B138/B139/B140 plateaued with zero clean Level1-3 clears, while the Level1-1 B55 recipe remains the
+  strongest confirmed training baseline. This arm returns to B55 short-credit PPO and no advantage
+  normalization, but lowers direct progress pressure, keeps progress clipped, reduces death pressure,
+  and gives true level-change completions a much larger reward. Seed 80 should avoid the flat
+  high-progress shaped-reward plateau and produce the first nonzero
+  train/info/level_complete/from/0-2/count, or quickly show that B55-shaped low-progress score reward
+  is also a dead end for Level1-3.
 parent_spec_slug: b83-b55-post21-five-seed-l11-confirm
-priority: 57
 seeds:
 - 80
 run_target: rtx4090
@@ -66,7 +72,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -148,6 +148,7 @@ def env_config_from_args(
 
     max_episode_steps = value(max_episode_steps_attr, defaults.max_episode_steps)
     config_kwargs: dict[str, Any] = {
+        "env_provider": value("env_provider"),
         "game": value("game"),
         "state": value("state"),
         "task_conditioning": value("task_conditioning"),
@@ -175,7 +176,6 @@ def env_config_from_args(
         "score_progress_clipped": value("score_progress_clipped"),
         "no_progress_timeout_steps": value("no_progress_timeout_steps"),
         "no_progress_min_delta": value("no_progress_min_delta"),
-        "completion_x_threshold": value("completion_x_threshold"),
         "info_events": parse_info_events(
             value("info_events_json", value("info_events", "")),
         ),

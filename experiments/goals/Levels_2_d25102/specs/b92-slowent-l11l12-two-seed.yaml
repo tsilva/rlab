@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b92-slowent-l11l12-two-seed
-stage: screen
-hypothesis: A slower entropy decay with a higher entropy floor should make the transient balanced competence seen in b86 less likely to collapse late in training.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with later peaks holding a less brittle Level1-2 rate than b86.
+hypothesis: >-
+  A slower entropy decay with a higher entropy floor should make the transient balanced competence
+  seen in b86 less likely to collapse late in training. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with later peaks holding a less brittle Level1-2 rate than
+  b86.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 71
 seeds:
 - 198
 - 199
@@ -76,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

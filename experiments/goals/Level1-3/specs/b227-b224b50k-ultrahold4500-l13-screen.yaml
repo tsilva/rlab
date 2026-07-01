@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b227-b224b50k-ultrahold4500-l13-screen
-stage: screen
-hypothesis: B224b reached the same 0.12 band as B224a with a later peak near 83k. B227 resumes B224b at 50k with the same ultra-hold continuation as B225, checking whether pre-peak checkpoint quality is repeatable across dense B224 samples.
-expected_signal: Seed 80 should match or exceed B224b's 0.12 peak and improve the final rolling window. If B225 and B227 both underperform, 50k forks are probably too early or the stabilizer is wrong.
+hypothesis: >-
+  B224b reached the same 0.12 band as B224a with a later peak near 83k. B227 resumes B224b at 50k with
+  the same ultra-hold continuation as B225, checking whether pre-peak checkpoint quality is repeatable
+  across dense B224 samples. Seed 80 should match or exceed B224b's 0.12 peak and improve the final
+  rolling window. If B225 and B227 both underperform, 50k forks are probably too early or the
+  stabilizer is wrong.
 parent_spec_slug: b224-b191resume-200k-freezemid4500-ckpt50k-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -24,7 +24,6 @@ from rlab.job_queue import (
     new_worker_id,
     print_status,
     queue_status,
-    record_eval_wandb_status,
 )
 from rlab.device import resolve_sb3_device
 from rlab.env import EnvConfig, resolve_env_config
@@ -135,6 +134,63 @@ def wandb_project_path_for_metadata(config: dict[str, Any], metadata: dict[str, 
     return DEFAULT_WANDB_PROJECT_PATH
 
 
+def _metric_float(metrics: dict[str, Any], key: str, default: float = float("-inf")) -> float:
+    value = metrics.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def eval_leader_score(metrics: dict[str, Any]) -> tuple[float, float, float]:
+    completion = _metric_float(
+        metrics,
+        "eval/done/level_change/from_rate/min",
+        default=_metric_float(
+            metrics,
+            "eval/done/level_change/rate",
+            default=_metric_float(metrics, "completion_rate"),
+        ),
+    )
+    return (
+        completion,
+        _metric_float(metrics, "reward_mean"),
+        _metric_float(metrics, "max_x_max"),
+    )
+
+
+def update_best_checkpoint_summary(
+    run,
+    *,
+    job: dict[str, Any],
+    config: dict[str, Any],
+    metrics: dict[str, Any],
+    checkpoint_step: int,
+    model_ref: str,
+) -> None:
+    score = eval_leader_score(metrics)
+    previous_score = (
+        _metric_float(run.summary, "leader/checkpoint/completion_rate"),
+        _metric_float(run.summary, "leader/checkpoint/reward_mean"),
+        _metric_float(run.summary, "leader/checkpoint/max_x_max"),
+    )
+    if score < previous_score:
+        return
+    run.summary["leader/checkpoint/completion_rate"] = score[0]
+    run.summary["leader/checkpoint/reward_mean"] = score[1]
+    run.summary["leader/checkpoint/max_x_max"] = score[2]
+    run.summary["leader/checkpoint/step"] = checkpoint_step
+    run.summary["leader/checkpoint/artifact_ref"] = model_ref
+    run.summary["leader/checkpoint/eval_protocol_hash"] = (
+        job.get("eval_protocol_hash") or config.get("eval_protocol_hash") or ""
+    )
+    run.summary["leader/checkpoint/eval_job_id"] = int(job["id"])
+    run.summary["leader/checkpoint/candidate_label"] = job.get("candidate_label") or ""
+    run.summary["leader/checkpoint/updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def log_eval_to_wandb(
     *,
     job: dict[str, Any],
@@ -157,6 +213,16 @@ def log_eval_to_wandb(
     entity, project = split_project(wandb_project_path_for_metadata(config, metadata))
     run = wandb.init(entity=entity, project=project, id=run_id, resume="allow", mode=config.get("wandb_mode", "online"))
     try:
+        config_update = {
+            key: value
+            for key, value in {
+                "goal_slug": job.get("goal_slug"),
+                "spec_slug": job.get("spec_slug"),
+            }.items()
+            if value
+        }
+        if config_update:
+            run.config.update(config_update, allow_val_change=True)
         payload: dict[str, Any] = {
             GLOBAL_STEP: checkpoint_step,
             EVAL_CHECKPOINT_STEP: checkpoint_step,
@@ -185,6 +251,14 @@ def log_eval_to_wandb(
         if video_path is not None and video_path.is_file():
             payload[EVAL_BEST_VIDEO] = wandb.Video(str(video_path), format="mp4")
         run.log(payload, step=checkpoint_step)
+        update_best_checkpoint_summary(
+            run,
+            job=job,
+            config=config,
+            metrics=metrics,
+            checkpoint_step=checkpoint_step,
+            model_ref=model_ref_for_config(config),
+        )
     finally:
         run.finish()
     return {"wandb_run_id": run_id, "wandb_logged": True, "wandb_log_step": checkpoint_step}
@@ -276,7 +350,6 @@ def run_eval_job(
             seed=int(config["seed"]),
             max_steps=int(config["max_steps"]),
             deterministic=not bool(config["stochastic"]),
-            completion_x_threshold=int(env_config.completion_x_threshold),
             n_envs=int(config["n_envs"]),
             capture_best_video=bool(config.get("capture_best_video")),
             video_path=video_path,
@@ -297,22 +370,6 @@ def run_eval_job(
             env_config=env_config,
             metrics=safe_metrics,
         )
-        finish_eval_job(
-            conn,
-            job=job,
-            worker_id=worker_id,
-            status="succeeded",
-            result={
-                "candidate_label": job.get("candidate_label"),
-                "model_ref": model_ref_for_config(config),
-                "output_path": str(output_path),
-                "video_path": str(written_video) if written_video else None,
-                "artifact_ref": job.get("artifact_ref") or model_ref_for_config(config),
-                "checkpoint_step": job.get("checkpoint_step"),
-                "eval_protocol_hash": job.get("eval_protocol_hash"),
-                "metrics_json": safe_metrics,
-            },
-        )
         try:
             wandb_result = log_eval_to_wandb(
                 job=job,
@@ -328,13 +385,24 @@ def run_eval_job(
                 "wandb_log_step": job.get("checkpoint_step"),
                 "wandb_log_error": repr(exc),
             }
-        record_eval_wandb_status(
+        finish_eval_job(
             conn,
-            eval_job_id=int(job["id"]),
-            wandb_run_id=wandb_result.get("wandb_run_id"),
-            logged=bool(wandb_result.get("wandb_logged")),
-            log_step=wandb_result.get("wandb_log_step"),
-            error=wandb_result.get("wandb_log_error"),
+            job=job,
+            worker_id=worker_id,
+            status="succeeded",
+            result={
+                "candidate_label": job.get("candidate_label"),
+                "model_ref": model_ref_for_config(config),
+                "output_path": str(output_path),
+                "video_path": str(written_video) if written_video else None,
+                "artifact_ref": job.get("artifact_ref") or model_ref_for_config(config),
+                "checkpoint_step": job.get("checkpoint_step"),
+                "eval_protocol_hash": job.get("eval_protocol_hash"),
+                "wandb_run_id": wandb_result.get("wandb_run_id"),
+                "wandb_logged": bool(wandb_result.get("wandb_logged")),
+                "wandb_log_step": wandb_result.get("wandb_log_step"),
+                "wandb_log_error": wandb_result.get("wandb_log_error"),
+            },
         )
         print(
             "eval_job="

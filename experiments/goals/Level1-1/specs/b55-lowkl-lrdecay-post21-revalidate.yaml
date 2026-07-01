@@ -1,17 +1,11 @@
-schema_version: 1
-goal: Level1-1
+defaults:
+- ../goal@goal
+- _self_
 slug: b55-lowkl-lrdecay-post21-revalidate
-stage: confirm
-hypothesis: The B55 low-KL late-decay recipe remains a strong Level1-1 policy-search baseline under the active post21 runtime.
-expected_signal: Seeds 23, 24, and 25 should either reach 100/100 terminal level-change windows or produce stronger eval-ranked checkpoints than the current incumbent evidence.
-parent_spec_slug: null
-priority: 50
-seeds:
-- 23
-- 24
-- 25
-profile_id: mario-ppo/post21/rtx4090-prebuilt-l11-lowkl-lrdecay-v1
-run_target: rtx4090
+hypothesis: >-
+  The B55 low-KL late-decay recipe remains a strong Level1-1 policy-search baseline under the active
+  post21 runtime. Confirmation runs should either reach 100/100 terminal level-change windows or
+  produce stronger eval-ranked checkpoints than the current incumbent evidence.
 wandb_group: b82-l11-b55-post21-revalidate
 wandb_tags:
 - mario
@@ -21,14 +15,7 @@ wandb_tags:
 - confirm
 run_name_template: b82_l11_b55post21_s{seed}_{utc}
 run_description_template: Post21 revalidation of the B55 low-KL late-decay Level1-1 recipe, confirm seed {seed}.
-selection_gate:
-  primary: max(train/info/level_complete/rate/min/last)
-  tie_breakers:
-  - max(train/info/level_complete/rate/mean/last)
-  training_metrics: diagnostic_only
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
+train:
   n_envs: 16
   env_threads: 4
   torch_num_threads: 1
@@ -48,25 +35,12 @@ train_config:
   vf_coef: 1.0
   adam_eps: 1.0e-08
   normalize_advantage: false
+reward:
   reward_mode: score
   terminal_reward: 50
   death_penalty: 25
   reward_scale: 10
-  action_set: simple
-  frame_skip: 4
-  max_pool_frames: false
-  hud_crop_top: 32
-  max_episode_steps: 4500
-  completion_x_threshold: 0
-  info_events_json:
-    life_loss:
-    - lives
-    - decrease
-    level_change:
-    - - levelHi
-      - levelLo
-    - change
-  done_on_events: life_loss,level_change
+logging:
   eval_freq: 0
   eval_episodes: 0
   checkpoint_freq: 500000

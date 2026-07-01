@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b176-lowlr-criticwide-survival-steady-complete5000-l13-screen
-stage: screen
-hypothesis: B166/B171/B172 prove that the critic-wide survival family discovers Level1-3 clears, but the rolling completion rate remains sparse. B176 keeps B175's steadier PPO geometry and raises only the true clean-clear bonus to 5000 to test whether the sparse completion event is still underweighted once PPO update pressure is reduced.
-expected_signal: Seed 80 should increase clear density versus B175 if the policy needs a stronger target-aligned sparse event. If B176 inflates reward without improving train/info/level_complete/rate/min/last, completion magnitude is not the missing lever.
+hypothesis: >-
+  B166/B171/B172 prove that the critic-wide survival family discovers Level1-3 clears, but the rolling
+  completion rate remains sparse. B176 keeps B175's steadier PPO geometry and raises only the true
+  clean-clear bonus to 5000 to test whether the sparse completion event is still underweighted once
+  PPO update pressure is reduced. Seed 80 should increase clear density versus B175 if the policy
+  needs a stronger target-aligned sparse event. If B176 inflates reward without improving
+  train/info/level_complete/rate/min/last, completion magnitude is not the missing lever.
 parent_spec_slug: b166-lowlr-criticwide-survival-complete3000-l13-screen
-priority: 35
 seeds:
 - 80
 run_target: rtx4090
@@ -73,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

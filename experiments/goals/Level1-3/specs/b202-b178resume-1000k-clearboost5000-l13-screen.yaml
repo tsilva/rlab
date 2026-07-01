@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b202-b178resume-1000k-clearboost5000-l13-screen
-stage: screen
-hypothesis: 'B202 is the strong-bonus pair to B201: completion_reward=5000 from B178 step 1.0M with conservative PPO updates. It tests whether the stronger clean-clear reward only helps when applied early enough in the breakthrough trajectory.'
-expected_signal: Seed 80 should beat B201 on clean-clear density without reward-only inflation or value instability.
+hypothesis: >-
+  B202 is the strong-bonus pair to B201: completion_reward=5000 from B178 step 1.0M with conservative
+  PPO updates. It tests whether the stronger clean-clear reward only helps when applied early enough
+  in the breakthrough trajectory. Seed 80 should beat B201 on clean-clear density without reward-only
+  inflation or value instability.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 33
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +77,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

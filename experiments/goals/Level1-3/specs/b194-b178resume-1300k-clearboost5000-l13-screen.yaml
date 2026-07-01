@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b194-b178resume-1300k-clearboost5000-l13-screen
-stage: screen
-hypothesis: The stronger completion bonus sometimes raises short-window clear density but has not stabilized reliability from later checkpoints. B194 resumes B178 at 1.3M with completion_reward=5000 and conservative PPO updates to test whether extra runway lets the stronger clean-clear signal consolidate before the policy becomes brittle.
-expected_signal: Seed 80 should produce higher clear counts or a better peak train/info/level_complete/rate/min/last than the 1.5M and 1.6M completion_reward=5000 continuations.
+hypothesis: >-
+  The stronger completion bonus sometimes raises short-window clear density but has not stabilized
+  reliability from later checkpoints. B194 resumes B178 at 1.3M with completion_reward=5000 and
+  conservative PPO updates to test whether extra runway lets the stronger clean-clear signal
+  consolidate before the policy becomes brittle. Seed 80 should produce higher clear counts or a
+  better peak train/info/level_complete/rate/min/last than the 1.5M and 1.6M completion_reward=5000
+  continuations.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 41
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

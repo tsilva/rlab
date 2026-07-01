@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b111-gentlerpress-complete25-l11soft-l11l12-two-seed
-stage: screen
-hypothesis: 'B110 shows that adding a soft Level1-2 sampling bias to the B91 completion-reward recipe can start Level1-2 clears, but the early bottleneck shifts to Level1-1. Pairing B109''s gentler PPO updates with a soft Level1-1 sampling bias should test the symmetric retention fix: protect Level1-1 without abandoning completion_reward=25 or the real mixed-policy task.'
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum show earlier Level1-1 retention than B110 while preserving nonzero Level1-2 clears.
+hypothesis: >-
+  B110 shows that adding a soft Level1-2 sampling bias to the B91 completion-reward recipe can start
+  Level1-2 clears, but the early bottleneck shifts to Level1-1. Pairing B109's gentler PPO updates
+  with a soft Level1-1 sampling bias should test the symmetric retention fix: protect Level1-1 without
+  abandoning completion_reward=25 or the real mixed-policy task. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, or at minimum show earlier Level1-1 retention than B110
+  while preserving nonzero Level1-2 clears.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 89
 seeds:
 - 206
 - 207
@@ -78,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

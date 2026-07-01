@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b93-slowent-l12bias-l11l12-two-seed
-stage: screen
-hypothesis: Combining slower entropy decay with a modest Level1-2 sampling bias should preserve exploration while giving the historical bottleneck level more attempts.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 no longer collapsing while Level1-1 remains above the same threshold.
+hypothesis: >-
+  Combining slower entropy decay with a modest Level1-2 sampling bias should preserve exploration
+  while giving the historical bottleneck level more attempts. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-2 no longer collapsing while Level1-1 remains
+  above the same threshold.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 70
 seeds:
 - 200
 - 201
@@ -77,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

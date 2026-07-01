@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b153-additive-survival-fastupdate-complete1000-l13-screen
-stage: screen
-hypothesis: B148's bounded reward arm crossed 2M steps with zero clean Level1-3 clears and a death-dominated negative reward plateau. Bounded reward ties the clear bonus and death penalty together, which appears too harsh for Level1-3 exploration. This arm removes score reward, keeps only a tiny progress gradient, adds the small survival-bonus proxy from B151, keeps death pressure low, and uses B152-style frequent PPO updates to test patient jump timing without the bounded-mode death cliff.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count or show whether additive low-death survival shaping also stalls before the first safe Level1-3 jump.
+hypothesis: >-
+  B148's bounded reward arm crossed 2M steps with zero clean Level1-3 clears and a death-dominated
+  negative reward plateau. Bounded reward ties the clear bonus and death penalty together, which
+  appears too harsh for Level1-3 exploration. This arm removes score reward, keeps only a tiny
+  progress gradient, adds the small survival-bonus proxy from B151, keeps death pressure low, and uses
+  B152-style frequent PPO updates to test patient jump timing without the bounded-mode death cliff.
+  Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count or show whether
+  additive low-death survival shaping also stalls before the first safe Level1-3 jump.
 parent_spec_slug: b151-lowlr-survival-minprogress-complete1000-l13-screen
-priority: 47
 seeds:
 - 80
 run_target: rtx4090
@@ -71,7 +77,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

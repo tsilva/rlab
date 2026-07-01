@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b148-lowlr-bounded-terminal500-gamma995-l13-screen
-stage: screen
-hypothesis: B143/B144/B145 all crossed the 2M checkpoint with zero clean Level1-3 clears, while the low-LR/high-entropy B146/B147 arms are still too young to judge. This arm combines the low-LR gamma=0.995 treatment with bounded reward, a small progress cap, and a much larger terminal signal to test whether score/progress-rich local optima are masking the sparse true clear objective.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count or show whether bounded terminal reward plus long-horizon PPO still falls into the zero-clear plateau.
+hypothesis: >-
+  B143/B144/B145 all crossed the 2M checkpoint with zero clean Level1-3 clears, while the
+  low-LR/high-entropy B146/B147 arms are still too young to judge. This arm combines the low-LR
+  gamma=0.995 treatment with bounded reward, a small progress cap, and a much larger terminal signal
+  to test whether score/progress-rich local optima are masking the sparse true clear objective. Seed
+  80 should either produce nonzero train/info/level_complete/from/0-2/count or show whether bounded
+  terminal reward plus long-horizon PPO still falls into the zero-clear plateau.
 parent_spec_slug: b140-bounded-terminal150-longcredit-l13-screen
-priority: 52
 seeds:
 - 80
 run_target: rtx4090
@@ -69,7 +74,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

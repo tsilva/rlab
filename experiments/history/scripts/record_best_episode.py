@@ -121,7 +121,6 @@ def main() -> None:
         seed=args.seed,
         max_steps=args.max_steps,
         deterministic=args.deterministic,
-        completion_x_threshold=config.completion_x_threshold,
         capture_best_video=True,
         video_path=output,
         video_fps=args.fps,

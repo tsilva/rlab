@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b228-b224e50k-ultrahold4500-l13-screen
-stage: screen
-hypothesis: B224e reached the B224 0.12 band and had the best live final window among B224 copies before completion. B228 resumes B224e at 50k with ultra-hold PPO, testing whether the stronger late-window dense-checkpoint parent can preserve the pre-peak behavior better than B224a/B224b 50k forks.
-expected_signal: Seed 80 should match or exceed the 0.12 B224e peak and improve final train/info/level_complete/rate/min/last. If it underperforms B225/B227, parent final-window quality was not predictive.
+hypothesis: >-
+  B224e reached the B224 0.12 band and had the best live final window among B224 copies before
+  completion. B228 resumes B224e at 50k with ultra-hold PPO, testing whether the stronger late-window
+  dense-checkpoint parent can preserve the pre-peak behavior better than B224a/B224b 50k forks. Seed
+  80 should match or exceed the 0.12 B224e peak and improve final
+  train/info/level_complete/rate/min/last. If it underperforms B225/B227, parent final-window quality
+  was not predictive.
 parent_spec_slug: b224-b191resume-200k-freezemid4500-ckpt50k-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

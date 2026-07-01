@@ -1,11 +1,18 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b159-lowlr-microupdate-entropyburst-complete2500-l13-screen
-stage: screen
-hypothesis: B154 crossed the 2.5M checkpoint with zero clean Level1-3 clears and a very flat reward tail while still spending most reward mass on progress. B152-B154 showed that 512-step fast updates were not enough by themselves. This arm keeps the same Level1-3 environment and action semantics but shortens PPO rollouts further to n_steps=256, keeps high early entropy, removes explicit death pressure, nearly removes x-progress reward, and makes the true clean clear overwhelmingly dominant.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count before prior fast-update arms, or show that even very frequent high-entropy PPO updates cannot discover safe Level1-3 jump timing under the current legal reward/hyperparameter scope.
+hypothesis: >-
+  B154 crossed the 2.5M checkpoint with zero clean Level1-3 clears and a very flat reward tail while
+  still spending most reward mass on progress. B152-B154 showed that 512-step fast updates were not
+  enough by themselves. This arm keeps the same Level1-3 environment and action semantics but shortens
+  PPO rollouts further to n_steps=256, keeps high early entropy, removes explicit death pressure,
+  nearly removes x-progress reward, and makes the true clean clear overwhelmingly dominant. Seed 80
+  should either produce nonzero train/info/level_complete/from/0-2/count before prior fast-update
+  arms, or show that even very frequent high-entropy PPO updates cannot discover safe Level1-3 jump
+  timing under the current legal reward/hyperparameter scope.
 parent_spec_slug: b157-lowlr-entropyburst-fastupdate-complete2000-l13-screen
-priority: 41
 seeds:
 - 80
 run_target: rtx4090
@@ -70,7 +77,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

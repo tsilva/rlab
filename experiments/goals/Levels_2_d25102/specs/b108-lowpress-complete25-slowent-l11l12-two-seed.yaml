@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b108-lowpress-complete25-slowent-l11l12-two-seed
-stage: screen
-hypothesis: B91 is the first active recipe where both seeds are climbing into mid-range balanced competence, but one seed is Level1-1 bottlenecked and the other is Level1-2 bottlenecked. Keeping the B91 50/50 state sampling while slowing entropy decay should preserve more action diversity long enough for both level policies to co-exist instead of specializing.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with smoother growth than B91 and less late one-level collapse than B89.
+hypothesis: >-
+  B91 is the first active recipe where both seeds are climbing into mid-range balanced competence, but
+  one seed is Level1-1 bottlenecked and the other is Level1-2 bottlenecked. Keeping the B91 50/50
+  state sampling while slowing entropy decay should preserve more action diversity long enough for
+  both level policies to co-exist instead of specializing. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with smoother growth than B91 and less late one-level
+  collapse than B89.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 55
 seeds:
 - 204
 - 205
@@ -79,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b102-lowpress-complete25-slowent-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: B89 shows that completion_reward=25 can create a balanced lift, but active runs still collapse on Level1-2; combining completion reward, lower PPO update pressure, slower entropy decay, and a soft Level1-2 sampling bias is the most compact legal anti-collapse bundle queued so far.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with lower KL/clip pressure than B89 and more persistent Level1-2 rolling clear rate than B99 or B101 alone.
+hypothesis: >-
+  B89 shows that completion_reward=25 can create a balanced lift, but active runs still collapse on
+  Level1-2; combining completion reward, lower PPO update pressure, slower entropy decay, and a soft
+  Level1-2 sampling bias is the most compact legal anti-collapse bundle queued so far. Both seeds
+  should maximize peak train/info/level_complete/rate/min/last, with lower KL/clip pressure than B89
+  and more persistent Level1-2 rolling clear rate than B99 or B101 alone.
 parent_spec_slug: b100-lowpress-complete25-l12soft-l11l12-two-seed
-priority: 61
 seeds:
 - 200
 - 201
@@ -80,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b118-b55complete25-l13-screen
-stage: screen
-hypothesis: Adding a modest true clean-completion reward to the B55 low-update-pressure recipe should reinforce real Level1-3 clears without changing the target, emulator state, action space, or eval semantics.
-expected_signal: Seed 80 should show a higher or earlier peak train/info/level_complete/from/0-2/rate than the no-bonus B117 arm, with train/reward_share/done visible but not dominating progress reward.
+hypothesis: >-
+  Adding a modest true clean-completion reward to the B55 low-update-pressure recipe should reinforce
+  real Level1-3 clears without changing the target, emulator state, action space, or eval semantics.
+  Seed 80 should show a higher or earlier peak train/info/level_complete/from/0-2/rate than the
+  no-bonus B117 arm, with train/reward_share/done visible but not dominating progress reward.
 parent_spec_slug: b117-b55post21-l13-screen
-priority: 81
 seeds:
 - 80
 run_target: rtx4090
@@ -66,7 +69,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

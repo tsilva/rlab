@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b249-b191resume-200k-longhorizon4250-l13-screen
-stage: screen
-hypothesis: Level1-3 rewards require long sequences of timed jumps, and B236's 0.14 high-water came from the longest-credit branch tested so far. B249 extends that idea with a longer rollout horizon and gamma=0.999/gae_lambda=1.0 while keeping completion_reward=4250, testing whether still-longer credit assignment helps the tree-platform sequence.
-expected_signal: Seed 80 should improve peak completion rate or max clean count over B242 repeats. If throughput drops without completion gain, the longer horizon is not worth the extra update latency.
+hypothesis: >-
+  Level1-3 rewards require long sequences of timed jumps, and B236's 0.14 high-water came from the
+  longest-credit branch tested so far. B249 extends that idea with a longer rollout horizon and
+  gamma=0.999/gae_lambda=1.0 while keeping completion_reward=4250, testing whether still-longer credit
+  assignment helps the tree-platform sequence. Seed 80 should improve peak completion rate or max
+  clean count over B242 repeats. If throughput drops without completion gain, the longer horizon is
+  not worth the extra update latency.
 parent_spec_slug: b242-b191resume-200k-longcredit4250-ckpt25k-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -75,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

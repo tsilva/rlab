@@ -20,13 +20,13 @@ from stable_retro import RetroVecEnv
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
+from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id, resolve_env_provider
 from rlab.targets import GenericRetroTarget, target_for_game
 
 GAME = os.environ.get("RETRO_GAME", "")
 DEFAULT_STATE = os.environ.get("RETRO_STATE", "")
 DEFAULT_OBS_RESIZE_ALGORITHM = "area"
 DEFAULT_HUD_CROP_TOP = GenericRetroTarget.default_hud_crop_top
-DEFAULT_COMPLETION_X_THRESHOLD = GenericRetroTarget.default_completion_x_threshold
 FRAME_STACK_CHANNELS = {1, 3, 4}
 DoneOnInfoRule = tuple[str | tuple[str, ...], str]
 DoneOnInfoRules = dict[str, DoneOnInfoRule]
@@ -48,6 +48,7 @@ def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class EnvConfig:
+    env_provider: str = STABLE_RETRO_TURBO_PROVIDER.provider_id
     game: str = GAME
     state: str = DEFAULT_STATE
     states: tuple[str, ...] = ()
@@ -75,7 +76,6 @@ class EnvConfig:
     score_progress_clipped: bool = False
     no_progress_timeout_steps: int = 0
     no_progress_min_delta: int = 0
-    completion_x_threshold: int = 0
     info_events: InfoEventRules = field(default_factory=dict)
     done_on_events: tuple[str, ...] = ()
     action_set: str = "auto"
@@ -98,6 +98,7 @@ def normalize_event_config(config: EnvConfig) -> EnvConfig:
 def resolve_env_config(config: EnvConfig) -> EnvConfig:
     if not config.game:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
+    qualify_env_id(config.env_provider, config.game)
     _validate_sticky_action_prob(config.sticky_action_prob)
     if config.task_conditioning_info_vars and not config.task_conditioning:
         raise ValueError("--task-conditioning-info-vars requires --task-conditioning")
@@ -123,8 +124,6 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         updates["reward_mode"] = target.default_reward_mode
     if config.hud_crop_top < 0:
         updates["hud_crop_top"] = target.default_hud_crop_top
-    if config.completion_x_threshold < 0:
-        updates["completion_x_threshold"] = 0
     config = replace(config, **updates) if updates else config
     return normalize_event_config(config)
 
@@ -235,6 +234,56 @@ def task_conditioning_info_values(config: EnvConfig) -> tuple[tuple[int | str, .
 
 def retro_make_kwargs(config: EnvConfig) -> dict[str, Any]:
     return {"state": config.state} if config.state else {}
+
+
+def _require_stable_retro_turbo_provider(config: EnvConfig):
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id != STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        raise ValueError(
+            f"unsupported environment provider {provider.provider_id!r}; "
+            f"supported providers: {STABLE_RETRO_TURBO_PROVIDER.provider_id}",
+        )
+    return provider
+
+
+def _stable_retro_turbo_make_env(
+    config: EnvConfig,
+    *,
+    render_mode: str,
+    fast_observation_path: bool = False,
+) -> gym.Env:
+    _require_stable_retro_turbo_provider(config)
+    kwargs: dict[str, Any] = {
+        "render_mode": render_mode,
+        **retro_make_kwargs(config),
+    }
+    if fast_observation_path:
+        kwargs.update(
+            {
+                "obs_resize": (config.observation_size, config.observation_size),
+                "obs_crop": (config.hud_crop_top, 0, 0, 0) if config.hud_crop_top else None,
+                "obs_grayscale": True,
+                "obs_resize_algorithm": config.obs_resize_algorithm,
+                "frame_skip": config.frame_skip,
+                "frame_stack": 4,
+                "frame_maxpool": config.max_pool_frames,
+            }
+        )
+    return retro.make(config.game, **kwargs)
+
+
+def make_provider_env(
+    config: EnvConfig,
+    *,
+    render_mode: str,
+    fast_observation_path: bool = False,
+) -> gym.Env:
+    _require_stable_retro_turbo_provider(config)
+    return _stable_retro_turbo_make_env(
+        config,
+        render_mode=render_mode,
+        fast_observation_path=fast_observation_path,
+    )
 
 
 class DiscreteRetroActions(gym.ActionWrapper):
@@ -693,24 +742,17 @@ class RetroPreprocess(gym.ObservationWrapper):
 
 def make_retro_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
     config = resolve_env_config(config or EnvConfig())
-    env = retro.make(config.game, render_mode="rgb_array", **retro_make_kwargs(config))
+    env = make_provider_env(config, render_mode="rgb_array")
     return wrap_retro_env(env, config=config, seed=seed)
 
 
 def make_fast_retro_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
     config = resolve_env_config(config or EnvConfig())
     target = target_for_game(config.game)
-    env = retro.make(
-        config.game,
+    env = make_provider_env(
+        config,
         render_mode="rgb_array",
-        obs_resize=(config.observation_size, config.observation_size),
-        obs_crop=(config.hud_crop_top, 0, 0, 0) if config.hud_crop_top else None,
-        obs_grayscale=True,
-        obs_resize_algorithm=config.obs_resize_algorithm,
-        frame_skip=config.frame_skip,
-        frame_stack=4,
-        frame_maxpool=config.max_pool_frames,
-        **retro_make_kwargs(config),
+        fast_observation_path=True,
     )
     if target.uses_discrete_actions(config.action_set):
         env = DiscreteRetroActions(env, config=config)
@@ -728,7 +770,7 @@ def make_fast_retro_env(config: EnvConfig | None = None, seed: int | None = None
 
 def make_rendered_retro_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
     config = resolve_env_config(config or EnvConfig())
-    env = retro.make(config.game, render_mode="human", **retro_make_kwargs(config))
+    env = make_provider_env(config, render_mode="human")
     return wrap_retro_env(env, config=config, seed=seed)
 
 
@@ -844,6 +886,24 @@ def _native_vec_kwargs(
     return native_kwargs
 
 
+def _stable_retro_turbo_make_vec_env(
+    config: EnvConfig,
+    *,
+    native_kwargs: Mapping[str, Any],
+):
+    _require_stable_retro_turbo_provider(config)
+    return RetroVecEnv(config.game, **dict(native_kwargs))
+
+
+def make_provider_vec_env(
+    config: EnvConfig,
+    *,
+    native_kwargs: Mapping[str, Any],
+):
+    _require_stable_retro_turbo_provider(config)
+    return _stable_retro_turbo_make_vec_env(config, native_kwargs=native_kwargs)
+
+
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
@@ -859,7 +919,7 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
         num_threads=num_threads,
         native_done_on_rules=native_done_on_rules,
     )
-    vec_env = RetroVecEnv(config.game, **native_kwargs)
+    vec_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
     vec_env.seed(seed)
     if target.uses_discrete_actions(config.action_set):
         vec_env = VecDiscreteRetroActions(vec_env, config=config)

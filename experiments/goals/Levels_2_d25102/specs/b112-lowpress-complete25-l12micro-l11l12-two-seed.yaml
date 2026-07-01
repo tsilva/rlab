@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b112-lowpress-complete25-l12micro-l11l12-two-seed
-stage: screen
-hypothesis: 'B91 produced the strongest evidence so far: one seed crossed 0.88 and the paired seed reached 0.67, with Level1-2 as the bottleneck. B110/B111 add gentler PPO pressure but are much slower early. This arm keeps B91''s faster low-pressure optimizer shape and changes only the sampling mix to a tiny Level1-2 nudge, aiming to lift the weaker Level1-2 window without sacrificing Level1-1 competence.'
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum beat B91 seed 207's 0.67 high-watermark with Level1-1 and Level1-2 rates closer together near peak.
+hypothesis: >-
+  B91 produced the strongest evidence so far: one seed crossed 0.88 and the paired seed reached 0.67,
+  with Level1-2 as the bottleneck. B110/B111 add gentler PPO pressure but are much slower early. This
+  arm keeps B91's faster low-pressure optimizer shape and changes only the sampling mix to a tiny
+  Level1-2 nudge, aiming to lift the weaker Level1-2 window without sacrificing Level1-1 competence.
+  Both seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum beat B91 seed
+  207's 0.67 high-watermark with Level1-1 and Level1-2 rates closer together near peak.
 parent_spec_slug: b91-lowpress-complete25-l11l12-two-seed
-priority: 88
 seeds:
 - 206
 - 207
@@ -78,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

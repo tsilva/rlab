@@ -45,8 +45,10 @@ from rlab.env import (
     VecRetroProgressInfo,
     VecTaskConditioning,
     make_eval_vec_env,
+    make_retro_env,
     make_rendered_replay_env,
     make_training_vec_env,
+    make_vec_envs,
     native_vec_env_supports_done_on,
     needs_vec_transpose_image,
     resolve_env_config,
@@ -261,7 +263,6 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             score_progress_clipped=False,
             no_progress_timeout_steps=0,
             no_progress_min_delta=0,
-            completion_x_threshold=SuperMarioBrosNesV0Target.default_completion_x_threshold,
             info_events_json='{"life_loss":["lives","decrease"]}',
             done_on_events="life_loss",
             action_set="right",
@@ -517,6 +518,61 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sticky_action_prob"):
             resolve_env_config(EnvConfig(game="SuperMarioBros-Nes-v0", sticky_action_prob=-0.1))
 
+    def test_unknown_env_provider_fails_loudly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown environment provider"):
+            resolve_env_config(
+                EnvConfig(env_provider="stable-retro", game="SuperMarioBros-Nes-v0")
+            )
+
+    def test_make_retro_env_uses_provider_factory(self) -> None:
+        sentinel = object()
+        wrapped = object()
+        config = EnvConfig(game="SuperMarioBros-Nes-v0")
+
+        with (
+            patch("rlab.env.make_provider_env", return_value=sentinel) as make_provider_env,
+            patch("rlab.env.wrap_retro_env", return_value=wrapped) as wrap_retro_env,
+        ):
+            env = make_retro_env(config=config, seed=7)
+
+        self.assertIs(env, wrapped)
+        make_provider_env.assert_called_once()
+        self.assertEqual(make_provider_env.call_args.kwargs["render_mode"], "rgb_array")
+        wrap_retro_env.assert_called_once_with(sentinel, config=resolve_env_config(config), seed=7)
+
+    def test_make_vec_envs_uses_provider_factory(self) -> None:
+        class FakeNative:
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.MultiBinary(2)
+
+            def seed(self, seed):
+                self.seed_value = seed
+                return [seed]
+
+        fake_native = FakeNative()
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            reward_mode="native",
+        )
+        with (
+            patch("rlab.env.make_provider_vec_env", return_value=fake_native) as make_provider_vec_env,
+            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
+            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
+            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
+        ):
+            env = make_vec_envs(config=config, n_envs=2, seed=7)
+
+        self.assertIs(env, fake_native)
+        self.assertEqual(fake_native.seed_value, 7)
+        make_provider_vec_env.assert_called_once()
+        self.assertEqual(make_provider_vec_env.call_args.kwargs["native_kwargs"]["num_envs"], 2)
+
     def test_eval_vec_env_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
         config = EnvConfig(
@@ -643,7 +699,6 @@ class TargetTests(unittest.TestCase):
         config = argparse.Namespace(
             reward_mode="baseline",
             no_progress_min_delta=0,
-            completion_x_threshold=0,
             max_episode_steps=0,
             no_progress_timeout_steps=0,
             progress_reward_cap=30.0,
@@ -673,11 +728,10 @@ class TargetTests(unittest.TestCase):
         self.assertTrue(info["died"])
         self.assertEqual(info["raw_reward"], -50.0)
 
-    def test_mario_completion_uses_level_change_not_x_threshold(self) -> None:
+    def test_mario_completion_uses_level_change(self) -> None:
         config = argparse.Namespace(
             reward_mode="score",
             no_progress_min_delta=0,
-            completion_x_threshold=25,
             max_episode_steps=0,
             no_progress_timeout_steps=0,
             progress_reward_cap=30.0,
@@ -704,7 +758,6 @@ class TargetTests(unittest.TestCase):
         tracker.step(0.0, same_level_info, done=False)
 
         self.assertFalse(same_level_info["level_complete"])
-        self.assertFalse(same_level_info["threshold_complete"])
         self.assertEqual(same_level_info["progress_component"], 256.0)
         self.assertEqual(same_level_info["progress_reward_component"], 256.0)
         self.assertEqual(same_level_info["score_reward_component"], 0.0)
@@ -729,7 +782,6 @@ class TargetTests(unittest.TestCase):
         config = argparse.Namespace(
             reward_mode="score",
             no_progress_min_delta=0,
-            completion_x_threshold=0,
             max_episode_steps=0,
             no_progress_timeout_steps=0,
             progress_reward_cap=30.0,
@@ -768,7 +820,6 @@ class TargetTests(unittest.TestCase):
         config = argparse.Namespace(
             reward_mode="score",
             no_progress_min_delta=0,
-            completion_x_threshold=0,
             max_episode_steps=0,
             no_progress_timeout_steps=0,
             progress_reward_cap=30.0,
@@ -2469,22 +2520,16 @@ class EvalMetricTests(unittest.TestCase):
         self.assertFalse(
             is_level_complete(
                 {"level_complete": False, "level_changed": False, "level_max_x_pos": 5000},
-                max_x_pos=5000,
-                completion_x_threshold=25,
             )
         )
         self.assertFalse(
             is_level_complete(
                 {"level_complete": False, "level_changed": True},
-                max_x_pos=0,
-                completion_x_threshold=0,
             )
         )
         self.assertTrue(
             is_level_complete(
                 {"level_complete": True, "level_changed": True},
-                max_x_pos=0,
-                completion_x_threshold=0,
             )
         )
 
@@ -2492,15 +2537,11 @@ class EvalMetricTests(unittest.TestCase):
         self.assertFalse(
             is_level_complete(
                 {"level_changed": True, "died": True},
-                max_x_pos=0,
-                completion_x_threshold=0,
             )
         )
         self.assertTrue(
             is_level_complete(
                 {"level_changed": True, "died": False},
-                max_x_pos=0,
-                completion_x_threshold=0,
             )
         )
 
@@ -2563,7 +2604,6 @@ class EvalMetricTests(unittest.TestCase):
             max_steps=2,
             deterministic=True,
             seed=7,
-            completion_x_threshold=0,
             default_start_state="Level1-1",
         )
 
@@ -2636,7 +2676,7 @@ class EvalMetricTests(unittest.TestCase):
             def close(self) -> None:
                 pass
 
-        config = EnvConfig(game="SuperMarioBros-Nes-v0", completion_x_threshold=25)
+        config = EnvConfig(game="SuperMarioBros-Nes-v0")
         with patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeVecEnv()):
             metrics, video_path = evaluate_model_episodes(
                 model=FakeModel(),
@@ -2645,7 +2685,6 @@ class EvalMetricTests(unittest.TestCase):
                 seed=7,
                 max_steps=10,
                 deterministic=True,
-                completion_x_threshold=25,
                 n_envs=2,
             )
 
@@ -2749,7 +2788,7 @@ class EvalMetricTests(unittest.TestCase):
                 pass
 
         fake_env = FakeVecEnv()
-        config = EnvConfig(game="SuperMarioBros-Nes-v0", completion_x_threshold=25)
+        config = EnvConfig(game="SuperMarioBros-Nes-v0")
         with patch("rlab.eval_runner.make_eval_vec_env", return_value=fake_env):
             metrics, video_path = evaluate_model_episodes(
                 model=FakeModel(),
@@ -2758,7 +2797,6 @@ class EvalMetricTests(unittest.TestCase):
                 seed=7,
                 max_steps=2,
                 deterministic=True,
-                completion_x_threshold=25,
                 n_envs=2,
             )
 
@@ -2835,7 +2873,6 @@ class EvalMetricTests(unittest.TestCase):
                 seed=7,
                 max_steps=10,
                 deterministic=True,
-                completion_x_threshold=0,
                 progress=True,
                 progress_description="eval checkpoint 4100000",
             )

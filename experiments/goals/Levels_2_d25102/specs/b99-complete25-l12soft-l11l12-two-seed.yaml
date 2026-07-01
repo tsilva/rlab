@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b99-complete25-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: B89's completion reward produced the best peak so far, but late training collapses on Level1-2 while Level1-1 remains strong; a soft Level1-2 sampling bias may preserve the completion-reward benefit and keep the bottleneck level alive.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 rates staying closer to Level1-1 after the first strong completion-reward phase.
+hypothesis: >-
+  B89's completion reward produced the best peak so far, but late training collapses on Level1-2 while
+  Level1-1 remains strong; a soft Level1-2 sampling bias may preserve the completion-reward benefit
+  and keep the bottleneck level alive. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-2 rates staying closer to Level1-1 after the
+  first strong completion-reward phase.
 parent_spec_slug: b89-complete25-l11l12-two-seed
-priority: 64
 seeds:
 - 202
 - 203
@@ -77,7 +81,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

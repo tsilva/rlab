@@ -1,15 +1,17 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-single-level-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b269-b55complete25-l21-screen
-stage: screen
-hypothesis: B263 seed 90 found 93 clean Level2-1 clears but failed to retain a high rolling clear rate; a tiny completion_reward=25 tests target-aligned retention reinforcement without the large completion-bonus disruption observed in earlier single-level screens.
-expected_signal: Seed 90 should improve rolling clear retention over B263 while reward share for completion stays secondary to progress/score; strict 100/100 is required before confirmation.
+hypothesis: >-
+  B263 seed 90 found 93 clean Level2-1 clears but failed to retain a high rolling clear rate; a tiny
+  completion_reward=25 tests target-aligned retention reinforcement without the large completion-bonus
+  disruption observed in earlier single-level screens. Seed 90 should improve rolling clear retention
+  over B263 while reward share for completion stays secondary to progress/score; strict 100/100 is
+  required before confirmation.
 parent_spec_slug: b263-b257soft-l21-screen
-priority: 75
 seeds:
 - 90
 run_target: rtx4090

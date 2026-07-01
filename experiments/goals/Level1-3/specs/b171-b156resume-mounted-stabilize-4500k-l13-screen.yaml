@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b171-b156resume-mounted-stabilize-4500k-l13-screen
-stage: screen
-hypothesis: 'B156 is the first active Level1-3 run to pass the early bottleneck: deterministic artifact eval moves from the failed-run wall near x=670 to x=1645 at the 4.5M checkpoint, and training clean clears begin shortly before 4M. B169 proved the direct-resume path reaches W&B, but the checkpoint was staged outside the worker container mount. This corrected retry resumes the same checkpoint from the mounted runs/train_resumes path and spends only the remaining 500k cap budget on a conservative low-LR, low-entropy stabilization pass.'
-expected_signal: Seed 80 should preserve B156's post-bottleneck behavior and increase the rolling Level1-3 completion rate within the 500k continuation budget. If the policy collapses or fails to add clears, the B156 behavior is fragile under further PPO updates rather than merely undertrained.
+hypothesis: >-
+  B156 is the first active Level1-3 run to pass the early bottleneck: deterministic artifact eval
+  moves from the failed-run wall near x=670 to x=1645 at the 4.5M checkpoint, and training clean
+  clears begin shortly before 4M. B169 proved the direct-resume path reaches W&B, but the checkpoint
+  was staged outside the worker container mount. This corrected retry resumes the same checkpoint from
+  the mounted runs/train_resumes path and spends only the remaining 500k cap budget on a conservative
+  low-LR, low-entropy stabilization pass. Seed 80 should preserve B156's post-bottleneck behavior and
+  increase the rolling Level1-3 completion rate within the 500k continuation budget. If the policy
+  collapses or fails to add clears, the B156 behavior is fragile under further PPO updates rather than
+  merely undertrained.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 36
 seeds:
 - 80
 run_target: rtx4090
@@ -77,7 +85,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

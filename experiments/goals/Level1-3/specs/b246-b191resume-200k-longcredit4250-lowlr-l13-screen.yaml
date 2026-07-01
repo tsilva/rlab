@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b246-b191resume-200k-longcredit4250-lowlr-l13-screen
-stage: screen
-hypothesis: B236 reached a new 0.14 high-water but decayed, suggesting completion_reward=4250 is useful while the update path may still be too sharp. B246 starts from the same B191 200k parent with the B236 reward and long-credit settings, but lowers learning rate and entropy pressure across the full 400k continuation.
-expected_signal: Seed 80 should either reproduce the B236 high-water more smoothly or finish with a stronger completion window. If it never reaches the peak band, B236's stronger update path may be required for discovery.
+hypothesis: >-
+  B236 reached a new 0.14 high-water but decayed, suggesting completion_reward=4250 is useful while
+  the update path may still be too sharp. B246 starts from the same B191 200k parent with the B236
+  reward and long-credit settings, but lowers learning rate and entropy pressure across the full 400k
+  continuation. Seed 80 should either reproduce the B236 high-water more smoothly or finish with a
+  stronger completion window. If it never reaches the peak band, B236's stronger update path may be
+  required for discovery.
 parent_spec_slug: b236-b191resume-200k-longcredit4250-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +81,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

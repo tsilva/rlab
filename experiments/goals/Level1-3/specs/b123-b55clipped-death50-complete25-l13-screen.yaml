@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b123-b55clipped-death50-complete25-l13-screen
-stage: screen
-hypothesis: Active Level1-3 runs are ending almost entirely on life loss while death penalty is a small reward share; combining clipped progress with a stronger death penalty should improve survival behavior without changing the environment or target metric.
-expected_signal: Seed 80 should reduce life-loss-only churn and improve train/info/level_complete/from/0-2/count or rate versus B122-style clipped progress with the original death penalty.
+hypothesis: >-
+  Active Level1-3 runs are ending almost entirely on life loss while death penalty is a small reward
+  share; combining clipped progress with a stronger death penalty should improve survival behavior
+  without changing the environment or target metric. Seed 80 should reduce life-loss-only churn and
+  improve train/info/level_complete/from/0-2/count or rate versus B122-style clipped progress with the
+  original death penalty.
 parent_spec_slug: b122-b55clipped-complete25-l13-screen
-priority: 77
 seeds:
 - 80
 run_target: rtx4090
@@ -67,7 +71,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

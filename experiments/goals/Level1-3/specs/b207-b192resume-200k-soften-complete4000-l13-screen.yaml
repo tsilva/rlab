@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b207-b192resume-200k-soften-complete4000-l13-screen
-stage: screen
-hypothesis: B192's completion_reward=5000 run reached a 0.11 peak but decayed more than B191. B207 resumes B192 at 200k and softens the completion bonus back to 4000 with freeze-style PPO updates, testing whether the stronger early reward discovered clears that a softer continuation can stabilize.
-expected_signal: Seed 80 should beat B192's final window and approach or exceed B191's 0.12 peak. If it collapses, the B192 state distribution is less useful than B191 despite similar peak.
+hypothesis: >-
+  B192's completion_reward=5000 run reached a 0.11 peak but decayed more than B191. B207 resumes B192
+  at 200k and softens the completion bonus back to 4000 with freeze-style PPO updates, testing whether
+  the stronger early reward discovered clears that a softer continuation can stabilize. Seed 80 should
+  beat B192's final window and approach or exceed B191's 0.12 peak. If it collapses, the B192 state
+  distribution is less useful than B191 despite similar peak.
 parent_spec_slug: b192-b178resume-1400k-clearboost5000-l13-screen
-priority: 28
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

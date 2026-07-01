@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b147-lowlr-baseline-gamma995-terminal300-l13-screen
-stage: screen
-hypothesis: B142's low-death tiny-progress score arm passed the 2M checkpoint with zero clean Level1-3 clears and an essentially flat reward tail. B145's baseline-reward arm is still young and moving, so this companion tests whether the same low-LR, high-entropy, high-gamma, long-rollout treatment used by B146 works better when direct x-progress shaping is removed.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count or give a clearer native/score-plus-terminal death/progress profile for deciding whether Level1-3 needs jump-specific reward shaping next.
+hypothesis: >-
+  B142's low-death tiny-progress score arm passed the 2M checkpoint with zero clean Level1-3 clears
+  and an essentially flat reward tail. B145's baseline-reward arm is still young and moving, so this
+  companion tests whether the same low-LR, high-entropy, high-gamma, long-rollout treatment used by
+  B146 works better when direct x-progress shaping is removed. Seed 80 should either produce nonzero
+  train/info/level_complete/from/0-2/count or give a clearer native/score-plus-terminal death/progress
+  profile for deciding whether Level1-3 needs jump-specific reward shaping next.
 parent_spec_slug: b145-b55baseline-terminal300-l13-screen
-priority: 53
 seeds:
 - 80
 run_target: rtx4090
@@ -69,7 +74,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

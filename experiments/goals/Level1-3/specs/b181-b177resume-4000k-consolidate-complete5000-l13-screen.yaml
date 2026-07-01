@@ -1,11 +1,18 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b181-b177resume-4000k-consolidate-complete5000-l13-screen
-stage: screen
-hypothesis: B177's critic-XL policy discovered clean Level1-3 clears, but the rolling completion window remained sparse and the shaped reward tail fell after the first clear burst. B181 resumes the B177 4.0M checkpoint with the same stabilization settings as B180, but raises the clean-clear bonus to 5000. This isolates whether the already-discovered post-bottleneck behavior is still underweighted once the policy has crossed the hard initial platform sequence.
-expected_signal: Seed 80 should preserve B177's post-bottleneck behavior and improve clear density or peak train/info/level_complete/rate/min/last relative to B180 and B177's original continuation. If shaped reward rises without completion-rate improvement, sparse clear magnitude is not the consolidation lever.
+hypothesis: >-
+  B177's critic-XL policy discovered clean Level1-3 clears, but the rolling completion window remained
+  sparse and the shaped reward tail fell after the first clear burst. B181 resumes the B177 4.0M
+  checkpoint with the same stabilization settings as B180, but raises the clean-clear bonus to 5000.
+  This isolates whether the already-discovered post-bottleneck behavior is still underweighted once
+  the policy has crossed the hard initial platform sequence. Seed 80 should preserve B177's
+  post-bottleneck behavior and improve clear density or peak train/info/level_complete/rate/min/last
+  relative to B180 and B177's original continuation. If shaped reward rises without completion-rate
+  improvement, sparse clear magnitude is not the consolidation lever.
 parent_spec_slug: b177-lowlr-criticxl-survival-complete3000-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

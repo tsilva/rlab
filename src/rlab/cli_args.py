@@ -15,6 +15,7 @@ def add_env_config_args(
     defaults: EnvConfig | None = None,
 ) -> None:
     defaults = defaults or EnvConfig()
+    parser.add_argument("--env-provider", default=defaults.env_provider)
     parser.add_argument("--game", default=defaults.game)
     parser.add_argument("--state", default=defaults.state)
     parser.add_argument("--states", default=",".join(defaults.states))
@@ -74,12 +75,6 @@ def add_env_config_args(
     parser.add_argument("--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
     parser.add_argument("--no-progress-min-delta", type=int, default=0)
-    parser.add_argument(
-        "--completion-x-threshold",
-        type=int,
-        default=defaults.completion_x_threshold,
-        help="Deprecated no-op; level completion is detected from stable-retro level changes.",
-    )
     parser.add_argument(
         "--info-events-json",
         default="",

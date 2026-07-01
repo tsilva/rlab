@@ -32,7 +32,8 @@ Queue-backed train specs use `selection_metrics` as an ordered list of training
 signals. Goal-owned eval specs do not define selection metrics; they only define
 the checkpoint measurement protocol. Queued checkpoint eval writes canonical
 `eval/*` metrics to the producing W&B run with `global_step` set to the
-checkpoint timestep, and stores the same metrics in `eval_results.metrics_json`.
+checkpoint timestep. W&B is the source of truth for train and eval metrics; the
+queue database stores job state, not result metric projections.
 
 | Metric | Meaning |
 | --- | --- |
@@ -105,6 +106,11 @@ because they also count non-terminal clears and exclude death or life-loss trans
 single training selection scalar across source levels, prefer
 `train/info/level_complete/rate/min/last`; use `train/info/level_complete/rate/mean/last` as a
 tiebreaker/secondary signal when bottleneck rates match.
+
+Goal contracts should not restate the `train/info/level_complete/from/<prev>/rate` 100-attempt FIFO
+window as a separate success setting. The metric definition owns that window. Goal files should
+declare the solved condition in `objective.success` and ordered ranking signals in `objective.rank`,
+for example `{metric: train/info/level_complete/rate/min/last, operator: '>', threshold: 0.99}`.
 
 Use current `train/reward_share/*` metrics for reward attribution rather than the older
 `train/reward_component/*` namespace. Shares are based on absolute rollout contribution
@@ -321,6 +327,15 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/checkpoint/step` | Checkpoint step being evaluated. Logged by `rlab-eval` artifact mode. |
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated. Logged by `rlab-eval` artifact mode. |
 | `eval/config/hud_crop_top` | HUD crop used for the out-of-process checkpoint eval. |
+| `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, ranked by completion first. Used by `rlab leaders checkpoints`. |
+| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint. Used before max X. |
+| `leader/checkpoint/max_x_max` | W&B summary tiebreaker for the source run's best evaluated checkpoint. Used after mean reward. |
+| `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
+| `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
+| `leader/checkpoint/eval_protocol_hash` | Eval protocol hash attached to the source run's current best evaluated checkpoint. |
+| `leader/checkpoint/eval_job_id` | Queue eval job id that produced the current best-checkpoint summary update. |
+| `leader/checkpoint/candidate_label` | Candidate label attached to that eval job. |
+| `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 
 Per-start-state eval done metrics mirror the training done namespace as
 `eval/done/<reason>/from/<start>`. Because eval disables native event termination,
@@ -387,6 +402,11 @@ The run config is not a metric, but W&B stores all train CLI args plus resolved 
 configuration fields such as `game`, `state`, `states`, `state_probs`, `task_conditioning`,
 frame skip, action set, reward settings, termination settings, preprocessing settings, and
 state-distribution metadata.
+
+Queue-backed training also records flat W&B config fields for leaderboard queries:
+`goal_slug`, `spec_slug`, `spec_path`, `queue_train_job_id`, `runtime_image_ref`, and
+`run_target`. Use `rlab leaders runs` for run/spec winners across seeds and
+`rlab leaders checkpoints` for the best evaluated checkpoints by source run.
 
 Training logs model artifacts when W&B artifacts are enabled:
 

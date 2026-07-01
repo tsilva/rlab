@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b231-b191resume-200k-longrollout4500-l13-screen
-stage: screen
-hypothesis: B214 discovers a short high-clear window but PPO update noise may be too coupled to short rollout batches. B231 keeps the B214 reward and low update scale while increasing rollout horizon to n_steps=2048, testing whether longer on-policy batches improve value estimates for the Level1-3 platform sequence.
-expected_signal: Seed 80 should exceed B214's 0.13 peak or show a better final clear window with lower KL/clip noise. If it is slower but not better on completion rate, rollout length is not the binding issue.
+hypothesis: >-
+  B214 discovers a short high-clear window but PPO update noise may be too coupled to short rollout
+  batches. B231 keeps the B214 reward and low update scale while increasing rollout horizon to
+  n_steps=2048, testing whether longer on-policy batches improve value estimates for the Level1-3
+  platform sequence. Seed 80 should exceed B214's 0.13 peak or show a better final clear window with
+  lower KL/clip noise. If it is slower but not better on completion rate, rollout length is not the
+  binding issue.
 parent_spec_slug: b214-b191resume-200k-freezemid4500-l13-screen
-priority: 36
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

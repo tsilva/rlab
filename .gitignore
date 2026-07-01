@@ -46,6 +46,7 @@ experiments/goals/*/models/
 experiments/goals/*/videos/
 experiments/goals/*/wandb/
 experiments/goals/*/artifacts/
+experiments/goals/.deprecated/
 
 # RL/model artifacts generated outside ignored run dirs
 *.ckpt

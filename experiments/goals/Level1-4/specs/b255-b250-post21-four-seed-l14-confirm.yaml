@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b255-b250-post21-four-seed-l14-confirm
-stage: confirm
-hypothesis: The B250 no-completion-bonus B55 low-KL scratch recipe can reproduce strict 100/100 World 1-4 completion under the active post21 runtime across the remaining goal confirmation seeds.
-expected_signal: Seeds 91-94 should reach the strict 100/100 Level1-4 source-attempt completion window. Together with the already succeeded seed 90 B250 screen run, this completes the goal-defined five-seed train confirmation set before out-of-process eval promotion.
+hypothesis: >-
+  The B250 no-completion-bonus B55 low-KL scratch recipe can reproduce strict 100/100 World 1-4
+  completion under the active post21 runtime across the remaining goal confirmation seeds. Seeds 91-94
+  should reach the strict 100/100 Level1-4 source-attempt completion window. Together with the already
+  succeeded seed 90 B250 screen run, this completes the goal-defined five-seed train confirmation set
+  before out-of-process eval promotion.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 80
 seeds:
 - 91
 - 92
@@ -71,7 +75,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

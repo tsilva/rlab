@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b212-b178resume-1400k-clearboost4500-l13-screen
-stage: screen
-hypothesis: B191 completion_reward=4000 and B192 completion_reward=5000 from B178 1.4M both reached useful clear windows, and B205 later showed the 4500 midpoint can tie the current 0.12 peak. B212 tests that midpoint directly from the B178 1.4M parent for the full remaining 600k under the 5M cap.
-expected_signal: Seed 80 should beat the B191/B205 0.12 peak train/info/level_complete/rate/min/last or finish with a stronger final window. If it only raises reward, the midpoint bonus is not enough from the B178 parent.
+hypothesis: >-
+  B191 completion_reward=4000 and B192 completion_reward=5000 from B178 1.4M both reached useful clear
+  windows, and B205 later showed the 4500 midpoint can tie the current 0.12 peak. B212 tests that
+  midpoint directly from the B178 1.4M parent for the full remaining 600k under the 5M cap. Seed 80
+  should beat the B191/B205 0.12 peak train/info/level_complete/rate/min/last or finish with a
+  stronger final window. If it only raises reward, the midpoint bonus is not enough from the B178
+  parent.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 34
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

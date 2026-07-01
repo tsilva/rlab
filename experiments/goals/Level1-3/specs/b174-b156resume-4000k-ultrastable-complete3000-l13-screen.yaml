@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b174-b156resume-4000k-ultrastable-complete3000-l13-screen
-stage: screen
-hypothesis: B171/B172 showed that B156 checkpoint forks produce immediate clean clears but fail to consolidate a reliable 100-attempt window. B174 resumes the B156 4.0M checkpoint with the same ultra-low update pressure as B173, but uses completion_reward=3000 to match the B166/B172 sparse-clear weighting that rediscovered more clears than the original B156 recipe.
-expected_signal: Seed 80 should improve clear density over B173 if B156's original completion_reward=1500 underweights the sparse clean-clear event. If B174 collapses faster than B173, the stronger clear bonus is destabilizing even under ultra-low update pressure.
+hypothesis: >-
+  B171/B172 showed that B156 checkpoint forks produce immediate clean clears but fail to consolidate a
+  reliable 100-attempt window. B174 resumes the B156 4.0M checkpoint with the same ultra-low update
+  pressure as B173, but uses completion_reward=3000 to match the B166/B172 sparse-clear weighting that
+  rediscovered more clears than the original B156 recipe. Seed 80 should improve clear density over
+  B173 if B156's original completion_reward=1500 underweights the sparse clean-clear event. If B174
+  collapses faster than B173, the stronger clear bonus is destabilizing even under ultra-low update
+  pressure.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +82,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b55-lowkl-lrdecay@_global_
 - _self_
-goal: Level1-1
 slug: b83-b55-post21-five-seed-l11-confirm
-stage: confirm
-hypothesis: The B55 low-KL late-decay Level1-1 recipe can reproduce strict 100/100 completion under the active post21 runtime across a five-seed Beast3 confirmation batch.
-expected_signal: Seeds 23-27 should be judged by strict Level1-1 completion; a 100/100 terminal level-change window in training, then out-of-process 100-episode eval before promotion.
+hypothesis: >-
+  The B55 low-KL late-decay Level1-1 recipe can reproduce strict 100/100 completion under the active
+  post21 runtime across a five-seed Beast3 confirmation batch. Seeds 23-27 should be judged by strict
+  Level1-1 completion; a 100/100 terminal level-change window in training, then out-of-process
+  100-episode eval before promotion.
 parent_spec_slug: b55-lowkl-lrdecay-post21-revalidate
-priority: 60
 seeds: [23, 24, 25, 26, 27]
 run_target: rtx4090
 state: Level1-1

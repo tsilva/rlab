@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b197-b178resume-1200k-clearboost5000-l13-screen
-stage: screen
-hypothesis: B197 pairs the earliest B178 continuation point in this saturation batch with the stronger completion_reward=5000 signal. This tests whether the high completion bonus needs to influence the still-forming breakthrough behavior rather than being applied after the policy has already narrowed.
-expected_signal: Seed 80 should improve clean clear density over B194 and preserve or beat the B178 0.06 rolling clean-clear high-water. If it only raises reward without train/info/level_complete improvement, the stronger bonus remains the wrong lever.
+hypothesis: >-
+  B197 pairs the earliest B178 continuation point in this saturation batch with the stronger
+  completion_reward=5000 signal. This tests whether the high completion bonus needs to influence the
+  still-forming breakthrough behavior rather than being applied after the policy has already narrowed.
+  Seed 80 should improve clean clear density over B194 and preserve or beat the B178 0.06 rolling
+  clean-clear high-water. If it only raises reward without train/info/level_complete improvement, the
+  stronger bonus remains the wrong lever.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

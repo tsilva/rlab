@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b253-longcredit-complete500-l14-screen
-stage: screen
-hypothesis: World 1-4 is likely a sparse, delayed-credit castle task. A longer-credit PPO setup with clipped progress, advantage normalization, wider critic, reduced death pressure, and a stronger clean-completion reward tests whether scratch learning needs credit assignment rather than more raw x-progress pressure.
-expected_signal: Seed 90 should improve late training clean-completion count/rate or max x-position over the B250-B252 family without PPO collapse; if completion remains zero but x-progress improves, this arm identifies a useful follow-up region.
+hypothesis: >-
+  World 1-4 is likely a sparse, delayed-credit castle task. A longer-credit PPO setup with clipped
+  progress, advantage normalization, wider critic, reduced death pressure, and a stronger
+  clean-completion reward tests whether scratch learning needs credit assignment rather than more raw
+  x-progress pressure. Seed 90 should improve late training clean-completion count/rate or max
+  x-position over the B250-B252 family without PPO collapse; if completion remains zero but x-progress
+  improves, this arm identifies a useful follow-up region.
 parent_spec_slug: b230-b191resume-200k-longcredit4500-l13-screen
-priority: 67
 seeds:
 - 90
 run_target: rtx4090
@@ -74,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

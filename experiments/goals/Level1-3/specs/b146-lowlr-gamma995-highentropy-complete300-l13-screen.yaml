@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b146-lowlr-gamma995-highentropy-complete300-l13-screen
-stage: screen
-hypothesis: 'B141''s long-credit baseline reward arm passed the 2M checkpoint with zero clean Level1-3 clears and a flat reward tail. Level1-3 stresses PPO with precise delayed jumps and harsh pit deaths, so this arm keeps direct Level1-3 training but shifts toward the commonly successful 1-3 fixes: much lower learning rate, higher early entropy, longer rollout horizon, higher gamma, and a strong true-clear bonus with low direct progress pressure.'
-expected_signal: Seed 80 should either produce the first nonzero train/info/level_complete/from/0-2/count or show a materially different death/progress/reward profile from the existing high-progress and baseline plateaus.
+hypothesis: >-
+  B141's long-credit baseline reward arm passed the 2M checkpoint with zero clean Level1-3 clears and
+  a flat reward tail. Level1-3 stresses PPO with precise delayed jumps and harsh pit deaths, so this
+  arm keeps direct Level1-3 training but shifts toward the commonly successful 1-3 fixes: much lower
+  learning rate, higher early entropy, longer rollout horizon, higher gamma, and a strong true-clear
+  bonus with low direct progress pressure. Seed 80 should either produce the first nonzero
+  train/info/level_complete/from/0-2/count or show a materially different death/progress/reward
+  profile from the existing high-progress and baseline plateaus.
 parent_spec_slug: b143-b55lowprogress-complete300-l13-screen
-priority: 54
 seeds:
 - 80
 run_target: rtx4090
@@ -68,7 +74,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

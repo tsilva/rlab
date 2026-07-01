@@ -1,11 +1,18 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b157-lowlr-entropyburst-fastupdate-complete2000-l13-screen
-stage: screen
-hypothesis: B152 and B153 tested frequent PPO updates but still settled into zero-clear flat tails. If the remaining blocker is first-pit exploration rather than update cadence, the policy may need a much larger early entropy push while direct x-progress and death penalties stay small. This arm keeps fast updates, raises early entropy, removes explicit death penalty, keeps only a tiny clipped progress signal, and makes the first true clean clear dominate the return.
-expected_signal: Seed 80 should either produce nonzero train/info/level_complete/from/0-2/count earlier than prior fast-update arms, or show that entropy alone cannot discover safe Level1-3 jump timing under the current action/reward contract.
+hypothesis: >-
+  B152 and B153 tested frequent PPO updates but still settled into zero-clear flat tails. If the
+  remaining blocker is first-pit exploration rather than update cadence, the policy may need a much
+  larger early entropy push while direct x-progress and death penalties stay small. This arm keeps
+  fast updates, raises early entropy, removes explicit death penalty, keeps only a tiny clipped
+  progress signal, and makes the first true clean clear dominate the return. Seed 80 should either
+  produce nonzero train/info/level_complete/from/0-2/count earlier than prior fast-update arms, or
+  show that entropy alone cannot discover safe Level1-3 jump timing under the current action/reward
+  contract.
 parent_spec_slug: b152-lowlr-fastupdate-deathlight-complete1000-l13-screen
-priority: 43
 seeds:
 - 80
 run_target: rtx4090
@@ -70,7 +77,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

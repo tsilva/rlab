@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b240-b236resume-200k-ultrahold4250-l13-screen
-stage: screen
-hypothesis: B236 is the first B230-family run to exceed the previous 0.13 ceiling, reaching 0.14 near 198k continuation steps before decaying. B240 resumes from the B236 200k checkpoint and cuts PPO update pressure further to test whether the discovered bottleneck-crossing policy can be preserved for the remaining 200k steps under the 5M effective cap.
-expected_signal: Seed 80 should sustain or recover a train/info/level_complete/rate/min/last near B236's 0.14 high-water with a stronger final window. If it collapses immediately, the B236 200k checkpoint is already past the useful policy window or the hold update is insufficient.
+hypothesis: >-
+  B236 is the first B230-family run to exceed the previous 0.13 ceiling, reaching 0.14 near 198k
+  continuation steps before decaying. B240 resumes from the B236 200k checkpoint and cuts PPO update
+  pressure further to test whether the discovered bottleneck-crossing policy can be preserved for the
+  remaining 200k steps under the 5M effective cap. Seed 80 should sustain or recover a
+  train/info/level_complete/rate/min/last near B236's 0.14 high-water with a stronger final window. If
+  it collapses immediately, the B236 200k checkpoint is already past the useful policy window or the
+  hold update is insufficient.
 parent_spec_slug: b236-b191resume-200k-longcredit4250-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +82,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

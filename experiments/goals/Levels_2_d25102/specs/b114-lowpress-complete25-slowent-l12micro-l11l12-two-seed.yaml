@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b114-lowpress-complete25-slowent-l12micro-l11l12-two-seed
-stage: screen
-hypothesis: B91 proved the low-pressure completion-reward recipe can reach the strict threshold on one seed, but seed 207 and B110 both lose Level1-2 after early competence. B112 tests only a tiny Level1-2 sampling nudge. This arm keeps that small sampling nudge and B91's faster PPO pressure, while slowing entropy decay to preserve enough exploration for Level1-2 retention after 2-3M steps.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum seed 207 should exceed B91's 0.67 high-watermark with less Level1-2 collapse after the peak.
+hypothesis: >-
+  B91 proved the low-pressure completion-reward recipe can reach the strict threshold on one seed, but
+  seed 207 and B110 both lose Level1-2 after early competence. B112 tests only a tiny Level1-2
+  sampling nudge. This arm keeps that small sampling nudge and B91's faster PPO pressure, while
+  slowing entropy decay to preserve enough exploration for Level1-2 retention after 2-3M steps. Both
+  seeds should maximize peak train/info/level_complete/rate/min/last, or at minimum seed 207 should
+  exceed B91's 0.67 high-watermark with less Level1-2 collapse after the peak.
 parent_spec_slug: b112-lowpress-complete25-l12micro-l11l12-two-seed
-priority: 86
 seeds:
 - 206
 - 207
@@ -79,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,15 +1,17 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b257-softupdate-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b263-b257soft-l21-screen
-stage: screen
-hypothesis: The current best robustness transfer recipe, B257 soft-update with no completion bonus, can establish the first World 2-1 100/100 baseline because it preserves B55/B250 reward semantics while lowering PPO update pressure.
-expected_signal: Seed 90 should either reach strict 100/100 Level2-1 source-attempt completion before the 5M-step cap or establish whether this no-bonus score/progress recipe produces nonzero train/info/level_complete/from/1-0/count on World 2-1.
+hypothesis: >-
+  The current best robustness transfer recipe, B257 soft-update with no completion bonus, can
+  establish the first World 2-1 100/100 baseline because it preserves B55/B250 reward semantics while
+  lowering PPO update pressure. Seed 90 should either reach strict 100/100 Level2-1 source-attempt
+  completion before the 5M-step cap or establish whether this no-bonus score/progress recipe produces
+  nonzero train/info/level_complete/from/1-0/count on World 2-1.
 parent_spec_slug: b257-b250-softupdate-l14-screen
-priority: 80
 seeds:
 - 90
 run_target: rtx4090

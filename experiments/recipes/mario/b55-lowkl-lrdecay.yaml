@@ -31,7 +31,6 @@ environment:
     # Hard per-episode cap; prevents stuck episodes from consuming unbounded rollout time.
     max_episode_steps: 4500
     # X-position threshold for completion logic; 0 means rely on configured info events here.
-    completion_x_threshold: 0
     # Info-event extraction rules; converts emulator info changes into named events.
     info_events_json:
       # Life-loss event source; used to end attempts on death.

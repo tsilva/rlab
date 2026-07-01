@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b104-complete50-slowent-l12soft-l11l12-two-seed
-stage: screen
-hypothesis: If completion_reward=50 raises true clears but still collapses after a transient peak, adding the B97/B101 slower entropy schedule and soft Level1-2 sampling bias should preserve exploration and coverage long enough for both levels to cross the balanced threshold.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with higher entropy retained later than B103 and a larger sustained Level1-2 rolling clear rate after the first improvement phase.
+hypothesis: >-
+  If completion_reward=50 raises true clears but still collapses after a transient peak, adding the
+  B97/B101 slower entropy schedule and soft Level1-2 sampling bias should preserve exploration and
+  coverage long enough for both levels to cross the balanced threshold. Both seeds should maximize
+  peak train/info/level_complete/rate/min/last, with higher entropy retained later than B103 and a
+  larger sustained Level1-2 rolling clear rate after the first improvement phase.
 parent_spec_slug: b103-complete50-l12soft-l11l12-two-seed
-priority: 59
 seeds:
 - 206
 - 207
@@ -79,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

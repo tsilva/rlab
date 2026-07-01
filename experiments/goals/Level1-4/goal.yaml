@@ -1,20 +1,16 @@
 # Hydra composition list; imports the shared Mario goal contract first.
 defaults:
-# Shared Mario base; supplies common environment and success criteria.
-- ../_shared/mario@_global_
+# Shared Mario base; composes the reusable env and supplies success/eval defaults.
+- ../_mario@_global_
 # Apply this file after the base; lets Level1-4 define its state, evidence, and defaults.
 - _self_
 # Goal id; must match the directory so tools can address this contract unambiguously.
 goal_id: Level1-4
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES World 1-4 completion
-# Goal-specific environment overlay; only the source state differs from the shared Mario env.
-environment:
-  # Stable Retro state id; Level1-4 is the only source for this goal.
-  state: Level1-4
-# Goal-specific candidate ranking policy.
-selection_policy:
-  # Ordered ranking metrics; compare each metric in sequence until a candidate wins.
-  rank_order:
-  - max(train/info/level_complete/rate/min/last)
-  - max(train/info/level_complete/rate/mean/last)
+# Goal-specific train environment overlay; only the source state differs from the shared Mario env.
+train:
+  environment:
+    # Stable Retro state id; Level1-4 is the only source for this goal.
+    env_config:
+      state: Level1-4

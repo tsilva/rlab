@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b245-b191resume-200k-longcredit4250-repeat-l13-screen
-stage: screen
-hypothesis: B236 is a single-run high-water at 0.14, while nearby completion_reward values underperformed. B245 is an exact B236 repeat to test whether completion_reward=4250 plus long-credit PPO is repeatably better than the B214/B230 0.13 band.
-expected_signal: Seed 80 should reproduce a peak above 0.13 or at least match the B230/B214 0.12-0.13 band. If it collapses to ordinary B230 behavior, B236 was likely a high-variance sample rather than a stable recipe improvement.
+hypothesis: >-
+  B236 is a single-run high-water at 0.14, while nearby completion_reward values underperformed. B245
+  is an exact B236 repeat to test whether completion_reward=4250 plus long-credit PPO is repeatably
+  better than the B214/B230 0.13 band. Seed 80 should reproduce a peak above 0.13 or at least match
+  the B230/B214 0.12-0.13 band. If it collapses to ordinary B230 behavior, B236 was likely a
+  high-variance sample rather than a stable recipe improvement.
 parent_spec_slug: b236-b191resume-200k-longcredit4250-l13-screen
-priority: 38
 seeds:
 - 80
 run_target: rtx4090
@@ -75,7 +79,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

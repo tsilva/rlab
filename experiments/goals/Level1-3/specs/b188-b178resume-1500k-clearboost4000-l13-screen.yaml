@@ -1,11 +1,17 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b188-b178resume-1500k-clearboost4000-l13-screen
-stage: screen
-hypothesis: B186's completion_reward=4000 arm was the best B178 1.6M fork, finishing at a 0.04 rolling min rate with less value-loss stress than the 5000 clearboost arms, but it still did not match B178's observed 0.06 high-water window. B188 starts one checkpoint earlier at B178 1.5M with the same completion_reward=4000 conservative continuation, giving 500k steps under the effective 5M cap to test whether extra runway can improve consolidation.
-expected_signal: Seed 80 should beat B186's final 0.04 rolling min rate or sustain a higher clear density over the longer continuation. If it stays below B178's 0.06 high-water, the intermediate clear bonus is insufficient.
+hypothesis: >-
+  B186's completion_reward=4000 arm was the best B178 1.6M fork, finishing at a 0.04 rolling min rate
+  with less value-loss stress than the 5000 clearboost arms, but it still did not match B178's
+  observed 0.06 high-water window. B188 starts one checkpoint earlier at B178 1.5M with the same
+  completion_reward=4000 conservative continuation, giving 500k steps under the effective 5M cap to
+  test whether extra runway can improve consolidation. Seed 80 should beat B186's final 0.04 rolling
+  min rate or sustain a higher clear density over the longer continuation. If it stays below B178's
+  0.06 high-water, the intermediate clear bonus is insufficient.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 45
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

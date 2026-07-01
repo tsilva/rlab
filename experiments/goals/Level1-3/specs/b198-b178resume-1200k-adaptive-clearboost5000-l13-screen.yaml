@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b198-b178resume-1200k-adaptive-clearboost5000-l13-screen
-stage: screen
-hypothesis: B198 completes the 1.2M fork set by applying the adaptive completion_reward=5000 continuation from an earlier B178 checkpoint. It tests whether moderate LR/entropy adaptation helps only before the breakthrough policy has narrowed.
-expected_signal: Seed 80 should improve peak train/info/level_complete/rate/min/last over B195 or show that adaptive updates are consistently worse than conservative continuations.
+hypothesis: >-
+  B198 completes the 1.2M fork set by applying the adaptive completion_reward=5000 continuation from
+  an earlier B178 checkpoint. It tests whether moderate LR/entropy adaptation helps only before the
+  breakthrough policy has narrowed. Seed 80 should improve peak
+  train/info/level_complete/rate/min/last over B195 or show that adaptive updates are consistently
+  worse than conservative continuations.
 parent_spec_slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,0 +1,51 @@
+# Hydra composition list; imports the reusable Mario environment contract first.
+defaults:
+# Shared Stable Retro Turbo Super Mario Bros EnvConfig for training; goal overlays set the source state(s).
+- ../envs/stable-retro-turbo/super-mario-bros-nes-v0@train.environment.env_config
+# Same EnvConfig composed into eval, with eval-only overrides below.
+- ../envs/stable-retro-turbo/super-mario-bros-nes-v0@eval.environment.env_config
+# Apply this file after the env so goal-owned defaults can override env details deliberately.
+- _self_
+# Objective defines both the solved predicate and candidate comparison order.
+objective:
+  success:
+    # The metric itself owns the 100-attempt FIFO semantics.
+    metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    # >0.99 means the latest FIFO window is effectively full.
+    threshold: 0.99
+  # Ordered ranking signals; compare each metric in sequence until a candidate wins.
+  rank:
+  - max(train/info/level_complete/rate/min/last)
+  - max(train/info/level_complete/rate/mean/last)
+  - max(rollout/ep_rew_mean)
+# Training contract for this goal. The composed env supplies train.environment.
+train:
+  environment:
+    env_config:
+      # Training attempts terminate on death or level clear.
+      done_on:
+        life_loss:
+        - lives
+        - decrease
+        level_change:
+        - - levelHi
+          - levelLo
+        - change
+# Goal-owned checkpoint eval protocol.
+eval:
+  # Eval-time environment config; composed from the same reusable EnvConfig as training.
+  environment:
+    env_config:
+      episodes: 100
+      seed: 10007
+      num_envs: 20
+      max_steps: 4500
+      # Eval episodes stop on observed level changes, not life loss.
+      done_on:
+        level_change:
+        - - levelHi
+          - levelLo
+        - change
+  policy:
+    stochastic: true

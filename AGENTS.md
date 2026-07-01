@@ -16,6 +16,7 @@ Before choosing hardware, launching training, changing concurrency, or recommend
 ## Training Runs
 
 - Active research goal contracts live under goal-scoped folders in `experiments/goals/`. For current Mario Level1-1 work, read `experiments/goals/Level1-1/goal.yaml` before choosing specs, caps, metrics, or promotion criteria. Seed ranges are owned by `rlab.seeds`, not goal files.
+- Legacy goal-local `decisions/`, `recipes/`, `reports/`, and `best.yml` artifacts have been moved under `experiments/goals/.deprecated/` with the same goal-relative folder structure. That directory is gitignored and should be treated only as historical context about past experiments, not as active contract, recipe, or promotion state.
 - Keep generated artifacts out of source control; use `runs/`, `logs/`, and `models/`.
 - Log to W&B and upload checkpoint/final artifacts unless explicitly opted out.
 - Every training run needs a specific description via `--run-description`.

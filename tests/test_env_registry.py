@@ -29,12 +29,23 @@ def test_environment_identity_normalizes_bare_stable_retro_game() -> None:
     assert identity["env_id"] == "stable-retro-turbo:SuperMarioBros-Nes-v0"
 
 
+def test_rejects_unknown_provider_alias() -> None:
+    with pytest.raises(ValueError, match="unknown environment provider"):
+        environment_identity_from_train_config(
+            {
+                "env_provider": "stable-retro",
+                "game": "SuperMarioBros-Nes-v0",
+            }
+        )
+
+
 def test_train_config_materializes_provider_local_game_id() -> None:
     train_config = train_config_from_environment(
         {"env_id": "stable-retro-turbo:SuperMarioBros-Nes-v0"}
     )
 
     assert train_config["game"] == "SuperMarioBros-Nes-v0"
+    assert train_config["env_provider"] == "stable-retro-turbo"
 
 
 def test_flat_state_materializes_train_config_state() -> None:

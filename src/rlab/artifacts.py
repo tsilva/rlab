@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from rlab.env import EnvConfig, state_distribution_metadata
+from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.env_config import parse_event_names, parse_info_events
 from rlab.env_identity import environment_hash, environment_identity_from_train_config
 from rlab.metric_names import (
@@ -59,7 +60,6 @@ PLAYBACK_ENV_ARG_KEYS = {
     "score_progress_clipped": ("score_progress_clipped",),
     "no_progress_timeout_steps": ("no_progress_timeout_steps",),
     "no_progress_min_delta": ("no_progress_min_delta",),
-    "completion_x_threshold": ("completion_x_threshold",),
     "info_events_json": ("info_events",),
     "done_on_events": ("done_on_events",),
     "action_set": ("action_set",),
@@ -171,6 +171,10 @@ def build_model_metadata(
         "filename": model_path.name,
         "run_name": getattr(args, "run_name", ""),
         "run_description": getattr(args, "run_description", ""),
+        "goal_slug": getattr(args, "goal_slug", ""),
+        "spec_slug": getattr(args, "spec_slug", ""),
+        "spec_path": getattr(args, "spec_path", ""),
+        "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "run_target": getattr(args, "run_target", ""),
         "checkpoint_step": checkpoint_step(model_path),
@@ -256,6 +260,7 @@ def env_config_from_config_dict(
     config: dict[str, Any],
     fallback: EnvConfig | None = None,
 ) -> EnvConfig | None:
+    config = normalize_provider_env_config_aliases(config, label="env_config")
     field_names = set(EnvConfig.__dataclass_fields__) - {"info_events", "done_on_events"}
     config_values = asdict(fallback) if fallback is not None else {}
     matched = False
@@ -415,7 +420,6 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         "score_progress_clipped": config.score_progress_clipped,
         "no_progress_timeout_steps": config.no_progress_timeout_steps,
         "no_progress_min_delta": config.no_progress_min_delta,
-        "completion_x_threshold": config.completion_x_threshold,
         "info_events": config.info_events,
         "done_on_events": list(config.done_on_events),
         "action_set": config.action_set,
@@ -634,6 +638,10 @@ def log_wandb_model_artifact(
     metadata: dict[str, Any] = {
         "run_name": args.run_name,
         "run_description": args.run_description,
+        "goal_slug": getattr(args, "goal_slug", ""),
+        "spec_slug": getattr(args, "spec_slug", ""),
+        "spec_path": getattr(args, "spec_path", ""),
+        "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "kind": kind,
         "filename": model_path.name,
         "checkpoint_step": step,

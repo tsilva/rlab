@@ -1,11 +1,16 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b126-b46style-clipped-slowent-complete25-l13-screen
-stage: screen
-hypothesis: If Level1-3 needs broader policy movement than low-KL B55 but B120's raw-progress reward is too dominated by x-progress, a B46-style target_kl=0.20 arm with clipped progress, slow entropy, and completion_reward=25 should test update pressure without the same reward imbalance.
-expected_signal: Seed 80 should outperform B120 on first nonzero train/info/level_complete/from/0-2/count or peak train/info/level_complete/from/0-2/rate while keeping approximate KL and clip fraction in a usable range.
+hypothesis: >-
+  If Level1-3 needs broader policy movement than low-KL B55 but B120's raw-progress reward is too
+  dominated by x-progress, a B46-style target_kl=0.20 arm with clipped progress, slow entropy, and
+  completion_reward=25 should test update pressure without the same reward imbalance. Seed 80 should
+  outperform B120 on first nonzero train/info/level_complete/from/0-2/count or peak
+  train/info/level_complete/from/0-2/rate while keeping approximate KL and clip fraction in a usable
+  range.
 parent_spec_slug: b120-b46style-l13-screen
-priority: 74
 seeds:
 - 80
 run_target: rtx4090
@@ -69,7 +74,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

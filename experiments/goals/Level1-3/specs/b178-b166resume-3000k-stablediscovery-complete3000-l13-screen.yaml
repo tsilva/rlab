@@ -1,11 +1,19 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b178-b166resume-3000k-stablediscovery-complete3000-l13-screen
-stage: screen
-hypothesis: 'B166 is the strongest from-scratch Level1-3 discovery run so far: it first cleared at about 3.11M and reached 44 total clean clears by the 5M cap. B175/B176 lowered update pressure from scratch but stayed at zero clears well past B166''s first-clear timing, so the conservative-from-start recipe appears to suppress discovery. B178 resumes B166 at 3.0M, just before the first-clear burst, and uses moderate stabilization rather than ultra-low updates so the policy can still discover while reducing late collapse.'
-expected_signal: Seed 80 should reproduce B166's post-3M clear discovery and improve peak train/info/level_complete/rate/min/last or final clear density under gentler continuation. If it fails to discover clears, the continuation settings are too conservative or the B166 discovery is not recoverable from the 3.0M checkpoint.
+hypothesis: >-
+  B166 is the strongest from-scratch Level1-3 discovery run so far: it first cleared at about 3.11M
+  and reached 44 total clean clears by the 5M cap. B175/B176 lowered update pressure from scratch but
+  stayed at zero clears well past B166's first-clear timing, so the conservative-from-start recipe
+  appears to suppress discovery. B178 resumes B166 at 3.0M, just before the first-clear burst, and
+  uses moderate stabilization rather than ultra-low updates so the policy can still discover while
+  reducing late collapse. Seed 80 should reproduce B166's post-3M clear discovery and improve peak
+  train/info/level_complete/rate/min/last or final clear density under gentler continuation. If it
+  fails to discover clears, the continuation settings are too conservative or the B166 discovery is
+  not recoverable from the 3.0M checkpoint.
 parent_spec_slug: b166-lowlr-criticwide-survival-complete3000-l13-screen
-priority: 37
 seeds:
 - 80
 run_target: rtx4090
@@ -76,7 +84,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

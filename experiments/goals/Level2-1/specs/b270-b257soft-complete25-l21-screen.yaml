@@ -1,15 +1,18 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b257-softupdate-no-bonus@_global_
 - _self_
-goal: Level2-1
 slug: b270-b257soft-complete25-l21-screen
-stage: screen
-hypothesis: B264 showed that the B257-soft no-completion-bonus recipe can discover many clean Level2-1 clears, peaking at 0.31 rolling completion, but cannot retain strict reliability; adding a tiny completion_reward=25 keeps the same soft PPO update shape while giving clean clears a modest retention signal.
-expected_signal: Seed 95 should improve over B264 seed 91's 0.31 peak train/info/level_complete/rate/min/last without relying on reward hacking; strict 100/100 is still required before any confirmation or promotion.
+hypothesis: >-
+  B264 showed that the B257-soft no-completion-bonus recipe can discover many clean Level2-1 clears,
+  peaking at 0.31 rolling completion, but cannot retain strict reliability; adding a tiny
+  completion_reward=25 keeps the same soft PPO update shape while giving clean clears a modest
+  retention signal. Seed 95 should improve over B264 seed 91's 0.31 peak
+  train/info/level_complete/rate/min/last without relying on reward hacking; strict 100/100 is still
+  required before any confirmation or promotion.
 parent_spec_slug: b264-b263-b257soft-four-seed-l21-screen
-priority: 74
 seeds:
 - 95
 run_target: rtx4090

@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b88-l12bias-l11l12-two-seed
-stage: screen
-hypothesis: A modest Level1-2 sampling bias should raise the bottleneck level without erasing Level1-1 competence, since b86 mostly failed by Level1-2 underperformance.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 peak rates materially above b86 non-winner seeds.
+hypothesis: >-
+  A modest Level1-2 sampling bias should raise the bottleneck level without erasing Level1-1
+  competence, since b86 mostly failed by Level1-2 underperformance. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-2 peak rates materially above b86 non-winner
+  seeds.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 75
 seeds:
 - 200
 - 201
@@ -75,7 +78,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Levels_2_d25102
 slug: b94-lowpress-slowent-l11l12-two-seed
-stage: screen
-hypothesis: Combining the early-improving lower PPO update pressure from B87 with the slower entropy decay from B92 should improve peak reproducibility while reducing late collapse risk.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with balanced rates emerging no later than B86 and staying less brittle near the late-training peak.
+hypothesis: >-
+  Combining the early-improving lower PPO update pressure from B87 with the slower entropy decay from
+  B92 should improve peak reproducibility while reducing late collapse risk. Both seeds should
+  maximize peak train/info/level_complete/rate/min/last, with balanced rates emerging no later than
+  B86 and staying less brittle near the late-training peak.
 parent_spec_slug: b87-lowpress-l11l12-two-seed
-priority: 69
 seeds:
 - 202
 - 203
@@ -77,7 +80,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

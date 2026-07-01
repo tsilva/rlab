@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b120-b46style-l13-screen
-stage: screen
-hypothesis: A fixed-learning-rate, higher-target-KL single-level recipe from the historical Level1-2 teacher may explore Level1-3 faster than the lower-pressure B55 transfer if the new level needs broader policy movement.
-expected_signal: Seed 80 should reach a higher early train/info/level_complete/from/0-2/rate than the B117 low-pressure baseline or reveal whether Level1-3 is update-pressure limited.
+hypothesis: >-
+  A fixed-learning-rate, higher-target-KL single-level recipe from the historical Level1-2 teacher may
+  explore Level1-3 faster than the lower-pressure B55 transfer if the new level needs broader policy
+  movement. Seed 80 should reach a higher early train/info/level_complete/from/0-2/rate than the B117
+  low-pressure baseline or reveal whether Level1-3 is update-pressure limited.
 parent_spec_slug: b85-b46-post21-five-seed-l12-confirm
-priority: 79
 seeds:
 - 80
 run_target: rtx4090
@@ -66,7 +69,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

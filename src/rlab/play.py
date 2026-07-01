@@ -732,7 +732,7 @@ def main(argv: list[str] | None = None) -> None:
                 total_reward += float(reward)
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
                 final_info = dict(info)
-                completed = is_level_complete(final_info, max_x_pos, config.completion_x_threshold)
+                completed = is_level_complete(final_info)
                 frame = display_env.render()
                 overlay = [
                     f"r_step: {float(reward):.2f}",

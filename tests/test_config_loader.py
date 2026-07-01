@@ -86,6 +86,47 @@ items:
             with self.assertRaisesRegex(ValueError, "cyclic Hydra defaults chain"):
                 load_composed_mapping(first, cycle_label="test")
 
+    def test_load_composed_mapping_composes_fragment_into_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragment = root / "fragments" / "env.yaml"
+            goal = root / "goals" / "goal.yaml"
+            fragment.parent.mkdir()
+            goal.parent.mkdir()
+            fragment.write_text(
+                """
+env_provider: stable-retro-turbo
+game: SuperMarioBros-Nes-v0
+frame_skip: 4
+""",
+                encoding="utf-8",
+            )
+            goal.write_text(
+                """
+defaults:
+- ../fragments/env@train.environment.env_config
+- _self_
+train:
+  environment:
+    env_config:
+      state: Level1-1
+""",
+                encoding="utf-8",
+            )
+
+            composed = load_composed_mapping(goal, cycle_label="test")
+
+        self.assertEqual(
+            composed.document["train"]["environment"]["env_config"],
+            {
+                "env_provider": "stable-retro-turbo",
+                "game": "SuperMarioBros-Nes-v0",
+                "frame_skip": 4,
+                "state": "Level1-1",
+            },
+        )
+        self.assertEqual(composed.sources, (fragment.resolve(), goal.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()

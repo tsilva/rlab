@@ -1,11 +1,20 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b165-lowlr-criticwide-antistall-complete3000-l13-screen
-stage: screen
-hypothesis: B156 is the first active Level1-3 screen to produce real clean completions, reaching nonzero train/info/level_complete/from/0-2/count before the 5M cap. That points toward the critic-wide, low-LR, long-credit setup as useful delayed-jump credit support, but B156 still has only a low completion rate and includes a small survival incentive. This arm keeps the B156 critic-wide architecture and low-pressure PPO shape, removes the survival incentive, adds light anti-stall pressure, modestly raises early entropy, and makes true clean clears overwhelmingly dominant.
-expected_signal: Seed 80 should beat B156's early nonzero-clear signal by producing Level1-3 completions earlier or at a higher train/info/level_complete/from/0-2/rate. If it stays at zero while B156 keeps clearing, the survival/gentler entropy shape in B156 is likely carrying the useful behavior rather than the anti-stall clear bonus.
+hypothesis: >-
+  B156 is the first active Level1-3 screen to produce real clean completions, reaching nonzero
+  train/info/level_complete/from/0-2/count before the 5M cap. That points toward the critic-wide,
+  low-LR, long-credit setup as useful delayed-jump credit support, but B156 still has only a low
+  completion rate and includes a small survival incentive. This arm keeps the B156 critic-wide
+  architecture and low-pressure PPO shape, removes the survival incentive, adds light anti-stall
+  pressure, modestly raises early entropy, and makes true clean clears overwhelmingly dominant. Seed
+  80 should beat B156's early nonzero-clear signal by producing Level1-3 completions earlier or at a
+  higher train/info/level_complete/from/0-2/rate. If it stays at zero while B156 keeps clearing, the
+  survival/gentler entropy shape in B156 is likely carrying the useful behavior rather than the
+  anti-stall clear bonus.
 parent_spec_slug: b156-lowlr-criticwide-tinyprogress-complete1500-l13-screen
-priority: 35
 seeds:
 - 80
 run_target: rtx4090
@@ -74,7 +83,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

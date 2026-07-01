@@ -1,15 +1,16 @@
 schema_version: 1
 kind: train_experiment
 defaults:
+- ../goal@goal
 - ../../../recipes/mario/b87-mixed-l11l12-lowpress@_global_
 - _self_
-goal: Levels_2_d25102
 slug: b87-lowpress-l11l12-two-seed
-stage: screen
-hypothesis: Lower PPO update pressure should make the transient balanced Level1-1/Level1-2 behavior found by b86 more reproducible across seeds.
-expected_signal: Both seeds should maximize peak train/info/level_complete/rate/min/last, with Level1-2 no longer acting as a one-seed-only bottleneck.
+hypothesis: >-
+  Lower PPO update pressure should make the transient balanced Level1-1/Level1-2 behavior found by b86
+  more reproducible across seeds. Both seeds should maximize peak
+  train/info/level_complete/rate/min/last, with Level1-2 no longer acting as a one-seed-only
+  bottleneck.
 parent_spec_slug: b86-b74current-l11l12-latest-five-seed
-priority: 76
 seeds:
 - 198
 - 199

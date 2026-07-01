@@ -1,11 +1,15 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-3
 slug: b124-b55clipped-slowent-complete50-l13-screen
-stage: screen
-hypothesis: If Level1-3 needs longer exploration and a stronger true-clear signal than B121, clipped progress plus slower entropy decay and completion_reward=50 should keep policy search broad while making any clean clear much more reinforcing.
-expected_signal: Seed 80 should beat B121 on first nonzero train/info/level_complete/from/0-2/count or peak train/info/level_complete/from/0-2/rate while preserving controlled PPO update metrics.
+hypothesis: >-
+  If Level1-3 needs longer exploration and a stronger true-clear signal than B121, clipped progress
+  plus slower entropy decay and completion_reward=50 should keep policy search broad while making any
+  clean clear much more reinforcing. Seed 80 should beat B121 on first nonzero
+  train/info/level_complete/from/0-2/count or peak train/info/level_complete/from/0-2/rate while
+  preserving controlled PPO update metrics.
 parent_spec_slug: b121-b55slowent-complete25-l13-screen
-priority: 76
 seeds:
 - 80
 run_target: rtx4090
@@ -68,7 +72,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

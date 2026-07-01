@@ -1,11 +1,14 @@
+defaults:
+- ../goal@goal
+- _self_
 schema_version: 1
-goal: Level1-4
 slug: b260-b250-complete25-l14-screen
-stage: screen
-hypothesis: B251's completion_reward=100 appeared too disruptive, but B250 still needs better retention once a clean route is found. A tiny clean-completion bonus tests target-aligned reinforcement that should not swamp progress learning.
-expected_signal: Seed 90 should reach 100/100 and show completion reward share staying secondary to progress/score. If it does, confirm rather than trusting the easy seed alone.
+hypothesis: >-
+  B251's completion_reward=100 appeared too disruptive, but B250 still needs better retention once a
+  clean route is found. A tiny clean-completion bonus tests target-aligned reinforcement that should
+  not swamp progress learning. Seed 90 should reach 100/100 and show completion reward share staying
+  secondary to progress/score. If it does, confirm rather than trusting the easy seed alone.
 parent_spec_slug: b250-b55post21-l14-screen
-priority: 75
 seeds:
 - 90
 run_target: rtx4090
@@ -66,7 +69,6 @@ train_config:
   max_pool_frames: false
   hud_crop_top: 32
   max_episode_steps: 4500
-  completion_x_threshold: 0
   info_events_json:
     life_loss:
     - lives

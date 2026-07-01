@@ -42,7 +42,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"goal contract not found: {goal_path}")
 
     goal = load_goal_contract(goal_path)
-    rank_order = goal.get("selection_policy", {}).get("rank_order", [])
+    objective = goal.get("objective", {})
+    rank_order = objective.get("rank", []) if isinstance(objective, dict) else []
+    if not rank_order:
+        rank_order = goal.get("selection_policy", {}).get("rank_order", [])
     print(f"goal={goal.get('goal_id') or args.goal}")
     print(f"goal_path={goal_path}")
     print(f"candidate={args.candidate}")
