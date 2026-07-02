@@ -70,6 +70,9 @@ policies. `eval/info/level_complete/rate/min/last` and
 `eval/info/level_complete/rate/mean/last` mirror the train `info/level_complete` aggregate names
 for dashboards that compare train and eval surfaces side by side. The top-level eval metrics are
 pooled summaries and should be treated as secondary when per-start-state eval done metrics exist.
+After a checkpoint reaches the completion goal (`>=0.99` bottleneck completion), use
+`leader/checkpoint/steps_to_completion_goal` to choose the most sample-efficient solved run before
+falling back to reward.
 
 ### Mario Level1-1/Level1-2/Level1-3/Level1-4 Notes
 
@@ -338,7 +341,8 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
 | `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, using `eval/done/level_change/from_rate/min` when available. Used by `rlab leaders checkpoints`. |
 | `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, using `eval/done/level_change/from_rate/mean` when available. |
-| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, after min and mean per-start completion. |
+| `leader/checkpoint/steps_to_completion_goal` | Checkpoint timestep for the source run's best evaluated checkpoint once `leader/checkpoint/completion_rate >= 0.99`. Lower is better and is used after min and mean per-start completion, before eval reward, so solved runs are ranked by sample efficiency. |
+| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, after min and mean per-start completion and solved checkpoint timesteps. |
 | `leader/checkpoint/max_x_max` | Progress field for the source run's best evaluated checkpoint. Reported for inspection but not part of the current objective rank. |
 | `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
@@ -393,7 +397,7 @@ stored in eval history or stdout JSON; only the `eval/*` subset above is logged 
 | `death_x_histogram` | Local JSON histogram of death X positions. W&B receives `eval/death/x_hist` when death positions exist. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
 | `best_episode` | Best episode record ranked by completion first, then max X, then reward. |
-| `best_model_score` | In-training eval ranking tuple: completion metric, max X, reward mean. |
+| `best_model_score` | In-training eval ranking tuple: completion metric, solved checkpoint timesteps when available, reward mean. |
 | `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
 | `timesteps` | Training timestep attached by in-training eval summaries. |
 | `eval_n_envs` | Number of vector env slots used by artifact/local eval summaries. |

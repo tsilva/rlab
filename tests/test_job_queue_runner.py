@@ -221,6 +221,7 @@ class JobQueueTests(unittest.TestCase):
                 "leader/checkpoint/max_x_max": 4610,
                 "leader/checkpoint/reward_mean": 4200.0,
                 "leader/checkpoint/step": 4500000,
+                "leader/checkpoint/steps_to_completion_goal": 4500000,
                 "leader/checkpoint/artifact_ref": "entity/project/candidate:step-4500000",
                 "leader/checkpoint/eval_source": "post_train_inline",
             },
@@ -235,8 +236,72 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(leader.completion_rate, 1.0)
         self.assertEqual(leader.completion_rate_mean, 0.95)
         self.assertEqual(leader.checkpoint_step, 4500000)
+        self.assertEqual(leader.steps_to_completion_goal, 4500000)
         self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
         self.assertEqual(leader.eval_source, "post_train_inline")
+
+    def test_wandb_checkpoint_leaders_infer_solved_step_for_legacy_rows(self) -> None:
+        run = FakeWandbRun(
+            run_id="run-1",
+            name="candidate",
+            config={"goal_slug": "Level1-4", "spec_slug": "b257"},
+            summary={
+                "leader/checkpoint/completion_rate": 1.0,
+                "leader/checkpoint/completion_rate_mean": 1.0,
+                "leader/checkpoint/max_x_max": 4610,
+                "leader/checkpoint/reward_mean": 4200.0,
+                "leader/checkpoint/step": 3500000,
+                "leader/checkpoint/artifact_ref": "entity/project/candidate:step-3500000",
+            },
+        )
+
+        leader = wandb_leaders.checkpoint_leader(run)
+
+        self.assertIsNotNone(leader)
+        assert leader is not None
+        self.assertEqual(leader.steps_to_completion_goal, 3500000)
+
+    def test_wandb_checkpoint_leaders_rank_solved_runs_by_timesteps_before_reward(self) -> None:
+        slower_higher_reward = FakeWandbRun(
+            run_id="slow",
+            name="slow",
+            config={"goal_slug": "Level1-1", "spec_slug": "slow"},
+            summary={
+                "leader/checkpoint/completion_rate": 1.0,
+                "leader/checkpoint/completion_rate_mean": 1.0,
+                "leader/checkpoint/max_x_max": 4610,
+                "leader/checkpoint/reward_mean": 4200.0,
+                "leader/checkpoint/step": 5000000,
+                "leader/checkpoint/steps_to_completion_goal": 5000000,
+                "leader/checkpoint/artifact_ref": "entity/project/slow:step-5000000",
+            },
+        )
+        faster_lower_reward = FakeWandbRun(
+            run_id="fast",
+            name="fast",
+            config={"goal_slug": "Level1-1", "spec_slug": "fast"},
+            summary={
+                "leader/checkpoint/completion_rate": 1.0,
+                "leader/checkpoint/completion_rate_mean": 1.0,
+                "leader/checkpoint/max_x_max": 4610,
+                "leader/checkpoint/reward_mean": 100.0,
+                "leader/checkpoint/step": 3500000,
+                "leader/checkpoint/steps_to_completion_goal": 3500000,
+                "leader/checkpoint/artifact_ref": "entity/project/fast:step-3500000",
+            },
+        )
+        leaders = [
+            leader
+            for leader in (
+                wandb_leaders.checkpoint_leader(run)
+                for run in (slower_higher_reward, faster_lower_reward)
+            )
+            if leader is not None
+        ]
+
+        ranked = wandb_leaders.rank_checkpoint_leaders(leaders)
+
+        self.assertEqual(ranked[0].run_id, "fast")
 
     def test_wandb_checkpoint_leaders_accept_current_eval_artifact_key(self) -> None:
         run = FakeWandbRun(
@@ -1083,7 +1148,7 @@ train_config:
                 ]
             )
 
-    def test_eval_selection_score_prefers_min_completion_then_mean_then_reward(self) -> None:
+    def test_eval_selection_score_prefers_min_completion_then_mean_then_solved_step(self) -> None:
         weak_bottleneck = {
             "completion_rate": 1.0,
             "eval/done/level_change/from_rate/min": 0.25,
@@ -1113,6 +1178,24 @@ train_config:
         self.assertGreater(
             job_queue.eval_selection_score(same_min_better_mean),
             job_queue.eval_selection_score(balanced),
+        )
+        slower_higher_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 5000000,
+            "reward_mean": 900.0,
+        }
+        faster_lower_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 3500000,
+            "reward_mean": 10.0,
+        }
+        self.assertGreater(
+            job_queue.eval_selection_score(faster_lower_reward),
+            job_queue.eval_selection_score(slower_higher_reward),
         )
 
     def test_enqueue_train_jobs_from_spec_derives_group_run_names(self) -> None:
@@ -1534,11 +1617,11 @@ class TrainRunnerTests(unittest.TestCase):
                 "wandb_tags": ["screen"],
             },
             "goal_slug": "Level1-1",
-            "spec_slug": "b55-lowkl-lrdecay-post21-revalidate",
-            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/b55-lowkl-lrdecay-post21-revalidate.yaml",
-            "run_name": "b55_seed23",
+            "spec_slug": "lowkl-lrdecay",
+            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/lowkl-lrdecay.yaml",
+            "run_name": "lowkl_seed23",
             "run_description": "Codex-authored smoke job.",
-            "wandb_group": "b55",
+            "wandb_group": "level1-1-lowkl-lrdecay",
             "wandb_tags": ["fallback"],
             "runtime_image_ref": RUNTIME_IMAGE_REF,
             "run_target": "rtx4090",
@@ -1552,18 +1635,18 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,goal:Level1-1,spec:b55-lowkl-lrdecay-post21-revalidate,level:Level1-1",
+            "screen,goal:Level1-1,spec:lowkl-lrdecay,level:Level1-1",
         )
         self.assertEqual(written_config["goal_slug"], "Level1-1")
-        self.assertEqual(written_config["spec_slug"], "b55-lowkl-lrdecay-post21-revalidate")
+        self.assertEqual(written_config["spec_slug"], "lowkl-lrdecay")
         self.assertEqual(
             written_config["spec_path"],
-            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/b55-lowkl-lrdecay-post21-revalidate.yaml",
+            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/lowkl-lrdecay.yaml",
         )
         self.assertEqual(written_config["queue_train_job_id"], 12)
-        self.assertEqual(written_config["run_name"], "b55_seed23")
+        self.assertEqual(written_config["run_name"], "lowkl_seed23")
         self.assertEqual(written_config["state"], "Level1-1")
-        self.assertEqual(written_config["wandb_group"], "b55")
+        self.assertEqual(written_config["wandb_group"], "level1-1-lowkl-lrdecay")
         self.assertEqual(written_config["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertEqual(written_config["run_target"], "rtx4090")
         self.assertTrue(written_config["wandb"])

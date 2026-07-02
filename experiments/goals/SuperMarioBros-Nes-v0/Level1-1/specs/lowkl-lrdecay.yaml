@@ -1,17 +1,18 @@
 defaults:
 - ../_goal@goal
 - _self_
-slug: b55-lowkl-lrdecay-post21-revalidate
+slug: lowkl-lrdecay
 hypothesis: >-
-  The B55 low-KL late-decay recipe remains a strong Level1-1 policy-search baseline under the active
-  post21 runtime. Confirmation runs should either reach 100/100 terminal level-change windows or
-  produce stronger eval-ranked checkpoints than the current incumbent evidence.
-wandb_group: b82-l11-b55-post21-revalidate
-run_name_label: b55reval
+  The low-KL late-decay recipe is the stable Level1-1 policy-search baseline. Across-seed validation
+  should use the goal contract's clear-rate gate first, then out-of-process eval ranking for
+  checkpoint promotion.
+wandb_group: level1-1-lowkl-lrdecay
+run_name_label: lowkl
 wandb_tags:
-- b55
-- confirm
-run_description_template: Post21 revalidation of the B55 low-KL late-decay Level1-1 recipe, confirm seed {seed}.
+- lowkl
+- lrdecay
+- stable
+run_description_template: Stable low-KL late-decay Level1-1 recipe, seed {seed}.
 train:
   policy:
     # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.

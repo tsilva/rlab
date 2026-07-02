@@ -6,7 +6,7 @@ target: rtx4090
 host: beast-3
 workers: 5
 env_threads: 4
-spec_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/b55-lowkl-lrdecay-post21-revalidate.yaml
+spec_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/lowkl-lrdecay.yaml
 runtime_image_ref_file: rlab-train-image.json
 gates:
   expected_aggregate_wall_fps: 6200

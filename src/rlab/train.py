@@ -66,6 +66,16 @@ from rlab.metric_names import (
     EVAL_REWARD_MEAN,
     EVAL_REWARD_STD,
     GLOBAL_STEP,
+    LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_COMPLETION_RATE,
+    LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,
+    LEADER_CHECKPOINT_EVAL_SOURCE,
+    LEADER_CHECKPOINT_LOCAL_PATH,
+    LEADER_CHECKPOINT_MAX_X_MAX,
+    LEADER_CHECKPOINT_REWARD_MEAN,
+    LEADER_CHECKPOINT_STEP,
+    LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
+    LEADER_CHECKPOINT_UPDATED_AT,
 )
 from rlab.schedules import (
     EntropyCoefficientScheduleCallback,
@@ -178,7 +188,10 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     return str(checkpoint_path)
 
 
-def eval_score(metrics: dict[str, object]) -> tuple[float, float, float]:
+COMPLETION_GOAL_RATE = 0.99
+
+
+def eval_score(metrics: dict[str, object]) -> tuple[float, float, float, float]:
     def metric_float(key: str, default: float = float("-inf")) -> float:
         value = metrics.get(key)
         if value is None:
@@ -196,7 +209,13 @@ def eval_score(metrics: dict[str, object]) -> tuple[float, float, float]:
         "eval/done/level_change/from_rate/mean",
         metric_float("eval/done/level_change/rate", metric_float("completion_rate")),
     )
-    return (completion_min, completion_mean, metric_float("reward_mean"))
+    checkpoint_step_value = metric_float("checkpoint_step")
+    steps_to_goal = (
+        checkpoint_step_value
+        if completion_min >= COMPLETION_GOAL_RATE and checkpoint_step_value > float("-inf")
+        else float("inf")
+    )
+    return (completion_min, completion_mean, -steps_to_goal, metric_float("reward_mean"))
 
 
 def update_best_checkpoint_summary(
@@ -223,23 +242,38 @@ def update_best_checkpoint_summary(
             return float("-inf")
 
     score = eval_score(metrics)
+    previous_completion = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE)
+    previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
+    previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
+    if previous_steps_to_goal == float("-inf") and previous_completion >= COMPLETION_GOAL_RATE:
+        previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEP)
+    previous_step_score = (
+        -previous_steps_to_goal
+        if previous_steps_to_goal > float("-inf")
+        else float("-inf")
+    )
     previous = (
-        summary_float("leader/checkpoint/completion_rate"),
-        summary_float("leader/checkpoint/completion_rate_mean"),
-        summary_float("leader/checkpoint/reward_mean"),
+        previous_completion,
+        previous_completion_mean,
+        previous_step_score,
+        summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
     )
     if score < previous:
         return
 
-    wandb_run.summary["leader/checkpoint/completion_rate"] = score[0]
-    wandb_run.summary["leader/checkpoint/completion_rate_mean"] = score[1]
-    wandb_run.summary["leader/checkpoint/reward_mean"] = score[2]
-    wandb_run.summary["leader/checkpoint/max_x_max"] = metrics.get("max_x_max")
-    wandb_run.summary["leader/checkpoint/step"] = checkpoint_step_value
-    wandb_run.summary["leader/checkpoint/artifact_ref"] = artifact_ref
-    wandb_run.summary["leader/checkpoint/local_path"] = str(checkpoint_path)
-    wandb_run.summary["leader/checkpoint/eval_source"] = "post_train_inline"
-    wandb_run.summary["leader/checkpoint/updated_at"] = time.strftime(
+    wandb_run.summary[LEADER_CHECKPOINT_COMPLETION_RATE] = score[0]
+    wandb_run.summary[LEADER_CHECKPOINT_COMPLETION_RATE_MEAN] = score[1]
+    wandb_run.summary[LEADER_CHECKPOINT_REWARD_MEAN] = score[3]
+    wandb_run.summary[LEADER_CHECKPOINT_MAX_X_MAX] = metrics.get("max_x_max")
+    wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
+    if score[2] > float("-inf"):
+        wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL] = checkpoint_step_value
+    elif hasattr(wandb_run.summary, "pop"):
+        wandb_run.summary.pop(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL, None)
+    wandb_run.summary[LEADER_CHECKPOINT_ARTIFACT_REF] = artifact_ref
+    wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
+    wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = "post_train_inline"
+    wandb_run.summary[LEADER_CHECKPOINT_UPDATED_AT] = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ",
         time.gmtime(),
     )
@@ -356,6 +390,7 @@ def evaluate_checkpoints_after_training(
             "checkpoint_path": str(checkpoint_path),
             "completion_min": eval_score(metrics)[0],
             "completion_mean": eval_score(metrics)[1],
+            "steps_to_completion_goal": step if eval_score(metrics)[2] > float("-inf") else None,
             "reward_mean": float(metrics["reward_mean"]),
         }
         results.append(summary)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,7 @@ from rlab.env import (
     make_retro_env,
     make_rendered_replay_env,
     make_training_vec_env,
+    make_visual_replay_env,
     make_vec_envs,
     native_vec_env_supports_done_on,
     needs_vec_transpose_image,
@@ -79,8 +81,10 @@ from rlab.model_sources import (
     single_model_artifact_ref,
 )
 from rlab.play import build_parser as build_play_parser
+from rlab.play import display_replay_config
 from rlab.play import model_observation
 from rlab.play import playback_should_end_episode
+from rlab.play import resolved_play_launch_lines
 from rlab.play import task_conditioning_change_message
 from rlab.play import task_conditioning_start_message
 from rlab.eval import build_parser as build_eval_parser
@@ -97,6 +101,7 @@ from rlab.train import (
     Sb3HumanOutputFormatCallback,
     disable_sb3_human_output_truncation,
     log_checkpoint_eval_metrics,
+    update_best_checkpoint_summary,
 )
 from rlab.wandb_artifacts import (
     artifact_download_dir,
@@ -104,6 +109,13 @@ from rlab.wandb_artifacts import (
     safe_artifact_stem,
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
 
 
 class EnvConfigAliasTests(unittest.TestCase):
@@ -758,6 +770,31 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(make_provider_env.call_args.kwargs["render_mode"], "rgb_array")
         wrap_retro_env.assert_called_once_with(sentinel, config=resolve_env_config(config), seed=7)
 
+    def test_visual_replay_env_avoids_preprocess_wrapper(self) -> None:
+        class FakeSpace:
+            def seed(self, seed):
+                self.seed_value = seed
+
+        class FakeEnv:
+            action_space = FakeSpace()
+            observation_space = FakeSpace()
+
+        sentinel = FakeEnv()
+        config = EnvConfig(game="SuperMarioBros-Nes-v0", action_set="native")
+
+        with (
+            patch("rlab.env.make_provider_env", return_value=sentinel) as make_provider_env,
+            patch("rlab.env.FrameSkip", side_effect=lambda env, skip, max_pool: env) as frame_skip,
+            patch("rlab.env.RetroPreprocess") as retro_preprocess,
+        ):
+            env = make_visual_replay_env(config=config, seed=7)
+
+        self.assertIs(env, sentinel)
+        make_provider_env.assert_called_once()
+        self.assertEqual(make_provider_env.call_args.kwargs["render_mode"], "rgb_array")
+        frame_skip.assert_called_once()
+        retro_preprocess.assert_not_called()
+
     def test_make_vec_envs_uses_provider_factory(self) -> None:
         class FakeNative:
             observation_space = gym.spaces.Box(
@@ -820,6 +857,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             frame_skip=4,
             max_pool_frames=False,
             sticky_action_prob=0.0,
+            env_threads=3,
         )
         with (
             patch(
@@ -837,6 +875,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(FakeSuperMarioNative.calls[0][0], "SuperMarioBros-Nes-v0")
         native_kwargs = FakeSuperMarioNative.calls[0][1]
         self.assertEqual(native_kwargs["num_envs"], 2)
+        self.assertEqual(native_kwargs["num_threads"], 3)
         self.assertEqual(native_kwargs["frame_skip"], 4)
         self.assertEqual(native_kwargs["obs_resize"], (84, 84))
         self.assertEqual(native_kwargs["maxpool_last_two"], False)
@@ -2519,6 +2558,179 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(config.done_on_events, ("level_change",))
 
+    def test_model_metadata_defaults_apply_env_provider_and_threads_to_playback(self) -> None:
+        parser = build_play_parser()
+        parser_defaults = vars(parser.parse_args([]))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                    env_threads=4,
+                ),
+                kind="checkpoint",
+            )
+
+            argv = ["--model", str(model_path)]
+            args = parser.parse_args(argv)
+            explicit_dests = explicit_arg_dests(parser, argv)
+
+            self.assertTrue(
+                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
+            )
+            self.assertEqual(args.env_provider, "supermariobrosnes-turbo")
+            self.assertEqual(args.env_threads, 4)
+            config = env_config_from_args(
+                args,
+                max_episode_steps_attr="max_steps",
+                include_states=True,
+                include_env_threads=True,
+            )
+            self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
+            self.assertEqual(config.env_threads, 4)
+
+    def test_explicit_env_provider_overrides_model_metadata(self) -> None:
+        parser = build_play_parser()
+        parser_defaults = vars(parser.parse_args([]))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                    env_threads=4,
+                ),
+                kind="checkpoint",
+            )
+
+            argv = [
+                "--model",
+                str(model_path),
+                "--env-provider",
+                "stable-retro-turbo",
+                "--env-threads",
+                "2",
+            ]
+            args = parser.parse_args(argv)
+            explicit_dests = explicit_arg_dests(parser, argv)
+
+            self.assertTrue(
+                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
+            )
+            self.assertEqual(args.env_provider, "stable-retro-turbo")
+            self.assertEqual(args.env_threads, 2)
+
+    def test_eval_model_metadata_defaults_apply_env_provider_and_threads(self) -> None:
+        parser = build_eval_parser()
+        parser_defaults = vars(parser.parse_args([]))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                    env_threads=4,
+                ),
+                kind="checkpoint",
+            )
+
+            argv = ["--model", str(model_path)]
+            args = parser.parse_args(argv)
+            explicit_dests = explicit_arg_dests(parser, argv)
+
+            self.assertTrue(
+                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
+            )
+            config = env_config_from_args(
+                args,
+                max_episode_steps_attr="max_steps",
+                include_states=True,
+                include_env_threads=True,
+            )
+            self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
+            self.assertEqual(config.env_threads, 4)
+
+    def test_non_stable_playback_uses_stable_retro_for_display_only(self) -> None:
+        policy_config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+            state="Level1-1",
+            env_threads=4,
+        )
+
+        config = display_replay_config(policy_config)
+
+        self.assertEqual(config.env_provider, "stable-retro-turbo")
+        self.assertEqual(config.env_threads, 0)
+
+    def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
+        args = argparse.Namespace(
+            artifact_ref="run",
+            model="model.zip",
+            env_provider="supermariobrosnes-turbo",
+            env_threads=4,
+            policy_env="fast",
+            device="cpu",
+            deterministic=False,
+            seed=10000,
+            episodes=1,
+            max_steps=1200,
+        )
+        policy_config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+            state="Level1-1",
+            env_threads=4,
+            frame_skip=4,
+            max_pool_frames=False,
+            hud_crop_top=32,
+            reward_mode="score",
+            action_set="simple",
+            env_wrappers=({"id": "SuperMarioBrosNesProgressInfoWrapper"},),
+        )
+        display_config = display_replay_config(policy_config)
+
+        lines = resolved_play_launch_lines(
+            args,
+            argv=["b82-b55reval-s-20260702T174216Z"],
+            artifact_ref="entity/project/run-checkpoint:latest",
+            policy_config=policy_config,
+            display_config=display_config,
+        )
+        colored_text = "\n".join(lines)
+        text = strip_ansi(colored_text)
+
+        self.assertIn("▶ resolved play launch", text)
+        self.assertIn("◇ artifact:", text)
+        self.assertIn("● policy/eval env:", text)
+        self.assertIn("○ viewer env:", text)
+        self.assertIn("▤ preprocessing:", text)
+        self.assertIn("⚙ action/reward:", text)
+        self.assertIn("artifact: entity/project/run-checkpoint:latest", text)
+        self.assertIn("model: model.zip", text)
+        self.assertIn("policy/eval env: supermariobrosnes-turbo", text)
+        self.assertIn("viewer env: stable-retro-turbo", text)
+        self.assertIn("visual_only=True", text)
+        self.assertIn("source of truth:", text)
+        self.assertIn("threads=4", text)
+        self.assertIn("frame_skip=4", text)
+        self.assertIn("max_pool=False", text)
+        self.assertIn("action_set=simple", text)
+        self.assertIn("wrappers: SuperMarioBrosNesProgressInfoWrapper", text)
+
     def test_model_observation_wraps_task_conditioned_policy_input(self) -> None:
         class FakeModel:
             observation_space = gym.spaces.Dict(
@@ -2860,11 +3072,33 @@ class EvalMetricTests(unittest.TestCase):
             "completion_rate": 0.95,
             "eval/done/level_change/from_rate/min": 0.80,
             "eval/done/level_change/from_rate/mean": 0.90,
+            "checkpoint_step": 5000000,
             "max_x_max": 3200,
             "reward_mean": 1200.0,
         }
 
-        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, 1200.0))
+        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, float("-inf"), 1200.0))
+
+    def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
+        slower_higher_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 5000000,
+            "reward_mean": 1200.0,
+        }
+        faster_lower_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 3500000,
+            "reward_mean": 900.0,
+        }
+
+        self.assertGreater(
+            eval_checkpoint_score(faster_lower_reward),
+            eval_checkpoint_score(slower_higher_reward),
+        )
 
     def test_artifact_eval_wandb_log_does_not_force_retroactive_history_step(self) -> None:
         class FakeRun:
@@ -2960,6 +3194,85 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(run.summary["leader/checkpoint/completion_rate"], 0.8)
         self.assertEqual(run.summary["leader/checkpoint/completion_rate_mean"], 0.9)
         self.assertEqual(run.summary["leader/checkpoint/reward_mean"], 10.0)
+        self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
+
+    def test_post_train_checkpoint_summary_tracks_steps_to_completion_goal(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.payload: dict[str, object] | None = None
+                self.kwargs: dict[str, object] | None = None
+                self.summary: dict[str, object] = {}
+
+            def log(self, payload: dict[str, object], **kwargs: object) -> None:
+                self.payload = payload
+                self.kwargs = kwargs
+
+        run = FakeRun()
+        metrics = {
+            "checkpoint_step": 3500000,
+            "checkpoint_artifact": "entity/project/run-checkpoint:step-3500000",
+            "reward_mean": 10.0,
+            "reward_std": 1.0,
+            "reward_max": 12.0,
+            "max_x_mean": 300.0,
+            "max_x_max": 400.0,
+            "max_level_x_mean": 300.0,
+            "max_level_x_max": 400.0,
+            "death_count": 1,
+            "death_rate": 0.1,
+            "best_episode": {"reward": 12.0, "max_x_pos": 400.0},
+            "eval/done/all": 10,
+            "eval/done/level_change": 10,
+            "eval/done/level_change/rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "eval/reward/mean": 10.0,
+        }
+
+        log_checkpoint_eval_metrics(
+            wandb_run=run,
+            args=argparse.Namespace(hud_crop_top=32),
+            metrics=metrics,
+            checkpoint_path=Path("/tmp/model_3500000_steps.zip"),
+            checkpoint_step_value=3500000,
+            artifact_ref="entity/project/run-checkpoint:step-3500000",
+        )
+
+        self.assertEqual(run.summary["leader/checkpoint/steps_to_completion_goal"], 3500000)
+
+    def test_checkpoint_summary_uses_legacy_step_as_previous_steps_to_goal(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.summary: dict[str, object] = {
+                    "leader/checkpoint/completion_rate": 1.0,
+                    "leader/checkpoint/completion_rate_mean": 1.0,
+                    "leader/checkpoint/reward_mean": 10.0,
+                    "leader/checkpoint/step": 3500000,
+                    "leader/checkpoint/artifact_ref": "entity/project/run-checkpoint:step-3500000",
+                }
+
+        run = FakeRun()
+        metrics = {
+            "checkpoint_step": 5000000,
+            "reward_mean": 999.0,
+            "max_x_max": 400.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+        }
+
+        update_best_checkpoint_summary(
+            run,
+            metrics=metrics,
+            checkpoint_path=Path("/tmp/model_5000000_steps.zip"),
+            checkpoint_step_value=5000000,
+            artifact_ref="entity/project/run-checkpoint:step-5000000",
+        )
+
+        self.assertEqual(run.summary["leader/checkpoint/step"], 3500000)
+        self.assertEqual(
+            run.summary["leader/checkpoint/artifact_ref"],
+            "entity/project/run-checkpoint:step-3500000",
+        )
 
     def test_checkpoint_eval_preserves_artifact_states_in_eval_config(self) -> None:
         parser = build_eval_parser()

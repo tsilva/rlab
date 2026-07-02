@@ -109,7 +109,7 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
+Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
 
 To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
 single-row limit:

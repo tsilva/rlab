@@ -63,6 +63,17 @@ EVAL_CHECKPOINT_STEP = "eval/checkpoint/step"
 EVAL_CHECKPOINT_ARTIFACT = "eval/checkpoint/artifact"
 EVAL_CONFIG_HUD_CROP_TOP = "eval/config/hud_crop_top"
 
+LEADER_CHECKPOINT_COMPLETION_RATE = "leader/checkpoint/completion_rate"
+LEADER_CHECKPOINT_COMPLETION_RATE_MEAN = "leader/checkpoint/completion_rate_mean"
+LEADER_CHECKPOINT_REWARD_MEAN = "leader/checkpoint/reward_mean"
+LEADER_CHECKPOINT_MAX_X_MAX = "leader/checkpoint/max_x_max"
+LEADER_CHECKPOINT_STEP = "leader/checkpoint/step"
+LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL = "leader/checkpoint/steps_to_completion_goal"
+LEADER_CHECKPOINT_ARTIFACT_REF = "leader/checkpoint/artifact_ref"
+LEADER_CHECKPOINT_LOCAL_PATH = "leader/checkpoint/local_path"
+LEADER_CHECKPOINT_EVAL_SOURCE = "leader/checkpoint/eval_source"
+LEADER_CHECKPOINT_UPDATED_AT = "leader/checkpoint/updated_at"
+
 
 def metric_path_segment(value: object) -> str:
     segment = str(value).strip()

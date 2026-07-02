@@ -3,19 +3,25 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import argparse
+import contextlib
 import os
 import sys
 import time
 from collections import deque
+from dataclasses import replace
 from itertools import count
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import numpy as np
-import pygame
 import torch
-from stable_baselines3 import PPO
+
+if TYPE_CHECKING:
+    from stable_baselines3 import PPO
 
 from rlab.artifacts import explicit_arg_dests
 from rlab.cli_args import add_env_config_args
@@ -25,11 +31,13 @@ from rlab.env import (
     info_value_from_state_name,
     make_eval_vec_env,
     make_rendered_replay_env,
+    make_visual_replay_env,
     resolve_env_config,
     state_name_candidates_from_level_id,
     task_conditioning_info_values,
 )
 from rlab.env_config import env_config_from_args
+from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (
@@ -39,6 +47,64 @@ from rlab.model_sources import (
     single_model_artifact_ref,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
+
+
+ANSI_RESET = "\033[0m"
+ANSI_STYLES = {
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "cyan": "\033[36m",
+    "green": "\033[32m",
+    "blue": "\033[34m",
+    "yellow": "\033[33m",
+    "magenta": "\033[35m",
+}
+
+
+def _color(text: str, style: str) -> str:
+    if os.environ.get("NO_COLOR") or os.environ.get("RLAB_NO_COLOR"):
+        return text
+    return f"{ANSI_STYLES[style]}{text}{ANSI_RESET}"
+
+
+def _summary_line(icon: str, label: str, value: str, style: str) -> str:
+    return f"  {_color(icon, style)} {_color(label + ':', 'dim')} {value}"
+
+
+def _format_sequence(value) -> str:
+    if not value:
+        return "-"
+    if isinstance(value, str):
+        return value
+    return ",".join(str(item) for item in value)
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr():
+    """Hide noisy native-library import chatter while keeping normal stderr intact."""
+
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        yield
+        return
+    saved_stderr_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+        yield
+    finally:
+        os.dup2(saved_stderr_fd, stderr_fd)
+        os.close(saved_stderr_fd)
+
+
+def import_pygame() -> ModuleType:
+    if "pygame" in sys.modules:
+        return sys.modules["pygame"]
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    with _suppress_native_stderr():
+        import pygame
+    return pygame
 
 
 def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
@@ -262,25 +328,27 @@ class PygameViewer:
     ):
         if scale < 1:
             raise ValueError("--scale must be >= 1")
+        self.pygame = import_pygame()
         height, width, _channels = frame_shape
         self.size = (width * scale, height * scale)
         if position is not None:
             os.environ["SDL_VIDEO_WINDOW_POS"] = f"{position[0]},{position[1]}"
-        pygame.init()
-        pygame.display.set_caption("rlab")
-        self.screen = pygame.display.set_mode(self.size)
-        self.font = pygame.font.Font(None, max(16, 5 * scale))
+        with _suppress_native_stderr():
+            self.pygame.init()
+            self.pygame.display.set_caption("rlab")
+            self.screen = self.pygame.display.set_mode(self.size)
+            self.font = self.pygame.font.Font(None, max(16, 5 * scale))
 
     def show(self, frame: np.ndarray, overlay: list[str] | None = None) -> bool:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+        for event in self.pygame.event.get():
+            if event.type == self.pygame.QUIT:
                 return False
-        surface = pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
-        surface = pygame.transform.scale(surface, self.size)
+        surface = self.pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
+        surface = self.pygame.transform.scale(surface, self.size)
         self.screen.blit(surface, (0, 0))
         if overlay:
             self.draw_overlay(overlay)
-        pygame.display.flip()
+        self.pygame.display.flip()
         return True
 
     def draw_overlay(self, lines: list[str]) -> None:
@@ -288,7 +356,7 @@ class PygameViewer:
         line_height = self.font.get_height() + 2
         width = max(self.font.size(line)[0] for line in lines) + padding * 2
         height = line_height * len(lines) + padding * 2
-        background = pygame.Surface((width, height), pygame.SRCALPHA)
+        background = self.pygame.Surface((width, height), self.pygame.SRCALPHA)
         background.fill((0, 0, 0, 160))
         self.screen.blit(background, (0, 0))
         for idx, line in enumerate(lines):
@@ -296,7 +364,7 @@ class PygameViewer:
             self.screen.blit(text, (padding, padding + idx * line_height))
 
     def close(self) -> None:
-        pygame.quit()
+        self.pygame.quit()
 
 
 class OptionsPanel:
@@ -472,6 +540,106 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def display_replay_config(config):
+    if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return config
+    return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id, env_threads=0)
+
+
+def resolved_play_launch_lines(
+    args: argparse.Namespace,
+    *,
+    argv: list[str],
+    artifact_ref: str | None,
+    policy_config,
+    display_config,
+) -> list[str]:
+    wrapper_ids = [
+        str(spec.get("id", ""))
+        for spec in policy_config.env_wrappers
+        if isinstance(spec, dict) and spec.get("id")
+    ]
+    states = policy_config.states or ((policy_config.state,) if policy_config.state else ())
+    return [
+        _color("▶ resolved play launch", "bold"),
+        _summary_line("›", "argv", " ".join(argv) if argv else "-", "cyan"),
+        _summary_line("◇", "artifact", artifact_ref or "-", "magenta"),
+        _summary_line("▣", "model", args.model, "magenta"),
+        _summary_line(
+            "●",
+            "policy/eval env",
+            f"{policy_config.env_provider} game={policy_config.game} "
+            f"state={policy_config.state or '-'} states={_format_sequence(states)} "
+            f"threads={policy_config.env_threads}",
+            "green",
+        ),
+        _summary_line(
+            "○",
+            "viewer env",
+            f"{display_config.env_provider} game={display_config.game} "
+            f"state={display_config.state or '-'} visual_only=True",
+            "blue",
+        ),
+        _summary_line(
+            "▶",
+            "policy",
+            f"policy_env={args.policy_env} device={args.device} "
+            f"stochastic={not args.deterministic} seed={args.seed} "
+            f"episodes={args.episodes} max_steps={args.max_steps}",
+            "green",
+        ),
+        _summary_line(
+            "▤",
+            "preprocessing",
+            f"frame_skip={policy_config.frame_skip} max_pool={policy_config.max_pool_frames} "
+            f"sticky={policy_config.sticky_action_prob} "
+            f"obs={policy_config.observation_size} crop_top={policy_config.hud_crop_top} "
+            f"resize={policy_config.obs_resize_algorithm}",
+            "yellow",
+        ),
+        _summary_line(
+            "⚙",
+            "action/reward",
+            f"action_set={policy_config.action_set} reward_mode={policy_config.reward_mode} "
+            f"reward_scale={policy_config.reward_scale} clip_rewards={policy_config.clip_rewards}",
+            "yellow",
+        ),
+        _summary_line(
+            "◆",
+            "task/events",
+            f"task_conditioning={policy_config.task_conditioning} "
+            f"task_info_vars={_format_sequence(policy_config.task_conditioning_info_vars)} "
+            f"done_on={_format_sequence(policy_config.done_on_events)}",
+            "cyan",
+        ),
+        _summary_line("✚", "wrappers", _format_sequence(wrapper_ids), "blue"),
+        _summary_line(
+            "✓",
+            "source of truth",
+            "policy/eval env supplies model observations, rewards, dones, and info",
+            "green",
+        ),
+    ]
+
+
+def print_resolved_play_launch(
+    args: argparse.Namespace,
+    *,
+    argv: list[str],
+    artifact_ref: str | None,
+    policy_config,
+    display_config,
+) -> None:
+    lines = resolved_play_launch_lines(
+        args,
+        argv=argv,
+        artifact_ref=artifact_ref,
+        policy_config=policy_config,
+        display_config=display_config,
+    )
+    print("\n".join(lines), flush=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
@@ -495,6 +663,23 @@ def main(argv: list[str] | None = None) -> None:
         infer_artifact_config=True,
         print_loaded_metadata=True,
     )
+    config = resolve_env_config(
+        env_config_from_args(
+            args,
+            max_episode_steps_attr="max_steps",
+            include_states=True,
+            include_env_threads=True,
+        )
+    )
+    effective_policy_env = args.policy_env
+    display_config = display_replay_config(config)
+    print_resolved_play_launch(
+        args,
+        argv=argv_list,
+        artifact_ref=ref,
+        policy_config=config,
+        display_config=display_config,
+    )
     if args.download_only:
         if ref is None:
             raise SystemExit(
@@ -502,19 +687,22 @@ def main(argv: list[str] | None = None) -> None:
             )
         return
     assert_rom_imported(args.game)
+    from stable_baselines3 import PPO
+
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
-    config = resolve_env_config(
-        env_config_from_args(
-            args,
-            max_episode_steps_attr="max_steps",
-            include_states=True,
+    if (
+        effective_policy_env == "rendered"
+        and config.env_provider != STABLE_RETRO_TURBO_PROVIDER.provider_id
+    ):
+        raise SystemExit(
+            "--policy-env rendered only supports stable-retro-turbo; use --policy-env fast "
+            f"to replay policies trained with {config.env_provider}",
         )
-    )
-    display_env = make_rendered_replay_env(config=config, seed=args.seed)
-    effective_policy_env = args.policy_env
     if args.policy_env == "fast":
+        display_env = make_visual_replay_env(config=display_config, seed=args.seed)
         policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
     else:
+        display_env = make_rendered_replay_env(config=display_config, seed=args.seed)
         policy_env = display_env
     seed_rng = np.random.default_rng() if args.random_seeds else None
 

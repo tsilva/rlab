@@ -4,6 +4,8 @@
 
 Before choosing hardware, launching training, changing concurrency, or recommending beast targets, read `INSTANCES.md`. It is the source of truth for known GPU instances, access commands, child counts, `env_threads`, cleanup, and gotchas. Update it when benchmark or access facts change.
 
+When running or changing fleet shepherd behavior, make unused host runtime-image cleanup part of the reconciliation contract: after jobs stop using an image, the shepherd should prune stale Docker images from the host while preserving active containers and currently demanded immutable runtime image digests.
+
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.

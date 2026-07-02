@@ -245,6 +245,7 @@ environment_hash: sha256:deadbeef
             [
                 "max(eval/done/level_change/from_rate/min)",
                 "max(eval/done/level_change/from_rate/mean)",
+                "min(leader/checkpoint/steps_to_completion_goal)",
                 "max(eval/reward/mean)",
             ],
         )

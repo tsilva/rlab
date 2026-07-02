@@ -17,6 +17,14 @@ RUNTIME_IMAGE_REF = (
     "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 )
+OTHER_IMAGE_REF = (
+    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+)
+STALE_IMAGE_REF = (
+    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
 
 
 class FakeCursor:
@@ -302,6 +310,10 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 calls.append(f"launch:{machine.name}:{job_kind}:{limit}:{reconcile}")
                 return 2
 
+            def prune(_conn, machine, *, job_kind, color):
+                calls.append(f"prune:{machine.name}:{job_kind}")
+                return 4
+
             with (
                 contextlib.redirect_stdout(io.StringIO()),
                 mock.patch.object(fleet, "_connect_from_args", return_value=conn),
@@ -313,11 +325,15 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 mock.patch.object(fleet, "release_shepherd_lock") as release,
                 mock.patch.object(fleet, "reconcile_machine_launches", side_effect=reconcile),
                 mock.patch.object(fleet, "launch_next_jobs", side_effect=launch_next),
+                mock.patch.object(fleet, "prune_stale_runtime_images", side_effect=prune),
             ):
                 status = fleet.cmd_container_shepherd(args)
 
         self.assertEqual(status, 0)
-        self.assertEqual(calls, ["reconcile:beast-test", "launch:beast-test:train:3:False"])
+        self.assertEqual(
+            calls,
+            ["reconcile:beast-test", "launch:beast-test:train:3:False", "prune:beast-test:train"],
+        )
         acquire.assert_called_once()
         release.assert_called_once()
         self.assertTrue(conn.closed)
@@ -348,6 +364,115 @@ class FleetShepherdSplitTests(unittest.TestCase):
         reconcile.assert_not_called()
         launch.assert_not_called()
         self.assertTrue(conn.closed)
+
+
+class RuntimeImagePruneTests(unittest.TestCase):
+    def test_stale_runtime_image_plan_preserves_active_containers_and_demand(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            machine = resolve_machine(load_machine_registry(path), "beast-test")
+
+        image_rows = "\n".join(
+            json.dumps(
+                {
+                    "Repository": "ghcr.io/tsilva/rlab/rlab-train",
+                    "Digest": ref.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
+                    "ID": ref[-12:],
+                }
+            )
+            for ref in (RUNTIME_IMAGE_REF, OTHER_IMAGE_REF, STALE_IMAGE_REF)
+        )
+        images = fleet.parse_runtime_host_images(machine, image_rows)
+        demands = [
+            fleet.QueueDemand(
+                profile_id=None,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                run_target="rtx4090",
+                pending_count=1,
+                running_count=0,
+                oldest_job_id=7,
+            )
+        ]
+        containers = [
+            fleet.JobContainer(
+                machine="beast-test",
+                name="active",
+                state="running",
+                status="Up",
+                labels={
+                    fleet.JOB_CONTAINER_LABEL: "true",
+                    fleet.JOB_KIND_LABEL: "train",
+                    f"{fleet.LABEL_PREFIX}runtime-image-ref": OTHER_IMAGE_REF,
+                },
+            )
+        ]
+
+        stale = fleet.stale_runtime_host_images(
+            machine=machine,
+            images=images,
+            demands=demands,
+            containers=containers,
+            job_kind="train",
+        )
+
+        self.assertEqual([image.runtime_image_ref for image in stale], [STALE_IMAGE_REF])
+
+    def test_prune_stale_runtime_images_removes_only_unprotected_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            machine = resolve_machine(load_machine_registry(path), "beast-test")
+
+        images = (
+            fleet.RuntimeHostImage(
+                machine="beast-test",
+                repository="ghcr.io/tsilva/rlab/rlab-train",
+                digest=RUNTIME_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
+                image_id="keep",
+            ),
+            fleet.RuntimeHostImage(
+                machine="beast-test",
+                repository="ghcr.io/tsilva/rlab/rlab-train",
+                digest=STALE_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
+                image_id="stale",
+            ),
+        )
+        demands = [
+            fleet.QueueDemand(
+                profile_id=None,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                run_target="rtx4090",
+                pending_count=1,
+                running_count=0,
+                oldest_job_id=7,
+            )
+        ]
+        docker_calls = []
+
+        def fake_run_machine_docker(machine, docker_args, *, capture=False):
+            docker_calls.append(list(docker_args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            mock.patch.object(fleet, "queue_demands", return_value=demands),
+            mock.patch.object(fleet, "list_job_containers", return_value=[]),
+            mock.patch.object(fleet, "list_runtime_host_images", return_value=images),
+            mock.patch.object(fleet, "run_machine_docker", side_effect=fake_run_machine_docker),
+            mock.patch.object(fleet, "log_shepherd_event"),
+        ):
+            pruned = fleet.prune_stale_runtime_images(
+                FakeConnection(),
+                machine,
+                job_kind="train",
+                color=False,
+            )
+
+        self.assertEqual(pruned, 1)
+        self.assertEqual(
+            docker_calls,
+            [["rmi", STALE_IMAGE_REF.removeprefix("docker:")]],
+        )
 
 
 class LaunchLedgerTests(unittest.TestCase):

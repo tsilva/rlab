@@ -52,6 +52,7 @@ from rlab.metric_names import (
     EVAL_REWARD_MEAN,
     EVAL_REWARD_STD,
     GLOBAL_STEP,
+    LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
 )
 from rlab.model_sources import (
     ResolvedModelSource,
@@ -96,10 +97,30 @@ def append_eval_history(path: Path, metrics: dict[str, Any]) -> None:
         file.write(json.dumps(json_safe(metrics)) + "\n")
 
 
-def score(metrics: dict[str, Any]) -> tuple[float, float, float]:
+COMPLETION_GOAL_RATE = 0.99
+
+
+def score(metrics: dict[str, Any]) -> tuple[float, float, float, float]:
+    checkpoint_step = metrics.get("checkpoint_step")
+    try:
+        checkpoint_step_value = float(checkpoint_step)
+    except (TypeError, ValueError):
+        checkpoint_step_value = float("-inf")
+    completion_min = float(
+        metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, metrics["completion_rate"])
+    )
+    completion_mean = float(
+        metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN, metrics["completion_rate"])
+    )
+    steps_to_goal = (
+        checkpoint_step_value
+        if completion_min >= COMPLETION_GOAL_RATE and checkpoint_step_value > float("-inf")
+        else float("inf")
+    )
     return (
-        float(metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, metrics["completion_rate"])),
-        float(metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN, metrics["completion_rate"])),
+        completion_min,
+        completion_mean,
+        -steps_to_goal,
         float(metrics["reward_mean"]),
     )
 
@@ -157,6 +178,7 @@ def evaluate_checkpoint(
             args,
             max_episode_steps_attr="max_steps",
             include_states=True,
+            include_env_threads=True,
         )
     )
     eval_seed = eval_seed_for_checkpoint(args)
@@ -295,6 +317,9 @@ def promote_best_artifact(
             "checkpoint_step": metrics["checkpoint_step"],
             "checkpoint_artifact": metrics["checkpoint_artifact"],
             "completion_rate": metrics["completion_rate"],
+            LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL: metrics["checkpoint_step"]
+            if score(metrics)[2] > float("-inf")
+            else None,
             "max_x_max": metrics["max_x_max"],
             "reward_mean": metrics["reward_mean"],
             "hud_crop_top": metrics["hud_crop_top"],
@@ -576,6 +601,7 @@ def main(argv: list[str] | None = None) -> None:
             args,
             max_episode_steps_attr="max_steps",
             include_states=True,
+            include_env_threads=True,
         )
     )
     model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None

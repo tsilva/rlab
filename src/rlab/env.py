@@ -13,11 +13,9 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import gymnasium as gym
-import cv2
 import numpy as np
 import stable_retro as retro
 from stable_retro import RetroVecEnv
-from stable_baselines3.common.atari_wrappers import ClipRewardEnv
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from rlab.env_registry import (
@@ -751,6 +749,11 @@ class RetroProgressInfo(gym.Wrapper):
         return obs, progress.reward, terminated, truncated, info
 
 
+class ClipRewardEnv(gym.RewardWrapper):
+    def reward(self, reward: float) -> float:
+        return float(np.sign(reward))
+
+
 class RetroPreprocess(gym.ObservationWrapper):
     """Crop optional HUD rows, then convert RGB frames to grayscale observations."""
 
@@ -768,6 +771,8 @@ class RetroPreprocess(gym.ObservationWrapper):
         )
 
     def observation(self, observation: np.ndarray) -> np.ndarray:
+        import cv2
+
         if self.hud_crop_top >= observation.shape[0]:
             raise ValueError(
                 f"hud_crop_top={self.hud_crop_top} must be less than frame height {observation.shape[0]}",
@@ -810,6 +815,21 @@ def make_rendered_retro_env(config: EnvConfig | None = None, seed: int | None = 
     config = resolve_env_config(config or EnvConfig())
     env = make_provider_env(config, render_mode="human")
     return wrap_retro_env(env, config=config, seed=seed)
+
+
+def make_visual_replay_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
+    config = resolve_env_config(config or EnvConfig())
+    target = target_for_game(config.game)
+    env = make_provider_env(config, render_mode="rgb_array")
+    if target.uses_discrete_actions(config.action_set):
+        env = DiscreteRetroActions(env, config=config)
+    env = FrameSkip(env, config.frame_skip, max_pool=False)
+    if config.sticky_action_prob > 0.0:
+        env = StickyAction(env, config.sticky_action_prob)
+    if seed is not None:
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
+    return env
 
 
 def wrap_retro_env(env: gym.Env, config: EnvConfig, seed: int | None = None) -> gym.Env:

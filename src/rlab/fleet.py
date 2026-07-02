@@ -90,6 +90,7 @@ MANAGED_LABEL = f"{LABEL_PREFIX}managed"
 CONFIG_HASH_LABEL = f"{LABEL_PREFIX}config-hash"
 DEFAULT_RUNNER_AUTOSCALE_MIN_WORKERS = 1
 DEFAULT_RUNNER_AUTOSCALE_MAX_WORKERS = 16
+DEFAULT_RUNTIME_IMAGE_REPOSITORIES = ("ghcr.io/tsilva/rlab/rlab-train",)
 WORKER_KIND_TRAIN = "train"
 JOB_CONTAINER_LABEL = f"{LABEL_PREFIX}job-container"
 JOB_ID_LABEL = f"{LABEL_PREFIX}job-id"
@@ -2131,6 +2132,22 @@ class JobContainer:
         return self.labels.get(JOB_KIND_LABEL)
 
 
+@dataclass(frozen=True)
+class RuntimeHostImage:
+    machine: str
+    repository: str
+    digest: str
+    image_id: str
+
+    @property
+    def image_ref(self) -> str:
+        return f"{self.repository}@{self.digest}"
+
+    @property
+    def runtime_image_ref(self) -> str:
+        return f"docker:{self.image_ref}"
+
+
 def load_registry_from_args(args: argparse.Namespace) -> MachineRegistry:
     return load_machine_registry(args.machines)
 
@@ -2325,6 +2342,170 @@ def list_job_containers(machine: MachineConfig) -> list[JobContainer]:
     if result.returncode != 0:
         raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
     return parse_job_containers(machine, result.stdout)
+
+
+def parse_runtime_host_images(
+    machine: MachineConfig,
+    output: str,
+    *,
+    repositories: Sequence[str] = DEFAULT_RUNTIME_IMAGE_REPOSITORIES,
+) -> tuple[RuntimeHostImage, ...]:
+    allowed = set(repositories)
+    images: list[RuntimeHostImage] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        repository = str(row.get("Repository") or "").strip()
+        digest = str(row.get("Digest") or "").strip()
+        if repository not in allowed or not digest.startswith("sha256:"):
+            continue
+        image = RuntimeHostImage(
+            machine=machine.name,
+            repository=repository,
+            digest=digest,
+            image_id=str(row.get("ID") or "").strip(),
+        )
+        try:
+            normalize_runtime_image_ref(image.runtime_image_ref)
+        except ValueError:
+            continue
+        if image.runtime_image_ref in seen:
+            continue
+        seen.add(image.runtime_image_ref)
+        images.append(image)
+    return tuple(images)
+
+
+def runtime_image_repository(runtime_image_ref: str) -> str | None:
+    try:
+        image = docker_image_ref(runtime_image_ref)
+    except ValueError:
+        return None
+    if "@" not in image:
+        return None
+    repository, _ = image.split("@", 1)
+    return repository or None
+
+
+def protected_runtime_image_refs(
+    *,
+    machine: MachineConfig,
+    demands: Sequence[QueueDemand],
+    containers: Sequence[JobContainer],
+    job_kind: str,
+) -> set[str]:
+    protected: set[str] = set()
+    for demand in demands:
+        if demand.total <= 0:
+            continue
+        if demand.run_target not in (None, machine.run_target):
+            continue
+        protected.add(normalize_runtime_image_ref(demand.runtime_image_ref))
+    for container in containers:
+        if container.job_kind != job_kind:
+            continue
+        if container.state not in {"created", "restarting", "running"}:
+            continue
+        runtime_image_ref = container.labels.get(f"{LABEL_PREFIX}runtime-image-ref")
+        if not runtime_image_ref:
+            continue
+        try:
+            protected.add(normalize_runtime_image_ref(runtime_image_ref))
+        except ValueError:
+            continue
+    return protected
+
+
+def repositories_for_runtime_images(protected_refs: set[str]) -> tuple[str, ...]:
+    repositories = set(DEFAULT_RUNTIME_IMAGE_REPOSITORIES)
+    for runtime_image_ref in protected_refs:
+        repository = runtime_image_repository(runtime_image_ref)
+        if repository:
+            repositories.add(repository)
+    return tuple(sorted(repositories))
+
+
+def list_runtime_host_images(
+    machine: MachineConfig,
+    *,
+    repositories: Sequence[str],
+) -> tuple[RuntimeHostImage, ...]:
+    result = run_machine_docker(
+        machine,
+        ["image", "ls", "--digests", "--format", "{{json .}}"],
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker image ls failed on {machine.name}: {result.stderr or result.stdout}")
+    return parse_runtime_host_images(machine, result.stdout, repositories=repositories)
+
+
+def stale_runtime_host_images(
+    *,
+    machine: MachineConfig,
+    images: Sequence[RuntimeHostImage],
+    demands: Sequence[QueueDemand],
+    containers: Sequence[JobContainer],
+    job_kind: str,
+) -> tuple[RuntimeHostImage, ...]:
+    protected = protected_runtime_image_refs(
+        machine=machine,
+        demands=demands,
+        containers=containers,
+        job_kind=job_kind,
+    )
+    return tuple(image for image in images if image.runtime_image_ref not in protected)
+
+
+def prune_stale_runtime_images(
+    conn,
+    machine: MachineConfig,
+    *,
+    job_kind: str,
+    color: bool | None = None,
+) -> int:
+    demands = queue_demands(conn)
+    containers = list_job_containers(machine)
+    protected = protected_runtime_image_refs(
+        machine=machine,
+        demands=demands,
+        containers=containers,
+        job_kind=job_kind,
+    )
+    images = list_runtime_host_images(
+        machine,
+        repositories=repositories_for_runtime_images(protected),
+    )
+    stale_images = tuple(image for image in images if image.runtime_image_ref not in protected)
+    pruned = 0
+    for image in stale_images:
+        result = run_machine_docker(machine, ["rmi", image.image_ref], capture=True)
+        if result.returncode == 0:
+            pruned += 1
+            log_shepherd_event(
+                machine=machine.name,
+                action="prune-image",
+                result="ok",
+                image=image.digest,
+                repository=image.repository,
+                color=color,
+            )
+            continue
+        log_shepherd_event(
+            machine=machine.name,
+            action="prune-image",
+            result="failed",
+            image=image.digest,
+            repository=image.repository,
+            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
+            color=color,
+        )
+    return pruned
 
 
 def read_remote_result(machine: MachineConfig, output_uri: str) -> dict[str, Any] | None:
@@ -2982,6 +3163,13 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
             status = cmd_container_launch_next(args)
             if status != 0:
                 return status
+            log_shepherd_event(
+                machine=machine.name,
+                action="prune-image",
+                result="planned",
+                mode="dry-run",
+                color=color,
+            )
             if args.once:
                 return 0
             time.sleep(args.interval)
@@ -3019,6 +3207,19 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
                     result="ok",
                     job_kind=args.job_kind,
                     launched=launched,
+                    color=color,
+                )
+                pruned = prune_stale_runtime_images(
+                    conn,
+                    machine,
+                    job_kind=args.job_kind,
+                    color=color,
+                )
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="prune-image",
+                    result="ok",
+                    pruned=pruned,
                     color=color,
                 )
                 if args.once:

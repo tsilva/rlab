@@ -1861,8 +1861,11 @@ def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("
         return default
 
 
-def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float]:
-    """Eval-first policy ranking: bottleneck completion, mean completion, then reward."""
+COMPLETION_GOAL_RATE = 0.99
+
+
+def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float, float]:
+    """Eval-first policy ranking: completion, solved timestep, then reward."""
 
     completion_min = _metric_float(
         metrics,
@@ -1882,9 +1885,16 @@ def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, floa
             default=_metric_float(metrics, "completion_rate"),
         ),
     )
+    checkpoint_step = _metric_float(metrics, "checkpoint_step")
+    steps_to_goal = (
+        checkpoint_step
+        if completion_min >= COMPLETION_GOAL_RATE and checkpoint_step > float("-inf")
+        else float("inf")
+    )
     return (
         completion_min,
         completion_mean,
+        -steps_to_goal,
         _metric_float(metrics, "reward_mean"),
     )
 

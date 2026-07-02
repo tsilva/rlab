@@ -41,7 +41,17 @@ CHECKPOINT_REWARD_KEYS = (
     "eval/reward/mean",
     "reward_mean",
 )
+CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS = (
+    "leader/checkpoint/steps_to_completion_goal",
+)
+CHECKPOINT_STEP_KEYS = (
+    "leader/checkpoint/step",
+    "eval/checkpoint/step",
+    "eval/checkpoint_step",
+    "checkpoint_step",
+)
 CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/completion_rate"
+COMPLETION_GOAL_RATE = 0.99
 WANDB_RUNS_PER_PAGE = 200
 
 
@@ -78,6 +88,7 @@ class CheckpointLeader:
     completion_rate_mean: float
     max_x_max: float
     reward_mean: float
+    steps_to_completion_goal: float | None
     checkpoint_step: int | None
     artifact_ref: str
     eval_source: str
@@ -247,6 +258,10 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     completion_mean = _first_float(summary, CHECKPOINT_COMPLETION_MEAN_KEYS)
     max_x = _first_float(summary, CHECKPOINT_MAX_X_KEYS)
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
+    checkpoint_step = _optional_int(_first_float(summary, CHECKPOINT_STEP_KEYS))
+    steps_to_completion_goal = _first_float(summary, CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS)
+    if steps_to_completion_goal is None and completion is not None and completion >= COMPLETION_GOAL_RATE:
+        steps_to_completion_goal = float(checkpoint_step) if checkpoint_step is not None else None
     artifact_ref = _first_text(
         _mapping_value(summary, "leader/checkpoint/artifact_ref"),
         _mapping_value(summary, "eval/checkpoint/artifact"),
@@ -265,7 +280,8 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         completion_rate_mean=completion_mean,
         max_x_max=max_x,
         reward_mean=reward,
-        checkpoint_step=_optional_int(_mapping_value(summary, "leader/checkpoint/step")),
+        steps_to_completion_goal=steps_to_completion_goal,
+        checkpoint_step=checkpoint_step,
         artifact_ref=artifact_ref,
         eval_source=_first_text(_mapping_value(summary, "leader/checkpoint/eval_source")),
     )
@@ -274,7 +290,14 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
 def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[CheckpointLeader]:
     return sorted(
         leaders,
-        key=lambda item: (item.completion_rate, item.completion_rate_mean, item.reward_mean),
+        key=lambda item: (
+            item.completion_rate,
+            item.completion_rate_mean,
+            -item.steps_to_completion_goal
+            if item.steps_to_completion_goal is not None
+            else float("-inf"),
+            item.reward_mean,
+        ),
         reverse=True,
     )
 
@@ -315,11 +338,19 @@ def print_run_leaders(rows: Sequence[RunLeader]) -> None:
 
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
-    print("goal_slug\tspec_slug\tcompletion_min\tcompletion_mean\treward\tmax_x\tstep\trun\tartifact_ref")
+    print(
+        "goal_slug\tspec_slug\tcompletion_min\tcompletion_mean\tsteps_to_goal\t"
+        "reward\tmax_x\tstep\trun\tartifact_ref"
+    )
     for row in rows:
+        steps_to_goal = (
+            f"{row.steps_to_completion_goal:.6g}"
+            if row.steps_to_completion_goal is not None
+            else ""
+        )
         print(
             f"{row.goal_slug}\t{row.spec_slug}\t{row.completion_rate:.6g}\t"
-            f"{row.completion_rate_mean:.6g}\t{row.reward_mean:.6g}\t"
+            f"{row.completion_rate_mean:.6g}\t{steps_to_goal}\t{row.reward_mean:.6g}\t"
             f"{row.max_x_max:.6g}\t"
             f"{row.checkpoint_step or ''}\t{row.run_name}\t{row.artifact_ref}"
         )

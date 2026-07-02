@@ -69,8 +69,11 @@ In the job-container path, `watch --machine` is read-only: it shows machine
 capacity, queued demand, launch rows, labeled containers, result presence, and
 which rows need shepherd action. `shepherd --machine` is the long-running
 mutating orchestrator: it reconciles, claims, launches, finalizes, and streams a
-line-oriented action log. `launch-next` is the manual one-shot dispatcher, and
-`reconcile --machine` is the manual one-shot repair/finalization command.
+line-oriented action log. It should also prune stale Docker images from the
+host once no active container or queued demand needs them, preserving active
+containers and currently demanded immutable runtime image digests. `launch-next`
+is the manual one-shot dispatcher, and `reconcile --machine` is the manual
+one-shot repair/finalization command.
 
 For managed runner reconciliation, a long-running local loop is:
 

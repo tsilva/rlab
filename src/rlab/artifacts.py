@@ -33,6 +33,7 @@ from rlab.wandb_utils import load_wandb_env
 MODEL_METADATA_VERSION = 2
 
 PLAYBACK_ENV_ARG_KEYS = {
+    "env_provider": ("env_provider",),
     "game": ("game",),
     "state": ("state",),
     "states": ("states",),
@@ -64,6 +65,7 @@ PLAYBACK_ENV_ARG_KEYS = {
     "info_events_json": ("info_events",),
     "done_on_events": ("done_on_events",),
     "action_set": ("action_set",),
+    "env_threads": ("env_threads",),
 }
 
 

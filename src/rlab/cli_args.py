@@ -24,6 +24,12 @@ def add_env_config_args(
 ) -> None:
     defaults = defaults or EnvConfig()
     parser.add_argument("--env-provider", default=defaults.env_provider)
+    parser.add_argument(
+        "--env-threads",
+        type=int,
+        default=defaults.env_threads,
+        help="Native vector env threads; <=0 keeps the provider default for the env count.",
+    )
     parser.add_argument("--game", default=defaults.game)
     parser.add_argument("--state", default=defaults.state)
     parser.add_argument("--states", default=",".join(defaults.states))

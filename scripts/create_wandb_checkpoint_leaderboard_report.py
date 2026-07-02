@@ -17,6 +17,7 @@ PINNED_COLUMNS = [
     "config:seed.value",
     "summary:leader/checkpoint/completion_rate",
     "summary:leader/checkpoint/completion_rate_mean",
+    "summary:leader/checkpoint/steps_to_completion_goal",
     "summary:leader/checkpoint/reward_mean",
     "summary:leader/checkpoint/max_x_max",
     "summary:leader/checkpoint/step",
@@ -92,6 +93,10 @@ def goal_runset(*, entity: str, project: str, goal: str):
         order=[
             wr.OrderBy(wr.SummaryMetric("leader/checkpoint/completion_rate"), ascending=False),
             wr.OrderBy(wr.SummaryMetric("leader/checkpoint/completion_rate_mean"), ascending=False),
+            wr.OrderBy(
+                wr.SummaryMetric("leader/checkpoint/steps_to_completion_goal"),
+                ascending=True,
+            ),
             wr.OrderBy(wr.SummaryMetric("leader/checkpoint/reward_mean"), ascending=False),
             wr.OrderBy(wr.SummaryMetric("eval/done/level_change/from_rate/min"), ascending=False),
             wr.OrderBy(wr.SummaryMetric("eval/done/level_change/from_rate/mean"), ascending=False),
@@ -112,7 +117,7 @@ def build_report(*, entity: str, project: str, goals: Sequence[str], goal_counts
         wr.MarkdownBlock(
             "Live checkpoint leaderboards grouped by goal. Each section is a W&B runset filtered "
             "to runs with evaluated checkpoint summaries and sorted by completion minimum, "
-            "completion mean, then reward."
+            "completion mean, least steps to completion goal, then reward."
         )
     ]
     for goal in goals:
