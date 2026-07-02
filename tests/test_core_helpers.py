@@ -36,6 +36,7 @@ from rlab.callbacks import (
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
+    TimeElapsedCallback,
 )
 from rlab.cli import build_parser as build_train_parser
 from rlab.cli import build_train_command
@@ -74,6 +75,7 @@ from rlab.metric_names import (
 from rlab.model_sources import (
     ResolvedModelSource,
     apply_model_source_defaults,
+    model_artifact_checkpoint_step,
     single_model_artifact_ref,
 )
 from rlab.play import build_parser as build_play_parser
@@ -82,6 +84,7 @@ from rlab.play import playback_should_end_episode
 from rlab.play import task_conditioning_change_message
 from rlab.play import task_conditioning_start_message
 from rlab.eval import build_parser as build_eval_parser
+from rlab.eval import already_evaluated_artifact
 from rlab.eval import eval_seed_for_checkpoint
 from rlab.eval import evaluate_checkpoint
 from rlab.eval import log_wandb_eval
@@ -164,6 +167,10 @@ class EnvConfigAliasTests(unittest.TestCase):
         self.assertEqual(
             config.env_wrappers,
             (
+                {
+                    "id": "SuperMarioBrosNesProgressInfoWrapper",
+                    "kwargs": {},
+                },
                 {
                     "id": "SuperMarioBrosNesRewardEnvWrapper",
                     "kwargs": {
@@ -2086,7 +2093,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         clock_values = iter([10.0, 10.0, 10.2, 10.2, 11.2, 11.2, 11.5, 11.5])
         uploads: list[tuple[Path, str]] = []
         args = argparse.Namespace(
-            game="TestGame-Platform",
+            game="SuperMarioBros-Nes-v0",
             run_name="candidate/run",
             run_description="description",
             no_wandb_artifacts=False,
@@ -2108,7 +2115,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 timing = log_wandb_model_artifact(
                     fake_run,
                     args,
-                    EnvConfig(game="TestGame-Platform"),
+                    EnvConfig(game="SuperMarioBros-Nes-v0"),
                     model_path,
                     kind="checkpoint",
                     aliases=["latest", "step-100"],
@@ -2124,7 +2131,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             [
                 (
                     model_path,
-                    "s3://bucket/checkpoints/TestGame-Platform/candidate-run/checkpoint/ppo_test_100_steps.zip",
+                    "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/candidate-run/checkpoint/ppo_test_100_steps.zip",
                 )
             ],
         )
@@ -2140,6 +2147,105 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_LOG_SECONDS], 1.5)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_LOCAL_SAVE_SECONDS], 2.0)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_STALL_SECONDS], 4.0)
+
+    def test_wandb_final_artifact_records_metric_step(self) -> None:
+        class FakeArtifact:
+            def __init__(self, name: str, type: str, metadata: dict[str, object]) -> None:
+                self.name = name
+                self.type = type
+                self.metadata = metadata
+                self.files: list[tuple[str, str]] = []
+
+            def add_file(self, path: str, name: str) -> None:
+                self.files.append((path, name))
+
+        class FakeRun:
+            id = "run-id"
+            path = ("entity", "project", "runs", "run-id")
+
+            def __init__(self) -> None:
+                self.artifact_logs: list[tuple[FakeArtifact, list[str] | None]] = []
+                self.metric_logs: list[tuple[dict[str, object], int | None]] = []
+
+            def log_artifact(
+                self, artifact: FakeArtifact, aliases: list[str] | None = None
+            ) -> None:
+                self.artifact_logs.append((artifact, aliases))
+
+            def log(self, payload: dict[str, object], step: int | None = None) -> None:
+                self.metric_logs.append((payload, step))
+
+        class FakeWandb:
+            def Artifact(self, name: str, type: str, metadata: dict[str, object]) -> FakeArtifact:
+                return FakeArtifact(name, type, metadata)
+
+        args = argparse.Namespace(
+            game="SuperMarioBros-Nes-v0",
+            run_name="candidate-run",
+            run_description="description",
+            no_wandb_artifacts=False,
+            wandb_artifact_storage_uri="",
+        )
+        clock_values = iter([1.0, 1.0, 1.1, 1.1, 1.3, 1.3])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "final_model.zip"
+            model_path.write_bytes(b"zip")
+            fake_run = FakeRun()
+
+            with patch.dict(sys.modules, {"wandb": FakeWandb()}):
+                timing = log_wandb_model_artifact(
+                    fake_run,
+                    args,
+                    EnvConfig(game="SuperMarioBros-Nes-v0"),
+                    model_path,
+                    kind="final",
+                    metric_step=2500000,
+                    clock=lambda: next(clock_values),
+                )
+
+            artifact, _ = fake_run.artifact_logs[0]
+            self.assertEqual(artifact.metadata["checkpoint_step"], 2500000)
+            self.assertEqual(load_model_metadata(model_path)["checkpoint_step"], 2500000)
+            self.assertIsNotNone(timing)
+            assert timing is not None
+            self.assertEqual(timing.checkpoint_step, 2500000)
+
+    def test_final_artifact_step_falls_back_to_logged_run_global_step(self) -> None:
+        class Summary:
+            _json_dict = {"global_step": 2500000}
+
+        class Run:
+            summary = Summary()
+
+        class Artifact:
+            metadata = {"kind": "final", "checkpoint_step": None}
+            qualified_name = "entity/project/candidate-final:v0"
+
+            def logged_by(self) -> Run:
+                return Run()
+
+        self.assertEqual(model_artifact_checkpoint_step(Artifact()), 2500000)
+
+    def test_final_artifact_eval_dedupes_by_artifact_not_step(self) -> None:
+        self.assertFalse(
+            already_evaluated_artifact(
+                checkpoint_step=2500000,
+                artifact_name="entity/project/run-final:v0",
+                kind="final",
+                evaluated_steps={2500000},
+                evaluated_artifacts={"entity/project/run-checkpoint:v4"},
+            )
+        )
+        self.assertTrue(
+            already_evaluated_artifact(
+                checkpoint_step=2500000,
+                artifact_name="entity/project/run-checkpoint:v4",
+                kind="checkpoint",
+                evaluated_steps={2500000},
+                evaluated_artifacts=set(),
+            )
+        )
 
     def test_wandb_artifact_logging_can_purge_uploaded_local_files(self) -> None:
         class FakeArtifact:
@@ -2574,10 +2680,13 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertFalse(parser.parse_args([]).deterministic)
         self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        self.assertEqual(parser.parse_args([]).episodes, 0)
+        self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
         self.assertEqual(parser.parse_args(["--seed", "7"]).seed, 7)
         help_text = parser.format_help()
         self.assertIn("--deterministic", help_text)
+        self.assertIn("--episodes", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
 
@@ -2634,12 +2743,23 @@ class CommandAndArtifactTests(unittest.TestCase):
             "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
         )
 
-    def test_model_source_ref_rejects_positional_run_name(self) -> None:
+    def test_model_source_ref_uses_positional_run_name(self) -> None:
         parser = build_play_parser()
+        args = parser.parse_args(["run"])
 
-        with patch("sys.stderr", new_callable=io.StringIO):
-            with self.assertRaises(SystemExit):
-                parser.parse_args(["run"])
+        self.assertEqual(
+            single_model_artifact_ref(args),
+            "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
+        )
+
+    def test_model_source_ref_uses_positional_run_name_kind_and_version(self) -> None:
+        parser = build_play_parser()
+        args = parser.parse_args(["run", "--artifact-kind", "best", "--artifact-version", "v8"])
+
+        self.assertEqual(
+            single_model_artifact_ref(args),
+            "tsilva/SuperMarioBros-NES/run-best:v8",
+        )
 
     def test_model_source_ref_uses_explicit_run_kind_and_version(self) -> None:
         parser = build_play_parser()
@@ -2735,6 +2855,7 @@ class EvalMetricTests(unittest.TestCase):
 
         assert run.payload is not None
         self.assertEqual(run.kwargs, {})
+        self.assertEqual(run.payload["global_step"], 4100000)
         self.assertEqual(run.payload["eval/checkpoint/step"], 4100000)
         self.assertEqual(run.payload["eval/done/all"], 10)
         self.assertEqual(run.payload["eval/info/level_complete/rate/min/last"], 0.9)
@@ -3977,6 +4098,43 @@ class ThroughputCallbackTests(unittest.TestCase):
                 ("throughput/rollout_fps", 60.0),
                 ("throughput/loop_fps", 20.0),
             ],
+        )
+
+
+class TimeElapsedCallbackTests(unittest.TestCase):
+    def test_logs_elapsed_time_to_logger_and_wandb(self) -> None:
+        class Logger:
+            def __init__(self) -> None:
+                self.records: list[tuple[str, float]] = []
+
+            def record(self, key: str, value: float) -> None:
+                self.records.append((key, value))
+
+        class Model:
+            def __init__(self) -> None:
+                self.logger = Logger()
+
+        class FakeRun:
+            def __init__(self) -> None:
+                self.payloads: list[tuple[dict[str, object], int]] = []
+
+            def log(self, payload: dict[str, object], *, step: int) -> None:
+                self.payloads.append((payload, step))
+
+        times = iter([10.0, 25.0])
+        model = Model()
+        run = FakeRun()
+        callback = TimeElapsedCallback(wandb_run=run, clock=lambda: next(times))
+        callback.model = model  # type: ignore[assignment]
+        callback.num_timesteps = 8192
+
+        callback._on_training_start()
+        callback._on_rollout_end()
+
+        self.assertEqual(model.logger.records, [(metric_names.TIME_TIME_ELAPSED, 15.0)])
+        self.assertEqual(
+            run.payloads,
+            [({metric_names.GLOBAL_STEP: 8192, metric_names.TIME_TIME_ELAPSED: 15.0}, 8192)],
         )
 
 

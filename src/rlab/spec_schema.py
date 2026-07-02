@@ -59,6 +59,7 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
             "items": {"type": "integer", "minimum": TRAIN_SEED_MIN, "maximum": TRAIN_SEED_MAX},
         },
         "wandb_group": {"type": "string", "minLength": 1},
+        "run_name_label": {"type": "string", "minLength": 1},
         "wandb_tags": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
@@ -68,18 +69,6 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
             "type": "array",
             "minItems": 1,
             "items": {"type": "string", "minLength": 1},
-        },
-        "selection_gate": {
-            "type": "object",
-            "additionalProperties": True,
-            "required": ["primary"],
-            "properties": {
-                "primary": {"type": "string", "minLength": 1},
-                "tie_breakers": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1},
-                },
-            },
         },
         "selection_policy": {
             "type": "object",
@@ -260,6 +249,8 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         _require_int(document, "max_attempts", label=label, minimum=1)
     seed_values = _require_int_list(document, "seeds", label=label) if "seeds" in document else []
     _require_non_empty_string(document, "wandb_group", label=label)
+    if "run_name_label" in document:
+        _require_non_empty_string(document, "run_name_label", label=label)
     _require_string_list(document, "wandb_tags", label=label)
     _require_template(
         document,
@@ -272,22 +263,6 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         metrics = _require_string_list(document, "selection_metrics", label=label)
         if not metrics:
             raise ValueError(f"{_label_path(label, 'selection_metrics')} must not be empty")
-    elif "selection_gate" in document:
-        selection_gate = _require_mapping(
-            _require_key(document, "selection_gate", label=label),
-            label=_label_path(label, "selection_gate"),
-        )
-        _require_non_empty_string(
-            selection_gate,
-            "primary",
-            label=_label_path(label, "selection_gate"),
-        )
-        if "tie_breakers" in selection_gate:
-            _require_string_list(
-                selection_gate,
-                "tie_breakers",
-                label=_label_path(label, "selection_gate"),
-            )
     elif "selection_policy" in document:
         _require_mapping(
             _require_key(document, "selection_policy", label=label),
@@ -295,9 +270,7 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         )
     else:
         raise ValueError(
-            f"{label} must define selection_metrics "
-            "(selection_gate is accepted only for legacy specs; "
-            "goal-owned selection_policy may be inherited)"
+            f"{label} must define selection_metrics or inherit goal-owned selection_policy"
         )
 
     train_config = _require_mapping(

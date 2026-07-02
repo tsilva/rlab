@@ -23,7 +23,6 @@ from rlab.job_queue import load_spec_document
 from rlab.seeds import validate_eval_seed
 
 
-RECIPE_SCHEMA_VERSION = 1
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
@@ -624,45 +623,6 @@ def _validate_goal_contract_document(
     _validate_goal_eval(document, label=label)
 
 
-def validate_train_recipe(path: Path) -> None:
-    document = load_mapping_document(path, label=f"recipe file {path}")
-    label = f"recipe file {path}"
-    _require_schema_version(document, RECIPE_SCHEMA_VERSION, label=label)
-    kind = _require_non_empty_string(document, "kind", label=label)
-    if kind != "train_recipe":
-        raise ValueError(f"{label}.kind must be train_recipe")
-    _require_non_empty_string(document, "slug", label=label)
-    _require_non_empty_string(document, "algorithm", label=label)
-    reward = None
-    if "environment" in document:
-        environment = _validate_environment_identity(document, label=label)
-        reward = _require_mapping(
-            _require_key(environment, "reward", label=f"{label}.environment"),
-            label=f"{label}.environment.reward",
-        )
-    else:
-        env = _require_mapping(_require_key(document, "env", label=label), label=f"{label}.env")
-        _require_non_empty_string(env, "game", label=f"{label}.env")
-        _require_non_empty_string(env, "action_set", label=f"{label}.env")
-        reward = _require_mapping(_require_key(document, "reward", label=label), label=f"{label}.reward")
-
-    train = _require_mapping(_require_key(document, "train", label=label), label=f"{label}.train")
-    logging = _require_mapping(_require_key(document, "logging", label=label), label=f"{label}.logging")
-
-    for key in ("n_steps", "batch_size", "n_epochs"):
-        _require_int(train, key, label=f"{label}.train", minimum=1)
-    if "reward_mode" in reward:
-        _require_non_empty_string(reward, "reward_mode", label=f"{label}.reward")
-    _require_int(logging, "timesteps", label=f"{label}.logging", minimum=1)
-    wandb = _require_key(logging, "wandb", label=f"{label}.logging")
-    if not isinstance(wandb, bool):
-        raise ValueError(f"{label}.logging.wandb must be a boolean")
-    if "wandb_mode" in logging:
-        wandb_mode = _require_non_empty_string(logging, "wandb_mode", label=f"{label}.logging")
-        if wandb_mode not in {"online", "offline", "disabled"}:
-            raise ValueError(f"{label}.logging.wandb_mode must be one of online, offline, disabled")
-
-
 def validate_env_config_file(path: Path) -> None:
     document = load_composed_mapping(path, cycle_label="env config").document
     label = f"env config file {path}"
@@ -782,12 +742,6 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     for path in specs:
         _capture_issue(issues, path, repo_root, lambda path=path: load_spec_document(path))
 
-    recipes_dir = experiments_dir / "history" / "recipes"
-    recipes = sorted(recipes_dir.rglob("*.yaml")) if recipes_dir.is_dir() else []
-    counts["recipes"] = len(recipes)
-    for path in recipes:
-        _capture_issue(issues, path, repo_root, lambda path=path: validate_train_recipe(path))
-
     env_configs_dir = experiments_dir / "envs"
     env_configs = sorted(env_configs_dir.rglob("*.yaml")) if env_configs_dir.is_dir() else []
     counts["env_configs"] = len(env_configs)
@@ -843,7 +797,7 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab validate",
-        description="Validate checked-in YAML experiment, goal, spec, recipe, and ops configs.",
+        description="Validate checked-in YAML experiment, goal, spec, benchmark, and ops configs.",
     )
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")

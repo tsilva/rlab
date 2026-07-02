@@ -130,12 +130,30 @@ class MachineRegistryTests(unittest.TestCase):
 class FleetShepherdSplitTests(unittest.TestCase):
     def test_parser_exposes_shepherd_command(self) -> None:
         args = fleet.build_parser().parse_args(
-            ["shepherd", "--machine", "beast-test", "--limit", "5", "--once"]
+            ["shepherd", "--machine", "beast-test", "--limit", "5", "--once", "--no-color"]
         )
 
         self.assertIs(args.func, fleet.cmd_container_shepherd)
         self.assertEqual(args.machine, "beast-test")
         self.assertEqual(args.limit, 5)
+        self.assertTrue(args.no_color)
+
+    def test_shepherd_event_format_includes_timestamp_symbol_and_color(self) -> None:
+        text = fleet.format_shepherd_event(
+            machine="beast-test",
+            action="reconcile",
+            result="ok",
+            reconciled=2,
+            color=True,
+            timestamp=fleet.datetime(2026, 7, 2, 13, 4, 5, tzinfo=fleet.UTC),
+        )
+
+        self.assertIn("2026-07-02T13:04:05Z", text)
+        self.assertIn("✓", text)
+        self.assertIn("machine=", text)
+        self.assertIn("action=", text)
+        self.assertIn("reconciled=2", text)
+        self.assertIn("\033[", text)
 
     def test_machine_watch_is_read_only_dashboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -241,15 +259,21 @@ class FleetShepherdSplitTests(unittest.TestCase):
 
         output = fleet.render_machine_watch_dashboard(snapshot)
 
-        self.assertIn("capacity total=1/5 train=1/4", output)
+        self.assertIn("capacity=1/5", output)
+        self.assertIn("train=1/4", output)
         self.assertIn("train_pending=4", output)
         self.assertNotIn("eval" + "_pending", output)
-        self.assertIn("launch_id=launch-live", output)
-        self.assertIn("hint=ok", output)
-        self.assertIn("launch_id=launch-missing", output)
-        self.assertIn("hint=needs_shepherd_finalize", output)
-        self.assertIn("orphaned_containers:", output)
-        self.assertIn("launch_id=launch-orphan", output)
+        self.assertIn("launch-live", output)
+        self.assertIn("✓ ok", output)
+        self.assertIn("launch-missing", output)
+        self.assertIn("→ needs_shepherd_finalize", output)
+        self.assertIn("orphaned containers:", output)
+        self.assertIn("launch-orphan", output)
+
+        color_output = fleet.render_machine_watch_dashboard(snapshot, color=True)
+        self.assertIn("\033[", color_output)
+        self.assertIn("✓", color_output)
+        self.assertIn("ok", color_output)
 
     def test_shepherd_once_reconciles_then_fills_slots_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,11 +294,11 @@ class FleetShepherdSplitTests(unittest.TestCase):
             conn = FakeConnection()
             calls: list[str] = []
 
-            def reconcile(_conn, machine):
+            def reconcile(_conn, machine, *, color):
                 calls.append(f"reconcile:{machine.name}")
                 return 1
 
-            def launch_next(_conn, *, machine, job_kind, limit, reconcile):
+            def launch_next(_conn, *, machine, job_kind, limit, reconcile, color):
                 calls.append(f"launch:{machine.name}:{job_kind}:{limit}:{reconcile}")
                 return 2
 

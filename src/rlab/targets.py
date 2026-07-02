@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import re
+from copy import copy
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import numpy as np
+
+from rlab.env_wrappers import progress_info_wrappers_for_config
 
 
 def target_class_name_for_game(game: str) -> str:
@@ -32,14 +35,17 @@ class RetroProgressTracker:
         self.target = target
         self.config = config
         self.episode_steps = 0
+        self.last_progress_step = 0
+        self.progress_info_wrappers = progress_info_wrappers_for_config(config)
 
     def reset(self, info: dict[str, Any] | None = None) -> None:
         self.episode_steps = 0
+        self.last_progress_step = 0
+        for wrapper in self.progress_info_wrappers:
+            wrapper.reset(info)
 
-    def step(self, native_reward: float, info: dict[str, Any], done: bool) -> ProgressStep:
-        self.episode_steps += 1
-        if done:
-            info["_native_done"] = True
+    @staticmethod
+    def _ensure_progress_defaults(info: dict[str, Any]) -> None:
         info.setdefault("x_pos", 0)
         info.setdefault("max_x_pos", 0)
         info.setdefault("level_x_pos", 0)
@@ -51,107 +57,31 @@ class RetroProgressTracker:
         info.setdefault("completed_level_count", 0)
         info.setdefault("died", False)
         info.setdefault("score_delta", 0)
-        info["reward_mode"] = self.config.reward_mode
-        info["raw_reward"] = float(native_reward)
-        info["shaped_reward"] = float(native_reward)
-        info["time_penalty"] = self.config.time_penalty
 
-        reward = float(native_reward) if self.config.use_retro_reward else float(native_reward)
-        reward -= self.config.time_penalty
-        custom_done = False
-        custom_truncated = False
-        if self.config.max_episode_steps > 0 and self.episode_steps >= self.config.max_episode_steps:
-            custom_done = True
-            custom_truncated = True
-        return ProgressStep(reward=reward, done=custom_done, truncated=custom_truncated)
-
-
-class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
-    def __init__(self, target: type[RetroTarget], config: Any):
-        super().__init__(target, config)
-        self.level_x_pos = 0
-        self.level_max_x_pos = 0
-        self.completed_level_base = 0
-        self.max_global_x_pos = 0
-        self.curr_score = 0
-        self.prev_lives: int | None = None
-        self.initial_level: tuple[int, int] | None = None
-        self.current_level: tuple[int, int] | None = None
-        self.completed_level_count = 0
-        self.current_level_completion_awarded = False
-        self.completed = False
-        self.last_progress_step = 0
-
-    def reset(self, info: dict[str, Any] | None = None) -> None:
-        super().reset(info)
-        info = info or {}
-        self.level_x_pos = 0
-        self.level_max_x_pos = 0
-        self.completed_level_base = 0
-        self.max_global_x_pos = 0
-        self.curr_score = int(info.get("score", 0))
-        lives = info.get("lives")
-        self.prev_lives = int(lives) if lives is not None else None
-        if "levelHi" in info or "levelLo" in info:
-            level = (int(info.get("levelHi", 0)), int(info.get("levelLo", 0)))
-            self.initial_level = level
-            self.current_level = level
-        else:
-            self.initial_level = None
-            self.current_level = None
-        self.completed_level_count = 0
-        self.current_level_completion_awarded = False
-        self.completed = False
-        self.last_progress_step = 0
+    def annotate_progress_info(self, native_reward: float, info: dict[str, Any], done: bool) -> None:
+        self._ensure_progress_defaults(info)
+        for wrapper in self.progress_info_wrappers:
+            wrapper.annotate(info, native_reward=native_reward, done=done)
+        self._ensure_progress_defaults(info)
 
     def step(self, native_reward: float, info: dict[str, Any], done: bool) -> ProgressStep:
         config = self.config
-        x_pos = int(info.get("xscrollHi", 0)) * 256 + int(info.get("xscrollLo", 0))
-        lives = info.get("lives")
-        level = (int(info.get("levelHi", 0)), int(info.get("levelLo", 0)))
-        if self.initial_level is None:
-            self.initial_level = level
-        if self.current_level is None:
-            self.current_level = level
+        if done:
+            info["_native_done"] = True
 
-        info_events = info.get("info_events") or info.get("done_on_info") or {}
-        died = "life_loss" in info_events or bool(info.get("life_loss", False))
-        if self.prev_lives is not None and lives is not None and int(lives) < self.prev_lives:
-            died = True
-        if lives is not None:
-            self.prev_lives = int(lives)
+        self.annotate_progress_info(native_reward, info, done)
 
-        native_level_changed = "level_change" in info_events
-        level_changed = native_level_changed or level != self.current_level
-        level_completion_event = False
-        if level_changed and not died:
-            self.completed_level_base += self.level_max_x_pos
-            self.completed_level_count += 1
-            level_completion_event = not self.current_level_completion_awarded
-            self.current_level = level
-            self.level_max_x_pos = 0
-            self.current_level_completion_awarded = False
-
-        self.level_x_pos = x_pos
-        self.level_max_x_pos = max(self.level_max_x_pos, x_pos)
-        global_x_pos = self.completed_level_base + self.level_x_pos
-        global_max_x_pos = self.completed_level_base + self.level_max_x_pos
-        progress_delta = max(0, global_max_x_pos - self.max_global_x_pos)
-        self.max_global_x_pos = max(self.max_global_x_pos, global_max_x_pos)
+        progress_delta = int(info.get("progress_delta", 0))
         if progress_delta > config.no_progress_min_delta:
             self.last_progress_step = self.episode_steps
-
-        completion_event = level_completion_event
-        if completion_event:
-            self.completed = True
 
         custom_done = False
         custom_truncated = False
 
         progress_reward = min(float(progress_delta), config.progress_reward_cap)
-        score = int(info.get("score", 0))
-        score_delta = max(0, score - self.curr_score)
-        self.curr_score = score
+        score_delta = int(info.get("score_delta", 0))
+        completion_event = bool(info.get("completion_event", info.get("level_complete", False)))
+        died = bool(info.get("died", False))
 
         native_reward_component = float(native_reward) if config.use_retro_reward else 0.0
         progress_component = float(progress_reward)
@@ -238,21 +168,6 @@ class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
             custom_done = True
             custom_truncated = True
 
-        if done:
-            info["_native_done"] = True
-        info["x_pos"] = int(global_x_pos)
-        info["max_x_pos"] = int(self.max_global_x_pos)
-        info["level_x_pos"] = int(self.level_x_pos)
-        info["level_max_x_pos"] = int(self.level_max_x_pos)
-        info["completed_level_base"] = int(self.completed_level_base)
-        info["global_x_pos"] = int(global_x_pos)
-        info["global_max_x_pos"] = int(self.max_global_x_pos)
-        info["progress_delta"] = int(progress_delta)
-        info["level_id"] = f"{level[0]}-{level[1]}"
-        info["level_changed"] = level_changed
-        info["completed_level_count"] = int(self.completed_level_count)
-        info["level_complete"] = bool(completion_event)
-        info["completion_event"] = bool(completion_event)
         info["completion_bonus"] = config.completion_reward if completion_event else 0.0
         info["reward_mode"] = config.reward_mode
         info["progress_reward"] = float(progress_reward)
@@ -278,16 +193,16 @@ class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
             and config.no_progress_timeout_steps > 0
             and self.episode_steps - self.last_progress_step >= config.no_progress_timeout_steps
         )
-        info["died"] = died
-        if died:
-            info["death_x_pos"] = int(self.max_global_x_pos)
-            info["death_level_x_pos"] = int(self.level_max_x_pos)
 
         return ProgressStep(
             reward=float(shaped_reward),
             done=custom_done,
             truncated=custom_truncated,
         )
+
+
+class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
+    pass
 
 
 class RetroTarget:
@@ -300,6 +215,7 @@ class RetroTarget:
     native_level_variables: ClassVar[tuple[str, ...]] = ()
     action_library: ClassVar[dict[str, np.ndarray]] = {}
     action_sets: ClassVar[dict[str, tuple[str, ...]]] = {}
+    default_env_wrappers: ClassVar[tuple[dict[str, Any], ...]] = ()
     tracker_cls: ClassVar[type[RetroProgressTracker]] = RetroProgressTracker
 
     @classmethod
@@ -321,6 +237,9 @@ class RetroTarget:
 
     @classmethod
     def create_tracker(cls, config: Any) -> RetroProgressTracker:
+        if cls.default_env_wrappers and not getattr(config, "env_wrappers", ()):
+            config = copy(config)
+            setattr(config, "env_wrappers", cls.default_env_wrappers)
         return cls.tracker_cls(cls, config)
 
 
@@ -337,7 +256,8 @@ class SuperMarioBrosNesV0Target(RetroTarget):
     default_reward_mode = "baseline"
     native_life_variable = "lives"
     native_level_variables = ("levelHi", "levelLo")
-    tracker_cls = SuperMarioBrosNesV0ProgressTracker
+    default_env_wrappers = ({"id": "SuperMarioBrosNesProgressInfoWrapper"},)
+    tracker_cls = RetroProgressTracker
 
     # stable-retro button order for NES:
     # ['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']

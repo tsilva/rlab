@@ -5,9 +5,7 @@ import os
 import tempfile
 import unittest
 from argparse import Namespace
-from contextlib import redirect_stderr
 from datetime import UTC, datetime, timedelta
-from io import StringIO
 from pathlib import Path
 from unittest import mock
 

@@ -427,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-only", action="store_true")
     add_env_config_args(parser, max_steps_default=1200)
     parser.add_argument(
-        "--episodes", type=int, default=3, help="Number of episodes; use 0 to run forever"
+        "--episodes", type=int, default=0, help="Number of episodes; use 0 to run forever"
     )
     parser.add_argument(
         "--seed",

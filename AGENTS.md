@@ -21,7 +21,7 @@ Before choosing hardware, launching training, changing concurrency, or recommend
 - Log to W&B and upload checkpoint/final artifacts unless explicitly opted out.
 - Every training run needs a specific description via `--run-description`.
 - Queue-backed train jobs should be profileless by default: do not pass or persist a `profile_id` unless the user explicitly asks for a profile-locked lane. Lock train jobs to immutable runtime image digests instead, resolving to the latest successful train image by default when no digest is specified.
-- Use run names shaped as `<batch>_<scope>_<arm>_s<seed>_<utc>`, for example `b58_l11_lowkldecay_s108_20260623T142700Z`. Keep target/scope separate from the arm/recipe unless the recipe is inherently target-specific.
+- Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `b82-b55reval-s6-20260702T150934Z`. Keep target/scope, runtime versions, and long recipe context in W&B groups, tags, descriptions, and spec metadata rather than the run name.
 - Do not run robust evals inside remote training by default. Evaluate checkpoints out of process; promote by completion rate, then mean reward, then max x-position.
 
 ## Metrics

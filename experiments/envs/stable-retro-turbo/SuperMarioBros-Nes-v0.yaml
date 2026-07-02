@@ -38,6 +38,7 @@ env_config:
   info_filter: terminal
   # Default Mario reward shaping contract.
   env_wrappers:
+  - id: SuperMarioBrosNesProgressInfoWrapper
   - id: SuperMarioBrosNesRewardEnvWrapper
     kwargs:
       reward_mode: score

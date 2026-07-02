@@ -34,6 +34,7 @@ from rlab.callbacks import (
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
+    TimeElapsedCallback,
     TimedCheckpointCallback,
     WandbCheckpointArtifactCallback,
 )
@@ -470,6 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     callbacks = [
         GracefulStopCallback(graceful_stop_flag),
         Sb3HumanOutputFormatCallback(),
+        TimeElapsedCallback(wandb_run=wandb_run),
         ThroughputCallback(),
         DoneCounterCallback(
             wandb_run=wandb_run,

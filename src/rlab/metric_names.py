@@ -4,6 +4,8 @@ import re
 
 GLOBAL_STEP = "global_step"
 
+TIME_TIME_ELAPSED = "time/time_elapsed"
+
 THROUGHPUT_ROLLOUT_FPS = "throughput/rollout_fps"
 THROUGHPUT_LOOP_FPS = "throughput/loop_fps"
 

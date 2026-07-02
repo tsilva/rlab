@@ -18,6 +18,7 @@ RUN_OBJECTIVE_KEYS = (
     "train/completion_episode_rate",
     "completion_episode_rate",
 )
+RUN_PRIMARY_ORDER = "-summary_metrics.train/info/level_complete/rate/min/last"
 CHECKPOINT_COMPLETION_KEYS = (
     "leader/checkpoint/completion_rate",
     "eval/done/level_change/from_rate/min",
@@ -40,6 +41,8 @@ CHECKPOINT_REWARD_KEYS = (
     "eval/reward/mean",
     "reward_mean",
 )
+CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/completion_rate"
+WANDB_RUNS_PER_PAGE = 200
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,68 @@ def _tag_value(tags: Iterable[Any], prefix: str) -> str:
     return ""
 
 
+def _summary_metric_key(metric: str) -> str:
+    return f"summary_metrics.{metric}"
+
+
+def _exists_filter(metric: str) -> dict[str, Any]:
+    return {_summary_metric_key(metric): {"$exists": True}}
+
+
+def _and_filters(*filters: Mapping[str, Any] | None) -> dict[str, Any]:
+    parts = [dict(item) for item in filters if item]
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return parts[0]
+    return {"$and": parts}
+
+
+def goal_run_filter(goal: str | None) -> dict[str, Any]:
+    if not goal:
+        return {}
+    return {"$or": [{"config.goal_slug": goal}, {"tags": f"goal:{goal}"}]}
+
+
+def run_objective_filter(objective_keys: Sequence[str]) -> dict[str, Any]:
+    return {"$or": [_exists_filter(key) for key in objective_keys]}
+
+
+def run_query_objective_keys(args: argparse.Namespace) -> tuple[str, ...]:
+    explicit_keys = tuple(args.objective_key or ())
+    if explicit_keys:
+        return explicit_keys
+    if getattr(args, "include_legacy_objectives", False):
+        return RUN_OBJECTIVE_KEYS
+    return (RUN_OBJECTIVE_KEYS[0],)
+
+
+def checkpoint_summary_filter() -> dict[str, Any]:
+    current_leader = {
+        "$and": [
+            _exists_filter("leader/checkpoint/completion_rate"),
+            _exists_filter("leader/checkpoint/completion_rate_mean"),
+            _exists_filter("leader/checkpoint/max_x_max"),
+            _exists_filter("leader/checkpoint/reward_mean"),
+            _exists_filter("leader/checkpoint/artifact_ref"),
+        ]
+    }
+    legacy_eval = {
+        "$and": [
+            _exists_filter("eval/done/level_change/rate"),
+            _exists_filter("eval/progress/x/max"),
+            _exists_filter("eval/reward/mean"),
+            {
+                "$or": [
+                    _exists_filter("eval/checkpoint/artifact"),
+                    _exists_filter("eval/checkpoint_artifact"),
+                ]
+            },
+        ]
+    }
+    return {"$or": [current_leader, legacy_eval]}
+
+
 def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
     config = dict(getattr(run, "config", {}) or {})
     summary = getattr(run, "summary", {}) or {}
@@ -184,6 +249,7 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
     artifact_ref = _first_text(
         _mapping_value(summary, "leader/checkpoint/artifact_ref"),
+        _mapping_value(summary, "eval/checkpoint/artifact"),
         _mapping_value(summary, "eval/checkpoint_artifact"),
     )
     if completion is None or completion_mean is None or max_x is None or reward is None or not artifact_ref:
@@ -213,17 +279,26 @@ def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[Checkpo
     )
 
 
-def wandb_runs(*, project: str, goal: str | None = None):
+def wandb_runs(
+    *,
+    project: str,
+    goal: str | None = None,
+    extra_filter: Mapping[str, Any] | None = None,
+    order: str = "+created_at",
+    lazy: bool = True,
+):
     load_wandb_env()
     import wandb
 
     api = wandb.Api()
-    if goal:
-        return api.runs(
-            project,
-            filters={"$or": [{"config.goal_slug": goal}, {"tags": f"goal:{goal}"}]},
-        )
-    return api.runs(project)
+    filters = _and_filters(goal_run_filter(goal), extra_filter)
+    return api.runs(
+        project,
+        filters=filters or None,
+        order=order,
+        per_page=WANDB_RUNS_PER_PAGE,
+        lazy=lazy,
+    )
 
 
 def print_json(rows: Sequence[Any]) -> None:
@@ -286,7 +361,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--objective-key",
         action="append",
         default=[],
-        help="W&B summary metric to rank; may be repeated. Defaults cover current and legacy goal metrics.",
+        help=(
+            "W&B summary metric to rank; may be repeated. Defaults to the current primary "
+            "goal metric with automatic legacy fallback if no current rows are found."
+        ),
+    )
+    runs.add_argument(
+        "--include-legacy-objectives",
+        action="store_true",
+        help=(
+            "Scan legacy objective aliases too. By default, the query uses the current primary "
+            "metric and falls back to legacy aliases only if no current rows are found."
+        ),
     )
     runs.set_defaults(func=cmd_runs)
 
@@ -301,15 +387,40 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_runs(args: argparse.Namespace) -> int:
     objective_keys = tuple(args.objective_key or RUN_OBJECTIVE_KEYS)
+    query_objective_keys = run_query_objective_keys(args)
     scores = [
         score
         for score in (
             run_score(run, objective_keys=objective_keys)
-            for run in wandb_runs(project=args.project, goal=args.goal)
+            for run in wandb_runs(
+                project=args.project,
+                goal=args.goal,
+                extra_filter=run_objective_filter(query_objective_keys),
+                order=RUN_PRIMARY_ORDER,
+                lazy=False,
+            )
         )
         if score is not None and (not args.goal or score.goal_slug == args.goal)
     ]
     leaders = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[: max(0, int(args.limit))]
+    if not leaders and not args.objective_key and not args.include_legacy_objectives:
+        scores = [
+            score
+            for score in (
+                run_score(run, objective_keys=objective_keys)
+                for run in wandb_runs(
+                    project=args.project,
+                    goal=args.goal,
+                    extra_filter=run_objective_filter(RUN_OBJECTIVE_KEYS[1:]),
+                    order="-created_at",
+                    lazy=False,
+                )
+            )
+            if score is not None and (not args.goal or score.goal_slug == args.goal)
+        ]
+        leaders = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[
+            : max(0, int(args.limit))
+        ]
     if args.json:
         print_json(leaders)
     else:
@@ -320,7 +431,15 @@ def cmd_runs(args: argparse.Namespace) -> int:
 def cmd_checkpoints(args: argparse.Namespace) -> int:
     leaders = [
         leader
-        for leader in (checkpoint_leader(run) for run in wandb_runs(project=args.project, goal=args.goal))
+        for leader in (
+            checkpoint_leader(run)
+            for run in wandb_runs(
+                project=args.project,
+                goal=args.goal,
+                extra_filter=checkpoint_summary_filter(),
+                order=CHECKPOINT_PRIMARY_ORDER,
+            )
+        )
         if leader is not None and (not args.goal or leader.goal_slug == args.goal)
     ]
     ranked = rank_checkpoint_leaders(leaders)[: max(0, int(args.limit))]

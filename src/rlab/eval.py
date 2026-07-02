@@ -51,6 +51,7 @@ from rlab.metric_names import (
     EVAL_REWARD_MAX,
     EVAL_REWARD_MEAN,
     EVAL_REWARD_STD,
+    GLOBAL_STEP,
 )
 from rlab.model_sources import (
     ResolvedModelSource,
@@ -107,6 +108,33 @@ def best_metrics(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not rows:
         return None
     return max(rows, key=score)
+
+
+def artifact_kind(artifact_name: str, artifact: Any) -> str:
+    metadata = getattr(artifact, "metadata", {}) or {}
+    if isinstance(metadata, dict) and metadata.get("kind"):
+        return str(metadata["kind"])
+    name = artifact_name.split(":", 1)[0]
+    if name.endswith("-final"):
+        return "final"
+    if name.endswith("-best"):
+        return "best"
+    if name.endswith("-checkpoint"):
+        return "checkpoint"
+    return ""
+
+
+def already_evaluated_artifact(
+    *,
+    checkpoint_step: int | None,
+    artifact_name: str,
+    kind: str,
+    evaluated_steps: set[int],
+    evaluated_artifacts: set[str],
+) -> bool:
+    if kind == "final":
+        return artifact_name in evaluated_artifacts
+    return checkpoint_step is not None and checkpoint_step in evaluated_steps
 
 
 def eval_seed_for_checkpoint(args: argparse.Namespace) -> int:
@@ -214,6 +242,7 @@ def log_wandb_eval(wandb_run, metrics: dict[str, Any], video_path: Path | None) 
     import wandb
 
     payload: dict[str, Any] = {
+        GLOBAL_STEP: metrics["checkpoint_step"],
         EVAL_REWARD_MEAN: metrics["reward_mean"],
         EVAL_REWARD_STD: metrics["reward_std"],
         EVAL_REWARD_MAX: metrics["reward_max"],
@@ -432,6 +461,9 @@ def run_checkpoint_artifact_eval(
     history_path = Path(args.eval_dir) / args.eval_run_name / "checkpoint_eval_metrics.jsonl"
     history = load_eval_history(history_path)
     evaluated_steps = {int(row["checkpoint_step"]) for row in history}
+    evaluated_artifacts = {
+        str(row["checkpoint_artifact"]) for row in history if row.get("checkpoint_artifact")
+    }
     wandb_run = init_wandb_run(args, artifacts)
 
     try:
@@ -439,11 +471,14 @@ def run_checkpoint_artifact_eval(
             artifact_name = getattr(artifact, "qualified_name", None) or getattr(
                 artifact, "name", "artifact"
             )
+            kind = artifact_kind(artifact_name, artifact)
             checkpoint_step = model_artifact_checkpoint_step(artifact)
-            if (
-                checkpoint_step is not None
-                and checkpoint_step in evaluated_steps
-                and not args.force
+            if not args.force and already_evaluated_artifact(
+                checkpoint_step=checkpoint_step,
+                artifact_name=artifact_name,
+                kind=kind,
+                evaluated_steps=evaluated_steps,
+                evaluated_artifacts=evaluated_artifacts,
             ):
                 print(f"Skipping step {checkpoint_step}: already evaluated")
                 continue
@@ -454,7 +489,13 @@ def run_checkpoint_artifact_eval(
             if checkpoint_step is None:
                 print(f"Skipping {artifact_name}: cannot infer checkpoint step", file=sys.stderr)
                 continue
-            if checkpoint_step in evaluated_steps and not args.force:
+            if not args.force and already_evaluated_artifact(
+                checkpoint_step=checkpoint_step,
+                artifact_name=artifact_name,
+                kind=kind,
+                evaluated_steps=evaluated_steps,
+                evaluated_artifacts=evaluated_artifacts,
+            ):
                 print(f"Skipping step {checkpoint_step}: already evaluated")
                 continue
 
@@ -475,6 +516,7 @@ def run_checkpoint_artifact_eval(
             append_eval_history(history_path, metrics)
             history.append(metrics)
             evaluated_steps.add(checkpoint_step)
+            evaluated_artifacts.add(artifact_name)
             log_wandb_eval(wandb_run, metrics, video_path)
 
             current_best = best_metrics(history)

@@ -55,7 +55,6 @@ rlab eval \
 rlab play \
   --game <GameId> \
   --model runs/local_smoke/final_model.zip \
-  --episodes 3 \
   --max-steps 1200 \
   --fps 30 \
   --scale 4
@@ -74,14 +73,16 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 ## Commands
 
 ```bash
-rlab validate                                      # validate goals, specs, recipes, benchmarks, machine config, and policies
+rlab validate                                      # validate goals, specs, benchmarks, machine config, and policies
 rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
 rlab train --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
-rlab play <entity>/<project>/<run-name>-checkpoint:latest --episodes 0 --policy-env fast
+rlab play <run-name>                                  # installed CLI; works outside this checkout
+rlab play <entity>/<project>/<run-name>-checkpoint:latest --policy-env fast
 rlab jobs status --goal <goal-slug>
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
+rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
 rlab jobs cancel-train <train_job_id>
 rlab fleet policy
 rlab fleet plan
@@ -109,6 +110,25 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
 Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
+
+To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
+single-row limit:
+
+```bash
+rlab leaders checkpoints --goal Level1-1 --limit 1 --json
+```
+
+`leaders checkpoints` returns evaluated checkpoint rows already sorted by the checkpoint promotion
+order, so `--limit 1` is the canonical best-checkpoint query. Use `leaders runs` separately when
+the question is about training/spec winners rather than the checkpoint artifact to play or promote.
+`leaders runs` uses the current primary goal metric by default for fast W&B queries; pass
+`--include-legacy-objectives` when you need to scan older objective-metric aliases too.
+
+To regenerate the W&B checkpoint leaderboard report with one section per goal, run:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06-25T00:00:00Z python scripts/create_wandb_checkpoint_leaderboard_report.py
+```
 
 ## Fleet
 

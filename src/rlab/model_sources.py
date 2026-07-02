@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,12 @@ def artifact_ref_arg(value: str) -> str:
     return value
 
 
+def positional_model_source_arg(value: str) -> str:
+    if "/" not in value and ":" not in value:
+        return value
+    return artifact_ref_arg(value)
+
+
 def add_model_source_args(
     parser: argparse.ArgumentParser,
     *,
@@ -63,8 +70,11 @@ def add_model_source_args(
         parser.add_argument(
             "artifact_ref",
             nargs="?",
-            type=artifact_ref_arg,
-            help="Full W&B artifact ref, for example entity/project/run-checkpoint:latest.",
+            type=positional_model_source_arg,
+            help=(
+                "W&B run name, or a full artifact ref like "
+                "entity/project/run-checkpoint:latest."
+            ),
         )
     model_kwargs: dict[str, Any] = {}
     if model_default is not None:
@@ -116,7 +126,15 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
         return artifacts[0]
     positional = getattr(args, "artifact_ref", None)
     if positional:
-        return str(positional)
+        positional_ref = str(positional)
+        if "/" in positional_ref or ":" in positional_ref:
+            return positional_ref
+        return model_artifact_ref(
+            project=getattr(args, "artifact_project", DEFAULT_WANDB_PROJECT_PATH),
+            run_name=positional_ref,
+            kind=getattr(args, "artifact_kind", "checkpoint"),
+            version=getattr(args, "artifact_version", "latest"),
+        )
     run_name = getattr(args, "artifact_run", None)
     if not run_name:
         return None
@@ -184,8 +202,66 @@ def find_model_artifacts(args: argparse.Namespace):
     return versions
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mapping_value(mapping: Any, key: str) -> Any:
+    if isinstance(mapping, Mapping):
+        return mapping.get(key)
+    json_dict = getattr(mapping, "_json_dict", None)
+    if isinstance(json_dict, Mapping):
+        return json_dict.get(key)
+    getter = getattr(mapping, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:
+            return None
+    return None
+
+
+def _artifact_kind(artifact: Any) -> str:
+    metadata = getattr(artifact, "metadata", {}) or {}
+    if isinstance(metadata, Mapping) and metadata.get("kind"):
+        return str(metadata["kind"])
+    name = artifact_qualified_name(artifact).split(":", 1)[0]
+    if name.endswith("-final"):
+        return "final"
+    if name.endswith("-best"):
+        return "best"
+    if name.endswith("-checkpoint"):
+        return "checkpoint"
+    return ""
+
+
+def _logged_run_global_step(artifact: Any) -> int | None:
+    try:
+        run = artifact.logged_by()
+    except Exception:
+        return None
+    if run is None:
+        return None
+    summary = getattr(run, "summary", {}) or {}
+    for key in ("global_step", "time/total_timesteps", "total_timesteps"):
+        step = _optional_int(_mapping_value(summary, key))
+        if step is not None:
+            return step
+    return None
+
+
 def model_artifact_checkpoint_step(artifact: Any, model_path: Path | None = None) -> int | None:
-    return checkpoint_step_from_artifact(artifact, model_path)
+    step = checkpoint_step_from_artifact(artifact, model_path)
+    if step is not None:
+        return step
+    if _artifact_kind(artifact) == "final":
+        return _logged_run_global_step(artifact)
+    return None
 
 
 def download_artifact_source(artifact: Any, root: Path) -> ResolvedModelSource:

@@ -2018,6 +2018,18 @@ def format_utc_minute(value: Any) -> str:
     return timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
+def format_utc_second(value: Any | None = None) -> str:
+    timestamp = value or datetime.now(UTC)
+    if not isinstance(timestamp, datetime):
+        try:
+            timestamp = datetime.fromisoformat(str(timestamp).strip().replace("Z", "+00:00"))
+        except ValueError:
+            return str(timestamp)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def format_containers(
     containers: Sequence[ExistingContainer],
     jobs: Sequence[RunningJob] = (),
@@ -2424,8 +2436,17 @@ def _watch_hint(
     return "needs_shepherd_mark_failed"
 
 
+def watch_hint_icon(hint: str) -> str:
+    if hint == "ok":
+        return "✓"
+    if hint == "orphaned_container":
+        return "!"
+    if hint.startswith("needs_shepherd"):
+        return "→"
+    return "?"
+
+
 def render_machine_watch_dashboard(snapshot: MachineWatchSnapshot, *, color: bool = False) -> str:
-    del color
     machine = snapshot.machine
     active_containers = [container for container in snapshot.containers if _job_container_active(container)]
     active_by_kind: dict[str, int] = {"train": 0}
@@ -2435,60 +2456,166 @@ def render_machine_watch_dashboard(snapshot: MachineWatchSnapshot, *, color: boo
     launches_by_id = {str(launch["launch_id"]): launch for launch in snapshot.launches}
     containers_by_launch = {container.launch_id: container for container in snapshot.containers if container.launch_id}
     train_counts = snapshot.queue_counts.get("train", {})
-    lines = [
-        f"rlab fleet watch machine={machine.name} mode=read-only captured={snapshot.captured_at.isoformat()}",
+    width = max(shutil.get_terminal_size((120, 30)).columns, 72)
+    captured = format_utc_second(snapshot.captured_at)
+    clock = colorize(captured, "white", enabled=color)
+    title = colorize("rlab fleet watch", "bright_cyan", enabled=color)
+    capacity = f"{len(active_containers)}/{machine.limits.max_parallel_containers}"
+    train_capacity = f"{active_by_kind['train']}/{machine.max_containers_for_kind('train')}"
+    header = [
+        f"{title} {colorize('◷', 'gray', enabled=color)} {clock}",
         (
-            "capacity "
-            f"total={len(active_containers)}/{machine.limits.max_parallel_containers} "
-            f"train={active_by_kind['train']}/{machine.max_containers_for_kind('train')}"
+            f"machine={colorize(machine.name, 'cyan', enabled=color)} "
+            f"{dashboard_chip('mode', 'read-only', 'blue', color=color)} "
+            f"{dashboard_chip('capacity', capacity, heat_style(used_total_ratio(capacity) or 0.0), color=color)} "
+            f"{dashboard_chip('train', train_capacity, heat_style(used_total_ratio(train_capacity) or 0.0), color=color)}"
         ),
         (
             "queue "
-            f"train_pending={int(train_counts.get('pending', 0))} "
-            f"train_launching={int(train_counts.get('launching', 0))} "
-            f"train_running={int(train_counts.get('running', 0))}"
+            f"{dashboard_chip('train_pending', str(int(train_counts.get('pending', 0))), 'bright_cyan', color=color)} "
+            f"{dashboard_chip('train_launching', str(int(train_counts.get('launching', 0))), 'bright_yellow', color=color)} "
+            f"{dashboard_chip('train_running', str(int(train_counts.get('running', 0))), 'bright_green', color=color)}"
         ),
-        "launches:",
+        dashboard_divider(width, color=color),
     ]
-    if not snapshot.launches:
-        lines.append("  none")
+    sections = ["\n".join(header)]
+
+    launch_rows: list[list[str]] = []
     for launch in snapshot.launches:
         launch_id = str(launch["launch_id"])
         container = containers_by_launch.get(launch_id)
         result_present = bool(snapshot.result_present.get(launch_id, False))
         hint = _watch_hint(launch=launch, container=container, result_present=result_present)
-        lines.append(
-            "  "
-            f"launch_id={launch_id} "
-            f"job={launch['job_kind']}/{launch['job_id']} "
-            f"launch_state={launch['state']} "
-            f"container={container.name if container else 'missing'} "
-            f"container_state={container.state if container else 'missing'} "
-            f"result={'yes' if result_present else 'no'} "
-            f"hint={hint}"
+        launch_rows.append(
+            [
+                f"{watch_hint_icon(hint)} {hint}",
+                launch_id,
+                f"{launch['job_kind']}/{launch['job_id']}",
+                str(launch["state"]),
+                container.name if container else "missing",
+                container.state if container else "missing",
+                "yes" if result_present else "no",
+            ]
         )
+    sections.append(
+        numbered_section(1, " launches:", "cyan", color=color)
+        + "\n"
+        + (
+            style_table(
+                format_table(
+                    ["hint", "launch_id", "job", "launch", "container", "state", "result"],
+                    launch_rows,
+                    max_width=width,
+                ),
+                color=color,
+            )
+            if launch_rows
+            else highlight_dashboard_text("none", color=color)
+        )
+    )
+
     orphaned = [
         container
         for container in snapshot.containers
         if container.launch_id and container.launch_id not in launches_by_id
     ]
     if orphaned:
-        lines.append("orphaned_containers:")
+        orphan_rows = []
         for container in orphaned:
             result_present = bool(snapshot.result_present.get(str(container.launch_id), False))
-            lines.append(
-                "  "
-                f"container={container.name} "
-                f"launch_id={container.launch_id} "
-                f"job={container.job_kind or 'unknown'}/{container.labels.get(JOB_ID_LABEL, 'unknown')} "
-                f"state={container.state} "
-                f"result={'yes' if result_present else 'no'} "
-                "hint=orphaned_container"
+            orphan_rows.append(
+                [
+                    "! orphaned_container",
+                    container.name,
+                    container.launch_id or "unknown",
+                    f"{container.job_kind or 'unknown'}/{container.labels.get(JOB_ID_LABEL, 'unknown')}",
+                    container.state,
+                    "yes" if result_present else "no",
+                ]
             )
+        sections.append(
+            numbered_section(2, " orphaned containers:", "bright_yellow", color=color)
+            + "\n"
+            + style_table(
+                format_table(
+                    ["hint", "container", "launch_id", "job", "state", "result"],
+                    orphan_rows,
+                    max_width=width,
+                ),
+                color=color,
+            )
+        )
     if snapshot.warnings:
-        lines.append("warnings:")
-        lines.extend(f"  {warning}" for warning in snapshot.warnings)
-    return "\n".join(lines)
+        sections.append(
+            numbered_section(3, " warnings:", "yellow", color=color)
+            + "\n"
+            + "\n".join(highlight_dashboard_text(f"  ! {warning}", color=color) for warning in snapshot.warnings)
+        )
+    return "\n\n".join(sections)
+
+
+def shepherd_color_enabled(color: bool | None) -> bool:
+    return sys.stdout.isatty() if color is None else color
+
+
+def shepherd_event_style(action: str, result: str | None) -> str:
+    if result in {"ok", "started"}:
+        return "bright_green"
+    if result in {"busy", "skip"} or action in {"launch-next", "reconcile"}:
+        return "bright_yellow" if result == "start" else "bright_cyan"
+    if result in {"failed", "error"} or action == "error":
+        return "bright_red"
+    if action == "stop":
+        return "yellow"
+    return "white"
+
+
+def shepherd_event_icon(action: str, result: str | None) -> str:
+    if result in {"ok", "started"}:
+        return "✓"
+    if result in {"busy", "skip"}:
+        return "!"
+    if result in {"failed", "error"} or action == "error":
+        return "✕"
+    if action in {"launch", "launch-next"}:
+        return "→"
+    if action == "lock":
+        return "■"
+    if action == "stop":
+        return "■"
+    return "•"
+
+
+def format_shepherd_event(
+    *,
+    machine: str,
+    action: str,
+    result: str | None = None,
+    color: bool | None = None,
+    timestamp: datetime | None = None,
+    **fields: Any,
+) -> str:
+    enabled = shepherd_color_enabled(color)
+    style = shepherd_event_style(action, result)
+    icon = colorize(shepherd_event_icon(action, result), style, enabled=enabled)
+    parts = [
+        colorize(format_utc_second(timestamp), "gray", enabled=enabled),
+        icon,
+        f"machine={colorize(machine, 'cyan', enabled=enabled)}",
+        f"action={colorize(action, style, enabled=enabled)}",
+    ]
+    if result is not None:
+        parts.append(f"result={colorize(result, style, enabled=enabled)}")
+    for key, value in fields.items():
+        if value is None:
+            continue
+        rendered = shlex.quote(str(value)) if isinstance(value, str) and any(char.isspace() for char in value) else str(value)
+        parts.append(f"{key}={highlight_dashboard_text(rendered, color=enabled)}")
+    return " ".join(parts)
+
+
+def log_shepherd_event(*, color: bool | None = None, **fields: Any) -> None:
+    print(format_shepherd_event(color=color, **fields), flush=True)
 
 
 def docker_pull_for_job(machine: MachineConfig, runtime_image_ref: str) -> int:
@@ -2504,6 +2631,7 @@ def launch_claimed_job_container(
     machine: MachineConfig,
     job_kind: str,
     job_id: int | None = None,
+    color: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     launch_id = new_launch_id(job_kind, job_id)
     claimed = claim_job_launch(
@@ -2550,17 +2678,22 @@ def launch_claimed_job_container(
             container_name=container_name,
             provider_run_id=provider_run_id,
         )
-        print(
-            f"machine={machine.name} action=launch result=started "
-            f"job_kind={job_kind} job_id={job['id']} "
-            f"launch_id={launch_id} container={container_name}"
+        log_shepherd_event(
+            machine=machine.name,
+            action="launch",
+            result="started",
+            job_kind=job_kind,
+            job_id=job["id"],
+            launch_id=launch_id,
+            container=container_name,
+            color=color,
         )
         return job, launch
     except Exception:
         raise
 
 
-def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
+def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | None = None) -> int:
     launches = active_job_launches(conn, machine=machine.name)
     containers = {container.launch_id: container for container in list_job_containers(machine)}
     reconciled = 0
@@ -2571,10 +2704,24 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
             result = read_remote_result(machine, str(launch["output_uri"]))
             if result is not None:
                 finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
-                print(f"finalized launch_id={launch_id} from result.json")
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="finalize",
+                    result="ok",
+                    launch_id=launch_id,
+                    source="result.json",
+                    color=color,
+                )
             elif launch["state"] == "launching":
                 release_job_launch(conn, launch_id=launch_id, error="launching container missing")
-                print(f"released launch_id={launch_id}: launching container missing")
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="release",
+                    result="ok",
+                    launch_id=launch_id,
+                    reason="launching container missing",
+                    color=color,
+                )
             else:
                 synthetic = {
                     "job_kind": launch["job_kind"],
@@ -2585,7 +2732,14 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
                     "error": "running container missing and result.json not found",
                 }
                 finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
-                print(f"failed launch_id={launch_id}: running container missing")
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="finalize",
+                    result="failed",
+                    launch_id=launch_id,
+                    reason="running container missing",
+                    color=color,
+                )
             reconciled += 1
             continue
         if container.state == "running":
@@ -2600,7 +2754,14 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
         result = read_remote_result(machine, str(launch["output_uri"]))
         if result is not None:
             finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
-            print(f"finalized launch_id={launch_id} exit_state={container.state}")
+            log_shepherd_event(
+                machine=machine.name,
+                action="finalize",
+                result="ok",
+                launch_id=launch_id,
+                exit_state=container.state,
+                color=color,
+            )
         else:
             synthetic = {
                 "job_kind": launch["job_kind"],
@@ -2611,7 +2772,14 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
                 "error": f"container exited without result.json: {container.status}",
             }
             finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
-            print(f"failed launch_id={launch_id}: missing result.json")
+            log_shepherd_event(
+                machine=machine.name,
+                action="finalize",
+                result="failed",
+                launch_id=launch_id,
+                reason="missing result.json",
+                color=color,
+            )
         reconciled += 1
     return reconciled
 
@@ -2639,15 +2807,22 @@ def launch_next_jobs(
     job_kind: str,
     limit: int,
     reconcile: bool = True,
+    color: bool | None = None,
 ) -> int:
     if reconcile:
-        reconcile_machine_launches(conn, machine)
+        reconcile_machine_launches(conn, machine, color=color)
     launched = 0
     active, capacity, slots = job_container_slot_usage(machine, job_kind=job_kind)
     if slots <= 0:
-        print(
-            f"machine={machine.name} action=skip reason=no_available_slots "
-            f"job_kind={job_kind} used={active} max={capacity}"
+        log_shepherd_event(
+            machine=machine.name,
+            action="launch-next",
+            result="skip",
+            reason="no_available_slots",
+            job_kind=job_kind,
+            used=active,
+            max=capacity,
+            color=color,
         )
         return 0
     for _ in range(min(int(limit), slots)):
@@ -2655,6 +2830,7 @@ def launch_next_jobs(
             conn,
             machine=machine,
             job_kind=job_kind,
+            color=color,
         )
         if claimed is None:
             break
@@ -2687,10 +2863,19 @@ def cmd_container_launch(args: argparse.Namespace) -> int:
 
 def cmd_container_launch_next(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
+    color = not getattr(args, "no_color", False)
     if not args.execute:
         slots = machine_available_slots(machine, job_kind=args.job_kind)
         planned = min(int(args.limit), slots)
-        print(f"dry_run: would claim up to {planned} {args.job_kind} job(s) machine={machine.name}")
+        log_shepherd_event(
+            machine=machine.name,
+            action="launch-next",
+            result="planned",
+            mode="dry-run",
+            job_kind=args.job_kind,
+            planned=planned,
+            color=color,
+        )
         return 0
     conn = _connect_from_args(args)
     try:
@@ -2700,17 +2885,32 @@ def cmd_container_launch_next(args: argparse.Namespace) -> int:
             job_kind=args.job_kind,
             limit=int(args.limit),
             reconcile=True,
+            color=color,
         )
     finally:
         conn.close()
-    print(f"launched={launched} machine={machine.name} job_kind={args.job_kind}")
+    log_shepherd_event(
+        machine=machine.name,
+        action="launch-next",
+        result="ok",
+        job_kind=args.job_kind,
+        launched=launched,
+        color=color,
+    )
     return 0
 
 
 def cmd_container_reconcile(args: argparse.Namespace) -> int:
+    color = not getattr(args, "no_color", False)
     if not args.execute:
         target = args.machine or "all"
-        print(f"dry_run: would reconcile job-container launches for machine={target}")
+        log_shepherd_event(
+            machine=str(target),
+            action="reconcile",
+            result="planned",
+            mode="dry-run",
+            color=color,
+        )
         return 0
     registry = load_registry_from_args(args)
     machines = [resolve_machine(registry, args.machine)] if args.machine else list(registry.machines.values())
@@ -2718,10 +2918,16 @@ def cmd_container_reconcile(args: argparse.Namespace) -> int:
     try:
         total = 0
         for machine in machines:
-            total += reconcile_machine_launches(conn, machine)
+            total += reconcile_machine_launches(conn, machine, color=color)
     finally:
         conn.close()
-    print(f"reconciled={total}")
+    log_shepherd_event(
+        machine=args.machine or "all",
+        action="reconcile",
+        result="ok",
+        reconciled=total,
+        color=color,
+    )
     return 0
 
 
@@ -2752,13 +2958,27 @@ def release_shepherd_lock(conn, lock: ShepherdLock) -> None:
 
 def cmd_container_shepherd(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
+    color = not getattr(args, "no_color", False)
     if not args.execute:
         while True:
-            print(f"machine={machine.name} action=reconcile mode=dry-run")
+            log_shepherd_event(
+                machine=machine.name,
+                action="reconcile",
+                result="planned",
+                mode="dry-run",
+                color=color,
+            )
             status = cmd_container_reconcile(args)
             if status != 0:
                 return status
-            print(f"machine={machine.name} action=launch-next mode=dry-run limit={args.limit}")
+            log_shepherd_event(
+                machine=machine.name,
+                action="launch-next",
+                result="planned",
+                mode="dry-run",
+                limit=args.limit,
+                color=color,
+            )
             status = cmd_container_launch_next(args)
             if status != 0:
                 return status
@@ -2772,31 +2992,53 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
         try:
             lock = acquire_shepherd_lock(conn, machine.name)
         except ShepherdLockBusy as exc:
-            print(f"machine={exc.machine} action=lock result=busy")
+            log_shepherd_event(machine=exc.machine, action="lock", result="busy", color=color)
             return 2
         while True:
             try:
-                print(f"machine={machine.name} action=reconcile result=start")
-                reconciled = reconcile_machine_launches(conn, machine)
-                print(f"machine={machine.name} action=reconcile result=ok reconciled={reconciled}")
+                log_shepherd_event(machine=machine.name, action="reconcile", result="start", color=color)
+                reconciled = reconcile_machine_launches(conn, machine, color=color)
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="reconcile",
+                    result="ok",
+                    reconciled=reconciled,
+                    color=color,
+                )
                 launched = launch_next_jobs(
                     conn,
                     machine=machine,
                     job_kind=args.job_kind,
                     limit=int(args.limit),
                     reconcile=False,
+                    color=color,
                 )
-                print(
-                    f"machine={machine.name} action=launch-next result=ok "
-                    f"job_kind={args.job_kind} launched={launched}"
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="launch-next",
+                    result="ok",
+                    job_kind=args.job_kind,
+                    launched=launched,
+                    color=color,
                 )
                 if args.once:
                     return 0
             except KeyboardInterrupt:
-                print(f"machine={machine.name} action=stop reason=keyboard_interrupt")
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="stop",
+                    reason="keyboard_interrupt",
+                    color=color,
+                )
                 return 130
             except Exception as exc:
-                print(f"machine={machine.name} action=error error={shlex.quote(str(exc))}")
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="error",
+                    result="error",
+                    error=str(exc),
+                    color=color,
+                )
                 if args.once or getattr(args, "fail_fast", False):
                     return 1
             time.sleep(args.interval)
@@ -3170,6 +3412,9 @@ def highlight_dashboard_text(text: str, *, color: bool) -> str:
         return text
     styles = [
         (r"\bwould_fail\b", "bright_yellow"),
+        (r"\bneeds_shepherd_(?:finalize|release)\b", "bright_yellow"),
+        (r"\bneeds_shepherd_[a-z_]+\b", "bright_red"),
+        (r"\borphaned_container\b", "bright_red"),
         (r"\bfailed\b", "bright_red"),
         (r"\bexit=\d+\b", "bright_red"),
         (r"\bdown\b", "bright_red"),
@@ -3505,6 +3750,9 @@ def rich_text(value: Any, *, base_style: str = "") -> Any:
     text = RichText(str(value), style=base_style)
     styles = [
         (r"\bwould_fail\b", "bright_yellow"),
+        (r"\bneeds_shepherd_(?:finalize|release)\b", "bright_yellow"),
+        (r"\bneeds_shepherd_[a-z_]+\b", "bright_red"),
+        (r"\borphaned_container\b", "bright_red"),
         (r"\bfailed\b", "bright_red"),
         (r"\bexit=\d+\b", "bright_red"),
         (r"\bdown\b", "bright_red"),
@@ -4311,6 +4559,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit when a poll or action fails instead of retrying forever.",
     )
+    shepherd.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     add_dry_run_arg(shepherd)
     shepherd.set_defaults(func=cmd_container_shepherd)
 

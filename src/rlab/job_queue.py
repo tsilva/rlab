@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
@@ -919,6 +920,26 @@ def spec_goal_slug(document: Mapping[str, Any]) -> str:
     )
 
 
+def _goal_wandb_tag(document: Mapping[str, Any]) -> str:
+    return spec_goal_slug(document).lower()
+
+
+def spec_wandb_tags(document: Mapping[str, Any]) -> list[str]:
+    tags = []
+    seen: set[str] = set()
+    goal_tag = _goal_wandb_tag(document)
+    if goal_tag:
+        tags.append(goal_tag)
+        seen.add(goal_tag)
+    for raw_tag in document.get("wandb_tags") or []:
+        tag = str(raw_tag).strip()
+        if not tag or tag in seen:
+            continue
+        tags.append(tag)
+        seen.add(tag)
+    return tags
+
+
 def _utc_stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -929,8 +950,34 @@ def _format_seed_template(template: str | None, *, seed: int | None, slug: str, 
     return str(template).format(seed="" if seed is None else seed, slug=slug, utc=utc)
 
 
-def _format_default_run_name(wandb_group: str, *, seed: int | None, utc: str) -> str:
-    return f"{wandb_group}_s{'' if seed is None else seed}_{utc}"
+def _run_name_slug(value: str, *, limit: int = 32) -> str:
+    chars = []
+    for char in value.lower():
+        if char.isalnum():
+            chars.append(char)
+        elif chars and chars[-1] != "-":
+            chars.append("-")
+    slug = "".join(chars).strip("-") or "run"
+    return slug[:limit].strip("-") or "run"
+
+
+def _run_name_batch_id(wandb_group: str) -> str:
+    group = _run_name_slug(wandb_group)
+    match = re.match(r"^(b\d+)(?:-|$)", group)
+    return match.group(1) if match else group
+
+
+def _format_default_run_name(
+    wandb_group: str,
+    *,
+    label: str,
+    seed: int | None,
+    utc: str,
+) -> str:
+    batch_id = _run_name_batch_id(wandb_group)
+    description = _run_name_slug(label, limit=24)
+    seed_label = f"s{seed}" if seed is not None else "s"
+    return f"{batch_id}-{description}-{seed_label}-{utc}"
 
 
 def _document_seeds(document: Mapping[str, Any], override_seeds: Sequence[int] = ()) -> list[int | None]:
@@ -987,7 +1034,12 @@ def enqueue_train_jobs_from_spec_document(
             run_target=None,
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
-            run_name=_format_default_run_name(str(document["wandb_group"]), seed=seed, utc=utc),
+            run_name=_format_default_run_name(
+                str(document["wandb_group"]),
+                label=str(document.get("run_name_label") or document_slug),
+                seed=seed,
+                utc=utc,
+            ),
             run_description=_format_seed_template(
                 document.get("run_description_template"),
                 seed=seed,
@@ -996,7 +1048,7 @@ def enqueue_train_jobs_from_spec_document(
             ),
             seed=seed,
             wandb_group=document.get("wandb_group"),
-            wandb_tags=[str(tag) for tag in document.get("wandb_tags") or []],
+            wandb_tags=spec_wandb_tags(document),
         )
         rows.append(row)
     return rows

@@ -9,7 +9,6 @@ from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import yaml
 
@@ -134,7 +133,8 @@ def valid_train_spec() -> dict:
         "parent_spec_slug": None,
         "seeds": [23, 24],
         "wandb_group": "b-test",
-        "wandb_tags": ["mario", "confirm"],
+        "run_name_label": "candidate",
+        "wandb_tags": ["b55", "confirm"],
         "run_description_template": "candidate seed {seed}",
         "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": {
@@ -237,6 +237,93 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(leader.checkpoint_step, 4500000)
         self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
         self.assertEqual(leader.eval_source, "post_train_inline")
+
+    def test_wandb_checkpoint_leaders_accept_current_eval_artifact_key(self) -> None:
+        run = FakeWandbRun(
+            run_id="run-1",
+            name="candidate",
+            config={"goal_slug": "Level1-4", "spec_slug": "b257"},
+            summary={
+                "eval/done/level_change/rate": 0.8,
+                "eval/progress/x/max": 4610,
+                "eval/reward/mean": 4200.0,
+                "eval/checkpoint/artifact": "entity/project/candidate:step-4500000",
+            },
+        )
+
+        leader = wandb_leaders.checkpoint_leader(run)
+
+        self.assertIsNotNone(leader)
+        assert leader is not None
+        self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
+
+    def test_wandb_checkpoint_filter_requires_evaluated_checkpoint_summary(self) -> None:
+        expected_current = {
+            "$and": [
+                {"summary_metrics.leader/checkpoint/completion_rate": {"$exists": True}},
+                {"summary_metrics.leader/checkpoint/completion_rate_mean": {"$exists": True}},
+                {"summary_metrics.leader/checkpoint/max_x_max": {"$exists": True}},
+                {"summary_metrics.leader/checkpoint/reward_mean": {"$exists": True}},
+                {"summary_metrics.leader/checkpoint/artifact_ref": {"$exists": True}},
+            ]
+        }
+        expected_legacy = {
+            "$and": [
+                {"summary_metrics.eval/done/level_change/rate": {"$exists": True}},
+                {"summary_metrics.eval/progress/x/max": {"$exists": True}},
+                {"summary_metrics.eval/reward/mean": {"$exists": True}},
+                {
+                    "$or": [
+                        {"summary_metrics.eval/checkpoint/artifact": {"$exists": True}},
+                        {"summary_metrics.eval/checkpoint_artifact": {"$exists": True}},
+                    ]
+                },
+            ]
+        }
+
+        self.assertEqual(
+            wandb_leaders.checkpoint_summary_filter(),
+            {"$or": [expected_current, expected_legacy]},
+        )
+
+    def test_wandb_goal_filter_accepts_config_or_tag_partition(self) -> None:
+        self.assertEqual(
+            wandb_leaders.goal_run_filter("Level1-1"),
+            {"$or": [{"config.goal_slug": "Level1-1"}, {"tags": "goal:Level1-1"}]},
+        )
+        self.assertEqual(wandb_leaders.goal_run_filter(None), {})
+
+    def test_wandb_run_objective_filter_requires_any_objective_summary(self) -> None:
+        self.assertEqual(
+            wandb_leaders.run_objective_filter(("metric/a", "metric/b")),
+            {
+                "$or": [
+                    {"summary_metrics.metric/a": {"$exists": True}},
+                    {"summary_metrics.metric/b": {"$exists": True}},
+                ]
+            },
+        )
+
+    def test_wandb_run_query_uses_current_metric_by_default(self) -> None:
+        args = SimpleNamespace(objective_key=[], include_legacy_objectives=False)
+
+        self.assertEqual(
+            wandb_leaders.run_query_objective_keys(args),
+            ("train/info/level_complete/rate/min/last",),
+        )
+
+    def test_wandb_run_query_can_include_legacy_objective_aliases(self) -> None:
+        args = SimpleNamespace(objective_key=[], include_legacy_objectives=True)
+
+        self.assertEqual(wandb_leaders.run_query_objective_keys(args), wandb_leaders.RUN_OBJECTIVE_KEYS)
+
+    def test_wandb_run_query_explicit_objective_keys_override_defaults(self) -> None:
+        args = SimpleNamespace(
+            objective_key=["metric/a", "metric/b"],
+            include_legacy_objectives=True,
+        )
+
+        self.assertEqual(wandb_leaders.run_query_objective_keys(args), ("metric/a", "metric/b"))
 
     def test_claim_train_job_filters_exact_runtime_image_only(self) -> None:
         conn = FakeConnection(row={"id": 7, "profile_id": "mario-ppo/post16/rtx4090-screening"})
@@ -368,9 +455,7 @@ state: Level1-1
 wandb_group: b-test
 wandb_tags: [mario, confirm]
 run_description_template: candidate seed {seed}
-selection_gate:
-  primary: train/completion_episode_rate
-  tie_breakers: [train/reward/mean]
+selection_metrics: [train/completion_episode_rate, train/reward/mean]
 overrides:
   train:
     learning_rate: 0.0001
@@ -426,8 +511,7 @@ environment:
 wandb_group: b-test
 wandb_tags: [mario, env-hash]
 run_description_template: candidate seed {seed}
-selection_gate:
-  primary: train/completion_episode_rate
+selection_metrics: [train/completion_episode_rate]
 train:
   timesteps: 1024
 logging:
@@ -472,8 +556,7 @@ run_target: rtx4090
 wandb_group: b-test
 wandb_tags: [mario, env-config]
 run_description_template: candidate seed {seed}
-selection_gate:
-  primary: train/completion_episode_rate
+selection_metrics: [train/completion_episode_rate]
 train:
   environment:
     env_config:
@@ -623,7 +706,7 @@ train_config:
             with self.assertRaisesRegex(ValueError, "run_description_template"):
                 job_queue.load_spec_document(path)
 
-    def test_enqueue_train_jobs_from_spec_document_derives_run_name_from_wandb_group(self) -> None:
+    def test_enqueue_train_jobs_from_spec_document_derives_short_run_name(self) -> None:
         calls = []
 
         def fake_enqueue(conn, **kwargs):
@@ -650,8 +733,37 @@ train_config:
             job_queue.enqueue_train_job = old_enqueue
             job_queue._utc_stamp = old_utc
 
-        self.assertEqual([row["run_name"] for row in rows], ["b-test_s23_20260626T120000Z", "b-test_s24_20260626T120000Z"])
-        self.assertEqual([call["run_name"] for call in calls], ["b-test_s23_20260626T120000Z", "b-test_s24_20260626T120000Z"])
+        self.assertEqual([row["run_name"] for row in rows], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
+        self.assertEqual([call["run_name"] for call in calls], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
+
+    def test_enqueue_train_jobs_from_spec_document_uses_batch_id_from_wandb_group(self) -> None:
+        calls = []
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"run_name": kwargs["run_name"]}
+
+        document = valid_train_spec()
+        document["wandb_group"] = "b82-l11-b55-post21-revalidate"
+        document["run_name_label"] = "b55reval"
+
+        old_enqueue = job_queue.enqueue_train_job
+        old_utc = job_queue._utc_stamp
+        job_queue.enqueue_train_job = fake_enqueue
+        job_queue._utc_stamp = lambda: "20260702T150934Z"
+        try:
+            rows = job_queue.enqueue_train_jobs_from_spec_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                seeds=[6],
+            )
+        finally:
+            job_queue.enqueue_train_job = old_enqueue
+            job_queue._utc_stamp = old_utc
+
+        self.assertEqual([row["run_name"] for row in rows], ["b82-b55reval-s6-20260702T150934Z"])
+        self.assertEqual([call["run_name"] for call in calls], ["b82-b55reval-s6-20260702T150934Z"])
 
     def test_checked_in_goal_yaml_specs_match_train_spec_schema(self) -> None:
         spec_paths = sorted(Path("experiments/goals").rglob("specs/*.y*ml"))
@@ -1045,7 +1157,7 @@ train_config:
             job_queue.enqueue_train_job = old_enqueue
             job_queue._utc_stamp = old_utc
 
-        self.assertEqual([row["run_name"] for row in rows], ["b-test_s23_20260626T120000Z", "b-test_s24_20260626T120000Z"])
+        self.assertEqual([row["run_name"] for row in rows], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
         self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
         self.assertEqual(
             calls[0]["train_config"]["info_events_json"],
@@ -1056,7 +1168,7 @@ train_config:
         )
         self.assertEqual(calls[0]["train_config"]["done_on_events"], "life_loss,level_change")
         self.assertNotIn("done_on_info_json", calls[0]["train_config"])
-        self.assertEqual(calls[0]["wandb_tags"], ["mario", "confirm"])
+        self.assertEqual(calls[0]["wandb_tags"], ["level1-1", "b55", "confirm"])
         self.assertEqual(calls[0]["goal_slug"], "Level1-1")
         self.assertEqual(calls[0]["spec_slug"], "candidate")
         self.assertIsNone(calls[0]["profile_id"])
@@ -1419,7 +1531,7 @@ class TrainRunnerTests(unittest.TestCase):
                 "timesteps": 1024,
                 "state": "Level1-1",
                 "wandb": True,
-                "wandb_tags": ["screen", "post16"],
+                "wandb_tags": ["screen"],
             },
             "goal_slug": "Level1-1",
             "spec_slug": "b55-lowkl-lrdecay-post21-revalidate",
@@ -1440,7 +1552,7 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,post16,goal:Level1-1,spec:b55-lowkl-lrdecay-post21-revalidate,level:Level1-1",
+            "screen,goal:Level1-1,spec:b55-lowkl-lrdecay-post21-revalidate,level:Level1-1",
         )
         self.assertEqual(written_config["goal_slug"], "Level1-1")
         self.assertEqual(written_config["spec_slug"], "b55-lowkl-lrdecay-post21-revalidate")

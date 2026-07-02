@@ -176,7 +176,7 @@ These come from Stable-Baselines3 PPO and `VecMonitor`.
 | `rollout/ep_len_mean` | Mean episode length over SB3's monitor window. |
 | `time/fps` | Cumulative SB3 training throughput in environment steps per second. |
 | `time/iterations` | Number of PPO learn iterations completed. |
-| `time/time_elapsed` | Wall-clock seconds elapsed in the SB3 learn loop. |
+| `time/time_elapsed` | Wall-clock seconds elapsed in the SB3 learn loop. Explicitly mirrored to W&B at rollout end with `global_step` as the step. |
 | `time/total_timesteps` | Total environment steps reached by SB3 or the in-loop eval callback. |
 | `train/approx_kl` | Approximate KL divergence between old and updated policies for the last PPO update. Spikes indicate large policy updates. |
 | `train/clip_fraction` | Fraction of policy updates clipped by PPO's ratio clipping. High values mean many updates hit the trust-region bound. |
@@ -197,6 +197,15 @@ These come from Stable-Baselines3 PPO and `VecMonitor`.
 | --- | --- |
 | `throughput/rollout_fps` | Rollout-only environment-step throughput, measured from rollout start to rollout end. This excludes PPO optimization time. |
 | `throughput/loop_fps` | Full-loop instantaneous throughput, measured from one rollout start to the next. This includes rollout collection plus PPO optimization overhead. |
+
+For training-speed and host-saturation comparisons, prefer `throughput/loop_fps` over total wall
+time. It is the closest per-run W&B metric to effective training throughput because it includes
+both environment rollout collection and PPO optimization. Use `throughput/rollout_fps` beside it to
+separate emulator/vector-env pressure from optimizer overhead: if rollout FPS drops as parallel jobs
+increase, the env/CPU side is the likely bottleneck; if rollout FPS is steady but loop FPS drops, PPO
+optimization, GPU scheduling, or host contention outside rollout collection is more likely. Use
+`time/fps` only as a cumulative SB3 sanity check, and discount points near checkpoint/final artifact
+events by checking `train/artifact/stall_seconds`.
 
 ## Artifact Timing Metrics
 
@@ -324,8 +333,8 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
 | `eval/best/x` | Max global X position of the best eval episode. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
-| `eval/checkpoint/step` | Checkpoint step being evaluated by post-train checkpoint eval or local artifact eval. |
-| `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated by post-train checkpoint eval or local artifact eval. |
+| `eval/checkpoint/step` | Checkpoint or final-artifact timestep being evaluated by post-train checkpoint eval or local artifact eval. Artifact eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
+| `eval/checkpoint/artifact` | W&B model artifact name being evaluated by post-train checkpoint eval or local artifact eval. This can be a `checkpoint`, `final`, or `best` artifact. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
 | `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, using `eval/done/level_change/from_rate/min` when available. Used by `rlab leaders checkpoints`. |
 | `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, using `eval/done/level_change/from_rate/mean` when available. |

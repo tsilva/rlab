@@ -25,6 +25,7 @@ from rlab.metric_names import (
     ROLLOUT_ADVANTAGE_HIST,
     ROLLOUT_VALUE_PRED,
     ROLLOUT_VALUE_PRED_HIST,
+    TIME_TIME_ELAPSED,
     THROUGHPUT_LOOP_FPS,
     THROUGHPUT_ROLLOUT_FPS,
     TRAIN_DONE_ALL,
@@ -195,6 +196,43 @@ class ThroughputCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         return True
+
+
+class TimeElapsedCallback(BaseCallback):
+    """Mirror elapsed SB3 learn-loop time into W&B history."""
+
+    def __init__(self, wandb_run=None, clock: Callable[[], float] | None = None):
+        super().__init__()
+        self.wandb_run = wandb_run
+        self.clock = clock or time.perf_counter
+        self.started_at: float | None = None
+
+    def _on_training_start(self) -> None:
+        self.started_at = self.clock()
+
+    def _on_rollout_end(self) -> None:
+        elapsed = self.elapsed_seconds()
+        if elapsed is None:
+            return
+
+        self.logger.record(TIME_TIME_ELAPSED, elapsed)
+        if self.wandb_run is not None:
+            self.wandb_run.log(
+                {
+                    GLOBAL_STEP: self.num_timesteps,
+                    TIME_TIME_ELAPSED: elapsed,
+                },
+                step=self.num_timesteps,
+            )
+
+    def _on_step(self) -> bool:
+        return True
+
+    def elapsed_seconds(self) -> float | None:
+        if self.started_at is None:
+            return None
+        elapsed = self.clock() - self.started_at
+        return elapsed if elapsed >= 0 else None
 
 
 class MetricThresholdStopCallback(BaseCallback):

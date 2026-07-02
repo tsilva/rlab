@@ -138,7 +138,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "play": ("render a local model or W&B artifact in a GUI window", _play),
     "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
     "promote": ("gate a candidate checkpoint against a goal contract", _promote),
-    "validate": ("validate checked-in YAML experiments, specs, recipes, and ops configs", _validate),
+    "validate": ("validate checked-in YAML experiments, specs, benchmarks, and ops configs", _validate),
     "jobs": ("manage queue schema, status, cancellation, and stale jobs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "fleet": ("manage remote runner containers from queue state", _fleet),

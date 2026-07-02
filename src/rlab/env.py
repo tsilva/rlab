@@ -21,7 +21,7 @@ from stable_baselines3.common.atari_wrappers import ClipRewardEnv
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id, resolve_env_provider
-from rlab.env_wrappers import resolve_configured_env_wrappers
+from rlab.env_wrappers import resolve_configured_env_wrappers, with_default_env_wrapper_specs
 from rlab.targets import GenericRetroTarget, target_for_game
 
 GAME = os.environ.get("RETRO_GAME", "")
@@ -126,6 +126,11 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         updates["reward_mode"] = target.default_reward_mode
     if config.hud_crop_top < 0:
         updates["hud_crop_top"] = target.default_hud_crop_top
+    if target.default_env_wrappers:
+        updates["env_wrappers"] = with_default_env_wrapper_specs(
+            updates.get("env_wrappers", config.env_wrappers),
+            target.default_env_wrappers,
+        )
     config = replace(config, **updates) if updates else config
     config = resolve_configured_env_wrappers(config)
     return normalize_event_config(config)

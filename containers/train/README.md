@@ -42,7 +42,9 @@ docker run --rm --gpus all \
   -v /home/tsilva/sandbox-runs:/root/rlab/runs \
   ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   rlab-container-entrypoint \
-  rlab train worker --profile mario-ppo/post20/rtx2060-task-conditioned-v1
+  rlab train worker \
+    --runtime-image-ref docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
+    --run-target rtx2060
 ```
 
 `rlab-container-entrypoint` imports ROMs from `RLAB_ROM_DIR` before executing

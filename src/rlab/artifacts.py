@@ -171,8 +171,12 @@ def build_model_metadata(
     config: EnvConfig,
     model_path: Path,
     kind: str,
+    checkpoint_step_value: int | None = None,
 ) -> dict[str, Any]:
     training = training_metadata(config)
+    step = checkpoint_step(model_path)
+    if step is None:
+        step = checkpoint_step_value
     return {
         "metadata_version": MODEL_METADATA_VERSION,
         "kind": kind,
@@ -185,7 +189,7 @@ def build_model_metadata(
         "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "run_target": getattr(args, "run_target", ""),
-        "checkpoint_step": checkpoint_step(model_path),
+        "checkpoint_step": step,
         "env_config": training["env_config"],
         "environment": training["environment"],
         "environment_hash": training["environment_hash"],
@@ -199,12 +203,23 @@ def write_model_metadata(
     args: argparse.Namespace,
     config: EnvConfig,
     kind: str,
+    checkpoint_step_value: int | None = None,
 ) -> Path | None:
     if not model_path.is_file():
         return None
     path = model_metadata_path(model_path)
     path.write_text(
-        json.dumps(build_model_metadata(args, config, model_path, kind), indent=2, sort_keys=True)
+        json.dumps(
+            build_model_metadata(
+                args,
+                config,
+                model_path,
+                kind,
+                checkpoint_step_value=checkpoint_step_value,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -630,9 +645,16 @@ def log_wandb_model_artifact(
     started_at = timer()
     artifact_name = f"{sanitize_artifact_name(args.run_name)}-{kind}"
     step = checkpoint_step(model_path)
+    artifact_step = step if step is not None else metric_step
 
     metadata_started_at = timer()
-    sidecar_path = write_model_metadata(model_path, args, config, kind)
+    sidecar_path = write_model_metadata(
+        model_path,
+        args,
+        config,
+        kind,
+        checkpoint_step_value=artifact_step,
+    )
     metadata_seconds = timer() - metadata_started_at
 
     if not wandb_artifacts_enabled(wandb_run, args):
@@ -640,7 +662,7 @@ def log_wandb_model_artifact(
         return ArtifactLogTiming(
             artifact_name=artifact_name,
             kind=kind,
-            checkpoint_step=step,
+            checkpoint_step=artifact_step,
             metadata_seconds=metadata_seconds,
             storage_upload_seconds=0.0,
             wandb_log_seconds=0.0,
@@ -665,7 +687,7 @@ def log_wandb_model_artifact(
         "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "kind": kind,
         "filename": model_path.name,
-        "checkpoint_step": step,
+        "checkpoint_step": artifact_step,
         "metadata_version": MODEL_METADATA_VERSION,
     }
     training = training_metadata(config)
@@ -711,7 +733,7 @@ def log_wandb_model_artifact(
     timing = ArtifactLogTiming(
         artifact_name=artifact_name,
         kind=kind,
-        checkpoint_step=step,
+        checkpoint_step=artifact_step,
         metadata_seconds=metadata_seconds,
         storage_upload_seconds=storage_upload_seconds,
         wandb_log_seconds=wandb_log_seconds,
@@ -727,7 +749,7 @@ def log_wandb_model_artifact(
     log_artifact_timing_metrics(
         wandb_run,
         timing,
-        metric_step=metric_step if metric_step is not None else step,
+        metric_step=metric_step if metric_step is not None else artifact_step,
     )
     location = reference_uri or str(model_path)
     print(
