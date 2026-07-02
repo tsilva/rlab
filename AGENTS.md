@@ -7,7 +7,7 @@ Before choosing hardware, launching training, changing concurrency, or recommend
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
-- Current forward runtime is `stable-retro-turbo==1.0.0.post23`.
+- Current forward runtime is `stable-retro-turbo==1.0.1.post1`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime pin source of truth: `pyproject.toml` and `uv.lock`. Use `uv sync --frozen`; make overrides explicit in specs, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.
@@ -48,4 +48,4 @@ When the user asks to flush unevaluated checkpoints, evaluate pending checkpoint
 ## Dependencies
 
 Use `uv` for dependency resolution and keep `uv.lock` committed. Preserve Python supply-chain hardening in `pyproject.toml`.
-The intentional exception to the seven-day `exclude-newer` window is `stable-retro-turbo`, because this project pins the current forward Stable Retro runtime. Keep the per-package cutoff in `[tool.uv.exclude-newer-package]`, and when using resolver paths that do not apply project config or `uv.lock` directly, pass the matching override explicitly, for example `uv tool install --editable --exclude-newer-package stable-retro-turbo=2026-06-29T17:00:00Z .`.
+The intentional exception to the seven-day `exclude-newer` window is `stable-retro-turbo`, because this project pins the current forward Stable Retro runtime. Keep the per-package cutoff in `[tool.uv.exclude-newer-package]`, and when using resolver paths that do not apply project config or `uv.lock` directly, pass the matching override explicitly, for example `uv tool install --editable --exclude-newer-package stable-retro-turbo=2026-07-02T13:00:00Z .`.

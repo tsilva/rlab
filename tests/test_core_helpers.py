@@ -61,6 +61,7 @@ from rlab.env_config import (
     parse_state_probs,
     parse_states,
 )
+from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import (
@@ -99,6 +100,37 @@ from rlab.wandb_artifacts import (
     safe_artifact_stem,
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
+
+
+class EnvConfigAliasTests(unittest.TestCase):
+    def test_stable_retro_turbo_101_provider_keywords_map_to_env_config(self) -> None:
+        config = normalize_provider_env_config_aliases(
+            {
+                "maxpool_last_two": False,
+                "sticky_action_prob": 0.25,
+                "noop_reset_max": 3,
+            }
+        )
+
+        self.assertEqual(config["max_pool_frames"], False)
+        self.assertEqual(config["sticky_action_prob"], 0.25)
+        self.assertNotIn("maxpool_last_two", config)
+        self.assertNotIn("noop_reset_max", config)
+
+    def test_legacy_stable_retro_turbo_provider_keywords_still_map_to_env_config(self) -> None:
+        config = normalize_provider_env_config_aliases(
+            {
+                "frame_maxpool": False,
+                "action_sticky_prob": 0.25,
+                "reset_noops": 3,
+            }
+        )
+
+        self.assertEqual(config["max_pool_frames"], False)
+        self.assertEqual(config["sticky_action_prob"], 0.25)
+        self.assertNotIn("frame_maxpool", config)
+        self.assertNotIn("action_sticky_prob", config)
+        self.assertNotIn("reset_noops", config)
 
 
 class Sb3LoggerTests(unittest.TestCase):
@@ -1140,9 +1172,9 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0]["num_envs"], 16)
         self.assertEqual(created[0]["obs_layout"], "chw")
-        self.assertEqual(created[0]["frame_maxpool"], True)
+        self.assertEqual(created[0]["maxpool_last_two"], True)
         self.assertEqual(created[0]["obs_copy"], "safe_view")
-        self.assertNotIn("maxpool_last_two", created[0])
+        self.assertNotIn("frame_maxpool", created[0])
         self.assertNotIn("copy_observations", created[0])
         self.assertEqual(created[0]["state"], {"Level1-1": 0.5, "Level1-2": 0.5})
         self.assertNotIn("states", created[0])
@@ -1190,7 +1222,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
         self.assertNotIn("states", created[0])
         self.assertNotIn("state_probs", created[0])
 
-    def test_training_vec_env_passes_action_sticky_prob_to_native_vec_env(self) -> None:
+    def test_training_vec_env_passes_sticky_action_prob_to_native_vec_env(self) -> None:
         created: list[dict[str, object]] = []
 
         class FakeNative:
@@ -1224,8 +1256,8 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             env = make_training_vec_env(config, n_envs=4, seed=7)
 
         self.assertIsInstance(env, FakeNative)
-        self.assertEqual(created[0]["action_sticky_prob"], 0.25)
-        self.assertNotIn("sticky_action_prob", created[0])
+        self.assertEqual(created[0]["sticky_action_prob"], 0.25)
+        self.assertNotIn("action_sticky_prob", created[0])
 
     def test_training_vec_env_passes_configured_native_done_on_rules(self) -> None:
         created: list[dict[str, object]] = []
@@ -2089,13 +2121,17 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(metadata["env_config"]["hud_crop_top"], 32)
             self.assertEqual(metadata["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
             self.assertEqual(metadata["environment"]["preprocessing"]["frame_stack"], 4)
-            self.assertEqual(metadata["training_metadata"]["preprocessing"]["frame_maxpool"], False)
             self.assertEqual(
-                metadata["training_metadata"]["preprocessing"]["action_sticky_prob"],
+                metadata["training_metadata"]["preprocessing"]["maxpool_last_two"],
+                False,
+            )
+            self.assertEqual(
+                metadata["training_metadata"]["preprocessing"]["sticky_action_prob"],
                 0.0,
             )
             self.assertEqual(metadata["training_metadata"]["preprocessing"]["obs_copy"], "safe_view")
-            self.assertNotIn("maxpool_last_two", metadata["training_metadata"]["preprocessing"])
+            self.assertNotIn("frame_maxpool", metadata["training_metadata"]["preprocessing"])
+            self.assertNotIn("action_sticky_prob", metadata["training_metadata"]["preprocessing"])
             self.assertNotIn("copy_observations", metadata["training_metadata"]["preprocessing"])
             self.assertIn("environment_hash", metadata)
             self.assertIn("training_metadata", metadata)

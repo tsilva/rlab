@@ -332,6 +332,8 @@ def _validate_env_config(
         _require_string_list(env_config, "done_on_events", label=label)
     if "frame_stack" in env_config:
         _require_int(env_config, "frame_stack", label=label, minimum=1)
+    if "maxpool_last_two" in env_config:
+        _require_bool(env_config, "maxpool_last_two", label=label)
     if "frame_maxpool" in env_config:
         _require_bool(env_config, "frame_maxpool", label=label)
     if "action_sticky_prob" in env_config:
@@ -350,6 +352,8 @@ def _validate_env_config(
         obs_copy = _require_non_empty_string(env_config, "obs_copy", label=label)
         if obs_copy not in {"copy", "safe_view", "unsafe_view"}:
             raise ValueError(f"{label}.obs_copy must be copy, safe_view, or unsafe_view")
+    if "noop_reset_max" in env_config:
+        _require_int(env_config, "noop_reset_max", label=label, minimum=0)
     if "reset_noops" in env_config:
         _require_int(env_config, "reset_noops", label=label, minimum=0)
     if "reward_clip" in env_config:

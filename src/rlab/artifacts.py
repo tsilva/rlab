@@ -123,8 +123,8 @@ def training_preprocessing_metadata(config: EnvConfig) -> dict[str, Any]:
         "obs_resize_algorithm": config.obs_resize_algorithm,
         "frame_skip": config.frame_skip,
         "frame_stack": 4,
-        "frame_maxpool": config.max_pool_frames,
-        "action_sticky_prob": config.sticky_action_prob,
+        "maxpool_last_two": config.max_pool_frames,
+        "sticky_action_prob": config.sticky_action_prob,
         "obs_copy": "safe_view",
         "policy_observation_layout": "dict_image_task"
         if config.task_conditioning

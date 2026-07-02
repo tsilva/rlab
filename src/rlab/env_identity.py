@@ -59,6 +59,14 @@ def _normalize_preprocessing(identity: dict[str, Any]) -> None:
     if "obs_copy" not in preprocessing and "copy_observations" in preprocessing:
         preprocessing["obs_copy"] = "copy" if preprocessing["copy_observations"] else "safe_view"
     preprocessing.pop("copy_observations", None)
+    if "max_pool_frames" not in preprocessing and "maxpool_last_two" in preprocessing:
+        preprocessing["max_pool_frames"] = preprocessing["maxpool_last_two"]
+    if "max_pool_frames" not in preprocessing and "frame_maxpool" in preprocessing:
+        preprocessing["max_pool_frames"] = preprocessing["frame_maxpool"]
+    if "sticky_action_prob" not in preprocessing and "action_sticky_prob" in preprocessing:
+        preprocessing["sticky_action_prob"] = preprocessing["action_sticky_prob"]
+    preprocessing.pop("frame_maxpool", None)
+    preprocessing.pop("action_sticky_prob", None)
     preprocessing.setdefault("pipeline", "stable_retro_native_vec_env")
     preprocessing.setdefault("frame_skip", 4)
     preprocessing.setdefault("frame_stack", 4)
@@ -284,6 +292,15 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
             train_config["obs_resize"],
         )
     train_config.pop("obs_resize", None)
+    if "maxpool_last_two" in train_config and "max_pool_frames" not in train_config:
+        train_config["max_pool_frames"] = deepcopy(train_config["maxpool_last_two"])
+    train_config.pop("maxpool_last_two", None)
+    if "frame_maxpool" in train_config and "max_pool_frames" not in train_config:
+        train_config["max_pool_frames"] = deepcopy(train_config["frame_maxpool"])
+    train_config.pop("frame_maxpool", None)
+    if "action_sticky_prob" in train_config and "sticky_action_prob" not in train_config:
+        train_config["sticky_action_prob"] = deepcopy(train_config["action_sticky_prob"])
+    train_config.pop("action_sticky_prob", None)
     if "info_events" in train_config and "info_events_json" not in train_config:
         train_config["info_events_json"] = deepcopy(train_config["info_events"])
     return train_config

@@ -18,7 +18,9 @@ STABLE_RETRO_TURBO_ENV_CONFIG_KEYS = frozenset(
         "obs_copy",
         "frame_skip",
         "frame_stack",
+        "maxpool_last_two",
         "frame_maxpool",
+        "noop_reset_max",
         "reset_noops",
         "action_sticky_prob",
         "reward_clip",
@@ -79,6 +81,8 @@ def normalize_provider_env_config_aliases(
         )
     if "obs_crop" in result and "hud_crop_top" not in result:
         result["hud_crop_top"] = _hud_crop_top_from_obs_crop(result["obs_crop"], label=label)
+    if "maxpool_last_two" in result and "max_pool_frames" not in result:
+        result["max_pool_frames"] = result["maxpool_last_two"]
     if "frame_maxpool" in result and "max_pool_frames" not in result:
         result["max_pool_frames"] = result["frame_maxpool"]
     if "action_sticky_prob" in result and "sticky_action_prob" not in result:

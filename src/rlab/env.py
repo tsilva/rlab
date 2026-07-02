@@ -266,7 +266,7 @@ def _stable_retro_turbo_make_env(
                 "obs_resize_algorithm": config.obs_resize_algorithm,
                 "frame_skip": config.frame_skip,
                 "frame_stack": 4,
-                "frame_maxpool": config.max_pool_frames,
+                "maxpool_last_two": config.max_pool_frames,
             }
         )
     return retro.make(config.game, **kwargs)
@@ -874,8 +874,8 @@ def _native_vec_kwargs(
         "obs_resize_algorithm": config.obs_resize_algorithm,
         "frame_skip": config.frame_skip,
         "frame_stack": 4,
-        "frame_maxpool": config.max_pool_frames,
-        "action_sticky_prob": config.sticky_action_prob,
+        "maxpool_last_two": config.max_pool_frames,
+        "sticky_action_prob": config.sticky_action_prob,
         "obs_copy": "safe_view",
         "obs_layout": "chw",
     }

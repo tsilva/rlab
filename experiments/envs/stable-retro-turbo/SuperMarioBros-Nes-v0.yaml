@@ -11,9 +11,9 @@ env_config:
   # Number of preprocessed frames stacked in the returned observation.
   frame_stack: 4
   # Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.
-  frame_maxpool: false
+  maxpool_last_two: false
   # Random sticky action probability; 0 disables stochastic action repetition for this contract.
-  action_sticky_prob: 0.0
+  sticky_action_prob: 0.0
   # Resize target for native preprocessing as [width, height].
   obs_resize:
   - 84
@@ -33,7 +33,7 @@ env_config:
   # Observation ownership mode; safe_view avoids unnecessary memory traffic.
   obs_copy: safe_view
   # Disable random no-op starts for reproducible goal attempts.
-  reset_noops: 0
+  noop_reset_max: 0
   # Only return full info payloads at terminal transitions.
   info_filter: terminal
   # Default Mario reward shaping contract.

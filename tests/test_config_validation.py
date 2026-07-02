@@ -259,8 +259,8 @@ environment_hash: sha256:deadbeef
         self.assertEqual(document["train"]["environment"]["env_config"]["state"], "Level1-1")
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_resize"], [84, 84])
-        self.assertEqual(document["train"]["environment"]["env_config"]["frame_maxpool"], False)
-        self.assertEqual(document["train"]["environment"]["env_config"]["action_sticky_prob"], 0.0)
+        self.assertEqual(document["train"]["environment"]["env_config"]["maxpool_last_two"], False)
+        self.assertEqual(document["train"]["environment"]["env_config"]["sticky_action_prob"], 0.0)
         self.assertNotIn("policy", document["eval"])
         self.assertNotIn("schema_version", document["eval"])
         self.assertEqual(
