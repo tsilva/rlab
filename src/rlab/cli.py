@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT
@@ -55,6 +56,10 @@ TRAIN_VALUE_OPTIONS = {
     "eval_freq": "--eval-freq",
     "eval_episodes": "--eval-episodes",
     "checkpoint_freq": "--checkpoint-freq",
+    "post_train_eval_episodes": "--post-train-eval-episodes",
+    "post_train_eval_n_envs": "--post-train-eval-n-envs",
+    "post_train_eval_max_steps": "--post-train-eval-max-steps",
+    "early_stop": "--early-stop",
     "early_stop_metric": "--early-stop-metric",
     "early_stop_threshold": "--early-stop-threshold",
     "early_stop_operator": "--early-stop-operator",
@@ -114,6 +119,11 @@ TRAIN_TRUE_FLAGS = {
 TRAIN_BOOLEAN_OPTIONS = {
     "max_pool_frames": ("--max-pool-frames", "--no-max-pool-frames"),
     "normalize_advantage": ("--normalize-advantage", "--no-normalize-advantage"),
+    "post_train_eval": ("--post-train-eval", "--no-post-train-eval"),
+    "post_train_eval_stochastic": (
+        "--post-train-eval-stochastic",
+        "--no-post-train-eval-stochastic",
+    ),
 }
 TRAIN_COMMAND_FIELDS = (
     tuple(TRAIN_VALUE_OPTIONS) + tuple(TRAIN_TRUE_FLAGS) + tuple(TRAIN_BOOLEAN_OPTIONS)
@@ -128,7 +138,9 @@ def build_train_command(options: Mapping[str, Any]) -> list[str]:
             continue
         if key == "target_kl" and float(value) <= 0:
             continue
-        if key == "info_events_json" and isinstance(value, Mapping):
+        if key == "early_stop" and isinstance(value, Mapping | list | tuple):
+            value = json.dumps(value, separators=(",", ":"))
+        elif key == "info_events_json" and isinstance(value, Mapping):
             value = json.dumps(value, separators=(",", ":"))
         elif key == "task_conditioning_info_values" and isinstance(value, list | tuple):
             value = ";".join(
@@ -203,6 +215,13 @@ def apply_train_config_json(
     return args
 
 
+def parse_json_value(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"must be valid JSON: {exc}") from exc
+
+
 def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
@@ -225,9 +244,15 @@ def validate_training_eval_disabled(args: argparse.Namespace) -> None:
 
 
 def validate_early_stop_args(args: argparse.Namespace) -> None:
+    early_stop = getattr(args, "early_stop", None)
     metric = str(getattr(args, "early_stop_metric", "") or "").strip()
     threshold = getattr(args, "early_stop_threshold", None)
     args.early_stop_metric = metric
+    if early_stop is not None:
+        if metric or threshold is not None:
+            raise ValueError("--early-stop cannot be combined with --early-stop-metric/--early-stop-threshold")
+        args.early_stop = normalize_early_stop_config(early_stop, label="--early-stop")
+        return
     if bool(metric) == (threshold is not None):
         if threshold is not None and not math.isfinite(float(threshold)):
             raise ValueError("--early-stop-threshold must be finite")
@@ -394,6 +419,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-video-fps", type=float, default=30.0, help=argparse.SUPPRESS)
     parser.add_argument("--eval-video-scale", type=int, default=4, help=argparse.SUPPRESS)
     parser.add_argument("--checkpoint-freq", type=int, default=500_000)
+    parser.add_argument(
+        "--post-train-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluate checkpoint artifacts in this training process after learning finishes.",
+    )
+    parser.add_argument(
+        "--post-train-eval-episodes",
+        type=int,
+        default=100,
+        help="Episodes per checkpoint for post-training checkpoint eval.",
+    )
+    parser.add_argument(
+        "--post-train-eval-n-envs",
+        type=int,
+        default=20,
+        help="Vector eval env count for post-training checkpoint eval.",
+    )
+    parser.add_argument(
+        "--post-train-eval-max-steps",
+        type=int,
+        default=0,
+        help="Max steps per post-training eval episode; <=0 uses --max-episode-steps.",
+    )
+    parser.add_argument(
+        "--post-train-eval-stochastic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use stochastic policy sampling for post-training checkpoint eval.",
+    )
+    parser.add_argument(
+        "--early-stop",
+        type=parse_json_value,
+        default=None,
+        help="JSON early-stop list of AND-combined metric threshold rules.",
+    )
     parser.add_argument(
         "--early-stop-metric",
         default="",

@@ -42,6 +42,7 @@ from rlab.metric_names import (
     EVAL_DEATH_COUNT,
     EVAL_DEATH_RATE,
     EVAL_DEATH_X_HIST,
+    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     EVAL_PROGRESS_LEVEL_X_MAX,
     EVAL_PROGRESS_LEVEL_X_MEAN,
@@ -94,10 +95,10 @@ def append_eval_history(path: Path, metrics: dict[str, Any]) -> None:
         file.write(json.dumps(json_safe(metrics)) + "\n")
 
 
-def score(metrics: dict[str, Any]) -> tuple[float, int, float]:
+def score(metrics: dict[str, Any]) -> tuple[float, float, float]:
     return (
         float(metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, metrics["completion_rate"])),
-        int(metrics["max_x_max"]),
+        float(metrics.get(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN, metrics["completion_rate"])),
         float(metrics["reward_mean"]),
     )
 

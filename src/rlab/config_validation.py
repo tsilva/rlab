@@ -13,6 +13,7 @@ import yaml
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document
+from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.env_config_aliases import STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
 from rlab.env_registry import qualify_env_id, resolve_env_id
@@ -23,7 +24,6 @@ from rlab.seeds import validate_eval_seed
 
 RECIPE_SCHEMA_VERSION = 1
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
-GOAL_OPERATOR_VALUES = {"<", "<=", "==", ">=", ">"}
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
 
@@ -465,74 +465,6 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(f"{label}.eval.policy must be an object")
 
 
-def _validate_operator(value: str, *, label: str) -> None:
-    if value not in GOAL_OPERATOR_VALUES:
-        allowed = ", ".join(sorted(GOAL_OPERATOR_VALUES))
-        raise ValueError(f"{label} must be one of {allowed}")
-
-
-def _validate_success_criteria(success: Mapping[str, Any], *, label: str) -> None:
-    criteria = success.get("criteria")
-    if criteria is None:
-        if "metric" in success:
-            allowed_keys = {"metric", "operator", "threshold"}
-            extra_keys = sorted(set(success) - allowed_keys)
-            if extra_keys:
-                raise ValueError(f"{label} has unexpected keys: {extra_keys}")
-            _require_non_empty_string(success, "metric", label=label)
-            operator = _require_non_empty_string(success, "operator", label=label)
-            _validate_operator(operator, label=f"{label}.operator")
-            _require_number(success, "threshold", label=label)
-        elif "success_metric" in success:
-            _require_non_empty_string(success, "success_metric", label=label)
-            _require_number(success, "success_threshold", label=label)
-            if "success_threshold_operator" in success:
-                success_operator = _require_non_empty_string(
-                    success,
-                    "success_threshold_operator",
-                    label=label,
-                )
-                _validate_operator(success_operator, label=f"{label}.success_threshold_operator")
-        else:
-            _require_non_empty_string(success, "primary_metric", label=label)
-            _require_number(success, "success_threshold", label=label)
-            if "balance_guard_threshold_operator" in success:
-                balance_operator = _require_non_empty_string(
-                    success,
-                    "balance_guard_threshold_operator",
-                    label=label,
-                )
-                _validate_operator(balance_operator, label=f"{label}.balance_guard_threshold_operator")
-            if "success_window_attempts" in success:
-                _require_int(success, "success_window_attempts", label=label, minimum=1)
-        return
-
-    if not isinstance(criteria, Sequence) or isinstance(criteria, str | bytes) or not criteria:
-        raise ValueError(f"{label}.criteria must be a non-empty list")
-    for index, raw_criterion in enumerate(criteria):
-        criterion_label = f"{label}.criteria[{index}]"
-        criterion = _require_mapping(raw_criterion, label=criterion_label)
-        allowed_keys = {"metric", "operator", "threshold"}
-        extra_keys = sorted(set(criterion) - allowed_keys)
-        if extra_keys:
-            raise ValueError(f"{criterion_label} has unexpected keys: {extra_keys}")
-        _require_non_empty_string(criterion, "metric", label=criterion_label)
-        operator = _require_non_empty_string(criterion, "operator", label=criterion_label)
-        _validate_operator(operator, label=f"{criterion_label}.operator")
-        _require_number(criterion, "threshold", label=criterion_label)
-
-
-def _objective_success_section(objective: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:
-    if "success" in objective:
-        return _require_mapping(objective["success"], label=f"{label}.success")
-    return objective
-
-
-def _validate_objective_success(objective: Mapping[str, Any], *, label: str) -> None:
-    success = _objective_success_section(objective, label=label)
-    _validate_success_criteria(success, label=f"{label}.success" if success is not objective else label)
-
-
 def _validate_rank_order(rank_order: Any, *, label: str) -> None:
     if not isinstance(rank_order, Sequence) or isinstance(rank_order, str | bytes) or not rank_order:
         raise ValueError(f"{label} must be a non-empty list")
@@ -639,7 +571,10 @@ def _validate_goal_contract_document(
             f"{label}.objective must be script-readable; "
             f"remove narrative keys: {present_objective_narrative_keys}"
         )
-    _validate_objective_success(objective, label=f"{label}.objective")
+    if "success" in objective:
+        raise ValueError(
+            f"{label}.objective.success moved to train.early_stop"
+        )
     _validate_objective_rank(objective, label=f"{label}.objective")
 
     train = _goal_train_section(document, label=label)
@@ -647,6 +582,14 @@ def _validate_goal_contract_document(
         raise ValueError(f"{label}.training is not part of goal contracts")
     if "max_train_timesteps" in train:
         raise ValueError(f"{label}.train.max_train_timesteps is not part of goal contracts")
+    policy = train.get("policy")
+    if isinstance(policy, Mapping):
+        policy_early_stop_keys = {"early_stop", "early_stop_metric", "early_stop_operator", "early_stop_threshold"}
+        present = sorted(set(policy) & policy_early_stop_keys)
+        if present:
+            raise ValueError(f"{label}.train.policy early-stop fields moved to train.early_stop: {present}")
+    if "early_stop" in train:
+        normalize_early_stop_config(train["early_stop"], label=f"{label}.train.early_stop")
     environment = _goal_train_environment(document, train, label=label)
     _validate_environment_identity({"environment": environment}, label=f"{label}.train")
     env_config = environment.get("env_config") if isinstance(environment.get("env_config"), Mapping) else environment

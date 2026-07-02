@@ -78,7 +78,6 @@ machines:
     limits:
       max_parallel_containers: 5
       max_train_containers: 4
-      max_eval_containers: 3
     paths:
       host_root: /host/rlab
       payloads_dir: /host/rlab/payloads
@@ -101,7 +100,6 @@ class MachineRegistryTests(unittest.TestCase):
 
         self.assertEqual(machine.backend, "docker_ssh")
         self.assertEqual(machine.max_containers_for_kind("train"), 4)
-        self.assertEqual(machine.max_containers_for_kind("eval"), 3)
         self.assertEqual(machine.max_containers_for_kind("other"), 5)
         self.assertEqual(machine.paths.container_payloads_dir, "/input/payloads")
 
@@ -149,7 +147,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 machine=machine,
                 containers=(),
                 launches=(),
-                queue_counts={"train": {"pending": 2}, "eval": {"pending": 1}},
+                queue_counts={"train": {"pending": 2}},
                 result_present={},
             )
             args = fleet.build_parser().parse_args(
@@ -211,7 +209,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
                     labels={
                         fleet.JOB_CONTAINER_LABEL: "true",
                         fleet.LAUNCH_ID_LABEL: "launch-orphan",
-                        fleet.JOB_KIND_LABEL: "eval",
+                        fleet.JOB_KIND_LABEL: "train",
                         fleet.JOB_ID_LABEL: "2",
                         fleet.OUTPUT_URI_LABEL: "/out/launch-orphan",
                     },
@@ -237,14 +235,15 @@ class FleetShepherdSplitTests(unittest.TestCase):
                         "output_uri": "/out/launch-missing",
                     },
                 ),
-                queue_counts={"train": {"pending": 4, "running": 1}, "eval": {"pending": 2}},
+                queue_counts={"train": {"pending": 4, "running": 1}},
                 result_present={"launch-missing": True, "launch-orphan": True},
             )
 
         output = fleet.render_machine_watch_dashboard(snapshot)
 
-        self.assertIn("capacity total=1/5 train=1/4 eval=0/3", output)
+        self.assertIn("capacity total=1/5 train=1/4", output)
         self.assertIn("train_pending=4", output)
+        self.assertNotIn("eval" + "_pending", output)
         self.assertIn("launch_id=launch-live", output)
         self.assertIn("hint=ok", output)
         self.assertIn("launch_id=launch-missing", output)
@@ -427,7 +426,7 @@ class RunJobCommandTests(unittest.TestCase):
         self.assertEqual(result["job_kind"], "train")
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["train"]["status"], "succeeded")
-        self.assertEqual(result["eval"]["status"], "skipped")
+        self.assertNotIn("eval", result)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_rom_imported,
     info_value_from_state_name,
-    make_fast_retro_env,
+    make_eval_vec_env,
     make_rendered_replay_env,
     resolve_env_config,
     state_name_candidates_from_level_id,
@@ -50,6 +50,10 @@ def fast_env_obs(obs: np.ndarray) -> np.ndarray:
     # Older native envs may expose HWC stacks; post12 exposes CHW stacks.
     # The policy always receives SB3's channel-first batch layout.
     arr = np.asarray(obs)
+    if arr.ndim == 4 and arr.shape[0] == 1 and arr.shape[-1] == 4:
+        return np.transpose(arr, (0, 3, 1, 2))
+    if arr.ndim == 4 and arr.shape[0] == 1 and arr.shape[1] == 4:
+        return arr
     if arr.ndim == 3 and arr.shape[-1] == 4:
         return np.transpose(arr, (2, 0, 1))[None, ...]
     if arr.ndim == 3 and arr.shape[0] == 4:
@@ -59,6 +63,8 @@ def fast_env_obs(obs: np.ndarray) -> np.ndarray:
 
 def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
     arr = np.asarray(obs)
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]
     if arr.ndim == 3 and arr.shape[-1] == 4:
         return deque([arr[..., idx : idx + 1] for idx in range(arr.shape[-1])], maxlen=4)
     if arr.ndim == 3 and arr.shape[0] == 4:
@@ -505,15 +511,16 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
     display_env = make_rendered_replay_env(config=config, seed=args.seed)
-    policy_env = (
-        make_fast_retro_env(config=config, seed=args.seed)
-        if args.policy_env == "fast"
-        else display_env
-    )
+    effective_policy_env = args.policy_env
+    if args.policy_env == "fast":
+        policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+    else:
+        policy_env = display_env
     seed_rng = np.random.default_rng() if args.random_seeds else None
 
-    if policy_env is not display_env:
-        policy_env.reset(seed=args.seed)
+    if effective_policy_env == "fast":
+        policy_env.seed(args.seed)
+        policy_env.reset()
     display_env.reset(seed=args.seed)
     first_frame = display_env.render()
     game_position = (460, 60) if args.control_panel else None
@@ -601,11 +608,14 @@ def main(argv: list[str] | None = None) -> None:
                 else args.seed + episode
             )
             torch.manual_seed(episode_seed)
-            policy_obs, policy_reset_info = policy_env.reset(seed=episode_seed)
-            if policy_env is display_env:
-                display_obs = policy_obs
-            else:
+            if effective_policy_env == "fast":
+                policy_env.seed(episode_seed)
+                policy_obs = policy_env.reset()
+                policy_reset_info = {}
                 display_obs, _ = display_env.reset(seed=episode_seed)
+            else:
+                policy_obs, policy_reset_info = policy_env.reset(seed=episode_seed)
+                display_obs = policy_obs
             frame = display_env.render()
             if not viewer.show(
                 frame,
@@ -621,7 +631,7 @@ def main(argv: list[str] | None = None) -> None:
             throttle()
             frames: deque[np.ndarray] = (
                 fast_env_frames(policy_obs)
-                if args.policy_env == "fast"
+                if effective_policy_env == "fast"
                 else deque([display_obs] * 4, maxlen=4)
             )
             configured_task_states = task_state_names(config) if config.task_conditioning else ()
@@ -677,7 +687,7 @@ def main(argv: list[str] | None = None) -> None:
             for step_idx in range(args.max_steps):
                 image_obs = (
                     fast_env_obs(policy_obs)
-                    if args.policy_env == "fast"
+                    if effective_policy_env == "fast"
                     else stacked_obs(frames)
                 )
                 model_obs = model_observation(
@@ -689,7 +699,15 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 action, _ = model.predict(model_obs, deterministic=args.deterministic)
                 env_action = single_env_action(action)
-                policy_obs, reward, terminated, truncated, info = policy_env.step(env_action)
+                if effective_policy_env == "fast":
+                    policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
+                    reward = float(np.asarray(rewards)[0])
+                    done = bool(np.asarray(dones)[0])
+                    terminated = done
+                    truncated = bool(infos[0].get("TimeLimit.truncated", False))
+                    info = dict(infos[0])
+                else:
+                    policy_obs, reward, terminated, truncated, info = policy_env.step(env_action)
                 if config.task_conditioning_info_vars:
                     next_info_value = task_info_value_from_info(info, config)
                     if next_info_value is not None and next_info_value != active_info_value:
@@ -721,7 +739,7 @@ def main(argv: list[str] | None = None) -> None:
                             flush=True,
                         )
                         active_task_state = next_task_state
-                if policy_env is display_env:
+                if effective_policy_env == "rendered":
                     display_obs = policy_obs
                     frames.append(display_obs)
                 else:

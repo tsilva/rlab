@@ -21,8 +21,8 @@ Use `rate` for fractions in `[0, 1]`, `count` for point-in-time counts, and stan
 distribution statistics. Avoid aliases and alternate names for the same value.
 
 `global_step` is the W&B step axis for training metrics logged directly to W&B and for
-TensorBoard-synced SB3 metrics. Out-of-process checkpoint eval logs use checkpoint step as the W&B
-step value and also log `eval/checkpoint/step`.
+TensorBoard-synced SB3 metrics. Post-training checkpoint eval logs `global_step` and
+`eval/checkpoint/step` as the checkpoint timestep on the same W&B run that produced the checkpoint.
 
 ## Selection Metrics
 
@@ -30,10 +30,10 @@ These are the first metrics to check when choosing policies.
 
 Queue-backed train specs use `selection_metrics` as an ordered list of training
 signals. Goal-owned eval specs do not define selection metrics; they only define
-the checkpoint measurement protocol. Queued checkpoint eval writes canonical
-`eval/*` metrics to the producing W&B run with `global_step` set to the
-checkpoint timestep. W&B is the source of truth for train and eval metrics; the
-queue database stores job state, not result metric projections.
+the checkpoint measurement protocol. Post-training checkpoint eval writes
+canonical `eval/*` metrics to the producing W&B run with `global_step` set to
+the checkpoint timestep. W&B is the source of truth for train and eval metrics;
+the queue database stores train-job state, not result metric projections.
 
 | Metric | Meaning |
 | --- | --- |
@@ -89,8 +89,8 @@ far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate/min/last` 
 Level1-1 later drops from `1.00` to `0.50` while Level1-2 drops from `0.60` to `0.55`, `rate/min/last`
 is `0.50`. Use `train/info/level_complete/rate/mean/last` as the companion average over those same
 latest per-level rates, mainly to distinguish policies with the same bottleneck. Training
-intentionally no longer logs generic `train/event/*` or `train/outcome/*` metrics. Once checkpoint
-eval jobs have logged per-start metrics,
+intentionally no longer logs generic `train/event/*` or `train/outcome/*` metrics. Once post-train
+checkpoint eval has logged per-start metrics,
 use `eval/done/level_change/from_rate/min` as the balanced eval selection metric.
 
 `rate/min/last` and `rate/mean/last` are intentionally available-source live metrics. If only one
@@ -109,8 +109,8 @@ tiebreaker/secondary signal when bottleneck rates match.
 
 Goal contracts should not restate the `train/info/level_complete/from/<prev>/rate` 100-attempt FIFO
 window as a separate success setting. The metric definition owns that window. Goal files should
-declare the solved condition in `objective.success` and ordered ranking signals in `objective.rank`,
-for example `{metric: train/info/level_complete/rate/min/last, operator: '>', threshold: 0.99}`.
+declare training stop gates as a list in `train.early_stop`; multiple metric-threshold rules are
+combined with AND. Ordered ranking signals stay in `objective.rank`.
 
 Use current `train/reward_share/*` metrics for reward attribution rather than the older
 `train/reward_component/*` namespace. Shares are based on absolute rollout contribution
@@ -324,17 +324,16 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
 | `eval/best/x` | Max global X position of the best eval episode. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
-| `eval/checkpoint/step` | Checkpoint step being evaluated. Logged by `rlab-eval` artifact mode. |
-| `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated. Logged by `rlab-eval` artifact mode. |
-| `eval/config/hud_crop_top` | HUD crop used for the out-of-process checkpoint eval. |
-| `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, ranked by completion first. Used by `rlab leaders checkpoints`. |
-| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint. Used before max X. |
-| `leader/checkpoint/max_x_max` | W&B summary tiebreaker for the source run's best evaluated checkpoint. Used after mean reward. |
+| `eval/checkpoint/step` | Checkpoint step being evaluated by post-train checkpoint eval or local artifact eval. |
+| `eval/checkpoint/artifact` | W&B checkpoint artifact name being evaluated by post-train checkpoint eval or local artifact eval. |
+| `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
+| `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, using `eval/done/level_change/from_rate/min` when available. Used by `rlab leaders checkpoints`. |
+| `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, using `eval/done/level_change/from_rate/mean` when available. |
+| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, after min and mean per-start completion. |
+| `leader/checkpoint/max_x_max` | Progress field for the source run's best evaluated checkpoint. Reported for inspection but not part of the current objective rank. |
 | `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
-| `leader/checkpoint/eval_protocol_hash` | Eval protocol hash attached to the source run's current best evaluated checkpoint. |
-| `leader/checkpoint/eval_job_id` | Queue eval job id that produced the current best-checkpoint summary update. |
-| `leader/checkpoint/candidate_label` | Candidate label attached to that eval job. |
+| `leader/checkpoint/eval_source` | Source that produced the current best-checkpoint summary update, currently `post_train_inline`. |
 | `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 
 Per-start-state eval done metrics mirror the training done namespace as

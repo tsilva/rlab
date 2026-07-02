@@ -12,7 +12,6 @@ machines:
     limits:
       max_parallel_containers: 5
       max_train_containers: 5
-      max_eval_containers: 5
     paths:
       host_root: /home/tsilva/rlab
       payloads_dir: /home/tsilva/rlab/payloads
@@ -39,7 +38,6 @@ machines:
     limits:
       max_parallel_containers: 4
       max_train_containers: 4
-      max_eval_containers: 4
     paths:
       host_root: /home/tsilva/rlab
       payloads_dir: /home/tsilva/rlab/payloads

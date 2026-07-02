@@ -16,7 +16,6 @@ DEFAULT_MACHINE_REGISTRY = Path("experiments/machines.yaml")
 class MachineLimits:
     max_parallel_containers: int
     max_train_containers: int | None = None
-    max_eval_containers: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,8 +46,6 @@ class MachineConfig:
     def max_containers_for_kind(self, job_kind: str) -> int:
         if job_kind == "train" and self.limits.max_train_containers is not None:
             return self.limits.max_train_containers
-        if job_kind == "eval" and self.limits.max_eval_containers is not None:
-            return self.limits.max_eval_containers
         return self.limits.max_parallel_containers
 
 
@@ -121,10 +118,6 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
             max_train_containers=_optional_positive_int(
                 limits_raw.get("max_train_containers"),
                 label=f"machine {name} limits.max_train_containers",
-            ),
-            max_eval_containers=_optional_positive_int(
-                limits_raw.get("max_eval_containers"),
-                label=f"machine {name} limits.max_eval_containers",
             ),
         ),
         paths=MachinePaths(

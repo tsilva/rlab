@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import time
 from collections import deque
@@ -12,6 +13,11 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
 from rlab.artifacts import checkpoint_step, log_wandb_model_artifact
+from rlab.early_stop import (
+    evaluate_early_stop_config,
+    flat_metric_rule_from_early_stop,
+    normalize_early_stop_config,
+)
 from rlab.env import DoneOnInfoRules, EnvConfig
 from rlab.metric_names import (
     GLOBAL_STEP,
@@ -140,7 +146,7 @@ class WandbCheckpointArtifactCallback(BaseCallback):
                 else None,
                 stall_started_at=pending_timing.started_at if pending_timing is not None else None,
                 clock=self.clock,
-                purge_after_upload=True,
+                purge_after_upload=False,
             )
             if self.timing_state is not None:
                 self.timing_state.clear(step)
@@ -192,80 +198,95 @@ class ThroughputCallback(BaseCallback):
 
 
 class MetricThresholdStopCallback(BaseCallback):
-    OPERATORS = {
-        ">": lambda value, threshold: value > threshold,
-        ">=": lambda value, threshold: value >= threshold,
-        "<": lambda value, threshold: value < threshold,
-        "<=": lambda value, threshold: value <= threshold,
-    }
-
     def __init__(
         self,
         *,
-        metric_name: str,
-        threshold: float,
-        operator: str,
         marker_path: Path,
+        metric_name: str | None = None,
+        threshold: float | None = None,
+        operator: str = ">=",
+        detector: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        metric_name = str(metric_name).strip()
-        if not metric_name:
-            raise ValueError("metric_name is required")
-        if operator not in self.OPERATORS:
-            raise ValueError(f"unsupported metric threshold operator: {operator}")
-        if not math.isfinite(float(threshold)):
-            raise ValueError("metric threshold must be finite")
-        self.metric_name = metric_name
-        self.threshold = float(threshold)
-        self.operator = operator
+        if detector is None:
+            metric_name = str(metric_name or "").strip()
+            if not metric_name:
+                raise ValueError("metric_name is required")
+            detector = {
+                "metric": metric_name,
+                "operator": operator,
+                "threshold": threshold,
+            }
+            detector = [detector]
+        self.detector = normalize_early_stop_config(detector, label="early_stop")
+        self.flat_rule = flat_metric_rule_from_early_stop(self.detector)
+        self.metric_name = str(self.flat_rule["metric"]) if self.flat_rule else ""
+        self.threshold = float(self.flat_rule["threshold"]) if self.flat_rule else None
+        self.operator = str(self.flat_rule["operator"]) if self.flat_rule else ""
         self.marker_path = marker_path
         self.triggered = False
 
     def _on_step(self) -> bool:
-        value = self.current_metric_value()
-        if value is None:
-            return True
-        if not self.OPERATORS[self.operator](value, self.threshold):
+        result, values = evaluate_early_stop_config(self.detector, self.current_metric_value)
+        if result is not True:
             return True
         self.triggered = True
-        self.write_marker(value)
+        self.write_marker(values)
         print(
             "early stop: "
-            f"{self.metric_name} {value:.12g} {self.operator} {self.threshold:.12g}; "
+            f"{self.describe_trigger(values)}; "
             f"stopping at num_timesteps={self.num_timesteps}",
             flush=True,
         )
         return False
 
-    def current_metric_value(self) -> float | None:
+    def current_metric_value(self, metric_name: str | None = None) -> float | None:
+        metric_name = self.metric_name if metric_name is None else str(metric_name)
         logger = getattr(self.model, "logger", None)
         for attr in ("name_to_value", "records"):
             values = getattr(logger, attr, None)
-            if not isinstance(values, Mapping) or self.metric_name not in values:
+            if not isinstance(values, Mapping) or metric_name not in values:
                 continue
             try:
-                value = float(values[self.metric_name])
+                value = float(values[metric_name])
             except (TypeError, ValueError):
                 return None
             return value if math.isfinite(value) else None
         return None
 
-    def write_marker(self, value: float) -> None:
+    def describe_trigger(self, values: Mapping[str, float]) -> str:
+        if self.flat_rule:
+            value = values.get(self.metric_name)
+            if value is not None:
+                return f"{self.metric_name} {value:.12g} {self.operator} {float(self.threshold):.12g}"
+        return "early_stop metrics matched"
+
+    def write_marker(self, values: Mapping[str, float]) -> None:
         self.marker_path.parent.mkdir(parents=True, exist_ok=True)
-        self.marker_path.write_text(
-            "\n".join(
-                [
-                    "early_stop=metric_threshold",
-                    f"early_stop_metric={self.metric_name}",
-                    f"early_stop_operator={self.operator}",
-                    f"early_stop_threshold={self.threshold:.12g}",
-                    f"early_stop_value={value:.12g}",
-                    f"early_stop_timesteps={self.num_timesteps}",
-                    f"{self.metric_name}={value:.12g}",
-                    f"timesteps={self.num_timesteps}",
-                ]
+        lines = [
+            "early_stop=metric_threshold",
+            f"early_stop_timesteps={self.num_timesteps}",
+            f"early_stop_detector_json={json.dumps(self.detector, sort_keys=True, separators=(',', ':'))}",
+            f"timesteps={self.num_timesteps}",
+        ]
+        if self.flat_rule:
+            value = values.get(self.metric_name)
+            if value is not None:
+                lines.extend(
+                    [
+                        f"early_stop_metric={self.metric_name}",
+                        f"early_stop_operator={self.operator}",
+                        f"early_stop_threshold={float(self.threshold):.12g}",
+                        f"early_stop_value={value:.12g}",
+                        f"{self.metric_name}={value:.12g}",
+                    ]
+                )
+        else:
+            lines.extend(
+                f"early_stop_value/{metric}={value:.12g}" for metric, value in sorted(values.items())
             )
-            + "\n",
+        self.marker_path.write_text(
+            "\n".join(lines) + "\n",
             encoding="utf-8",
         )
 
@@ -355,7 +376,7 @@ class RewardComponentDiagnosticsCallback(BaseCallback):
                     continue
                 try:
                     numeric_value = float(value)
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     continue
                 if np.isfinite(numeric_value):
                     self.component_values[component].append(numeric_value)

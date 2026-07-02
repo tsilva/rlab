@@ -24,6 +24,12 @@ CHECKPOINT_COMPLETION_KEYS = (
     "eval/done/level_change/rate",
     "completion_rate",
 )
+CHECKPOINT_COMPLETION_MEAN_KEYS = (
+    "leader/checkpoint/completion_rate_mean",
+    "eval/done/level_change/from_rate/mean",
+    "eval/done/level_change/rate",
+    "completion_rate",
+)
 CHECKPOINT_MAX_X_KEYS = (
     "leader/checkpoint/max_x_max",
     "eval/progress/x/max",
@@ -66,12 +72,12 @@ class CheckpointLeader:
     run_name: str
     url: str
     completion_rate: float
+    completion_rate_mean: float
     max_x_max: float
     reward_mean: float
     checkpoint_step: int | None
     artifact_ref: str
-    eval_protocol_hash: str
-    eval_job_id: int | None
+    eval_source: str
 
 
 def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
@@ -173,13 +179,14 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     config = dict(getattr(run, "config", {}) or {})
     summary = getattr(run, "summary", {}) or {}
     completion = _first_float(summary, CHECKPOINT_COMPLETION_KEYS)
+    completion_mean = _first_float(summary, CHECKPOINT_COMPLETION_MEAN_KEYS)
     max_x = _first_float(summary, CHECKPOINT_MAX_X_KEYS)
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
     artifact_ref = _first_text(
         _mapping_value(summary, "leader/checkpoint/artifact_ref"),
         _mapping_value(summary, "eval/checkpoint_artifact"),
     )
-    if completion is None or max_x is None or reward is None or not artifact_ref:
+    if completion is None or completion_mean is None or max_x is None or reward is None or not artifact_ref:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
     return CheckpointLeader(
@@ -189,19 +196,19 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
         completion_rate=completion,
+        completion_rate_mean=completion_mean,
         max_x_max=max_x,
         reward_mean=reward,
         checkpoint_step=_optional_int(_mapping_value(summary, "leader/checkpoint/step")),
         artifact_ref=artifact_ref,
-        eval_protocol_hash=_first_text(_mapping_value(summary, "leader/checkpoint/eval_protocol_hash")),
-        eval_job_id=_optional_int(_mapping_value(summary, "leader/checkpoint/eval_job_id")),
+        eval_source=_first_text(_mapping_value(summary, "leader/checkpoint/eval_source")),
     )
 
 
 def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[CheckpointLeader]:
     return sorted(
         leaders,
-        key=lambda item: (item.completion_rate, item.reward_mean, item.max_x_max),
+        key=lambda item: (item.completion_rate, item.completion_rate_mean, item.reward_mean),
         reverse=True,
     )
 
@@ -233,11 +240,12 @@ def print_run_leaders(rows: Sequence[RunLeader]) -> None:
 
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
-    print("goal_slug\tspec_slug\tcompletion\tmax_x\treward\tstep\trun\tartifact_ref")
+    print("goal_slug\tspec_slug\tcompletion_min\tcompletion_mean\treward\tmax_x\tstep\trun\tartifact_ref")
     for row in rows:
         print(
             f"{row.goal_slug}\t{row.spec_slug}\t{row.completion_rate:.6g}\t"
-            f"{row.max_x_max:.6g}\t{row.reward_mean:.6g}\t"
+            f"{row.completion_rate_mean:.6g}\t{row.reward_mean:.6g}\t"
+            f"{row.max_x_max:.6g}\t"
             f"{row.checkpoint_step or ''}\t{row.run_name}\t{row.artifact_ref}"
         )
 

@@ -35,15 +35,6 @@ def _train(argv: Sequence[str]) -> int:
 
 
 def _eval(argv: Sequence[str]) -> int:
-    if argv and argv[0] == "enqueue":
-        from rlab.job_queue import cmd_enqueue_eval
-
-        return int(cmd_enqueue_eval(build_eval_enqueue_parser().parse_args(list(argv[1:]))))
-    if argv and argv[0] == "worker":
-        from rlab.eval_job_runner import main as worker_main
-
-        return _run(worker_main, argv[1:], prog="rlab eval worker")
-
     from rlab.eval import main as eval_main
 
     return _run(eval_main, argv, prog="rlab eval")
@@ -141,51 +132,9 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_eval_enqueue_parser() -> argparse.ArgumentParser:
-    from rlab.runtime_refs import DEFAULT_IMAGE_ARTIFACT, DEFAULT_IMAGE_BRANCH, DEFAULT_IMAGE_WORKFLOW
-
-    parser = argparse.ArgumentParser(
-        prog="rlab eval enqueue",
-        description="Create a concrete queue-backed eval job.",
-    )
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-    parser.add_argument("--goal", required=True, help="Research goal slug")
-    parser.add_argument("--spec-slug")
-    parser.add_argument("--spec-path")
-    parser.add_argument("--train-job-id", type=int)
-    parser.add_argument("--profile", help=argparse.SUPPRESS)
-    parser.add_argument("--runtime-image-ref")
-    parser.add_argument(
-        "--runtime-image-ref-file",
-        type=Path,
-        help=(
-            "JSON artifact or plain-text file containing the immutable runtime image ref; "
-            "defaults to latest."
-        ),
-    )
-    parser.add_argument(
-        "--latest-image",
-        action="store_true",
-        help="Resolve the latest successful train image digest.",
-    )
-    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
-    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    parser.add_argument(
-        "--eval-config-json",
-        help="Optional JSON/file overrides merged onto the goal-owned eval policy.",
-    )
-    parser.add_argument("--artifact-ref")
-    parser.add_argument("--checkpoint-step", type=int)
-    parser.add_argument("--eval-protocol-hash")
-    parser.add_argument("--max-attempts", type=int, default=1)
-    parser.add_argument("--candidate-label")
-    return parser
-
-
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "train": ("enqueue train jobs from checked-in specs; use 'local' for direct training", _train),
-    "eval": ("run local evals; use 'enqueue' or 'worker' for queue-backed evals", _eval),
+    "eval": ("run local evals", _eval),
     "play": ("render a local model or W&B artifact in a GUI window", _play),
     "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
     "promote": ("gate a candidate checkpoint against a goal contract", _promote),

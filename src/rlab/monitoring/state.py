@@ -560,68 +560,6 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def job_from_eval_row(row: dict[str, Any]) -> dict[str, Any]:
-    config = dict(row.get("eval_config") or {})
-    metrics: dict[str, Any] = {}
-    status = str(row.get("status") or "")
-    worker = str(row.get("lease_owner") or "")
-    profile = str(row.get("profile_id") or "")
-    device_key = infer_device_key("eval", profile, worker, config)
-    device = device_label(device_key)
-    container = container_label(worker)
-    progress = ""
-    if status == "running" and config.get("episodes"):
-        progress = f"0/{config['episodes']}"
-    if metrics:
-        progress = completion_progress(metrics) or progress
-    return {
-        "id": f"eval-{row['id']}",
-        "kind": "eval",
-        "target": row.get("candidate_label") or target_label(config),
-        "device": device,
-        "container": container,
-        "device_key": device_key,
-        "state": status,
-        "progress": progress,
-        "wandb_url": str(config.get("wandb_url") or "").strip(),
-        "attention": attention_for_row(
-            status=status,
-            error=row.get("error"),
-            heartbeat_at=row.get("heartbeat_at"),
-            lease_expires_at=row.get("lease_expires_at"),
-            metrics=metrics,
-            cancel_requested=row.get("cancel_requested"),
-            drain_requested=row.get("drain_requested"),
-        ),
-        "details": {
-            "goal": row.get("goal_slug") or "",
-            "profile": profile_label(profile),
-            "device": device,
-            "container": container,
-            "worker": worker,
-            "lease": minutes_until(row.get("lease_expires_at")),
-            "heartbeat": short_age(row.get("heartbeat_at")),
-            "attempts": f"{row.get('attempts')}/{row.get('max_attempts')}"
-            if row.get("attempts") is not None and row.get("max_attempts") is not None
-            else "",
-            "cancel": "requested" if row.get("cancel_requested") else "",
-            "drain": "requested" if row.get("drain_requested") else "",
-            "episodes": config.get("episodes") or "",
-            "seed": config.get("seed") or "",
-            "n_envs": config.get("n_envs") or "",
-            "artifact": config.get("artifact_ref") or config.get("model_artifact") or "",
-            "completion": completion_progress(metrics),
-            "reward": metric_value(metrics, "reward_mean", "mean_reward") or "",
-            "max_x": metric_value(metrics, "max_x_position_mean", "max_x") or "",
-        },
-        "payload": payload_from_row(
-            table="eval_jobs",
-            row=row,
-            config_key="eval_config",
-        ),
-    }
-
-
 def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if options.sample:
         return sample_jobs(), {"queue": "sample", "message": "sample mode"}
@@ -658,34 +596,12 @@ def queue_jobs(options: MonitorOptions) -> tuple[list[dict[str, Any]], dict[str,
                     params,
                 )
                 train_rows = [dict(row) for row in cur.fetchall()]
-                cur.execute(
-                    f"""
-                    SELECT
-                      j.*,
-                      to_jsonb(j) AS job_payload
-                    FROM eval_jobs j
-                    WHERE j.status IN ('running', 'pending', 'failed')
-                    {goal_filter}
-                    ORDER BY
-                      CASE j.status
-                        WHEN 'running' THEN 0
-                        WHEN 'pending' THEN 1
-                        WHEN 'failed' THEN 2
-                        ELSE 3
-                      END,
-                      j.id DESC
-                    LIMIT %(limit)s
-                    """,
-                    params,
-                )
-                eval_rows = [dict(row) for row in cur.fetchall()]
         finally:
             conn.close()
     except Exception as exc:
         return sample_jobs(), {"queue": "sample", "message": f"DB unavailable: {exc}"}
 
     jobs = [job_from_train_row(row) for row in train_rows]
-    jobs.extend(job_from_eval_row(row) for row in eval_rows)
     return jobs, {"queue": "live", "message": f"{len(jobs)} active jobs"}
 
 
@@ -726,40 +642,6 @@ def sample_jobs() -> list[dict[str, Any]]:
             },
         },
         {
-            "id": "eval-77",
-            "kind": "eval",
-            "target": "checkpoint v47",
-            "device": "local",
-            "container": "",
-            "device_key": "local",
-            "state": "running",
-            "progress": "68/100",
-            "wandb_url": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/sample-eval-77",
-            "attention": "",
-            "details": {
-                "worker": "eval-runner",
-                "episodes": 100,
-                "seed": 10000,
-                "n_envs": 20,
-                "wandb": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/sample-eval-77",
-            },
-            "payload": {
-                "table": "eval_jobs",
-                "schema": ["id", "profile_id", "eval_config", "status"],
-                "config_key": "eval_config",
-                "job": {
-                    "id": 77,
-                    "profile_id": "mario-level1-quick",
-                    "eval_config": {
-                        "episodes": 100,
-                        "wandb_url": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/sample-eval-77",
-                    },
-                    "status": "running",
-                },
-                "context": {"goal_slug": "sample"},
-            },
-        },
-        {
             "id": "train-185",
             "kind": "train",
             "target": "Mario L1-2",
@@ -770,18 +652,6 @@ def sample_jobs() -> list[dict[str, Any]]:
             "progress": "",
             "attention": "",
             "details": {"profile": "rtx4090-screening"},
-        },
-        {
-            "id": "eval-78",
-            "kind": "eval",
-            "target": "seed81 best",
-            "device": "local",
-            "container": "",
-            "device_key": "local",
-            "state": "pending",
-            "progress": "",
-            "attention": "",
-            "details": {"profile": "mario-level1-quick"},
         },
         {
             "id": "train-181",

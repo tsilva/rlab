@@ -6,6 +6,8 @@ import os
 import re
 import signal
 import time
+import json
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -17,8 +19,10 @@ from stable_baselines3.common.logger import HumanOutputFormat
 from stable_baselines3.common.utils import set_random_seed
 
 from rlab.artifacts import (
+    checkpoint_step,
     init_wandb,
     log_wandb_model_artifact,
+    sanitize_artifact_name,
     write_run_description,
     write_wandb_url,
 )
@@ -43,11 +47,32 @@ from rlab.env import (
     resolve_mixed_state_config,
 )
 from rlab.env_config import env_config_from_args
+from rlab.eval_metrics import flat_numeric_metrics
+from rlab.eval_runner import evaluate_model_episodes
+from rlab.metric_names import (
+    EVAL_BEST_REWARD,
+    EVAL_BEST_X,
+    EVAL_CHECKPOINT_ARTIFACT,
+    EVAL_CHECKPOINT_STEP,
+    EVAL_CONFIG_HUD_CROP_TOP,
+    EVAL_DEATH_COUNT,
+    EVAL_DEATH_RATE,
+    EVAL_PROGRESS_LEVEL_X_MAX,
+    EVAL_PROGRESS_LEVEL_X_MEAN,
+    EVAL_PROGRESS_X_MAX,
+    EVAL_PROGRESS_X_MEAN,
+    EVAL_REWARD_MAX,
+    EVAL_REWARD_MEAN,
+    EVAL_REWARD_STD,
+    GLOBAL_STEP,
+)
 from rlab.schedules import (
     EntropyCoefficientScheduleCallback,
     apply_resume_hyperparameters,
     learning_rate_schedule,
 )
+from rlab.seeds import DEFAULT_EVAL_SEED
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
 
@@ -130,6 +155,217 @@ def disable_sb3_human_output_truncation(
     for output_format in getattr(logger, "output_formats", ()):
         if isinstance(output_format, HumanOutputFormat):
             output_format.max_length = max_length
+
+
+def checkpoint_sort_key(path: Path) -> tuple[int, str]:
+    step = checkpoint_step(path)
+    return (step if step is not None else 2**63 - 1, path.name)
+
+
+def checkpoint_paths_for_eval(checkpoint_dir: str | Path) -> list[Path]:
+    return sorted(Path(checkpoint_dir).glob("*.zip"), key=checkpoint_sort_key)
+
+
+def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
+    if getattr(args, "no_wandb_artifacts", False):
+        return str(checkpoint_path)
+    entity = str(getattr(args, "wandb_entity", "") or DEFAULT_WANDB_ENTITY).strip()
+    project = str(getattr(args, "wandb_project", "") or DEFAULT_WANDB_PROJECT).strip()
+    if entity and project:
+        name = f"{sanitize_artifact_name(args.run_name)}-checkpoint"
+        return f"{entity}/{project}/{name}:step-{step}"
+    return str(checkpoint_path)
+
+
+def eval_score(metrics: dict[str, object]) -> tuple[float, float, float]:
+    def metric_float(key: str, default: float = float("-inf")) -> float:
+        value = metrics.get(key)
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    completion_min = metric_float(
+        "eval/done/level_change/from_rate/min",
+        metric_float("eval/done/level_change/rate", metric_float("completion_rate")),
+    )
+    completion_mean = metric_float(
+        "eval/done/level_change/from_rate/mean",
+        metric_float("eval/done/level_change/rate", metric_float("completion_rate")),
+    )
+    return (completion_min, completion_mean, metric_float("reward_mean"))
+
+
+def update_best_checkpoint_summary(
+    wandb_run,
+    *,
+    metrics: dict[str, object],
+    checkpoint_path: Path,
+    checkpoint_step_value: int,
+    artifact_ref: str,
+) -> None:
+    if wandb_run is None:
+        return
+
+    def summary_float(key: str) -> float:
+        try:
+            value = wandb_run.summary.get(key)
+        except AttributeError:
+            value = None
+        if value is None:
+            return float("-inf")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    score = eval_score(metrics)
+    previous = (
+        summary_float("leader/checkpoint/completion_rate"),
+        summary_float("leader/checkpoint/completion_rate_mean"),
+        summary_float("leader/checkpoint/reward_mean"),
+    )
+    if score < previous:
+        return
+
+    wandb_run.summary["leader/checkpoint/completion_rate"] = score[0]
+    wandb_run.summary["leader/checkpoint/completion_rate_mean"] = score[1]
+    wandb_run.summary["leader/checkpoint/reward_mean"] = score[2]
+    wandb_run.summary["leader/checkpoint/max_x_max"] = metrics.get("max_x_max")
+    wandb_run.summary["leader/checkpoint/step"] = checkpoint_step_value
+    wandb_run.summary["leader/checkpoint/artifact_ref"] = artifact_ref
+    wandb_run.summary["leader/checkpoint/local_path"] = str(checkpoint_path)
+    wandb_run.summary["leader/checkpoint/eval_source"] = "post_train_inline"
+    wandb_run.summary["leader/checkpoint/updated_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(),
+    )
+
+
+def log_checkpoint_eval_metrics(
+    wandb_run,
+    *,
+    args,
+    metrics: dict[str, object],
+    checkpoint_path: Path,
+    checkpoint_step_value: int,
+    artifact_ref: str,
+) -> None:
+    if wandb_run is None:
+        return
+    payload: dict[str, object] = {
+        GLOBAL_STEP: checkpoint_step_value,
+        EVAL_CHECKPOINT_STEP: checkpoint_step_value,
+        EVAL_CHECKPOINT_ARTIFACT: artifact_ref,
+        EVAL_REWARD_MEAN: metrics["reward_mean"],
+        EVAL_REWARD_STD: metrics["reward_std"],
+        EVAL_REWARD_MAX: metrics["reward_max"],
+        EVAL_PROGRESS_X_MEAN: metrics["max_x_mean"],
+        EVAL_PROGRESS_X_MAX: metrics["max_x_max"],
+        EVAL_PROGRESS_LEVEL_X_MEAN: metrics["max_level_x_mean"],
+        EVAL_PROGRESS_LEVEL_X_MAX: metrics["max_level_x_max"],
+        EVAL_DEATH_COUNT: metrics["death_count"],
+        EVAL_DEATH_RATE: metrics["death_rate"],
+        EVAL_BEST_REWARD: metrics["best_episode"]["reward"],
+        EVAL_BEST_X: metrics["best_episode"]["max_x_pos"],
+        EVAL_CONFIG_HUD_CROP_TOP: args.hud_crop_top,
+        "eval/source": "post_train_inline",
+    }
+    payload.update(flat_numeric_metrics(metrics, "eval/done/"))
+    payload.update(flat_numeric_metrics(metrics, "eval/info/"))
+    # Keep W&B's internal history cursor monotonic after training. `global_step`
+    # and `eval/checkpoint/step` carry the checkpoint identity for charts/queries.
+    wandb_run.log(payload)
+    update_best_checkpoint_summary(
+        wandb_run,
+        metrics=metrics,
+        checkpoint_path=checkpoint_path,
+        checkpoint_step_value=checkpoint_step_value,
+        artifact_ref=artifact_ref,
+    )
+
+
+def eval_config_from_training_config(config):
+    eval_done_on = tuple(name for name in config.done_on_events if name == "level_change")
+    return config if not eval_done_on else replace(config, done_on_events=eval_done_on)
+
+
+def evaluate_checkpoints_after_training(
+    *,
+    args,
+    config,
+    checkpoint_dir: str | Path,
+    wandb_run,
+) -> list[dict[str, object]]:
+    if not args.post_train_eval:
+        print("post-training checkpoint eval disabled", flush=True)
+        return []
+    paths = checkpoint_paths_for_eval(checkpoint_dir)
+    if not paths:
+        print("post-training checkpoint eval skipped: no checkpoints found", flush=True)
+        return []
+    episodes = int(args.post_train_eval_episodes)
+    n_envs = int(args.post_train_eval_n_envs)
+    max_steps = int(args.post_train_eval_max_steps or args.max_episode_steps)
+    if episodes < 1:
+        raise ValueError("--post-train-eval-episodes must be >= 1")
+    if n_envs < 1:
+        raise ValueError("--post-train-eval-n-envs must be >= 1")
+    if max_steps < 1:
+        raise ValueError("--post-train-eval-max-steps/--max-episode-steps must be >= 1")
+
+    eval_config = eval_config_from_training_config(config)
+    results: list[dict[str, object]] = []
+    for checkpoint_path in paths:
+        step = checkpoint_step(checkpoint_path)
+        if step is None:
+            print(f"post-training checkpoint eval skipped: unknown step {checkpoint_path}", flush=True)
+            continue
+        print(f"post-training checkpoint eval step={step} path={checkpoint_path}", flush=True)
+        eval_model = PPO.load(checkpoint_path, device=resolve_sb3_device(args.device))
+        metrics, _video_path = evaluate_model_episodes(
+            model=eval_model,
+            config=eval_config,
+            episodes=episodes,
+            seed=DEFAULT_EVAL_SEED,
+            max_steps=max_steps,
+            deterministic=not bool(args.post_train_eval_stochastic),
+            n_envs=n_envs,
+            progress=True,
+            progress_description=f"eval checkpoint {step}",
+            extra={
+                "checkpoint_step": step,
+                "checkpoint_artifact": str(checkpoint_path),
+                "eval_source": "post_train_inline",
+            },
+        )
+        artifact_ref = eval_checkpoint_artifact_ref(args, checkpoint_path, step)
+        log_checkpoint_eval_metrics(
+            wandb_run,
+            args=args,
+            metrics=metrics,
+            checkpoint_path=checkpoint_path,
+            checkpoint_step_value=step,
+            artifact_ref=artifact_ref,
+        )
+        summary = {
+            "checkpoint_step": step,
+            "checkpoint_path": str(checkpoint_path),
+            "completion_min": eval_score(metrics)[0],
+            "completion_mean": eval_score(metrics)[1],
+            "reward_mean": float(metrics["reward_mean"]),
+        }
+        results.append(summary)
+        print(
+            "post-training checkpoint eval "
+            f"step={step} completion_min={summary['completion_min']:.3f} "
+            f"completion_mean={summary['completion_mean']:.3f} "
+            f"reward_mean={summary['reward_mean']:.2f}",
+            flush=True,
+        )
+    return results
 
 
 class Sb3HumanOutputFormatCallback(BaseCallback):
@@ -251,13 +487,14 @@ def main(argv: list[str] | None = None) -> None:
         *(
             [
                 MetricThresholdStopCallback(
+                    marker_path=Path(run_dir) / "early_stop.txt",
+                    detector=args.early_stop,
                     metric_name=args.early_stop_metric,
                     threshold=args.early_stop_threshold,
                     operator=args.early_stop_operator,
-                    marker_path=Path(run_dir) / "early_stop.txt",
                 )
             ]
-            if args.early_stop_metric
+            if args.early_stop or args.early_stop_metric
             else []
         ),
         RolloutDiagnosticsCallback(wandb_run=wandb_run),
@@ -300,6 +537,7 @@ def main(argv: list[str] | None = None) -> None:
     print("training-loop eval disabled; evaluate checkpoint artifacts out of process")
 
     final_model_path = Path(run_dir, "final_model.zip")
+    env_closed = False
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks, progress_bar=True)
         if graceful_stop_flag.requested and checkpoint_save_freq is not None:
@@ -335,9 +573,23 @@ def main(argv: list[str] | None = None) -> None:
             metric_step=model.num_timesteps,
             local_save_seconds=final_save_seconds,
         )
+        env.close()
+        env_closed = True
+        checkpoint_eval_results = evaluate_checkpoints_after_training(
+            args=args,
+            config=config,
+            checkpoint_dir=checkpoint_dir,
+            wandb_run=wandb_run,
+        )
+        if checkpoint_eval_results:
+            (Path(run_dir) / "checkpoint_eval_summary.json").write_text(
+                json.dumps(checkpoint_eval_results, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         write_wandb_url(wandb_run, run_dir)
     finally:
-        env.close()
+        if not env_closed:
+            env.close()
         if wandb_run is not None:
             wandb_run.finish()
     print(f"saved {final_model_path}")

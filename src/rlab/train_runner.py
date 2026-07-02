@@ -23,11 +23,8 @@ from rlab.job_queue import (
     claim_train_job,
     connect,
     database_url,
-    enqueue_eval_job,
-    eval_protocol_hash,
     finish_train_job,
     heartbeat_train_job,
-    load_goal_eval_spec,
     new_worker_id,
     print_status,
     queue_status,
@@ -36,10 +33,8 @@ from rlab.runtime_refs import normalize_runtime_image_ref
 from rlab.seeds import validate_training_seed
 from rlab.wandb_artifacts import (
     artifact_download_dir,
-    checkpoint_step_from_name,
     download_model_artifact,
 )
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 
 
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
@@ -643,6 +638,15 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
     ]
     metrics = parse_log_metrics(log_text)
     metrics.update(parse_key_value_file(run_dir / "early_stop.txt"))
+    checkpoint_eval_summary_path = run_dir / "checkpoint_eval_summary.json"
+    checkpoint_eval_summary = []
+    if checkpoint_eval_summary_path.is_file():
+        try:
+            loaded_summary = json.loads(checkpoint_eval_summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_summary, list):
+                checkpoint_eval_summary = loaded_summary
+        except json.JSONDecodeError:
+            checkpoint_eval_summary = []
     return {
         "run_name": run_name,
         "run_dir": str(run_dir),
@@ -652,72 +656,9 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         "wandb_run_id": read_text_file(run_dir / "wandb_run_id.txt"),
         "wandb_url": read_text_file(run_dir / "wandb_url.txt") or parse_wandb_run_url(log_text),
         "artifact_refs": artifact_refs,
+        "checkpoint_eval_summary": checkpoint_eval_summary,
         "metrics_json": metrics,
     }
-
-
-def artifact_checkpoint_step(ref: Mapping[str, Any]) -> int | None:
-    location = str(ref.get("location") or "")
-    name = str(ref.get("name") or "")
-    for candidate in (location.rsplit("/", 1)[-1], name):
-        step = checkpoint_step_from_name(candidate)
-        if step is not None:
-            return step
-    return None
-
-
-def checkpoint_artifact_ref(job: dict[str, Any], ref: Mapping[str, Any], step: int) -> str:
-    config = normalize_train_config(job, resolve_resume_artifact=False)
-    project = str(config.get("wandb_project") or DEFAULT_WANDB_PROJECT)
-    entity = str(config.get("wandb_entity") or DEFAULT_WANDB_ENTITY)
-    name = str(ref.get("name") or "").strip()
-    if not name:
-        raise ValueError("artifact name is required")
-    return f"{entity}/{project}/{name}:step-{step}"
-
-
-def enqueue_eval_jobs_for_checkpoints(conn, job: dict[str, Any], result: Mapping[str, Any]) -> int:
-    refs = [dict(item) for item in result.get("artifact_refs") or []]
-    checkpoint_refs = [ref for ref in refs if str(ref.get("name") or "").endswith("-checkpoint")]
-    if not checkpoint_refs:
-        return 0
-    eval_spec = load_goal_eval_spec(str(job["goal_slug"]))
-    protocol_hash = eval_protocol_hash(eval_spec)
-    base_eval_config = dict(eval_spec["eval_config"])
-    count = 0
-    for ref in checkpoint_refs:
-        step = artifact_checkpoint_step(ref)
-        if step is None:
-            print(f"warning: could not infer checkpoint step for artifact {ref}", flush=True)
-            continue
-        artifact_ref = checkpoint_artifact_ref(job, ref, step)
-        eval_config = {
-            **base_eval_config,
-            "artifact_ref": artifact_ref,
-            "checkpoint_step": step,
-            "eval_protocol_hash": protocol_hash,
-        }
-        row = enqueue_eval_job(
-            conn,
-            goal_slug=str(job["goal_slug"]),
-            spec_slug=job.get("spec_slug"),
-            spec_path=job.get("spec_path"),
-            train_job_id=int(job["id"]),
-            runtime_image_ref=str(job["runtime_image_ref"]),
-            artifact_ref=artifact_ref,
-            checkpoint_step=step,
-            eval_protocol_hash=protocol_hash,
-            eval_config=eval_config,
-            max_attempts=1,
-            candidate_label=str(job.get("run_name") or ""),
-        )
-        count += 1
-        print(
-            f"eval enqueued: eval_job_id={row['id']} checkpoint_step={step} "
-            f"artifact={artifact_ref}",
-            flush=True,
-        )
-    return count
 
 
 def should_purge_successful_run_data(job: dict[str, Any], result: Mapping[str, Any]) -> bool:
@@ -899,17 +840,7 @@ def run_training_job(
                                 break
                     if heartbeat.get("drain_requested"):
                         drain_after_job = True
-                    try:
-                        running_result = collect_result_metadata(job, log_path)
-                        enqueue_eval_jobs_for_checkpoints(conn, job, running_result)
-                    except Exception as exc:
-                        if hasattr(conn, "rollback"):
-                            conn.rollback()
-                        print(
-                            f"warning: failed to record running train metadata or enqueue eval "
-                            f"job={job['id']}: {exc}",
-                            flush=True,
-                        )
+                    _ = collect_result_metadata(job, log_path)
                 if (
                     graceful_cancel_started_at is not None
                     and process.poll() is None
@@ -929,12 +860,6 @@ def run_training_job(
 
     exit_code = process.returncode
     result = collect_result_metadata(job, log_path)
-    try:
-        enqueue_eval_jobs_for_checkpoints(conn, job, result)
-    except Exception as exc:
-        if hasattr(conn, "rollback"):
-            conn.rollback()
-        print(f"warning: failed to enqueue eval jobs job={job['id']}: {exc}", flush=True)
     if canceled:
         finish_train_job(
             conn,

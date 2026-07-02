@@ -96,7 +96,7 @@ The command surface is intentionally one binary:
 
 - `rlab train` enqueues queue-backed train jobs from checked-in specs.
 - `rlab train local` runs direct local training.
-- `rlab eval` runs local evaluation, while `rlab eval enqueue` creates eval queue jobs.
+- `rlab eval` runs local evaluation; queued train jobs evaluate their checkpoints inline after training.
 - `rlab play` replays a local model path or W&B checkpoint artifact.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and runner fleet.
 - `rlab leaders` queries W&B for run/spec winners and best evaluated checkpoints.
@@ -108,7 +108,7 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by completion rate first, then mean reward, then max x-position. W&B is the source of truth for run and eval metrics; the queue database stores operational job state. Robust evals run out of process and log back to W&B.
+Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
 
 ## Fleet
 

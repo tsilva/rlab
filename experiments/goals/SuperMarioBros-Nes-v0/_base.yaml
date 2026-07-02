@@ -6,23 +6,23 @@ defaults:
 - ../../envs/stable-retro-turbo/SuperMarioBros-Nes-v0@eval.environment
 # Apply this file after the env so goal-owned defaults can override env details deliberately.
 - _self_
-# Objective defines both the solved predicate and candidate comparison order.
+# Objective defines candidate comparison order.
 objective:
-  success:
-    # The metric itself owns the 100-attempt FIFO semantics.
-    metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    # >0.99 means the latest FIFO window is effectively full.
-    threshold: 0.99
   # Ordered ranking signals; compare each metric in sequence until a candidate wins.
   rank:
-  - max(train/info/level_complete/rate/min/last)
-  - max(train/info/level_complete/rate/mean/last)
-  - max(rollout/ep_rew_mean)
+  - max(eval/done/level_change/from_rate/min)
+  - max(eval/done/level_change/from_rate/mean)
+  - max(eval/reward/mean)
 # Training contract for this goal. The composed env supplies train.environment.
 train:
   # Shared checkpoint cadence for Mario training jobs.
   checkpoint_freq: 500000
+  # The metric itself owns the 100-attempt FIFO semantics.
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    # >0.99 means the latest FIFO window is effectively full.
+    threshold: 0.99
   environment:
     env_config:
       # Training attempts terminate on death or level clear.

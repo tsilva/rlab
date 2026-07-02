@@ -11,7 +11,6 @@ from rlab.monitoring.state import (
     collect_state,
     devices_from_jobs,
     infer_device_key,
-    job_from_eval_row,
     job_from_train_row,
     parse_probe_metrics,
     resource_metrics,
@@ -77,7 +76,7 @@ class MonitoringStateTests(unittest.TestCase):
 
         self.assertEqual(by_id["rtx4090"]["state"], "warning")
         self.assertIn("train-184", by_id["rtx4090"]["current_job"])
-        self.assertEqual(by_id["local-macbook"]["state"], "busy")
+        self.assertEqual(by_id["local-macbook"]["state"], "available")
         self.assertEqual(by_id["rtx2060"]["state"], "available")
 
     def test_base_devices_include_all_configured_compute_targets(self) -> None:
@@ -141,9 +140,9 @@ class MonitoringStateTests(unittest.TestCase):
     def test_pending_jobs_do_not_make_device_busy(self) -> None:
         jobs = [
             {
-                "id": "eval-4",
-                "kind": "eval",
-                "target": "checkpoint",
+                "id": "train-4",
+                "kind": "train",
+                "target": "checkpoint training",
                 "device": "beast-3",
                 "container": "",
                 "device_key": "rtx4090",
@@ -159,10 +158,10 @@ class MonitoringStateTests(unittest.TestCase):
 
         self.assertEqual(by_id["rtx4090"]["state"], "available")
         self.assertEqual(by_id["rtx4090"]["current_job"], "")
-        self.assertEqual(by_id["rtx4090"]["queued_job"], "eval-4")
+        self.assertEqual(by_id["rtx4090"]["queued_job"], "train-4")
         self.assertEqual(by_id["rtx4090"]["attention"], "1 queued")
         self.assertEqual(by_id["rtx4090"]["details"]["running jobs"], "")
-        self.assertEqual(by_id["rtx4090"]["details"]["queued jobs"], "eval-4")
+        self.assertEqual(by_id["rtx4090"]["details"]["queued jobs"], "train-4")
 
     def test_train_job_includes_full_payload_for_queue_inspection(self) -> None:
         job = job_from_train_row(
@@ -226,36 +225,6 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(job["details"]["device"], "beast-3")
         self.assertEqual(job["details"]["container"], "rlab-beast-3-rtx4090-any-profile-aaaaaaaaaaaa")
         self.assertEqual(job["details"]["wandb"], "")
-        self.assertEqual(job["state"], "running")
-
-    def test_running_eval_job_exposes_config_wandb_url_for_queue_linking(self) -> None:
-        wandb_url = "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/eval123"
-        job = job_from_eval_row(
-            {
-                "id": 8,
-                "goal_slug": "goal",
-                "profile_id": "mario-level1-quick",
-                "eval_config": {"episodes": 100, "wandb_url": wandb_url},
-                "candidate_label": "checkpoint v8",
-                "status": "running",
-                "lease_owner": "eval-runner",
-                "heartbeat_at": None,
-                "lease_expires_at": None,
-                "error": None,
-                "metrics_json": {},
-                "cancel_requested": False,
-                "drain_requested": False,
-                "job_payload": {
-                    "id": 8,
-                    "profile_id": "mario-level1-quick",
-                    "eval_config": {"episodes": 100, "wandb_url": wandb_url},
-                    "status": "running",
-                },
-                "result_payload": None,
-            }
-        )
-
-        self.assertEqual(job["wandb_url"], wandb_url)
         self.assertEqual(job["state"], "running")
 
     def test_profileless_train_job_surfaces_target_and_runtime_digest(self) -> None:

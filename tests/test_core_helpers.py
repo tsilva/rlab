@@ -88,7 +88,11 @@ from rlab.eval import score as eval_checkpoint_score
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
-from rlab.train import Sb3HumanOutputFormatCallback, disable_sb3_human_output_truncation
+from rlab.train import (
+    Sb3HumanOutputFormatCallback,
+    disable_sb3_human_output_truncation,
+    log_checkpoint_eval_metrics,
+)
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     model_artifact_ref,
@@ -377,12 +381,53 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.early_stop_threshold, 0.99)
         self.assertEqual(args.early_stop_operator, ">")
 
+    def test_train_config_json_accepts_structured_early_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            early_stop = [
+                {
+                    "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    "operator": ">",
+                    "threshold": 0.99,
+                },
+                {
+                    "metric": "rollout/ep_rew_mean",
+                    "operator": ">=",
+                    "threshold": 1000,
+                },
+            ]
+            path.write_text(json.dumps({"early_stop": early_stop}) + "\n", encoding="utf-8")
+
+            args = parse_train_args(["--train-config-json", str(path)])
+
+        self.assertEqual(args.early_stop, early_stop)
+        self.assertEqual(args.early_stop_metric, "")
+        self.assertIsNone(args.early_stop_threshold)
+
     def test_train_config_json_rejects_incomplete_metric_early_stop(self) -> None:
         with self.assertRaisesRegex(ValueError, "early-stop-metric"):
             parse_train_args(["--early-stop-metric", TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST])
 
         with self.assertRaisesRegex(ValueError, "early-stop-metric"):
             parse_train_args(["--early-stop-threshold", "0.99"])
+
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            parse_train_args(
+                [
+                    "--early-stop",
+                    json.dumps(
+                        {
+                            "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                            "operator": ">",
+                            "threshold": 0.99,
+                        }
+                    ),
+                    "--early-stop-metric",
+                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    "--early-stop-threshold",
+                    "0.99",
+                ]
+            )
 
     def test_build_train_command_includes_metric_early_stop_flags(self) -> None:
         command = build_train_command(
@@ -399,6 +444,22 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIn("0.99", command)
         self.assertIn("--early-stop-operator", command)
         self.assertIn(">", command)
+
+    def test_build_train_command_includes_structured_early_stop(self) -> None:
+        early_stop = [
+            {
+                "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                "operator": ">",
+                "threshold": 0.99,
+            }
+        ]
+        command = build_train_command({"early_stop": early_stop})
+
+        self.assertIn("--early-stop", command)
+        self.assertIn(
+            '[{"metric":"train/info/level_complete/rate/min/last","operator":">","threshold":0.99}]',
+            command,
+        )
 
     def test_training_loop_eval_settings_must_stay_disabled(self) -> None:
         args = parse_train_args(["--eval-freq", "0", "--eval-episodes", "0"])
@@ -2476,11 +2537,12 @@ class EvalMetricTests(unittest.TestCase):
         metrics = {
             "completion_rate": 0.95,
             "eval/done/level_change/from_rate/min": 0.80,
+            "eval/done/level_change/from_rate/mean": 0.90,
             "max_x_max": 3200,
             "reward_mean": 1200.0,
         }
 
-        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 3200, 1200.0))
+        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, 1200.0))
 
     def test_artifact_eval_wandb_log_does_not_force_retroactive_history_step(self) -> None:
         class FakeRun:
@@ -2524,6 +2586,57 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(run.payload["eval/checkpoint/step"], 4100000)
         self.assertEqual(run.payload["eval/done/all"], 10)
         self.assertEqual(run.payload["eval/info/level_complete/rate/min/last"], 0.9)
+
+    def test_post_train_checkpoint_eval_logs_checkpoint_step_as_metric(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.payload: dict[str, object] | None = None
+                self.kwargs: dict[str, object] | None = None
+                self.summary: dict[str, object] = {}
+
+            def log(self, payload: dict[str, object], **kwargs: object) -> None:
+                self.payload = payload
+                self.kwargs = kwargs
+
+        run = FakeRun()
+        metrics = {
+            "checkpoint_step": 120000,
+            "checkpoint_artifact": "entity/project/run-checkpoint:step-120000",
+            "reward_mean": 10.0,
+            "reward_std": 1.0,
+            "reward_max": 12.0,
+            "max_x_mean": 300.0,
+            "max_x_max": 400.0,
+            "max_level_x_mean": 300.0,
+            "max_level_x_max": 400.0,
+            "death_count": 1,
+            "death_rate": 0.1,
+            "best_episode": {"reward": 12.0, "max_x_pos": 400.0},
+            "eval/done/all": 10,
+            "eval/done/level_change": 9,
+            "eval/done/level_change/rate": 0.9,
+            "eval/done/level_change/from_rate/min": 0.8,
+            "eval/done/level_change/from_rate/mean": 0.9,
+            "eval/reward/mean": 10.0,
+        }
+
+        log_checkpoint_eval_metrics(
+            wandb_run=run,
+            args=argparse.Namespace(hud_crop_top=32),
+            metrics=metrics,
+            checkpoint_path=Path("/tmp/model_120000_steps.zip"),
+            checkpoint_step_value=120000,
+            artifact_ref="entity/project/run-checkpoint:step-120000",
+        )
+
+        assert run.payload is not None
+        self.assertEqual(run.kwargs, {})
+        self.assertEqual(run.payload["global_step"], 120000)
+        self.assertEqual(run.payload["eval/checkpoint/step"], 120000)
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+        self.assertEqual(run.summary["leader/checkpoint/completion_rate"], 0.8)
+        self.assertEqual(run.summary["leader/checkpoint/completion_rate_mean"], 0.9)
+        self.assertEqual(run.summary["leader/checkpoint/reward_mean"], 10.0)
 
     def test_checkpoint_eval_preserves_artifact_states_in_eval_config(self) -> None:
         parser = build_eval_parser()
@@ -3640,6 +3753,41 @@ class MetricThresholdStopCallbackTests(unittest.TestCase):
             self.assertIn("early_stop_threshold=0.99", marker)
             self.assertIn("early_stop_value=1", marker)
             self.assertIn("timesteps=200", marker)
+
+    def test_structured_detector_requires_all_metric_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            marker_path = Path(tmp) / "run" / "early_stop.txt"
+            model = self.FakeModel()
+            callback = MetricThresholdStopCallback(
+                detector=[
+                    {
+                        "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                        "operator": ">",
+                        "threshold": 0.99,
+                    },
+                    {
+                        "metric": "rollout/ep_rew_mean",
+                        "operator": ">=",
+                        "threshold": 1000,
+                    },
+                ],
+                marker_path=marker_path,
+            )
+            callback.model = model  # type: ignore[assignment]
+            callback.num_timesteps = 100
+
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 1.0
+            model.logger.records["rollout/ep_rew_mean"] = 999
+            self.assertTrue(callback._on_step())
+            self.assertFalse(marker_path.exists())
+
+            model.logger.records["rollout/ep_rew_mean"] = 1000
+            callback.num_timesteps = 200
+            self.assertFalse(callback._on_step())
+
+            marker = marker_path.read_text(encoding="utf-8")
+            self.assertIn("early_stop_detector_json=", marker)
+            self.assertIn("early_stop_value/rollout/ep_rew_mean=1000", marker)
 
 
 class ThroughputCallbackTests(unittest.TestCase):

@@ -34,7 +34,7 @@ from rlab.runtime_refs import (
     normalize_runtime_image_ref,
     runtime_image_ref_from_file,
 )
-from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed, validate_training_seed
+from rlab.seeds import validate_training_seed
 from rlab.spec_schema import validate_train_spec_schema
 
 
@@ -106,6 +106,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
 )
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
     {
+        "early_stop",
         "early_stop_metric",
         "early_stop_operator",
         "early_stop_threshold",
@@ -146,37 +147,10 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   error TEXT
 );
 
-CREATE TABLE IF NOT EXISTS eval_jobs (
-  id BIGSERIAL PRIMARY KEY,
-  goal_slug TEXT NOT NULL,
-  spec_slug TEXT,
-  spec_path TEXT,
-  train_job_id BIGINT REFERENCES train_jobs(id) ON DELETE SET NULL,
-  profile_id TEXT,
-  runtime_image_ref TEXT,
-  artifact_ref TEXT,
-  checkpoint_step INTEGER,
-  eval_protocol_hash TEXT,
-  eval_config JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 1,
-  lease_owner TEXT,
-  lease_expires_at TIMESTAMPTZ,
-  cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
-  drain_requested BOOLEAN NOT NULL DEFAULT FALSE,
-  candidate_label TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  started_at TIMESTAMPTZ,
-  heartbeat_at TIMESTAMPTZ,
-  finished_at TIMESTAMPTZ,
-  error TEXT
-);
-
 CREATE TABLE IF NOT EXISTS job_launches (
   id BIGSERIAL PRIMARY KEY,
   launch_id TEXT NOT NULL UNIQUE,
-  job_kind TEXT NOT NULL CHECK (job_kind IN ('train', 'eval')),
+  job_kind TEXT NOT NULL CHECK (job_kind IN ('train')),
   job_id BIGINT NOT NULL,
   backend TEXT NOT NULL,
   machine TEXT NOT NULL,
@@ -196,7 +170,7 @@ CREATE TABLE IF NOT EXISTS job_launches (
 
 CREATE TABLE IF NOT EXISTS job_events (
   id BIGSERIAL PRIMARY KEY,
-  job_kind TEXT NOT NULL CHECK (job_kind IN ('train', 'eval')),
+  job_kind TEXT NOT NULL CHECK (job_kind IN ('train')),
   job_id BIGINT NOT NULL,
   event_type TEXT NOT NULL,
   message TEXT,
@@ -204,18 +178,10 @@ CREATE TABLE IF NOT EXISTS job_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE eval_jobs ALTER COLUMN profile_id DROP NOT NULL;
-ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS runtime_image_ref TEXT;
-ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS artifact_ref TEXT;
-ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS checkpoint_step INTEGER;
-ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS eval_protocol_hash TEXT;
-
 DROP INDEX IF EXISTS train_jobs_claim_idx;
 DROP INDEX IF EXISTS train_jobs_runtime_claim_idx;
-DROP INDEX IF EXISTS eval_jobs_claim_idx;
 
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
-ALTER TABLE eval_jobs DROP COLUMN IF EXISTS priority;
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (profile_id, status, id)
@@ -228,19 +194,8 @@ CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
 
-CREATE INDEX IF NOT EXISTS eval_jobs_claim_idx
-  ON eval_jobs (runtime_image_ref, status, id)
-  WHERE status IN ('pending', 'running');
-
-CREATE UNIQUE INDEX IF NOT EXISTS eval_jobs_artifact_protocol_idx
-  ON eval_jobs (artifact_ref, eval_protocol_hash)
-  WHERE artifact_ref IS NOT NULL AND eval_protocol_hash IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS train_jobs_spec_status_idx
   ON train_jobs (goal_slug, spec_slug, status);
-
-CREATE INDEX IF NOT EXISTS eval_jobs_goal_status_idx
-  ON eval_jobs (goal_slug, status);
 
 CREATE INDEX IF NOT EXISTS job_launches_machine_state_idx
   ON job_launches (machine, state, created_at);
@@ -255,7 +210,6 @@ CREATE INDEX IF NOT EXISTS job_events_job_idx
 RESET_TABLES = (
     "job_events",
     "job_launches",
-    "eval_jobs",
     "train_jobs",
 )
 
@@ -273,33 +227,6 @@ WITH next_job AS (
   FOR UPDATE SKIP LOCKED
 )
 UPDATE train_jobs AS job
-SET
-  status = 'running',
-  lease_owner = %(worker_id)s,
-  lease_expires_at = now() + (%(lease_seconds)s || ' seconds')::interval,
-  attempts = attempts + 1,
-  started_at = COALESCE(started_at, now()),
-  heartbeat_at = now(),
-  error = NULL
-FROM next_job
-WHERE job.id = next_job.id
-RETURNING job.*;
-"""
-
-
-CLAIM_EVAL_JOB_SQL = """
-WITH next_job AS (
-  SELECT id
-  FROM eval_jobs
-  WHERE
-    runtime_image_ref = %(runtime_image_ref)s
-    AND cancel_requested = FALSE
-    AND status = 'pending'
-  ORDER BY id ASC
-  LIMIT 1
-  FOR UPDATE SKIP LOCKED
-)
-UPDATE eval_jobs AS job
 SET
   status = 'running',
   lease_owner = %(worker_id)s,
@@ -404,7 +331,6 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                 DROP TABLE IF EXISTS
                   job_events,
                   job_launches,
-                  eval_jobs,
                   train_jobs
                 CASCADE
                 """
@@ -472,45 +398,12 @@ def _without_keys(value: Mapping[str, Any], keys: frozenset[str]) -> dict[str, A
     }
 
 
-def _goal_objective_train_config(document: Mapping[str, Any]) -> dict[str, Any]:
-    objective = document.get("objective")
-    if not isinstance(objective, Mapping):
-        return {}
-    success = objective.get("success")
-    success_config = success if isinstance(success, Mapping) else objective
-    if success_config.get("metric") is not None:
-        return {
-            "early_stop_metric": copy.deepcopy(success_config["metric"]),
-            "early_stop_operator": copy.deepcopy(success_config.get("operator", ">")),
-            "early_stop_threshold": copy.deepcopy(success_config.get("threshold")),
-        }
-    criteria = success_config.get("criteria")
-    if isinstance(criteria, list) and criteria and isinstance(criteria[0], Mapping):
-        criterion = criteria[0]
-        config: dict[str, Any] = {}
-        if criterion.get("metric") is not None:
-            config["early_stop_metric"] = copy.deepcopy(criterion["metric"])
-        if criterion.get("operator") is not None:
-            config["early_stop_operator"] = copy.deepcopy(criterion["operator"])
-        if criterion.get("threshold") is not None:
-            config["early_stop_threshold"] = copy.deepcopy(criterion["threshold"])
-        return config
-    if success_config.get("success_metric") is not None:
-        return {
-            "early_stop_metric": copy.deepcopy(success_config["success_metric"]),
-            "early_stop_operator": copy.deepcopy(success_config.get("success_threshold_operator", ">")),
-            "early_stop_threshold": copy.deepcopy(success_config.get("success_threshold")),
-        }
-    return {}
-
-
 def _goal_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     environment = _document_train_environment(document)
     config = _train_environment_section_config(environment) if isinstance(environment, Mapping) else {}
     train = document.get("train")
     if isinstance(train, Mapping):
         config = deep_merge(config, _train_config_from_train_section(train))
-    config = deep_merge(config, _goal_objective_train_config(document))
     return config
 
 
@@ -869,88 +762,6 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def stable_json_hash(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def goal_path_for_slug(goal_slug: str) -> Path:
-    goals_dir = Path("experiments/goals")
-    for filename in ("_goal.yaml", "goal.yaml"):
-        for candidate in sorted(goals_dir.rglob(f"{goal_slug}/{filename}")):
-            if ".deprecated" not in candidate.parts and candidate.is_file():
-                return candidate
-    return goals_dir / goal_slug / "goal.yaml"
-
-
-def load_goal_eval_spec(goal_slug: str) -> dict[str, Any]:
-    goal_slug = str(goal_slug).strip()
-    if not goal_slug:
-        raise ValueError("goal_slug is required")
-    path = goal_path_for_slug(goal_slug)
-    if not path.is_file():
-        raise FileNotFoundError(f"goal eval spec not found: {path}")
-    document = load_composed_mapping(path, cycle_label="goal").document
-    eval_spec = document.get("eval")
-    if not isinstance(eval_spec, Mapping):
-        legacy_eval_spec = document.get("eval_spec")
-        if isinstance(legacy_eval_spec, Mapping):
-            eval_spec = legacy_eval_spec
-        else:
-            raise ValueError(f"{path} must define eval")
-    eval = eval_spec.get("policy")
-    if not isinstance(eval, Mapping):
-        legacy_eval = eval_spec.get("eval")
-        if isinstance(legacy_eval, Mapping):
-            eval = legacy_eval
-    if not isinstance(eval, Mapping):
-        legacy_eval_config = eval_spec.get("eval_config")
-        if isinstance(legacy_eval_config, Mapping):
-            eval = legacy_eval_config
-        else:
-            eval = {}
-    merged_eval_config = dict(eval)
-    eval_environment = eval_spec.get("environment")
-    if isinstance(eval_environment, Mapping):
-        eval_env_config = {}
-        raw_eval_env_config = eval_environment.get("env_config")
-        if isinstance(raw_eval_env_config, Mapping):
-            eval_env_config.update(copy.deepcopy(dict(raw_eval_env_config)))
-        if eval_environment.get("env_provider") is not None and "env_provider" not in eval_env_config:
-            eval_env_config["env_provider"] = copy.deepcopy(eval_environment["env_provider"])
-    else:
-        raw_eval_env_config = eval_spec.get("env_config")
-        eval_env_config = (
-            copy.deepcopy(dict(raw_eval_env_config))
-            if isinstance(raw_eval_env_config, Mapping)
-            else {}
-        )
-    if eval_env_config:
-        if "max_episodes" in eval_env_config:
-            merged_eval_config["episodes"] = eval_env_config["max_episodes"]
-        elif "episodes" in eval_env_config:
-            merged_eval_config["episodes"] = eval_env_config["episodes"]
-        for key in ("seed", "n_envs", "max_steps"):
-            if key in eval_env_config:
-                merged_eval_config[key] = eval_env_config[key]
-        if "num_envs" in eval_env_config:
-            merged_eval_config["n_envs"] = eval_env_config["num_envs"]
-        merged_eval_config["env_config"] = eval_env_config
-    merged_eval_config.setdefault("seed", DEFAULT_EVAL_SEED)
-    merged_eval_config["seed"] = validate_eval_seed(merged_eval_config["seed"], label="eval.seed")
-    merged_eval_config.setdefault("n_envs", 20)
-    merged_eval_config.setdefault("max_steps", 4500)
-    merged_eval_config.setdefault("stochastic", True)
-    result = {"eval_config": merged_eval_config}
-    if eval_spec.get("schema_version") is not None:
-        result["schema_version"] = eval_spec.get("schema_version")
-    return result
-
-
-def eval_protocol_hash(eval_spec: Mapping[str, Any]) -> str:
-    return stable_json_hash(eval_spec)
-
-
 def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:
     try:
         result = subprocess.run(
@@ -999,7 +810,7 @@ def record_job_event(
     message: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
-    if job_kind not in {"train", "eval"}:
+    if job_kind != "train":
         raise ValueError(f"invalid job_kind: {job_kind}")
     metadata = dict(metadata or {})
     assert_no_secrets(metadata, label="event metadata")
@@ -1298,88 +1109,6 @@ def enqueue_train_job(
             return row
 
 
-def enqueue_eval_job(
-    conn,
-    *,
-    goal_slug: str,
-    eval_config: Mapping[str, Any],
-    runtime_image_ref: str,
-    spec_slug: str | None = None,
-    spec_path: str | None = None,
-    train_job_id: int | None = None,
-    artifact_ref: str | None = None,
-    checkpoint_step: int | None = None,
-    eval_protocol_hash: str | None = None,
-    profile_id: str | None = None,
-    max_attempts: int = 1,
-    candidate_label: str | None = None,
-) -> dict[str, Any]:
-    goal_slug = str(goal_slug).strip()
-    if not goal_slug:
-        raise ValueError("goal_slug is required")
-    config = dict(eval_config)
-    assert_no_secrets(config, label="eval_config")
-    if _non_empty_config_value(config.get("seed")):
-        validate_eval_seed(config["seed"], label="eval_config.seed")
-    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    profile_id = None
-    artifact_ref = str(artifact_ref).strip() if artifact_ref else None
-    eval_protocol_hash = str(eval_protocol_hash).strip() if eval_protocol_hash else None
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO eval_jobs (
-                  goal_slug, spec_slug, spec_path, train_job_id, profile_id,
-                  runtime_image_ref, artifact_ref, checkpoint_step, eval_protocol_hash,
-                  eval_config, max_attempts, candidate_label
-                )
-                VALUES (
-                  %(goal_slug)s, %(spec_slug)s, %(spec_path)s, %(train_job_id)s,
-                  %(profile_id)s, %(runtime_image_ref)s, %(artifact_ref)s,
-                  %(checkpoint_step)s, %(eval_protocol_hash)s, %(eval_config)s,
-                  %(max_attempts)s, %(candidate_label)s
-                )
-                ON CONFLICT (artifact_ref, eval_protocol_hash)
-                  WHERE artifact_ref IS NOT NULL AND eval_protocol_hash IS NOT NULL
-                DO UPDATE SET
-                  runtime_image_ref = EXCLUDED.runtime_image_ref,
-                  train_job_id = COALESCE(eval_jobs.train_job_id, EXCLUDED.train_job_id),
-                  spec_slug = COALESCE(eval_jobs.spec_slug, EXCLUDED.spec_slug),
-                  spec_path = COALESCE(eval_jobs.spec_path, EXCLUDED.spec_path),
-                  checkpoint_step = COALESCE(eval_jobs.checkpoint_step, EXCLUDED.checkpoint_step),
-                  eval_config = EXCLUDED.eval_config,
-                  max_attempts = GREATEST(eval_jobs.max_attempts, EXCLUDED.max_attempts),
-                  candidate_label = COALESCE(eval_jobs.candidate_label, EXCLUDED.candidate_label)
-                RETURNING *
-                """,
-                {
-                    "goal_slug": goal_slug,
-                    "spec_slug": spec_slug,
-                    "spec_path": spec_path,
-                    "train_job_id": train_job_id,
-                    "profile_id": profile_id,
-                    "runtime_image_ref": runtime_image_ref,
-                    "artifact_ref": artifact_ref,
-                    "checkpoint_step": checkpoint_step,
-                    "eval_protocol_hash": eval_protocol_hash,
-                    "eval_config": json_arg(config),
-                    "max_attempts": max_attempts,
-                    "candidate_label": candidate_label,
-                },
-            )
-            row = dict(cur.fetchone())
-            record_job_event(
-                conn,
-                job_kind="eval",
-                job_id=int(row["id"]),
-                event_type="enqueued",
-                message="eval job enqueued",
-                metadata={"goal_slug": goal_slug, "spec_slug": spec_slug},
-            )
-            return row
-
-
 def claim_train_job(
     conn,
     *,
@@ -1404,29 +1133,6 @@ def claim_train_job(
             return dict(row) if row else None
 
 
-def claim_eval_job(
-    conn,
-    *,
-    runtime_image_ref: str,
-    worker_id: str,
-    lease_seconds: int,
-    profile_id: str | None = None,
-) -> dict[str, Any] | None:
-    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                CLAIM_EVAL_JOB_SQL,
-                {
-                    "runtime_image_ref": runtime_image_ref,
-                    "worker_id": worker_id,
-                    "lease_seconds": lease_seconds,
-                },
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-
 def new_launch_id(job_kind: str, job_id: int | None = None) -> str:
     suffix = uuid.uuid4().hex[:12]
     if job_id is None:
@@ -1437,13 +1143,11 @@ def new_launch_id(job_kind: str, job_id: int | None = None) -> str:
 def _job_table(job_kind: str) -> str:
     if job_kind == "train":
         return "train_jobs"
-    if job_kind == "eval":
-        return "eval_jobs"
     raise ValueError(f"invalid job_kind: {job_kind}")
 
 
 def _job_event_kind(job_kind: str) -> str:
-    if job_kind not in {"train", "eval"}:
+    if job_kind != "train":
         raise ValueError(f"invalid job_kind: {job_kind}")
     return job_kind
 
@@ -1713,54 +1417,12 @@ def heartbeat_train_job(
             return dict(row) if row else None
 
 
-def heartbeat_eval_job(
-    conn,
-    *,
-    job_id: int,
-    worker_id: str,
-    lease_seconds: int,
-) -> dict[str, Any] | None:
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE eval_jobs
-                SET heartbeat_at = now(),
-                    lease_expires_at = now() + (%(lease_seconds)s || ' seconds')::interval
-                WHERE id = %(job_id)s
-                  AND lease_owner = %(worker_id)s
-                  AND status = 'running'
-                RETURNING id, cancel_requested, drain_requested
-                """,
-                {"job_id": job_id, "worker_id": worker_id, "lease_seconds": lease_seconds},
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-
 def request_cancel_train_job(conn, *, job_id: int) -> int:
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE train_jobs
-                SET cancel_requested = TRUE,
-                    status = CASE WHEN status IN ('pending', 'launching') THEN 'canceled' ELSE status END,
-                    finished_at = CASE WHEN status IN ('pending', 'launching') THEN now() ELSE finished_at END
-                WHERE id = %(job_id)s
-                  AND status IN ('pending', 'launching', 'running')
-                """,
-                {"job_id": job_id},
-            )
-            return int(cur.rowcount)
-
-
-def request_cancel_eval_job(conn, *, job_id: int) -> int:
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE eval_jobs
                 SET cancel_requested = TRUE,
                     status = CASE WHEN status IN ('pending', 'launching') THEN 'canceled' ELSE status END,
                     finished_at = CASE WHEN status IN ('pending', 'launching') THEN now() ELSE finished_at END
@@ -1946,115 +1608,6 @@ def mark_stale_train_jobs_failed(
             return [dict(row) for row in cur.fetchall()]
 
 
-def _stale_eval_candidate_sql(
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-    lock: bool = False,
-) -> tuple[str, dict[str, Any]]:
-    filters, params = _stale_job_filters(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-    )
-    lock_clause = "FOR UPDATE SKIP LOCKED" if lock else ""
-    where = "\n    AND ".join(filters)
-    return (
-        f"""
-        SELECT
-          id, goal_slug, spec_slug, train_job_id, profile_id,
-          candidate_label, lease_owner AS stale_lease_owner,
-          lease_expires_at AS stale_lease_expires_at,
-          started_at AS stale_started_at, heartbeat_at AS stale_heartbeat_at
-        FROM eval_jobs
-        WHERE {where}
-        ORDER BY id ASC
-        LIMIT %(limit)s
-        {lock_clause}
-        """,
-        params,
-    )
-
-
-def list_stale_eval_jobs(
-    conn,
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-) -> list[dict[str, Any]]:
-    sql, params = _stale_eval_candidate_sql(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-        lock=False,
-    )
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return [dict(row) for row in cur.fetchall()]
-
-
-def mark_stale_eval_jobs_failed(
-    conn,
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-    error: str | None = None,
-) -> list[dict[str, Any]]:
-    candidate_sql, params = _stale_eval_candidate_sql(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-        lock=True,
-    )
-    error = error or "worker_lost: stale eval job marked failed by rlab jobs"
-    params["error"] = error
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                WITH candidates AS (
-                  {candidate_sql}
-                ),
-                updated AS (
-                  UPDATE eval_jobs AS job
-                  SET status = 'failed',
-                      lease_owner = NULL,
-                      lease_expires_at = NULL,
-                      finished_at = now(),
-                      error = %(error)s
-                  FROM candidates
-                  WHERE job.id = candidates.id
-                  RETURNING job.*
-                )
-                SELECT
-                  updated.id, updated.profile_id, updated.candidate_label,
-                  candidates.stale_lease_owner, candidates.stale_lease_expires_at,
-                  candidates.stale_started_at, candidates.stale_heartbeat_at,
-                  updated.finished_at, updated.error
-                FROM updated
-                JOIN candidates ON candidates.id = updated.id
-                ORDER BY updated.id ASC
-                """,
-                params,
-            )
-            return [dict(row) for row in cur.fetchall()]
-
-
 def finish_train_job(
     conn,
     *,
@@ -2101,61 +1654,6 @@ def finish_train_job(
                     "run_name": result.get("run_name") or job.get("run_name"),
                     "wandb_run_id": result.get("wandb_run_id"),
                     "wandb_url": result.get("wandb_url"),
-                },
-            )
-
-
-def finish_eval_job(
-    conn,
-    *,
-    job: Mapping[str, Any],
-    worker_id: str,
-    status: str,
-    result: Mapping[str, Any],
-    error: str | None = None,
-) -> None:
-    if status not in {"succeeded", "failed", "canceled"}:
-        raise ValueError(f"invalid eval job terminal status: {status}")
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE eval_jobs
-                SET status = %(status)s,
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    finished_at = now(),
-                    error = %(error)s
-                WHERE id = %(job_id)s
-                  AND lease_owner = %(worker_id)s
-                  AND status = 'running'
-                """,
-                {
-                    "status": status,
-                    "error": error,
-                    "job_id": job["id"],
-                    "worker_id": worker_id,
-                },
-            )
-            if cur.rowcount != 1:
-                raise RuntimeError(f"could not finish eval job {job['id']} for worker {worker_id}")
-            record_job_event(
-                conn,
-                job_kind="eval",
-                job_id=int(job["id"]),
-                event_type=status,
-                message=error,
-                metadata={
-                    "candidate_label": result.get("candidate_label") or job.get("candidate_label"),
-                    "model_ref": result.get("model_ref"),
-                    "artifact_ref": result.get("artifact_ref") or job.get("artifact_ref"),
-                    "checkpoint_step": result.get("checkpoint_step") or job.get("checkpoint_step"),
-                    "eval_protocol_hash": result.get("eval_protocol_hash")
-                    or job.get("eval_protocol_hash"),
-                    "wandb_run_id": result.get("wandb_run_id"),
-                    "wandb_logged": result.get("wandb_logged"),
-                    "wandb_log_step": result.get("wandb_log_step"),
-                    "wandb_log_error": result.get("wandb_log_error"),
                 },
             )
 
@@ -2265,94 +1763,6 @@ def finish_train_launch_from_result(
             )
 
 
-def finish_eval_launch_from_result(
-    conn,
-    *,
-    launch_id: str,
-    result: Mapping[str, Any],
-) -> None:
-    status = _terminal_status_from_result(result)
-    exit_code = result.get("exit_code")
-    error = str(result.get("error") or "") or None
-    eval_result = result.get("eval")
-    eval_payload = eval_result.get("result") if isinstance(eval_result, Mapping) else {}
-    eval_payload = dict(eval_payload or {})
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE job_launches
-                SET state = %(state)s,
-                    exit_code = %(exit_code)s,
-                    error = %(error)s,
-                    result_json = %(result_json)s,
-                    last_observed_at = now(),
-                    finished_at = now()
-                WHERE launch_id = %(launch_id)s
-                RETURNING *
-                """,
-                {
-                    "state": status,
-                    "exit_code": exit_code,
-                    "error": error,
-                    "result_json": json_arg(launch_result_metadata(result)),
-                    "launch_id": launch_id,
-                },
-            )
-            launch = cur.fetchone()
-            if not launch:
-                raise RuntimeError(f"unknown launch_id {launch_id}")
-            if launch["job_kind"] != "eval":
-                raise RuntimeError(f"launch {launch_id} is not an eval launch")
-            cur.execute(
-                """
-                UPDATE eval_jobs
-                SET status = %(status)s,
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    heartbeat_at = now(),
-                    finished_at = now(),
-                    error = %(error)s
-                WHERE id = %(job_id)s
-                  AND lease_owner = %(launch_id)s
-                  AND status IN ('launching', 'running')
-                RETURNING *
-                """,
-                {
-                    "status": status,
-                    "error": error,
-                    "job_id": launch["job_id"],
-                    "launch_id": launch_id,
-                },
-            )
-            job = cur.fetchone()
-            if not job:
-                raise RuntimeError(f"could not finish eval job for launch {launch_id}")
-            record_job_event(
-                conn,
-                job_kind="eval",
-                job_id=int(job["id"]),
-                event_type=status,
-                message=error,
-                metadata={
-                    "launch_id": launch_id,
-                    "exit_code": exit_code,
-                    "candidate_label": eval_payload.get("candidate_label")
-                    or job.get("candidate_label"),
-                    "model_ref": eval_payload.get("model_ref"),
-                    "artifact_ref": eval_payload.get("artifact_ref") or job.get("artifact_ref"),
-                    "checkpoint_step": eval_payload.get("checkpoint_step")
-                    or job.get("checkpoint_step"),
-                    "eval_protocol_hash": eval_payload.get("eval_protocol_hash")
-                    or job.get("eval_protocol_hash"),
-                    "wandb_run_id": eval_payload.get("wandb_run_id"),
-                    "wandb_logged": eval_payload.get("wandb_logged"),
-                    "wandb_log_step": eval_payload.get("wandb_log_step"),
-                    "wandb_log_error": eval_payload.get("wandb_log_error"),
-                },
-            )
-
-
 def finish_job_launch_from_result(
     conn,
     *,
@@ -2362,10 +1772,8 @@ def finish_job_launch_from_result(
     job_kind = str(result.get("job_kind") or "")
     if job_kind == "train":
         finish_train_launch_from_result(conn, launch_id=launch_id, result=result)
-    elif job_kind == "eval":
-        finish_eval_launch_from_result(conn, launch_id=launch_id, result=result)
     else:
-        raise ValueError(f"result does not identify train/eval job kind: {job_kind!r}")
+        raise ValueError(f"result does not identify train job kind: {job_kind!r}")
 
 
 def _one_line(value: Any, *, limit: int = 140) -> str:
@@ -2398,9 +1806,9 @@ def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("
 
 
 def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float]:
-    """Eval-first policy ranking: completion, then mean reward, then progress."""
+    """Eval-first policy ranking: bottleneck completion, mean completion, then reward."""
 
-    completion = _metric_float(
+    completion_min = _metric_float(
         metrics,
         "eval/done/level_change/from_rate/min",
         default=_metric_float(
@@ -2409,10 +1817,19 @@ def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, floa
             default=_metric_float(metrics, "completion_rate"),
         ),
     )
+    completion_mean = _metric_float(
+        metrics,
+        "eval/done/level_change/from_rate/mean",
+        default=_metric_float(
+            metrics,
+            "eval/done/level_change/rate",
+            default=_metric_float(metrics, "completion_rate"),
+        ),
+    )
     return (
-        completion,
+        completion_min,
+        completion_mean,
         _metric_float(metrics, "reward_mean"),
-        _metric_float(metrics, "max_x_max"),
     )
 
 
@@ -2432,17 +1849,6 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
         train_jobs = {row["status"]: int(row["count"]) for row in cur.fetchall()}
         cur.execute(
             """
-            SELECT status, COUNT(*) AS count
-            FROM eval_jobs
-            WHERE goal_slug = %(goal_slug)s
-            GROUP BY status
-            ORDER BY status
-            """,
-            {"goal_slug": goal_slug},
-        )
-        eval_jobs = {row["status"]: int(row["count"]) for row in cur.fetchall()}
-        cur.execute(
-            """
             SELECT id, goal_slug, spec_slug, profile_id, status, run_name,
                    run_target, lease_owner, heartbeat_at, created_at
             FROM train_jobs
@@ -2456,35 +1862,16 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
             {"goal_slug": goal_slug},
         )
         active_train_jobs = [dict(row) for row in cur.fetchall()]
-        cur.execute(
-            """
-            SELECT id, goal_slug, spec_slug, train_job_id, profile_id, runtime_image_ref,
-                   artifact_ref, checkpoint_step, status, candidate_label, lease_owner,
-                   heartbeat_at, created_at
-            FROM eval_jobs
-            WHERE goal_slug = %(goal_slug)s
-              AND status IN ('pending', 'launching', 'running')
-            ORDER BY
-              CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-              id ASC
-            LIMIT 10
-            """,
-            {"goal_slug": goal_slug},
-        )
-        active_eval_jobs = [dict(row) for row in cur.fetchall()]
     return {
         "goal_slug": goal_slug,
         "train_jobs": train_jobs,
-        "eval_jobs": eval_jobs,
         "active_train_jobs": active_train_jobs,
-        "active_eval_jobs": active_eval_jobs,
     }
 
 
 def print_status(report: Mapping[str, Any]) -> None:
     print(f"goal: {report['goal_slug']}")
     print(f"train_jobs: {json.dumps(report['train_jobs'], sort_keys=True)}")
-    print(f"eval_jobs: {json.dumps(report['eval_jobs'], sort_keys=True)}")
     print("active_train_jobs:")
     for row in report.get("active_train_jobs", []):
         print(
@@ -2492,18 +1879,10 @@ def print_status(report: Mapping[str, Any]) -> None:
             f"job={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
             f"run={row.get('run_name') or ''}"
         )
-    print("active_eval_jobs:")
-    for row in report.get("active_eval_jobs", []):
-        print(
-            "  "
-            f"job={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
-            f"checkpoint_step={row.get('checkpoint_step') or ''} "
-            f"candidate={row.get('candidate_label') or ''}"
-        )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage rlab train/eval job queues.")
+    parser = argparse.ArgumentParser(description="Manage rlab train job queues.")
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -2526,15 +1905,11 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("job_id", type=int)
     cancel.set_defaults(func=cmd_cancel_train)
 
-    cancel_eval = subparsers.add_parser("cancel-eval", help="Request cancellation for an eval job")
-    cancel_eval.add_argument("job_id", type=int)
-    cancel_eval.set_defaults(func=cmd_cancel_eval)
-
     stale = subparsers.add_parser(
         "mark-stale-failed",
         help="Mark stale running queue jobs failed after their worker is known lost.",
     )
-    stale.add_argument("--job-kind", choices=("train", "eval"), default="train")
+    stale.add_argument("--job-kind", choices=("train",), default="train")
     stale.add_argument("--job-id", type=int, action="append", default=[])
     stale.add_argument("--profile", help="Restrict to one profile_id.")
     stale.add_argument("--target", dest="run_target", help="Restrict train jobs to one run_target.")
@@ -2641,61 +2016,10 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_enqueue_eval(args: argparse.Namespace) -> int:
-    runtime_image_ref = runtime_image_ref_from_args(args, default_latest=True)
-    if not runtime_image_ref:
-        raise SystemExit("--runtime-image-ref, --runtime-image-ref-file, or latest image resolution is required")
-    goal_eval_spec = load_goal_eval_spec(args.goal)
-    eval_config = dict(goal_eval_spec["eval_config"])
-    eval_config.update(load_json_arg(args.eval_config_json, default={}))
-    if args.artifact_ref:
-        eval_config["artifact_ref"] = args.artifact_ref
-    if args.checkpoint_step is not None:
-        eval_config["checkpoint_step"] = args.checkpoint_step
-    materialized_eval_spec = {"eval_config": eval_config}
-    if goal_eval_spec.get("schema_version") is not None:
-        materialized_eval_spec["schema_version"] = goal_eval_spec.get("schema_version")
-    protocol_hash = args.eval_protocol_hash or eval_protocol_hash(materialized_eval_spec)
-    eval_config["eval_protocol_hash"] = protocol_hash
-    conn = _connect_from_args(args)
-    try:
-        row = enqueue_eval_job(
-            conn,
-            goal_slug=args.goal,
-            spec_slug=args.spec_slug,
-            spec_path=args.spec_path,
-            train_job_id=args.train_job_id,
-            runtime_image_ref=runtime_image_ref,
-            artifact_ref=args.artifact_ref,
-            checkpoint_step=args.checkpoint_step,
-            eval_protocol_hash=protocol_hash,
-            eval_config=eval_config,
-            max_attempts=args.max_attempts,
-            candidate_label=args.candidate_label,
-        )
-    finally:
-        conn.close()
-    print(
-        f"eval_job_id={row['id']} image={row.get('runtime_image_ref') or ''} "
-        f"artifact={row.get('artifact_ref') or ''}"
-    )
-    return 0
-
-
 def cmd_cancel_train(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
         count = request_cancel_train_job(conn, job_id=args.job_id)
-    finally:
-        conn.close()
-    print(f"cancel_requested={count}")
-    return 0
-
-
-def cmd_cancel_eval(args: argparse.Namespace) -> int:
-    conn = _connect_from_args(args)
-    try:
-        count = request_cancel_eval_job(conn, job_id=args.job_id)
     finally:
         conn.close()
     print(f"cancel_requested={count}")
@@ -2729,45 +2053,26 @@ def _print_stale_rows(
 
 
 def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
-    if args.job_kind == "eval" and args.run_target:
-        raise SystemExit("--target is only valid for train jobs")
     if args.execute and not args.all and not _stale_scope_selected(args):
         raise SystemExit(
             "refusing unscoped apply; pass --job-id, --profile, "
             "--target, --lease-owner-prefix, or --all"
         )
-    run_target = (
-        canonicalize_run_target(args.run_target, instances_path=args.instances)
-        if args.job_kind == "train"
-        else None
-    )
+    run_target = canonicalize_run_target(args.run_target, instances_path=args.instances)
     conn = _connect_from_args(args)
     try:
-        if args.job_kind == "train":
-            common = {
-                "job_ids": args.job_id,
-                "profile_id": args.profile,
-                "run_target": run_target,
-                "lease_owner_prefix": args.lease_owner_prefix,
-                "older_than_seconds": args.older_than_seconds,
-                "limit": args.limit,
-            }
-            if args.execute:
-                rows = mark_stale_train_jobs_failed(conn, **common, error=args.error)
-            else:
-                rows = list_stale_train_jobs(conn, **common)
+        common = {
+            "job_ids": args.job_id,
+            "profile_id": args.profile,
+            "run_target": run_target,
+            "lease_owner_prefix": args.lease_owner_prefix,
+            "older_than_seconds": args.older_than_seconds,
+            "limit": args.limit,
+        }
+        if args.execute:
+            rows = mark_stale_train_jobs_failed(conn, **common, error=args.error)
         else:
-            common = {
-                "job_ids": args.job_id,
-                "profile_id": args.profile,
-                "lease_owner_prefix": args.lease_owner_prefix,
-                "older_than_seconds": args.older_than_seconds,
-                "limit": args.limit,
-            }
-            if args.execute:
-                rows = mark_stale_eval_jobs_failed(conn, **common, error=args.error)
-            else:
-                rows = list_stale_eval_jobs(conn, **common)
+            rows = list_stale_train_jobs(conn, **common)
     finally:
         conn.close()
     _print_stale_rows(rows, job_kind=args.job_kind, execute=args.execute)

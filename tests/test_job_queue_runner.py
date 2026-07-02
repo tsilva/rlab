@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -19,7 +18,6 @@ from rlab import main as rlab_main
 from rlab import wandb_leaders
 from rlab.artifacts import wandb_artifact_storage_uri
 from rlab.dotenv import load_env_file
-from rlab.eval_job_runner import log_eval_to_wandb, normalize_eval_config
 from rlab.json_utils import json_safe
 from rlab.metric_names import TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST
 from rlab.seeds import DEFAULT_EVAL_SEED
@@ -34,7 +32,6 @@ from rlab.train_runner import (
     WorkerSlot,
     build_parser as build_train_runner_parser,
     collect_result_metadata,
-    enqueue_eval_jobs_for_checkpoints,
     mark_surplus_workers_for_retirement,
     matching_pending_train_job_exists,
     normalize_train_config,
@@ -220,12 +217,12 @@ class JobQueueTests(unittest.TestCase):
             config={"goal_slug": "Level1-4", "spec_slug": "b257"},
             summary={
                 "leader/checkpoint/completion_rate": 1.0,
+                "leader/checkpoint/completion_rate_mean": 0.95,
                 "leader/checkpoint/max_x_max": 4610,
                 "leader/checkpoint/reward_mean": 4200.0,
                 "leader/checkpoint/step": 4500000,
                 "leader/checkpoint/artifact_ref": "entity/project/candidate:step-4500000",
-                "leader/checkpoint/eval_protocol_hash": "abc",
-                "leader/checkpoint/eval_job_id": 12,
+                "leader/checkpoint/eval_source": "post_train_inline",
             },
         )
 
@@ -235,8 +232,11 @@ class JobQueueTests(unittest.TestCase):
         assert leader is not None
         self.assertEqual(leader.run_id, "run-1")
         self.assertEqual(leader.run_name, "candidate")
+        self.assertEqual(leader.completion_rate, 1.0)
+        self.assertEqual(leader.completion_rate_mean, 0.95)
         self.assertEqual(leader.checkpoint_step, 4500000)
         self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
+        self.assertEqual(leader.eval_source, "post_train_inline")
 
     def test_claim_train_job_filters_exact_runtime_image_only(self) -> None:
         conn = FakeConnection(row={"id": 7, "profile_id": "mario-ppo/post16/rtx4090-screening"})
@@ -281,6 +281,7 @@ class JobQueueTests(unittest.TestCase):
             )
 
     def test_schema_defines_queue_tables(self) -> None:
+        obsolete_eval_table = "eval" + "_jobs"
         self.assertNotIn("CREATE TABLE IF NOT EXISTS research_goals", job_queue.SCHEMA_SQL)
         self.assertNotIn("CREATE TABLE IF NOT EXISTS experiment_specs", job_queue.SCHEMA_SQL)
         self.assertNotIn("CREATE TABLE IF NOT EXISTS campaign_decisions", job_queue.SCHEMA_SQL)
@@ -288,7 +289,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("goal_slug TEXT NOT NULL", job_queue.SCHEMA_SQL)
         self.assertIn("spec_payload_json JSONB", job_queue.SCHEMA_SQL)
         self.assertIn("spec_sha256 TEXT", job_queue.SCHEMA_SQL)
-        self.assertIn("CREATE TABLE IF NOT EXISTS eval_jobs", job_queue.SCHEMA_SQL)
+        self.assertNotIn(f"CREATE TABLE IF NOT EXISTS {obsolete_eval_table}", job_queue.SCHEMA_SQL)
         self.assertNotIn("CREATE TABLE IF NOT EXISTS train_results", job_queue.SCHEMA_SQL)
         self.assertNotIn("CREATE TABLE IF NOT EXISTS eval_results", job_queue.SCHEMA_SQL)
 
@@ -299,7 +300,7 @@ class JobQueueTests(unittest.TestCase):
 
         drop_sql = next(sql for sql in conn.cursor_obj.executed_sqls if "DROP TABLE" in sql)
         self.assertIn("train_jobs", drop_sql)
-        self.assertIn("eval_jobs", drop_sql)
+        self.assertNotIn("eval" + "_jobs", drop_sql)
         self.assertNotIn("research_goals", drop_sql)
         self.assertNotIn("experiment_specs", drop_sql)
         self.assertNotIn("campaign_decisions", drop_sql)
@@ -523,16 +524,16 @@ train:
 goal_id: Level1-1
 title: Level 1-1
 objective:
-  success:
-    metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    threshold: 0.99
   rank:
   - metric: train/info/level_complete/rate/min/last
     aggregation: max
     direction: maximize
 train:
   checkpoint_freq: 500000
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -560,7 +561,7 @@ defaults:
 - ../_goal@goal
 - _self_
 slug: candidate
-hypothesis: Candidate should inherit the goal contract. The queue materializes env identity and objective from the goal.
+hypothesis: Candidate should inherit the goal contract. The queue materializes env identity and training policy from the goal.
 parent_spec_slug: null
 seeds: [23]
 wandb_group: b-test
@@ -594,10 +595,15 @@ train_config:
         self.assertEqual(loaded["train_config"]["n_envs"], 16)
         self.assertEqual(loaded["train_config"]["env_threads"], 4)
         self.assertEqual(
-            loaded["train_config"]["early_stop_metric"],
-            TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+            loaded["train_config"]["early_stop"],
+            [
+                {
+                    "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    "operator": ">",
+                    "threshold": 0.99,
+                }
+            ],
         )
-        self.assertEqual(loaded["train_config"]["early_stop_threshold"], 0.99)
         self.assertEqual(loaded["train_config"]["timesteps"], 5_000_000)
         self.assertEqual(loaded["train_config"]["checkpoint_freq"], 500000)
         self.assertTrue(loaded["train_config"]["wandb"])
@@ -662,11 +668,15 @@ train_config:
                 spec = job_queue.load_spec_document(path)
                 train_config = spec["train_config"]
                 self.assertEqual(
-                    train_config["early_stop_metric"],
-                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    train_config["early_stop"],
+                    [
+                        {
+                            "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                            "operator": ">",
+                            "threshold": 0.99,
+                        }
+                    ],
                 )
-                self.assertEqual(train_config["early_stop_threshold"], 0.99)
-                self.assertEqual(train_config["early_stop_operator"], ">")
 
     def test_launch_result_metadata_strips_metrics_json(self) -> None:
         result = job_queue.launch_result_metadata(
@@ -925,211 +935,6 @@ train_config:
             [{"workflow": "workflow", "branch": "main", "artifact_name": "artifact"}],
         )
 
-    def test_claim_eval_job_filters_exact_runtime_image(self) -> None:
-        conn = FakeConnection(row={"id": 8, "profile_id": "mario-ppo/post16/rtx4090-eval"})
-
-        row = job_queue.claim_eval_job(
-            conn,
-            runtime_image_ref=RUNTIME_IMAGE_REF,
-            worker_id="worker-a",
-            lease_seconds=60,
-        )
-
-        self.assertEqual(row["id"], 8)
-        self.assertIn("runtime_image_ref = %(runtime_image_ref)s", conn.cursor_obj.executed_sql)
-        self.assertNotIn("profile_id = %(profile_id)s", conn.cursor_obj.executed_sql)
-        self.assertEqual(conn.cursor_obj.executed_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
-
-    def test_claim_eval_job_does_not_reclaim_expired_running_leases(self) -> None:
-        conn = FakeConnection(row=None)
-
-        row = job_queue.claim_eval_job(
-            conn,
-            runtime_image_ref=RUNTIME_IMAGE_REF,
-            worker_id="worker-a",
-            lease_seconds=60,
-        )
-
-        self.assertIsNone(row)
-        self.assertIn("AND status = 'pending'", conn.cursor_obj.executed_sql)
-        self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
-        self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
-
-    def test_load_goal_eval_spec_defaults_seed_to_eval_range_start(self) -> None:
-        eval_spec = job_queue.load_goal_eval_spec("Level1-1")
-
-        self.assertEqual(eval_spec["eval_config"]["seed"], DEFAULT_EVAL_SEED)
-        self.assertEqual(eval_spec["eval_config"]["seed"], 10000)
-        self.assertEqual(eval_spec["eval_config"]["n_envs"], 20)
-        self.assertEqual(eval_spec["eval_config"]["max_steps"], 4500)
-        self.assertTrue(eval_spec["eval_config"]["stochastic"])
-        self.assertEqual(eval_spec["eval_config"]["env_config"]["env_provider"], "stable-retro-turbo")
-        self.assertNotIn("seed", eval_spec["eval_config"]["env_config"])
-        self.assertNotIn("n_envs", eval_spec["eval_config"]["env_config"])
-        self.assertNotIn("max_steps", eval_spec["eval_config"]["env_config"])
-
-    def test_enqueue_eval_job_persists_runtime_artifact_and_protocol(self) -> None:
-        conn = FakeConnection(
-            row={
-                "id": 10,
-                "profile_id": None,
-                "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "artifact_ref": "entity/project/model:step-100",
-                "eval_protocol_hash": "abc123",
-            }
-        )
-
-        row = job_queue.enqueue_eval_job(
-            conn,
-            goal_slug="Level1-1",
-            runtime_image_ref=RUNTIME_IMAGE_REF,
-            artifact_ref="entity/project/model:step-100",
-            checkpoint_step=100,
-            eval_protocol_hash="abc123",
-            eval_config={"episodes": 100, "seed": DEFAULT_EVAL_SEED},
-        )
-
-        self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        sql = conn.cursor_obj.executed_sqls[0]
-        params = conn.cursor_obj.executed_params_list[0]
-        self.assertIn("ON CONFLICT (artifact_ref, eval_protocol_hash)", sql)
-        self.assertIsNone(params["profile_id"])
-        self.assertEqual(params["artifact_ref"], "entity/project/model:step-100")
-        self.assertEqual(params["checkpoint_step"], 100)
-        self.assertEqual(params["eval_protocol_hash"], "abc123")
-
-    def test_checkpoint_artifact_upload_enqueues_goal_eval_job(self) -> None:
-        calls: list[dict] = []
-
-        def fake_enqueue(conn, **kwargs):
-            calls.append(kwargs)
-            return {"id": 77, **kwargs}
-
-        job = {
-            "id": 12,
-            "goal_slug": "Level1-1",
-            "spec_slug": "candidate",
-            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/candidate.yaml",
-            "runtime_image_ref": RUNTIME_IMAGE_REF,
-            "run_name": "candidate_run",
-            "train_config": {
-                "run_name": "candidate_run",
-                "wandb_entity": "entity",
-                "wandb_project": "project",
-            },
-        }
-        result = {
-            "artifact_refs": [
-                {
-                    "name": "candidate_run-checkpoint",
-                    "location": "s3://bucket/path/ppo_test_500000_steps.zip",
-                },
-                {"name": "candidate_run-final", "location": "s3://bucket/path/final_model.zip"},
-            ]
-        }
-        eval_spec = {
-            "schema_version": 1,
-            "eval_config": {
-                "episodes": 100,
-                "seed": DEFAULT_EVAL_SEED,
-                "n_envs": 20,
-                "max_steps": 4500,
-                "stochastic": True,
-            },
-        }
-
-        with (
-            patch("rlab.train_runner.load_goal_eval_spec", return_value=eval_spec),
-            patch("rlab.train_runner.enqueue_eval_job", side_effect=fake_enqueue),
-            patch("rlab.train_runner.eval_protocol_hash", return_value="protocol-hash"),
-        ):
-            count = enqueue_eval_jobs_for_checkpoints(FakeConnection(), job, result)
-
-        self.assertEqual(count, 1)
-        self.assertEqual(calls[0]["runtime_image_ref"], RUNTIME_IMAGE_REF)
-        self.assertEqual(calls[0]["artifact_ref"], "entity/project/candidate_run-checkpoint:step-500000")
-        self.assertEqual(calls[0]["checkpoint_step"], 500000)
-        self.assertEqual(calls[0]["eval_protocol_hash"], "protocol-hash")
-        self.assertEqual(calls[0]["eval_config"]["artifact_ref"], calls[0]["artifact_ref"])
-
-    def test_log_eval_to_wandb_uses_checkpoint_global_step(self) -> None:
-        class FakeRun:
-            def __init__(self) -> None:
-                self.logged: list[tuple[dict, int | None]] = []
-                self.config: dict = {}
-                self.summary: dict = {}
-                self.finished = False
-
-            def log(self, payload: dict, step: int | None = None) -> None:
-                self.logged.append((payload, step))
-
-            def finish(self) -> None:
-                self.finished = True
-
-        class FakeWandb:
-            def __init__(self) -> None:
-                self.run = FakeRun()
-
-            def init(self, **kwargs):
-                self.init_kwargs = kwargs
-                return self.run
-
-        fake_wandb = FakeWandb()
-        metrics = {
-            "reward_mean": 12.5,
-            "reward_std": 1.0,
-            "reward_max": 15.0,
-            "max_x_mean": 300.0,
-            "max_x_max": 500,
-            "max_level_x_mean": 300.0,
-            "max_level_x_max": 500,
-            "death_count": 1,
-            "death_rate": 0.01,
-            "best_episode": {"reward": 15.0, "max_x_pos": 500},
-            "eval/done/level_change/rate": 1.0,
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            model_path = Path(tmp) / "model.zip"
-            model_path.write_bytes(b"zip")
-            model_path.with_suffix(".metadata.json").write_text(
-                json.dumps(
-                    {
-                        "wandb_run_id": "run-id",
-                        "wandb_run_path": "entity/project/runs/run-id",
-                        "checkpoint_step": 500000,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with (
-                patch.dict(sys.modules, {"wandb": fake_wandb}),
-                patch("rlab.eval_job_runner.load_wandb_env"),
-            ):
-                result = log_eval_to_wandb(
-                    job={"id": 9, "eval_protocol_hash": "protocol"},
-                    config={"artifact_ref": "entity/project/model:step-500000"},
-                    model_path=model_path,
-                    metrics=metrics,
-                    video_path=None,
-                )
-
-        payload, step = fake_wandb.run.logged[0]
-        self.assertTrue(result["wandb_logged"])
-        self.assertEqual(result["wandb_run_id"], "run-id")
-        self.assertEqual(step, 500000)
-        self.assertEqual(payload["global_step"], 500000)
-        self.assertEqual(payload["eval/reward/mean"], 12.5)
-        self.assertEqual(payload["eval/checkpoint/step"], 500000)
-        self.assertEqual(payload["eval/done/level_change/rate"], 1.0)
-        self.assertEqual(fake_wandb.run.summary["leader/checkpoint/completion_rate"], 1.0)
-        self.assertEqual(fake_wandb.run.summary["leader/checkpoint/step"], 500000)
-        self.assertEqual(
-            fake_wandb.run.summary["leader/checkpoint/artifact_ref"],
-            "entity/project/model:step-500000",
-        )
-        self.assertTrue(fake_wandb.run.finished)
-
     def test_parser_removed_research_db_commands(self) -> None:
         parser = job_queue.build_parser()
         for command in (
@@ -1166,23 +971,36 @@ train_config:
                 ]
             )
 
-    def test_eval_selection_score_prefers_eval_min_completion_then_progress(self) -> None:
-        weak_pooled = {
+    def test_eval_selection_score_prefers_min_completion_then_mean_then_reward(self) -> None:
+        weak_bottleneck = {
             "completion_rate": 1.0,
             "eval/done/level_change/from_rate/min": 0.25,
+            "eval/done/level_change/from_rate/mean": 1.0,
             "max_x_max": 4000,
             "reward_mean": 900.0,
         }
         balanced = {
             "completion_rate": 0.8,
             "eval/done/level_change/from_rate/min": 0.75,
+            "eval/done/level_change/from_rate/mean": 0.8,
             "max_x_max": 3200,
             "reward_mean": 600.0,
+        }
+        same_min_better_mean = {
+            "completion_rate": 0.9,
+            "eval/done/level_change/from_rate/min": 0.75,
+            "eval/done/level_change/from_rate/mean": 0.9,
+            "max_x_max": 3000,
+            "reward_mean": 10.0,
         }
 
         self.assertGreater(
             job_queue.eval_selection_score(balanced),
-            job_queue.eval_selection_score(weak_pooled),
+            job_queue.eval_selection_score(weak_bottleneck),
+        )
+        self.assertGreater(
+            job_queue.eval_selection_score(same_min_better_mean),
+            job_queue.eval_selection_score(balanced),
         )
 
     def test_enqueue_train_jobs_from_spec_derives_group_run_names(self) -> None:
@@ -1859,25 +1677,7 @@ class ArtifactConfigTests(unittest.TestCase):
         self.assertEqual(wandb_artifact_storage_uri(args), "s3://bucket/from-arg")
 
 
-class EvalJobRunnerTests(unittest.TestCase):
-    def test_normalize_eval_config_defaults_to_100_episode_stochastic_vector_eval(self) -> None:
-        config = normalize_eval_config(
-            {
-                "id": 4,
-                "eval_config": {"artifact_ref": "tsilva/SuperMarioBros-NES/model:v1"},
-            }
-        )
-
-        self.assertEqual(config["episodes"], 100)
-        self.assertEqual(config["n_envs"], 20)
-        self.assertEqual(config["seed"], DEFAULT_EVAL_SEED)
-        self.assertTrue(config["stochastic"])
-        self.assertFalse(config["capture_best_video"])
-
-    def test_normalize_eval_config_rejects_training_seed_range(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reserved for training"):
-            normalize_eval_config({"id": 4, "eval_config": {"seed": 9999}})
-
+class JsonSafeTests(unittest.TestCase):
     def test_json_safe_converts_nested_non_json_values(self) -> None:
         class Scalar:
             def item(self):

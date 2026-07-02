@@ -40,13 +40,13 @@ goal_id: bad
 title: Bad Goal
 objective:
   states: [Level1-1]
-  success:
-    metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    threshold: 0.99
   rank:
   - train/info/level_complete/rate/min/last
 train:
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -106,6 +106,66 @@ objective: {}
             with self.assertRaisesRegex(ValueError, "goal_id.*must match goal directory name: real-goal"):
                 validate_goal_contract(goal_path, root)
 
+    def test_goal_validator_rejects_objective_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "experiments" / "goals" / "bad"
+            goal_dir.mkdir(parents=True)
+            goal_path = goal_dir / "goal.yaml"
+            goal_path.write_text(
+                """
+goal_id: bad
+title: Bad Goal
+objective:
+  success:
+    metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
+  rank:
+  - train/info/level_complete/rate/min/last
+train:
+  environment:
+    env_config:
+      env_provider: stable-retro-turbo
+      game: SuperMarioBros-Nes-v0
+      state: Level1-1
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      hud_crop_top: 32
+      obs_resize_algorithm: area
+      max_episode_steps: 4500
+      info_events:
+        life_loss: [lives, decrease]
+        level_change: [[levelHi, levelLo], change]
+      done_on_events: [life_loss, level_change]
+eval:
+  environment:
+    env_config:
+      env_provider: stable-retro-turbo
+      game: SuperMarioBros-Nes-v0
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      hud_crop_top: 32
+      obs_resize_algorithm: area
+      max_episode_steps: 4500
+      info_events:
+        life_loss: [lives, decrease]
+        level_change: [[levelHi, levelLo], change]
+      max_episodes: 100
+      done_on_events: [level_change]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "objective\\.success moved to train\\.early_stop"):
+                validate_goal_contract(goal_path, root)
+
     def test_goal_validator_rejects_environment_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -118,13 +178,13 @@ goal_id: bad
 title: Bad Goal
 objective:
   states: [Level1-1]
-  success:
-    metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    threshold: 0.99
   rank:
   - train/info/level_complete/rate/min/last
 train:
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -169,20 +229,23 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("states", document["objective"])
         self.assertNotIn("forbidden_stop_rules", document["objective"])
         self.assertNotIn("max_train_timesteps", document["objective"])
+        self.assertNotIn("success", document["objective"])
         self.assertEqual(
-            document["objective"]["success"],
-            {
-                "metric": "train/info/level_complete/rate/min/last",
-                "operator": ">",
-                "threshold": 0.99,
-            },
+            document["train"]["early_stop"],
+            [
+                {
+                    "metric": "train/info/level_complete/rate/min/last",
+                    "operator": ">",
+                    "threshold": 0.99,
+                }
+            ],
         )
         self.assertEqual(
             document["objective"]["rank"],
             [
-                "max(train/info/level_complete/rate/min/last)",
-                "max(train/info/level_complete/rate/mean/last)",
-                "max(rollout/ep_rew_mean)",
+                "max(eval/done/level_change/from_rate/min)",
+                "max(eval/done/level_change/from_rate/mean)",
+                "max(eval/reward/mean)",
             ],
         )
         self.assertNotIn("selection_policy", document)
