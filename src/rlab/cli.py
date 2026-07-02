@@ -48,6 +48,7 @@ TRAIN_VALUE_OPTIONS = {
     "task_conditioning_info_vars": "--task-conditioning-info-vars",
     "task_conditioning_info_values": "--task-conditioning-info-values",
     "frame_skip": "--frame-skip",
+    "sticky_action_prob": "--sticky-action-prob",
     "max_episode_steps": "--max-episode-steps",
     "observation_size": "--observation-size",
     "hud_crop_top": "--hud-crop-top",
@@ -343,6 +344,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--frame-skip", type=int, default=4)
+    parser.add_argument(
+        "--sticky-action-prob",
+        type=float,
+        default=parser_defaults_env.sticky_action_prob,
+        help="Probability of replaying the previous high-level action; 0 disables sticky actions.",
+    )
     parser.add_argument(
         "--max-pool-frames",
         action=argparse.BooleanOptionalAction,

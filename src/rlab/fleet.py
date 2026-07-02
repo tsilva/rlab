@@ -2445,7 +2445,7 @@ def run_machine_shell(
             check=False,
         )
     return subprocess.run(
-        [*machine_ssh_prefix(machine), "sh", "-lc", script],
+        [*machine_ssh_prefix(machine), "sh", "-lc", shlex.quote(script)],
         input=input_text,
         capture_output=capture,
         text=True,
