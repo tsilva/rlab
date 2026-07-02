@@ -174,6 +174,7 @@ def env_config_from_args(
         "death_penalty": value("death_penalty"),
         "completion_reward": value("completion_reward"),
         "score_progress_clipped": value("score_progress_clipped"),
+        "env_wrappers": value("env_wrappers"),
         "no_progress_timeout_steps": value("no_progress_timeout_steps"),
         "no_progress_min_delta": value("no_progress_min_delta"),
         "info_events": parse_info_events(

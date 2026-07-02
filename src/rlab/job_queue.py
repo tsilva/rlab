@@ -104,6 +104,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "info_events_json",
         "done_on",
         "done_on_events",
+        "env_wrappers",
     }
 )
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(

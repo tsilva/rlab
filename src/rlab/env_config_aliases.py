@@ -89,6 +89,8 @@ def normalize_provider_env_config_aliases(
         result["sticky_action_prob"] = result["action_sticky_prob"]
     if "reward_clip" in result and "clip_rewards" not in result:
         result["clip_rewards"] = result["reward_clip"]
+    if "num_envs" in result and "n_envs" not in result:
+        result["n_envs"] = result["num_envs"]
     if "num_threads" in result and "env_threads" not in result:
         result["env_threads"] = result["num_threads"]
     done_on = result.get("done_on")

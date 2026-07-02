@@ -18,6 +18,7 @@ from rlab.artifacts import (
     apply_config_defaults,
     build_s3_artifact_uri,
     checkpoint_step,
+    env_config_from_config_dict,
     env_config_from_model_metadata,
     env_config_from_metadata,
     explicit_arg_dests,
@@ -106,14 +107,20 @@ class EnvConfigAliasTests(unittest.TestCase):
     def test_stable_retro_turbo_101_provider_keywords_map_to_env_config(self) -> None:
         config = normalize_provider_env_config_aliases(
             {
+                "num_envs": 16,
+                "num_threads": 4,
                 "maxpool_last_two": False,
                 "sticky_action_prob": 0.25,
                 "noop_reset_max": 3,
             }
         )
 
+        self.assertEqual(config["n_envs"], 16)
+        self.assertEqual(config["env_threads"], 4)
         self.assertEqual(config["max_pool_frames"], False)
         self.assertEqual(config["sticky_action_prob"], 0.25)
+        self.assertNotIn("num_envs", config)
+        self.assertNotIn("num_threads", config)
         self.assertNotIn("maxpool_last_two", config)
         self.assertNotIn("noop_reset_max", config)
 
@@ -131,6 +138,70 @@ class EnvConfigAliasTests(unittest.TestCase):
         self.assertNotIn("frame_maxpool", config)
         self.assertNotIn("action_sticky_prob", config)
         self.assertNotIn("reset_noops", config)
+
+    def test_reward_env_wrapper_resolves_to_mario_reward_config(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                game="SuperMarioBros-Nes-v0",
+                env_wrappers=(
+                    {
+                        "id": "SuperMarioBrosNesRewardEnvWrapper",
+                        "kwargs": {
+                            "reward_mode": "score",
+                            "progress_reward_scale": 1.5,
+                            "death_penalty": 17,
+                            "score_progress_clipped": True,
+                        },
+                    },
+                ),
+            )
+        )
+
+        self.assertEqual(config.reward_mode, "score")
+        self.assertEqual(config.progress_reward_scale, 1.5)
+        self.assertEqual(config.death_penalty, 17.0)
+        self.assertTrue(config.score_progress_clipped)
+        self.assertEqual(
+            config.env_wrappers,
+            (
+                {
+                    "id": "SuperMarioBrosNesRewardEnvWrapper",
+                    "kwargs": {
+                        "reward_mode": "score",
+                        "progress_reward_scale": 1.5,
+                        "death_penalty": 17.0,
+                        "score_progress_clipped": True,
+                    },
+                },
+            ),
+        )
+
+    def test_unknown_env_wrapper_fails_loudly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            resolve_env_config(
+                EnvConfig(
+                    game="SuperMarioBros-Nes-v0",
+                    env_wrappers=({"id": "MissingRewardWrapper", "kwargs": {}},),
+                )
+            )
+
+    def test_metadata_config_dict_preserves_env_wrappers(self) -> None:
+        config = env_config_from_config_dict(
+            {
+                "game": "SuperMarioBros-Nes-v0",
+                "env_wrappers": [
+                    {
+                        "id": "SuperMarioBrosNesRewardEnvWrapper",
+                        "kwargs": {"reward_mode": "score", "terminal_reward": 30},
+                    }
+                ],
+            }
+        )
+
+        self.assertIsNotNone(config)
+        resolved = resolve_env_config(config)
+        self.assertEqual(resolved.reward_mode, "score")
+        self.assertEqual(resolved.terminal_reward, 30.0)
 
 
 class Sb3LoggerTests(unittest.TestCase):
@@ -268,7 +339,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 patch("rlab.artifacts.load_wandb_env"),
                 patch.dict(sys.modules, {"wandb": fake_wandb}),
             ):
-                run = init_wandb(args, tmp_dir, EnvConfig())
+                run = init_wandb(args, tmp_dir, EnvConfig(game="SuperMarioBros-Nes-v0"))
 
         self.assertIs(run, fake_wandb.run)
         self.assertEqual(
@@ -392,6 +463,33 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
         self.assertEqual(args.wandb_tags, "from-json,config-file")
 
+    def test_train_config_json_accepts_env_wrappers(self) -> None:
+        env_wrappers = [
+            {
+                "id": "SuperMarioBrosNesRewardEnvWrapper",
+                "kwargs": {"reward_mode": "score", "death_penalty": 12},
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "game": "SuperMarioBros-Nes-v0",
+                        "env_wrappers": env_wrappers,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = parse_train_args(["--train-config-json", str(path)])
+            config = resolve_env_config(env_config_from_args(args))
+
+        self.assertEqual(args.env_wrappers, env_wrappers)
+        self.assertEqual(config.reward_mode, "score")
+        self.assertEqual(config.death_penalty, 12.0)
+
     def test_train_config_json_accepts_metric_early_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
@@ -490,6 +588,24 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIn("--early-stop", command)
         self.assertIn(
             '[{"metric":"train/info/level_complete/rate/min/last","operator":">","threshold":0.99}]',
+            command,
+        )
+
+    def test_build_train_command_serializes_env_wrappers(self) -> None:
+        command = build_train_command(
+            {
+                "env_wrappers": [
+                    {
+                        "id": "SuperMarioBrosNesRewardEnvWrapper",
+                        "kwargs": {"reward_mode": "score"},
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("--env-wrappers", command)
+        self.assertIn(
+            '[{"id":"SuperMarioBrosNesRewardEnvWrapper","kwargs":{"reward_mode":"score"}}]',
             command,
         )
 

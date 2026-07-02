@@ -58,6 +58,7 @@ PLAYBACK_ENV_ARG_KEYS = {
     "death_penalty": ("death_penalty",),
     "completion_reward": ("completion_reward",),
     "score_progress_clipped": ("score_progress_clipped",),
+    "env_wrappers": ("env_wrappers",),
     "no_progress_timeout_steps": ("no_progress_timeout_steps",),
     "no_progress_min_delta": ("no_progress_min_delta",),
     "info_events_json": ("info_events",),
@@ -96,6 +97,13 @@ def env_config_metadata(config: EnvConfig) -> dict[str, Any]:
     metadata["task_conditioning_info_vars"] = list(config.task_conditioning_info_vars)
     metadata["task_conditioning_info_values"] = [
         list(value) for value in config.task_conditioning_info_values
+    ]
+    metadata["env_wrappers"] = [
+        {
+            "id": str(spec.get("id", "")),
+            "kwargs": dict(spec.get("kwargs", {})) if isinstance(spec.get("kwargs"), dict) else {},
+        }
+        for spec in config.env_wrappers
     ]
     if config.state_probs:
         metadata["state_sampling_mode"] = "probability"
@@ -314,6 +322,12 @@ def env_config_from_config_dict(
             else info_values
         )
         matched = True
+    if "env_wrappers" in config and config.get("env_wrappers") is not None:
+        env_wrappers = config["env_wrappers"]
+        config_values["env_wrappers"] = (
+            tuple(env_wrappers) if isinstance(env_wrappers, list) else env_wrappers
+        )
+        matched = True
 
     if not matched and fallback is None:
         return None
@@ -418,6 +432,13 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         "death_penalty": config.death_penalty,
         "completion_reward": config.completion_reward,
         "score_progress_clipped": config.score_progress_clipped,
+        "env_wrappers": [
+            {
+                "id": str(spec.get("id", "")),
+                "kwargs": dict(spec.get("kwargs", {})) if isinstance(spec.get("kwargs"), dict) else {},
+            }
+            for spec in config.env_wrappers
+        ],
         "no_progress_timeout_steps": config.no_progress_timeout_steps,
         "no_progress_min_delta": config.no_progress_min_delta,
         "info_events": config.info_events,

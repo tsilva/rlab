@@ -91,6 +91,7 @@ TRAIN_VALUE_OPTIONS = {
     "time_penalty": "--time-penalty",
     "death_penalty": "--death-penalty",
     "completion_reward": "--completion-reward",
+    "env_wrappers": "--env-wrappers",
     "no_progress_timeout_steps": "--no-progress-timeout-steps",
     "no_progress_min_delta": "--no-progress-min-delta",
     "action_set": "--action-set",
@@ -140,7 +141,7 @@ def build_train_command(options: Mapping[str, Any]) -> list[str]:
             continue
         if key == "early_stop" and isinstance(value, Mapping | list | tuple):
             value = json.dumps(value, separators=(",", ":"))
-        elif key == "info_events_json" and isinstance(value, Mapping):
+        elif key in {"info_events_json", "env_wrappers"} and isinstance(value, Mapping | list | tuple):
             value = json.dumps(value, separators=(",", ":"))
         elif key == "task_conditioning_info_values" and isinstance(value, list | tuple):
             value = ";".join(
@@ -558,6 +559,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--score-progress-clipped",
         action="store_true",
         help="In score reward mode, use clipped progress_reward instead of raw progress_delta.",
+    )
+    parser.add_argument(
+        "--env-wrappers",
+        type=parse_json_value,
+        default=parser_defaults_env.env_wrappers,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-progress-timeout-steps",

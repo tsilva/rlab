@@ -49,6 +49,7 @@ REWARD_KEYS = (
     "death_penalty",
     "completion_reward",
     "score_progress_clipped",
+    "env_wrappers",
 )
 
 

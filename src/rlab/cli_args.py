@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from rlab.env import EnvConfig
 
 
 REWARD_MODE_CHOICES = ("auto", "baseline", "bounded", "additive", "score", "native")
+
+
+def parse_json_value(value: str):
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"must be valid JSON: {exc}") from exc
 
 
 def add_env_config_args(
@@ -73,6 +81,7 @@ def add_env_config_args(
     parser.add_argument("--death-penalty", type=float, default=25.0)
     parser.add_argument("--completion-reward", type=float, default=0.0)
     parser.add_argument("--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--env-wrappers", type=parse_json_value, default=defaults.env_wrappers)
     parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
     parser.add_argument("--no-progress-min-delta", type=int, default=0)
     parser.add_argument(

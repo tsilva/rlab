@@ -2,10 +2,10 @@
 # Environment provider id; stable-retro-turbo supplies the stable_retro runtime import.
 env_provider: stable-retro-turbo
 env_config:
-  # Stable Retro game id passed to EnvConfig.
+  # Stable Retro game id passed to RetroVecEnv.
   game: SuperMarioBros-Nes-v0
-  n_envs: 16
-  env_threads: 4
+  num_envs: 16
+  num_threads: 4
   # Emulator frame skip; fixes action repeat and observation cadence.
   frame_skip: 4
   # Number of preprocessed frames stacked in the returned observation.
@@ -37,10 +37,13 @@ env_config:
   # Only return full info payloads at terminal transitions.
   info_filter: terminal
   # Default Mario reward shaping contract.
-  reward_mode: score
-  progress_reward_scale: 1.0
-  terminal_reward: 50
-  death_penalty: 25
-  completion_reward: 0.0
-  reward_scale: 10
-  score_progress_clipped: false
+  env_wrappers:
+  - id: SuperMarioBrosNesRewardEnvWrapper
+    kwargs:
+      reward_mode: score
+      progress_reward_scale: 1.0
+      terminal_reward: 50
+      death_penalty: 25
+      completion_reward: 0.0
+      reward_scale: 10
+      score_progress_clipped: false

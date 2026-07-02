@@ -21,6 +21,7 @@ from stable_baselines3.common.atari_wrappers import ClipRewardEnv
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id, resolve_env_provider
+from rlab.env_wrappers import resolve_configured_env_wrappers
 from rlab.targets import GenericRetroTarget, target_for_game
 
 GAME = os.environ.get("RETRO_GAME", "")
@@ -80,6 +81,7 @@ class EnvConfig:
     death_penalty: float = 25.0
     completion_reward: float = 0.0
     score_progress_clipped: bool = False
+    env_wrappers: tuple[dict[str, Any], ...] = ()
     no_progress_timeout_steps: int = 0
     no_progress_min_delta: int = 0
     info_events: InfoEventRules = field(default_factory=dict)
@@ -125,6 +127,7 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
     if config.hud_crop_top < 0:
         updates["hud_crop_top"] = target.default_hud_crop_top
     config = replace(config, **updates) if updates else config
+    config = resolve_configured_env_wrappers(config)
     return normalize_event_config(config)
 
 

@@ -16,6 +16,7 @@ from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.env_config_aliases import STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
+from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_spec_document
@@ -365,6 +366,8 @@ def _validate_env_config(
             _require_mapping(env_config["done_on"], label=f"{label}.done_on")
         else:
             _require_string_list(env_config, "done_on", label=label)
+    if "env_wrappers" in env_config:
+        normalize_env_wrapper_specs(env_config["env_wrappers"], label=f"{label}.env_wrappers")
 
 
 def _goal_train_section(document: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:
