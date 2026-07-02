@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from argparse import Namespace
@@ -1570,6 +1571,24 @@ class FleetPlanTests(unittest.TestCase):
 
 
 class FleetHostSetupTests(unittest.TestCase):
+    def test_default_repo_root_uses_source_checkout_outside_repo(self) -> None:
+        old_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                args = fleet.build_parser().parse_args(["watch"])
+                root = fleet.repo_root_from_args(args)
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(root, Path(__file__).resolve().parents[1])
+
+    def test_explicit_repo_root_still_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(repo_root=tmp)
+
+            self.assertEqual(fleet.repo_root_from_args(args), Path(tmp).resolve())
+
     def test_machine_registry_encodes_beast_host_setup(self) -> None:
         config = fleet.load_fleet_config(Path(".").resolve())
 

@@ -739,7 +739,7 @@ def sample_jobs() -> list[dict[str, Any]]:
             "details": {
                 "worker": "eval-runner",
                 "episodes": 100,
-                "seed": 10007,
+                "seed": 10000,
                 "n_envs": 20,
                 "wandb": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/sample-eval-77",
             },

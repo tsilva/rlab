@@ -1,9 +1,9 @@
 # Hydra composition list; imports the reusable Mario environment contract first.
 defaults:
 # Shared Stable Retro Turbo Super Mario Bros EnvConfig for training; goal overlays set the source state(s).
-- ../../envs/stable-retro-turbo/super-mario-bros-nes-v0@train.environment.env_config
+- ../../envs/stable-retro-turbo/SuperMarioBros-Nes-v0@train.environment
 # Same EnvConfig composed into eval, with eval-only overrides below.
-- ../../envs/stable-retro-turbo/super-mario-bros-nes-v0@eval.environment.env_config
+- ../../envs/stable-retro-turbo/SuperMarioBros-Nes-v0@eval.environment
 # Apply this file after the env so goal-owned defaults can override env details deliberately.
 - _self_
 # Objective defines both the solved predicate and candidate comparison order.
@@ -24,9 +24,6 @@ train:
   # Shared checkpoint cadence for Mario training jobs.
   checkpoint_freq: 500000
   environment:
-    # Default vectorization for Mario training jobs; specs can focus on policy/reward changes.
-    n_envs: 16
-    env_threads: 4
     env_config:
       # Training attempts terminate on death or level clear.
       done_on:
@@ -37,12 +34,7 @@ eval:
   # Eval-time environment config; composed from the same reusable EnvConfig as training.
   environment:
     env_config:
-      episodes: 100
-      seed: 10007
-      num_envs: 20
-      max_steps: 4500
+      max_episodes: 100
       # Eval episodes stop on observed level changes, not life loss.
       done_on:
       - level_change
-  policy:
-    stochastic: true

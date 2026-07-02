@@ -34,7 +34,7 @@ from rlab.runtime_refs import (
     normalize_runtime_image_ref,
     runtime_image_ref_from_file,
 )
-from rlab.seeds import validate_eval_seed, validate_training_seed
+from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed, validate_training_seed
 from rlab.spec_schema import validate_train_spec_schema
 
 
@@ -908,7 +908,7 @@ def load_goal_eval_spec(goal_slug: str) -> dict[str, Any]:
         if isinstance(legacy_eval_config, Mapping):
             eval = legacy_eval_config
         else:
-            raise ValueError(f"{path} eval must define policy")
+            eval = {}
     merged_eval_config = dict(eval)
     eval_environment = eval_spec.get("environment")
     if isinstance(eval_environment, Mapping):
@@ -916,6 +916,8 @@ def load_goal_eval_spec(goal_slug: str) -> dict[str, Any]:
         raw_eval_env_config = eval_environment.get("env_config")
         if isinstance(raw_eval_env_config, Mapping):
             eval_env_config.update(copy.deepcopy(dict(raw_eval_env_config)))
+        if eval_environment.get("env_provider") is not None and "env_provider" not in eval_env_config:
+            eval_env_config["env_provider"] = copy.deepcopy(eval_environment["env_provider"])
     else:
         raw_eval_env_config = eval_spec.get("env_config")
         eval_env_config = (
@@ -924,12 +926,21 @@ def load_goal_eval_spec(goal_slug: str) -> dict[str, Any]:
             else {}
         )
     if eval_env_config:
-        for key in ("episodes", "seed", "n_envs", "max_steps"):
+        if "max_episodes" in eval_env_config:
+            merged_eval_config["episodes"] = eval_env_config["max_episodes"]
+        elif "episodes" in eval_env_config:
+            merged_eval_config["episodes"] = eval_env_config["episodes"]
+        for key in ("seed", "n_envs", "max_steps"):
             if key in eval_env_config:
                 merged_eval_config[key] = eval_env_config[key]
         if "num_envs" in eval_env_config:
             merged_eval_config["n_envs"] = eval_env_config["num_envs"]
         merged_eval_config["env_config"] = eval_env_config
+    merged_eval_config.setdefault("seed", DEFAULT_EVAL_SEED)
+    merged_eval_config["seed"] = validate_eval_seed(merged_eval_config["seed"], label="eval.seed")
+    merged_eval_config.setdefault("n_envs", 20)
+    merged_eval_config.setdefault("max_steps", 4500)
+    merged_eval_config.setdefault("stochastic", True)
     result = {"eval_config": merged_eval_config}
     if eval_spec.get("schema_version") is not None:
         result["schema_version"] = eval_spec.get("schema_version")

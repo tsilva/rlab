@@ -80,13 +80,8 @@ eval:
       info_events:
         life_loss: [lives, decrease]
         level_change: [[levelHi, levelLo], change]
-      episodes: 100
-      seed: 10007
-      n_envs: 20
-      max_steps: 4500
+      max_episodes: 100
       done_on_events: [level_change]
-  policy:
-    stochastic: true
 """,
                 encoding="utf-8",
             )
@@ -193,29 +188,32 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("selection_policy", document)
         self.assertNotIn("max_train_timesteps", document["train"])
         self.assertEqual(
-            document["train"]["environment"]["env_config"]["env_provider"],
+            document["train"]["environment"]["env_provider"],
             "stable-retro-turbo",
         )
+        self.assertNotIn("env_provider", document["train"]["environment"]["env_config"])
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["train"]["environment"]["env_config"]["state"], "Level1-1")
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_resize"], [84, 84])
         self.assertEqual(document["train"]["environment"]["env_config"]["frame_maxpool"], False)
         self.assertEqual(document["train"]["environment"]["env_config"]["action_sticky_prob"], 0.0)
-        self.assertEqual(document["eval"]["policy"], {"stochastic": True})
+        self.assertNotIn("policy", document["eval"])
         self.assertNotIn("schema_version", document["eval"])
-        self.assertNotIn("env_provider", document["eval"]["environment"])
         self.assertEqual(
-            document["eval"]["environment"]["env_config"]["env_provider"],
+            document["eval"]["environment"]["env_provider"],
             "stable-retro-turbo",
         )
+        self.assertNotIn("env_provider", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_resize"], [84, 84])
-        self.assertEqual(document["eval"]["environment"]["env_config"]["episodes"], 100)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["seed"], 10007)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["num_envs"], 20)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["max_steps"], 4500)
+        self.assertEqual(document["eval"]["environment"]["env_config"]["max_episodes"], 100)
+        self.assertNotIn("episodes", document["eval"]["environment"]["env_config"])
+        self.assertNotIn("seed", document["eval"]["environment"]["env_config"])
+        self.assertNotIn("n_envs", document["eval"]["environment"]["env_config"])
+        self.assertNotIn("num_envs", document["eval"]["environment"]["env_config"])
+        self.assertNotIn("max_steps", document["eval"]["environment"]["env_config"])
         self.assertEqual(
             document["eval"]["environment"]["env_config"]["done_on"],
             ["level_change"],

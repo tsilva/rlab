@@ -25,7 +25,7 @@ RECIPE_SCHEMA_VERSION = 1
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 GOAL_OPERATOR_VALUES = {"<", "<=", "==", ">=", ">"}
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
-ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
+ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
 
 
 @dataclass(frozen=True)
@@ -208,7 +208,12 @@ def _validate_environment_identity(
     )
     env_config = environment.get("env_config")
     if isinstance(env_config, Mapping):
-        _validate_env_config(env_config, label=f"{label}.environment.env_config", require_game=True)
+        _validate_environment_env_config(
+            environment,
+            env_config,
+            label=f"{label}.environment",
+            require_game=True,
+        )
         return environment
 
     for old_key in ("provider", "env_provider", "provider_env_id"):
@@ -237,6 +242,25 @@ def _validate_environment_identity(
         label=f"{label}.environment.termination",
     )
     return environment
+
+
+def _validate_environment_env_config(
+    environment: Mapping[str, Any],
+    env_config: Mapping[str, Any],
+    *,
+    label: str,
+    require_game: bool,
+    allowed_extra_keys: set[str] | None = None,
+) -> None:
+    combined = dict(env_config)
+    if "env_provider" in environment and "env_provider" not in combined:
+        combined["env_provider"] = environment["env_provider"]
+    _validate_env_config(
+        combined,
+        label=f"{label}.env_config",
+        require_game=require_game,
+        allowed_extra_keys=allowed_extra_keys,
+    )
 
 
 def _validate_env_config(
@@ -290,6 +314,10 @@ def _validate_env_config(
         if key in env_config:
             minimum = 1 if key == "frame_skip" else 0
             _require_int(env_config, key, label=label, minimum=minimum)
+    if "n_envs" in env_config:
+        _require_int(env_config, "n_envs", label=label, minimum=1)
+    if "env_threads" in env_config:
+        _require_int(env_config, "env_threads", label=label, minimum=0)
     if "max_pool_frames" in env_config:
         _require_bool(env_config, "max_pool_frames", label=label)
     if "sticky_action_prob" in env_config:
@@ -365,7 +393,7 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
     )
     eval_environment = eval_section.get("environment")
     if isinstance(eval_environment, Mapping):
-        eval_environment_keys = {"env_config"}
+        eval_environment_keys = {"env_provider", "env_config"}
         extra_keys = sorted(set(eval_environment) - eval_environment_keys)
         if extra_keys:
             raise ValueError(f"{label}.eval.environment has unexpected keys: {extra_keys}")
@@ -373,36 +401,40 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             _require_key(eval_environment, "env_config", label=f"{label}.eval.environment"),
             label=f"{label}.eval.environment.env_config",
         )
-        _validate_env_config(
+        _validate_environment_env_config(
+            eval_environment,
             eval_env_config,
-            label=f"{label}.eval.environment.env_config",
+            label=f"{label}.eval.environment",
             require_game=True,
-            allowed_extra_keys={"episodes", "seed", "n_envs", "max_steps"},
+            allowed_extra_keys={"max_episodes", "seed", "n_envs", "max_steps"},
         )
         _require_int(
             eval_env_config,
-            "episodes",
+            "max_episodes",
             label=f"{label}.eval.environment.env_config",
             minimum=1,
         )
-        seed = _require_int(
-            eval_env_config,
-            "seed",
-            label=f"{label}.eval.environment.env_config",
-        )
-        validate_eval_seed(seed, label=f"{label}.eval.environment.env_config.seed")
+        if "seed" in eval_env_config:
+            seed = _require_int(
+                eval_env_config,
+                "seed",
+                label=f"{label}.eval.environment.env_config",
+            )
+            validate_eval_seed(seed, label=f"{label}.eval.environment.env_config.seed")
         if "n_envs" in eval_env_config and "num_envs" in eval_env_config:
             raise ValueError(
                 f"{label}.eval.environment.env_config must define only one of n_envs or num_envs"
             )
-        n_envs_key = "num_envs" if "num_envs" in eval_env_config else "n_envs"
-        _require_int(eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1)
-        _require_int(
-            eval_env_config,
-            "max_steps",
-            label=f"{label}.eval.environment.env_config",
-            minimum=1,
-        )
+        if "n_envs" in eval_env_config or "num_envs" in eval_env_config:
+            n_envs_key = "num_envs" if "num_envs" in eval_env_config else "n_envs"
+            _require_int(eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1)
+        if "max_steps" in eval_env_config:
+            _require_int(
+                eval_env_config,
+                "max_steps",
+                label=f"{label}.eval.environment.env_config",
+                minimum=1,
+            )
     elif "env_config" in eval_section:
         eval_env_config = _require_mapping(
             eval_section["env_config"],
@@ -417,19 +449,20 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(f"{label}.eval.eval_config moved to eval.policy")
     if "eval" in eval_section:
         raise ValueError(f"{label}.eval.eval moved to eval.policy")
-    policy = _require_mapping(
-        _require_key(eval_section, "policy", label=f"{label}.eval"),
-        label=f"{label}.eval.policy",
-    )
-    for moved_key in ("episodes", "seed", "n_envs", "max_steps"):
-        if moved_key in policy:
-            raise ValueError(
-                f"{label}.eval.policy.{moved_key} moved to "
-                f"{label}.eval.environment.env_config.{moved_key}"
-            )
-    _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
-    if "done_on_events" in policy:
-        _require_string_list(policy, "done_on_events", label=f"{label}.eval.policy")
+    policy = eval_section.get("policy")
+    if isinstance(policy, Mapping):
+        for moved_key in ("max_episodes", "seed", "n_envs", "max_steps"):
+            if moved_key in policy:
+                raise ValueError(
+                    f"{label}.eval.policy.{moved_key} moved to "
+                    f"{label}.eval.environment.env_config.{moved_key}"
+                )
+        if "stochastic" in policy:
+            _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
+        if "done_on_events" in policy:
+            _require_string_list(policy, "done_on_events", label=f"{label}.eval.policy")
+    elif policy is not None:
+        raise ValueError(f"{label}.eval.policy must be an object")
 
 
 def _validate_operator(value: str, *, label: str) -> None:
@@ -681,9 +714,16 @@ def validate_train_recipe(path: Path) -> None:
 
 
 def validate_env_config_file(path: Path) -> None:
-    document = load_mapping_document(path, label=f"env config file {path}")
+    document = load_composed_mapping(path, cycle_label="env config").document
     label = f"env config file {path}"
-    _validate_env_config(document, label=label, require_game=True)
+    env_config = document.get("env_config")
+    if isinstance(env_config, Mapping):
+        extra_keys = sorted(set(document) - {"env_provider", "env_config"})
+        if extra_keys:
+            raise ValueError(f"{label} has unexpected keys: {extra_keys}")
+        _validate_environment_env_config(document, env_config, label=label, require_game=True)
+    else:
+        _validate_env_config(document, label=label, require_game=True)
     if "state" in document or "states" in document:
         raise ValueError(f"{label} must not define state or states")
 

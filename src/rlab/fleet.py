@@ -610,6 +610,23 @@ def resolve_repo_path(repo_root: Path, path: Path | None, default: Path) -> Path
     return repo_root / candidate
 
 
+def _candidate_repo_roots(start: Path) -> tuple[Path, ...]:
+    base = start if start.is_dir() else start.parent
+    return (base, *base.parents)
+
+
+def _is_fleet_repo_root(path: Path) -> bool:
+    return (path / DEFAULT_MACHINE_REGISTRY).is_file()
+
+
+def default_repo_root() -> Path:
+    for start in (Path.cwd(), Path(__file__).resolve()):
+        for candidate in _candidate_repo_roots(start):
+            if _is_fleet_repo_root(candidate):
+                return candidate.resolve()
+    return Path.cwd().resolve()
+
+
 def filter_config_to_host(config: FleetConfig, host_name: str | None) -> FleetConfig:
     if not host_name:
         return config
@@ -1901,7 +1918,10 @@ def _load_config_from_args(args: argparse.Namespace) -> FleetConfig:
 
 
 def repo_root_from_args(args: argparse.Namespace) -> Path:
-    return Path(getattr(args, "repo_root", ".")).expanduser().resolve()
+    repo_root = getattr(args, "repo_root", None)
+    if repo_root:
+        return Path(repo_root).expanduser().resolve()
+    return default_repo_root()
 
 
 def watch_latest_lock_path(args: argparse.Namespace) -> Path:
@@ -4443,7 +4463,7 @@ def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--repo-root", default=None)
     parser.add_argument("--instances", type=Path, default=DEFAULT_INSTANCES_CONFIG)
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")

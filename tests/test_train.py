@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 
 from rlab.train import GracefulStopCallback, GracefulStopFlag, checkpoint_save_frequency
-from rlab.seeds import eval_seed_for_training_seed, eval_seeds, training_seeds, validate_eval_seed
+from rlab.seeds import (
+    DEFAULT_EVAL_SEED,
+    eval_seed_for_training_seed,
+    eval_seeds,
+    training_seeds,
+    validate_eval_seed,
+)
 
 
 class TrainTests(unittest.TestCase):
@@ -19,6 +25,7 @@ class TrainTests(unittest.TestCase):
         self.assertEqual(eval_seed_for_training_seed(123), 10123)
 
     def test_eval_seed_rejects_training_range(self) -> None:
+        self.assertEqual(DEFAULT_EVAL_SEED, 10000)
         self.assertEqual(validate_eval_seed(10000), 10000)
         with self.assertRaisesRegex(ValueError, "reserved for training"):
             validate_eval_seed(9999)

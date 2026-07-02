@@ -475,11 +475,11 @@ selection_gate:
   primary: train/completion_episode_rate
 train:
   environment:
-    n_envs: 16
-    env_threads: 4
     env_config:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
+      n_envs: 16
+      env_threads: 4
       state: Level1-1
       action_set: simple
       frame_skip: 4
@@ -534,11 +534,11 @@ objective:
 train:
   checkpoint_freq: 500000
   environment:
-    n_envs: 16
-    env_threads: 4
     env_config:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
+      n_envs: 16
+      env_threads: 4
       state: Level1-1
       action_set: simple
       frame_skip: 4
@@ -583,8 +583,10 @@ train_config:
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-1")
         self.assertNotIn("goal", source_spec)
         self.assertNotIn("train", source_spec)
-        self.assertEqual(loaded["train"]["environment"]["n_envs"], 16)
-        self.assertEqual(loaded["train"]["environment"]["env_threads"], 4)
+        self.assertNotIn("n_envs", loaded["train"]["environment"])
+        self.assertNotIn("env_threads", loaded["train"]["environment"])
+        self.assertEqual(loaded["train"]["environment"]["env_config"]["n_envs"], 16)
+        self.assertEqual(loaded["train"]["environment"]["env_config"]["env_threads"], 4)
         self.assertEqual(loaded["train"]["environment"]["env_config"]["state"], "Level1-1")
         self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(loaded["train_config"]["state"], "Level1-1")
@@ -952,6 +954,19 @@ train_config:
         self.assertIn("AND status = 'pending'", conn.cursor_obj.executed_sql)
         self.assertNotIn("lease_expires_at < now()", conn.cursor_obj.executed_sql)
         self.assertNotIn("attempts < max_attempts", conn.cursor_obj.executed_sql)
+
+    def test_load_goal_eval_spec_defaults_seed_to_eval_range_start(self) -> None:
+        eval_spec = job_queue.load_goal_eval_spec("Level1-1")
+
+        self.assertEqual(eval_spec["eval_config"]["seed"], DEFAULT_EVAL_SEED)
+        self.assertEqual(eval_spec["eval_config"]["seed"], 10000)
+        self.assertEqual(eval_spec["eval_config"]["n_envs"], 20)
+        self.assertEqual(eval_spec["eval_config"]["max_steps"], 4500)
+        self.assertTrue(eval_spec["eval_config"]["stochastic"])
+        self.assertEqual(eval_spec["eval_config"]["env_config"]["env_provider"], "stable-retro-turbo")
+        self.assertNotIn("seed", eval_spec["eval_config"]["env_config"])
+        self.assertNotIn("n_envs", eval_spec["eval_config"]["env_config"])
+        self.assertNotIn("max_steps", eval_spec["eval_config"]["env_config"])
 
     def test_enqueue_eval_job_persists_runtime_artifact_and_protocol(self) -> None:
         conn = FakeConnection(
