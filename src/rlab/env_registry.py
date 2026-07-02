@@ -24,8 +24,15 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     env_ids=("SuperMarioBros-Nes-v0",),
 )
 
+SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
+    provider_id="supermariobrosnes-turbo",
+    import_name="supermariobrosnes_turbo",
+    env_ids=("SuperMarioBros-Nes-v0",),
+)
+
 ENV_PROVIDERS: dict[str, EnvProvider] = {
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
+    SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id: SUPERMARIOBROS_NES_TURBO_PROVIDER,
 }
 
 

@@ -60,6 +60,7 @@ TRAIN_ENVIRONMENT_SECTION_KEYS = frozenset(
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
 PROVIDER_OWNED_INFO_EVENTS = {
     "stable-retro-turbo": frozenset({"life_loss", "level_change"}),
+    "supermariobrosnes-turbo": frozenset({"life_loss", "level_change"}),
 }
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
 RUNTIME_TRAIN_CONFIG_DEFAULTS = {

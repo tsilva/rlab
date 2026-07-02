@@ -791,6 +791,56 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         make_provider_vec_env.assert_called_once()
         self.assertEqual(make_provider_vec_env.call_args.kwargs["native_kwargs"]["num_envs"], 2)
 
+    def test_make_vec_envs_dispatches_to_supermariobrosnes_turbo_provider(self) -> None:
+        class FakeSuperMarioNative:
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.MultiBinary(2)
+            calls = []
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                self.kwargs = kwargs
+                self.__class__.calls.append((game, kwargs))
+
+            def seed(self, seed):
+                self.seed_value = seed
+                return [seed]
+
+        FakeSuperMarioNative.calls = []
+        config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            reward_mode="native",
+            frame_skip=4,
+            max_pool_frames=False,
+            sticky_action_prob=0.0,
+        )
+        with (
+            patch(
+                "rlab.env._super_mario_bros_nes_turbo_vec_env_type",
+                return_value=FakeSuperMarioNative,
+            ),
+            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
+            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
+            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
+        ):
+            env = make_vec_envs(config=config, n_envs=2, seed=7)
+
+        self.assertIsInstance(env, FakeSuperMarioNative)
+        self.assertEqual(env.seed_value, 7)
+        self.assertEqual(FakeSuperMarioNative.calls[0][0], "SuperMarioBros-Nes-v0")
+        native_kwargs = FakeSuperMarioNative.calls[0][1]
+        self.assertEqual(native_kwargs["num_envs"], 2)
+        self.assertEqual(native_kwargs["frame_skip"], 4)
+        self.assertEqual(native_kwargs["obs_resize"], (84, 84))
+        self.assertEqual(native_kwargs["maxpool_last_two"], False)
+
     def test_eval_vec_env_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
         config = EnvConfig(

@@ -307,7 +307,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--env-provider",
         default=parser_defaults_env.env_provider,
-        help="Environment provider id. Currently supported: stable-retro-turbo.",
+        help=(
+            "Environment provider id. Supported: stable-retro-turbo, "
+            "supermariobrosnes-turbo."
+        ),
     )
     parser.add_argument(
         "--game",

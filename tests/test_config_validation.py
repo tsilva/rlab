@@ -252,7 +252,7 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("max_train_timesteps", document["train"])
         self.assertEqual(
             document["train"]["environment"]["env_provider"],
-            "stable-retro-turbo",
+            "supermariobrosnes-turbo",
         )
         self.assertNotIn("env_provider", document["train"]["environment"]["env_config"])
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
@@ -268,7 +268,7 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("schema_version", document["eval"])
         self.assertEqual(
             document["eval"]["environment"]["env_provider"],
-            "stable-retro-turbo",
+            "supermariobrosnes-turbo",
         )
         self.assertNotIn("env_provider", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")

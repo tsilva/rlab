@@ -13,9 +13,11 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-25T00:00:00Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+supermariobrosnes-turbo = "2026-07-02T17:30:00Z"
 stable-retro-turbo = "2026-07-02T13:00:00Z"
 
 [manifest]
@@ -875,6 +877,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "stable-baselines3", extra = ["extra"] },
     { name = "stable-retro-turbo", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "supermariobrosnes-turbo", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tensorboard" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "wandb" },
@@ -894,6 +897,8 @@ requires-dist = [
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
     { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post1" },
     { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post1" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.1.2" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.1.2" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==2.11.0" },
     { name = "wandb", specifier = ">=0.18,<0.23" },
@@ -1007,6 +1012,19 @@ dependencies = [
 wheels = [
     { url = "https://files.pythonhosted.org/packages/37/3e/3d59607fe3a54905ed2a5e8e07e3d3f17db1f2f3994e37b444dea346833e/stable_retro_turbo-1.0.1.post1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:fd7459050fdf78434a3df6ccfbff5c609dc4a1328f1f08d8d43425f2c5e9d68e", size = 81499139, upload-time = "2026-07-02T12:33:01.751Z" },
     { url = "https://files.pythonhosted.org/packages/23/b3/51d659b9e7d857dc34a5a134446e3264ceefd803855a10c46e41a10f5a3c/stable_retro_turbo-1.0.1.post1-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dcb49f34362549f8337feaaeef34c48cb1796846eb0ba42a4952ce073786cd90", size = 84434965, upload-time = "2026-07-02T12:33:12.45Z" },
+]
+
+[[package]]
+name = "supermariobrosnes-turbo"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gymnasium", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "numpy", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/67/76ea374a04e4e6a721bbf11597cf0b6d23d78e97af5833a05b08dea7c1ad/supermariobrosnes_turbo-0.1.2-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:08dce3f57fe53ea07c4a96b780db44769eca916fa9e0cf94edd0099bf0ab4683", size = 323851, upload-time = "2026-07-02T17:22:00.464Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/29/a5060dada417eb241550fcfefc5532a6e234e5dc6d0d385f0e64f9a015bd/supermariobrosnes_turbo-0.1.2-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:0a4c1d6789a85363e82aabe2fcc7f3ceaafeea4476fcf9dbee54c66fcbf628ea", size = 373916, upload-time = "2026-07-02T17:21:58.821Z" },
 ]
 
 [[package]]

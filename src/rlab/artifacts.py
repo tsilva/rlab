@@ -123,8 +123,13 @@ def _package_version(package: str) -> str | None:
 
 
 def training_preprocessing_metadata(config: EnvConfig) -> dict[str, Any]:
+    pipeline = (
+        "stable_retro_native_vec_env"
+        if config.env_provider == "stable-retro-turbo"
+        else f"{config.env_provider.replace('-', '_')}_native_vec_env"
+    )
     return {
-        "pipeline": "stable_retro_native_vec_env",
+        "pipeline": pipeline,
         "obs_resize": [config.observation_size, config.observation_size],
         "obs_crop": [config.hud_crop_top, 0, 0, 0] if config.hud_crop_top else None,
         "obs_grayscale": True,
@@ -152,6 +157,7 @@ def training_metadata(config: EnvConfig) -> dict[str, Any]:
         "preprocessing": preprocessing,
         "versions": {
             "stable_retro_turbo": _package_version("stable-retro-turbo"),
+            "supermariobrosnes_turbo": _package_version("supermariobrosnes-turbo"),
             "stable_baselines3": _package_version("stable-baselines3"),
         },
     }

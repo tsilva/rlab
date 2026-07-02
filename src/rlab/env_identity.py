@@ -57,6 +57,13 @@ def _normalize_preprocessing(identity: dict[str, Any]) -> None:
     preprocessing = identity.setdefault("preprocessing", {})
     if not isinstance(preprocessing, dict):
         return
+    env_id = identity.get("env_id")
+    provider_id = str(env_id).split(":", 1)[0] if isinstance(env_id, str) and ":" in env_id else ""
+    pipeline = (
+        "stable_retro_native_vec_env"
+        if provider_id in ("", "stable-retro-turbo")
+        else f"{provider_id.replace('-', '_')}_native_vec_env"
+    )
     if "obs_copy" not in preprocessing and "copy_observations" in preprocessing:
         preprocessing["obs_copy"] = "copy" if preprocessing["copy_observations"] else "safe_view"
     preprocessing.pop("copy_observations", None)
@@ -68,7 +75,7 @@ def _normalize_preprocessing(identity: dict[str, Any]) -> None:
         preprocessing["sticky_action_prob"] = preprocessing["action_sticky_prob"]
     preprocessing.pop("frame_maxpool", None)
     preprocessing.pop("action_sticky_prob", None)
-    preprocessing.setdefault("pipeline", "stable_retro_native_vec_env")
+    preprocessing.setdefault("pipeline", pipeline)
     preprocessing.setdefault("frame_skip", 4)
     preprocessing.setdefault("frame_stack", 4)
     preprocessing.setdefault("max_pool_frames", True)

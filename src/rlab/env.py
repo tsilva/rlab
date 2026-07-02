@@ -20,7 +20,12 @@ from stable_retro import RetroVecEnv
 from stable_baselines3.common.atari_wrappers import ClipRewardEnv
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
 
-from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id, resolve_env_provider
+from rlab.env_registry import (
+    STABLE_RETRO_TURBO_PROVIDER,
+    SUPERMARIOBROS_NES_TURBO_PROVIDER,
+    qualify_env_id,
+    resolve_env_provider,
+)
 from rlab.env_wrappers import resolve_configured_env_wrappers, with_default_env_wrapper_specs
 from rlab.targets import GenericRetroTarget, target_for_game
 
@@ -37,16 +42,41 @@ InfoEventRule = DoneOnInfoRule
 InfoEventRules = DoneOnInfoRules
 
 
-def native_vec_env_supports_done_on() -> bool:
+def _super_mario_bros_nes_turbo_vec_env_type():
     try:
-        signature = inspect.signature(RetroVecEnv.__init__)
+        from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
+    except ImportError as exc:
+        raise ImportError(
+            "supermariobrosnes-turbo provider requires "
+            "supermariobrosnes-turbo==0.1.2",
+        ) from exc
+    return SuperMarioBrosNesTurboVecEnv
+
+
+def _provider_vec_env_type(config: EnvConfig | None = None):
+    provider_id = (config or EnvConfig()).env_provider
+    provider = resolve_env_provider(provider_id)
+    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return RetroVecEnv
+    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        return _super_mario_bros_nes_turbo_vec_env_type()
+    raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
+
+
+def native_vec_env_supports_done_on(config: EnvConfig | None = None) -> bool:
+    try:
+        signature = inspect.signature(_provider_vec_env_type(config).__init__)
     except (OSError, TypeError):
         return False
     return "done_on" in signature.parameters
 
 
-def native_vec_env_supports_named_done_on() -> bool:
-    return callable(getattr(RetroVecEnv, "resolve_info_event_rules", None))
+def native_vec_env_supports_named_done_on(config: EnvConfig | None = None) -> bool:
+    provider_id = (config or EnvConfig()).env_provider
+    provider = resolve_env_provider(provider_id)
+    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        return True
+    return callable(getattr(_provider_vec_env_type(config), "resolve_info_event_rules", None))
 
 
 def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
@@ -914,13 +944,31 @@ def _stable_retro_turbo_make_vec_env(
     return RetroVecEnv(config.game, **dict(native_kwargs))
 
 
+def _super_mario_bros_nes_turbo_make_vec_env(
+    config: EnvConfig,
+    *,
+    native_kwargs: Mapping[str, Any],
+):
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id != SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        raise ValueError(
+            f"unsupported environment provider {provider.provider_id!r}; "
+            f"expected {SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id}",
+        )
+    return _super_mario_bros_nes_turbo_vec_env_type()(config.game, **dict(native_kwargs))
+
+
 def make_provider_vec_env(
     config: EnvConfig,
     *,
     native_kwargs: Mapping[str, Any],
 ):
-    _require_stable_retro_turbo_provider(config)
-    return _stable_retro_turbo_make_vec_env(config, native_kwargs=native_kwargs)
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return _stable_retro_turbo_make_vec_env(config, native_kwargs=native_kwargs)
+    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        return _super_mario_bros_nes_turbo_make_vec_env(config, native_kwargs=native_kwargs)
+    raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
 
 
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):
@@ -930,8 +978,8 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
     num_threads = config.env_threads if config.env_threads > 0 else min(max(n_envs, 1), 16)
     native_done_on_rules = _native_done_on_rules(
         config,
-        done_on_supported=native_vec_env_supports_done_on(),
-        named_done_on_supported=native_vec_env_supports_named_done_on(),
+        done_on_supported=native_vec_env_supports_done_on(config),
+        named_done_on_supported=native_vec_env_supports_named_done_on(config),
     )
     native_kwargs = _native_vec_kwargs(
         config,
