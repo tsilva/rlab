@@ -77,6 +77,20 @@ def native_vec_env_supports_named_done_on(config: EnvConfig | None = None) -> bo
     return callable(getattr(_provider_vec_env_type(config), "resolve_info_event_rules", None))
 
 
+def native_vec_env_supports_rgb_render(config: EnvConfig | None = None) -> bool:
+    provider_id = (config or EnvConfig()).env_provider
+    provider = resolve_env_provider(provider_id)
+    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return True
+    try:
+        env_type = _provider_vec_env_type(config)
+    except (ImportError, ValueError):
+        return False
+    metadata = getattr(env_type, "metadata", {})
+    render_modes = metadata.get("render_modes", ()) if isinstance(metadata, Mapping) else ()
+    return "rgb_array" in render_modes
+
+
 def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
     return target_for_game(game).action_names_for_set(action_set)
 
@@ -308,18 +322,115 @@ def _stable_retro_turbo_make_env(
     return retro.make(config.game, **kwargs)
 
 
+class SingleLaneVecEnvAdapter(gym.Env):
+    """Adapt a one-lane SB3 VecEnv to the Gymnasium API used by replay display."""
+
+    metadata = {"render_modes": ["rgb_array"]}
+
+    def __init__(self, vec_env):
+        super().__init__()
+        if getattr(vec_env, "num_envs", 1) != 1:
+            raise ValueError("SingleLaneVecEnvAdapter requires num_envs=1")
+        self.vec_env = vec_env
+        self.action_space = vec_env.action_space
+        self.observation_space = vec_env.observation_space
+        self.render_mode = getattr(vec_env, "render_mode", None)
+
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        if seed is not None:
+            self.vec_env.seed(seed)
+        if options is not None and hasattr(self.vec_env, "set_options"):
+            self.vec_env.set_options(options)
+        obs = self.vec_env.reset()
+        reset_infos = getattr(self.vec_env, "reset_infos", [{}])
+        info = dict(reset_infos[0]) if reset_infos else {}
+        return np.asarray(obs)[0], info
+
+    def step(self, action: Any):
+        action_batch = np.asarray(action)
+        if action_batch.shape == getattr(self.action_space, "shape", None):
+            action_batch = action_batch.reshape((1, *action_batch.shape))
+        elif action_batch.ndim == 0:
+            action_batch = action_batch.reshape((1,))
+        obs, rewards, dones, infos = self.vec_env.step(action_batch)
+        info = dict(infos[0]) if infos else {}
+        done = bool(np.asarray(dones)[0])
+        truncated = bool(info.get("TimeLimit.truncated", False))
+        terminated = done and not truncated
+        return np.asarray(obs)[0], float(np.asarray(rewards)[0]), terminated, truncated, info
+
+    def render(self):
+        return self.vec_env.render()
+
+    def close(self):
+        return self.vec_env.close()
+
+
+def _visual_state_for_config(config: EnvConfig) -> Any:
+    if config.state:
+        return config.state
+    if config.states:
+        return config.states[0]
+    return None
+
+
+def _super_mario_bros_nes_turbo_make_env(
+    config: EnvConfig,
+    *,
+    render_mode: str,
+    fast_observation_path: bool = False,
+) -> gym.Env:
+    if fast_observation_path:
+        raise ValueError("supermariobrosnes-turbo single-env display does not use fast_observation_path")
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id != SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        raise ValueError(
+            f"unsupported environment provider {provider.provider_id!r}; "
+            f"expected {SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id}",
+        )
+    if render_mode != "rgb_array":
+        raise ValueError("supermariobrosnes-turbo visual replay requires render_mode='rgb_array'")
+    kwargs: dict[str, Any] = {
+        "num_envs": 1,
+        "num_threads": 1,
+        "render_mode": "rgb_array",
+        "use_restricted_actions": "ALL",
+        "frame_skip": 1,
+        "frame_stack": 1,
+        "maxpool_last_two": False,
+        "sticky_action_prob": 0.0,
+        "obs_grayscale": False,
+        "obs_layout": "hwc",
+    }
+    state = _visual_state_for_config(config)
+    if state is not None:
+        kwargs["state"] = state
+    return SingleLaneVecEnvAdapter(
+        _super_mario_bros_nes_turbo_vec_env_type()(config.game, **kwargs)
+    )
+
+
 def make_provider_env(
     config: EnvConfig,
     *,
     render_mode: str,
     fast_observation_path: bool = False,
 ) -> gym.Env:
-    _require_stable_retro_turbo_provider(config)
-    return _stable_retro_turbo_make_env(
-        config,
-        render_mode=render_mode,
-        fast_observation_path=fast_observation_path,
-    )
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return _stable_retro_turbo_make_env(
+            config,
+            render_mode=render_mode,
+            fast_observation_path=fast_observation_path,
+        )
+    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        return _super_mario_bros_nes_turbo_make_env(
+            config,
+            render_mode=render_mode,
+            fast_observation_path=fast_observation_path,
+        )
+    raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
+
 
 
 class DiscreteRetroActions(gym.ActionWrapper):

@@ -519,7 +519,11 @@ def strip_env_file_quotes(value: str) -> str:
 
 def wandb_artifact_storage_uri(args: argparse.Namespace) -> str:
     configured_uri = strip_env_file_quotes(args.wandb_artifact_storage_uri)
-    if configured_uri == "${CHECKPOINT_BUCKET_URI}":
+    if configured_uri in {
+        "${CHECKPOINT_BUCKET_URI}",
+        "$CHECKPOINT_BUCKET_URI",
+        "CHECKPOINT_BUCKET_URI",
+    }:
         configured_uri = ""
     return (
         configured_uri

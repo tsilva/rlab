@@ -32,6 +32,7 @@ from rlab.env import (
     make_eval_vec_env,
     make_rendered_replay_env,
     make_visual_replay_env,
+    native_vec_env_supports_rgb_render,
     resolve_env_config,
     state_name_candidates_from_level_id,
     task_conditioning_info_values,
@@ -542,6 +543,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def display_replay_config(config):
     if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        return config
+    if native_vec_env_supports_rgb_render(config):
         return config
     return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id, env_threads=0)
 

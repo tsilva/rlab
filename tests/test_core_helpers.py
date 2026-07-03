@@ -55,6 +55,7 @@ from rlab.env import (
     make_visual_replay_env,
     make_vec_envs,
     native_vec_env_supports_done_on,
+    native_vec_env_supports_rgb_render,
     needs_vec_transpose_image,
     resolve_env_config,
     resolve_mixed_state_config,
@@ -895,6 +896,34 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["frame_skip"], 4)
         self.assertEqual(native_kwargs["obs_resize"], (84, 84))
         self.assertEqual(native_kwargs["maxpool_last_two"], False)
+
+    def test_supermariobrosnes_turbo_rgb_render_support_uses_metadata(self) -> None:
+        class FakeSuperMarioNative:
+            metadata = {"render_modes": ["rgb_array"]}
+
+        config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+        )
+        with patch(
+            "rlab.env._super_mario_bros_nes_turbo_vec_env_type",
+            return_value=FakeSuperMarioNative,
+        ):
+            self.assertTrue(native_vec_env_supports_rgb_render(config))
+
+    def test_supermariobrosnes_turbo_rgb_render_support_rejects_old_metadata(self) -> None:
+        class FakeSuperMarioNative:
+            metadata = {"render_modes": []}
+
+        config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+        )
+        with patch(
+            "rlab.env._super_mario_bros_nes_turbo_vec_env_type",
+            return_value=FakeSuperMarioNative,
+        ):
+            self.assertFalse(native_vec_env_supports_rgb_render(config))
 
     def test_eval_vec_env_preserves_requested_terminal_info_events(self) -> None:
         sentinel = object()
@@ -2679,7 +2708,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.env_threads, 4)
 
-    def test_non_stable_playback_uses_stable_retro_for_display_only(self) -> None:
+    def test_non_stable_playback_uses_native_display_when_rgb_supported(self) -> None:
         policy_config = EnvConfig(
             env_provider="supermariobrosnes-turbo",
             game="SuperMarioBros-Nes-v0",
@@ -2687,7 +2716,22 @@ class CommandAndArtifactTests(unittest.TestCase):
             env_threads=4,
         )
 
-        config = display_replay_config(policy_config)
+        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=True):
+            config = display_replay_config(policy_config)
+
+        self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
+        self.assertEqual(config.env_threads, 4)
+
+    def test_non_stable_playback_falls_back_to_stable_retro_without_rgb(self) -> None:
+        policy_config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+            state="Level1-1",
+            env_threads=4,
+        )
+
+        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
+            config = display_replay_config(policy_config)
 
         self.assertEqual(config.env_provider, "stable-retro-turbo")
         self.assertEqual(config.env_threads, 0)

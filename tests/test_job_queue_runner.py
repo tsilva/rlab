@@ -2183,9 +2183,15 @@ class ArtifactConfigTests(unittest.TestCase):
         old_value = os.environ.get("CHECKPOINT_BUCKET_URI")
         os.environ["CHECKPOINT_BUCKET_URI"] = '"s3://bucket/from-env"'
         try:
-            args = SimpleNamespace(wandb_artifact_storage_uri="${CHECKPOINT_BUCKET_URI}")
+            for placeholder in (
+                "${CHECKPOINT_BUCKET_URI}",
+                "$CHECKPOINT_BUCKET_URI",
+                "CHECKPOINT_BUCKET_URI",
+            ):
+                with self.subTest(placeholder=placeholder):
+                    args = SimpleNamespace(wandb_artifact_storage_uri=placeholder)
 
-            self.assertEqual(wandb_artifact_storage_uri(args), "s3://bucket/from-env")
+                    self.assertEqual(wandb_artifact_storage_uri(args), "s3://bucket/from-env")
         finally:
             if old_value is None:
                 os.environ.pop("CHECKPOINT_BUCKET_URI", None)
