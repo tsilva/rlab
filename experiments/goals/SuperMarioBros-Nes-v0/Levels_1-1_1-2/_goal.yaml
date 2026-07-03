@@ -1,0 +1,88 @@
+defaults:
+- _self_
+goal_id: "{goal_id}"
+group_id: Levels_1-1_1-2
+run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
+tags:
+- "goal_id:{goal_id}"
+- "recipe_id:{recipe_id}"
+- "env_id:{env_id}"
+- mario
+- level1-1
+- level1-2
+- mixed-state
+title: Sample-efficient SuperMarioBros-NES Levels 1-1 and 1-2 completion
+objective:
+  states:
+  - Level1-1
+  - Level1-2
+  rank:
+  - max(eval/done/level_change/from_rate/min)
+  - max(eval/done/level_change/from_rate/mean)
+  - min(leader/checkpoint/steps_to_completion_goal)
+  - max(eval/reward/mean)
+train:
+  checkpoint_freq: 500000
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
+  environment:
+    env_provider: &mario_env_provider supermariobrosnes-turbo
+    env_config:
+      <<: &mario_env_config
+        game: SuperMarioBros-Nes-v0
+        n_envs: 16
+        env_threads: 4
+        states:
+        - Level1-1
+        - Level1-2
+        state_probs:
+        - 0.5
+        - 0.5
+        task_conditioning: true
+        task_conditioning_info_vars:
+        - levelHi
+        - levelLo
+        task_conditioning_info_values:
+        - [0, 0]
+        - [0, 1]
+        frame_skip: 4
+        max_pool_frames: false
+        sticky_action_prob: 0.0
+        observation_size: 84
+        obs_crop:
+        - 32
+        - 0
+        - 0
+        - 0
+        obs_resize_algorithm: area
+        env_wrappers:
+        - id: SuperMarioBrosNesProgressInfoWrapper
+        - id: SuperMarioBrosNesRewardEnvWrapper
+          kwargs:
+            reward_mode: score
+            progress_reward_scale: 1.0
+            terminal_reward: 50
+            death_penalty: 25
+            completion_reward: 0.0
+            reward_scale: 10
+            score_progress_clipped: false
+      done_on_events:
+      - life_loss
+      - level_change
+eval:
+  environment:
+    env_provider: *mario_env_provider
+    env_config:
+      <<: *mario_env_config
+      max_episodes: 100
+      done_on_events:
+      - level_change
+release:
+  huggingface:
+    repo: "{env_id}_{goal_id}"
+    card_template: stable-retro-sb3
+    checkpoint_filename: model.zip
+    preview_filename: replay.mp4
+    include_youtube_preview: true

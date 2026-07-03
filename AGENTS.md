@@ -11,19 +11,19 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
 - Current forward runtime is `stable-retro-turbo==1.0.1.post4`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
-- Runtime pin source of truth: `pyproject.toml` and `uv.lock`. Use `uv sync --frozen`; make overrides explicit in specs, fleet policy, run descriptions, and W&B tags.
+- Runtime pin source of truth: `pyproject.toml` and `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.
 - Keep version history and benchmark conclusions in `INSTANCES.md` or experiment reports.
 
 ## Training Runs
 
-- Active research goal contracts live under goal-scoped folders in `experiments/goals/`. For current Mario Level1-1 work, read `experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml` before choosing specs, caps, metrics, or promotion criteria. Seed ranges are owned by `rlab.seeds`, not goal files.
+- Active research goal contracts live under goal-scoped folders in `experiments/goals/`. For current Mario Level1-1 work, read `experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria. Seed ranges are owned by `rlab.seeds`, not goal files.
 - Legacy goal-local `decisions/`, `recipes/`, `reports/`, `best.yml`, and old `experiments/history/` artifacts live under repo-root `.deprecated/` with their source-relative folder structure. That directory is gitignored and should be treated only as historical context about past experiments, not as active contract, recipe, or promotion state.
 - Keep generated artifacts out of source control; use `runs/`, `logs/`, and `models/`.
 - Log to W&B and upload checkpoint/final artifacts unless explicitly opted out.
 - Every training run needs a specific description via `--run-description`.
 - Queue-backed train jobs should be profileless by default: do not pass or persist a `profile_id` unless the user explicitly asks for a profile-locked lane. Lock train jobs to immutable runtime image digests instead, resolving to the latest successful train image by default when no digest is specified.
-- Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `b82-b55reval-s6-20260702T150934Z`. Keep target/scope, runtime versions, and long recipe context in W&B groups, tags, descriptions, and spec metadata rather than the run name.
+- Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `b82-b55reval-s6-20260702T150934Z`. Keep target/scope, runtime versions, and long recipe context in W&B groups, tags, descriptions, and recipe metadata rather than the run name.
 - Do not run robust evals inside remote training by default. Evaluate checkpoints out of process; promote by completion rate, then mean reward, then max x-position.
 
 ## Metrics
@@ -42,10 +42,6 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Autoresearch
 
 When the user gives a game plus target and asks Codex to find a reproducible model-training recipe, use the project-level `$autoresearch` skill in `.codex/skills/autoresearch`. That workflow is RTX4090-only, allows only reward-function and hyperparameter changes by default, and requires three fresh successful seeds before declaring the target solved.
-
-## Eval Queue
-
-When the user asks to flush unevaluated checkpoints, evaluate pending checkpoints, run the eval queue, or produce an eval database report, use the project-level `$flush-eval` skill in `.codex/skills/flush-eval`. Its default eval profile is Level 1 with no terminal-on-life.
 
 ## Dependencies
 

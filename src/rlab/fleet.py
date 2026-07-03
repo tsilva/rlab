@@ -459,19 +459,6 @@ def load_capacity_policy(repo_root: Path, path: Path | None = None) -> dict[str,
     return load_json_file(resolve_repo_path(repo_root, path, DEFAULT_CAPACITY_POLICY))
 
 
-def goal_contract_path(repo_root: Path, goal_slug: str) -> Path:
-    goals_dir = repo_root / "experiments" / "goals"
-    for filename in ("_goal.yaml", "goal.yaml"):
-        for candidate in sorted(goals_dir.rglob(f"{goal_slug}/{filename}")):
-            if ".deprecated" not in candidate.parts and candidate.is_file():
-                return candidate
-    return goals_dir / goal_slug / "goal.yaml"
-
-
-def discover_active_goal_slugs(repo_root: Path) -> tuple[str, ...]:
-    return ()
-
-
 def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> None:
     lanes = policy.get("lanes", [])
     if not isinstance(lanes, list):

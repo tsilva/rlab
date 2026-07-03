@@ -111,10 +111,10 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="rlab train",
-        description="Create queue-backed train jobs from a checked-in spec file.",
+        description="Create queue-backed train jobs from a checked-in recipe file.",
     )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-    parser.add_argument("--spec-file", type=Path, required=True)
+    parser.add_argument("--recipe-file", "--spec-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--profile", help=argparse.SUPPRESS)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(
@@ -145,14 +145,14 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
-    "train": ("enqueue train jobs from checked-in specs; use 'local' for direct training", _train),
+    "train": ("enqueue train jobs from checked-in recipes; use 'local' for direct training", _train),
     "eval": ("run local evals", _eval),
     "play": ("render a local model or W&B artifact in a GUI window", _play),
     "import-roms": ("import ROMs into the installed rlab runtime", _import_roms),
     "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
     "promote": ("gate a candidate checkpoint against a goal contract", _promote),
     "release": ("publish evaluated checkpoint winners from goal contracts", _release),
-    "validate": ("validate checked-in YAML experiments, specs, benchmarks, and ops configs", _validate),
+    "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
     "jobs": ("manage queue schema, status, cancellation, and stale jobs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "fleet": ("manage remote runner containers from queue state", _fleet),

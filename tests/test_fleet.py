@@ -120,33 +120,6 @@ def demand(
     )
 
 
-class GoalDiscoveryTests(unittest.TestCase):
-    def test_discover_active_goal_slugs_returns_empty_without_goal_runners(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            goals_dir = root / "experiments" / "goals"
-            runnable_goal = goals_dir / "runnable-goal"
-            inert_goal = goals_dir / "inert-goal"
-            runnable_goal.mkdir(parents=True)
-            inert_goal.mkdir(parents=True)
-            runnable_goal.joinpath("goal.yaml").write_text(
-                """
-execution: {}
-""",
-                encoding="utf-8",
-            )
-            inert_goal.joinpath("goal.yaml").write_text(
-                """
-execution: {}
-""",
-                encoding="utf-8",
-            )
-
-            slugs = fleet.discover_active_goal_slugs(root)
-
-        self.assertEqual(slugs, ())
-
-
 class FleetQueueTests(unittest.TestCase):
     def test_queue_demands_groups_by_profile_digest_and_target(self) -> None:
         conn = FakeConnection(

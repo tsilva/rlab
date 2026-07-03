@@ -28,8 +28,8 @@ TensorBoard-synced SB3 metrics. Post-training checkpoint eval logs `global_step`
 
 These are the first metrics to check when choosing policies.
 
-Queue-backed train specs use `selection_metrics` as an ordered list of training
-signals. Goal-owned eval specs do not define selection metrics; they only define
+Queue-backed train recipes use `selection_metrics` as an ordered list of training
+signals. Goal-owned eval settings do not define selection metrics; they only define
 the checkpoint measurement protocol. Post-training checkpoint eval writes
 canonical `eval/*` metrics to the producing W&B run with `global_step` set to
 the checkpoint timestep. W&B is the source of truth for train and eval metrics;
@@ -424,8 +424,8 @@ frame skip, action set, reward settings, termination settings, preprocessing set
 state-distribution metadata.
 
 Queue-backed training also records flat W&B config fields for leaderboard queries:
-`goal_slug`, `spec_slug`, `spec_path`, `queue_train_job_id`, `runtime_image_ref`, and
-`run_target`. Use `rlab leaders runs` for run/spec winners across seeds and
+`goal_slug`, `recipe_slug`, `recipe_path`, `queue_train_job_id`, `runtime_image_ref`, and
+`run_target`. Use `rlab leaders runs` for run/recipe winners across seeds and
 `rlab leaders checkpoints` for the best evaluated checkpoints by source run.
 
 Training logs model artifacts when W&B artifacts are enabled:

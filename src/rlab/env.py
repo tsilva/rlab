@@ -945,12 +945,6 @@ def make_fast_retro_env(config: EnvConfig | None = None, seed: int | None = None
     return env
 
 
-def make_rendered_retro_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
-    config = resolve_env_config(config or EnvConfig())
-    env = make_provider_env(config, render_mode="human")
-    return wrap_retro_env(env, config=config, seed=seed)
-
-
 def make_visual_replay_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
     config = resolve_env_config(config or EnvConfig())
     target = target_for_game(config.game)

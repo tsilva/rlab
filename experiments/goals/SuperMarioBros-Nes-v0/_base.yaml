@@ -5,14 +5,14 @@ goal_id: "{goal_id}"
 # SuperMario single-state goals intentionally map the source state from goal identity.
 template_vars:
   state: "{goal_id}"
-# Default reusable group identifier for all Super Mario specs under this goal tree.
+# Default reusable group identifier for all Super Mario recipes under this goal tree.
 group_id: "{goal_id}"
 # Default queue run name; seed and timestamp are filled when jobs are enqueued.
-run_name_template: "{group_id}_{spec_id}_s{seed}_{timestamp}"
-# Default W&B tags for queue-backed specs under this goal tree.
+run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
+# Default W&B tags for queue-backed recipes under this goal tree.
 tags:
 - "goal_id:{goal_id}"
-- "spec_id:{spec_id}"
+- "recipe_id:{recipe_id}"
 - "env_id:{env_id}"
 # Human-readable title; helps reports and operators identify the goal quickly.
 title: Sample-efficient SuperMarioBros-NES {goal_id} completion

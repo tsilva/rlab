@@ -8,14 +8,14 @@ Keep broad repo rules in the top-level runbooks:
 - `../INSTANCES.md` for the human-facing hardware runbook.
 
 Use `goals/<env-id>/` for durable goal-family contracts, provider-specific
-environment fragments named `_env-<provider>.yaml`, checked-in specs, recipe
+environment fragments named `_env-<provider>.yaml`, checked-in train recipes, recipe
 evidence, reports, and decisions. Generated local run logs and outputs belong
 under ignored paths such as `runs/`, `logs/`, `models/`, or goal-local ignored
 scratch directories.
 
 Current machine-readable research state:
 
-- `goals/`: active goal capsules, including contracts and checked-in specs.
+- `goals/`: active goal capsules, including contracts and checked-in recipes.
 - `policies/`: active fleet capacity and scheduling policies.
 - `scripts/`: active experiment utilities used by benchmark profiles and tooling.
 

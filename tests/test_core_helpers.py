@@ -3165,13 +3165,9 @@ class CommandAndArtifactTests(unittest.TestCase):
         help_text = parser.format_help()
         self.assertIn("--deterministic", help_text)
         self.assertIn("--n-envs", help_text)
+        self.assertNotIn("--record-best-video", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
-
-    def test_eval_record_best_video_is_disabled_before_work(self) -> None:
-        with patch.object(sys, "argv", ["rlab-eval", "--record-best-video"]):
-            with self.assertRaisesRegex(SystemExit, "--record-best-video is temporarily disabled"):
-                eval_main()
 
     def test_gui_playback_does_not_end_on_completion_without_env_done(self) -> None:
         self.assertFalse(
@@ -3661,7 +3657,6 @@ class EvalMetricTests(unittest.TestCase):
         )
         args.eval_dir = "runs/local_evals"
         args.eval_run_name = "unit"
-        args.record_best_video = False
         model_path = Path("model.zip")
 
         with (

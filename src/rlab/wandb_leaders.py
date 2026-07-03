@@ -42,29 +42,37 @@ WANDB_RUNS_PER_PAGE = 200
 @dataclass(frozen=True)
 class RunScore:
     goal_slug: str
-    spec_slug: str
+    recipe_slug: str
     run_id: str
     run_name: str
     url: str
     seed: int | None
     objective: float
 
+    @property
+    def spec_slug(self) -> str:
+        return self.recipe_slug
+
 
 @dataclass(frozen=True)
 class RunLeader:
     goal_slug: str
-    spec_slug: str
+    recipe_slug: str
     seeds: int
     worst_seed: float
     mean_seed: float
     best_seed: float
     runs: tuple[RunScore, ...]
 
+    @property
+    def spec_slug(self) -> str:
+        return self.recipe_slug
+
 
 @dataclass(frozen=True)
 class CheckpointLeader:
     goal_slug: str
-    spec_slug: str
+    recipe_slug: str
     run_id: str
     run_name: str
     url: str
@@ -76,6 +84,10 @@ class CheckpointLeader:
     checkpoint_step: int | None
     artifact_ref: str
     eval_source: str
+
+    @property
+    def spec_slug(self) -> str:
+        return self.recipe_slug
 
 
 def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
@@ -186,12 +198,12 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
         _tag_value(tags, "goal_id:"),
         _tag_value(tags, "goal:"),
     )
-    spec_slug = _first_text(config.get("spec_slug"), getattr(run, "group", ""))
-    if not goal_slug or not spec_slug:
+    recipe_slug = _first_text(config.get("recipe_slug"), config.get("spec_slug"), getattr(run, "group", ""))
+    if not goal_slug or not recipe_slug:
         return None
     return RunScore(
         goal_slug=goal_slug,
-        spec_slug=spec_slug,
+        recipe_slug=recipe_slug,
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
@@ -203,10 +215,10 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
 def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[RunLeader]:
     grouped: dict[tuple[str, str], list[RunScore]] = defaultdict(list)
     for score in scores:
-        grouped[(score.goal_slug, score.spec_slug)].append(score)
+        grouped[(score.goal_slug, score.recipe_slug)].append(score)
 
     leaders: list[RunLeader] = []
-    for (goal_slug, spec_slug), group_scores in grouped.items():
+    for (goal_slug, recipe_slug), group_scores in grouped.items():
         if len(group_scores) < min_seeds:
             continue
         ordered_runs = tuple(sorted(group_scores, key=lambda item: item.objective, reverse=True))
@@ -214,7 +226,7 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
         leaders.append(
             RunLeader(
                 goal_slug=goal_slug,
-                spec_slug=spec_slug,
+                recipe_slug=recipe_slug,
                 seeds=len(ordered_runs),
                 worst_seed=min(values),
                 mean_seed=mean(values),
@@ -252,7 +264,7 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
             _tag_value(tags, "goal_id:"),
             _tag_value(tags, "goal:"),
         ),
-        spec_slug=_first_text(config.get("spec_slug"), getattr(run, "group", "")),
+        recipe_slug=_first_text(config.get("recipe_slug"), config.get("spec_slug"), getattr(run, "group", "")),
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
@@ -309,17 +321,17 @@ def print_json(rows: Sequence[Any]) -> None:
 
 
 def print_run_leaders(rows: Sequence[RunLeader]) -> None:
-    print("goal_slug\tspec_slug\tseeds\tworst_seed\tmean_seed\tbest_seed")
+    print("goal_slug\trecipe_slug\tseeds\tworst_seed\tmean_seed\tbest_seed")
     for row in rows:
         print(
-            f"{row.goal_slug}\t{row.spec_slug}\t{row.seeds}\t"
+            f"{row.goal_slug}\t{row.recipe_slug}\t{row.seeds}\t"
             f"{row.worst_seed:.6g}\t{row.mean_seed:.6g}\t{row.best_seed:.6g}"
         )
 
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
     print(
-        "goal_slug\tspec_slug\tcompletion_min\tcompletion_mean\tsteps_to_goal\t"
+        "goal_slug\trecipe_slug\tcompletion_min\tcompletion_mean\tsteps_to_goal\t"
         "reward\tmax_x\tstep\trun\tartifact_ref"
     )
     for row in rows:
@@ -329,7 +341,7 @@ def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
             else ""
         )
         print(
-            f"{row.goal_slug}\t{row.spec_slug}\t{row.completion_rate:.6g}\t"
+            f"{row.goal_slug}\t{row.recipe_slug}\t{row.completion_rate:.6g}\t"
             f"{row.completion_rate_mean:.6g}\t{steps_to_goal}\t{row.reward_mean:.6g}\t"
             f"{row.max_x_max:.6g}\t"
             f"{row.checkpoint_step or ''}\t{row.run_name}\t{row.artifact_ref}"
@@ -365,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    runs = subparsers.add_parser("runs", help="Rank run/spec winners across seeds from W&B.")
+    runs = subparsers.add_parser("runs", help="Rank run/recipe winners across seeds from W&B.")
     add_common_args(runs, suppress_defaults=True)
     runs.add_argument("--min-seeds", type=int, default=1)
     runs.add_argument(

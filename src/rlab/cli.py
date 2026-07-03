@@ -106,6 +106,8 @@ TRAIN_VALUE_OPTIONS = {
     "runtime_image_ref": "--runtime-image-ref",
     "run_target": "--run-target",
     "goal_slug": "--goal-slug",
+    "recipe_slug": "--recipe-slug",
+    "recipe_path": "--recipe-path",
     "spec_slug": "--spec-slug",
     "spec_path": "--spec-path",
     "queue_train_job_id": "--queue-train-job-id",
@@ -606,8 +608,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Canonical compute target recorded as run metadata; does not affect training.",
     )
     parser.add_argument("--goal-slug", default="", help="Research goal slug recorded in W&B config.")
-    parser.add_argument("--spec-slug", default="", help="Experiment spec slug recorded in W&B config.")
-    parser.add_argument("--spec-path", default="", help="Experiment spec path recorded in W&B config.")
+    parser.add_argument("--recipe-slug", default="", help="Experiment recipe slug recorded in W&B config.")
+    parser.add_argument("--recipe-path", default="", help="Experiment recipe path recorded in W&B config.")
+    parser.add_argument("--spec-slug", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--spec-path", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--queue-train-job-id",
         type=int,

@@ -396,7 +396,7 @@ def payload_from_row(
         payload = {key: value for key, value in row.items() if key not in {"job_payload", "result_payload"}}
     context = {
         "goal_slug": row.get("goal_slug"),
-        "spec_slug": row.get("spec_slug"),
+        "recipe_slug": row.get("recipe_slug") or row.get("spec_slug"),
     }
     return {
         "table": table,
@@ -533,7 +533,7 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "details": {
             "goal": row.get("goal_slug") or "",
-            "spec": row.get("spec_slug") or "",
+            "recipe": row.get("recipe_slug") or row.get("spec_slug") or "",
             "profile": profile_label(profile),
             "device": device,
             "container": container,

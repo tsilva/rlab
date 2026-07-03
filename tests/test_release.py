@@ -111,7 +111,7 @@ class ReleaseModelCardTests(unittest.TestCase):
         )
         leader = SimpleNamespace(
             goal_slug="Level1-1",
-            spec_slug="b55",
+            recipe_slug="b55",
             run_id="abc123",
             run_name="b272-l11-b55-s1-20260703T000000Z",
             url="https://wandb.ai/tsilva/SuperMarioBros-NES/runs/abc123",
@@ -186,7 +186,7 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("| `action_set` | `simple` |", content)
         self.assertIn("| `reward_shaping` | reward_mode=`score` |", content)
         self.assertIn("| `done_on_events` | goal-specific termination |", content)
-        self.assertIn("| `spec_id` | `b55` |", content)
+        self.assertIn("| `recipe_id` | `b55` |", content)
         self.assertIn("| `max_episode_steps` |  |", content)
         self.assertNotIn("| `wandb_run` |", pre_quick_start)
         self.assertNotIn("| `wandb_artifact` |", pre_quick_start)

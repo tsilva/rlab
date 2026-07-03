@@ -136,14 +136,14 @@ def valid_train_spec() -> dict:
     return {
         "schema_version": 1,
         "goal": {"goal_id": "Level1-1"},
-        "spec_id": "candidate",
+        "recipe_id": "candidate",
         "description": (
             "Candidate seed {seed} reproduces the expected completion signal and was created "
             "to rank by completion rate, then reward."
         ),
         "seeds": [23, 24],
         "group_id": "b-test",
-        "run_name_template": "{group_id}_{spec_id}_s{seed}_{timestamp}",
+        "run_name_template": "{group_id}_{recipe_id}_s{seed}_{timestamp}",
         "tags": ["b55", "confirm"],
         "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": {
@@ -450,18 +450,18 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("run_target TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("train_jobs_runtime_claim_idx", job_queue.SCHEMA_SQL)
 
-    def test_load_spec_document_validates_schema_and_preserves_extra_fields(self) -> None:
+    def test_load_recipe_document_validates_schema_and_preserves_extra_fields(self) -> None:
         spec = valid_train_spec()
         spec["operator_note"] = {"why": "kept outside the formal schema for now"}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.json"
             path.write_text(json.dumps(spec), encoding="utf-8")
 
-            loaded = job_queue.load_spec_document(path)
+            loaded = job_queue.load_recipe_document(path)
 
         self.assertEqual(loaded["operator_note"], {"why": "kept outside the formal schema for now"})
 
-    def test_load_spec_document_resolves_hydra_defaults_and_materializes_train_config(self) -> None:
+    def test_load_recipe_document_resolves_hydra_defaults_and_materializes_train_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             recipe = root / "recipes" / "base.yaml"
@@ -500,7 +500,7 @@ defaults:
 - _self_
 goal:
   goal_id: Level1-1
-spec_id: candidate
+recipe_id: candidate
 description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23, 24]
 run_target: rtx4090
@@ -517,7 +517,7 @@ overrides:
                 encoding="utf-8",
             )
 
-            loaded = job_queue.load_spec_document(spec)
+            loaded = job_queue.load_recipe_document(spec)
 
         self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(loaded["train_config"]["state"], "Level1-1")
@@ -530,11 +530,11 @@ overrides:
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
         self.assertEqual(len(loaded["_composition"]["source_files"]), 2)
 
-    def test_load_spec_document_renders_template_vars_before_queue_payload(self) -> None:
+    def test_load_recipe_document_renders_template_vars_before_queue_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "SuperMarioBros-Nes-v0" / "Level1-2"
-            spec_dir = goal_dir / "specs"
+            spec_dir = goal_dir / "recipes"
             spec_dir.mkdir(parents=True)
             (goal_dir.parent / "_base.yaml").write_text(
                 """
@@ -606,14 +606,14 @@ title: "{goal_id} completion"
 defaults:
 - ../_goal@goal
 - _self_
-spec_id: candidate
+recipe_id: candidate
 template_vars:
   batch_id: b272
   recipe: b55
 description: "{goal_id} {recipe} seed {seed} transfer run created to validate recipe transfer."
 group_id: "{batch_id}-{level_short}-{recipe}"
-run_name_template: "{group_id}_{spec_id}_s{seed}_{timestamp}"
-tags: ["goal_id:{goal_id}", "spec_id:{spec_id}", "env_id:{env_id}"]
+run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
+tags: ["goal_id:{goal_id}", "recipe_id:{recipe_id}", "env_id:{env_id}"]
 selection_metrics: [eval/reward/mean]
 train:
   policy:
@@ -626,7 +626,7 @@ logging:
                 encoding="utf-8",
             )
 
-            loaded = job_queue.load_spec_document(spec)
+            loaded = job_queue.load_recipe_document(spec)
 
         self.assertFalse(contains_key(loaded, "template_vars"))
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-2")
@@ -635,7 +635,7 @@ logging:
             loaded["tags"],
             [
                 "goal_id:Level1-2",
-                "spec_id:candidate",
+                "recipe_id:candidate",
                 "env_id:SuperMarioBros-Nes-v0",
             ],
         )
@@ -648,7 +648,7 @@ logging:
             "model.zip",
         )
 
-    def test_load_spec_document_materializes_first_class_environment_identity(self) -> None:
+    def test_load_recipe_document_materializes_first_class_environment_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.yaml"
             path.write_text(
@@ -657,7 +657,7 @@ schema_version: 1
 kind: train_experiment
 goal:
   goal_id: Level1-1
-spec_id: candidate
+recipe_id: candidate
 description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23]
 run_target: rtx4090
@@ -692,7 +692,7 @@ logging:
                 encoding="utf-8",
             )
 
-            loaded = job_queue.load_spec_document(path)
+            loaded = job_queue.load_recipe_document(path)
 
         self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(loaded["train_config"]["state"], "Level1-1")
@@ -712,7 +712,7 @@ logging:
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_resize"], [84, 84])
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
 
-    def test_load_spec_document_materializes_env_config_environment(self) -> None:
+    def test_load_recipe_document_materializes_env_config_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.yaml"
             path.write_text(
@@ -721,7 +721,7 @@ schema_version: 1
 kind: train_experiment
 goal:
   goal_id: Level1-1
-spec_id: candidate
+recipe_id: candidate
 description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23]
 run_target: rtx4090
@@ -754,7 +754,7 @@ logging:
                 encoding="utf-8",
             )
 
-            loaded = job_queue.load_spec_document(path)
+            loaded = job_queue.load_recipe_document(path)
 
         self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(loaded["train_config"]["env_provider"], "stable-retro-turbo")
@@ -773,11 +773,11 @@ logging:
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
 
-    def test_load_spec_document_inherits_goal_owned_contract_fields(self) -> None:
+    def test_load_recipe_document_inherits_goal_owned_contract_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "Level1-1"
-            specs_dir = goal_dir / "specs"
+            specs_dir = goal_dir / "recipes"
             specs_dir.mkdir(parents=True)
             goal_dir.joinpath("_goal.yaml").write_text(
                 """
@@ -826,7 +826,7 @@ schema_version: 1
 defaults:
 - ../_goal@goal
 - _self_
-spec_id: candidate
+recipe_id: candidate
 description: Candidate seed {seed} inherits the goal contract and was created to verify queue materialization of env identity and training policy.
 seeds: [23]
 group_id: b-test
@@ -850,7 +850,7 @@ train_config:
             )
 
             source_spec = yaml.safe_load(spec.read_text(encoding="utf-8"))
-            loaded = job_queue.load_spec_document(spec)
+            loaded = job_queue.load_recipe_document(spec)
 
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-1")
         self.assertNotIn("goal", source_spec)
@@ -890,7 +890,7 @@ train_config:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "Level1-1"
-            specs_dir = goal_dir / "specs"
+            specs_dir = goal_dir / "recipes"
             specs_dir.mkdir(parents=True)
             goal_dir.joinpath("_goal.yaml").write_text(
                 """
@@ -926,7 +926,7 @@ schema_version: 1
 defaults:
 - ../_goal@goal
 - _self_
-spec_id: candidate
+recipe_id: candidate
 description: Candidate seed {seed} disables native terminal boundaries and was created to verify spec overrides on the goal contract.
 seeds: [23]
 group_id: b-test
@@ -945,12 +945,12 @@ logging:
                 encoding="utf-8",
             )
 
-            loaded = job_queue.load_spec_document(spec)
+            loaded = job_queue.load_recipe_document(spec)
 
         self.assertEqual(loaded["train"]["environment"]["env_config"]["done_on_events"], [])
         self.assertEqual(loaded["train_config"]["done_on_events"], [])
 
-    def test_load_spec_document_rejects_missing_mandatory_schema_field(self) -> None:
+    def test_load_recipe_document_rejects_missing_mandatory_schema_field(self) -> None:
         spec = valid_train_spec()
         del spec["description"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -958,9 +958,9 @@ logging:
             path.write_text(json.dumps(spec), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "description"):
-                job_queue.load_spec_document(path)
+                job_queue.load_recipe_document(path)
 
-    def test_load_spec_document_rejects_missing_explicit_train_timestep(self) -> None:
+    def test_load_recipe_document_rejects_missing_explicit_train_timestep(self) -> None:
         spec = valid_train_spec()
         del spec["train_config"]["timesteps"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -968,9 +968,9 @@ logging:
             path.write_text(json.dumps(spec), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "train_config.timesteps"):
-                job_queue.load_spec_document(path)
+                job_queue.load_recipe_document(path)
 
-    def test_load_spec_document_rejects_removed_spec_fields(self) -> None:
+    def test_load_recipe_document_rejects_removed_spec_fields(self) -> None:
         for field in (
             "hypothesis",
             "parent_spec_slug",
@@ -987,10 +987,10 @@ logging:
                     path = Path(tmp) / "candidate.json"
                     path.write_text(json.dumps(spec), encoding="utf-8")
 
-                    with self.assertRaisesRegex(ValueError, "removed train spec field"):
-                        job_queue.load_spec_document(path)
+                    with self.assertRaisesRegex(ValueError, "removed train recipe field"):
+                        job_queue.load_recipe_document(path)
 
-    def test_enqueue_train_jobs_from_spec_document_derives_short_run_name(self) -> None:
+    def test_enqueue_train_jobs_from_recipe_document_derives_short_run_name(self) -> None:
         calls = []
 
         def fake_enqueue(conn, **kwargs):
@@ -1001,14 +1001,14 @@ logging:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.json"
             path.write_text(json.dumps(spec), encoding="utf-8")
-            document = job_queue.load_spec_document(path)
+            document = job_queue.load_recipe_document(path)
 
         old_enqueue = job_queue.enqueue_train_job
         old_utc = job_queue._utc_stamp
         job_queue.enqueue_train_job = fake_enqueue
         job_queue._utc_stamp = lambda: "20260626T120000Z"
         try:
-            rows = job_queue.enqueue_train_jobs_from_spec_document(
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -1026,7 +1026,7 @@ logging:
             ["b-test_candidate_s23_20260626T120000Z", "b-test_candidate_s24_20260626T120000Z"],
         )
 
-    def test_enqueue_train_jobs_from_spec_document_uses_run_name_template(self) -> None:
+    def test_enqueue_train_jobs_from_recipe_document_uses_run_name_template(self) -> None:
         calls = []
 
         def fake_enqueue(conn, **kwargs):
@@ -1041,7 +1041,7 @@ logging:
         job_queue.enqueue_train_job = fake_enqueue
         job_queue._utc_stamp = lambda: "20260702T150934Z"
         try:
-            rows = job_queue.enqueue_train_jobs_from_spec_document(
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -1060,21 +1060,21 @@ logging:
             ["b82-l11-b55-post21-revalidate_candidate_s6_20260702T150934Z"],
         )
 
-    def test_checked_in_goal_yaml_specs_match_train_spec_schema(self) -> None:
-        spec_paths = sorted(Path("experiments/goals").rglob("specs/*.y*ml"))
-        self.assertGreater(len(spec_paths), 0)
-        for path in spec_paths:
+    def test_checked_in_goal_yaml_recipes_match_train_recipe_schema(self) -> None:
+        recipe_paths = sorted(Path("experiments/goals").rglob("recipes/*.y*ml"))
+        self.assertGreater(len(recipe_paths), 0)
+        for path in recipe_paths:
             with self.subTest(path=str(path)):
-                job_queue.load_spec_document(path)
+                job_queue.load_recipe_document(path)
 
-    def test_active_level1_1_specs_configure_goal_metric_early_stop(self) -> None:
-        spec_paths = sorted(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs").glob("*.yaml")
+    def test_active_level1_1_recipes_configure_goal_metric_early_stop(self) -> None:
+        recipe_paths = sorted(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes").glob("*.yaml")
         )
-        self.assertGreater(len(spec_paths), 0)
-        for path in spec_paths:
+        self.assertGreater(len(recipe_paths), 0)
+        for path in recipe_paths:
             with self.subTest(path=str(path)):
-                spec = job_queue.load_spec_document(path)
+                spec = job_queue.load_recipe_document(path)
                 train_config = spec["train_config"]
                 self.assertEqual(
                     train_config["early_stop"],
@@ -1087,23 +1087,33 @@ logging:
                     ],
                 )
 
-    def test_active_goal_tree_only_keeps_level1_1_specs(self) -> None:
-        level1_1 = job_queue.load_spec_document(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
+    def test_active_goal_tree_lists_checked_in_mario_specs(self) -> None:
+        level1_1 = job_queue.load_recipe_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml")
         )
         self.assertEqual(
             level1_1["group_id"],
             "Level1-1",
         )
+        mixed = job_queue.load_recipe_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/recipes/base.yaml")
+        )
+        mixed_train_config = mixed["train_config"]
+        self.assertEqual(mixed["group_id"], "Levels_1-1_1-2")
+        self.assertEqual(mixed_train_config["states"], ["Level1-1", "Level1-2"])
+        self.assertEqual(mixed_train_config["state_probs"], [0.5, 0.5])
+        self.assertTrue(mixed_train_config["task_conditioning"])
+        self.assertEqual(mixed_train_config["advantage_normalization"], "per-task")
         active_specs = sorted(
             str(path)
-            for path in Path("experiments/goals/SuperMarioBros-Nes-v0").glob("*/specs/*.yaml")
+            for path in Path("experiments/goals/SuperMarioBros-Nes-v0").glob("*/recipes/*.yaml")
         )
         self.assertEqual(
             active_specs,
             [
-                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
-                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/no-terminal.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/no-terminal.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/recipes/base.yaml",
             ],
         )
 
@@ -1378,22 +1388,22 @@ logging:
     def test_train_parser_uses_spec_file_for_train_enqueue(self) -> None:
         args = rlab_main.build_train_enqueue_parser().parse_args(
             [
-                "--spec-file",
-                "experiments/goals/example/specs/candidate.yaml",
+                "--recipe-file",
+                "experiments/goals/example/recipes/candidate.yaml",
                 "--runtime-image-ref-file",
                 "rlab-train-image.json",
             ]
         )
 
-        self.assertEqual(args.spec_file, Path("experiments/goals/example/specs/candidate.yaml"))
+        self.assertEqual(args.recipe_file, Path("experiments/goals/example/recipes/candidate.yaml"))
 
     def test_jobs_parser_no_longer_owns_train_enqueue(self) -> None:
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
             job_queue.build_parser().parse_args(
                 [
                     "enqueue-train",
-                    "--spec-file",
-                    "experiments/goals/example/specs/candidate.yaml",
+                    "--recipe-file",
+                    "experiments/goals/example/recipes/candidate.yaml",
                 ]
             )
 
@@ -1475,12 +1485,12 @@ logging:
                 },
                 "done_on_events": "life_loss,level_change",
             }
-            rows = job_queue.enqueue_train_jobs_from_spec_document(
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
-                spec_path="experiments/goals/mario/specs/candidate.yaml",
-                spec_sha256="abc123",
+                recipe_path="experiments/goals/mario/recipes/candidate.yaml",
+                recipe_sha256="abc123",
                 repo_git_commit="deadbeef",
                 repo_dirty=True,
                 instances_path=Path("/tmp/does-not-exist.json"),
@@ -1508,30 +1518,30 @@ logging:
         self.assertEqual(calls[0]["spec_slug"], "candidate")
         self.assertIsNone(calls[0]["profile_id"])
         self.assertIsNone(calls[0]["run_target"])
-        self.assertEqual(calls[0]["spec_path"], "experiments/goals/mario/specs/candidate.yaml")
+        self.assertEqual(calls[0]["spec_path"], "experiments/goals/mario/recipes/candidate.yaml")
         self.assertEqual(calls[0]["spec_sha256"], "abc123")
         self.assertEqual(calls[0]["repo_git_commit"], "deadbeef")
         self.assertTrue(calls[0]["repo_dirty"])
         self.assertEqual(calls[0]["spec_payload"]["operator_note"], "non-schema metadata persists")
 
-    def test_enqueue_train_jobs_from_spec_document_rejects_wrong_schema_version(self) -> None:
+    def test_enqueue_train_jobs_from_recipe_document_rejects_wrong_schema_version(self) -> None:
         document = copy.deepcopy(valid_train_spec())
         document["schema_version"] = 2
 
         with self.assertRaisesRegex(ValueError, "schema_version"):
-            job_queue.enqueue_train_jobs_from_spec_document(
+            job_queue.enqueue_train_jobs_from_recipe_document(
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 instances_path=Path("/tmp/does-not-exist.json"),
             )
 
-    def test_enqueue_train_jobs_from_spec_document_rejects_eval_reserved_seed(self) -> None:
+    def test_enqueue_train_jobs_from_recipe_document_rejects_eval_reserved_seed(self) -> None:
         document = copy.deepcopy(valid_train_spec())
         document["seeds"] = [DEFAULT_EVAL_SEED]
 
         with self.assertRaisesRegex(ValueError, "reserved for eval"):
-            job_queue.enqueue_train_jobs_from_spec_document(
+            job_queue.enqueue_train_jobs_from_recipe_document(
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -1890,7 +1900,7 @@ class TrainRunnerTests(unittest.TestCase):
             },
             "goal_slug": "Level1-1",
             "spec_slug": "base",
-            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
+            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
             "run_name": "lowkl_seed23",
             "run_description": "Codex-authored smoke job.",
             "wandb_group": "level1-1-lowkl-lrdecay",
@@ -1907,13 +1917,13 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,goal_id:Level1-1,spec_id:base,level_id:Level1-1",
+            "screen,goal_id:Level1-1,recipe_id:base,level_id:Level1-1",
         )
         self.assertEqual(written_config["goal_slug"], "Level1-1")
-        self.assertEqual(written_config["spec_slug"], "base")
+        self.assertEqual(written_config["recipe_slug"], "base")
         self.assertEqual(
-            written_config["spec_path"],
-            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
+            written_config["recipe_path"],
+            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
         )
         self.assertEqual(written_config["queue_train_job_id"], 12)
         self.assertEqual(written_config["run_name"], "lowkl_seed23")

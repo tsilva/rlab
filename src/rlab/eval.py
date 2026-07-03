@@ -184,14 +184,6 @@ def evaluate_checkpoint(
         )
     )
     eval_seed = eval_seed_for_checkpoint(args)
-    video_path = (
-        Path(args.eval_dir)
-        / args.eval_run_name
-        / "videos"
-        / f"best_episode_{checkpoint_step}_steps.mp4"
-        if args.record_best_video
-        else None
-    )
     metrics, video_path = evaluate_model_episodes(
         model=model,
         config=config,
@@ -200,8 +192,8 @@ def evaluate_checkpoint(
         max_steps=args.max_steps,
         deterministic=eval_deterministic(args),
         n_envs=args.n_envs,
-        capture_best_video=args.record_best_video,
-        video_path=video_path,
+        capture_best_video=False,
+        video_path=None,
         video_fps=args.video_fps,
         video_scale=args.video_scale,
         progress=args.progress,
@@ -441,11 +433,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use deterministic argmax actions instead of stochastic policy sampling.",
     )
-    parser.add_argument(
-        "--record-best-video",
-        action="store_true",
-        help="Temporarily disabled for rlab eval.",
-    )
     parser.add_argument("--video-fps", type=float, default=30.0)
     parser.add_argument("--video-scale", type=int, default=4)
     parser.add_argument("--wandb-run-id")
@@ -478,8 +465,6 @@ def run_checkpoint_artifact_eval(
         raise SystemExit("--episodes must be >= 1")
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
-    if args.record_best_video:
-        raise SystemExit("--record-best-video is temporarily disabled for rlab eval")
     args.eval_run_name = artifact_eval_name(args)
     artifacts = find_model_artifacts(args)
     if not artifacts:
@@ -585,8 +570,6 @@ def main(argv: list[str] | None = None) -> None:
     args.seed = validate_eval_seed(args.seed)
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
-    if args.record_best_video:
-        raise SystemExit("--record-best-video is temporarily disabled for rlab eval")
     if args.artifact or args.artifact_run or single_model_artifact_ref(args):
         run_checkpoint_artifact_eval(args, parser, parser_defaults, explicit_dests)
         return

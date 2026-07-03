@@ -18,7 +18,7 @@ from rlab.env import EnvConfig
 from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
-from rlab.job_queue import load_spec_document
+from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
 
 
@@ -27,9 +27,9 @@ ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_prov
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
-        {"group_id", "seed", "spec_id", "timestamp", "utc"}
+        {"group_id", "seed", "recipe_id", "spec_id", "timestamp", "utc"}
     ),
-    ("tags", "1"): frozenset({"slug", "spec_id", "spec_slug"}),
+    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug", "spec_id", "spec_slug"}),
     (
         "release",
         "huggingface",
@@ -805,14 +805,14 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
             issues, path, repo_root, lambda path=path: validate_goal_contract(path, repo_root)
         )
 
-    specs = sorted(
+    recipes = sorted(
         path
-        for path in (experiments_dir / "goals").rglob("specs/*.yaml")
+        for path in (experiments_dir / "goals").rglob("recipes/*.yaml")
         if _active_experiment_path(path)
     )
-    counts["train_specs"] = len(specs)
-    for path in specs:
-        _capture_issue(issues, path, repo_root, lambda path=path: load_spec_document(path))
+    counts["train_recipes"] = len(recipes)
+    for path in recipes:
+        _capture_issue(issues, path, repo_root, lambda path=path: load_recipe_document(path))
 
     env_configs = sorted(
         path
@@ -876,7 +876,7 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab validate",
-        description="Validate checked-in YAML experiment, goal, spec, benchmark, and ops configs.",
+        description="Validate checked-in YAML experiment, goal, recipe, benchmark, and ops configs.",
     )
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")

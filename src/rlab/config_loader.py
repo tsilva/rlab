@@ -88,14 +88,14 @@ def _environment_template_context_from_document(document: Mapping[str, Any]) -> 
 def template_context_from_path(
     path: Path, document: Mapping[str, Any] | None = None
 ) -> dict[str, str]:
-    """Build stable template variables from a goal/spec path and optional document."""
+    """Build stable template variables from a goal/recipe path and optional document."""
 
     resolved = path.resolve()
     goal_id = ""
     game = ""
-    spec_slug = ""
-    if resolved.parent.name == "specs":
-        spec_slug = resolved.stem
+    recipe_slug = ""
+    if resolved.parent.name in {"recipes", "specs"}:
+        recipe_slug = resolved.stem
         goal_id = resolved.parent.parent.name
         game = (
             resolved.parent.parent.parent.name
@@ -122,10 +122,11 @@ def template_context_from_path(
             or _concrete_template_source(document.get("goal_slug"))
             or goal_id
         )
-        spec_slug = (
-            _concrete_template_source(document.get("spec_id"))
+        recipe_slug = (
+            _concrete_template_source(document.get("recipe_id"))
+            or _concrete_template_source(document.get("spec_id"))
             or _concrete_template_source(document.get("slug"))
-            or spec_slug
+            or recipe_slug
         )
 
     game_slug = slugify_template_value(game)
@@ -147,9 +148,11 @@ def template_context_from_path(
             "goal_slug": goal_id,
             "level_short": level_short,
             "level_tag": goal_slug,
-            "slug": spec_slug,
-            "spec_id": spec_slug,
-            "spec_slug": spec_slug,
+            "slug": recipe_slug,
+            "recipe_id": recipe_slug,
+            "recipe_slug": recipe_slug,
+            "spec_id": recipe_slug,
+            "spec_slug": recipe_slug,
         }.items()
         if value
     }

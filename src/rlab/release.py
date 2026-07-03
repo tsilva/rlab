@@ -371,7 +371,7 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 | Setting | Value |
 |---|---:|
 | `goal_id` | `{goal["goal_id"]}` |
-| `spec_id` | `{leader.spec_slug}` |
+| `recipe_id` | `{leader.recipe_slug}` |
 | `checkpoint_step` | {checkpoint_step} |
 | `frame_skip` | {frame_skip} |
 | `max_episode_steps` | {max_episode_steps} |

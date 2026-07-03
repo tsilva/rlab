@@ -167,7 +167,12 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             _require_int(config, "timesteps", label=f"{label}.train_config")
 
     if kind == "fleet_capacity":
-        _require_string(payload, "spec_file", label=label)
+        if not payload.get("recipe_file") and not payload.get("spec_file"):
+            raise ValueError(f"{label}.recipe_file must be a non-empty string")
+        if payload.get("recipe_file"):
+            _require_string(payload, "recipe_file", label=label)
+        else:
+            _require_string(payload, "spec_file", label=label)
         _require_string(payload, "runtime_image_ref_file", label=label)
 
     if kind == "eval_contract":
@@ -315,6 +320,7 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
 
 
 def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+    recipe_file = str(profile.get("recipe_file") or profile.get("spec_file"))
     commands = [
         _command(
             "enqueue-train",
@@ -323,8 +329,8 @@ def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                 "-m",
                 "rlab.main",
                 "train",
-                "--spec-file",
-                str(profile["spec_file"]),
+                "--recipe-file",
+                recipe_file,
                 "--runtime-image-ref-file",
                 str(profile["runtime_image_ref_file"]),
             ],
@@ -351,8 +357,6 @@ def _eval_contract_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand
         argv.extend(["--artifact", str(profile["artifact_ref"])])
     else:
         argv.extend(["--model", str(profile["model_path"])])
-    if profile.get("record_best_video"):
-        argv.append("--record-best-video")
     return [_command("eval-contract", argv)]
 
 

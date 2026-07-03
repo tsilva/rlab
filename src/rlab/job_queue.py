@@ -37,7 +37,11 @@ from rlab.runtime_refs import (
     runtime_image_ref_from_file,
 )
 from rlab.seeds import validate_training_seed
-from rlab.spec_schema import require_explicit_queue_train_config, validate_train_spec_schema
+from rlab.spec_schema import (
+    require_explicit_queue_train_config,
+    train_recipe_id,
+    validate_train_recipe_schema,
+)
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -58,7 +62,9 @@ PROVIDER_OWNED_INFO_EVENTS = {
     "supermariobrosnes-turbo": frozenset({"life_loss", "level_change"}),
 }
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
-QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "spec_id", "timestamp", "utc"})
+QUEUE_TEMPLATE_FIELDS = frozenset(
+    {"group_id", "seed", "recipe_id", "spec_id", "timestamp", "utc"}
+)
 SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
@@ -78,7 +84,7 @@ SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
 }
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     **SPEC_DEFERRED_TEMPLATE_FIELDS,
-    ("tags", "1"): frozenset({"slug", "spec_id", "spec_slug"}),
+    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug", "spec_id", "spec_slug"}),
 }
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
     {
@@ -595,7 +601,7 @@ def _merge_train_config_sections(
 def _infer_goal_slug_from_path(path: Path) -> str:
     parts = path.parts
     for index, part in enumerate(parts):
-        if part == "specs" and index > 0:
+        if part in {"recipes", "specs"} and index > 0:
             return parts[index - 1]
     for index, part in enumerate(parts):
         if part == "goals" and index + 1 < len(parts):
@@ -614,19 +620,19 @@ def _goal_slug_from_value(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _goal_slug_for_spec(path: Path, document: Mapping[str, Any]) -> str:
+def _goal_slug_for_recipe(path: Path, document: Mapping[str, Any]) -> str:
     explicit = _goal_slug_from_value(document.get("goal")) or _goal_slug_from_value(
         document.get("goal_slug")
     )
     return explicit or _infer_goal_slug_from_path(path)
 
 
-def _goal_composition_for_spec(path: Path, document: Mapping[str, Any]) -> ComposedDocument | None:
-    goal_slug = _goal_slug_for_spec(path, document)
+def _goal_composition_for_recipe(path: Path, document: Mapping[str, Any]) -> ComposedDocument | None:
+    goal_slug = _goal_slug_for_recipe(path, document)
     if not goal_slug:
         return None
     inferred_path = path.resolve()
-    if inferred_path.parent.name == "specs":
+    if inferred_path.parent.name in {"recipes", "specs"}:
         goal_dir = inferred_path.parent.parent
         for filename in ("_goal.yaml", "goal.yaml"):
             candidate = goal_dir / filename
@@ -661,7 +667,7 @@ def _materialize_goal_owned_fields(
     goal_composition: ComposedDocument | None = None,
 ) -> Mapping[str, Any] | None:
     if goal_composition is None and path is not None:
-        goal_composition = _goal_composition_for_spec(path, materialized)
+        goal_composition = _goal_composition_for_recipe(path, materialized)
     if goal_composition is None:
         return None
     goal_document = goal_composition.document
@@ -712,11 +718,11 @@ def _materialize_goal_queue_defaults(
                 materialized["tags"] = render_template_vars(
                     {"tags": materialized["tags"]},
                     path=path,
-                    label=f"goal tags for spec file {path}",
+                    label=f"goal tags for recipe file {path}",
                 )["tags"]
 
 
-def materialize_train_spec_document(
+def materialize_train_recipe_document(
     document: Mapping[str, Any],
     *,
     path: Path | None = None,
@@ -739,7 +745,20 @@ def materialize_train_spec_document(
     return materialized
 
 
-def _spec_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
+def materialize_train_spec_document(
+    document: Mapping[str, Any],
+    *,
+    path: Path | None = None,
+    goal_composition: ComposedDocument | None = None,
+) -> dict[str, Any]:
+    return materialize_train_recipe_document(
+        document,
+        path=path,
+        goal_composition=goal_composition,
+    )
+
+
+def _recipe_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
     return [
         {
             "path": str(source),
@@ -760,19 +779,19 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
             assert_no_template_vars(nested, label=f"{label}[{index}]")
 
 
-def load_spec_document(path: Path) -> dict[str, Any]:
-    composed = load_composed_mapping(path, cycle_label="spec")
+def load_recipe_document(path: Path) -> dict[str, Any]:
+    composed = load_composed_mapping(path, cycle_label="recipe")
     document = render_template_vars(
         composed.document,
         path=path,
-        label=f"spec file {path}",
+        label=f"recipe file {path}",
         deferred_fields_by_path=SPEC_DEFERRED_TEMPLATE_FIELDS,
     )
     sources = list(composed.sources)
-    goal_composition = _goal_composition_for_spec(path, document)
+    goal_composition = _goal_composition_for_recipe(path, document)
     if goal_composition is not None:
         sources = [*goal_composition.sources, *sources]
-    document = materialize_train_spec_document(
+    document = materialize_train_recipe_document(
         document,
         path=path,
         goal_composition=goal_composition,
@@ -781,16 +800,24 @@ def load_spec_document(path: Path) -> dict[str, Any]:
     if path.suffix.lower() in YAML_EXTENSIONS or len(sources) > 1:
         document["_composition"] = {
             "root_path": str(path.resolve()),
-            "source_files": _spec_source_metadata(sources),
+            "source_files": _recipe_source_metadata(sources),
         }
-    validate_train_spec_schema(document, label=f"spec file {path}")
-    assert_no_template_vars(document, label=f"spec file {path}")
-    assert_no_secrets(document, label=f"spec file {path}")
+    validate_train_recipe_schema(document, label=f"recipe file {path}")
+    assert_no_template_vars(document, label=f"recipe file {path}")
+    assert_no_secrets(document, label=f"recipe file {path}")
     validate_launch_event_config(
         document["train_config"],
-        label=f"spec file {path} train_config",
+        label=f"recipe file {path} train_config",
     )
     return document
+
+
+def _spec_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
+    return _recipe_source_metadata(sources)
+
+
+def load_spec_document(path: Path) -> dict[str, Any]:
+    return load_recipe_document(path)
 
 
 def file_sha256(path: Path) -> str:
@@ -824,20 +851,37 @@ def repo_is_dirty(cwd: Path = Path(".")) -> bool:
     return bool(text)
 
 
-def spec_slug(document: Mapping[str, Any]) -> str:
-    return str(document.get("spec_id") or "").strip()
+def recipe_slug(document: Mapping[str, Any]) -> str:
+    return train_recipe_id(document)
 
 
-def spec_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
+def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
+    slug = recipe_slug(document)
+    payload = dict(document)
+    if slug and "recipe_id" not in payload:
+        payload["recipe_id"] = slug
     return {
         "goal_slug": spec_goal_slug(document),
-        "spec_slug": spec_slug(document),
+        "recipe_slug": slug,
+        "recipe_path": str(path),
+        "recipe_sha256": file_sha256(path),
+        "recipe_payload": payload,
+        # Queue storage still uses these legacy column names for existing DB compatibility.
+        "spec_slug": slug,
         "spec_path": str(path),
         "spec_sha256": file_sha256(path),
         "repo_git_commit": repo_git_commit(),
         "repo_dirty": repo_is_dirty(),
-        "spec_payload": dict(document),
+        "spec_payload": payload,
     }
+
+
+def spec_slug(document: Mapping[str, Any]) -> str:
+    return recipe_slug(document)
+
+
+def spec_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
+    return recipe_metadata(path, document)
 
 
 def record_job_event(
@@ -973,13 +1017,14 @@ def _utc_stamp() -> str:
 
 
 def _format_seed_template(
-    template: str | None, *, seed: int | None, spec_id: str, utc: str, group_id: str = ""
+    template: str | None, *, seed: int | None, recipe_id: str, utc: str, group_id: str = ""
 ) -> str | None:
     if not template:
         return None
     return str(template).format(
         seed="" if seed is None else seed,
-        spec_id=spec_id,
+        recipe_id=recipe_id,
+        spec_id=recipe_id,
         timestamp=utc,
         utc=utc,
         group_id=group_id,
@@ -990,7 +1035,7 @@ def _format_run_name_template(
     template: str | None,
     *,
     seed: int | None,
-    spec_id: str,
+    recipe_id: str,
     utc: str,
     group_id: str,
 ) -> str | None:
@@ -998,7 +1043,8 @@ def _format_run_name_template(
         return None
     return str(template).format(
         seed="" if seed is None else seed,
-        spec_id=spec_id,
+        recipe_id=recipe_id,
+        spec_id=recipe_id,
         timestamp=utc,
         utc=utc,
         group_id=group_id,
@@ -1049,6 +1095,84 @@ def _document_seeds(
     return [None]
 
 
+def enqueue_train_jobs_from_recipe_document(
+    conn,
+    *,
+    document: Mapping[str, Any],
+    runtime_image_ref: str,
+    recipe_path: str | None = None,
+    recipe_sha256: str | None = None,
+    repo_git_commit: str | None = None,
+    repo_dirty: bool = False,
+    profile_id: str | None = None,
+    run_target: str | None = None,
+    instances_path: Path | None = None,
+    seeds: Sequence[int] = (),
+) -> list[dict[str, Any]]:
+    validate_train_recipe_schema(document)
+    goal_slug = spec_goal_slug(document)
+    document_slug = recipe_slug(document)
+    utc = _utc_stamp()
+    rows = []
+    for seed in _document_seeds(document, seeds):
+        train_config = dict(document["train_config"])
+        if seed is not None:
+            validate_training_seed(
+                seed,
+                label="recipe seed",
+                seed_span=train_config.get("n_envs", 1),
+            )
+            train_config["seed"] = seed
+        train_config.setdefault("recipe_slug", document_slug)
+        if recipe_path:
+            train_config.setdefault("recipe_path", recipe_path)
+        group_id = str(document["group_id"])
+        payload = dict(document)
+        payload.setdefault("recipe_id", document_slug)
+        row = enqueue_train_job(
+            conn,
+            goal_slug=goal_slug,
+            spec_slug=document_slug,
+            spec_path=recipe_path,
+            spec_sha256=recipe_sha256,
+            repo_git_commit=repo_git_commit,
+            repo_dirty=repo_dirty,
+            spec_payload=payload,
+            profile_id=None,
+            runtime_image_ref=runtime_image_ref,
+            run_target=None,
+            train_config=train_config,
+            max_attempts=int(document.get("max_attempts") or 1),
+            run_name=(
+                _format_run_name_template(
+                    document.get("run_name_template"),
+                    seed=seed,
+                    recipe_id=document_slug,
+                    utc=utc,
+                    group_id=group_id,
+                )
+                or _format_default_run_name(
+                    group_id,
+                    label=str(document.get("run_name_label") or document_slug),
+                    seed=seed,
+                    utc=utc,
+                )
+            ),
+            run_description=_format_seed_template(
+                document.get("description"),
+                seed=seed,
+                recipe_id=document_slug,
+                utc=utc,
+                group_id=group_id,
+            ),
+            seed=seed,
+            wandb_group=group_id,
+            wandb_tags=spec_tags(document),
+        )
+        rows.append(row)
+    return rows
+
+
 def enqueue_train_jobs_from_spec_document(
     conn,
     *,
@@ -1063,63 +1187,46 @@ def enqueue_train_jobs_from_spec_document(
     instances_path: Path | None = None,
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
-    validate_train_spec_schema(document)
-    goal_slug = spec_goal_slug(document)
-    document_slug = spec_slug(document)
-    utc = _utc_stamp()
-    rows = []
-    for seed in _document_seeds(document, seeds):
-        train_config = dict(document["train_config"])
-        if seed is not None:
-            validate_training_seed(
-                seed,
-                label="spec seed",
-                seed_span=train_config.get("n_envs", 1),
-            )
-            train_config["seed"] = seed
-        group_id = str(document["group_id"])
-        row = enqueue_train_job(
-            conn,
-            goal_slug=goal_slug,
-            spec_slug=document_slug,
-            spec_path=spec_path,
-            spec_sha256=spec_sha256,
-            repo_git_commit=repo_git_commit,
-            repo_dirty=repo_dirty,
-            spec_payload=document,
-            profile_id=None,
-            runtime_image_ref=runtime_image_ref,
-            run_target=None,
-            train_config=train_config,
-            max_attempts=int(document.get("max_attempts") or 1),
-            run_name=(
-                _format_run_name_template(
-                    document.get("run_name_template"),
-                    seed=seed,
-                    spec_id=document_slug,
-                    utc=utc,
-                    group_id=group_id,
-                )
-                or _format_default_run_name(
-                    group_id,
-                    label=str(document.get("run_name_label") or document_slug),
-                    seed=seed,
-                    utc=utc,
-                )
-            ),
-            run_description=_format_seed_template(
-                document.get("description"),
-                seed=seed,
-                spec_id=document_slug,
-                utc=utc,
-                group_id=group_id,
-            ),
-            seed=seed,
-            wandb_group=group_id,
-            wandb_tags=spec_tags(document),
-        )
-        rows.append(row)
-    return rows
+    return enqueue_train_jobs_from_recipe_document(
+        conn,
+        document=document,
+        runtime_image_ref=runtime_image_ref,
+        recipe_path=spec_path,
+        recipe_sha256=spec_sha256,
+        repo_git_commit=repo_git_commit,
+        repo_dirty=repo_dirty,
+        profile_id=profile_id,
+        run_target=run_target,
+        instances_path=instances_path,
+        seeds=seeds,
+    )
+
+
+def enqueue_train_jobs_from_recipe_file(
+    conn,
+    *,
+    path: Path,
+    runtime_image_ref: str,
+    profile_id: str | None = None,
+    run_target: str | None = None,
+    instances_path: Path | None = None,
+    seeds: Sequence[int] = (),
+) -> list[dict[str, Any]]:
+    document = load_recipe_document(path)
+    metadata = recipe_metadata(path, document)
+    return enqueue_train_jobs_from_recipe_document(
+        conn,
+        document=document,
+        runtime_image_ref=runtime_image_ref,
+        recipe_path=metadata["recipe_path"],
+        recipe_sha256=metadata["recipe_sha256"],
+        repo_git_commit=metadata["repo_git_commit"],
+        repo_dirty=metadata["repo_dirty"],
+        profile_id=profile_id,
+        run_target=run_target,
+        instances_path=instances_path,
+        seeds=seeds,
+    )
 
 
 def enqueue_train_jobs_from_spec_file(
@@ -1132,16 +1239,10 @@ def enqueue_train_jobs_from_spec_file(
     instances_path: Path | None = None,
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
-    document = load_spec_document(path)
-    metadata = spec_metadata(path, document)
-    return enqueue_train_jobs_from_spec_document(
+    return enqueue_train_jobs_from_recipe_file(
         conn,
-        document=document,
+        path=path,
         runtime_image_ref=runtime_image_ref,
-        spec_path=metadata["spec_path"],
-        spec_sha256=metadata["spec_sha256"],
-        repo_git_commit=metadata["repo_git_commit"],
-        repo_dirty=metadata["repo_dirty"],
         profile_id=profile_id,
         run_target=run_target,
         instances_path=instances_path,
@@ -2122,9 +2223,9 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         )
     conn = _connect_from_args(args)
     try:
-        rows = enqueue_train_jobs_from_spec_file(
+        rows = enqueue_train_jobs_from_recipe_file(
             conn,
-            path=args.spec_file,
+            path=args.recipe_file,
             runtime_image_ref=runtime_image_ref,
             instances_path=args.instances,
             seeds=args.seed,

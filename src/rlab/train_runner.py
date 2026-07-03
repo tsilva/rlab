@@ -382,13 +382,13 @@ def normalize_train_config(
     if goal_slug:
         config["goal_slug"] = goal_slug
         append_unique_wandb_tag(tags, f"goal_id:{goal_slug}")
-    spec_slug = str(job.get("spec_slug") or "").strip()
-    if spec_slug:
-        config["spec_slug"] = spec_slug
-        append_unique_wandb_tag(tags, f"spec_id:{spec_slug}")
-    spec_path = str(job.get("spec_path") or "").strip()
-    if spec_path:
-        config["spec_path"] = spec_path
+    recipe_slug = str(job.get("recipe_slug") or job.get("spec_slug") or "").strip()
+    if recipe_slug:
+        config["recipe_slug"] = recipe_slug
+        append_unique_wandb_tag(tags, f"recipe_id:{recipe_slug}")
+    recipe_path = str(job.get("recipe_path") or job.get("spec_path") or "").strip()
+    if recipe_path:
+        config["recipe_path"] = recipe_path
     if job.get("id") is not None:
         config["queue_train_job_id"] = int(job["id"])
     for level in normalize_level_states(config):

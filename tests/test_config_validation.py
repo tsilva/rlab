@@ -23,7 +23,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.issues, ())
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
-        self.assertGreaterEqual(report.counts["train_specs"], 1)
+        self.assertGreaterEqual(report.counts["train_recipes"], 1)
         self.assertGreaterEqual(report.counts["goals"], 1)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)

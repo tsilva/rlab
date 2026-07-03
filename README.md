@@ -4,7 +4,7 @@
   **Reinforcement-learning workbench for training game agents**
 </div>
 
-rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed GPU runners, so a researcher can move from a checked-in experiment spec to a replayable checkpoint without hand-wiring each step.
+rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed GPU runners, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
 
 The normal workflow is to install the CLI once with `uv tool install .`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
 
@@ -66,11 +66,11 @@ rlab play \
   --scale 4
 ```
 
-Queue comparable experiments from checked-in spec files:
+Queue comparable experiments from checked-in recipe files:
 
 ```bash
 rlab train \
-  --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml \
+  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
@@ -79,9 +79,9 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 ## Commands
 
 ```bash
-rlab validate                                      # validate goals, specs, benchmarks, machine config, and policies
+rlab validate                                      # validate goals, recipes, benchmarks, machine config, and policies
 rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
-rlab train --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml
+rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
 rlab play <entity>/<project>/<run-name>-checkpoint:latest --policy-env fast
@@ -102,19 +102,19 @@ rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 
 The command surface is intentionally one binary:
 
-- `rlab train` enqueues queue-backed train jobs from checked-in specs.
+- `rlab train` enqueues queue-backed train jobs from checked-in recipes.
 - `rlab train local` runs direct local training.
 - `rlab eval` runs local evaluation; queued train jobs evaluate their checkpoints inline after training.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and runner fleet.
-- `rlab leaders` queries W&B for run/spec winners and best evaluated checkpoints.
+- `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
 ## Research Loop
 
-Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `_goal.yaml` before choosing specs, caps, metrics, or promotion criteria.
+Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria.
 
-Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
+Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
 Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
 
@@ -127,7 +127,7 @@ rlab leaders checkpoints --goal Level1-1 --limit 1 --json
 
 `leaders checkpoints` returns evaluated checkpoint rows already sorted by the checkpoint promotion
 order, so `--limit 1` is the canonical best-checkpoint query. Use `leaders runs` separately when
-the question is about training/spec winners rather than the checkpoint artifact to play or promote.
+the question is about training/recipe winners rather than the checkpoint artifact to play or promote.
 `leaders runs` uses the current primary goal metric by default for fast W&B queries.
 
 To regenerate the W&B checkpoint leaderboard report with one section per goal, run:

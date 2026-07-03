@@ -24,11 +24,11 @@ and policy checks live in `experiments/policies/capacity_policy.yaml`.
 
 ## Standard Workflow
 
-Queue work from checked-in goal spec files:
+Queue work from checked-in goal recipe files:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab train \
-  --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml \
+  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
   --runtime-image-ref-file rlab-train-image.json
 ```
 

@@ -1,7 +1,7 @@
 defaults:
 - base@_global_
 - _self_
-spec_id: no-terminal
+recipe_id: no-terminal
 template_vars:
   variant: no-terminal
   rollout: continuous-rollout

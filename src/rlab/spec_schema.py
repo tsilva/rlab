@@ -7,27 +7,27 @@ from typing import Any
 from rlab.seeds import validate_training_seed
 
 
-TRAIN_SPEC_SCHEMA_VERSION = 1
-TRAIN_SPEC_REQUIRED_FIELDS = (
+TRAIN_RECIPE_SCHEMA_VERSION = 1
+TRAIN_RECIPE_REQUIRED_FIELDS = (
     "goal",
-    "spec_id",
+    "recipe_id",
     "description",
     "group_id",
     "tags",
     "train_config",
 )
-TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
+TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = (
     "game",
     "timesteps",
     "wandb",
     "wandb_mode",
     "wandb_artifact_storage_uri",
 )
-EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS
-TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = frozenset(
-    {"group_id", "seed", "spec_id", "timestamp", "utc"}
+EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
+TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS = frozenset(
+    {"group_id", "seed", "recipe_id", "timestamp", "utc", "spec_id"}
 )
-TRAIN_SPEC_REMOVED_FIELDS = frozenset(
+TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
     {
         "hypothesis",
         "parent_spec_slug",
@@ -38,6 +38,12 @@ TRAIN_SPEC_REMOVED_FIELDS = frozenset(
         "wandb_group",
     }
 )
+
+TRAIN_SPEC_SCHEMA_VERSION = TRAIN_RECIPE_SCHEMA_VERSION
+TRAIN_SPEC_REQUIRED_FIELDS = TRAIN_RECIPE_REQUIRED_FIELDS
+TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
+TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS
+TRAIN_SPEC_REMOVED_FIELDS = TRAIN_RECIPE_REMOVED_FIELDS
 
 
 def _label_path(label: str, key: str) -> str:
@@ -52,7 +58,7 @@ def _is_int(value: Any) -> bool:
 
 def _require_key(document: Mapping[str, Any], key: str, *, label: str) -> Any:
     if key not in document:
-        raise ValueError(f"{_label_path(label, key)} is required by train spec schema")
+        raise ValueError(f"{_label_path(label, key)} is required by train recipe schema")
     return document[key]
 
 
@@ -99,8 +105,8 @@ def require_explicit_queue_train_config(
     missing = [key for key in EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS if key not in train_config]
     if missing:
         raise ValueError(
-            f"{label} missing required spec-defined field(s): "
-            f"{', '.join(missing)}; queue-backed train jobs must define train values in specs"
+            f"{label} missing required recipe-defined field(s): "
+            f"{', '.join(missing)}; queue-backed train jobs must define train values in recipes"
         )
 
 
@@ -149,7 +155,7 @@ def _require_template(
 ) -> str:
     template = _require_non_empty_string(document, key, label=label)
     field_names = _format_field_names(template)
-    unknown = sorted(field_names - TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS)
+    unknown = sorted(field_names - TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS)
     if unknown:
         raise ValueError(
             f"{_label_path(label, key)} uses unsupported template field(s): "
@@ -163,6 +169,7 @@ def _require_template(
     try:
         template.format(
             seed=123,
+            recipe_id="candidate",
             spec_id="candidate",
             timestamp="20260626T120000Z",
             utc="20260626T120000Z",
@@ -173,28 +180,33 @@ def _require_template(
     return template
 
 
-def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spec") -> None:
-    """Validate the non-negotiable queue-backed train spec contract.
+def train_recipe_id(document: Mapping[str, Any]) -> str:
+    return str(document.get("recipe_id") or document.get("spec_id") or "").strip()
+
+
+def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
+    """Validate the non-negotiable queue-backed train recipe contract.
 
     Unknown top-level and train_config fields are intentionally allowed so older
-    research metadata can keep flowing into spec_payload_json.
+    research metadata can keep flowing into the persisted queue payload.
     """
 
     _require_mapping(document, label=label)
-    removed_fields = sorted(field for field in TRAIN_SPEC_REMOVED_FIELDS if field in document)
+    removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
     if removed_fields:
-        raise ValueError(f"{label} uses removed train spec field(s): {', '.join(removed_fields)}")
+        raise ValueError(f"{label} uses removed train recipe field(s): {', '.join(removed_fields)}")
     if "schema_version" in document and (
         schema_version := _require_int(document, "schema_version", label=label, minimum=1)
-    ) != TRAIN_SPEC_SCHEMA_VERSION:
+    ) != TRAIN_RECIPE_SCHEMA_VERSION:
         raise ValueError(
             f"{_label_path(label, 'schema_version')} must be "
-            f"{TRAIN_SPEC_SCHEMA_VERSION}, got {schema_version}"
+            f"{TRAIN_RECIPE_SCHEMA_VERSION}, got {schema_version}"
         )
 
     goal = _require_mapping(_require_key(document, "goal", label=label), label=_label_path(label, "goal"))
     _require_non_empty_string(goal, "goal_id", label=_label_path(label, "goal"))
-    _require_non_empty_string(document, "spec_id", label=label)
+    if not train_recipe_id(document):
+        raise ValueError(f"{label}.recipe_id is required by train recipe schema")
     _require_template(
         document,
         "description",
@@ -280,3 +292,9 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         raise ValueError(
             f"{_label_path(label, 'train_config.wandb_artifact_storage_uri')} must be a string"
         )
+
+
+def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
+    """Backward-compatible alias for older callers."""
+
+    validate_train_recipe_schema(document, label=label)

@@ -6,7 +6,6 @@ game: SuperMarioBros-Nes-v0
 artifact_ref: <entity/project/run-checkpoint:latest>
 episodes: 5
 max_steps: 4500
-record_best_video: false
 gates:
   exit_code: 0
   required_metrics:
