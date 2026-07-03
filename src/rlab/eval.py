@@ -55,7 +55,6 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
 )
 from rlab.model_sources import (
-    ResolvedModelSource,
     add_model_source_args,
     apply_model_source_defaults,
     artifact_eval_name,
@@ -63,6 +62,9 @@ from rlab.model_sources import (
     explicit_source_arg_dests,
     find_model_artifacts,
     model_artifact_checkpoint_step,
+    model_source_ref,
+    resolve_single_model_source,
+    single_model_artifact_ref,
     slug,
     split_project,
 )
@@ -399,6 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate PPO or scripted Stable Retro baselines")
     add_model_source_args(
         parser,
+        positional_artifact=True,
         allow_multiple_artifacts=True,
         model_help="Path to PPO .zip model",
         default_kind="checkpoint",
@@ -584,13 +587,20 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("--n-envs must be >= 1")
     if args.record_best_video:
         raise SystemExit("--record-best-video is temporarily disabled for rlab eval")
-    if args.artifact or args.artifact_run:
+    if args.artifact or args.artifact_run or single_model_artifact_ref(args):
         run_checkpoint_artifact_eval(args, parser, parser_defaults, explicit_dests)
         return
-    if args.model:
+    ref = model_source_ref(args)
+    if ref is not None or args.model:
+        if ref is not None:
+            print(f"Downloading {ref}", flush=True)
+        source = resolve_single_model_source(args)
+        args.model = str(source.model_path)
+        if ref is not None:
+            print(f"Downloaded model: {args.model}", flush=True)
         apply_model_source_defaults(
             args,
-            ResolvedModelSource(model_path=Path(args.model)),
+            source,
             parser,
             parser_defaults,
             explicit_dests,

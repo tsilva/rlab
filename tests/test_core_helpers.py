@@ -3032,6 +3032,76 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(model_source_ref(args), "hf://tsilva/SuperMarioBros-NES_Level1-2")
         self.assertIsNone(single_model_artifact_ref(args))
 
+    def test_eval_model_source_ref_accepts_positional_huggingface_ref(self) -> None:
+        parser = build_eval_parser()
+        args = parser.parse_args(["hf://tsilva/SuperMarioBros-NES_Level1-1"])
+
+        self.assertEqual(
+            single_huggingface_model_ref(args),
+            "hf://tsilva/SuperMarioBros-NES_Level1-1",
+        )
+        self.assertEqual(model_source_ref(args), "hf://tsilva/SuperMarioBros-NES_Level1-1")
+        self.assertIsNone(single_model_artifact_ref(args))
+
+    def test_eval_main_resolves_huggingface_model_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "model.zip"
+            model_path.write_bytes(b"model")
+
+            def fake_resolve(args):
+                self.assertEqual(args.artifact_ref, "hf://tsilva/SuperMarioBros-NES_Level1-1")
+                return ResolvedModelSource(
+                    model_path=model_path,
+                    artifact_name="hf://tsilva/SuperMarioBros-NES_Level1-1/model.zip",
+                )
+
+            def fake_apply(args, source, parser, parser_defaults, explicit_dests, **_kwargs):
+                self.assertEqual(source.model_path, model_path)
+                apply_config_defaults(
+                    args,
+                    {"game": "SuperMarioBros-Nes-v0", "state": "Level1-1"},
+                    parser_defaults,
+                    explicit_dests,
+                )
+                return True
+
+            def fake_evaluate_model_episodes(**kwargs):
+                self.assertEqual(kwargs["model"], "ppo")
+                self.assertEqual(kwargs["episodes"], 1)
+                self.assertEqual(kwargs["extra"]["model"], str(model_path))
+                return (
+                    {
+                        "completion_rate": 1.0,
+                        "episode_results": [{"reward": 1.0}],
+                    },
+                    None,
+                )
+
+            output = io.StringIO()
+            with (
+                patch("rlab.eval.resolve_single_model_source", side_effect=fake_resolve),
+                patch("rlab.eval.apply_model_source_defaults", side_effect=fake_apply),
+                patch("rlab.eval.assert_rom_imported") as assert_rom,
+                patch("rlab.eval.PPO.load", return_value="ppo"),
+                patch("rlab.eval.evaluate_model_episodes", side_effect=fake_evaluate_model_episodes),
+                patch.object(sys, "stdout", output),
+            ):
+                eval_main(
+                    [
+                        "hf://tsilva/SuperMarioBros-NES_Level1-1",
+                        "--episodes",
+                        "1",
+                        "--summary-only",
+                        "--no-progress",
+                    ]
+                )
+
+            assert_rom.assert_called_once_with("SuperMarioBros-Nes-v0")
+            text = output.getvalue()
+            self.assertIn("Downloading hf://tsilva/SuperMarioBros-NES_Level1-1", text)
+            self.assertIn(f"Downloaded model: {model_path}", text)
+            self.assertIn('"completion_rate": 1.0', text)
+
     def test_huggingface_model_ref_parses_model_url_and_file_url(self) -> None:
         self.assertEqual(
             parse_huggingface_model_ref("hf://tsilva/SuperMarioBros-NES_Level1-2"),

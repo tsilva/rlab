@@ -357,6 +357,7 @@ Install `rlab` once, import the ROM, then play this checkpoint directly from Hug
 uv tool install --from git+https://github.com/tsilva/rlab rlab
 rlab import-roms ~/roms --game {game}
 rlab play hf://{release.repo_id}
+rlab eval hf://{release.repo_id}
 ```
 
 ## Results

@@ -160,6 +160,7 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("uv tool install --from git+https://github.com/tsilva/rlab rlab", content)
         self.assertIn("rlab import-roms ~/roms --game SuperMarioBros-Nes-v0", content)
         self.assertIn("rlab play hf://tsilva/SuperMarioBros-NES_Level1-1", content)
+        self.assertIn("rlab eval hf://tsilva/SuperMarioBros-NES_Level1-1", content)
         self.assertNotIn("hf download", content)
         self.assertIn("## Preview", content)
         self.assertIn("## Input / Output", content)
