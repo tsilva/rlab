@@ -158,7 +158,13 @@ def _and_filters(*filters: Mapping[str, Any] | None) -> dict[str, Any]:
 def goal_run_filter(goal: str | None) -> dict[str, Any]:
     if not goal:
         return {}
-    return {"$or": [{"config.goal_slug": goal}, {"tags": f"goal:{goal}"}]}
+    return {
+        "$or": [
+            {"config.goal_slug": goal},
+            {"tags": f"goal_id:{goal}"},
+            {"tags": f"goal:{goal}"},
+        ]
+    }
 
 
 def run_objective_filter(objective_keys: Sequence[str]) -> dict[str, Any]:
@@ -207,7 +213,11 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
     if objective is None:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
-    goal_slug = _first_text(config.get("goal_slug"), _tag_value(tags, "goal:"))
+    goal_slug = _first_text(
+        config.get("goal_slug"),
+        _tag_value(tags, "goal_id:"),
+        _tag_value(tags, "goal:"),
+    )
     spec_slug = _first_text(config.get("spec_slug"), getattr(run, "group", ""))
     if not goal_slug or not spec_slug:
         return None
@@ -271,7 +281,11 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
     return CheckpointLeader(
-        goal_slug=_first_text(config.get("goal_slug"), _tag_value(tags, "goal:")),
+        goal_slug=_first_text(
+            config.get("goal_slug"),
+            _tag_value(tags, "goal_id:"),
+            _tag_value(tags, "goal:"),
+        ),
         spec_slug=_first_text(config.get("spec_slug"), getattr(run, "group", "")),
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),

@@ -133,7 +133,7 @@ def release_config_from_goal(
         checkpoint_filename=str(
             huggingface.get(
                 "checkpoint_filename",
-                "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+                "model.zip",
             )
         ),
         preview_filename=str(huggingface.get("preview_filename", "replay.mp4")),
@@ -216,7 +216,6 @@ def write_model_card(
     completion = 100.0 * float(leader.completion_rate)
     reward = float(leader.reward_mean)
     max_x = float(leader.max_x_max)
-    eval_episodes = metrics.get("episodes", metrics.get("eval/episodes", ""))
     content = f"""---
 library_name: stable-baselines3
 pipeline_tag: reinforcement-learning
@@ -250,36 +249,22 @@ PPO policy checkpoint for `{game}` `{level}`, trained with [`rlab`](https://gith
 
 ## Quick Start
 
-```bash
-hf download {release.repo_id} {checkpoint_filename} --local-dir .
-rlab play {checkpoint_filename}
-```
-
-For the original W&B artifact:
+Install `rlab` once, import the ROM, then play this checkpoint directly from Hugging Face:
 
 ```bash
-rlab play {leader.artifact_ref} --policy-env fast
+uv tool install --from git+https://github.com/tsilva/rlab rlab
+rlab import-roms ~/roms --game {game}
+rlab play hf://{release.repo_id}
 ```
-
-## Validate
-
-This release is selected from the goal checkpoint leaderboard:
-
-```bash
-rlab leaders checkpoints --goal {goal["goal_id"]} --limit 1 --json
-```
-
-Release staging re-evaluated the checkpoint for preview generation with `{eval_episodes}`
-episode(s). See `release_manifest.json` for exact metrics and provenance.
 
 ## Results
 
 | Metric | Value |
 |---|---:|
-| Completion rate (leaderboard) | {completion:.1f}% |
-| Completion rate mean (leaderboard) | {100.0 * float(leader.completion_rate_mean):.1f}% |
-| Mean reward (leaderboard) | {reward:.3f} |
-| Max x-position (leaderboard) | {max_x:.0f} |
+| Completion rate | {completion:.1f}% |
+| Completion rate mean | {100.0 * float(leader.completion_rate_mean):.1f}% |
+| Mean reward | {reward:.3f} |
+| Max x-position | {max_x:.0f} |
 | Checkpoint step | {leader.checkpoint_step or ""} |
 
 ## Files
@@ -302,7 +287,7 @@ episode(s). See `release_manifest.json` for exact metrics and provenance.
 
 ## Limitations
 
-This is a single selected checkpoint for a specific Stable Retro task. Reported leaderboard
+This is a single selected checkpoint for a specific Stable Retro task. Reported
 metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated
 as cross-environment benchmark results.
 """
@@ -322,6 +307,16 @@ def copy_release_files(
     if metadata_source.is_file():
         metadata_path = stage_dir / "model_metadata.json"
         shutil.copy2(metadata_source, metadata_path)
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metadata = None
+        if isinstance(metadata, dict):
+            metadata["filename"] = checkpoint_filename
+            metadata_path.write_text(
+                json.dumps(json_safe(metadata), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
     return checkpoint_path, metadata_path
 
 

@@ -377,18 +377,18 @@ def normalize_train_config(
     goal_slug = str(job.get("goal_slug") or "").strip()
     if goal_slug:
         config["goal_slug"] = goal_slug
-        append_unique_wandb_tag(tags, f"goal:{goal_slug}")
+        append_unique_wandb_tag(tags, f"goal_id:{goal_slug}")
     spec_slug = str(job.get("spec_slug") or "").strip()
     if spec_slug:
         config["spec_slug"] = spec_slug
-        append_unique_wandb_tag(tags, f"spec:{spec_slug}")
+        append_unique_wandb_tag(tags, f"spec_id:{spec_slug}")
     spec_path = str(job.get("spec_path") or "").strip()
     if spec_path:
         config["spec_path"] = spec_path
     if job.get("id") is not None:
         config["queue_train_job_id"] = int(job["id"])
     for level in normalize_level_states(config):
-        append_unique_wandb_tag(tags, f"level:{level}")
+        append_unique_wandb_tag(tags, f"level_id:{level}")
     if tags:
         config["wandb_tags"] = ",".join(tags)
     if "seed" in config and config["seed"] is not None:

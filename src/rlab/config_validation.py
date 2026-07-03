@@ -27,6 +27,9 @@ BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    ("run_name_template",): frozenset(
+        {"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"}
+    ),
     (
         "release",
         "huggingface",
@@ -558,9 +561,9 @@ def _validate_goal_release(document: Mapping[str, Any], *, label: str) -> None:
         "checkpoint_filename",
         label=f"{label}.release.huggingface",
     )
-    if "{checkpoint_step}" not in checkpoint_filename:
+    if not checkpoint_filename.endswith(".zip"):
         raise ValueError(
-            f"{label}.release.huggingface.checkpoint_filename must contain {{checkpoint_step}}"
+            f"{label}.release.huggingface.checkpoint_filename must end with .zip"
         )
     _require_non_empty_string(
         huggingface,

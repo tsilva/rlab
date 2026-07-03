@@ -45,6 +45,35 @@ def _concrete_template_source(value: Any) -> str:
     return "" if "{" in text or "}" in text else text
 
 
+def _environment_mapping_from_document(document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for candidate in (document, document.get("goal")):
+        if not isinstance(candidate, Mapping):
+            continue
+        train = candidate.get("train")
+        if isinstance(train, Mapping) and isinstance(train.get("environment"), Mapping):
+            return train["environment"]
+        if isinstance(candidate.get("environment"), Mapping):
+            return candidate["environment"]
+    return None
+
+
+def _env_id_from_document(document: Mapping[str, Any]) -> str:
+    environment = _environment_mapping_from_document(document)
+    if not isinstance(environment, Mapping):
+        return ""
+    env_id = _concrete_template_source(environment.get("env_id"))
+    if env_id:
+        return env_id
+    provider = _concrete_template_source(environment.get("env_provider") or environment.get("provider"))
+    env_config = environment.get("env_config")
+    game = (
+        _concrete_template_source(env_config.get("game"))
+        if isinstance(env_config, Mapping)
+        else ""
+    )
+    return f"{provider}:{game}" if provider and game else ""
+
+
 def template_context_from_path(
     path: Path, document: Mapping[str, Any] | None = None
 ) -> dict[str, str]:
@@ -67,6 +96,7 @@ def template_context_from_path(
         game = resolved.parent.parent.name if resolved.parent.parent.name != "goals" else ""
 
     if isinstance(document, Mapping):
+        env_id = _env_id_from_document(document)
         raw_goal = document.get("goal")
         if isinstance(raw_goal, Mapping):
             goal_id = (
@@ -81,7 +111,11 @@ def template_context_from_path(
             or _concrete_template_source(document.get("goal_slug"))
             or goal_id
         )
-        spec_slug = _concrete_template_source(document.get("slug")) or spec_slug
+        spec_slug = (
+            _concrete_template_source(document.get("spec_id"))
+            or _concrete_template_source(document.get("slug"))
+            or spec_slug
+        )
 
     game_slug = slugify_template_value(game)
     goal_slug = slugify_template_value(goal_id)
@@ -92,6 +126,7 @@ def template_context_from_path(
     return {
         key: value
         for key, value in {
+            "env_id": env_id if isinstance(document, Mapping) else "",
             "game": game,
             "game_slug": game_slug,
             "goal_id": goal_id,
@@ -99,6 +134,7 @@ def template_context_from_path(
             "level_short": level_short,
             "level_tag": goal_slug,
             "slug": spec_slug,
+            "spec_id": spec_slug,
             "spec_slug": spec_slug,
             "state": goal_id,
         }.items()
@@ -177,7 +213,9 @@ def _render_template_string(
         if field_name is None:
             continue
         root_name = _template_field_root(field_name)
-        if root_name in context:
+        if root_name in deferred_fields:
+            chunks.append(_format_deferred_field(field_name, conversion, format_spec))
+        elif root_name in context:
             rendered_format_spec = (
                 _render_template_string(
                     format_spec,
@@ -191,8 +229,6 @@ def _render_template_string(
             chunks.append(
                 format(_apply_conversion(context[root_name], conversion), rendered_format_spec)
             )
-        elif root_name in deferred_fields:
-            chunks.append(_format_deferred_field(field_name, conversion, format_spec))
         else:
             allowed = ", ".join(sorted({*context, *deferred_fields}))
             raise ValueError(

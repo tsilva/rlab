@@ -306,7 +306,7 @@ environment_hash: sha256:deadbeef
         )
         self.assertEqual(
             document["release"]["huggingface"]["checkpoint_filename"],
-            "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+            "model.zip",
         )
 
     def test_validate_cli_success(self) -> None:

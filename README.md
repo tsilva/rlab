@@ -85,6 +85,7 @@ rlab train --spec-file experiments/goals/<goal-slug>/specs/<spec>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
 rlab play <entity>/<project>/<run-name>-checkpoint:latest --policy-env fast
+rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
 rlab jobs status --goal <goal-slug>
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
@@ -104,7 +105,7 @@ The command surface is intentionally one binary:
 - `rlab train` enqueues queue-backed train jobs from checked-in specs.
 - `rlab train local` runs direct local training.
 - `rlab eval` runs local evaluation; queued train jobs evaluate their checkpoints inline after training.
-- `rlab play` replays a local model path or W&B checkpoint artifact.
+- `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and runner fleet.
 - `rlab leaders` queries W&B for run/spec winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.

@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -77,8 +78,12 @@ from rlab.metric_names import (
 from rlab.model_sources import (
     ResolvedModelSource,
     apply_model_source_defaults,
+    download_huggingface_model_source,
     model_artifact_checkpoint_step,
+    model_source_ref,
+    parse_huggingface_model_ref,
     single_model_artifact_ref,
+    single_huggingface_model_ref,
 )
 from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
@@ -3015,6 +3020,72 @@ class CommandAndArtifactTests(unittest.TestCase):
             single_model_artifact_ref(args),
             "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
         )
+
+    def test_model_source_ref_accepts_positional_huggingface_ref(self) -> None:
+        parser = build_play_parser()
+        args = parser.parse_args(["hf://tsilva/SuperMarioBros-NES_Level1-2"])
+
+        self.assertEqual(
+            single_huggingface_model_ref(args),
+            "hf://tsilva/SuperMarioBros-NES_Level1-2",
+        )
+        self.assertEqual(model_source_ref(args), "hf://tsilva/SuperMarioBros-NES_Level1-2")
+        self.assertIsNone(single_model_artifact_ref(args))
+
+    def test_huggingface_model_ref_parses_model_url_and_file_url(self) -> None:
+        self.assertEqual(
+            parse_huggingface_model_ref("hf://tsilva/SuperMarioBros-NES_Level1-2"),
+            ("tsilva/SuperMarioBros-NES_Level1-2", None, None),
+        )
+        self.assertEqual(
+            parse_huggingface_model_ref(
+                "https://huggingface.co/tsilva/SuperMarioBros-NES_Level1-2/resolve/main/model.zip"
+            ),
+            ("tsilva/SuperMarioBros-NES_Level1-2", "model.zip", "main"),
+        )
+
+    def test_huggingface_model_source_downloads_checkpoint_and_metadata_sidecar(self) -> None:
+        test_case = self
+
+        class FakeApi:
+            def list_repo_files(self, *, repo_id, repo_type, revision):
+                test_case.assertEqual(repo_id, "tsilva/SuperMarioBros-NES_Level1-2")
+                test_case.assertEqual(repo_type, "model")
+                test_case.assertEqual(revision, "main")
+                return ["README.md", "model_metadata.json", "ppo_test_500_steps.zip"]
+
+        def fake_hf_hub_download(*, repo_id, repo_type, revision, filename, local_dir):
+            test_case.assertEqual(repo_id, "tsilva/SuperMarioBros-NES_Level1-2")
+            test_case.assertEqual(repo_type, "model")
+            test_case.assertEqual(revision, "main")
+            path = Path(local_dir) / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if filename.endswith(".json"):
+                path.write_text('{"env_config": {"state": "Level1-2"}}\n', encoding="utf-8")
+            else:
+                path.write_bytes(b"zip")
+            return str(path)
+
+        fake_hub = types.SimpleNamespace(
+            HfApi=lambda: FakeApi(),
+            hf_hub_download=fake_hf_hub_download,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                source = download_huggingface_model_source(
+                    "hf://tsilva/SuperMarioBros-NES_Level1-2",
+                    root=Path(tmp_dir),
+                )
+
+            self.assertEqual(source.model_path.name, "ppo_test_500_steps.zip")
+            self.assertEqual(
+                source.artifact_name,
+                "hf://tsilva/SuperMarioBros-NES_Level1-2/ppo_test_500_steps.zip",
+            )
+            self.assertIsNone(source.artifact_ref)
+            self.assertEqual(source.checkpoint_step, 500)
+            self.assertTrue(source.model_path.with_suffix(".metadata.json").is_file())
 
     def test_model_source_ref_uses_positional_run_name(self) -> None:
         parser = build_play_parser()

@@ -2,22 +2,19 @@ defaults:
 - ../../Level1-1/specs/base@_global_
 - ../_goal@goal
 - _self_
-slug: base
-parent_spec_slug: base
+spec_id: base
 template_vars:
   batch_id: b272
   recipe: b55
   recipe_label: B55 low-KL late-decay
-hypothesis: >-
-  The successful Level1-1 low-KL late-decay recipe should transfer to {goal_id} without
-  changing PPO or reward hyperparameters. This spec inherits the Level1-1 policy recipe and
-  overrides only {goal_id} identity, grouping, and reporting metadata.
-wandb_group: "{batch_id}-{level_short}-{recipe}-transfer"
-run_name_label: "{level_short}-{recipe}-transfer"
+  phase: transfer
+description: >-
+  Seed {seed} runs the {goal_id} transfer of the successful Level1-1 {recipe_label} recipe,
+  created to test whether that policy recipe transfers without changing PPO or reward
+  hyperparameters while overriding only {goal_id} identity and reporting metadata.
 wandb_tags:
-- "{level_tag}"
-- "{recipe}"
-- lowkl
-- lrdecay
-- transfer
-run_description_template: "{goal_id} transfer of the successful Level1-1 {recipe_label} recipe, seed {seed}."
+- "goal_id:{goal_id}"
+- "spec_id:{spec_id}"
+- "env_id:{env_id}"
+- "recipe:{recipe}"
+- "phase:{phase}"

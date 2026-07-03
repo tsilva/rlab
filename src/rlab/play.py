@@ -43,8 +43,8 @@ from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (
     add_model_source_args,
     apply_model_source_defaults,
+    model_source_ref,
     resolve_single_model_source,
-    single_model_artifact_ref,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 
@@ -647,7 +647,7 @@ def main(argv: list[str] | None = None) -> None:
     explicit_dests = explicit_arg_dests(parser, argv_list)
     args = parser.parse_args(argv_list)
     args.seed = validate_eval_seed(args.seed)
-    ref = single_model_artifact_ref(args)
+    ref = model_source_ref(args)
     if ref is not None:
         print(f"Downloading {ref}", flush=True)
     source = resolve_single_model_source(args)
@@ -683,7 +683,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.download_only:
         if ref is None:
             raise SystemExit(
-                "--download-only requires a positional artifact ref, --artifact, or --artifact-run"
+                "--download-only requires an hf:// model ref, positional artifact ref, "
+                "--artifact, or --artifact-run"
             )
         return
     assert_rom_imported(args.game)

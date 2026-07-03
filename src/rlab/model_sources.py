@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from rlab.artifacts import (
     apply_config_defaults,
@@ -30,6 +32,8 @@ from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 MODEL_KIND_CHOICES = ("final", "best", "checkpoint")
+HUGGINGFACE_MODEL_SCHEME = "hf://"
+HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
 
 
 @dataclass
@@ -51,7 +55,17 @@ def artifact_ref_arg(value: str) -> str:
     return value
 
 
+def is_huggingface_model_ref(value: str) -> bool:
+    text = str(value or "").strip()
+    if text.startswith(HUGGINGFACE_MODEL_SCHEME):
+        return True
+    parsed = urlparse(text)
+    return parsed.scheme in {"http", "https"} and parsed.netloc == HUGGINGFACE_MODEL_URL_HOST
+
+
 def positional_model_source_arg(value: str) -> str:
+    if is_huggingface_model_ref(value):
+        return value
     if "/" not in value and ":" not in value:
         return value
     return artifact_ref_arg(value)
@@ -98,6 +112,15 @@ def add_model_source_args(
     parser.add_argument("--artifact-kind", choices=MODEL_KIND_CHOICES, default=default_kind)
     parser.add_argument("--artifact-version", default="latest")
     parser.add_argument("--artifact-root", default="runs/wandb_artifacts")
+    parser.add_argument(
+        "--hf-file",
+        help=(
+            "Checkpoint filename to download from a Hugging Face model repo. "
+            "Required only when the repo contains multiple .zip checkpoints."
+        ),
+    )
+    parser.add_argument("--hf-revision", help="Hugging Face model revision. Defaults to main.")
+    parser.add_argument("--hf-model-root", default="runs/hf_models")
 
 
 def slug(value: str) -> str:
@@ -127,6 +150,8 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
     positional = getattr(args, "artifact_ref", None)
     if positional:
         positional_ref = str(positional)
+        if is_huggingface_model_ref(positional_ref):
+            return None
         if "/" in positional_ref or ":" in positional_ref:
             return positional_ref
         return model_artifact_ref(
@@ -144,6 +169,20 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
         kind=getattr(args, "artifact_kind", "checkpoint"),
         version=getattr(args, "artifact_version", "latest"),
     )
+
+
+def single_huggingface_model_ref(args: argparse.Namespace) -> str | None:
+    positional = getattr(args, "artifact_ref", None)
+    if positional and is_huggingface_model_ref(str(positional)):
+        return str(positional)
+    model = getattr(args, "model", None)
+    if model and is_huggingface_model_ref(str(model)):
+        return str(model)
+    return None
+
+
+def model_source_ref(args: argparse.Namespace) -> str | None:
+    return single_huggingface_model_ref(args) or single_model_artifact_ref(args)
 
 
 def checkpoint_series_ref(args: argparse.Namespace) -> str:
@@ -283,7 +322,141 @@ def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
     )
 
 
+def parse_huggingface_model_ref(value: str) -> tuple[str, str | None, str | None]:
+    text = str(value or "").strip()
+    if text.startswith(HUGGINGFACE_MODEL_SCHEME):
+        path = text.removeprefix(HUGGINGFACE_MODEL_SCHEME).strip("/")
+        parts = [unquote(part) for part in path.split("/") if part]
+        if len(parts) < 2:
+            raise ValueError(f"expected Hugging Face model ref like hf://owner/repo, got {value!r}")
+        repo_id = "/".join(parts[:2])
+        filename = "/".join(parts[2:]) or None
+        return repo_id, filename, None
+
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc != HUGGINGFACE_MODEL_URL_HOST:
+        raise ValueError(f"expected Hugging Face model ref, got {value!r}")
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        raise ValueError(f"expected Hugging Face model URL with owner/repo, got {value!r}")
+    repo_id = "/".join(parts[:2])
+    filename = None
+    revision = None
+    if len(parts) >= 5 and parts[2] in {"blob", "raw", "resolve"}:
+        revision = parts[3]
+        filename = "/".join(parts[4:])
+    elif len(parts) > 2:
+        filename = "/".join(parts[2:])
+    return repo_id, filename, revision
+
+
+def _select_huggingface_checkpoint(
+    *,
+    repo_id: str,
+    revision: str,
+    filename: str | None,
+) -> str:
+    if filename:
+        return filename
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise SystemExit(
+            "huggingface-hub is required for hf:// model refs; reinstall rlab with "
+            "`uv tool install --from git+https://github.com/tsilva/rlab rlab`."
+        ) from exc
+    try:
+        files = HfApi().list_repo_files(repo_id=repo_id, repo_type="model", revision=revision)
+    except Exception as exc:
+        raise SystemExit(f"Could not list Hugging Face model repo {repo_id}: {exc}") from exc
+    checkpoints = sorted(path for path in files if path.endswith(".zip"))
+    if not checkpoints:
+        raise SystemExit(f"Hugging Face model repo {repo_id} has no .zip checkpoint files")
+    if len(checkpoints) > 1:
+        choices = ", ".join(checkpoints)
+        raise SystemExit(
+            f"Hugging Face model repo {repo_id} has multiple .zip checkpoints; "
+            f"pass --hf-file. Choices: {choices}"
+        )
+    return checkpoints[0]
+
+
+def download_huggingface_model_source(
+    ref: str,
+    *,
+    root: Path,
+    filename: str | None = None,
+    revision: str | None = None,
+) -> ResolvedModelSource:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise SystemExit(
+            "huggingface-hub is required for hf:// model refs; reinstall rlab with "
+            "`uv tool install --from git+https://github.com/tsilva/rlab rlab`."
+        ) from exc
+
+    try:
+        repo_id, parsed_filename, parsed_revision = parse_huggingface_model_ref(ref)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    resolved_revision = revision or parsed_revision or "main"
+    checkpoint_filename = _select_huggingface_checkpoint(
+        repo_id=repo_id,
+        revision=resolved_revision,
+        filename=filename or parsed_filename,
+    )
+    target_dir = root / safe_artifact_stem(f"{repo_id}@{resolved_revision}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        checkpoint_path = Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                repo_type="model",
+                revision=resolved_revision,
+                filename=checkpoint_filename,
+                local_dir=target_dir,
+            )
+        )
+    except Exception as exc:
+        raise SystemExit(
+            f"Could not download {checkpoint_filename} from Hugging Face model repo {repo_id}: {exc}"
+        ) from exc
+
+    try:
+        metadata_path = Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                repo_type="model",
+                revision=resolved_revision,
+                filename="model_metadata.json",
+                local_dir=target_dir,
+            )
+        )
+    except Exception as exc:
+        print(f"warning: could not download model_metadata.json from {repo_id}: {exc}", file=sys.stderr)
+    else:
+        sidecar_path = checkpoint_path.with_suffix(".metadata.json")
+        if metadata_path != sidecar_path:
+            shutil.copy2(metadata_path, sidecar_path)
+
+    return ResolvedModelSource(
+        model_path=checkpoint_path,
+        artifact_ref=None,
+        artifact_name=f"hf://{repo_id}/{checkpoint_filename}",
+        checkpoint_step=checkpoint_step_from_artifact(None, checkpoint_path),
+    )
+
+
 def resolve_single_model_source(args: argparse.Namespace) -> ResolvedModelSource:
+    hf_ref = single_huggingface_model_ref(args)
+    if hf_ref is not None:
+        return download_huggingface_model_source(
+            hf_ref,
+            root=Path(getattr(args, "hf_model_root", "runs/hf_models")),
+            filename=getattr(args, "hf_file", None),
+            revision=getattr(args, "hf_revision", None),
+        )
     ref = single_model_artifact_ref(args)
     if ref is not None:
         return download_artifact_ref_source(ref, Path(args.artifact_root))

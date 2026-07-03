@@ -10,11 +10,10 @@ from rlab.seeds import TRAIN_SEED_MAX, TRAIN_SEED_MIN, validate_training_seed
 TRAIN_SPEC_SCHEMA_VERSION = 1
 TRAIN_SPEC_REQUIRED_FIELDS = (
     "goal",
-    "slug",
-    "hypothesis",
+    "spec_id",
+    "description",
     "wandb_group",
     "wandb_tags",
-    "run_description_template",
     "train_config",
 )
 TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
@@ -23,7 +22,12 @@ TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
     "wandb",
     "wandb_mode",
 )
-TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = frozenset({"seed", "slug", "utc"})
+TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = frozenset(
+    {"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"}
+)
+TRAIN_SPEC_REMOVED_FIELDS = frozenset(
+    {"hypothesis", "parent_spec_slug", "parent_spec_id", "run_description_template"}
+)
 
 
 TRAIN_SPEC_SCHEMA: dict[str, Any] = {
@@ -44,14 +48,8 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
             },
         },
         "goal_slug": {"type": "string", "minLength": 1},
-        "slug": {"type": "string", "minLength": 1},
-        "hypothesis": {"type": "string", "minLength": 1},
-        "parent_spec_slug": {
-            "anyOf": [
-                {"type": "string", "minLength": 1},
-                {"type": "null"},
-            ],
-        },
+        "spec_id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
         "max_attempts": {"type": "integer", "minimum": 1},
         "seeds": {
             "type": "array",
@@ -60,11 +58,11 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
         },
         "wandb_group": {"type": "string", "minLength": 1},
         "run_name_label": {"type": "string", "minLength": 1},
+        "run_name_template": {"type": "string", "minLength": 1},
         "wandb_tags": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
         },
-        "run_description_template": {"type": "string", "minLength": 1},
         "selection_metrics": {
             "type": "array",
             "minItems": 1,
@@ -217,7 +215,14 @@ def _require_template(
             f"{_label_path(label, key)} must include template field(s): {', '.join(missing)}"
         )
     try:
-        template.format(seed=123, slug="candidate", utc="20260626T120000Z")
+        template.format(
+            seed=123,
+            slug="candidate",
+            spec_id="candidate",
+            timestamp="20260626T120000Z",
+            utc="20260626T120000Z",
+            wandb_group="b-test",
+        )
     except (IndexError, KeyError, ValueError) as exc:
         raise ValueError(f"{_label_path(label, key)} is not a valid format template: {exc}") from exc
     return template
@@ -231,6 +236,9 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
     """
 
     _require_mapping(document, label=label)
+    removed_fields = sorted(field for field in TRAIN_SPEC_REMOVED_FIELDS if field in document)
+    if removed_fields:
+        raise ValueError(f"{label} uses removed train spec field(s): {', '.join(removed_fields)}")
     if "schema_version" in document and (
         schema_version := _require_int(document, "schema_version", label=label, minimum=1)
     ) != TRAIN_SPEC_SCHEMA_VERSION:
@@ -241,24 +249,27 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
 
     goal = _require_mapping(_require_key(document, "goal", label=label), label=_label_path(label, "goal"))
     _require_non_empty_string(goal, "goal_id", label=_label_path(label, "goal"))
-    _require_non_empty_string(document, "slug", label=label)
-    _require_non_empty_string(document, "hypothesis", label=label)
-    if "parent_spec_slug" in document:
-        _require_nullable_non_empty_string(document, "parent_spec_slug", label=label)
+    _require_non_empty_string(document, "spec_id", label=label)
+    _require_template(
+        document,
+        "description",
+        label=label,
+        required_fields=set(),
+    )
     if "max_attempts" in document:
         _require_int(document, "max_attempts", label=label, minimum=1)
     seed_values = _require_int_list(document, "seeds", label=label) if "seeds" in document else []
     _require_non_empty_string(document, "wandb_group", label=label)
     if "run_name_label" in document:
         _require_non_empty_string(document, "run_name_label", label=label)
+    if "run_name_template" in document:
+        _require_template(
+            document,
+            "run_name_template",
+            label=label,
+            required_fields=set(),
+        )
     _require_string_list(document, "wandb_tags", label=label)
-    _require_template(
-        document,
-        "run_description_template",
-        label=label,
-        required_fields={"seed"},
-    )
-
     if "selection_metrics" in document:
         metrics = _require_string_list(document, "selection_metrics", label=label)
         if not metrics:

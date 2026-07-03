@@ -136,14 +136,15 @@ def valid_train_spec() -> dict:
     return {
         "schema_version": 1,
         "goal": {"goal_id": "Level1-1"},
-        "slug": "candidate",
-        "hypothesis": "Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.",
-        "parent_spec_slug": None,
+        "spec_id": "candidate",
+        "description": (
+            "Candidate seed {seed} reproduces the expected completion signal and was created "
+            "to rank by completion rate, then reward."
+        ),
         "seeds": [23, 24],
         "wandb_group": "b-test",
-        "run_name_label": "candidate",
+        "run_name_template": "{wandb_group}_{spec_id}_s{seed}_{timestamp}",
         "wandb_tags": ["b55", "confirm"],
-        "run_description_template": "candidate seed {seed}",
         "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": {
             "game": "SuperMarioBros-Nes-v0",
@@ -362,7 +363,13 @@ class JobQueueTests(unittest.TestCase):
     def test_wandb_goal_filter_accepts_config_or_tag_partition(self) -> None:
         self.assertEqual(
             wandb_leaders.goal_run_filter("Level1-1"),
-            {"$or": [{"config.goal_slug": "Level1-1"}, {"tags": "goal:Level1-1"}]},
+            {
+                "$or": [
+                    {"config.goal_slug": "Level1-1"},
+                    {"tags": "goal_id:Level1-1"},
+                    {"tags": "goal:Level1-1"},
+                ]
+            },
         )
         self.assertEqual(wandb_leaders.goal_run_filter(None), {})
 
@@ -521,15 +528,13 @@ defaults:
 - _self_
 goal:
   goal_id: Level1-1
-slug: candidate
-hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
-parent_spec_slug: null
+spec_id: candidate
+description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23, 24]
 run_target: rtx4090
 state: Level1-1
 wandb_group: b-test
 wandb_tags: [mario, confirm]
-run_description_template: candidate seed {seed}
 selection_metrics: [train/completion_episode_rate, train/reward/mean]
 overrides:
   train:
@@ -605,7 +610,7 @@ release:
   huggingface:
     repo: SuperMarioBros-NES_{goal_id}
     card_template: stable-retro-sb3
-    checkpoint_filename: ppo_{game_slug}_{checkpoint_step}_steps.zip
+    checkpoint_filename: model.zip
     preview_filename: replay.mp4
     include_youtube_preview: true
 """,
@@ -627,15 +632,14 @@ title: "{goal_id} completion"
 defaults:
 - ../_goal@goal
 - _self_
-slug: candidate
+spec_id: candidate
 template_vars:
   batch_id: b272
   recipe: b55
-hypothesis: "{goal_id} should transfer {recipe}."
+description: "{goal_id} {recipe} seed {seed} transfer run created to validate recipe transfer."
 wandb_group: "{batch_id}-{level_short}-{recipe}"
-run_name_label: "{level_short}-{recipe}"
-wandb_tags: ["{level_tag}", "{recipe}"]
-run_description_template: "{goal_id} {recipe} seed {seed}"
+run_name_template: "{wandb_group}_{spec_id}_s{seed}_{timestamp}"
+wandb_tags: ["goal_id:{goal_id}", "spec_id:{spec_id}", "env_id:{env_id}", "recipe:{recipe}"]
 selection_metrics: [eval/reward/mean]
 """,
                 encoding="utf-8",
@@ -646,11 +650,22 @@ selection_metrics: [eval/reward/mean]
         self.assertFalse(contains_key(loaded, "template_vars"))
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-2")
         self.assertEqual(loaded["wandb_group"], "b272-l12-b55")
-        self.assertEqual(loaded["wandb_tags"], ["level1-2", "b55"])
-        self.assertEqual(loaded["run_description_template"], "Level1-2 b55 seed {seed}")
+        self.assertEqual(
+            loaded["wandb_tags"],
+            [
+                "goal_id:Level1-2",
+                "spec_id:candidate",
+                "env_id:stable-retro-turbo:SuperMarioBros-Nes-v0",
+                "recipe:b55",
+            ],
+        )
+        self.assertEqual(
+            loaded["description"],
+            "Level1-2 b55 seed {seed} transfer run created to validate recipe transfer.",
+        )
         self.assertEqual(
             loaded["goal"]["release"]["huggingface"]["checkpoint_filename"],
-            "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+            "model.zip",
         )
 
     def test_load_spec_document_materializes_first_class_environment_identity(self) -> None:
@@ -662,9 +677,8 @@ schema_version: 1
 kind: train_experiment
 goal:
   goal_id: Level1-1
-slug: candidate
-hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
-parent_spec_slug: null
+spec_id: candidate
+description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23]
 run_target: rtx4090
 environment:
@@ -687,7 +701,6 @@ environment:
     death_penalty: 25
 wandb_group: b-test
 wandb_tags: [mario, env-hash]
-run_description_template: candidate seed {seed}
 selection_metrics: [train/completion_episode_rate]
 train:
   timesteps: 1024
@@ -727,14 +740,12 @@ schema_version: 1
 kind: train_experiment
 goal:
   goal_id: Level1-1
-slug: candidate
-hypothesis: Candidate should reproduce the expected completion signal. Rank by completion rate, then reward.
-parent_spec_slug: null
+spec_id: candidate
+description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23]
 run_target: rtx4090
 wandb_group: b-test
 wandb_tags: [mario, env-config]
-run_description_template: candidate seed {seed}
 selection_metrics: [train/completion_episode_rate]
 train:
   environment:
@@ -824,13 +835,11 @@ schema_version: 1
 defaults:
 - ../_goal@goal
 - _self_
-slug: candidate
-hypothesis: Candidate should inherit the goal contract. The queue materializes env identity and training policy from the goal.
-parent_spec_slug: null
+spec_id: candidate
+description: Candidate seed {seed} inherits the goal contract and was created to verify queue materialization of env identity and training policy.
 seeds: [23]
 wandb_group: b-test
 wandb_tags: [mario, env-config]
-run_description_template: candidate seed {seed}
 state: WrongState
 train_config:
   game: WrongGame
@@ -913,12 +922,11 @@ schema_version: 1
 defaults:
 - ../_goal@goal
 - _self_
-slug: candidate
-hypothesis: Candidate should disable native terminal boundaries from the goal contract.
+spec_id: candidate
+description: Candidate seed {seed} disables native terminal boundaries and was created to verify spec overrides on the goal contract.
 seeds: [23]
 wandb_group: b-test
 wandb_tags: [mario, no-terminal]
-run_description_template: candidate seed {seed}
 train:
   environment:
     env_config:
@@ -934,13 +942,25 @@ train:
 
     def test_load_spec_document_rejects_missing_mandatory_schema_field(self) -> None:
         spec = valid_train_spec()
-        del spec["run_description_template"]
+        del spec["description"]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.json"
             path.write_text(json.dumps(spec), encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "run_description_template"):
+            with self.assertRaisesRegex(ValueError, "description"):
                 job_queue.load_spec_document(path)
+
+    def test_load_spec_document_rejects_removed_spec_fields(self) -> None:
+        for field in ("hypothesis", "parent_spec_slug", "parent_spec_id", "run_description_template"):
+            with self.subTest(field=field):
+                spec = valid_train_spec()
+                spec[field] = "removed"
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "candidate.json"
+                    path.write_text(json.dumps(spec), encoding="utf-8")
+
+                    with self.assertRaisesRegex(ValueError, "removed train spec field"):
+                        job_queue.load_spec_document(path)
 
     def test_enqueue_train_jobs_from_spec_document_derives_short_run_name(self) -> None:
         calls = []
@@ -971,14 +991,14 @@ train:
 
         self.assertEqual(
             [row["run_name"] for row in rows],
-            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+            ["b-test_candidate_s23_20260626T120000Z", "b-test_candidate_s24_20260626T120000Z"],
         )
         self.assertEqual(
             [call["run_name"] for call in calls],
-            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+            ["b-test_candidate_s23_20260626T120000Z", "b-test_candidate_s24_20260626T120000Z"],
         )
 
-    def test_enqueue_train_jobs_from_spec_document_uses_batch_id_from_wandb_group(self) -> None:
+    def test_enqueue_train_jobs_from_spec_document_uses_run_name_template(self) -> None:
         calls = []
 
         def fake_enqueue(conn, **kwargs):
@@ -987,7 +1007,6 @@ train:
 
         document = valid_train_spec()
         document["wandb_group"] = "b82-l11-b55-post21-revalidate"
-        document["run_name_label"] = "b55reval"
 
         old_enqueue = job_queue.enqueue_train_job
         old_utc = job_queue._utc_stamp
@@ -1004,8 +1023,14 @@ train:
             job_queue.enqueue_train_job = old_enqueue
             job_queue._utc_stamp = old_utc
 
-        self.assertEqual([row["run_name"] for row in rows], ["b82-b55reval-s6-20260702T150934Z"])
-        self.assertEqual([call["run_name"] for call in calls], ["b82-b55reval-s6-20260702T150934Z"])
+        self.assertEqual(
+            [row["run_name"] for row in rows],
+            ["b82-l11-b55-post21-revalidate_candidate_s6_20260702T150934Z"],
+        )
+        self.assertEqual(
+            [call["run_name"] for call in calls],
+            ["b82-l11-b55-post21-revalidate_candidate_s6_20260702T150934Z"],
+        )
 
     def test_checked_in_goal_yaml_specs_match_train_spec_schema(self) -> None:
         spec_paths = sorted(Path("experiments/goals").rglob("specs/*.y*ml"))
@@ -1038,6 +1063,10 @@ train:
         level1_1 = job_queue.load_spec_document(
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
         )
+        self.assertEqual(
+            level1_1["wandb_group"],
+            "supermariobrosnes-turbo:SuperMarioBros-Nes-v0_Level1-1",
+        )
         for level in ("Level1-2", "Level1-3"):
             with self.subTest(level=level):
                 transfer = job_queue.load_spec_document(
@@ -1047,7 +1076,10 @@ train:
                 self.assertEqual(transfer["train"]["policy"], level1_1["train"]["policy"])
                 self.assertEqual(transfer["goal"]["goal_id"], level)
                 self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
-                self.assertEqual(transfer["parent_spec_slug"], level1_1["slug"])
+                self.assertEqual(
+                    transfer["wandb_group"],
+                    f"supermariobrosnes-turbo:SuperMarioBros-Nes-v0_{level}",
+                )
                 self.assertFalse(contains_key(transfer, "template_vars"))
                 self.assertEqual(
                     transfer["goal"]["release"]["huggingface"]["repo"],
@@ -1055,14 +1087,19 @@ train:
                 )
                 self.assertEqual(
                     transfer["goal"]["release"]["huggingface"]["checkpoint_filename"],
-                    "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+                    "model.zip",
                 )
                 self.assertEqual(
-                    transfer["wandb_tags"][:2],
-                    [level.lower(), "b55"],
+                    transfer["wandb_tags"],
+                    [
+                        f"goal_id:{level}",
+                        "spec_id:base",
+                        "env_id:supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
+                        "recipe:b55",
+                        "phase:transfer",
+                    ],
                 )
-                self.assertIn(level, transfer["hypothesis"])
-                self.assertIn(level, transfer["run_description_template"])
+                self.assertIn(level, transfer["description"])
 
     def test_launch_result_metadata_strips_metrics_json(self) -> None:
         result = job_queue.launch_result_metadata(
@@ -1451,7 +1488,7 @@ train:
 
         self.assertEqual(
             [row["run_name"] for row in rows],
-            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+            ["b-test_candidate_s23_20260626T120000Z", "b-test_candidate_s24_20260626T120000Z"],
         )
         self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
         self.assertEqual(
@@ -1463,7 +1500,7 @@ train:
         )
         self.assertEqual(calls[0]["train_config"]["done_on_events"], "life_loss,level_change")
         self.assertNotIn("done_on_info_json", calls[0]["train_config"])
-        self.assertEqual(calls[0]["wandb_tags"], ["level1-1", "b55", "confirm"])
+        self.assertEqual(calls[0]["wandb_tags"], ["b55", "confirm"])
         self.assertEqual(calls[0]["goal_slug"], "Level1-1")
         self.assertEqual(calls[0]["spec_slug"], "candidate")
         self.assertIsNone(calls[0]["profile_id"])
@@ -1859,7 +1896,7 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,goal:Level1-1,spec:base,level:Level1-1",
+            "screen,goal_id:Level1-1,spec_id:base,level_id:Level1-1",
         )
         self.assertEqual(written_config["goal_slug"], "Level1-1")
         self.assertEqual(written_config["spec_slug"], "base")

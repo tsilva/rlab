@@ -71,8 +71,12 @@ RUNTIME_TRAIN_CONFIG_DEFAULTS = {
     "wandb_mode": "online",
     "wandb_artifact_storage_uri": "${CHECKPOINT_BUCKET_URI}",
 }
+QUEUE_TEMPLATE_FIELDS = frozenset({"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"})
 SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
-    ("run_description_template",): frozenset({"seed", "slug", "utc"}),
+    ("description",): QUEUE_TEMPLATE_FIELDS,
+    ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
+    ("run_name_template",): QUEUE_TEMPLATE_FIELDS,
+    ("goal", "run_name_template"): QUEUE_TEMPLATE_FIELDS,
     (
         "goal",
         "release",
@@ -751,6 +755,20 @@ def _materialize_goal_train_environment(
     materialized["train"] = train
 
 
+def _materialize_goal_queue_defaults(
+    materialized: dict[str, Any],
+    goal_document: Mapping[str, Any] | None,
+) -> None:
+    if goal_document is None:
+        return
+    for key in ("wandb_group", "run_name_template"):
+        if key in materialized:
+            continue
+        value = goal_document.get(key)
+        if isinstance(value, str) and value.strip():
+            materialized[key] = value
+
+
 def materialize_train_spec_document(
     document: Mapping[str, Any],
     *,
@@ -766,6 +784,7 @@ def materialize_train_spec_document(
         path=path,
         goal_composition=goal_composition,
     )
+    _materialize_goal_queue_defaults(materialized, goal_document)
     _materialize_goal_train_environment(materialized, goal_document)
     train_config = _merge_train_config_sections(materialized, goal_document=goal_document)
     if train_config:
@@ -861,7 +880,7 @@ def repo_is_dirty(cwd: Path = Path(".")) -> bool:
 
 
 def spec_slug(document: Mapping[str, Any]) -> str:
-    return str(document.get("slug") or "").strip()
+    return str(document.get("spec_id") or document.get("slug") or "").strip()
 
 
 def spec_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
@@ -992,17 +1011,9 @@ def spec_goal_slug(document: Mapping[str, Any]) -> str:
     )
 
 
-def _goal_wandb_tag(document: Mapping[str, Any]) -> str:
-    return spec_goal_slug(document).lower()
-
-
 def spec_wandb_tags(document: Mapping[str, Any]) -> list[str]:
     tags = []
     seen: set[str] = set()
-    goal_tag = _goal_wandb_tag(document)
-    if goal_tag:
-        tags.append(goal_tag)
-        seen.add(goal_tag)
     for raw_tag in document.get("wandb_tags") or []:
         tag = str(raw_tag).strip()
         if not tag or tag in seen:
@@ -1017,11 +1028,38 @@ def _utc_stamp() -> str:
 
 
 def _format_seed_template(
-    template: str | None, *, seed: int | None, slug: str, utc: str
+    template: str | None, *, seed: int | None, slug: str, utc: str, wandb_group: str = ""
 ) -> str | None:
     if not template:
         return None
-    return str(template).format(seed="" if seed is None else seed, slug=slug, utc=utc)
+    return str(template).format(
+        seed="" if seed is None else seed,
+        slug=slug,
+        spec_id=slug,
+        timestamp=utc,
+        utc=utc,
+        wandb_group=wandb_group,
+    )
+
+
+def _format_run_name_template(
+    template: str | None,
+    *,
+    seed: int | None,
+    slug: str,
+    utc: str,
+    wandb_group: str,
+) -> str | None:
+    if not template:
+        return None
+    return str(template).format(
+        seed="" if seed is None else seed,
+        slug=slug,
+        spec_id=slug,
+        timestamp=utc,
+        utc=utc,
+        wandb_group=wandb_group,
+    )
 
 
 def _run_name_slug(value: str, *, limit: int = 32) -> str:
@@ -1096,6 +1134,7 @@ def enqueue_train_jobs_from_spec_document(
                 seed_span=train_config.get("n_envs", 1),
             )
             train_config["seed"] = seed
+        wandb_group = str(document["wandb_group"])
         row = enqueue_train_job(
             conn,
             goal_slug=goal_slug,
@@ -1110,20 +1149,30 @@ def enqueue_train_jobs_from_spec_document(
             run_target=None,
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
-            run_name=_format_default_run_name(
-                str(document["wandb_group"]),
-                label=str(document.get("run_name_label") or document_slug),
-                seed=seed,
-                utc=utc,
+            run_name=(
+                _format_run_name_template(
+                    document.get("run_name_template"),
+                    seed=seed,
+                    slug=document_slug,
+                    utc=utc,
+                    wandb_group=wandb_group,
+                )
+                or _format_default_run_name(
+                    wandb_group,
+                    label=str(document.get("run_name_label") or document_slug),
+                    seed=seed,
+                    utc=utc,
+                )
             ),
             run_description=_format_seed_template(
-                document.get("run_description_template"),
+                document.get("description"),
                 seed=seed,
                 slug=document_slug,
                 utc=utc,
+                wandb_group=wandb_group,
             ),
             seed=seed,
-            wandb_group=document.get("wandb_group"),
+            wandb_group=wandb_group,
             wandb_tags=spec_wandb_tags(document),
         )
         rows.append(row)
