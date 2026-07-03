@@ -1136,7 +1136,7 @@ logging:
         )
         self.assertEqual(
             level1_1["group_id"],
-            "SuperMarioBros-Nes-v0_Level1-1",
+            "Level1-1",
         )
         for level in ("Level1-2", "Level1-3", "Level2-2"):
             with self.subTest(level=level):
@@ -1149,7 +1149,7 @@ logging:
                 self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
                 self.assertEqual(
                     transfer["group_id"],
-                    f"SuperMarioBros-Nes-v0_{level}",
+                    level,
                 )
                 self.assertFalse(contains_key(transfer, "template_vars"))
                 self.assertEqual(
