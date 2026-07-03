@@ -1113,6 +1113,9 @@ logging:
             [
                 "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
                 "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/no-terminal.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-2/recipes/base.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-3/recipes/base.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level2-2/recipes/base.yaml",
                 "experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/recipes/base.yaml",
             ],
         )
