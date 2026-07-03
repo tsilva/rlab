@@ -213,20 +213,19 @@ def environment_identity_from_train_config(
     return identity
 
 
-def _hud_crop_top_from_obs_crop(obs_crop: Any) -> int | None:
+def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
     if obs_crop is None:
-        return 0
+        return None
     if not isinstance(obs_crop, list | tuple) or len(obs_crop) != 4:
         raise ValueError("environment.preprocessing.obs_crop must be [top, right, bottom, left]")
-    top, right, bottom, left = obs_crop
-    if any(value not in (0, None) for value in (right, bottom, left)):
-        raise ValueError(
-            "environment.preprocessing.obs_crop cannot be materialized into the current "
-            "runtime unless right, bottom, and left are 0",
-        )
-    if not isinstance(top, int) or isinstance(top, bool) or top < 0:
-        raise ValueError("environment.preprocessing.obs_crop[0] must be a non-negative integer")
-    return top
+    result: list[int] = []
+    for index, value in enumerate(obs_crop):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(
+                f"environment.preprocessing.obs_crop[{index}] must be a non-negative integer"
+            )
+        result.append(int(value))
+    return result
 
 
 def _observation_size_from_obs_resize(obs_resize: Any) -> int:
@@ -292,9 +291,8 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
         value = environment.get(section)
         if isinstance(value, Mapping):
             train_config.update(deepcopy(dict(value)))
-    if "obs_crop" in train_config and "hud_crop_top" not in train_config:
-        train_config["hud_crop_top"] = _hud_crop_top_from_obs_crop(train_config["obs_crop"])
-    train_config.pop("obs_crop", None)
+    if "obs_crop" in train_config:
+        train_config["obs_crop"] = _obs_crop_from_value(train_config["obs_crop"])
     if "obs_resize" in train_config and "observation_size" not in train_config:
         train_config["observation_size"] = _observation_size_from_obs_resize(
             train_config["obs_resize"],

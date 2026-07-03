@@ -4,6 +4,7 @@ import argparse
 import json
 
 from rlab.env import EnvConfig
+from rlab.env_config import parse_obs_crop
 
 
 REWARD_MODE_CHOICES = ("auto", "baseline", "bounded", "additive", "score", "native")
@@ -70,6 +71,12 @@ def add_env_config_args(
         type=int,
         default=defaults.hud_crop_top,
         help="Crop this many pixels from the top of raw frames before grayscale resize.",
+    )
+    parser.add_argument(
+        "--obs-crop",
+        type=parse_obs_crop,
+        default=defaults.obs_crop,
+        help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
     )
     parser.add_argument("--obs-resize-algorithm", default=defaults.obs_resize_algorithm)
     parser.add_argument("--use-retro-reward", action=argparse.BooleanOptionalAction, default=False)

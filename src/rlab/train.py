@@ -83,7 +83,7 @@ from rlab.schedules import (
     learning_rate_schedule,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
 
@@ -181,7 +181,10 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     if getattr(args, "no_wandb_artifacts", False):
         return str(checkpoint_path)
     entity = str(getattr(args, "wandb_entity", "") or DEFAULT_WANDB_ENTITY).strip()
-    project = str(getattr(args, "wandb_project", "") or DEFAULT_WANDB_PROJECT).strip()
+    project = resolve_wandb_project(
+        getattr(args, "wandb_project", None),
+        str(getattr(args, "game", "") or ""),
+    )
     if entity and project:
         name = f"{sanitize_artifact_name(args.run_name)}-checkpoint"
         return f"{entity}/{project}/{name}:step-{step}"

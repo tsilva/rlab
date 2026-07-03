@@ -713,7 +713,7 @@ environment:
     frame_skip: 4
     max_pool_frames: false
     obs_resize: [84, 84]
-    obs_crop: [32, 0, 0, 0]
+    obs_crop: [0, 0, 32, 0]
   termination:
     max_episode_steps: 4500
     info_events_json:
@@ -740,8 +740,8 @@ logging:
         self.assertEqual(loaded["train_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(loaded["train_config"]["state"], "Level1-1")
         self.assertEqual(loaded["train_config"]["frame_skip"], 4)
-        self.assertEqual(loaded["train_config"]["hud_crop_top"], 32)
-        self.assertNotIn("obs_crop", loaded["train_config"])
+        self.assertEqual(loaded["train_config"]["obs_crop"], [0, 0, 32, 0])
+        self.assertNotIn("hud_crop_top", loaded["train_config"])
         self.assertEqual(loaded["train_config"]["observation_size"], 84)
         self.assertNotIn("obs_resize", loaded["train_config"])
         self.assertEqual(loaded["train_config"]["death_penalty"], 25)
@@ -750,7 +750,7 @@ logging:
         )
         self.assertEqual(loaded["environment"]["state"], "Level1-1")
         self.assertNotIn("hud_crop_top", loaded["environment"]["preprocessing"])
-        self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
+        self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [0, 0, 32, 0])
         self.assertNotIn("observation_size", loaded["environment"]["preprocessing"])
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_resize"], [84, 84])
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))

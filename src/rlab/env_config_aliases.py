@@ -11,7 +11,6 @@ STABLE_RETRO_TURBO_ENV_CONFIG_KEYS = frozenset(
         "num_threads",
         "rom_path",
         "obs_resize",
-        "obs_crop",
         "obs_grayscale",
         "obs_resize_algorithm",
         "obs_layout",
@@ -50,19 +49,17 @@ def _square_size_from_obs_resize(value: Any, *, label: str) -> int:
     return int(width)
 
 
-def _hud_crop_top_from_obs_crop(value: Any, *, label: str) -> int:
+def _obs_crop_from_value(value: Any, *, label: str) -> tuple[int, int, int, int] | None:
     if value is None:
-        return 0
+        return None
     if not isinstance(value, list | tuple) or len(value) != 4:
         raise ValueError(f"{label}.obs_crop must be [top, right, bottom, left]")
-    top, right, bottom, left = value
-    if any(item not in (0, None) for item in (right, bottom, left)):
-        raise ValueError(
-            f"{label}.obs_crop cannot map to current EnvConfig unless right, bottom, and left are 0"
-        )
-    if not isinstance(top, int) or isinstance(top, bool) or top < 0:
-        raise ValueError(f"{label}.obs_crop[0] must be a non-negative integer")
-    return int(top)
+    result: list[int] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            raise ValueError(f"{label}.obs_crop[{index}] must be a non-negative integer")
+        result.append(int(item))
+    return tuple(result)  # type: ignore[return-value]
 
 
 def normalize_provider_env_config_aliases(
@@ -79,8 +76,8 @@ def normalize_provider_env_config_aliases(
             result["obs_resize"],
             label=label,
         )
-    if "obs_crop" in result and "hud_crop_top" not in result:
-        result["hud_crop_top"] = _hud_crop_top_from_obs_crop(result["obs_crop"], label=label)
+    if "obs_crop" in result:
+        result["obs_crop"] = _obs_crop_from_value(result["obs_crop"], label=label)
     if "maxpool_last_two" in result and "max_pool_frames" not in result:
         result["max_pool_frames"] = result["maxpool_last_two"]
     if "frame_maxpool" in result and "max_pool_frames" not in result:

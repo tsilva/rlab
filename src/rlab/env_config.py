@@ -5,7 +5,7 @@ import json
 import math
 from typing import Any
 
-from rlab.env import EnvConfig, InfoEventRules
+from rlab.env import EnvConfig, InfoEventRules, validate_obs_crop
 
 
 def parse_states(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -134,6 +134,24 @@ def parse_event_names(value: str | list[str] | tuple[str, ...]) -> tuple[str, ..
     return tuple(dict.fromkeys(names))
 
 
+def parse_obs_crop(value: str | list[int] | tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
+    if value is None or value == "":
+        return None
+    raw: Any = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"--obs-crop contains invalid JSON: {exc.msg}") from exc
+        else:
+            raw = [int(item.strip()) for item in text.split(",")]
+    return validate_obs_crop(raw)
+
+
 def env_config_from_args(
     args: argparse.Namespace,
     *,
@@ -163,6 +181,7 @@ def env_config_from_args(
         "sticky_action_prob": value("sticky_action_prob"),
         "max_episode_steps": max_episode_steps,
         "hud_crop_top": value("hud_crop_top"),
+        "obs_crop": parse_obs_crop(value("obs_crop")),
         "use_retro_reward": value("use_retro_reward"),
         "clip_rewards": value("clip_rewards"),
         "reward_mode": value("reward_mode"),

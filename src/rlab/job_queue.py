@@ -842,7 +842,7 @@ def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:
             capture_output=True,
             text=True,
         )
-    except OSError, subprocess.CalledProcessError:
+    except (OSError, subprocess.CalledProcessError):
         return None
     return result.stdout.strip() or None
 
@@ -1940,7 +1940,7 @@ def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("
         return default
     try:
         return float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 

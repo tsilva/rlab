@@ -10,8 +10,8 @@ from typing import Any
 
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
+from rlab.env_config import parse_obs_crop
 from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
-from rlab.wandb_utils import DEFAULT_WANDB_PROJECT
 
 
 ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
@@ -53,6 +53,7 @@ TRAIN_VALUE_OPTIONS = {
     "max_episode_steps": "--max-episode-steps",
     "observation_size": "--observation-size",
     "hud_crop_top": "--hud-crop-top",
+    "obs_crop": "--obs-crop",
     "eval_freq": "--eval-freq",
     "eval_episodes": "--eval-episodes",
     "checkpoint_freq": "--checkpoint-freq",
@@ -393,6 +394,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Crop this many pixels from the top of raw frames before grayscale resize; -1 uses the target default.",
     )
     parser.add_argument(
+        "--obs-crop",
+        type=parse_obs_crop,
+        default=parser_defaults_env.obs_crop,
+        help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
+    )
+    parser.add_argument(
         "--eval-freq",
         type=int,
         default=0,
@@ -583,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--resume", help="Path to an existing PPO .zip checkpoint")
     parser.add_argument("--wandb", action="store_true", help="Log training to Weights & Biases")
-    parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
+    parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-group")
     parser.add_argument("--wandb-tags", default="", help="Comma-separated W&B tags")

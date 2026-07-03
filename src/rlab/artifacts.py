@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.env import EnvConfig, state_distribution_metadata
+from rlab.env import EnvConfig, native_obs_crop, state_distribution_metadata
 from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.env_config import parse_event_names, parse_info_events
 from rlab.env_identity import environment_hash, environment_identity_from_train_config
@@ -27,7 +27,7 @@ from rlab.metric_names import (
     TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS,
     TRAIN_ARTIFACT_WANDB_LOG_SECONDS,
 )
-from rlab.wandb_utils import load_wandb_env
+from rlab.wandb_utils import load_wandb_env, resolve_wandb_project
 
 
 MODEL_METADATA_VERSION = 2
@@ -47,6 +47,7 @@ PLAYBACK_ENV_ARG_KEYS = {
     "max_steps": ("max_steps", "max_episode_steps"),
     "observation_size": ("observation_size",),
     "hud_crop_top": ("hud_crop_top",),
+    "obs_crop": ("obs_crop",),
     "obs_resize_algorithm": ("obs_resize_algorithm",),
     "use_retro_reward": ("use_retro_reward",),
     "clip_rewards": ("clip_rewards",),
@@ -133,7 +134,7 @@ def training_preprocessing_metadata(config: EnvConfig) -> dict[str, Any]:
     return {
         "pipeline": pipeline,
         "obs_resize": [config.observation_size, config.observation_size],
-        "obs_crop": [config.hud_crop_top, 0, 0, 0] if config.hud_crop_top else None,
+        "obs_crop": list(native_obs_crop(config) or ()) or None,
         "obs_grayscale": True,
         "obs_resize_algorithm": config.obs_resize_algorithm,
         "frame_skip": config.frame_skip,
@@ -436,6 +437,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         "max_episode_steps": config.max_episode_steps,
         "observation_size": config.observation_size,
         "hud_crop_top": config.hud_crop_top,
+        "obs_crop": list(config.obs_crop) if config.obs_crop is not None else None,
         "obs_resize_algorithm": config.obs_resize_algorithm,
         "use_retro_reward": config.use_retro_reward,
         "reward_mode": config.reward_mode,
@@ -463,8 +465,10 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]
+    project = resolve_wandb_project(getattr(args, "wandb_project", None), config.game)
+    args.wandb_project = project
     wandb_run = wandb.init(
-        project=args.wandb_project,
+        project=project,
         entity=args.wandb_entity,
         group=args.wandb_group,
         name=args.run_name,

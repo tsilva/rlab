@@ -64,6 +64,7 @@ from rlab.env import (
 from rlab.env_config import (
     env_config_from_args,
     parse_info_events,
+    parse_obs_crop,
     parse_state_probs,
     parse_states,
 )
@@ -106,6 +107,7 @@ from rlab.targets import SuperMarioBros3NesV0Target, SuperMarioBrosNesV0Target, 
 from rlab.train import (
     Sb3HumanOutputFormatCallback,
     disable_sb3_human_output_truncation,
+    eval_checkpoint_artifact_ref,
     eval_config_from_training_config,
     log_checkpoint_eval_metrics,
     update_best_checkpoint_summary,
@@ -160,6 +162,12 @@ class EnvConfigAliasTests(unittest.TestCase):
         self.assertNotIn("frame_maxpool", config)
         self.assertNotIn("action_sticky_prob", config)
         self.assertNotIn("reset_noops", config)
+
+    def test_obs_crop_alias_preserves_bottom_crop(self) -> None:
+        config = normalize_provider_env_config_aliases({"obs_crop": [0, 0, 32, 0]})
+
+        self.assertEqual(config["obs_crop"], (0, 0, 32, 0))
+        self.assertNotIn("hud_crop_top", config)
 
     def test_done_on_alias_overrides_inherited_done_on_events(self) -> None:
         config = normalize_provider_env_config_aliases(
@@ -342,6 +350,10 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive finite"):
             parse_state_probs("1,0")
 
+    def test_parse_obs_crop_accepts_bottom_crop(self) -> None:
+        self.assertEqual(parse_obs_crop("0,0,32,0"), (0, 0, 32, 0))
+        self.assertEqual(parse_obs_crop("[0,0,32,0]"), (0, 0, 32, 0))
+
     def test_init_wandb_uses_global_step_as_metric_step(self) -> None:
         class FakeRun:
             def __init__(self) -> None:
@@ -385,6 +397,56 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 (("global_step",), {}),
                 (("*",), {"step_metric": "global_step"}),
             ],
+        )
+
+    def test_init_wandb_defaults_project_to_env_id(self) -> None:
+        class FakeRun:
+            def define_metric(self, *args: object, **kwargs: object) -> None:
+                pass
+
+        class FakeWandb:
+            def __init__(self) -> None:
+                self.run = FakeRun()
+                self.init_kwargs: dict[str, object] | None = None
+
+            def init(self, **kwargs: object) -> FakeRun:
+                self.init_kwargs = kwargs
+                return self.run
+
+        fake_wandb = FakeWandb()
+        args = argparse.Namespace(
+            wandb=True,
+            wandb_project=None,
+            wandb_entity="tsilva",
+            wandb_group="group",
+            wandb_tags="ppo, sample-efficiency",
+            wandb_mode="offline",
+            run_name="run",
+            run_description="description",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch("rlab.artifacts.load_wandb_env"),
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
+            ):
+                init_wandb(args, tmp_dir, EnvConfig(game="SuperMarioBros3-Nes-v0"))
+
+        self.assertEqual(fake_wandb.init_kwargs["project"], "SuperMarioBros3-Nes-v0")
+        self.assertEqual(args.wandb_project, "SuperMarioBros3-Nes-v0")
+
+    def test_eval_checkpoint_artifact_ref_defaults_project_to_env_id(self) -> None:
+        args = argparse.Namespace(
+            game="SuperMarioBros3-Nes-v0",
+            no_wandb_artifacts=False,
+            wandb_entity="tsilva",
+            wandb_project=None,
+            run_name="smb3-run",
+        )
+
+        self.assertEqual(
+            eval_checkpoint_artifact_ref(args, Path("model.zip"), 500000),
+            "tsilva/SuperMarioBros3-Nes-v0/smb3-run-checkpoint:step-500000",
         )
 
     def test_eval_max_steps_maps_to_env_max_episode_steps(self) -> None:
@@ -688,6 +750,12 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             '[{"id":"SuperMarioBrosNesRewardEnvWrapper","kwargs":{"reward_mode":"score"}}]',
             command,
         )
+
+    def test_build_train_command_includes_obs_crop(self) -> None:
+        command = build_train_command({"obs_crop": [0, 0, 32, 0]})
+
+        self.assertIn("--obs-crop", command)
+        self.assertIn("0,0,32,0", command)
 
     def test_training_loop_eval_settings_must_stay_disabled(self) -> None:
         args = parse_train_args(["--eval-freq", "0", "--eval-episodes", "0"])
@@ -2555,7 +2623,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 state_probs=(0.25, 0.75),
                 max_pool_frames=False,
                 observation_size=96,
-                hud_crop_top=32,
+                obs_crop=(0, 0, 32, 0),
                 action_set="simple",
             )
 
@@ -2566,7 +2634,11 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(metadata["checkpoint_step"], 100)
             self.assertEqual(metadata["env_config"]["max_pool_frames"], False)
             self.assertEqual(metadata["env_config"]["observation_size"], 96)
-            self.assertEqual(metadata["env_config"]["hud_crop_top"], 32)
+            self.assertEqual(metadata["env_config"]["obs_crop"], [0, 0, 32, 0])
+            self.assertEqual(
+                metadata["environment"]["preprocessing"]["obs_crop"],
+                [0, 0, 32, 0],
+            )
             self.assertEqual(metadata["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
             self.assertEqual(metadata["environment"]["preprocessing"]["frame_stack"], 4)
             self.assertEqual(

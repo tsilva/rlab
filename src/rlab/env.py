@@ -111,6 +111,7 @@ class EnvConfig:
     max_episode_steps: int = 4500
     observation_size: int = 84
     hud_crop_top: int = -1
+    obs_crop: tuple[int, int, int, int] | None = None
     obs_resize_algorithm: str = DEFAULT_OBS_RESIZE_ALGORITHM
     use_retro_reward: bool = False
     clip_rewards: bool = False
@@ -137,6 +138,28 @@ def normalize_event_config(config: EnvConfig) -> EnvConfig:
     if done_on_events != config.done_on_events:
         return replace(config, done_on_events=done_on_events)
     return config
+
+
+def validate_obs_crop(value: tuple[int, int, int, int] | list[int] | None) -> tuple[int, int, int, int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple) or len(value) != 4:
+        raise ValueError("obs_crop must be [top, right, bottom, left]")
+    result: list[int] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            raise ValueError(f"obs_crop[{index}] must be a non-negative integer")
+        result.append(int(item))
+    return tuple(result)  # type: ignore[return-value]
+
+
+def native_obs_crop(config: EnvConfig) -> tuple[int, int, int, int] | None:
+    obs_crop = validate_obs_crop(config.obs_crop)
+    if obs_crop is not None:
+        return obs_crop if any(obs_crop) else None
+    if config.hud_crop_top > 0:
+        return (config.hud_crop_top, 0, 0, 0)
+    return None
 
 
 def resolve_env_config(config: EnvConfig) -> EnvConfig:
@@ -166,7 +189,7 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         updates["action_set"] = target.default_action_set
     if config.reward_mode == "auto":
         updates["reward_mode"] = target.default_reward_mode
-    if config.hud_crop_top < 0:
+    if config.obs_crop is None and config.hud_crop_top < 0:
         updates["hud_crop_top"] = target.default_hud_crop_top
     if target.default_env_wrappers:
         updates["env_wrappers"] = with_default_env_wrapper_specs(
@@ -304,14 +327,14 @@ def _stable_retro_turbo_make_env(
 ) -> gym.Env:
     _require_stable_retro_turbo_provider(config)
     kwargs: dict[str, Any] = {
-        "render_mode": render_mode,
-        **retro_make_kwargs(config),
+                "render_mode": render_mode,
+                **retro_make_kwargs(config),
     }
     if fast_observation_path:
         kwargs.update(
             {
                 "obs_resize": (config.observation_size, config.observation_size),
-                "obs_crop": (config.hud_crop_top, 0, 0, 0) if config.hud_crop_top else None,
+                "obs_crop": native_obs_crop(config),
                 "obs_grayscale": True,
                 "obs_resize_algorithm": config.obs_resize_algorithm,
                 "frame_skip": config.frame_skip,
@@ -1038,7 +1061,7 @@ def _native_vec_kwargs(
         "num_threads": num_threads,
         "render_mode": "rgb_array",
         "obs_resize": (config.observation_size, config.observation_size),
-        "obs_crop": (config.hud_crop_top, 0, 0, 0) if config.hud_crop_top else None,
+        "obs_crop": native_obs_crop(config),
         "obs_grayscale": True,
         "obs_resize_algorithm": config.obs_resize_algorithm,
         "frame_skip": config.frame_skip,
