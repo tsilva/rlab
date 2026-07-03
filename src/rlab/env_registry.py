@@ -21,7 +21,7 @@ class ResolvedEnvId:
 STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     provider_id="stable-retro-turbo",
     import_name="stable_retro",
-    env_ids=("SuperMarioBros-Nes-v0",),
+    env_ids=("SuperMarioBros-Nes-v0", "SuperMarioBros3-Nes-v0"),
 )
 
 SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(

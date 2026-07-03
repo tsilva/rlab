@@ -1,0 +1,6 @@
+# Hydra composition list; imports the shared SMB3 Stable Retro goal contract first.
+defaults:
+# Shared SMB3 base; composes the stable-retro-turbo env and supplies eval/release defaults.
+- ../_base@_global_
+# Apply this file after the base; goal-specific overrides can live here when needed.
+- _self_

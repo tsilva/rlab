@@ -143,7 +143,7 @@ class ReleaseModelCardTests(unittest.TestCase):
 
             content = path.read_text(encoding="utf-8")
 
-        at_a_glance = content.split("## Preview", 1)[0]
+        pre_quick_start = content.split("## Quick Start", 1)[0]
 
         self.assertNotIn("<video", content)
         self.assertNotIn("resolve/main/replay.mp4", content)
@@ -156,7 +156,7 @@ class ReleaseModelCardTests(unittest.TestCase):
             content,
         )
         self.assertIn(
-            "current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract",
+            "checkpoint promotion metric from the current [`rlab`](https://github.com/tsilva/rlab) release process",
             content,
         )
         self.assertIn("uv tool install --from git+https://github.com/tsilva/rlab rlab", content)
@@ -164,24 +164,20 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("rlab play hf://tsilva/SuperMarioBros-NES_Level1-1", content)
         self.assertIn("rlab eval hf://tsilva/SuperMarioBros-NES_Level1-1", content)
         self.assertNotIn("hf download", content)
-        self.assertIn("## Preview", content)
+        self.assertNotIn("## At a Glance", content)
+        self.assertNotIn("## Preview", content)
         self.assertIn("## Evaluation Results", content)
         self.assertIn("## Environment Details", content)
-        self.assertIn("## Architecture", content)
+        self.assertNotIn("## Architecture", content)
         self.assertIn("## Training Recipe", content)
+        self.assertNotIn("## Files", content)
         self.assertNotIn("| Category | Setting | Value |", content)
-        self.assertIn("| `preview_video` | `replay.mp4` |", content)
-        self.assertIn("| Component | Value |", content)
-        self.assertIn("| Limitation | Detail |", content)
-        self.assertIn("| `environment` | `SuperMarioBros-Nes-v0`, state `Level1-1` |", content)
-        self.assertIn(
-            "| `observation` | 4 stacked grayscale `84 x 84` frames, channel-first |",
-            content,
-        )
-        self.assertIn(
-            "| `action_space` | Discrete action over the `simple` action set |",
-            content,
-        )
+        self.assertNotIn("| `preview_video` |", content)
+        self.assertNotIn("| Component | Value |", content)
+        self.assertNotIn("| File | Description |", content)
+        self.assertNotIn("| `replay.mp4` |", content)
+        self.assertNotIn("## Limitations", content)
+        self.assertNotIn("| Limitation | Detail |", content)
         self.assertIn("| `eval_profile` | `episodes` | `seed_start` |", content)
         self.assertIn("| Setting | Value |", content)
         self.assertIn("| `env_provider` | `Stable Retro` |", content)
@@ -196,8 +192,8 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("| `done_on_events` | goal-specific termination |", content)
         self.assertIn("| `spec_id` | `b55` |", content)
         self.assertIn("| `max_episode_steps` |  |", content)
-        self.assertNotIn("| `wandb_run` |", at_a_glance)
-        self.assertNotIn("| `wandb_artifact` |", at_a_glance)
+        self.assertNotIn("| `wandb_run` |", pre_quick_start)
+        self.assertNotIn("| `wandb_artifact` |", pre_quick_start)
         self.assertIn("| `wandb_run` |", content)
         self.assertIn("| `wandb_artifact` |", content)
         self.assertNotIn("For the original W&B artifact", content)
@@ -207,10 +203,6 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertNotIn("stable_retro_ppo.evaluate", content)
         self.assertNotIn("Expected summary fields", content)
         self.assertNotIn("leaderboard", content.lower())
-        self.assertIn(
-            "| `replay.mp4` | Hugging Face reinforcement-learning widget preview",
-            content,
-        )
 
     def test_copy_release_files_rewrites_model_metadata_filename(self) -> None:
         _config, _write_model_card, copy_release_files = import_release_card_symbols()

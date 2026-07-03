@@ -249,29 +249,6 @@ def _format_eval_profile(leader, metrics: Mapping[str, Any]) -> str:
     return f"`{profile}`, {mode}"
 
 
-def _format_preview_summary(metrics: Mapping[str, Any]) -> str:
-    best_episode = metrics.get("best_episode")
-    if not isinstance(best_episode, Mapping):
-        return "Preview episode is uploaded as `replay.mp4` for Hugging Face's reinforcement-learning widget."
-    seed = best_episode.get("seed")
-    max_x = best_episode.get("max_x_pos")
-    reward = best_episode.get("reward")
-    completed = bool(best_episode.get("level_complete"))
-    died = best_episode.get("died")
-    parts = []
-    if seed is not None:
-        parts.append(f"seed `{seed}`")
-    if completed:
-        parts.append("completed the level")
-    if max_x is not None:
-        parts.append(f"`max_x_pos={float(max_x):.0f}`")
-    if reward is not None:
-        parts.append(f"reward `{float(reward):.2f}`")
-    if died is False:
-        parts.append("no death recorded")
-    return "Preview episode: " + "; ".join(parts) + "."
-
-
 def _format_done_on(env_config: Mapping[str, Any]) -> str:
     done_on = env_config.get("done_on") or env_config.get("done_on_events")
     if isinstance(done_on, Sequence) and not isinstance(done_on, str):
@@ -334,7 +311,6 @@ def write_model_card(
     episodes_text = _format_episodes(metrics)
     seed_start_text = _format_seed_start(metrics)
     eval_profile = _format_eval_profile(leader, metrics)
-    preview_summary = _format_preview_summary(metrics)
     checkpoint_step = leader.checkpoint_step or ""
     model_name = release.repo.removeprefix("SuperMarioBros-NES_").replace("Level", "Level ")
     content = f"""---
@@ -357,30 +333,9 @@ metrics:
 
 PPO policy checkpoint for completing `{game}` `{level}` with Stable Retro, trained with [`rlab`](https://github.com/tsilva/rlab).
 
-## At a Glance
-
-| Item | Value |
-|---|---|
-| Task | Reinforcement learning policy for `{game}` `{level}` completion |
-| `environment` | `{game}`, state `{level}` |
-| `model` | Stable Baselines3 PPO |
-| `format` | PyTorch checkpoint inside SB3 `.zip` |
-| `observation` | {frame_stack} stacked grayscale `{obs_size} x {obs_size}` frames, channel-first |
-| `action_space` | Discrete action over the `{action_set}` action set |
-| `completion_rate` | {completion_text} |
-| `eval_profile` | {eval_profile} |
-| `checkpoint` | `{leader.run_name}`, checkpoint `{checkpoint_step}` timesteps |
-
-## Preview
-
-| Item | Value |
-|---|---|
-| `preview_video` | `{release.preview_filename}` |
-| `representative_episode` | {preview_summary} |
-
 ## Quick Start
 
-Install `rlab` once, import the ROM, then play this checkpoint directly from Hugging Face:
+Install `rlab` once, import the ROM, then play or evaluate this checkpoint directly from Hugging Face:
 
 ```bash
 uv tool install --from git+https://github.com/tsilva/rlab rlab
@@ -416,15 +371,6 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 | `max_episode_steps` | `{max_episode_steps}` |
 | `done_on_events` | {done_on} |
 
-## Architecture
-
-| Component | Value |
-|---|---|
-| `algorithm` | PPO from Stable Baselines3 |
-| `checkpoint_format` | SB3 PyTorch `.zip` |
-| `vector_environment` | `{env_provider}` |
-| `checkpoint_contents` | Policy, optimizer state, SB3 metadata, and system info |
-
 ## Training Recipe
 
 | Setting | Value |
@@ -438,15 +384,6 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 | `reward_shaping` | {reward_shaping} |
 | `done_on_events` | {done_on} |
 
-## Files
-
-| File | Description |
-|---|---|
-| `{checkpoint_filename}` | SB3 PPO checkpoint |
-| `{release.preview_filename}` | Hugging Face reinforcement-learning widget preview of a representative episode |
-| `model_metadata.json` | Provenance, eval profile, and checksum metadata when available |
-| `release_manifest.json` | Release provenance and verification inputs |
-
 ## Provenance
 
 | Item | Value |
@@ -457,15 +394,6 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 | `wandb_run` | [`{leader.run_name}`]({leader.url}) |
 | `wandb_artifact` | `{leader.artifact_ref}` |
 | `eval_source` | `{leader.eval_source or ""}` |
-
-## Limitations
-
-| Limitation | Detail |
-|---|---|
-| ROM | No ROM is included; users must provide and import their own legally obtained ROM. |
-| Benchmark scope | The checkpoint was selected by eval performance on this project-specific setup, not by a standardized public benchmark. |
-| Aggregate scope | This card reports one selected checkpoint evaluation, not a multi-seed aggregate. |
-| Metric scope | Reported metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated as cross-environment benchmark results. |
 """
     path.write_text(content, encoding="utf-8")
 

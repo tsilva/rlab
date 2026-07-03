@@ -1,0 +1,36 @@
+# Reusable Stable Retro Turbo Super Mario Bros. 3 environment fragment.
+# Environment provider id; stable-retro-turbo supplies the stable_retro runtime import.
+env_provider: stable-retro-turbo
+env_config:
+  # Stable Retro game id passed to RetroVecEnv.
+  game: SuperMarioBros3-Nes-v0
+  num_envs: 16
+  num_threads: 4
+  # Emulator frame skip; fixes action repeat and observation cadence.
+  frame_skip: 4
+  # Number of preprocessed frames stacked in the returned observation.
+  frame_stack: 4
+  # Preserve the full frame because the SMB3 Stable Retro scenario does not define a HUD crop.
+  obs_crop:
+  - 0
+  - 0
+  - 0
+  - 0
+  # Resize target for native preprocessing as [width, height].
+  obs_resize:
+  - 84
+  - 84
+  # Convert RGB observations to grayscale natively.
+  obs_grayscale: true
+  # Resize kernel; area downsampling is the expected image resizer for this contract.
+  obs_resize_algorithm: area
+  # Tensor layout expected by SB3 CNN policies.
+  obs_layout: chw
+  # Observation ownership mode; safe_view avoids unnecessary memory traffic.
+  obs_copy: safe_view
+  # Disable random no-op starts for reproducible goal attempts.
+  noop_reset_max: 0
+  # Use the Stable Retro scenario's native reward/done contract for SMB3.
+  use_retro_reward: true
+  reward_mode: native
+  action_set: native

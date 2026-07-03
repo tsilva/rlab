@@ -18,6 +18,18 @@ def test_resolves_registered_stable_retro_turbo_env_id() -> None:
     assert resolved.import_name == "stable_retro"
 
 
+def test_resolves_registered_stable_retro_turbo_smb3_env_id() -> None:
+    env_id = "stable-retro-turbo:SuperMarioBros3-Nes-v0"
+
+    resolved = resolve_env_id(env_id)
+
+    assert env_id in registered_env_ids()
+    assert resolved.qualified_id == env_id
+    assert resolved.provider_id == "stable-retro-turbo"
+    assert resolved.provider_env_id == "SuperMarioBros3-Nes-v0"
+    assert resolved.import_name == "stable_retro"
+
+
 def test_resolves_registered_supermariobrosnes_turbo_env_id() -> None:
     env_id = "supermariobrosnes-turbo:SuperMarioBros-Nes-v0"
 
