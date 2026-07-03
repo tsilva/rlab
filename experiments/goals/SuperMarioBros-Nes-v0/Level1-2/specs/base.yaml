@@ -1,0 +1,19 @@
+defaults:
+- ../../Level1-1/specs/base@_global_
+- ../_goal@goal
+- _self_
+slug: base
+parent_spec_slug: base
+hypothesis: >-
+  The successful Level1-1 low-KL late-decay recipe should transfer to Level1-2 without
+  changing PPO or reward hyperparameters. This spec inherits the Level1-1 policy recipe and
+  overrides only Level1-2 identity, grouping, and reporting metadata.
+wandb_group: b272-l12-b55-transfer
+run_name_label: l12-b55-transfer
+wandb_tags:
+- level1-2
+- b55
+- lowkl
+- lrdecay
+- transfer
+run_description_template: Level1-2 transfer of the successful Level1-1 B55 low-KL late-decay recipe, seed {seed}.

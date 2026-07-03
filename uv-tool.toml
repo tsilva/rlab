@@ -6,3 +6,4 @@ constraint-dependencies = [
 
 [exclude-newer-package]
 stable-retro-turbo = "2026-07-02T13:00:00Z"
+supermariobrosnes-turbo = "2026-07-03T12:00:00Z"

@@ -1039,7 +1039,8 @@ def assert_rom_imported(game: str = GAME) -> str:
         return retro.data.get_romfile_path(game)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"{game} is not imported. Run: uv run python scripts/import_roms.py ~/Desktop/roms",
+            f"{game} is not imported in this rlab runtime. "
+            f"Run: rlab import-roms ~/Desktop/roms --game {game}",
         ) from exc
 
 

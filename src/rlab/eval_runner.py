@@ -9,6 +9,7 @@ import torch
 from tqdm.auto import tqdm
 
 from rlab.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
+from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
 from rlab.eval_metrics import (
     episode_rank,
     is_level_complete,
@@ -240,7 +241,16 @@ def evaluate_model_episodes(
         and best_episode_actions
         and best_episode_seed is not None
     ):
-        video_env = make_rendered_replay_env(config=config, seed=best_episode_seed)
+        video_config = (
+            config
+            if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id
+            else replace(
+                config,
+                env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id,
+                env_threads=0,
+            )
+        )
+        video_env = make_rendered_replay_env(config=video_config, seed=best_episode_seed)
         try:
             frames = replay_actions_for_video(
                 video_env,

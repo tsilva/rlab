@@ -22,13 +22,19 @@ If you are reinstalling after local changes:
 uv --config-file uv-tool.toml tool install --editable --force .
 ```
 
-This repo uses uv's seven-day `exclude-newer` protection, with a package-specific exception for the pinned `stable-retro-turbo` release recorded in `uv-tool.toml`, `pyproject.toml`, and `uv.lock`. The explicit `--config-file uv-tool.toml` keeps `uv tool install` on the same exception policy as the project environment.
+This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, and `uv.lock`. The explicit `--config-file uv-tool.toml` keeps `uv tool install` on the same exception policy as the project environment.
 
 After installation, run commands as plain `rlab ...`:
 
 ```bash
 rlab --help
 rlab validate
+```
+
+Import ROMs through the installed CLI so playback and training see them in the same runtime:
+
+```bash
+rlab import-roms ~/Desktop/roms --game SuperMarioBros-Nes-v0
 ```
 
 ## Run
@@ -150,7 +156,7 @@ Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.ya
 - Python is pinned to `==3.14.*`; dependency resolution and lock state are managed by `uv`.
 - The installed console command is `rlab`; examples should not use `uv run`.
 - Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
-- Stable Retro matches ROMs by SHA, not filename. Import the ROMs needed for the game ids you train or play.
+- Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
 - Every training run should include `--run-description`.
 - Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts` is set.
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.

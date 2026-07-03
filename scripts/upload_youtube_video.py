@@ -22,6 +22,17 @@ UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3"
 
 
+class OAuthRequestError(RuntimeError):
+    def __init__(self, message: str, *, code: int, body: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.body = body
+
+    @property
+    def is_invalid_grant(self) -> bool:
+        return "invalid_grant" in self.body
+
+
 class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
     server: "OAuthCallbackServer"
 
@@ -71,7 +82,11 @@ def post_form(url: str, data: dict[str, str]) -> dict[str, Any]:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
-        raise SystemExit(f"OAuth request failed: HTTP {exc.code}: {body}") from exc
+        raise OAuthRequestError(
+            f"OAuth request failed: HTTP {exc.code}: {body}",
+            code=exc.code,
+            body=body,
+        ) from exc
 
 
 def request_json(
@@ -129,16 +144,19 @@ def authorize(client_config: dict[str, Any], token_path: Path, *, no_browser: bo
     if not server.auth_code or server.auth_state != state:
         raise SystemExit("OAuth authorization failed: missing code or state mismatch")
 
-    token = post_form(
-        token_uri,
-        {
-            "code": server.auth_code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        },
-    )
+    try:
+        token = post_form(
+            token_uri,
+            {
+                "code": server.auth_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+    except OAuthRequestError as exc:
+        raise SystemExit(str(exc)) from exc
     token["client_id"] = client_id
     token["client_secret"] = client_secret
     token["token_uri"] = token_uri
@@ -149,15 +167,20 @@ def authorize(client_config: dict[str, Any], token_path: Path, *, no_browser: bo
 def refresh_token(token: dict[str, Any]) -> dict[str, Any]:
     if "refresh_token" not in token:
         return token
-    refreshed = post_form(
-        token["token_uri"],
-        {
-            "client_id": token["client_id"],
-            "client_secret": token.get("client_secret", ""),
-            "refresh_token": token["refresh_token"],
-            "grant_type": "refresh_token",
-        },
-    )
+    try:
+        refreshed = post_form(
+            token["token_uri"],
+            {
+                "client_id": token["client_id"],
+                "client_secret": token.get("client_secret", ""),
+                "refresh_token": token["refresh_token"],
+                "grant_type": "refresh_token",
+            },
+        )
+    except OAuthRequestError as exc:
+        if exc.is_invalid_grant:
+            raise
+        raise SystemExit(str(exc)) from exc
     token.update(refreshed)
     return token
 
@@ -165,7 +188,17 @@ def refresh_token(token: dict[str, Any]) -> dict[str, Any]:
 def access_token(client_config: dict[str, Any], token_path: Path, *, no_browser: bool) -> str:
     if token_path.is_file():
         token = json.loads(token_path.read_text(encoding="utf-8"))
-        token = refresh_token(token)
+        try:
+            token = refresh_token(token)
+        except OAuthRequestError as exc:
+            if not exc.is_invalid_grant:
+                raise SystemExit(str(exc)) from exc
+            print(
+                "Stored YouTube OAuth token expired or was revoked; starting authorization flow.",
+                flush=True,
+            )
+            token_path.unlink(missing_ok=True)
+            token = authorize(client_config, token_path, no_browser=no_browser)
         save_json(token_path, token)
     else:
         token = authorize(client_config, token_path, no_browser=no_browser)

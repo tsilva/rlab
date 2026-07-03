@@ -1,0 +1,24 @@
+# Hydra composition list; imports the shared Mario goal contract first.
+defaults:
+# Shared Mario base; composes the reusable env and supplies early-stop/eval defaults.
+- ../_base@_global_
+# Apply this file after the base; lets Level1-2 define its own state, evidence, and defaults.
+- _self_
+# Goal id; must match the directory so tools can address this contract unambiguously.
+goal_id: Level1-2
+# Human-readable title; helps reports and operators identify the goal quickly.
+title: Sample-efficient SuperMarioBros-NES Level1-2 completion
+# Goal-specific train environment overlay; only the source state differs from the shared Mario env.
+train:
+  environment:
+    # Stable Retro state id; Level1-2 is the only source for this goal.
+    env_config:
+      state: Level1-2
+# Goal-level release target; winner identity is resolved from `rlab leaders checkpoints`.
+release:
+  huggingface:
+    repo: SuperMarioBros-NES_Level1-2
+    card_template: stable-retro-sb3
+    checkpoint_filename: ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip
+    preview_filename: replay.mp4
+    include_youtube_preview: true

@@ -855,6 +855,23 @@ train_config:
                     ],
                 )
 
+    def test_level1_transfer_specs_inherit_level1_1_policy_recipe(self) -> None:
+        level1_1 = job_queue.load_spec_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
+        )
+        for level in ("Level1-2", "Level1-3"):
+            with self.subTest(level=level):
+                transfer = job_queue.load_spec_document(
+                    Path(
+                        f"experiments/goals/SuperMarioBros-Nes-v0/{level}/specs/base.yaml"
+                    )
+                )
+
+                self.assertEqual(transfer["train"]["policy"], level1_1["train"]["policy"])
+                self.assertEqual(transfer["goal"]["goal_id"], level)
+                self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
+                self.assertEqual(transfer["parent_spec_slug"], level1_1["slug"])
+
     def test_launch_result_metadata_strips_metrics_json(self) -> None:
         result = job_queue.launch_result_metadata(
             {
@@ -1617,8 +1634,8 @@ class TrainRunnerTests(unittest.TestCase):
                 "wandb_tags": ["screen"],
             },
             "goal_slug": "Level1-1",
-            "spec_slug": "lowkl-lrdecay",
-            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/lowkl-lrdecay.yaml",
+            "spec_slug": "base",
+            "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
             "run_name": "lowkl_seed23",
             "run_description": "Codex-authored smoke job.",
             "wandb_group": "level1-1-lowkl-lrdecay",
@@ -1635,13 +1652,13 @@ class TrainRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,goal:Level1-1,spec:lowkl-lrdecay,level:Level1-1",
+            "screen,goal:Level1-1,spec:base,level:Level1-1",
         )
         self.assertEqual(written_config["goal_slug"], "Level1-1")
-        self.assertEqual(written_config["spec_slug"], "lowkl-lrdecay")
+        self.assertEqual(written_config["spec_slug"], "base")
         self.assertEqual(
             written_config["spec_path"],
-            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/lowkl-lrdecay.yaml",
+            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
         )
         self.assertEqual(written_config["queue_train_job_id"], 12)
         self.assertEqual(written_config["run_name"], "lowkl_seed23")

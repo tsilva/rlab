@@ -291,6 +291,24 @@ environment_hash: sha256:deadbeef
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)
 
+    def test_release_is_registered_on_unified_cli(self) -> None:
+        self.assertIn("release", COMMANDS)
+
+    def test_goal_validator_accepts_huggingface_release_target(self) -> None:
+        document = load_goal_contract(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/_goal.yaml")
+        )
+
+        self.assertNotIn("owner", document["release"]["huggingface"])
+        self.assertEqual(
+            document["release"]["huggingface"]["repo"],
+            "SuperMarioBros-NES_Level1-2",
+        )
+        self.assertEqual(
+            document["release"]["huggingface"]["checkpoint_filename"],
+            "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+        )
+
     def test_validate_cli_success(self) -> None:
         stdout = io.StringIO()
         with patch("sys.stdout", stdout):

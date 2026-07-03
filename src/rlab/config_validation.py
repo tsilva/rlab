@@ -508,6 +508,62 @@ def _validate_selection_policy(selection_policy: Mapping[str, Any], *, label: st
     _validate_rank_order(rank_order, label=f"{label}.rank_order")
 
 
+def _validate_goal_release(document: Mapping[str, Any], *, label: str) -> None:
+    if "release" not in document:
+        return
+    release = _require_mapping(document["release"], label=f"{label}.release")
+    allowed_release_keys = {"huggingface"}
+    extra_release_keys = sorted(set(release) - allowed_release_keys)
+    if extra_release_keys:
+        raise ValueError(f"{label}.release has unexpected keys: {extra_release_keys}")
+    huggingface = _require_mapping(
+        _require_key(release, "huggingface", label=f"{label}.release"),
+        label=f"{label}.release.huggingface",
+    )
+    allowed_hf_keys = {
+        "card_template",
+        "checkpoint_filename",
+        "include_youtube_preview",
+        "preview_filename",
+        "repo",
+    }
+    extra_hf_keys = sorted(set(huggingface) - allowed_hf_keys)
+    if extra_hf_keys:
+        raise ValueError(f"{label}.release.huggingface has unexpected keys: {extra_hf_keys}")
+    repo = _require_non_empty_string(huggingface, "repo", label=f"{label}.release.huggingface")
+    if "/" in repo:
+        raise ValueError(f"{label}.release.huggingface.repo must not contain '/'")
+    template = _require_non_empty_string(
+        huggingface,
+        "card_template",
+        label=f"{label}.release.huggingface",
+    )
+    if template != "stable-retro-sb3":
+        raise ValueError(
+            f"{label}.release.huggingface.card_template has unsupported value: {template!r}"
+        )
+    checkpoint_filename = _require_non_empty_string(
+        huggingface,
+        "checkpoint_filename",
+        label=f"{label}.release.huggingface",
+    )
+    if "{checkpoint_step}" not in checkpoint_filename:
+        raise ValueError(
+            f"{label}.release.huggingface.checkpoint_filename must contain "
+            "{checkpoint_step}"
+        )
+    _require_non_empty_string(
+        huggingface,
+        "preview_filename",
+        label=f"{label}.release.huggingface",
+    )
+    _require_bool(
+        huggingface,
+        "include_youtube_preview",
+        label=f"{label}.release.huggingface",
+    )
+
+
 def load_goal_contract(
     path: Path,
     repo_root: Path | None = None,
@@ -562,6 +618,7 @@ def _validate_goal_contract_document(
         )
     if "selection_policy" in document:
         raise ValueError(f"{label}.selection_policy moved to objective.rank")
+    _validate_goal_release(document, label=label)
     goal_id = _require_non_empty_string(document, "goal_id", label=label)
     _require_non_empty_string(document, "title", label=label)
     goal_dir = path.parent

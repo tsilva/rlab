@@ -1,7 +1,7 @@
 defaults:
 - ../_goal@goal
 - _self_
-slug: lowkl-lrdecay
+slug: base
 hypothesis: >-
   The low-KL late-decay recipe is the stable Level1-1 policy-search baseline. Across-seed validation
   should use the goal contract's clear-rate gate first, then out-of-process eval ranking for
