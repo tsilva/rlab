@@ -6,6 +6,10 @@ defaults:
 - ../../envs/supermariobrosnes-turbo/SuperMarioBros-Nes-v0@eval.environment
 # Apply this file after the env so goal-owned defaults can override env details deliberately.
 - _self_
+# Goal id is rendered from the goal directory name.
+goal_id: "{goal_id}"
+# Human-readable title; helps reports and operators identify the goal quickly.
+title: Sample-efficient SuperMarioBros-NES {goal_id} completion
 # Objective defines candidate comparison order.
 objective:
   # Ordered ranking signals; compare each metric in sequence until a candidate wins.
@@ -26,6 +30,8 @@ train:
     threshold: 0.99
   environment:
     env_config:
+      # Stable Retro state id; single-state Mario goals use the goal id as the source state.
+      state: "{state}"
       # Training attempts terminate on death or level clear.
       done_on:
       - life_loss

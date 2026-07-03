@@ -1,0 +1,30 @@
+defaults:
+- base@_global_
+- _self_
+slug: no-terminal
+parent_spec_slug: base
+hypothesis: >-
+  Removing native terminal boundaries on life loss and level change should test whether the
+  Level1-1 low-KL recipe benefits from longer continuous rollouts while preserving the same PPO
+  and reward-shaping settings as the baseline.
+wandb_group: level1-1-lowkl-no-terminal
+run_name_label: lowkl-noterm
+wandb_tags:
+- lowkl
+- lrdecay
+- no-terminal
+- continuous-rollout
+run_description_template: Level1-1 low-KL recipe without life-loss or level-change terminal rules, seed {seed}.
+train:
+  environment:
+    env_config:
+      # Empty list overrides the goal default of [life_loss, level_change].
+      done_on: []
+      # With terminal transitions disabled, expose info on nonterminal steps too.
+      info_filter: all
+eval:
+  environment:
+    env_config:
+      # Keep eval aligned with the no-terminal training environment.
+      done_on: []
+      info_filter: all

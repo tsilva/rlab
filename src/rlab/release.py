@@ -217,7 +217,6 @@ def write_model_card(
     reward = float(leader.reward_mean)
     max_x = float(leader.max_x_max)
     eval_episodes = metrics.get("episodes", metrics.get("eval/episodes", ""))
-    model_url = f"https://huggingface.co/{release.repo_id}"
     content = f"""---
 library_name: stable-baselines3
 pipeline_tag: reinforcement-learning
