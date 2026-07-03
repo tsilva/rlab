@@ -608,7 +608,7 @@ eval:
       done_on_events: [level_change]
 release:
   huggingface:
-    repo: SuperMarioBros-NES_{goal_id}
+    repo: "{env_id}_{goal_id}"
     card_template: stable-retro-sb3
     checkpoint_filename: model.zip
     preview_filename: replay.mp4
@@ -1090,7 +1090,7 @@ train:
                 self.assertFalse(contains_key(transfer, "template_vars"))
                 self.assertEqual(
                     transfer["goal"]["release"]["huggingface"]["repo"],
-                    f"SuperMarioBros-NES_{level}",
+                    f"SuperMarioBros-Nes-v0_{level}",
                 )
                 self.assertEqual(
                     transfer["goal"]["release"]["huggingface"]["checkpoint_filename"],

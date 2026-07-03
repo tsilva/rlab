@@ -302,7 +302,7 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("owner", document["release"]["huggingface"])
         self.assertEqual(
             document["release"]["huggingface"]["repo"],
-            "SuperMarioBros-NES_Level1-2",
+            "SuperMarioBros-Nes-v0_Level1-2",
         )
         self.assertEqual(
             document["release"]["huggingface"]["checkpoint_filename"],

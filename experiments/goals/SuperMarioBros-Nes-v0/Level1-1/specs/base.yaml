@@ -6,7 +6,7 @@ template_vars:
   recipe: lowkl
   schedule: lrdecay
 description: >-
-  Seed {seed} trains the stable low-KL late-decay Level1-1 policy-search baseline, created
+  Seed {seed} trains the stable low-KL late-decay {goal_id} policy-search baseline, created
   to validate the recipe across seeds with the goal contract's clear-rate gate first and
   out-of-process eval ranking for checkpoint promotion.
 tags:
@@ -17,7 +17,7 @@ train:
   policy:
     # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.
     torch_num_threads: 1
-    # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable Level1-1 progress.
+    # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
     n_steps: 512
     # Matches the rollout chunk size, giving full-batch PPO updates that reduce minibatch noise for this single-task recipe.
     batch_size: 512

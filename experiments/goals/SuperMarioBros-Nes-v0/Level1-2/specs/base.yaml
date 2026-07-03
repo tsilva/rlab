@@ -6,10 +6,11 @@ spec_id: base
 template_vars:
   batch_id: b272
   recipe: b55
+  source_goal_id: Level1-1
   recipe_label: B55 low-KL late-decay
   phase: transfer
 description: >-
-  Seed {seed} runs the {goal_id} transfer of the successful Level1-1 {recipe_label} recipe,
+  Seed {seed} runs the {goal_id} transfer of the successful {source_goal_id} {recipe_label} recipe,
   created to test whether that policy recipe transfers without changing PPO or reward
   hyperparameters while overriding only {goal_id} identity and reporting metadata.
 tags:
