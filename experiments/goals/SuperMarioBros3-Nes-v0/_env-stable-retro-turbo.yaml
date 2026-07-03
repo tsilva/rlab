@@ -30,7 +30,18 @@ env_config:
   obs_copy: safe_view
   # Disable random no-op starts for reproducible goal attempts.
   noop_reset_max: 0
-  # Use the Stable Retro scenario's native reward/done contract for SMB3.
-  use_retro_reward: true
-  reward_mode: native
+  # Default SMB3 reward shaping contract, mirroring the SMB1 score/progress/death
+  # shaping while reading SMB3's native hpos/lives/score info variables.
+  env_wrappers:
+  - id: SuperMarioBros3NesProgressInfoWrapper
+  - id: SuperMarioBros3NesRewardEnvWrapper
+    kwargs:
+      use_retro_reward: false
+      reward_mode: score
+      progress_reward_scale: 1.0
+      terminal_reward: 50
+      death_penalty: 25
+      completion_reward: 0.0
+      reward_scale: 10
+      score_progress_clipped: false
   action_set: native

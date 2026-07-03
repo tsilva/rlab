@@ -102,10 +102,11 @@ from rlab.eval import main as eval_main
 from rlab.eval import score as eval_checkpoint_score
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
-from rlab.targets import SuperMarioBrosNesV0Target, target_for_game
+from rlab.targets import SuperMarioBros3NesV0Target, SuperMarioBrosNesV0Target, target_for_game
 from rlab.train import (
     Sb3HumanOutputFormatCallback,
     disable_sb3_human_output_truncation,
+    eval_config_from_training_config,
     log_checkpoint_eval_metrics,
     update_best_checkpoint_summary,
 )
@@ -427,6 +428,49 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 "life_loss": ("lives", "decrease"),
                 "level_change": (("levelHi", "levelLo"), "change"),
             },
+        )
+
+    def test_smb3_reward_env_wrapper_resolves_to_mario_reward_config(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                game="SuperMarioBros3-Nes-v0",
+                env_wrappers=(
+                    {"id": "SuperMarioBros3NesProgressInfoWrapper"},
+                    {
+                        "id": "SuperMarioBros3NesRewardEnvWrapper",
+                        "kwargs": {
+                            "use_retro_reward": False,
+                            "reward_mode": "score",
+                            "progress_reward_scale": 1.0,
+                            "death_penalty": 25,
+                            "score_progress_clipped": False,
+                        },
+                    },
+                ),
+            )
+        )
+
+        self.assertEqual(config.reward_mode, "score")
+        self.assertFalse(config.use_retro_reward)
+        self.assertEqual(config.death_penalty, 25.0)
+        self.assertEqual(
+            config.env_wrappers,
+            (
+                {
+                    "id": "SuperMarioBros3NesProgressInfoWrapper",
+                    "kwargs": {},
+                },
+                {
+                    "id": "SuperMarioBros3NesRewardEnvWrapper",
+                    "kwargs": {
+                        "use_retro_reward": False,
+                        "reward_mode": "score",
+                        "progress_reward_scale": 1.0,
+                        "death_penalty": 25.0,
+                        "score_progress_clipped": False,
+                    },
+                },
+            ),
         )
 
     def test_parse_info_events_accepts_observed_nonterminal_rules(self) -> None:
@@ -1046,6 +1090,54 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(target.default_action_set, "native")
         self.assertEqual(target.action_names_for_set("native"), ())
         self.assertIsNone(target.native_life_variable)
+
+    def test_smb3_target_declares_native_life_variable(self) -> None:
+        self.assertIs(target_for_game("SuperMarioBros3-Nes-v0"), SuperMarioBros3NesV0Target)
+        self.assertEqual(SuperMarioBros3NesV0Target.native_life_variable, "lives")
+
+    def test_smb3_score_reward_uses_hpos_score_and_death(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                game="SuperMarioBros3-Nes-v0",
+                env_wrappers=(
+                    {"id": "SuperMarioBros3NesProgressInfoWrapper"},
+                    {
+                        "id": "SuperMarioBros3NesRewardEnvWrapper",
+                        "kwargs": {
+                            "use_retro_reward": False,
+                            "reward_mode": "score",
+                            "progress_reward_scale": 1.0,
+                            "terminal_reward": 50,
+                            "death_penalty": 25,
+                            "completion_reward": 0.0,
+                            "reward_scale": 10,
+                            "score_progress_clipped": False,
+                        },
+                    },
+                ),
+            )
+        )
+        tracker = SuperMarioBros3NesV0Target.create_tracker(config)
+        tracker.reset({"hpos": 0, "lives": 4, "score": 0})
+
+        progress_info = {"hpos": 12, "lives": 4, "score": 100}
+        progress = tracker.step(99.0, progress_info, done=False)
+
+        self.assertEqual(progress.reward, 13.0)
+        self.assertEqual(progress_info["progress_delta"], 12)
+        self.assertEqual(progress_info["progress_reward_component"], 12.0)
+        self.assertEqual(progress_info["score_delta"], 100)
+        self.assertEqual(progress_info["score_reward_component"], 1.0)
+        self.assertEqual(progress_info["native_reward_component"], 0.0)
+        self.assertEqual(progress_info["death_penalty_component"], 0.0)
+
+        death_info = {"hpos": 12, "lives": 3, "score": 100}
+        death_progress = tracker.step(0.0, death_info, done=True)
+
+        self.assertEqual(death_progress.reward, -25.0)
+        self.assertTrue(death_info["died"])
+        self.assertEqual(death_info["death_penalty_component"], -25.0)
+        self.assertFalse(death_info["level_complete"])
 
     def test_native_life_loss_marks_death_without_python_termination(self) -> None:
         config = argparse.Namespace(
@@ -3514,6 +3606,22 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(config.state_probs, (0.5, 0.5))
         self.assertTrue(config.task_conditioning)
         self.assertEqual(config.task_conditioning_info_vars, ("levelHi", "levelLo"))
+
+    def test_post_train_eval_config_clears_training_done_on_events(self) -> None:
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            info_events={
+                "life_loss": ("lives", "decrease"),
+                "level_change": (("levelHi", "levelLo"), "change"),
+            },
+            done_on_events=("life_loss", "level_change"),
+        )
+
+        eval_config = eval_config_from_training_config(config)
+
+        self.assertEqual(eval_config.info_events, config.info_events)
+        self.assertEqual(eval_config.done_on_events, ())
+        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
 
     def test_metric_path_segment_preserves_retro_state_names(self) -> None:
         self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")

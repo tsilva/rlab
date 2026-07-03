@@ -13,16 +13,16 @@ The normal workflow is to install the CLI once with `uv tool install .`, then us
 ```bash
 git clone git@github.com:tsilva/rlab.git
 cd rlab
-uv --config-file uv-tool.toml tool install --editable .
+uv tool install . --editable
 ```
 
 If you are reinstalling after local changes:
 
 ```bash
-uv --config-file uv-tool.toml tool install --editable --force .
+uv tool install . --editable --force
 ```
 
-This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, and `uv.lock`. The explicit `--config-file uv-tool.toml` keeps `uv tool install` on the same exception policy as the project environment.
+This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
 
 After installation, run commands as plain `rlab ...`:
 

@@ -3,11 +3,11 @@ defaults:
 - _self_
 spec_id: base
 template_vars:
-  recipe: native
+  recipe: score
   schedule: lrdecay
 description: >-
-  Seed {seed} trains a native Stable Retro reward baseline for {goal_id}, using the
-  stable-retro-turbo provider and the checked-in SMB3 state contract as the source of truth.
+  Seed {seed} trains an SMB1-style score/progress/death shaped baseline for {goal_id}, using
+  the stable-retro-turbo provider and SMB3 hpos/lives/score info variables as the source of truth.
 train:
   policy:
     # Queue-backed training caps must be explicit in specs; no runtime default is supplied.
@@ -18,7 +18,7 @@ train:
     n_steps: 512
     # Matches the rollout chunk size, giving full-batch PPO updates that reduce minibatch noise.
     batch_size: 512
-    # Reuses each rollout enough to extract signal from the native hpos/score reward without overfitting one pass.
+    # Reuses each rollout enough to extract signal from shaped hpos/score progress without overfitting one pass.
     n_epochs: 10
     # Starts with a conservative PPO learning rate for this first SMB3 baseline.
     learning_rate: 1.5e-4
@@ -44,7 +44,7 @@ train:
     vf_coef: 1.0
     # Keeps Adam's numerical stabilizer at the standard small value.
     adam_eps: 1.0e-08
-    # Preserves raw advantage scale, which can carry useful native reward magnitude.
+    # Preserves raw advantage scale, which can carry useful progress/death-signal strength.
     normalize_advantage: false
 logging:
   # Queue-backed logging choices are explicit spec inputs, not runtime defaults.

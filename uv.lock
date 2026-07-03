@@ -17,8 +17,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-03T15:10:00Z"
-stable-retro-turbo = "2026-07-03T15:00:00Z"
+supermariobrosnes-turbo = "2026-07-03T16:05:00Z"
+stable-retro-turbo = "2026-07-03T16:20:00Z"
 
 [manifest]
 constraints = [
@@ -990,10 +990,10 @@ requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post2" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post2" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.2.3" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.2.3" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post3" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post3" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.2.4" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.2.4" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==2.11.0" },
     { name = "wandb", specifier = ">=0.18,<0.23" },
@@ -1106,7 +1106,7 @@ extra = [
 
 [[package]]
 name = "stable-retro-turbo"
-version = "1.0.1.post2"
+version = "1.0.1.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
@@ -1114,21 +1114,21 @@ dependencies = [
     { name = "pyglet", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/91/cfd9e730a9f3a48f0beb50fe5f0416bf8c1fe6c57da4f476173549516e8b/stable_retro_turbo-1.0.1.post2-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:9008c0179ada9b60aa12c8b50a16bd7ce5d08028b2de0a1fa969b5934d15084c", size = 81537340, upload-time = "2026-07-03T14:39:12.76Z" },
-    { url = "https://files.pythonhosted.org/packages/40/08/680d58494514db32b60ea2c6523ff1e79161d0f68ebc220269e1547b2a93/stable_retro_turbo-1.0.1.post2-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1c5fb19174d5ca795a6458998d42c320edb76865ba022f844e710747b1de1b59", size = 84473686, upload-time = "2026-07-03T14:39:19.693Z" },
+    { url = "https://files.pythonhosted.org/packages/20/e2/76d8a2dafca970f31f3f48f2e43fe10fa4471eb3d51e5ceb245f41365eee/stable_retro_turbo-1.0.1.post3-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:fcb70e24b99568dd983f65c57dd49382a411ea5feed0245f6bcf61e81e731a33", size = 81537732, upload-time = "2026-07-03T16:15:38.918Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/80/b26c1de533dda8a500ad325d279c6da25559bc6cc69ffbfdd549c7cb7098/stable_retro_turbo-1.0.1.post3-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4f83ee74ce98788264a8c6865ba7aea9e9f87b1769ebc9afa7620b257c9cb820", size = 84474072, upload-time = "2026-07-03T16:15:42.749Z" },
 ]
 
 [[package]]
 name = "supermariobrosnes-turbo"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gymnasium", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "numpy", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/6d/6e51d943ba75e984d3ead3e8b76cacecdabeae43bb3ab2909b639646d39e/supermariobrosnes_turbo-0.2.3-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:97134c6212abf8764fc6ae9818b1cea1bd696ece2cd7e24ceb0fba59be07930f", size = 399183, upload-time = "2026-07-03T15:06:55.253Z" },
-    { url = "https://files.pythonhosted.org/packages/99/ca/92d9247ed1bbb79aa99825529e13b6392d34972021b76685bfa90c88ed4d/supermariobrosnes_turbo-0.2.3-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c52e14931c598e461625d6caad9e7e5b20f6b950c81149d29105e4ddf6f6fe81", size = 438647, upload-time = "2026-07-03T15:06:56.54Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/8a/a885538d3fd88a3ae98938ef69cd378789f02561d687e95ea3ca0cda3d9a/supermariobrosnes_turbo-0.2.4-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:c75c2dff62d4ced5f1a98693a1859625adde83a4ece913085fa21dd7555b5736", size = 400809, upload-time = "2026-07-03T16:02:21.699Z" },
+    { url = "https://files.pythonhosted.org/packages/03/2d/c26a8806b95bdf1cc2383aee678cb864660baad73d035ef85a08873a2f3f/supermariobrosnes_turbo-0.2.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3d6f1181914a8c29f343ffc1f7bb52cb821128ec737197b92f39ccf1de9749ba", size = 440536, upload-time = "2026-07-03T16:02:23.318Z" },
 ]
 
 [[package]]

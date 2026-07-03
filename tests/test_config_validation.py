@@ -341,6 +341,36 @@ environment_hash: sha256:deadbeef
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertNotIn("execution", document)
 
+    def test_smb3_goal_uses_score_reward_wrappers(self) -> None:
+        document = load_goal_contract(
+            Path("experiments/goals/SuperMarioBros3-Nes-v0/1Player.World1.Level1/_goal.yaml")
+        )
+
+        train_env_config = document["train"]["environment"]["env_config"]
+        self.assertEqual(train_env_config["game"], "SuperMarioBros3-Nes-v0")
+        self.assertEqual(train_env_config["state"], "1Player.World1.Level1")
+        self.assertEqual(
+            train_env_config["env_wrappers"],
+            [
+                {"id": "SuperMarioBros3NesProgressInfoWrapper"},
+                {
+                    "id": "SuperMarioBros3NesRewardEnvWrapper",
+                    "kwargs": {
+                        "use_retro_reward": False,
+                        "reward_mode": "score",
+                        "progress_reward_scale": 1.0,
+                        "terminal_reward": 50,
+                        "death_penalty": 25,
+                        "completion_reward": 0.0,
+                        "reward_scale": 10,
+                        "score_progress_clipped": False,
+                    },
+                },
+            ],
+        )
+        self.assertNotIn("reward_mode", train_env_config)
+        self.assertNotIn("use_retro_reward", train_env_config)
+
 
 if __name__ == "__main__":
     unittest.main()

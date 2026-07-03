@@ -134,8 +134,9 @@ configured rule keys read from terminal `info` as the source value. For Mario
 for their current `(levelHi, levelLo)` source level. Training intentionally does not emit `to` or
 full-transition counters because those multiply metric cardinality quickly. Training does not emit
 initializer-state mirrors under `train/state/<initializer>/done/*`; those labels are not reliable
-for natural level transitions. Evaluation forces `done_on_events=()` in env construction and does
-not pass native terminal `done_on` rules to Stable Retro; it keeps running after observed level completion, so `eval/done/level_change` and
+for natural level transitions. Evaluation, including post-training checkpoint eval, forces
+`done_on_events=()` in env construction and does not pass native terminal `done_on` rules to
+Stable Retro; it keeps running after observed level completion, so `eval/done/level_change` and
 `eval/done/level_change/from/<start>` track whether a natural transition was observed during the eval
 horizon. Eval `from` values are the configured episode start state, not native `done_on_info`
 previous-value payloads.

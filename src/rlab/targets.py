@@ -276,8 +276,19 @@ class SuperMarioBrosNesV0Target(RetroTarget):
     }
 
 
+class SuperMarioBros3NesV0Target(RetroTarget):
+    game = "SuperMarioBros3-Nes-v0"
+    default_state = "1Player.World1.Level1"
+    default_action_set = "native"
+    default_reward_mode = "native"
+    native_life_variable = "lives"
+    default_env_wrappers = ({"id": "SuperMarioBros3NesProgressInfoWrapper"},)
+    tracker_cls = RetroProgressTracker
+
+
 TARGETS: dict[str, type[RetroTarget]] = {
     SuperMarioBrosNesV0Target.game: SuperMarioBrosNesV0Target,
+    SuperMarioBros3NesV0Target.game: SuperMarioBros3NesV0Target,
 }
 
 

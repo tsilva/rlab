@@ -92,6 +92,18 @@ class SuperMarioBrosNesRewardEnvWrapper:
         return replace(config, **cls.validate_kwargs(kwargs, label=label))
 
 
+class SuperMarioBros3NesRewardEnvWrapper(SuperMarioBrosNesRewardEnvWrapper):
+    wrapper_id = "SuperMarioBros3NesRewardEnvWrapper"
+    aliases = frozenset(
+        {
+            wrapper_id,
+            "rlab.env_wrappers.SuperMarioBros3NesRewardEnvWrapper",
+            "super_mario_bros3_nes_reward",
+        }
+    )
+    game = "SuperMarioBros3-Nes-v0"
+
+
 class SuperMarioBrosNesProgressInfoWrapper:
     wrapper_id = "SuperMarioBrosNesProgressInfoWrapper"
     kind = "progress_info"
@@ -243,9 +255,110 @@ class SuperMarioBrosNesProgressInfoWrapper:
             info["death_level_x_pos"] = int(self.level_max_x_pos)
 
 
+class SuperMarioBros3NesProgressInfoWrapper:
+    wrapper_id = "SuperMarioBros3NesProgressInfoWrapper"
+    kind = "progress_info"
+    aliases = frozenset(
+        {
+            wrapper_id,
+            "rlab.env_wrappers.SuperMarioBros3NesProgressInfoWrapper",
+            "super_mario_bros3_nes_progress_info",
+        }
+    )
+    game = "SuperMarioBros3-Nes-v0"
+    default_keys = {
+        "hpos_key": "hpos",
+        "lives_key": "lives",
+        "score_key": "score",
+        "life_loss_event": "life_loss",
+    }
+    config_keys = frozenset(default_keys)
+
+    def __init__(self, kwargs: Mapping[str, Any] | None = None):
+        values = dict(self.default_keys)
+        values.update(dict(kwargs or {}))
+        self.keys = values
+        self.x_pos = 0
+        self.max_x_pos = 0
+        self.curr_score = 0
+        self.prev_lives: int | None = None
+
+    @classmethod
+    def validate_kwargs(cls, kwargs: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+        extra = sorted(set(kwargs) - cls.config_keys)
+        if extra:
+            raise ValueError(f"{label}.kwargs has unsupported key(s): {extra}")
+        cleaned = deepcopy(dict(kwargs))
+        for key, value in cleaned.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label}.kwargs.{key} must be a non-empty string")
+            cleaned[key] = value.strip()
+        return cleaned
+
+    @classmethod
+    def apply(cls, config: Any, kwargs: Mapping[str, Any], *, label: str) -> Any:
+        if getattr(config, "game", None) != cls.game:
+            raise ValueError(f"{label} supports only game {cls.game}")
+        cls.validate_kwargs(kwargs, label=label)
+        return config
+
+    def reset(self, info: dict[str, Any] | None = None) -> None:
+        info = info or {}
+        self.x_pos = int(info.get(self.keys["hpos_key"], 0))
+        self.max_x_pos = self.x_pos
+        self.curr_score = int(info.get(self.keys["score_key"], 0))
+        lives = info.get(self.keys["lives_key"])
+        self.prev_lives = int(lives) if lives is not None else None
+
+    def annotate(self, info: dict[str, Any], *, native_reward: float, done: bool) -> None:
+        del native_reward
+        x_pos = int(info.get(self.keys["hpos_key"], 0))
+        lives = info.get(self.keys["lives_key"])
+        info_events = info.get("info_events") or info.get("done_on_info") or {}
+        life_loss_event = self.keys["life_loss_event"]
+        died = life_loss_event in info_events or bool(info.get(life_loss_event, False))
+        if self.prev_lives is not None and lives is not None and int(lives) < self.prev_lives:
+            died = True
+        if lives is not None and int(lives) < 0:
+            died = True
+        if done and lives is not None and int(lives) < 0:
+            died = True
+        if lives is not None:
+            self.prev_lives = int(lives)
+
+        self.x_pos = x_pos
+        previous_max_x_pos = self.max_x_pos
+        self.max_x_pos = max(self.max_x_pos, x_pos)
+        progress_delta = max(0, self.max_x_pos - previous_max_x_pos)
+
+        score = int(info.get(self.keys["score_key"], 0))
+        score_delta = max(0, score - self.curr_score)
+        self.curr_score = score
+
+        info["x_pos"] = int(self.x_pos)
+        info["max_x_pos"] = int(self.max_x_pos)
+        info["level_x_pos"] = int(self.x_pos)
+        info["level_max_x_pos"] = int(self.max_x_pos)
+        info["global_x_pos"] = int(self.x_pos)
+        info["global_max_x_pos"] = int(self.max_x_pos)
+        info["progress_delta"] = int(progress_delta)
+        info["level_id"] = "1-1"
+        info["level_changed"] = False
+        info["completed_level_count"] = 0
+        info["level_complete"] = False
+        info["completion_event"] = False
+        info["score_delta"] = int(score_delta)
+        info["died"] = died
+        if died:
+            info["death_x_pos"] = int(self.max_x_pos)
+            info["death_level_x_pos"] = int(self.max_x_pos)
+
+
 ENV_WRAPPER_TYPES = (
     SuperMarioBrosNesRewardEnvWrapper,
+    SuperMarioBros3NesRewardEnvWrapper,
     SuperMarioBrosNesProgressInfoWrapper,
+    SuperMarioBros3NesProgressInfoWrapper,
 )
 ENV_WRAPPER_REGISTRY = {
     alias: wrapper_cls
@@ -340,8 +453,8 @@ def resolve_configured_env_wrappers(config: Any) -> Any:
     return resolved
 
 
-def progress_info_wrappers_for_config(config: Any) -> tuple[SuperMarioBrosNesProgressInfoWrapper, ...]:
-    wrappers: list[SuperMarioBrosNesProgressInfoWrapper] = []
+def progress_info_wrappers_for_config(config: Any) -> tuple[Any, ...]:
+    wrappers: list[Any] = []
     for spec in normalize_env_wrapper_specs(getattr(config, "env_wrappers", ())):
         wrapper_cls = ENV_WRAPPER_REGISTRY[spec["id"]]
         if getattr(wrapper_cls, "kind", "") != "progress_info":
