@@ -11,6 +11,8 @@ description: >-
   out-of-process eval ranking for checkpoint promotion.
 train:
   policy:
+    # Queue-backed training caps must be explicit in specs; no runtime default is supplied.
+    timesteps: 5000000
     # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.
     torch_num_threads: 1
     # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
@@ -45,3 +47,8 @@ train:
     adam_eps: 1.0e-08
     # Preserves raw advantage scale, which appears useful here because reward magnitude carries progress/terminal-signal strength.
     normalize_advantage: false
+logging:
+  # Queue-backed logging choices are explicit spec inputs, not runtime defaults.
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: CHECKPOINT_BUCKET_URI

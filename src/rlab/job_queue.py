@@ -38,7 +38,7 @@ from rlab.runtime_refs import (
     runtime_image_ref_from_file,
 )
 from rlab.seeds import validate_training_seed
-from rlab.spec_schema import validate_train_spec_schema
+from rlab.spec_schema import require_explicit_queue_train_config, validate_train_spec_schema
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -65,12 +65,6 @@ PROVIDER_OWNED_INFO_EVENTS = {
     "supermariobrosnes-turbo": frozenset({"life_loss", "level_change"}),
 }
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
-RUNTIME_TRAIN_CONFIG_DEFAULTS = {
-    "timesteps": 5_000_000,
-    "wandb": True,
-    "wandb_mode": "online",
-    "wandb_artifact_storage_uri": "${CHECKPOINT_BUCKET_URI}",
-}
 QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "spec_id", "timestamp", "utc"})
 SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
@@ -804,8 +798,6 @@ def materialize_train_spec_document(
     _materialize_goal_train_environment(materialized, goal_document)
     train_config = _merge_train_config_sections(materialized, goal_document=goal_document)
     if train_config:
-        for key, value in RUNTIME_TRAIN_CONFIG_DEFAULTS.items():
-            train_config.setdefault(key, copy.deepcopy(value))
         materialized["train_config"] = train_config
     return materialized
 
@@ -1247,6 +1239,7 @@ def enqueue_train_job(
     config = dict(train_config)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(spec_payload or {}, label="spec_payload")
+    require_explicit_queue_train_config(config)
     validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
     profile_id = None

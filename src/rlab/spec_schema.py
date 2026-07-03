@@ -21,7 +21,9 @@ TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
     "timesteps",
     "wandb",
     "wandb_mode",
+    "wandb_artifact_storage_uri",
 )
+EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS
 TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = frozenset(
     {"group_id", "seed", "spec_id", "timestamp", "utc"}
 )
@@ -95,6 +97,7 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
                 "timesteps": {"type": "integer", "minimum": 1},
                 "wandb": {"type": "boolean"},
                 "wandb_mode": {"enum": ["online", "offline", "disabled"]},
+                "wandb_artifact_storage_uri": {"type": "string"},
             },
         },
     },
@@ -164,6 +167,19 @@ def _require_bool(document: Mapping[str, Any], key: str, *, label: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{_label_path(label, key)} must be a boolean")
     return value
+
+
+def require_explicit_queue_train_config(
+    train_config: Mapping[str, Any],
+    *,
+    label: str = "train_config",
+) -> None:
+    missing = [key for key in EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS if key not in train_config]
+    if missing:
+        raise ValueError(
+            f"{label} missing required spec-defined field(s): "
+            f"{', '.join(missing)}; queue-backed train jobs must define train values in specs"
+        )
 
 
 def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -> list[str]:
@@ -332,4 +348,13 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
         raise ValueError(
             f"{_label_path(label, 'train_config.wandb_mode')} must be one of "
             "online, offline, disabled"
+        )
+    artifact_uri = _require_key(
+        train_config,
+        "wandb_artifact_storage_uri",
+        label=_label_path(label, "train_config"),
+    )
+    if not isinstance(artifact_uri, str):
+        raise ValueError(
+            f"{_label_path(label, 'train_config.wandb_artifact_storage_uri')} must be a string"
         )

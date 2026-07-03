@@ -152,7 +152,7 @@ class ReleaseModelCardTests(unittest.TestCase):
             content,
         )
         self.assertIn(
-            "| Source project | [`rlab`](https://github.com/tsilva/rlab) |",
+            "| `source_project` | [`rlab`](https://github.com/tsilva/rlab) |",
             content,
         )
         self.assertIn(
@@ -169,25 +169,37 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("## Environment Details", content)
         self.assertIn("## Architecture", content)
         self.assertIn("## Training Recipe", content)
-        self.assertIn("| Preview video | `replay.mp4` |", content)
+        self.assertNotIn("| Category | Setting | Value |", content)
+        self.assertIn("| `preview_video` | `replay.mp4` |", content)
         self.assertIn("| Component | Value |", content)
         self.assertIn("| Limitation | Detail |", content)
-        self.assertIn("| Environment | `SuperMarioBros-Nes-v0`, state `Level1-1` |", content)
-        self.assertIn("| Input | 4 stacked grayscale `84 x 84` frames, channel-first |", content)
-        self.assertIn("| Output | Discrete action over the `simple` action set |", content)
-        self.assertIn("| Runtime | Environment provider | `Stable Retro` |", content)
-        self.assertIn("| Runtime | Environment id | `SuperMarioBros-Nes-v0` |", content)
+        self.assertIn("| `environment` | `SuperMarioBros-Nes-v0`, state `Level1-1` |", content)
         self.assertIn(
-            "| Observation | Preprocessing | crop top `32` px, grayscale, resize to `84 x 84` |",
+            "| `observation` | 4 stacked grayscale `84 x 84` frames, channel-first |",
             content,
         )
-        self.assertIn("| Action | Action set | `simple` |", content)
-        self.assertIn("| Reward | Reward shaping | reward_mode=`score` |", content)
-        self.assertIn("| Termination | Done conditions | goal-specific termination |", content)
-        self.assertNotIn("| W&B run |", at_a_glance)
-        self.assertNotIn("| W&B artifact |", at_a_glance)
-        self.assertIn("| W&B run |", content)
-        self.assertIn("| W&B artifact |", content)
+        self.assertIn(
+            "| `action_space` | Discrete action over the `simple` action set |",
+            content,
+        )
+        self.assertIn("| `eval_profile` | `episodes` | `seed_start` |", content)
+        self.assertIn("| Setting | Value |", content)
+        self.assertIn("| `env_provider` | `Stable Retro` |", content)
+        self.assertIn("| `env_id` | `SuperMarioBros-Nes-v0` |", content)
+        self.assertIn(
+            "| `preprocessing` | crop top `32` px, grayscale, resize to `84 x 84` |",
+            content,
+        )
+        self.assertIn("| `frame_skip` | `4` |", content)
+        self.assertIn("| `action_set` | `simple` |", content)
+        self.assertIn("| `reward_shaping` | reward_mode=`score` |", content)
+        self.assertIn("| `done_on_events` | goal-specific termination |", content)
+        self.assertIn("| `spec_id` | `b55` |", content)
+        self.assertIn("| `max_episode_steps` |  |", content)
+        self.assertNotIn("| `wandb_run` |", at_a_glance)
+        self.assertNotIn("| `wandb_artifact` |", at_a_glance)
+        self.assertIn("| `wandb_run` |", content)
+        self.assertIn("| `wandb_artifact` |", content)
         self.assertNotIn("For the original W&B artifact", content)
         self.assertNotIn("rlab leaders checkpoints", content)
         self.assertNotIn("Release staging re-evaluated", content)

@@ -152,8 +152,22 @@ def valid_train_spec() -> dict:
             "timesteps": 1024,
             "wandb": True,
             "wandb_mode": "online",
+            "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
         },
     }
+
+
+def explicit_train_config(**overrides) -> dict:
+    config = {
+        "game": "SuperMarioBros-Nes-v0",
+        "state": "Level1-1",
+        "timesteps": 1024,
+        "wandb": True,
+        "wandb_mode": "online",
+        "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
+    }
+    config.update(overrides)
+    return config
 
 
 class TrainRunnerSignalTests(unittest.TestCase):
@@ -514,6 +528,7 @@ reward:
 logging:
   wandb: true
   wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -643,6 +658,13 @@ group_id: "{batch_id}-{level_short}-{recipe}"
 run_name_template: "{group_id}_{spec_id}_s{seed}_{timestamp}"
 tags: ["goal_id:{goal_id}", "spec_id:{spec_id}", "env_id:{env_id}"]
 selection_metrics: [eval/reward/mean]
+train:
+  policy:
+    timesteps: 1024
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -708,6 +730,7 @@ train:
 logging:
   wandb: true
   wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -766,6 +789,10 @@ train:
         life_loss: [lives, decrease]
       done_on_events: [life_loss]
   timesteps: 1024
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -805,6 +832,8 @@ objective:
     aggregation: max
     direction: maximize
 train:
+  policy:
+    timesteps: 1024
   checkpoint_freq: 500000
   early_stop:
   - metric: train/info/level_complete/rate/min/last
@@ -826,6 +855,10 @@ train:
       info_events:
         life_loss: [lives, decrease]
       done_on_events: [life_loss]
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -842,6 +875,13 @@ seeds: [23]
 group_id: b-test
 tags: [mario, env-config]
 state: WrongState
+train:
+  policy:
+    timesteps: 1024
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 train_config:
   game: WrongGame
   state: WrongState
@@ -857,7 +897,7 @@ train_config:
 
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-1")
         self.assertNotIn("goal", source_spec)
-        self.assertNotIn("train", source_spec)
+        self.assertIn("train", source_spec)
         self.assertNotIn("n_envs", loaded["train"]["environment"])
         self.assertNotIn("env_threads", loaded["train"]["environment"])
         self.assertEqual(loaded["train"]["environment"]["env_config"]["n_envs"], 16)
@@ -878,12 +918,12 @@ train_config:
                 }
             ],
         )
-        self.assertEqual(loaded["train_config"]["timesteps"], 5_000_000)
+        self.assertEqual(loaded["train_config"]["timesteps"], 1024)
         self.assertEqual(loaded["train_config"]["checkpoint_freq"], 500000)
         self.assertTrue(loaded["train_config"]["wandb"])
         self.assertEqual(loaded["train_config"]["wandb_mode"], "online")
         self.assertEqual(
-            loaded["train_config"]["wandb_artifact_storage_uri"], "${CHECKPOINT_BUCKET_URI}"
+            loaded["train_config"]["wandb_artifact_storage_uri"], "s3://bucket/checkpoints"
         )
         self.assertIn("selection_policy", loaded)
         source_paths = [source["path"] for source in loaded["_composition"]["source_files"]]
@@ -903,6 +943,8 @@ objective:
   rank:
   - max(eval/reward/mean)
 train:
+  policy:
+    timesteps: 1024
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -913,6 +955,10 @@ train:
         life_loss: [lives, decrease]
         level_change: [[levelHi, levelLo], change]
       done_on_events: [life_loss, level_change]
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -929,9 +975,15 @@ seeds: [23]
 group_id: b-test
 tags: [mario, no-terminal]
 train:
+  policy:
+    timesteps: 1024
   environment:
     env_config:
       done_on: []
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: s3://bucket/checkpoints
 """,
                 encoding="utf-8",
             )
@@ -949,6 +1001,16 @@ train:
             path.write_text(json.dumps(spec), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "description"):
+                job_queue.load_spec_document(path)
+
+    def test_load_spec_document_rejects_missing_explicit_train_timestep(self) -> None:
+        spec = valid_train_spec()
+        del spec["train_config"]["timesteps"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "candidate.json"
+            path.write_text(json.dumps(spec), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "train_config.timesteps"):
                 job_queue.load_spec_document(path)
 
     def test_load_spec_document_rejects_removed_spec_fields(self) -> None:
@@ -1212,7 +1274,7 @@ train:
             profile_id="mario-ppo/post21/rtx4090",
             runtime_image_ref=RUNTIME_IMAGE_REF,
             run_target="rtx4090",
-            train_config={"timesteps": 1024},
+            train_config=explicit_train_config(),
         )
 
         self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
@@ -1242,7 +1304,7 @@ train:
             profile_id=None,
             runtime_image_ref=RUNTIME_IMAGE_REF,
             run_target="rtx4090",
-            train_config={"timesteps": 1024},
+            train_config=explicit_train_config(),
         )
 
         self.assertIsNone(row["profile_id"])
@@ -1259,12 +1321,11 @@ train:
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
-                train_config={
-                    "timesteps": 1024,
-                    "done_on_info_json": {
+                train_config=explicit_train_config(
+                    done_on_info_json={
                         "level_change": [["levelHi", "levelLo"], "change"],
                     },
-                },
+                ),
             )
 
     def test_enqueue_train_job_requires_done_events_to_be_info_events(self) -> None:
@@ -1276,11 +1337,10 @@ train:
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
-                train_config={
-                    "timesteps": 1024,
-                    "info_events_json": {"life_loss": ["lives", "decrease"]},
-                    "done_on_events": "life_loss,level_change",
-                },
+                train_config=explicit_train_config(
+                    info_events_json={"life_loss": ["lives", "decrease"]},
+                    done_on_events="life_loss,level_change",
+                ),
             )
 
     def test_enqueue_train_job_allows_stable_retro_turbo_provider_owned_done_events(self) -> None:
@@ -1291,11 +1351,10 @@ train:
             profile_id=None,
             runtime_image_ref=RUNTIME_IMAGE_REF,
             run_target="rtx4090",
-            train_config={
-                "timesteps": 1024,
-                "env_provider": "stable-retro-turbo",
-                "done_on_events": "life_loss,level_change",
-            },
+            train_config=explicit_train_config(
+                env_provider="stable-retro-turbo",
+                done_on_events="life_loss,level_change",
+            ),
         )
 
         self.assertEqual(row["id"], 7)
@@ -1309,7 +1368,7 @@ train:
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
-                train_config={"timesteps": 1024, "seed": DEFAULT_EVAL_SEED},
+                train_config=explicit_train_config(seed=DEFAULT_EVAL_SEED),
             )
 
         with self.assertRaisesRegex(ValueError, "training env slot"):
@@ -1320,7 +1379,7 @@ train:
                 profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
-                train_config={"timesteps": 1024, "seed": 9999, "n_envs": 2},
+                train_config=explicit_train_config(seed=9999, n_envs=2),
             )
 
     def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
@@ -1333,7 +1392,7 @@ train:
                 spec_slug="spec",
                 profile_id="mario-ppo/post21/rtx4090",
                 runtime_image_ref="docker:ghcr.io/tsilva/rlab/rlab-train:latest",
-                train_config={"timesteps": 1024},
+                train_config=explicit_train_config(),
             )
 
     def test_runtime_image_ref_from_args_defaults_to_latest_digest(self) -> None:
@@ -1733,6 +1792,9 @@ class TrainRunnerTests(unittest.TestCase):
                     "game": "SuperMarioBros-Nes-v0",
                     "timesteps": 1024,
                     "state": "Level1-2",
+                    "wandb": True,
+                    "wandb_mode": "online",
+                    "wandb_artifact_storage_uri": "CHECKPOINT_BUCKET_URI",
                 },
                 "run_name": "placeholder_candidate",
             }
@@ -1779,6 +1841,9 @@ class TrainRunnerTests(unittest.TestCase):
                 "train_config": {
                     "game": "SuperMarioBros-Nes-v0",
                     "timesteps": 1024,
+                    "wandb": True,
+                    "wandb_mode": "online",
+                    "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
                     "resume_artifact": "entity/project/run-checkpoint:step-5000000",
                 },
                 "run_name": "resume_candidate",
@@ -1882,6 +1947,8 @@ class TrainRunnerTests(unittest.TestCase):
                 "timesteps": 1024,
                 "state": "Level1-1",
                 "wandb": True,
+                "wandb_mode": "online",
+                "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
                 "wandb_tags": ["screen"],
             },
             "goal_slug": "Level1-1",
@@ -2051,11 +2118,7 @@ class TrainRunnerTests(unittest.TestCase):
             job = {
                 "id": 3,
                 "run_name": "candidate",
-                "train_config": {
-                    "runs_dir": str(root / "runs"),
-                    "wandb": True,
-                    "wandb_mode": "online",
-                },
+                "train_config": explicit_train_config(runs_dir=str(root / "runs")),
             }
             result = {
                 "run_dir": str(run_dir),
@@ -2078,11 +2141,7 @@ class TrainRunnerTests(unittest.TestCase):
             job = {
                 "id": 3,
                 "run_name": "../escaped",
-                "train_config": {
-                    "runs_dir": str(runs_dir),
-                    "wandb": True,
-                    "wandb_mode": "online",
-                },
+                "train_config": explicit_train_config(runs_dir=str(runs_dir)),
             }
             result = {
                 "run_dir": str(escaped_dir),

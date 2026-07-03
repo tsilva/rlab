@@ -362,21 +362,21 @@ PPO policy checkpoint for completing `{game}` `{level}` with Stable Retro, train
 | Item | Value |
 |---|---|
 | Task | Reinforcement learning policy for `{game}` `{level}` completion |
-| Environment | `{game}`, state `{level}` |
-| Model | Stable Baselines3 PPO |
-| Format | PyTorch checkpoint inside SB3 `.zip` |
-| Input | {frame_stack} stacked grayscale `{obs_size} x {obs_size}` frames, channel-first |
-| Output | Discrete action over the `{action_set}` action set |
-| Eval completion rate | {completion_text} |
-| Eval profile | {eval_profile} |
-| Uploaded checkpoint | `{leader.run_name}`, checkpoint `{checkpoint_step}` timesteps |
+| `environment` | `{game}`, state `{level}` |
+| `model` | Stable Baselines3 PPO |
+| `format` | PyTorch checkpoint inside SB3 `.zip` |
+| `observation` | {frame_stack} stacked grayscale `{obs_size} x {obs_size}` frames, channel-first |
+| `action_space` | Discrete action over the `{action_set}` action set |
+| `completion_rate` | {completion_text} |
+| `eval_profile` | {eval_profile} |
+| `checkpoint` | `{leader.run_name}`, checkpoint `{checkpoint_step}` timesteps |
 
 ## Preview
 
 | Item | Value |
 |---|---|
-| Preview video | `{release.preview_filename}` |
-| Representative episode | {preview_summary} |
+| `preview_video` | `{release.preview_filename}` |
+| `representative_episode` | {preview_summary} |
 
 ## Quick Start
 
@@ -391,7 +391,7 @@ rlab eval hf://{release.repo_id}
 
 ## Evaluation Results
 
-| Eval profile | Episodes | Seed start | Completion rate | Max x | Mean reward | Checkpoint step |
+| `eval_profile` | `episodes` | `seed_start` | `completion_rate` | `max_x_max` | `reward_mean` | `checkpoint_step` |
 |---|---:|---:|---:|---:|---:|---:|
 | {eval_profile} | {episodes_text} | {seed_start_text} | {completion_text} | {max_x:.0f} | {reward:.3f} | {checkpoint_step} |
 
@@ -399,44 +399,44 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 
 ## Environment Details
 
-| Category | Setting | Value |
-|---|---|---|
-| Runtime | Environment provider | `{env_provider}` |
-| Runtime | Environment id | `{env_id}` |
-| Runtime | Game | `{game}` |
-| Runtime | State | `{level}` |
-| Observation | Preprocessing | crop top `{hud_crop_top}` px, grayscale, resize to `{obs_size} x {obs_size}` |
-| Observation | Frame stack | `{frame_stack}` |
-| Observation | Frame skip | `{frame_skip}` |
-| Observation | Max-pool last two frames | {_format_bool(max_pool_frames)} |
-| Observation | Policy layout | channel-first `({frame_stack}, {obs_size}, {obs_size})` |
-| Action | Action set | `{action_set}` |
-| Reward | Reward mode | `{reward_mode}` |
-| Reward | Reward shaping | {reward_shaping} |
-| Termination | Max episode steps | `{max_episode_steps}` |
-| Termination | Done conditions | {done_on} |
+| Setting | Value |
+|---|---|
+| `env_provider` | `{env_provider}` |
+| `env_id` | `{env_id}` |
+| `game` | `{game}` |
+| `state` | `{level}` |
+| `preprocessing` | crop top `{hud_crop_top}` px, grayscale, resize to `{obs_size} x {obs_size}` |
+| `frame_stack` | `{frame_stack}` |
+| `frame_skip` | `{frame_skip}` |
+| `max_pool_frames` | {_format_bool(max_pool_frames)} |
+| `policy_observation_layout` | channel-first `({frame_stack}, {obs_size}, {obs_size})` |
+| `action_set` | `{action_set}` |
+| `reward_mode` | `{reward_mode}` |
+| `reward_shaping` | {reward_shaping} |
+| `max_episode_steps` | `{max_episode_steps}` |
+| `done_on_events` | {done_on} |
 
 ## Architecture
 
 | Component | Value |
 |---|---|
-| Algorithm | PPO from Stable Baselines3 |
-| Checkpoint format | SB3 PyTorch `.zip` |
-| Vector environment | `{env_provider}` |
-| Checkpoint contents | Policy, optimizer state, SB3 metadata, and system info |
+| `algorithm` | PPO from Stable Baselines3 |
+| `checkpoint_format` | SB3 PyTorch `.zip` |
+| `vector_environment` | `{env_provider}` |
+| `checkpoint_contents` | Policy, optimizer state, SB3 metadata, and system info |
 
 ## Training Recipe
 
 | Setting | Value |
 |---|---:|
-| Goal | `{goal["goal_id"]}` |
-| Spec | `{leader.spec_slug}` |
-| Checkpoint step | {checkpoint_step} |
-| Frame skip | {frame_skip} |
-| Max episode steps | {max_episode_steps} |
-| Reward mode | `{reward_mode}` |
-| Reward shaping | {reward_shaping} |
-| Termination | {done_on} |
+| `goal_id` | `{goal["goal_id"]}` |
+| `spec_id` | `{leader.spec_slug}` |
+| `checkpoint_step` | {checkpoint_step} |
+| `frame_skip` | {frame_skip} |
+| `max_episode_steps` | {max_episode_steps} |
+| `reward_mode` | `{reward_mode}` |
+| `reward_shaping` | {reward_shaping} |
+| `done_on_events` | {done_on} |
 
 ## Files
 
@@ -451,12 +451,12 @@ This is a checkpoint promotion metric from the current [`rlab`](https://github.c
 
 | Item | Value |
 |---|---|
-| Source project | [`rlab`](https://github.com/tsilva/rlab) |
-| Goal | `{goal["goal_id"]}` |
-| Goal title | `{goal.get("title", "")}` |
-| W&B run | [`{leader.run_name}`]({leader.url}) |
-| W&B artifact | `{leader.artifact_ref}` |
-| Eval source | `{leader.eval_source or ""}` |
+| `source_project` | [`rlab`](https://github.com/tsilva/rlab) |
+| `goal_id` | `{goal["goal_id"]}` |
+| `goal_title` | `{goal.get("title", "")}` |
+| `wandb_run` | [`{leader.run_name}`]({leader.url}) |
+| `wandb_artifact` | `{leader.artifact_ref}` |
+| `eval_source` | `{leader.eval_source or ""}` |
 
 ## Limitations
 

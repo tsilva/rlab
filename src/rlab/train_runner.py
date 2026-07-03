@@ -31,6 +31,7 @@ from rlab.job_queue import (
 )
 from rlab.runtime_refs import normalize_runtime_image_ref
 from rlab.seeds import validate_training_seed
+from rlab.spec_schema import require_explicit_queue_train_config
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     download_model_artifact,
@@ -364,7 +365,10 @@ def normalize_level_states(config: Mapping[str, Any]) -> list[str]:
 
 
 def normalize_train_config(
-    job: dict[str, Any], *, resolve_resume_artifact: bool = True
+    job: dict[str, Any],
+    *,
+    resolve_resume_artifact: bool = True,
+    require_explicit_train_fields: bool = True,
 ) -> dict[str, Any]:
     config = dict(job.get("train_config") or {})
     run_name = job.get("run_name") or config.get("run_name") or f"train_job_{job['id']}"
@@ -401,12 +405,6 @@ def normalize_train_config(
         config["runtime_image_ref"] = job["runtime_image_ref"]
     if job.get("run_target"):
         config["run_target"] = job["run_target"]
-    config.setdefault("timesteps", 5_000_000)
-    config.setdefault("wandb", True)
-    config.setdefault("wandb_mode", "online")
-    config.setdefault("wandb_artifact_storage_uri", "${CHECKPOINT_BUCKET_URI}")
-    if config.get("wandb_artifact_storage_uri") == "${CHECKPOINT_BUCKET_URI}":
-        config["wandb_artifact_storage_uri"] = strip_env_file_quotes(os.environ.get("CHECKPOINT_BUCKET_URI", ""))
     resume_artifact = config.pop("resume_artifact", None)
     if resume_artifact:
         if config.get("resume"):
@@ -419,6 +417,14 @@ def normalize_train_config(
                     artifact_download_dir(RESUME_ARTIFACT_ROOT, resume_ref),
                 )
             )
+    if require_explicit_train_fields:
+        require_explicit_queue_train_config(config)
+    if config.get("wandb_artifact_storage_uri") in {
+        "${CHECKPOINT_BUCKET_URI}",
+        "$CHECKPOINT_BUCKET_URI",
+        "CHECKPOINT_BUCKET_URI",
+    }:
+        config["wandb_artifact_storage_uri"] = strip_env_file_quotes(os.environ.get("CHECKPOINT_BUCKET_URI", ""))
     return config
 
 
@@ -627,7 +633,11 @@ def parse_wandb_run_url(log_text: str) -> str | None:
 
 
 def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, Any]:
-    config = normalize_train_config(job, resolve_resume_artifact=False)
+    config = normalize_train_config(
+        job,
+        resolve_resume_artifact=False,
+        require_explicit_train_fields=False,
+    )
     run_name = str(config["run_name"])
     runs_dir = str(config.get("runs_dir") or "runs")
     run_dir = Path(runs_dir) / run_name
