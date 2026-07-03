@@ -353,6 +353,7 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `leader/checkpoint/max_x_max` | Progress field for the source run's best evaluated checkpoint. Reported for inspection but not part of the current objective rank. |
 | `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
+| `leader/checkpoint/local_path` | Local checkpoint path for the source run's current best evaluated checkpoint when it is available on the eval worker. |
 | `leader/checkpoint/eval_source` | Source that produced the current best-checkpoint summary update, currently `post_train_inline`. |
 | `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 

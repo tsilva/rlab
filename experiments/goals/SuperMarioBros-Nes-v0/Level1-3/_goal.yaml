@@ -1,6 +1,0 @@
-# Hydra composition list; imports the shared Mario goal contract first.
-defaults:
-# Shared Mario base supplies the environment contract and early-stop/eval defaults.
-- ../_base@_global_
-# Apply this file after the base; goal-specific overrides can live here when needed.
-- _self_

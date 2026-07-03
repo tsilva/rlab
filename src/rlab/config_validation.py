@@ -15,7 +15,6 @@ from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document, render_template_vars
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
-from rlab.env_config_aliases import STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
 from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
@@ -25,7 +24,7 @@ from rlab.seeds import validate_eval_seed
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
-ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
+ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
         {"group_id", "seed", "spec_id", "timestamp", "utc"}
@@ -137,11 +136,17 @@ def _require_bool(document: Mapping[str, Any], key: str, *, label: str) -> bool:
     return value
 
 
-def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -> list[str]:
+def _require_string_list(
+    document: Mapping[str, Any],
+    key: str,
+    *,
+    label: str,
+    allow_empty: bool = False,
+) -> list[str]:
     value = _require_key(document, key, label=label)
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         raise ValueError(f"{_label_path(label, key)} must be a list")
-    if not value:
+    if not value and not allow_empty:
         raise ValueError(f"{_label_path(label, key)} must not be empty")
     result: list[str] = []
     for index, item in enumerate(value):
@@ -338,42 +343,9 @@ def _validate_env_config(
     if "info_events_json" in env_config:
         _require_mapping(env_config["info_events_json"], label=f"{label}.info_events_json")
     if "done_on_events" in env_config:
-        _require_string_list(env_config, "done_on_events", label=label)
-    if "frame_stack" in env_config:
-        _require_int(env_config, "frame_stack", label=label, minimum=1)
-    if "maxpool_last_two" in env_config:
-        _require_bool(env_config, "maxpool_last_two", label=label)
-    if "frame_maxpool" in env_config:
-        _require_bool(env_config, "frame_maxpool", label=label)
-    if "action_sticky_prob" in env_config:
-        _require_number(env_config, "action_sticky_prob", label=label)
-    if "obs_resize" in env_config:
-        _require_int_list(env_config, "obs_resize", label=label, length=2, minimum=1)
+        _require_string_list(env_config, "done_on_events", label=label, allow_empty=True)
     if "obs_crop" in env_config:
         _require_int_list(env_config, "obs_crop", label=label, length=4, minimum=0)
-    if "obs_grayscale" in env_config:
-        _require_bool(env_config, "obs_grayscale", label=label)
-    if "obs_layout" in env_config:
-        obs_layout = _require_non_empty_string(env_config, "obs_layout", label=label)
-        if obs_layout not in {"hwc", "chw"}:
-            raise ValueError(f"{label}.obs_layout must be hwc or chw")
-    if "obs_copy" in env_config:
-        obs_copy = _require_non_empty_string(env_config, "obs_copy", label=label)
-        if obs_copy not in {"copy", "safe_view", "unsafe_view"}:
-            raise ValueError(f"{label}.obs_copy must be copy, safe_view, or unsafe_view")
-    if "noop_reset_max" in env_config:
-        _require_int(env_config, "noop_reset_max", label=label, minimum=0)
-    if "reset_noops" in env_config:
-        _require_int(env_config, "reset_noops", label=label, minimum=0)
-    if "reward_clip" in env_config:
-        _require_bool(env_config, "reward_clip", label=label)
-    if "info_filter" in env_config and not isinstance(env_config["info_filter"], str | Mapping):
-        raise ValueError(f"{label}.info_filter must be a string or mapping")
-    if "done_on" in env_config:
-        if isinstance(env_config["done_on"], Mapping):
-            _require_mapping(env_config["done_on"], label=f"{label}.done_on")
-        else:
-            _require_string_list(env_config, "done_on", label=label)
     if "env_wrappers" in env_config:
         normalize_env_wrapper_specs(env_config["env_wrappers"], label=f"{label}.env_wrappers")
 
@@ -436,14 +408,9 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
                 label=f"{label}.eval.environment.env_config",
             )
             validate_eval_seed(seed, label=f"{label}.eval.environment.env_config.seed")
-        if "n_envs" in eval_env_config and "num_envs" in eval_env_config:
-            raise ValueError(
-                f"{label}.eval.environment.env_config must define only one of n_envs or num_envs"
-            )
-        if "n_envs" in eval_env_config or "num_envs" in eval_env_config:
-            n_envs_key = "num_envs" if "num_envs" in eval_env_config else "n_envs"
+        if "n_envs" in eval_env_config:
             _require_int(
-                eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1
+                eval_env_config, "n_envs", label=f"{label}.eval.environment.env_config", minimum=1
             )
         if "max_steps" in eval_env_config:
             _require_int(

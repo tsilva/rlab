@@ -61,12 +61,8 @@ def _environment_template_context_from_document(document: Mapping[str, Any]) -> 
     environment = _environment_mapping_from_document(document)
     if not isinstance(environment, Mapping):
         return {}
-    env_provider = _concrete_template_source(
-        environment.get("env_provider") or environment.get("provider")
-    )
-    env_id = _concrete_template_source(
-        environment.get("provider_env_id") or environment.get("env_id")
-    )
+    env_provider = _concrete_template_source(environment.get("env_provider"))
+    env_id = _concrete_template_source(environment.get("env_id"))
     if env_id:
         if ":" in env_id:
             provider, provider_env_id = env_id.split(":", 1)

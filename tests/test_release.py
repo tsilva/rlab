@@ -29,10 +29,6 @@ def import_release_card_symbols():
             assert_rom_imported=lambda *_args, **_kwargs: None,
             resolve_env_config=lambda config: config,
         ),
-        "rlab.env_config_aliases": make_stub_module(
-            "rlab.env_config_aliases",
-            normalize_provider_env_config_aliases=lambda config, **_kwargs: config,
-        ),
         "rlab.eval_runner": make_stub_module(
             "rlab.eval_runner",
             evaluate_model_episodes=lambda *_args, **_kwargs: ({}, None),

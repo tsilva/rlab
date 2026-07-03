@@ -68,7 +68,6 @@ from rlab.env_config import (
     parse_state_probs,
     parse_states,
 )
-from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import (
@@ -118,6 +117,7 @@ from rlab.wandb_artifacts import (
     safe_artifact_stem,
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
+from rlab.wandb_utils import default_wandb_project_path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -127,59 +127,7 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
-class EnvConfigAliasTests(unittest.TestCase):
-    def test_stable_retro_turbo_101_provider_keywords_map_to_env_config(self) -> None:
-        config = normalize_provider_env_config_aliases(
-            {
-                "num_envs": 16,
-                "num_threads": 4,
-                "maxpool_last_two": False,
-                "sticky_action_prob": 0.25,
-                "noop_reset_max": 3,
-            }
-        )
-
-        self.assertEqual(config["n_envs"], 16)
-        self.assertEqual(config["env_threads"], 4)
-        self.assertEqual(config["max_pool_frames"], False)
-        self.assertEqual(config["sticky_action_prob"], 0.25)
-        self.assertNotIn("num_envs", config)
-        self.assertNotIn("num_threads", config)
-        self.assertNotIn("maxpool_last_two", config)
-        self.assertNotIn("noop_reset_max", config)
-
-    def test_legacy_stable_retro_turbo_provider_keywords_still_map_to_env_config(self) -> None:
-        config = normalize_provider_env_config_aliases(
-            {
-                "frame_maxpool": False,
-                "action_sticky_prob": 0.25,
-                "reset_noops": 3,
-            }
-        )
-
-        self.assertEqual(config["max_pool_frames"], False)
-        self.assertEqual(config["sticky_action_prob"], 0.25)
-        self.assertNotIn("frame_maxpool", config)
-        self.assertNotIn("action_sticky_prob", config)
-        self.assertNotIn("reset_noops", config)
-
-    def test_obs_crop_alias_preserves_bottom_crop(self) -> None:
-        config = normalize_provider_env_config_aliases({"obs_crop": [0, 0, 32, 0]})
-
-        self.assertEqual(config["obs_crop"], (0, 0, 32, 0))
-        self.assertNotIn("hud_crop_top", config)
-
-    def test_done_on_alias_overrides_inherited_done_on_events(self) -> None:
-        config = normalize_provider_env_config_aliases(
-            {
-                "done_on": [],
-                "done_on_events": ["life_loss", "level_change"],
-            }
-        )
-
-        self.assertEqual(config["done_on_events"], [])
-        self.assertNotIn("done_on", config)
-
+class EnvConfigTests(unittest.TestCase):
     def test_reward_env_wrapper_resolves_to_mario_reward_config(self) -> None:
         config = resolve_env_config(
             EnvConfig(
@@ -2487,7 +2435,10 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path.write_bytes(b"zip")
             fake_run = FakeRun()
 
-            with patch.dict(sys.modules, {"wandb": FakeWandb()}):
+            with (
+                patch.dict(sys.modules, {"wandb": FakeWandb()}),
+                patch("rlab.artifacts.wandb_artifact_storage_uri", return_value=""),
+            ):
                 timing = log_wandb_model_artifact(
                     fake_run,
                     args,
@@ -2579,7 +2530,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 return FakeArtifact(name, type, metadata)
 
         args = argparse.Namespace(
-            game="TestGame-Platform",
+            game="SuperMarioBros-Nes-v0",
             run_name="candidate-run",
             run_description="description",
             no_wandb_artifacts=False,
@@ -2593,11 +2544,14 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path.write_bytes(b"zip")
             fake_run = FakeRun()
 
-            with patch.dict(sys.modules, {"wandb": FakeWandb()}):
+            with (
+                patch.dict(sys.modules, {"wandb": FakeWandb()}),
+                patch("rlab.artifacts.wandb_artifact_storage_uri", return_value=""),
+            ):
                 log_wandb_model_artifact(
                     fake_run,
                     args,
-                    EnvConfig(game="TestGame-Platform"),
+                    EnvConfig(game="SuperMarioBros-Nes-v0"),
                     model_path,
                     kind="checkpoint",
                     purge_after_upload=True,
@@ -2766,6 +2720,29 @@ class CommandAndArtifactTests(unittest.TestCase):
                 {"level_change": (("levelHi", "levelLo"), "change")},
             )
             self.assertEqual(config.done_on_events, ("level_change",))
+
+    def test_model_metadata_preserves_native_done_on_events_without_info_events(self) -> None:
+        parser = build_play_parser()
+        parser_defaults = vars(parser.parse_args([]))
+        metadata = {
+            "env_config": {
+                "game": "SuperMarioBros3-Nes-v0",
+                "state": "1Player.World1.Level1",
+                "obs_crop": [0, 0, 32, 0],
+                "done_on_events": ["life_loss", "level_change"],
+            }
+        }
+
+        args = parser.parse_args(["--model", "model.zip"])
+        apply_config_defaults(args, env_config_from_metadata(metadata), parser_defaults, set())
+        config = env_config_from_args(
+            args,
+            max_episode_steps_attr="max_steps",
+            include_states=True,
+        )
+
+        self.assertEqual(config.obs_crop, (0, 0, 32, 0))
+        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
 
     def test_model_metadata_defaults_apply_env_provider_and_threads_to_playback(self) -> None:
         parser = build_play_parser()
@@ -2946,7 +2923,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("artifact: entity/project/run-checkpoint:latest", text)
         self.assertIn("model: model.zip", text)
         self.assertIn("policy/eval env: supermariobrosnes-turbo", text)
-        self.assertIn("viewer env: stable-retro-turbo", text)
+        self.assertIn("viewer env: supermariobrosnes-turbo", text)
         self.assertIn("visual_only=True", text)
         self.assertIn("source of truth:", text)
         self.assertIn("threads=4", text)
@@ -3229,6 +3206,28 @@ class CommandAndArtifactTests(unittest.TestCase):
             "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
         )
 
+    def test_model_source_ref_uses_positional_run_path_latest_checkpoint(self) -> None:
+        parser = build_play_parser()
+        args = parser.parse_args(
+            ["tsilva/SuperMarioBros3-Nes-v0/1Player.World1.Level1_base_s123_20260703T171520Z"]
+        )
+
+        self.assertEqual(
+            single_model_artifact_ref(args),
+            "tsilva/SuperMarioBros3-Nes-v0/"
+            "1Player.World1.Level1_base_s123_20260703T171520Z-checkpoint:latest",
+        )
+
+    def test_model_source_ref_uses_env_entity_for_project_run_path(self) -> None:
+        with patch.dict("os.environ", {"WANDB_ENTITY": "env-entity"}):
+            parser = build_play_parser()
+            args = parser.parse_args(["SuperMarioBros3-Nes-v0/run"])
+
+        self.assertEqual(
+            single_model_artifact_ref(args),
+            "env-entity/SuperMarioBros3-Nes-v0/run-checkpoint:latest",
+        )
+
     def test_model_source_ref_accepts_positional_huggingface_ref(self) -> None:
         parser = build_play_parser()
         args = parser.parse_args(["hf://tsilva/SuperMarioBros-NES_Level1-2"])
@@ -3371,7 +3370,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(
             single_model_artifact_ref(args),
-            "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
+            "tsilva/SuperMarioBros-Nes-v0/run-checkpoint:latest",
         )
 
     def test_model_source_ref_uses_positional_run_name_kind_and_version(self) -> None:
@@ -3380,8 +3379,15 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(
             single_model_artifact_ref(args),
-            "tsilva/SuperMarioBros-NES/run-best:v8",
+            "tsilva/SuperMarioBros-Nes-v0/run-best:v8",
         )
+
+    def test_default_wandb_project_path_uses_env_entity(self) -> None:
+        with patch.dict("os.environ", {"WANDB_ENTITY": "env-entity"}):
+            self.assertEqual(
+                default_wandb_project_path("SuperMarioBros3-Nes-v0"),
+                "env-entity/SuperMarioBros3-Nes-v0",
+            )
 
     def test_model_source_ref_uses_explicit_run_kind_and_version(self) -> None:
         parser = build_play_parser()
@@ -3390,7 +3396,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(
             single_model_artifact_ref(args),
-            "tsilva/SuperMarioBros-NES/run-best:v8",
+            "tsilva/SuperMarioBros-Nes-v0/run-best:v8",
         )
 
     def test_wandb_artifact_metadata_requires_artifact_training_metadata(self) -> None:

@@ -112,7 +112,7 @@ The command surface is intentionally one binary:
 
 ## Research Loop
 
-Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `goal.yaml` before choosing specs, caps, metrics, or promotion criteria.
+Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `_goal.yaml` before choosing specs, caps, metrics, or promotion criteria.
 
 Train specs are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
@@ -128,8 +128,7 @@ rlab leaders checkpoints --goal Level1-1 --limit 1 --json
 `leaders checkpoints` returns evaluated checkpoint rows already sorted by the checkpoint promotion
 order, so `--limit 1` is the canonical best-checkpoint query. Use `leaders runs` separately when
 the question is about training/spec winners rather than the checkpoint artifact to play or promote.
-`leaders runs` uses the current primary goal metric by default for fast W&B queries; pass
-`--include-legacy-objectives` when you need to scan older objective-metric aliases too.
+`leaders runs` uses the current primary goal metric by default for fast W&B queries.
 
 To regenerate the W&B checkpoint leaderboard report with one section per goal, run:
 

@@ -41,38 +41,24 @@ train:
       <<: &mario_env_config
         # Stable Retro-compatible game id passed to SuperMarioBrosNesTurboVecEnv.
         game: SuperMarioBros-Nes-v0
-        num_envs: 16
-        num_threads: 4
+        n_envs: 16
+        env_threads: 4
         # Emulator frame skip; fixes action repeat and observation cadence.
         frame_skip: 4
-        # Number of preprocessed frames stacked in the returned observation.
-        frame_stack: 4
         # Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.
-        maxpool_last_two: false
+        max_pool_frames: false
         # Random sticky action probability; 0 disables stochastic action repetition for this contract.
         sticky_action_prob: 0.0
-        # Resize target for native preprocessing as [width, height].
-        obs_resize:
-        - 84
-        - 84
+        # Square resize target for native preprocessing.
+        observation_size: 84
         # Crop the HUD from the top of the frame before resize as [top, right, bottom, left].
         obs_crop:
         - 32
         - 0
         - 0
         - 0
-        # Convert RGB observations to grayscale natively.
-        obs_grayscale: true
         # Resize kernel; area downsampling is the expected image resizer for this contract.
         obs_resize_algorithm: area
-        # Tensor layout expected by SB3 CNN policies.
-        obs_layout: chw
-        # Observation ownership mode; safe_view avoids unnecessary memory traffic.
-        obs_copy: safe_view
-        # Disable random no-op starts for reproducible goal attempts.
-        noop_reset_max: 0
-        # Only return full info payloads at terminal transitions.
-        info_filter: terminal
         # Default Mario reward shaping contract.
         env_wrappers:
         - id: SuperMarioBrosNesProgressInfoWrapper
@@ -88,7 +74,7 @@ train:
       # Stable Retro state id; single-state Mario goals use the goal id as the source state.
       state: "{state}"
       # Training attempts terminate on death or level clear.
-      done_on:
+      done_on_events:
       - life_loss
       - level_change
 # Goal-owned checkpoint eval protocol.
@@ -100,7 +86,7 @@ eval:
       <<: *mario_env_config
       max_episodes: 100
       # Eval episodes stop on observed level changes, not life loss.
-      done_on:
+      done_on_events:
       - level_change
 # Goal-level release target; winner identity is resolved from `rlab leaders checkpoints`.
 release:

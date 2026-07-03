@@ -13,9 +13,9 @@ train:
   environment:
     env_config:
       # Empty list overrides the goal default of [life_loss, level_change].
-      done_on: []
+      done_on_events: []
 eval:
   environment:
     env_config:
       # Keep eval aligned with the no-terminal training environment.
-      done_on: []
+      done_on_events: []

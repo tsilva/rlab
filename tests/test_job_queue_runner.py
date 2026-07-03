@@ -193,25 +193,25 @@ class JobQueueTests(unittest.TestCase):
                 run_id="a1",
                 name="a-s1",
                 config={"goal_slug": "Level1-1", "spec_slug": "a", "seed": 1},
-                summary={"info/level_complete/rate/min/last": 1.0},
+                summary={"train/info/level_complete/rate/min/last": 1.0},
             ),
             FakeWandbRun(
                 run_id="a2",
                 name="a-s2",
                 config={"goal_slug": "Level1-1", "spec_slug": "a", "seed": 2},
-                summary={"info/level_complete/rate/min/last": 0.8},
+                summary={"train/info/level_complete/rate/min/last": 0.8},
             ),
             FakeWandbRun(
                 run_id="b1",
                 name="b-s1",
                 config={"goal_slug": "Level1-1", "spec_slug": "b", "seed": 1},
-                summary={"info/level_complete/rate/min/last": 0.9},
+                summary={"train/info/level_complete/rate/min/last": 0.9},
             ),
             FakeWandbRun(
                 run_id="b2",
                 name="b-s2",
                 config={"goal_slug": "Level1-1", "spec_slug": "b", "seed": 2},
-                summary={"info/level_complete/rate/min/last": 0.9},
+                summary={"train/info/level_complete/rate/min/last": 0.9},
             ),
         ]
 
@@ -326,25 +326,6 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(ranked[0].run_id, "fast")
 
-    def test_wandb_checkpoint_leaders_accept_current_eval_artifact_key(self) -> None:
-        run = FakeWandbRun(
-            run_id="run-1",
-            name="candidate",
-            config={"goal_slug": "Level1-4", "spec_slug": "b257"},
-            summary={
-                "eval/done/level_change/rate": 0.8,
-                "eval/progress/x/max": 4610,
-                "eval/reward/mean": 4200.0,
-                "eval/checkpoint/artifact": "entity/project/candidate:step-4500000",
-            },
-        )
-
-        leader = wandb_leaders.checkpoint_leader(run)
-
-        self.assertIsNotNone(leader)
-        assert leader is not None
-        self.assertEqual(leader.artifact_ref, "entity/project/candidate:step-4500000")
-
     def test_wandb_checkpoint_filter_requires_evaluated_checkpoint_summary(self) -> None:
         expected_current = {
             "$and": [
@@ -355,24 +336,8 @@ class JobQueueTests(unittest.TestCase):
                 {"summary_metrics.leader/checkpoint/artifact_ref": {"$exists": True}},
             ]
         }
-        expected_legacy = {
-            "$and": [
-                {"summary_metrics.eval/done/level_change/rate": {"$exists": True}},
-                {"summary_metrics.eval/progress/x/max": {"$exists": True}},
-                {"summary_metrics.eval/reward/mean": {"$exists": True}},
-                {
-                    "$or": [
-                        {"summary_metrics.eval/checkpoint/artifact": {"$exists": True}},
-                        {"summary_metrics.eval/checkpoint_artifact": {"$exists": True}},
-                    ]
-                },
-            ]
-        }
 
-        self.assertEqual(
-            wandb_leaders.checkpoint_summary_filter(),
-            {"$or": [expected_current, expected_legacy]},
-        )
+        self.assertEqual(wandb_leaders.checkpoint_summary_filter(), expected_current)
 
     def test_wandb_goal_filter_accepts_config_or_tag_partition(self) -> None:
         self.assertEqual(
@@ -399,24 +364,16 @@ class JobQueueTests(unittest.TestCase):
         )
 
     def test_wandb_run_query_uses_current_metric_by_default(self) -> None:
-        args = SimpleNamespace(objective_key=[], include_legacy_objectives=False)
+        args = SimpleNamespace(objective_key=[])
 
         self.assertEqual(
             wandb_leaders.run_query_objective_keys(args),
             ("train/info/level_complete/rate/min/last",),
         )
 
-    def test_wandb_run_query_can_include_legacy_objective_aliases(self) -> None:
-        args = SimpleNamespace(objective_key=[], include_legacy_objectives=True)
-
-        self.assertEqual(
-            wandb_leaders.run_query_objective_keys(args), wandb_leaders.RUN_OBJECTIVE_KEYS
-        )
-
     def test_wandb_run_query_explicit_objective_keys_override_defaults(self) -> None:
         args = SimpleNamespace(
             objective_key=["metric/a", "metric/b"],
-            include_legacy_objectives=True,
         )
 
         self.assertEqual(wandb_leaders.run_query_objective_keys(args), ("metric/a", "metric/b"))
@@ -712,7 +669,7 @@ environment:
   preprocessing:
     frame_skip: 4
     max_pool_frames: false
-    obs_resize: [84, 84]
+    observation_size: 84
     obs_crop: [0, 0, 32, 0]
   termination:
     max_episode_steps: 4500
@@ -979,7 +936,7 @@ train:
     timesteps: 1024
   environment:
     env_config:
-      done_on: []
+      done_on_events: []
 logging:
   wandb: true
   wandb_mode: online
@@ -990,7 +947,7 @@ logging:
 
             loaded = job_queue.load_spec_document(spec)
 
-        self.assertEqual(loaded["train"]["environment"]["env_config"]["done_on"], [])
+        self.assertEqual(loaded["train"]["environment"]["env_config"]["done_on_events"], [])
         self.assertEqual(loaded["train_config"]["done_on_events"], [])
 
     def test_load_spec_document_rejects_missing_mandatory_schema_field(self) -> None:
@@ -1130,7 +1087,7 @@ logging:
                     ],
                 )
 
-    def test_transfer_specs_inherit_level1_1_policy_recipe(self) -> None:
+    def test_active_goal_tree_only_keeps_level1_1_specs(self) -> None:
         level1_1 = job_queue.load_spec_document(
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
         )
@@ -1138,37 +1095,17 @@ logging:
             level1_1["group_id"],
             "Level1-1",
         )
-        for level in ("Level1-2", "Level1-3", "Level2-2"):
-            with self.subTest(level=level):
-                transfer = job_queue.load_spec_document(
-                    Path(f"experiments/goals/SuperMarioBros-Nes-v0/{level}/specs/base.yaml")
-                )
-
-                self.assertEqual(transfer["train"]["policy"], level1_1["train"]["policy"])
-                self.assertEqual(transfer["goal"]["goal_id"], level)
-                self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
-                self.assertEqual(
-                    transfer["group_id"],
-                    level,
-                )
-                self.assertFalse(contains_key(transfer, "template_vars"))
-                self.assertEqual(
-                    transfer["goal"]["release"]["huggingface"]["repo"],
-                    f"SuperMarioBros-Nes-v0_{level}",
-                )
-                self.assertEqual(
-                    transfer["goal"]["release"]["huggingface"]["checkpoint_filename"],
-                    "model.zip",
-                )
-                self.assertEqual(
-                    transfer["tags"],
-                    [
-                        f"goal_id:{level}",
-                        "spec_id:base",
-                        "env_id:SuperMarioBros-Nes-v0",
-                    ],
-                )
-                self.assertIn(level, transfer["description"])
+        active_specs = sorted(
+            str(path)
+            for path in Path("experiments/goals/SuperMarioBros-Nes-v0").glob("*/specs/*.yaml")
+        )
+        self.assertEqual(
+            active_specs,
+            [
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml",
+                "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/no-terminal.yaml",
+            ],
+        )
 
     def test_launch_result_metadata_strips_metrics_json(self) -> None:
         result = job_queue.launch_result_metadata(

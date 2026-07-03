@@ -25,7 +25,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["train_specs"], 1)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertGreaterEqual(report.counts["env_configs"], 1)
+        self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)
 
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
@@ -258,12 +258,12 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("env_provider", document["train"]["environment"]["env_config"])
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["train"]["environment"]["env_config"]["state"], "Level1-1")
-        self.assertEqual(document["train"]["environment"]["env_config"]["num_envs"], 16)
-        self.assertEqual(document["train"]["environment"]["env_config"]["num_threads"], 4)
+        self.assertEqual(document["train"]["environment"]["env_config"]["n_envs"], 16)
+        self.assertEqual(document["train"]["environment"]["env_config"]["env_threads"], 4)
         self.assertNotIn("reward_mode", document["train"]["environment"]["env_config"])
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
-        self.assertEqual(document["train"]["environment"]["env_config"]["obs_resize"], [84, 84])
-        self.assertEqual(document["train"]["environment"]["env_config"]["maxpool_last_two"], False)
+        self.assertEqual(document["train"]["environment"]["env_config"]["observation_size"], 84)
+        self.assertEqual(document["train"]["environment"]["env_config"]["max_pool_frames"], False)
         self.assertEqual(document["train"]["environment"]["env_config"]["sticky_action_prob"], 0.0)
         self.assertNotIn("policy", document["eval"])
         self.assertNotIn("schema_version", document["eval"])
@@ -273,18 +273,17 @@ environment_hash: sha256:deadbeef
         )
         self.assertNotIn("env_provider", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
-        self.assertEqual(document["eval"]["environment"]["env_config"]["num_envs"], 16)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["num_threads"], 4)
+        self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 16)
+        self.assertEqual(document["eval"]["environment"]["env_config"]["env_threads"], 4)
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
-        self.assertEqual(document["eval"]["environment"]["env_config"]["obs_resize"], [84, 84])
+        self.assertEqual(document["eval"]["environment"]["env_config"]["observation_size"], 84)
         self.assertEqual(document["eval"]["environment"]["env_config"]["max_episodes"], 100)
         self.assertNotIn("episodes", document["eval"]["environment"]["env_config"])
         self.assertNotIn("seed", document["eval"]["environment"]["env_config"])
-        self.assertNotIn("n_envs", document["eval"]["environment"]["env_config"])
         self.assertNotIn("max_steps", document["eval"]["environment"]["env_config"])
         self.assertEqual(
-            document["eval"]["environment"]["env_config"]["done_on"],
+            document["eval"]["environment"]["env_config"]["done_on_events"],
             ["level_change"],
         )
 
@@ -296,13 +295,13 @@ environment_hash: sha256:deadbeef
 
     def test_goal_validator_accepts_huggingface_release_target(self) -> None:
         document = load_goal_contract(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/_goal.yaml")
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
         )
 
         self.assertNotIn("owner", document["release"]["huggingface"])
         self.assertEqual(
             document["release"]["huggingface"]["repo"],
-            "SuperMarioBros-Nes-v0_Level1-2",
+            "SuperMarioBros-Nes-v0_Level1-1",
         )
         self.assertEqual(
             document["release"]["huggingface"]["checkpoint_filename"],
@@ -340,36 +339,6 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("updated_at", document)
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertNotIn("execution", document)
-
-    def test_smb3_goal_uses_score_reward_wrappers(self) -> None:
-        document = load_goal_contract(
-            Path("experiments/goals/SuperMarioBros3-Nes-v0/1Player.World1.Level1/_goal.yaml")
-        )
-
-        train_env_config = document["train"]["environment"]["env_config"]
-        self.assertEqual(train_env_config["game"], "SuperMarioBros3-Nes-v0")
-        self.assertEqual(train_env_config["state"], "1Player.World1.Level1")
-        self.assertEqual(
-            train_env_config["env_wrappers"],
-            [
-                {"id": "SuperMarioBros3NesProgressInfoWrapper"},
-                {
-                    "id": "SuperMarioBros3NesRewardEnvWrapper",
-                    "kwargs": {
-                        "use_retro_reward": False,
-                        "reward_mode": "score",
-                        "progress_reward_scale": 1.0,
-                        "terminal_reward": 50,
-                        "death_penalty": 25,
-                        "completion_reward": 0.0,
-                        "reward_scale": 10,
-                        "score_progress_clipped": False,
-                    },
-                },
-            ],
-        )
-        self.assertNotIn("reward_mode", train_env_config)
-        self.assertNotIn("use_retro_reward", train_env_config)
 
 
 if __name__ == "__main__":

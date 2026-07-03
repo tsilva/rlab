@@ -550,7 +550,15 @@ class RunJobCommandTests(unittest.TestCase):
                     "goal_slug": "Level1-1",
                     "spec_slug": "candidate",
                     "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "train_config": {"game": "SuperMarioBros-Nes-v0", "run_name": "unit-run"},
+                    "train_config": {
+                        "game": "SuperMarioBros-Nes-v0",
+                        "state": "Level1-1",
+                        "timesteps": 1000,
+                        "wandb": True,
+                        "wandb_mode": "offline",
+                        "wandb_artifact_storage_uri": "",
+                        "run_name": "unit-run",
+                    },
                 },
             }
             payload_path.write_text(json.dumps(payload), encoding="utf-8")

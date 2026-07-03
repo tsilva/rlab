@@ -52,12 +52,6 @@ SECRET_KEY_FRAGMENTS = (
 LEGACY_EVENT_TRAIN_CONFIG_KEYS = ("done_on_info_json", "done_on_info")
 TRAIN_CONFIG_SECTION_KEYS = ("env", "train", "reward", "logging")
 TRAIN_CONFIG_TOP_LEVEL_KEYS = ("state", "states", "state_probs", "resume")
-TRAIN_ENVIRONMENT_SECTION_KEYS = frozenset(
-    {
-        "n_envs",
-        "env_threads",
-    }
-)
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
 PROVIDER_OWNED_INFO_EVENTS = {
     "stable-retro-turbo": frozenset({"life_loss", "level_change"}),
@@ -100,30 +94,19 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "task_conditioning_info_values",
         "action_set",
         "frame_skip",
-        "frame_stack",
         "max_pool_frames",
-        "maxpool_last_two",
-        "frame_maxpool",
         "sticky_action_prob",
-        "action_sticky_prob",
-        "obs_resize",
         "obs_crop",
-        "obs_grayscale",
         "obs_resize_algorithm",
         "observation_size",
         "hud_crop_top",
-        "policy_observation_layout",
-        "obs_layout",
-        "obs_copy",
-        "noop_reset_max",
-        "reset_noops",
-        "info_filter",
         "max_episode_steps",
         "info_events",
         "info_events_json",
-        "done_on",
         "done_on_events",
         "env_wrappers",
+        "n_envs",
+        "env_threads",
     }
 )
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
@@ -460,7 +443,6 @@ def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[st
         not in {
             "env_config",
             "env_id",
-            "provider_env_id",
             "state",
             "states",
             "state_probs",
@@ -474,30 +456,16 @@ def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[st
     return deep_merge(config, direct_items)
 
 
-def _split_legacy_train_section(
-    section: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    environment: dict[str, Any] = {}
-    policy: dict[str, Any] = {}
-    for key, value in section.items():
-        if key in TRAIN_NESTED_SECTION_KEYS:
-            continue
-        if key in TRAIN_ENVIRONMENT_SECTION_KEYS:
-            environment[key] = copy.deepcopy(value)
-        else:
-            policy[key] = copy.deepcopy(value)
-    return environment, policy
-
-
 def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(section, Mapping):
         return {}
-    legacy_environment, legacy_policy = _split_legacy_train_section(section)
-    environment = legacy_environment
     nested_environment = section.get("environment")
-    if isinstance(nested_environment, Mapping):
-        environment = deep_merge(environment, nested_environment)
-    policy = legacy_policy
+    environment = copy.deepcopy(dict(nested_environment)) if isinstance(nested_environment, Mapping) else {}
+    policy = {
+        key: copy.deepcopy(value)
+        for key, value in section.items()
+        if key not in TRAIN_NESTED_SECTION_KEYS
+    }
     nested_policy = section.get("policy")
     if isinstance(nested_policy, Mapping):
         policy = deep_merge(policy, nested_policy)

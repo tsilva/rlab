@@ -13,7 +13,6 @@ from typing import Any
 from rlab.config_validation import load_goal_contract
 from rlab.dotenv import load_env_file
 from rlab.env import EnvConfig, assert_rom_imported, resolve_env_config
-from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.json_utils import json_safe
 from rlab.model_sources import download_artifact_ref_source
@@ -158,12 +157,8 @@ def env_config_from_goal(goal: Mapping[str, Any]) -> EnvConfig:
     merged = {**train_config, **eval_config}
     if provider:
         merged["env_provider"] = provider
-    normalized = normalize_provider_env_config_aliases(
-        merged,
-        label="goal.release.eval.environment.env_config",
-    )
     fields = set(EnvConfig.__dataclass_fields__)
-    config_kwargs = {key: value for key, value in normalized.items() if key in fields}
+    config_kwargs = {key: value for key, value in merged.items() if key in fields}
     return resolve_env_config(EnvConfig(**config_kwargs))
 
 

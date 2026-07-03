@@ -15,7 +15,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from rlab.env import EnvConfig, native_obs_crop, state_distribution_metadata
-from rlab.env_config_aliases import normalize_provider_env_config_aliases
 from rlab.env_config import parse_event_names, parse_info_events
 from rlab.env_identity import environment_hash, environment_identity_from_train_config
 from rlab.metric_names import (
@@ -259,8 +258,9 @@ def env_config_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def sanitize_env_config_metadata(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(config)
+    had_legacy_done_on_info = "done_on_info" in cleaned
     cleaned.pop("done_on_info", None)
-    if not cleaned.get("info_events"):
+    if had_legacy_done_on_info and not cleaned.get("info_events"):
         cleaned.pop("done_on_events", None)
     return cleaned
 
@@ -284,7 +284,6 @@ def env_config_from_config_dict(
     config: dict[str, Any],
     fallback: EnvConfig | None = None,
 ) -> EnvConfig | None:
-    config = normalize_provider_env_config_aliases(config, label="env_config")
     field_names = set(EnvConfig.__dataclass_fields__) - {"info_events", "done_on_events"}
     config_values = asdict(fallback) if fallback is not None else {}
     matched = False
@@ -300,7 +299,6 @@ def env_config_from_config_dict(
     if (
         "done_on_events" in config
         and config.get("done_on_events") is not None
-        and config_values.get("info_events")
     ):
         config_values["done_on_events"] = parse_event_names(config["done_on_events"])
         matched = True

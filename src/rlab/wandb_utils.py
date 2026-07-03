@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from rlab.dotenv import load_env_file
@@ -21,6 +22,17 @@ def load_wandb_env(dotenv_path: str | Path = ".env") -> None:
         key_filter=lambda key: key.startswith(WANDB_ENV_PREFIXES)
         or key in WANDB_ARTIFACT_ENV_KEYS,
     )
+
+
+def wandb_entity_from_env(*, fallback: str = DEFAULT_WANDB_ENTITY) -> str:
+    entity = str(os.environ.get("WANDB_ENTITY") or "").strip()
+    return entity or fallback
+
+
+def default_wandb_project_path(project: str | None = None) -> str:
+    load_wandb_env()
+    project_name = str(project or DEFAULT_WANDB_PROJECT).strip() or DEFAULT_WANDB_PROJECT
+    return f"{wandb_entity_from_env()}/{project_name}"
 
 
 def wandb_project_for_env_id(env_id: str | None, *, fallback: str = DEFAULT_WANDB_PROJECT) -> str:

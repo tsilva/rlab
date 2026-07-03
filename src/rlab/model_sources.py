@@ -28,12 +28,13 @@ from rlab.wandb_artifacts import (
     model_artifact_ref,
     safe_artifact_stem,
 )
-from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
+from rlab.wandb_utils import default_wandb_project_path, load_wandb_env
 
 
 MODEL_KIND_CHOICES = ("final", "best", "checkpoint")
 HUGGINGFACE_MODEL_SCHEME = "hf://"
 HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
+MODEL_ARTIFACT_KIND_SUFFIXES = tuple(f"-{kind}" for kind in MODEL_KIND_CHOICES)
 
 
 @dataclass
@@ -67,6 +68,10 @@ def positional_model_source_arg(value: str) -> str:
     if is_huggingface_model_ref(value):
         return value
     if "/" not in value and ":" not in value:
+        return value
+    parts = value.split("/")
+    leaf = parts[-1] if parts else ""
+    if len(parts) in (2, 3) and ":" not in leaf:
         return value
     return artifact_ref_arg(value)
 
@@ -108,7 +113,7 @@ def add_model_source_args(
         "--artifact-run",
         help="Training run name used to build a W&B artifact ref with --artifact-kind/version.",
     )
-    parser.add_argument("--artifact-project", default=DEFAULT_WANDB_PROJECT_PATH)
+    parser.add_argument("--artifact-project", default=default_wandb_project_path())
     parser.add_argument("--artifact-kind", choices=MODEL_KIND_CHOICES, default=default_kind)
     parser.add_argument("--artifact-version", default="latest")
     parser.add_argument("--artifact-root", default="runs/wandb_artifacts")
@@ -143,6 +148,44 @@ def artifact_values(args: argparse.Namespace) -> tuple[str, ...]:
     return (str(value),)
 
 
+def artifact_project_from_args(args: argparse.Namespace) -> str:
+    return str(getattr(args, "artifact_project", "") or default_wandb_project_path())
+
+
+def model_ref_from_run_path(
+    value: str,
+    *,
+    default_project: str,
+    kind: str,
+    version: str,
+) -> str | None:
+    if ":" in value:
+        return None
+    parts = value.split("/")
+    if len(parts) == 1:
+        project = default_project
+        run_name = parts[0]
+    elif len(parts) == 2:
+        entity = default_project.split("/", 1)[0]
+        project = f"{entity}/{parts[0]}"
+        run_name = parts[1]
+    elif len(parts) == 3:
+        project = f"{parts[0]}/{parts[1]}"
+        run_name = parts[2]
+    else:
+        return None
+    if not run_name:
+        return None
+    if run_name.endswith(MODEL_ARTIFACT_KIND_SUFFIXES):
+        return f"{project}/{run_name}:{version}"
+    return model_artifact_ref(
+        project=project,
+        run_name=run_name,
+        kind=kind,
+        version=version,
+    )
+
+
 def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
     artifacts = artifact_values(args)
     if artifacts:
@@ -152,19 +195,23 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
         positional_ref = str(positional)
         if is_huggingface_model_ref(positional_ref):
             return None
-        if "/" in positional_ref or ":" in positional_ref:
+        if ":" in positional_ref:
             return positional_ref
-        return model_artifact_ref(
-            project=getattr(args, "artifact_project", DEFAULT_WANDB_PROJECT_PATH),
-            run_name=positional_ref,
+        ref = model_ref_from_run_path(
+            positional_ref,
+            default_project=artifact_project_from_args(args),
             kind=getattr(args, "artifact_kind", "checkpoint"),
             version=getattr(args, "artifact_version", "latest"),
         )
+        if ref is not None:
+            return ref
+        if "/" in positional_ref:
+            return positional_ref
     run_name = getattr(args, "artifact_run", None)
     if not run_name:
         return None
     return model_artifact_ref(
-        project=getattr(args, "artifact_project", DEFAULT_WANDB_PROJECT_PATH),
+        project=artifact_project_from_args(args),
         run_name=str(run_name),
         kind=getattr(args, "artifact_kind", "checkpoint"),
         version=getattr(args, "artifact_version", "latest"),
@@ -189,7 +236,7 @@ def checkpoint_series_ref(args: argparse.Namespace) -> str:
     run_name = getattr(args, "artifact_run", None)
     if not run_name:
         raise SystemExit("--artifact-run is required unless --artifact is provided")
-    return f"{getattr(args, 'artifact_project', DEFAULT_WANDB_PROJECT_PATH)}/{slug(str(run_name))}-checkpoint"
+    return f"{artifact_project_from_args(args)}/{slug(str(run_name))}-checkpoint"
 
 
 def checkpoint_artifact_ref(args: argparse.Namespace) -> str:
