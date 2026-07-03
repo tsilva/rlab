@@ -39,7 +39,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
    - Build or update the model card using that skill's structure and writing rules.
    - For RL checkpoints with visual behavior, include a browser-safe `replay.mp4` in the model repo root.
    - Encode/verify `replay.mp4` as H.264/AVC, `yuv420p`, faststart, with valid duration and frames.
-   - Embed the root replay video in the README using the direct `resolve/main/replay.mp4` URL.
+   - Let Hugging Face's reinforcement-learning widget render the root `replay.mp4` as the model page preview; do not also embed the same video in the README body unless the widget is unavailable.
    - Upload the checkpoint, README, metadata, and `replay.mp4` to Hugging Face.
    - Verify the live Hugging Face card and remote raw video after upload.
 

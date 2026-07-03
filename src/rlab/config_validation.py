@@ -12,7 +12,7 @@ import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
-from rlab.config_loader import load_composed_mapping, load_mapping_document
+from rlab.config_loader import load_composed_mapping, load_mapping_document, render_template_vars
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.env_config_aliases import STABLE_RETRO_TURBO_ENV_CONFIG_KEYS
@@ -26,6 +26,13 @@ from rlab.seeds import validate_eval_seed
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
+GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    (
+        "release",
+        "huggingface",
+        "checkpoint_filename",
+    ): frozenset({"checkpoint_step"}),
+}
 
 
 @dataclass(frozen=True)
@@ -271,9 +278,7 @@ def _validate_env_config(
     require_provider: bool = True,
     allowed_extra_keys: set[str] | None = None,
 ) -> None:
-    extra_keys = sorted(
-        set(env_config) - ENV_CONFIG_ALLOWED_KEYS - (allowed_extra_keys or set())
-    )
+    extra_keys = sorted(set(env_config) - ENV_CONFIG_ALLOWED_KEYS - (allowed_extra_keys or set()))
     if extra_keys:
         raise ValueError(f"{label} has non-EnvConfig key(s): {extra_keys}")
     if require_provider:
@@ -433,7 +438,9 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             )
         if "n_envs" in eval_env_config or "num_envs" in eval_env_config:
             n_envs_key = "num_envs" if "num_envs" in eval_env_config else "n_envs"
-            _require_int(eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1)
+            _require_int(
+                eval_env_config, n_envs_key, label=f"{label}.eval.environment.env_config", minimum=1
+            )
         if "max_steps" in eval_env_config:
             _require_int(
                 eval_env_config,
@@ -472,7 +479,11 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
 
 
 def _validate_rank_order(rank_order: Any, *, label: str) -> None:
-    if not isinstance(rank_order, Sequence) or isinstance(rank_order, str | bytes) or not rank_order:
+    if (
+        not isinstance(rank_order, Sequence)
+        or isinstance(rank_order, str | bytes)
+        or not rank_order
+    ):
         raise ValueError(f"{label} must be a non-empty list")
     for index, raw_item in enumerate(rank_order):
         item_label = f"{label}[{index}]"
@@ -549,8 +560,7 @@ def _validate_goal_release(document: Mapping[str, Any], *, label: str) -> None:
     )
     if "{checkpoint_step}" not in checkpoint_filename:
         raise ValueError(
-            f"{label}.release.huggingface.checkpoint_filename must contain "
-            "{checkpoint_step}"
+            f"{label}.release.huggingface.checkpoint_filename must contain {{checkpoint_step}}"
         )
     _require_non_empty_string(
         huggingface,
@@ -573,7 +583,12 @@ def load_goal_contract(
     """Return a goal contract with Hydra defaults resolved."""
     repo_root = (repo_root or Path(".")).resolve()
     path = path.resolve()
-    document = load_composed_mapping(path, cycle_label="goal").document
+    document = render_template_vars(
+        load_composed_mapping(path, cycle_label="goal").document,
+        path=path,
+        label=f"goal file {_display_path(path, repo_root)}",
+        deferred_fields_by_path=GOAL_DEFERRED_TEMPLATE_FIELDS,
+    )
     if validate:
         _validate_goal_contract_document(document, path, repo_root)
     return document
@@ -626,7 +641,9 @@ def _validate_goal_contract_document(
         raise ValueError(
             f"{_label_path(label, 'goal_id')} must match goal directory name: {goal_dir.name}"
         )
-    objective = _require_mapping(_require_key(document, "objective", label=label), label=f"{label}.objective")
+    objective = _require_mapping(
+        _require_key(document, "objective", label=label), label=f"{label}.objective"
+    )
     narrative_objective_keys = {"algorithm", "forbidden_stop_rules", "game", "success_requirement"}
     present_objective_narrative_keys = sorted(set(objective) & narrative_objective_keys)
     if present_objective_narrative_keys:
@@ -635,9 +652,7 @@ def _validate_goal_contract_document(
             f"remove narrative keys: {present_objective_narrative_keys}"
         )
     if "success" in objective:
-        raise ValueError(
-            f"{label}.objective.success moved to train.early_stop"
-        )
+        raise ValueError(f"{label}.objective.success moved to train.early_stop")
     _validate_objective_rank(objective, label=f"{label}.objective")
 
     train = _goal_train_section(document, label=label)
@@ -647,24 +662,41 @@ def _validate_goal_contract_document(
         raise ValueError(f"{label}.train.max_train_timesteps is not part of goal contracts")
     policy = train.get("policy")
     if isinstance(policy, Mapping):
-        policy_early_stop_keys = {"early_stop", "early_stop_metric", "early_stop_operator", "early_stop_threshold"}
+        policy_early_stop_keys = {
+            "early_stop",
+            "early_stop_metric",
+            "early_stop_operator",
+            "early_stop_threshold",
+        }
         present = sorted(set(policy) & policy_early_stop_keys)
         if present:
-            raise ValueError(f"{label}.train.policy early-stop fields moved to train.early_stop: {present}")
+            raise ValueError(
+                f"{label}.train.policy early-stop fields moved to train.early_stop: {present}"
+            )
     if "early_stop" in train:
         normalize_early_stop_config(train["early_stop"], label=f"{label}.train.early_stop")
     environment = _goal_train_environment(document, train, label=label)
     _validate_environment_identity({"environment": environment}, label=f"{label}.train")
-    env_config = environment.get("env_config") if isinstance(environment.get("env_config"), Mapping) else environment
+    env_config = (
+        environment.get("env_config")
+        if isinstance(environment.get("env_config"), Mapping)
+        else environment
+    )
     if "state" in env_config and "states" in env_config:
-        raise ValueError(f"{label}.train.environment.env_config must define only one of state or states")
+        raise ValueError(
+            f"{label}.train.environment.env_config must define only one of state or states"
+        )
     if "state" in env_config:
         state = env_config["state"]
         if not isinstance(state, str) or not state.strip():
-            raise ValueError(f"{label}.train.environment.env_config.state must be a non-empty string")
+            raise ValueError(
+                f"{label}.train.environment.env_config.state must be a non-empty string"
+            )
         environment_states = [state.strip()]
     elif "states" in env_config:
-        environment_states = _require_string_list(env_config, "states", label=f"{label}.train.environment.env_config")
+        environment_states = _require_string_list(
+            env_config, "states", label=f"{label}.train.environment.env_config"
+        )
     else:
         raise ValueError(f"{label}.train.environment.env_config must define state or states")
     if "states" in objective:
@@ -706,7 +738,9 @@ def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
         instance = _require_mapping(raw, label=label)
         _require_non_empty_string(instance, "kind", label=label)
         default_workers = _require_int(instance, "default_workers", label=label, minimum=1)
-        max_workers = _require_int(instance, "hardware_max_workers", label=label, minimum=default_workers)
+        max_workers = _require_int(
+            instance, "hardware_max_workers", label=label, minimum=default_workers
+        )
         if max_workers < default_workers:
             raise ValueError(f"{label}.hardware_max_workers must be >= default_workers")
 
@@ -738,7 +772,9 @@ def validate_benchmark_baselines(path: Path) -> None:
     document = load_mapping_document(path, label=f"benchmark baselines file {path}")
     label = f"benchmark baselines file {path}"
     _require_schema_version(document, BENCHMARK_BASELINES_SCHEMA_VERSION, label=label)
-    baselines = _require_mapping(_require_key(document, "baselines", label=label), label=f"{label}.baselines")
+    baselines = _require_mapping(
+        _require_key(document, "baselines", label=label), label=f"{label}.baselines"
+    )
     if not baselines:
         raise ValueError(f"{label}.baselines must not be empty")
     for name, raw in baselines.items():
@@ -769,7 +805,9 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
 
     if not experiments_dir.is_dir():
         return ValidationReport(
-            issues=(ValidationIssue(path="experiments", message="experiments directory does not exist"),),
+            issues=(
+                ValidationIssue(path="experiments", message="experiments directory does not exist"),
+            ),
             counts={},
         )
 
@@ -778,7 +816,11 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     counts["yaml_files"] = len(yaml_files)
     counts["json_files"] = len(json_files)
     for path in json_files:
-        issues.append(ValidationIssue(path=_display_path(path, repo_root), message="experiments configs must be YAML"))
+        issues.append(
+            ValidationIssue(
+                path=_display_path(path, repo_root), message="experiments configs must be YAML"
+            )
+        )
 
     goals_dir = experiments_dir / "goals"
     goals = sorted(
@@ -788,7 +830,9 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     )
     counts["goals"] = len(goals)
     for path in goals:
-        _capture_issue(issues, path, repo_root, lambda path=path: validate_goal_contract(path, repo_root))
+        _capture_issue(
+            issues, path, repo_root, lambda path=path: validate_goal_contract(path, repo_root)
+        )
 
     specs = sorted(
         path
@@ -824,10 +868,14 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     else:
         issues.append(ValidationIssue(path="experiments/machines.yaml", message="file is required"))
     if machines_path.is_file() and capacity_path.is_file():
-        _capture_issue(issues, capacity_path, repo_root, lambda: validate_fleet_and_capacity(repo_root))
+        _capture_issue(
+            issues, capacity_path, repo_root, lambda: validate_fleet_and_capacity(repo_root)
+        )
     elif not capacity_path.is_file():
         issues.append(
-            ValidationIssue(path="experiments/policies/capacity_policy.yaml", message="file is required")
+            ValidationIssue(
+                path="experiments/policies/capacity_policy.yaml", message="file is required"
+            )
         )
 
     benchmark_dir = experiments_dir / "benchmarks"

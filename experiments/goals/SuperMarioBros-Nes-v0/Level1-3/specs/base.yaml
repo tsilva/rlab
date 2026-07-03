@@ -4,16 +4,20 @@ defaults:
 - _self_
 slug: base
 parent_spec_slug: base
+template_vars:
+  batch_id: b273
+  recipe: b55
+  recipe_label: B55 low-KL late-decay
 hypothesis: >-
-  The successful Level1-1 low-KL late-decay recipe transferred cleanly to Level1-2,
-  so Level1-3 should reuse the same inherited PPO and reward hyperparameters before
-  treating the recipe as a broader Level1 baseline.
-wandb_group: b273-l13-b55-transfer
-run_name_label: l13-b55-transfer
+  The successful Level1-1 low-KL late-decay recipe should transfer to {goal_id} without
+  changing PPO or reward hyperparameters. This spec inherits the Level1-1 policy recipe and
+  overrides only {goal_id} identity, grouping, and reporting metadata.
+wandb_group: "{batch_id}-{level_short}-{recipe}-transfer"
+run_name_label: "{level_short}-{recipe}-transfer"
 wandb_tags:
-- level1-3
-- b55
+- "{level_tag}"
+- "{recipe}"
 - lowkl
 - lrdecay
 - transfer
-run_description_template: Level1-3 transfer of the successful B55 low-KL late-decay recipe, seed {seed}.
+run_description_template: "{goal_id} transfer of the successful Level1-1 {recipe_label} recipe, seed {seed}."

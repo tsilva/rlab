@@ -19,9 +19,11 @@ import psycopg2.extras
 from rlab.config_loader import (
     YAML_EXTENSIONS,
     ComposedDocument,
+    TEMPLATE_VARS_KEY,
     deep_merge,
     load_composed_mapping,
     load_config_document,
+    render_template_vars,
 )
 from rlab.compute_targets import instance_defaults, load_json_file
 from rlab.dotenv import load_env_file
@@ -68,6 +70,20 @@ RUNTIME_TRAIN_CONFIG_DEFAULTS = {
     "wandb": True,
     "wandb_mode": "online",
     "wandb_artifact_storage_uri": "${CHECKPOINT_BUCKET_URI}",
+}
+SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    ("run_description_template",): frozenset({"seed", "slug", "utc"}),
+    (
+        "goal",
+        "release",
+        "huggingface",
+        "checkpoint_filename",
+    ): frozenset({"checkpoint_step"}),
+    (
+        "release",
+        "huggingface",
+        "checkpoint_filename",
+    ): frozenset({"checkpoint_step"}),
 }
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
     {
@@ -405,7 +421,9 @@ def _without_keys(value: Mapping[str, Any], keys: frozenset[str]) -> dict[str, A
 
 def _goal_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     environment = _document_train_environment(document)
-    config = _train_environment_section_config(environment) if isinstance(environment, Mapping) else {}
+    config = (
+        _train_environment_section_config(environment) if isinstance(environment, Mapping) else {}
+    )
     train = document.get("train")
     if isinstance(train, Mapping):
         config = deep_merge(config, _train_config_from_train_section(train))
@@ -472,7 +490,9 @@ def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[st
     return deep_merge(config, direct_items)
 
 
-def _split_legacy_train_section(section: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _split_legacy_train_section(
+    section: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     environment: dict[str, Any] = {}
     policy: dict[str, Any] = {}
     for key, value in section.items():
@@ -618,7 +638,9 @@ def _infer_goal_slug_from_path(path: Path) -> str:
 
 def _goal_slug_from_value(value: Any) -> str:
     if isinstance(value, Mapping):
-        return str(value.get("goal_id") or value.get("goal") or value.get("goal_slug") or "").strip()
+        return str(
+            value.get("goal_id") or value.get("goal") or value.get("goal_slug") or ""
+        ).strip()
     return str(value or "").strip()
 
 
@@ -639,14 +661,27 @@ def _goal_composition_for_spec(path: Path, document: Mapping[str, Any]) -> Compo
         for filename in ("_goal.yaml", "goal.yaml"):
             candidate = goal_dir / filename
             if candidate.is_file():
-                return load_composed_mapping(candidate, cycle_label="goal")
+                return _load_rendered_goal_composition(candidate)
     for parent in inferred_path.parents:
         if parent.name == goal_slug:
             for filename in ("_goal.yaml", "goal.yaml"):
                 candidate = parent / filename
                 if candidate.is_file():
-                    return load_composed_mapping(candidate, cycle_label="goal")
+                    return _load_rendered_goal_composition(candidate)
     return None
+
+
+def _load_rendered_goal_composition(path: Path) -> ComposedDocument:
+    composition = load_composed_mapping(path, cycle_label="goal")
+    return ComposedDocument(
+        document=render_template_vars(
+            composition.document,
+            path=path,
+            label=f"goal file {path}",
+            deferred_fields_by_path=SPEC_DEFERRED_TEMPLATE_FIELDS,
+        ),
+        sources=composition.sources,
+    )
 
 
 def _goal_slug_from_goal_document(
@@ -732,9 +767,25 @@ def _spec_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
     ]
 
 
+def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
+    if isinstance(value, Mapping):
+        if TEMPLATE_VARS_KEY in value:
+            raise ValueError(f"{label} still contains {TEMPLATE_VARS_KEY}; render templates first")
+        for key, nested in value.items():
+            assert_no_template_vars(nested, label=f"{label}.{key}")
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        for index, nested in enumerate(value):
+            assert_no_template_vars(nested, label=f"{label}[{index}]")
+
+
 def load_spec_document(path: Path) -> dict[str, Any]:
     composed = load_composed_mapping(path, cycle_label="spec")
-    document = composed.document
+    document = render_template_vars(
+        composed.document,
+        path=path,
+        label=f"spec file {path}",
+        deferred_fields_by_path=SPEC_DEFERRED_TEMPLATE_FIELDS,
+    )
     sources = list(composed.sources)
     goal_composition = _goal_composition_for_spec(path, document)
     if goal_composition is not None:
@@ -751,6 +802,7 @@ def load_spec_document(path: Path) -> dict[str, Any]:
             "source_files": _spec_source_metadata(sources),
         }
     validate_train_spec_schema(document, label=f"spec file {path}")
+    assert_no_template_vars(document, label=f"spec file {path}")
     assert_no_secrets(document, label=f"spec file {path}")
     validate_launch_event_config(
         document["train_config"],
@@ -776,7 +828,7 @@ def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:
             capture_output=True,
             text=True,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return None
     return result.stdout.strip() or None
 
@@ -866,7 +918,9 @@ def _provider_owned_info_event_names(train_config: Mapping[str, Any]) -> frozens
     return PROVIDER_OWNED_INFO_EVENTS.get(provider_id, frozenset())
 
 
-def validate_launch_event_config(train_config: Mapping[str, Any], *, label: str = "train_config") -> None:
+def validate_launch_event_config(
+    train_config: Mapping[str, Any], *, label: str = "train_config"
+) -> None:
     legacy_keys = [
         key
         for key in LEGACY_EVENT_TRAIN_CONFIG_KEYS
@@ -896,8 +950,7 @@ def validate_launch_event_config(train_config: Mapping[str, Any], *, label: str 
     ]
     if missing:
         raise ValueError(
-            f"{label}.done_on_events references unconfigured info event(s): "
-            f"{', '.join(missing)}"
+            f"{label}.done_on_events references unconfigured info event(s): {', '.join(missing)}"
         )
 
 
@@ -945,7 +998,9 @@ def _utc_stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _format_seed_template(template: str | None, *, seed: int | None, slug: str, utc: str) -> str | None:
+def _format_seed_template(
+    template: str | None, *, seed: int | None, slug: str, utc: str
+) -> str | None:
     if not template:
         return None
     return str(template).format(seed="" if seed is None else seed, slug=slug, utc=utc)
@@ -981,7 +1036,9 @@ def _format_default_run_name(
     return f"{batch_id}-{description}-{seed_label}-{utc}"
 
 
-def _document_seeds(document: Mapping[str, Any], override_seeds: Sequence[int] = ()) -> list[int | None]:
+def _document_seeds(
+    document: Mapping[str, Any], override_seeds: Sequence[int] = ()
+) -> list[int | None]:
     if override_seeds:
         return [int(seed) for seed in override_seeds]
     seeds = document.get("seeds")
@@ -1223,7 +1280,9 @@ def claim_job_launch(
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     job_kind = _job_event_kind(job_kind)
     table = _job_table(job_kind)
-    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref) if runtime_image_ref else None
+    runtime_image_ref = (
+        normalize_runtime_image_ref(runtime_image_ref) if runtime_image_ref else None
+    )
     filters = ["cancel_requested = FALSE", "status = 'pending'"]
     params: dict[str, Any] = {
         "machine": str(machine),
@@ -1857,7 +1916,7 @@ def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("
         return default
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -1990,7 +2049,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict to running jobs whose lease_owner starts with this prefix.",
     )
     stale.add_argument("--older-than-seconds", type=int, default=300)
-    stale.add_argument("--limit", type=int, default=50, help="Maximum rows to affect; 0 means no limit.")
+    stale.add_argument(
+        "--limit", type=int, default=50, help="Maximum rows to affect; 0 means no limit."
+    )
     stale.add_argument("--error", help="Failure message to store on job/result rows.")
     stale.add_argument("--all", action="store_true", help="Allow an unscoped apply.")
     add_dry_run_arg(stale)
@@ -2016,7 +2077,9 @@ def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(args.direct))
 
 
-def runtime_image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = False) -> str | None:
+def runtime_image_ref_from_args(
+    args: argparse.Namespace, *, default_latest: bool = False
+) -> str | None:
     if getattr(args, "runtime_image_ref_file", None):
         return runtime_image_ref_from_file(args.runtime_image_ref_file)
     if getattr(args, "runtime_image_ref", None):
@@ -2062,7 +2125,9 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
     runtime_image_ref = runtime_image_ref_from_args(args, default_latest=True)
     if not runtime_image_ref:
-        raise SystemExit("--runtime-image-ref, --runtime-image-ref-file, or latest image resolution is required")
+        raise SystemExit(
+            "--runtime-image-ref, --runtime-image-ref-file, or latest image resolution is required"
+        )
     conn = _connect_from_args(args)
     try:
         rows = enqueue_train_jobs_from_spec_file(

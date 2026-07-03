@@ -218,7 +218,6 @@ def write_model_card(
     max_x = float(leader.max_x_max)
     eval_episodes = metrics.get("episodes", metrics.get("eval/episodes", ""))
     model_url = f"https://huggingface.co/{release.repo_id}"
-    replay_url = f"{model_url}/resolve/main/{release.preview_filename}"
     content = f"""---
 library_name: stable-baselines3
 pipeline_tag: reinforcement-learning
@@ -235,8 +234,6 @@ metrics:
 # {game} {level} PPO
 
 PPO policy checkpoint for `{game}` `{level}`, trained with `rlab`.
-
-<video controls src="{replay_url}"></video>
 
 ## At a Glance
 

@@ -82,6 +82,14 @@ class FakeWandbRun:
         self.url = f"https://wandb.ai/entity/project/runs/{run_id}"
 
 
+def contains_key(value, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(contains_key(nested, key) for nested in value.values())
+    if isinstance(value, list):
+        return any(contains_key(item, key) for item in value)
+    return False
+
+
 class FakeCursor:
     def __init__(self, row=None, rows=None) -> None:
         self.row = row
@@ -380,7 +388,9 @@ class JobQueueTests(unittest.TestCase):
     def test_wandb_run_query_can_include_legacy_objective_aliases(self) -> None:
         args = SimpleNamespace(objective_key=[], include_legacy_objectives=True)
 
-        self.assertEqual(wandb_leaders.run_query_objective_keys(args), wandb_leaders.RUN_OBJECTIVE_KEYS)
+        self.assertEqual(
+            wandb_leaders.run_query_objective_keys(args), wandb_leaders.RUN_OBJECTIVE_KEYS
+        )
 
     def test_wandb_run_query_explicit_objective_keys_override_defaults(self) -> None:
         args = SimpleNamespace(
@@ -537,9 +547,111 @@ overrides:
         self.assertEqual(loaded["train_config"]["learning_rate"], 0.0001)
         self.assertEqual(loaded["train_config"]["death_penalty"], 0)
         self.assertEqual(loaded["train_config"]["done_on_events"], ["life_loss", "level_change"])
-        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
+        )
         self.assertTrue(loaded["environment_hash"].startswith("sha256:"))
         self.assertEqual(len(loaded["_composition"]["source_files"]), 2)
+
+    def test_load_spec_document_renders_template_vars_before_queue_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "experiments" / "goals" / "SuperMarioBros-Nes-v0" / "Level1-2"
+            spec_dir = goal_dir / "specs"
+            spec_dir.mkdir(parents=True)
+            (goal_dir.parent / "_base.yaml").write_text(
+                """
+objective:
+  rank:
+  - max(eval/reward/mean)
+train:
+  early_stop:
+  - metric: train/info/level_complete/rate/min/last
+    operator: '>'
+    threshold: 0.99
+  environment:
+    env_provider: stable-retro-turbo
+    env_config:
+      game: SuperMarioBros-Nes-v0
+      state: "{state}"
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      hud_crop_top: 32
+      obs_resize_algorithm: area
+      info_events:
+        life_loss: [lives, decrease]
+        level_change: [[levelHi, levelLo], change]
+      done_on_events: [life_loss, level_change]
+eval:
+  environment:
+    env_provider: stable-retro-turbo
+    env_config:
+      game: SuperMarioBros-Nes-v0
+      state: "{state}"
+      action_set: simple
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      hud_crop_top: 32
+      obs_resize_algorithm: area
+      info_events:
+        level_change: [[levelHi, levelLo], change]
+      done_on_events: [level_change]
+release:
+  huggingface:
+    repo: SuperMarioBros-NES_{goal_id}
+    card_template: stable-retro-sb3
+    checkpoint_filename: ppo_{game_slug}_{checkpoint_step}_steps.zip
+    preview_filename: replay.mp4
+    include_youtube_preview: true
+""",
+                encoding="utf-8",
+            )
+            (goal_dir / "_goal.yaml").write_text(
+                """
+defaults:
+- ../_base@_global_
+- _self_
+goal_id: "{goal_id}"
+title: "{goal_id} completion"
+""",
+                encoding="utf-8",
+            )
+            spec = spec_dir / "candidate.yaml"
+            spec.write_text(
+                """
+defaults:
+- ../_goal@goal
+- _self_
+slug: candidate
+template_vars:
+  batch_id: b272
+  recipe: b55
+hypothesis: "{goal_id} should transfer {recipe}."
+wandb_group: "{batch_id}-{level_short}-{recipe}"
+run_name_label: "{level_short}-{recipe}"
+wandb_tags: ["{level_tag}", "{recipe}"]
+run_description_template: "{goal_id} {recipe} seed {seed}"
+selection_metrics: [eval/reward/mean]
+""",
+                encoding="utf-8",
+            )
+
+            loaded = job_queue.load_spec_document(spec)
+
+        self.assertFalse(contains_key(loaded, "template_vars"))
+        self.assertEqual(loaded["goal"]["goal_id"], "Level1-2")
+        self.assertEqual(loaded["wandb_group"], "b272-l12-b55")
+        self.assertEqual(loaded["wandb_tags"], ["level1-2", "b55"])
+        self.assertEqual(loaded["run_description_template"], "Level1-2 b55 seed {seed}")
+        self.assertEqual(
+            loaded["goal"]["release"]["huggingface"]["checkpoint_filename"],
+            "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+        )
 
     def test_load_spec_document_materializes_first_class_environment_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -596,7 +708,9 @@ logging:
         self.assertEqual(loaded["train_config"]["observation_size"], 84)
         self.assertNotIn("obs_resize", loaded["train_config"])
         self.assertEqual(loaded["train_config"]["death_penalty"], 25)
-        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
+        )
         self.assertEqual(loaded["environment"]["state"], "Level1-1")
         self.assertNotIn("hud_crop_top", loaded["environment"]["preprocessing"])
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
@@ -655,7 +769,9 @@ train:
             {"life_loss": ["lives", "decrease"]},
         )
         self.assertEqual(loaded["train_config"]["done_on_events"], ["life_loss"])
-        self.assertEqual(loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            loaded["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
+        )
         self.assertNotIn("env_config", loaded["environment"])
         self.assertEqual(loaded["environment"]["state"], "Level1-1")
         self.assertEqual(loaded["environment"]["preprocessing"]["obs_crop"], [32, 0, 0, 0])
@@ -756,7 +872,9 @@ train_config:
         self.assertEqual(loaded["train_config"]["checkpoint_freq"], 500000)
         self.assertTrue(loaded["train_config"]["wandb"])
         self.assertEqual(loaded["train_config"]["wandb_mode"], "online")
-        self.assertEqual(loaded["train_config"]["wandb_artifact_storage_uri"], "${CHECKPOINT_BUCKET_URI}")
+        self.assertEqual(
+            loaded["train_config"]["wandb_artifact_storage_uri"], "${CHECKPOINT_BUCKET_URI}"
+        )
         self.assertIn("selection_policy", loaded)
         source_paths = [source["path"] for source in loaded["_composition"]["source_files"]]
         self.assertTrue(any(path.endswith("_goal.yaml") for path in source_paths))
@@ -798,8 +916,14 @@ train_config:
             job_queue.enqueue_train_job = old_enqueue
             job_queue._utc_stamp = old_utc
 
-        self.assertEqual([row["run_name"] for row in rows], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
-        self.assertEqual([call["run_name"] for call in calls], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
+        self.assertEqual(
+            [row["run_name"] for row in rows],
+            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+        )
+        self.assertEqual(
+            [call["run_name"] for call in calls],
+            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+        )
 
     def test_enqueue_train_jobs_from_spec_document_uses_batch_id_from_wandb_group(self) -> None:
         calls = []
@@ -838,7 +962,9 @@ train_config:
                 job_queue.load_spec_document(path)
 
     def test_active_level1_1_specs_configure_goal_metric_early_stop(self) -> None:
-        spec_paths = sorted(Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs").glob("*.yaml"))
+        spec_paths = sorted(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs").glob("*.yaml")
+        )
         self.assertGreater(len(spec_paths), 0)
         for path in spec_paths:
             with self.subTest(path=str(path)):
@@ -862,15 +988,28 @@ train_config:
         for level in ("Level1-2", "Level1-3"):
             with self.subTest(level=level):
                 transfer = job_queue.load_spec_document(
-                    Path(
-                        f"experiments/goals/SuperMarioBros-Nes-v0/{level}/specs/base.yaml"
-                    )
+                    Path(f"experiments/goals/SuperMarioBros-Nes-v0/{level}/specs/base.yaml")
                 )
 
                 self.assertEqual(transfer["train"]["policy"], level1_1["train"]["policy"])
                 self.assertEqual(transfer["goal"]["goal_id"], level)
                 self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
                 self.assertEqual(transfer["parent_spec_slug"], level1_1["slug"])
+                self.assertFalse(contains_key(transfer, "template_vars"))
+                self.assertEqual(
+                    transfer["goal"]["release"]["huggingface"]["repo"],
+                    f"SuperMarioBros-NES_{level}",
+                )
+                self.assertEqual(
+                    transfer["goal"]["release"]["huggingface"]["checkpoint_filename"],
+                    "ppo_supermariobros-nes-v0_{checkpoint_step}_steps.zip",
+                )
+                self.assertEqual(
+                    transfer["wandb_tags"][:2],
+                    [level.lower(), "b55"],
+                )
+                self.assertIn(level, transfer["hypothesis"])
+                self.assertIn(level, transfer["run_description_template"])
 
     def test_launch_result_metadata_strips_metrics_json(self) -> None:
         result = job_queue.launch_result_metadata(
@@ -1257,7 +1396,10 @@ train_config:
             job_queue.enqueue_train_job = old_enqueue
             job_queue._utc_stamp = old_utc
 
-        self.assertEqual([row["run_name"] for row in rows], ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"])
+        self.assertEqual(
+            [row["run_name"] for row in rows],
+            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+        )
         self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
         self.assertEqual(
             calls[0]["train_config"]["info_events_json"],
@@ -1361,8 +1503,12 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
                 cooldown_seconds=0,
             )
         )
-        controller.observe(ResourceSample(cpu_percent=50, memory_percent=50, gpu_percent=50, vram_percent=50))
-        controller.observe(ResourceSample(cpu_percent=55, memory_percent=55, gpu_percent=55, vram_percent=55))
+        controller.observe(
+            ResourceSample(cpu_percent=50, memory_percent=50, gpu_percent=50, vram_percent=50)
+        )
+        controller.observe(
+            ResourceSample(cpu_percent=55, memory_percent=55, gpu_percent=55, vram_percent=55)
+        )
 
         decision = controller.decide(pending_jobs=True, active_workers=2, now=10)
 
@@ -1379,7 +1525,9 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
                 cooldown_seconds=0,
             )
         )
-        controller.observe(ResourceSample(cpu_percent=50, memory_percent=50, gpu_percent=50, vram_percent=50))
+        controller.observe(
+            ResourceSample(cpu_percent=50, memory_percent=50, gpu_percent=50, vram_percent=50)
+        )
 
         decision = controller.decide(pending_jobs=False, active_workers=2, now=10)
 
@@ -1397,8 +1545,12 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
                 cooldown_seconds=0,
             )
         )
-        controller.observe(ResourceSample(cpu_percent=91, memory_percent=50, gpu_percent=50, vram_percent=50))
-        controller.observe(ResourceSample(cpu_percent=92, memory_percent=50, gpu_percent=50, vram_percent=50))
+        controller.observe(
+            ResourceSample(cpu_percent=91, memory_percent=50, gpu_percent=50, vram_percent=50)
+        )
+        controller.observe(
+            ResourceSample(cpu_percent=92, memory_percent=50, gpu_percent=50, vram_percent=50)
+        )
 
         decision = controller.decide(pending_jobs=True, active_workers=3, now=10)
 
@@ -1416,7 +1568,9 @@ class TrainRunnerAutoscaleTests(unittest.TestCase):
                 cooldown_seconds=0,
             )
         )
-        controller.observe(ResourceSample(cpu_percent=10, memory_percent=10, gpu_percent=10, vram_percent=10))
+        controller.observe(
+            ResourceSample(cpu_percent=10, memory_percent=10, gpu_percent=10, vram_percent=10)
+        )
 
         decision = controller.decide(pending_jobs=True, active_workers=1, now=10)
 
@@ -1684,8 +1838,7 @@ class TrainRunnerTests(unittest.TestCase):
             )
             (run_dir / "wandb_run_id.txt").write_text("abc\n", encoding="utf-8")
             (run_dir / "early_stop.txt").write_text(
-                "completion_rate=1.000000\n"
-                "timesteps=3881520\n",
+                "completion_rate=1.000000\ntimesteps=3881520\n",
                 encoding="utf-8",
             )
             log_path.write_text(

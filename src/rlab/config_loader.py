@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 from hydra import compose, initialize_config_dir
@@ -12,6 +14,9 @@ import yaml
 
 
 YAML_EXTENSIONS = {".yaml", ".yml"}
+TEMPLATE_VARS_KEY = "template_vars"
+
+_LEVEL_ID_RE = re.compile(r"^Level(?P<world>\d+)-(?P<level>\d+)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,248 @@ class ComposedDocument:
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     cfg = OmegaConf.merge(OmegaConf.create(dict(base)), OmegaConf.create(dict(override)))
     return _plain_dict(cfg)
+
+
+def slugify_template_value(value: Any) -> str:
+    chars: list[str] = []
+    for char in str(value or "").strip().lower():
+        if char.isalnum():
+            chars.append(char)
+        elif chars and chars[-1] != "-":
+            chars.append("-")
+    return "".join(chars).strip("-")
+
+
+def _concrete_template_source(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if "{" in text or "}" in text else text
+
+
+def template_context_from_path(
+    path: Path, document: Mapping[str, Any] | None = None
+) -> dict[str, str]:
+    """Build stable template variables from a goal/spec path and optional document."""
+
+    resolved = path.resolve()
+    goal_id = ""
+    game = ""
+    spec_slug = ""
+    if resolved.parent.name == "specs":
+        spec_slug = resolved.stem
+        goal_id = resolved.parent.parent.name
+        game = (
+            resolved.parent.parent.parent.name
+            if resolved.parent.parent.parent.name != "goals"
+            else ""
+        )
+    else:
+        goal_id = resolved.parent.name
+        game = resolved.parent.parent.name if resolved.parent.parent.name != "goals" else ""
+
+    if isinstance(document, Mapping):
+        raw_goal = document.get("goal")
+        if isinstance(raw_goal, Mapping):
+            goal_id = (
+                _concrete_template_source(raw_goal.get("goal_id"))
+                or _concrete_template_source(raw_goal.get("goal"))
+                or goal_id
+            )
+        elif isinstance(raw_goal, str) and raw_goal.strip():
+            goal_id = _concrete_template_source(raw_goal) or goal_id
+        goal_id = (
+            _concrete_template_source(document.get("goal_id"))
+            or _concrete_template_source(document.get("goal_slug"))
+            or goal_id
+        )
+        spec_slug = _concrete_template_source(document.get("slug")) or spec_slug
+
+    game_slug = slugify_template_value(game)
+    goal_slug = slugify_template_value(goal_id)
+    level_match = _LEVEL_ID_RE.match(goal_id)
+    level_short = (
+        f"l{level_match.group('world')}{level_match.group('level')}" if level_match else goal_slug
+    )
+    return {
+        key: value
+        for key, value in {
+            "game": game,
+            "game_slug": game_slug,
+            "goal_id": goal_id,
+            "goal_slug": goal_id,
+            "level_short": level_short,
+            "level_tag": goal_slug,
+            "slug": spec_slug,
+            "spec_slug": spec_slug,
+            "state": goal_id,
+        }.items()
+        if value
+    }
+
+
+def _template_field_root(field_name: str) -> str:
+    return field_name.split(".", 1)[0].split("[", 1)[0]
+
+
+def _template_vars_from_document(
+    document: Mapping[str, Any],
+    *,
+    base_context: Mapping[str, Any],
+    label: str,
+) -> dict[str, str]:
+    raw_vars = document.get(TEMPLATE_VARS_KEY)
+    if raw_vars is None:
+        return {}
+    if not isinstance(raw_vars, Mapping):
+        raise ValueError(f"{label}.{TEMPLATE_VARS_KEY} must be an object")
+    rendered: dict[str, str] = {}
+    for key, value in raw_vars.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{label}.{TEMPLATE_VARS_KEY} keys must be non-empty strings")
+        if not isinstance(value, str | int | float | bool):
+            raise ValueError(f"{label}.{TEMPLATE_VARS_KEY}.{key} must be a scalar")
+        text = str(value)
+        if isinstance(value, str):
+            text = _render_template_string(
+                value,
+                context={**base_context, **rendered},
+                deferred_fields=frozenset(),
+                label=f"{label}.{TEMPLATE_VARS_KEY}.{key}",
+            )
+        rendered[key] = text
+    return rendered
+
+
+def _format_deferred_field(field_name: str, conversion: str | None, format_spec: str) -> str:
+    text = "{" + field_name
+    if conversion:
+        text += f"!{conversion}"
+    if format_spec:
+        text += f":{format_spec}"
+    return text + "}"
+
+
+def _apply_conversion(value: Any, conversion: str | None) -> Any:
+    if conversion == "s":
+        return str(value)
+    if conversion == "r":
+        return repr(value)
+    if conversion == "a":
+        return ascii(value)
+    if conversion:
+        raise ValueError(f"unsupported template conversion: !{conversion}")
+    return value
+
+
+def _render_template_string(
+    value: str,
+    *,
+    context: Mapping[str, Any],
+    deferred_fields: frozenset[str],
+    label: str,
+) -> str:
+    chunks: list[str] = []
+    try:
+        parsed = list(Formatter().parse(value))
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a valid format template: {exc}") from exc
+    for literal_text, field_name, format_spec, conversion in parsed:
+        chunks.append(literal_text)
+        if field_name is None:
+            continue
+        root_name = _template_field_root(field_name)
+        if root_name in context:
+            rendered_format_spec = (
+                _render_template_string(
+                    format_spec,
+                    context=context,
+                    deferred_fields=deferred_fields,
+                    label=f"{label} format spec",
+                )
+                if format_spec
+                else ""
+            )
+            chunks.append(
+                format(_apply_conversion(context[root_name], conversion), rendered_format_spec)
+            )
+        elif root_name in deferred_fields:
+            chunks.append(_format_deferred_field(field_name, conversion, format_spec))
+        else:
+            allowed = ", ".join(sorted({*context, *deferred_fields}))
+            raise ValueError(
+                f"{label} uses unknown template field {root_name!r}; allowed: {allowed}"
+            )
+    return "".join(chunks)
+
+
+def _render_template_value(
+    value: Any,
+    *,
+    context: Mapping[str, Any],
+    deferred_fields_by_path: Mapping[tuple[str, ...], frozenset[str]],
+    path: tuple[str, ...],
+    label: str,
+) -> Any:
+    if isinstance(value, str):
+        deferred_fields = deferred_fields_by_path.get(path, frozenset())
+        return _render_template_string(
+            value,
+            context=context,
+            deferred_fields=deferred_fields,
+            label=label,
+        )
+    if isinstance(value, Mapping):
+        return {
+            key: _render_template_value(
+                nested,
+                context=context,
+                deferred_fields_by_path=deferred_fields_by_path,
+                path=(*path, str(key)),
+                label=f"{label}.{key}",
+            )
+            for key, nested in value.items()
+            if key != TEMPLATE_VARS_KEY
+        }
+    if isinstance(value, list):
+        return [
+            _render_template_value(
+                item,
+                context=context,
+                deferred_fields_by_path=deferred_fields_by_path,
+                path=(*path, str(index)),
+                label=f"{label}[{index}]",
+            )
+            for index, item in enumerate(value)
+        ]
+    return value
+
+
+def render_template_vars(
+    document: Mapping[str, Any],
+    *,
+    path: Path,
+    label: str,
+    extra_context: Mapping[str, Any] | None = None,
+    deferred_fields_by_path: Mapping[tuple[str, ...], frozenset[str]] | None = None,
+) -> dict[str, Any]:
+    """Render checked-in `{}` template variables and remove `template_vars`.
+
+    This is intentionally stricter than OmegaConf interpolation: unknown fields fail
+    unless the caller marks a specific document path as a deferred runtime template.
+    """
+
+    base_context = {
+        **template_context_from_path(path, document),
+        **{key: str(value) for key, value in (extra_context or {}).items()},
+    }
+    template_vars = _template_vars_from_document(document, base_context=base_context, label=label)
+    context = {**base_context, **template_vars}
+    return _render_template_value(
+        dict(document),
+        context=context,
+        deferred_fields_by_path=deferred_fields_by_path or {},
+        path=(),
+        label=label,
+    )
 
 
 def load_config_document(path: Path, *, default: Any = None) -> Any:
