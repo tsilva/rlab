@@ -126,11 +126,6 @@ TRAIN_BOOLEAN_OPTIONS = {
         "--no-post-train-eval-stochastic",
     ),
 }
-TRAIN_COMMAND_FIELDS = (
-    tuple(TRAIN_VALUE_OPTIONS) + tuple(TRAIN_TRUE_FLAGS) + tuple(TRAIN_BOOLEAN_OPTIONS)
-)
-
-
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
     cmd = ["rlab", "train", "local"]
     for key, flag in TRAIN_VALUE_OPTIONS.items():

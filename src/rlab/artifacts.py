@@ -279,14 +279,6 @@ def require_training_metadata(model_path: Path) -> dict[str, Any]:
     return training
 
 
-def require_env_config_from_model_metadata(model_path: Path) -> EnvConfig:
-    training = require_training_metadata(model_path)
-    config = env_config_from_config_dict(training["env_config"])
-    if config is None:
-        raise ValueError(f"{model_path} training metadata cannot be converted to EnvConfig")
-    return config
-
-
 def env_config_from_config_dict(
     config: dict[str, Any],
     fallback: EnvConfig | None = None,

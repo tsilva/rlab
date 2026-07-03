@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from string import Formatter
 from typing import Any
 
-from rlab.seeds import TRAIN_SEED_MAX, TRAIN_SEED_MIN, validate_training_seed
+from rlab.seeds import validate_training_seed
 
 
 TRAIN_SPEC_SCHEMA_VERSION = 1
@@ -40,70 +40,6 @@ TRAIN_SPEC_REMOVED_FIELDS = frozenset(
 )
 
 
-TRAIN_SPEC_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://tsilva.dev/rlab/train-spec.schema.json",
-    "title": "rlab queue-backed train spec",
-    "type": "object",
-    "additionalProperties": True,
-    "required": list(TRAIN_SPEC_REQUIRED_FIELDS),
-    "properties": {
-        "schema_version": {"const": TRAIN_SPEC_SCHEMA_VERSION},
-        "goal": {
-            "type": "object",
-            "additionalProperties": True,
-            "required": ["goal_id"],
-            "properties": {
-                "goal_id": {"type": "string", "minLength": 1},
-            },
-        },
-        "goal_slug": {"type": "string", "minLength": 1},
-        "spec_id": {"type": "string", "minLength": 1},
-        "description": {"type": "string", "minLength": 1},
-        "max_attempts": {"type": "integer", "minimum": 1},
-        "seeds": {
-            "type": "array",
-            "minItems": 1,
-            "items": {"type": "integer", "minimum": TRAIN_SEED_MIN, "maximum": TRAIN_SEED_MAX},
-        },
-        "group_id": {"type": "string", "minLength": 1},
-        "run_name_label": {"type": "string", "minLength": 1},
-        "run_name_template": {"type": "string", "minLength": 1},
-        "tags": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-        },
-        "selection_metrics": {
-            "type": "array",
-            "minItems": 1,
-            "items": {"type": "string", "minLength": 1},
-        },
-        "selection_policy": {
-            "type": "object",
-            "additionalProperties": True,
-        },
-        "train_config": {
-            "type": "object",
-            "additionalProperties": True,
-            "required": list(TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS),
-            "properties": {
-                "game": {"type": "string", "minLength": 1},
-                "state": {"type": "string", "minLength": 1},
-                "states": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string", "minLength": 1},
-                },
-                "timesteps": {"type": "integer", "minimum": 1},
-                "wandb": {"type": "boolean"},
-                "wandb_mode": {"enum": ["online", "offline", "disabled"]},
-                "wandb_artifact_storage_uri": {"type": "string"},
-            },
-        },
-    },
-}
-
-
 def _label_path(label: str, key: str) -> str:
     if not label:
         return key
@@ -130,20 +66,6 @@ def _require_non_empty_string(document: Mapping[str, Any], key: str, *, label: s
     value = _require_key(document, key, label=label)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{_label_path(label, key)} must be a non-empty string")
-    return value
-
-
-def _require_nullable_non_empty_string(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    label: str,
-) -> str | None:
-    value = _require_key(document, key, label=label)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{_label_path(label, key)} must be null or a non-empty string")
     return value
 
 

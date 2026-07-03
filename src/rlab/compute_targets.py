@@ -8,7 +8,6 @@ import yaml
 
 DEFAULT_INSTANCE_CONFIG = "experiments/instances.yaml"
 DEFAULT_COMPUTE_TARGET = "rtx4090"
-LOCAL_TARGET_KINDS = {"local"}
 FLEET_TARGET_KINDS = {"fleet", "docker", "docker-fleet"}
 
 
@@ -26,16 +25,6 @@ def load_json_file(path: Path) -> dict[str, Any]:
 def load_instance_config(repo_root: Path, path: Path | None = None) -> dict[str, Any]:
     config_path = path or repo_root / DEFAULT_INSTANCE_CONFIG
     return load_json_file(config_path)
-
-
-def target_name(payload: dict[str, Any], override: str | None = None) -> str:
-    if override:
-        return override
-    for key in ("target", "compute_target", "instance"):
-        value = str(payload.get(key, "")).strip()
-        if value:
-            return value
-    return DEFAULT_COMPUTE_TARGET
 
 
 def instance_defaults(
@@ -65,36 +54,9 @@ def instance_defaults(
     return resolved
 
 
-def canonical_target_name(
-    instance_config: dict[str, Any],
-    target: str = DEFAULT_COMPUTE_TARGET,
-) -> str:
-    return str(instance_defaults(instance_config, target).get("name", target))
-
-
-def rtx4090_defaults(instance_config: dict[str, Any]) -> dict[str, Any]:
-    return instance_defaults(instance_config, DEFAULT_COMPUTE_TARGET)
-
-
 def instance_label(instance: dict[str, Any]) -> str:
     return str(instance.get("label") or instance.get("name") or DEFAULT_COMPUTE_TARGET)
 
 
 def target_kind(instance: dict[str, Any]) -> str:
     return str(instance.get("kind", "")).strip().lower()
-
-
-def ensure_available_target(instance: dict[str, Any]) -> None:
-    if instance.get("available") is False:
-        reason = str(instance.get("disabled_reason") or "target is marked unavailable")
-        raise ValueError(f"target {instance_label(instance)!r} is unavailable: {reason}")
-
-
-def ensure_local_target(instance: dict[str, Any]) -> None:
-    ensure_available_target(instance)
-    kind = target_kind(instance)
-    if kind not in LOCAL_TARGET_KINDS:
-        raise ValueError(
-            f"target {instance_label(instance)!r} has kind {kind!r}; "
-            "use a local target such as local-macbook"
-        )

@@ -22,7 +22,6 @@ from rlab.config_loader import (
     TEMPLATE_VARS_KEY,
     deep_merge,
     load_composed_mapping,
-    load_config_document,
     render_template_vars,
 )
 from rlab.compute_targets import instance_defaults, load_json_file
@@ -386,23 +385,6 @@ def assert_no_secrets(value: Any, *, label: str) -> None:
         raise ValueError(f"{label} appears to contain a secret-like key: {found}")
 
 
-def load_json_arg(value: str | None, *, default: Any) -> Any:
-    if value is None or value == "":
-        return default
-    path = Path(value)
-    text = path.read_text(encoding="utf-8") if path.is_file() else value
-    return json.loads(text)
-
-
-def load_document_arg(value: str | None, *, default: Any) -> Any:
-    if value is None or value == "":
-        return default
-    path = Path(value)
-    if not path.is_file():
-        return json.loads(value)
-    return load_config_document(path, default=default)
-
-
 def _document_train_environment(document: Mapping[str, Any]) -> Mapping[str, Any] | None:
     train_section = document.get("train")
     if isinstance(train_section, Mapping):
@@ -702,19 +684,6 @@ def _load_rendered_goal_composition(path: Path) -> ComposedDocument:
         ),
         sources=composition.sources,
     )
-
-
-def _goal_slug_from_goal_document(
-    goal_document: Mapping[str, Any],
-    *,
-    path: Path | None = None,
-) -> str:
-    goal_slug = _goal_slug_from_value(goal_document)
-    if goal_slug:
-        return goal_slug
-    if path is not None:
-        return _goal_slug_for_spec(path, goal_document)
-    return ""
 
 
 def _materialize_goal_owned_fields(
@@ -1963,25 +1932,6 @@ def finish_job_launch_from_result(
         finish_train_launch_from_result(conn, launch_id=launch_id, result=result)
     else:
         raise ValueError(f"result does not identify train job kind: {job_kind!r}")
-
-
-def _one_line(value: Any, *, limit: int = 140) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return f"{text[: limit - 1].rstrip()}..."
-
-
-def _metric_summary(metrics: Mapping[str, Any], keys: Sequence[str]) -> str:
-    parts = []
-    for key in keys:
-        if key in metrics and metrics[key] is not None:
-            value = metrics[key]
-            if isinstance(value, float):
-                parts.append(f"{key}={value:.3g}")
-            else:
-                parts.append(f"{key}={value}")
-    return " ".join(parts)
 
 
 def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("-inf")) -> float:

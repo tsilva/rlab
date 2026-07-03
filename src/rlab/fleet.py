@@ -51,7 +51,6 @@ from rlab.job_queue import (
     release_job_launch,
 )
 from rlab.compute_targets import instance_defaults, load_instance_config
-from rlab.config_loader import load_composed_mapping
 from rlab.json_utils import json_safe
 from rlab.machines import (
     DEFAULT_MACHINE_REGISTRY,
@@ -469,13 +468,6 @@ def goal_contract_path(repo_root: Path, goal_slug: str) -> Path:
     return goals_dir / goal_slug / "goal.yaml"
 
 
-def load_goal_document(repo_root: Path, goal_slug: str) -> Mapping[str, Any]:
-    path = goal_contract_path(repo_root, goal_slug)
-    if not path.is_file():
-        raise ValueError(f"unknown goal {goal_slug!r}: {path} does not exist")
-    return load_composed_mapping(path, cycle_label="goal").document
-
-
 def discover_active_goal_slugs(repo_root: Path) -> tuple[str, ...]:
     return ()
 
@@ -778,13 +770,6 @@ def allocate_desired_deployments(
     return tuple(desired), tuple(warnings)
 
 
-def demand_index(demands: Sequence[QueueDemand]) -> dict[tuple[str | None, str, str | None], QueueDemand]:
-    return {
-        (demand.profile_id, demand.runtime_image_ref, demand.run_target): demand
-        for demand in demands
-    }
-
-
 def demand_matches_key(demand: QueueDemand, key: DeploymentKey) -> bool:
     if key.worker_kind != WORKER_KIND_TRAIN:
         return False
@@ -807,10 +792,6 @@ def container_can_serve_desired(
         and key.runtime_image_ref == desired.key.runtime_image_ref
         and key.run_target == desired.key.run_target
     )
-
-
-def active_prefixes(leases: Sequence[ActiveLease]) -> tuple[str, ...]:
-    return tuple(sorted({lease.lease_owner for lease in leases if lease.lease_owner}))
 
 
 def container_has_active_lease(container: ExistingContainer, leases: Sequence[ActiveLease]) -> bool:
@@ -1072,84 +1053,6 @@ def build_ensure_runner_plan(
         existing=tuple(existing),
         actions=tuple(actions),
         warnings=tuple(warnings),
-    )
-
-
-def build_explicit_desired_plan(
-    config: FleetConfig,
-    desired: Sequence[DesiredDeployment],
-    existing: Sequence[ExistingContainer],
-    leases: Sequence[ActiveLease],
-    *,
-    reason: str,
-) -> FleetPlan:
-    existing_by_name = {item.name: item for item in existing}
-    warnings: list[str] = []
-    actions: list[FleetAction] = []
-    for item in desired:
-        host = config.hosts[item.key.host]
-        current = existing_by_name.get(item.name)
-        if current is None:
-            actions.append(
-                FleetAction(
-                    kind="start",
-                    host=host.name,
-                    container=item.name,
-                    reason=reason,
-                    commands=start_commands(host, item),
-                )
-            )
-            continue
-        if current.state.lower() != "running":
-            if container_has_active_lease(current, leases):
-                warnings.append(f"{current.name} is not running but still owns an active lease")
-                continue
-            actions.append(
-                FleetAction(
-                    kind="restart",
-                    host=host.name,
-                    container=item.name,
-                    reason=f"container state is {current.state or 'unknown'}",
-                    commands=restart_commands(host, item),
-                )
-            )
-            continue
-        if current.labels.get(CONFIG_HASH_LABEL) != item.config_hash:
-            if container_has_active_lease(current, leases):
-                warnings.append(f"{current.name} config changed but active lease prevents restart")
-                continue
-            actions.append(
-                FleetAction(
-                    kind="recreate",
-                    host=host.name,
-                    container=item.name,
-                    reason="managed container config changed",
-                    commands=restart_commands(host, item),
-                )
-            )
-            continue
-        actions.append(
-            FleetAction(
-                kind="keep",
-                host=host.name,
-                container=item.name,
-                reason="container already matches desired state",
-            )
-        )
-    return FleetPlan(
-        desired=tuple(desired),
-        existing=tuple(existing),
-        actions=tuple(actions),
-        warnings=tuple(warnings),
-    )
-
-
-def combine_plans(primary: FleetPlan, secondary: FleetPlan) -> FleetPlan:
-    return FleetPlan(
-        desired=(*primary.desired, *secondary.desired),
-        existing=primary.existing,
-        actions=(*primary.actions, *secondary.actions),
-        warnings=(*primary.warnings, *secondary.warnings),
     )
 
 

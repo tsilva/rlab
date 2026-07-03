@@ -85,10 +85,6 @@ def stat_metric(prefix: str, stat: str) -> str:
     return f"{prefix}/{stat}"
 
 
-def train_state_prefix(state: object) -> str:
-    return f"train/state/{metric_path_segment(state)}"
-
-
 def train_done_reason_metric(reason: object) -> str:
     return f"train/done/{metric_path_segment(reason)}"
 

@@ -201,10 +201,6 @@ class RetroProgressTracker:
         )
 
 
-class SuperMarioBrosNesV0ProgressTracker(RetroProgressTracker):
-    pass
-
-
 class RetroTarget:
     game: ClassVar[str] = ""
     default_state: ClassVar[str] = ""
