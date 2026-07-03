@@ -281,6 +281,29 @@ def _format_done_on(env_config: Mapping[str, Any]) -> str:
     return str(done_on or "goal-specific termination")
 
 
+def _format_env_id(env_provider: str, game: str) -> str:
+    if env_provider and env_provider not in {"Stable Retro", "stable-retro"}:
+        return f"{env_provider}:{game}"
+    return game
+
+
+def _format_reward_shaping(env_config: Mapping[str, Any], reward_mode: str) -> str:
+    fields = []
+    for key in (
+        "reward_scale",
+        "terminal_reward",
+        "death_penalty",
+        "completion_reward",
+        "progress_reward_scale",
+        "time_penalty",
+    ):
+        if key in env_config:
+            fields.append(f"{key}=`{env_config[key]}`")
+    if fields:
+        return ", ".join(fields)
+    return f"reward_mode=`{reward_mode}`"
+
+
 def write_model_card(
     *,
     path: Path,
@@ -304,6 +327,9 @@ def write_model_card(
     max_pool_frames = bool(env_config.get("max_pool_frames", False))
     max_episode_steps = env_config.get("max_episode_steps", "")
     env_provider = str(env_config.get("env_provider", "Stable Retro"))
+    env_id = _format_env_id(env_provider, game)
+    done_on = _format_done_on(env_config)
+    reward_shaping = _format_reward_shaping(env_config, reward_mode)
     completion_text = _format_completion(float(leader.completion_rate), metrics)
     episodes_text = _format_episodes(metrics)
     seed_start_text = _format_seed_start(metrics)
@@ -347,7 +373,10 @@ PPO policy checkpoint for completing `{game}` `{level}` with Stable Retro, train
 
 ## Preview
 
-{preview_summary}
+| Item | Value |
+|---|---|
+| Preview video | `{release.preview_filename}` |
+| Representative episode | {preview_summary} |
 
 ## Quick Start
 
@@ -360,7 +389,7 @@ rlab play hf://{release.repo_id}
 rlab eval hf://{release.repo_id}
 ```
 
-## Results
+## Evaluation Results
 
 | Eval profile | Episodes | Seed start | Completion rate | Max x | Mean reward | Checkpoint step |
 |---|---:|---:|---:|---:|---:|---:|
@@ -368,26 +397,33 @@ rlab eval hf://{release.repo_id}
 
 This is a checkpoint promotion metric from the current [`rlab`](https://github.com/tsilva/rlab) release process.
 
-## Input / Output
+## Environment Details
 
-The policy receives observations produced by the project eval wrapper:
-
-- Game: `{game}`
-- State: `{level}`
-- Preprocessing: crop top `{hud_crop_top}` pixels, grayscale, resize to `{obs_size} x {obs_size}`
-- Frame stack: `{frame_stack}`
-- Frame skip: `{frame_skip}`
-- Max-pool last two frames: {_format_bool(max_pool_frames)}
-- Observation layout: channel-first stack, shape `({frame_stack}, {obs_size}, {obs_size})`
-- Action set: `{action_set}`
-- Reward mode for reported eval: `{reward_mode}`
+| Category | Setting | Value |
+|---|---|---|
+| Runtime | Environment provider | `{env_provider}` |
+| Runtime | Environment id | `{env_id}` |
+| Runtime | Game | `{game}` |
+| Runtime | State | `{level}` |
+| Observation | Preprocessing | crop top `{hud_crop_top}` px, grayscale, resize to `{obs_size} x {obs_size}` |
+| Observation | Frame stack | `{frame_stack}` |
+| Observation | Frame skip | `{frame_skip}` |
+| Observation | Max-pool last two frames | {_format_bool(max_pool_frames)} |
+| Observation | Policy layout | channel-first `({frame_stack}, {obs_size}, {obs_size})` |
+| Action | Action set | `{action_set}` |
+| Reward | Reward mode | `{reward_mode}` |
+| Reward | Reward shaping | {reward_shaping} |
+| Termination | Max episode steps | `{max_episode_steps}` |
+| Termination | Done conditions | {done_on} |
 
 ## Architecture
 
-- Algorithm: PPO from Stable Baselines3.
-- Policy checkpoint: SB3 PyTorch `.zip`.
-- Training used `{env_provider}` vector environments.
-- The uploaded file contains the policy, optimizer state, SB3 metadata, and system info.
+| Component | Value |
+|---|---|
+| Algorithm | PPO from Stable Baselines3 |
+| Checkpoint format | SB3 PyTorch `.zip` |
+| Vector environment | `{env_provider}` |
+| Checkpoint contents | Policy, optimizer state, SB3 metadata, and system info |
 
 ## Training Recipe
 
@@ -399,7 +435,8 @@ The policy receives observations produced by the project eval wrapper:
 | Frame skip | {frame_skip} |
 | Max episode steps | {max_episode_steps} |
 | Reward mode | `{reward_mode}` |
-| Termination | {_format_done_on(env_config)} |
+| Reward shaping | {reward_shaping} |
+| Termination | {done_on} |
 
 ## Files
 
@@ -412,19 +449,23 @@ The policy receives observations produced by the project eval wrapper:
 
 ## Provenance
 
-- Source project: [`rlab`](https://github.com/tsilva/rlab)
-- Goal: `{goal["goal_id"]}`
-- Goal title: `{goal.get("title", "")}`
-- W&B run: [`{leader.run_name}`]({leader.url})
-- W&B artifact: `{leader.artifact_ref}`
-- Eval source: `{leader.eval_source or ""}`
+| Item | Value |
+|---|---|
+| Source project | [`rlab`](https://github.com/tsilva/rlab) |
+| Goal | `{goal["goal_id"]}` |
+| Goal title | `{goal.get("title", "")}` |
+| W&B run | [`{leader.run_name}`]({leader.url}) |
+| W&B artifact | `{leader.artifact_ref}` |
+| Eval source | `{leader.eval_source or ""}` |
 
 ## Limitations
 
-- No ROM is included; users must provide and import their own legally obtained ROM.
-- The checkpoint was selected by eval performance on this project-specific setup, not by a standardized public benchmark.
-- This card reports one selected checkpoint evaluation, not a multi-seed aggregate.
-- Reported metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated as cross-environment benchmark results.
+| Limitation | Detail |
+|---|---|
+| ROM | No ROM is included; users must provide and import their own legally obtained ROM. |
+| Benchmark scope | The checkpoint was selected by eval performance on this project-specific setup, not by a standardized public benchmark. |
+| Aggregate scope | This card reports one selected checkpoint evaluation, not a multi-seed aggregate. |
+| Metric scope | Reported metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated as cross-environment benchmark results. |
 """
     path.write_text(content, encoding="utf-8")
 

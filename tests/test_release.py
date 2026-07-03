@@ -143,6 +143,8 @@ class ReleaseModelCardTests(unittest.TestCase):
 
             content = path.read_text(encoding="utf-8")
 
+        at_a_glance = content.split("## Preview", 1)[0]
+
         self.assertNotIn("<video", content)
         self.assertNotIn("resolve/main/replay.mp4", content)
         self.assertIn(
@@ -150,7 +152,7 @@ class ReleaseModelCardTests(unittest.TestCase):
             content,
         )
         self.assertIn(
-            "- Source project: [`rlab`](https://github.com/tsilva/rlab)",
+            "| Source project | [`rlab`](https://github.com/tsilva/rlab) |",
             content,
         )
         self.assertIn(
@@ -163,14 +165,29 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("rlab eval hf://tsilva/SuperMarioBros-NES_Level1-1", content)
         self.assertNotIn("hf download", content)
         self.assertIn("## Preview", content)
-        self.assertIn("## Input / Output", content)
+        self.assertIn("## Evaluation Results", content)
+        self.assertIn("## Environment Details", content)
         self.assertIn("## Architecture", content)
         self.assertIn("## Training Recipe", content)
+        self.assertIn("| Preview video | `replay.mp4` |", content)
+        self.assertIn("| Component | Value |", content)
+        self.assertIn("| Limitation | Detail |", content)
         self.assertIn("| Environment | `SuperMarioBros-Nes-v0`, state `Level1-1` |", content)
         self.assertIn("| Input | 4 stacked grayscale `84 x 84` frames, channel-first |", content)
         self.assertIn("| Output | Discrete action over the `simple` action set |", content)
-        self.assertNotIn("| W&B run |", content)
-        self.assertNotIn("| W&B artifact |", content)
+        self.assertIn("| Runtime | Environment provider | `Stable Retro` |", content)
+        self.assertIn("| Runtime | Environment id | `SuperMarioBros-Nes-v0` |", content)
+        self.assertIn(
+            "| Observation | Preprocessing | crop top `32` px, grayscale, resize to `84 x 84` |",
+            content,
+        )
+        self.assertIn("| Action | Action set | `simple` |", content)
+        self.assertIn("| Reward | Reward shaping | reward_mode=`score` |", content)
+        self.assertIn("| Termination | Done conditions | goal-specific termination |", content)
+        self.assertNotIn("| W&B run |", at_a_glance)
+        self.assertNotIn("| W&B artifact |", at_a_glance)
+        self.assertIn("| W&B run |", content)
+        self.assertIn("| W&B artifact |", content)
         self.assertNotIn("For the original W&B artifact", content)
         self.assertNotIn("rlab leaders checkpoints", content)
         self.assertNotIn("Release staging re-evaluated", content)
