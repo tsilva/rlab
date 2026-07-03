@@ -1,9 +1,9 @@
 # Hydra composition list; imports the reusable SMB3 Stable Retro environment contract first.
 defaults:
 # Stable Retro Turbo EnvConfig for training; goal overlays set the source state.
-- ../../envs/stable-retro-turbo/SuperMarioBros3-Nes-v0@train.environment
+- _env-stable-retro-turbo@train.environment
 # Same EnvConfig composed into eval, with eval-only overrides below.
-- ../../envs/stable-retro-turbo/SuperMarioBros3-Nes-v0@eval.environment
+- _env-stable-retro-turbo@eval.environment
 # Apply this file after the env so goal-owned defaults can override env details deliberately.
 - _self_
 # Goal id is rendered from the goal directory name.

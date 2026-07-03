@@ -1,9 +1,9 @@
 # Hydra composition list; imports the reusable Mario environment contract first.
 defaults:
 # Shared SuperMarioBros-NES Turbo EnvConfig for training; goal overlays set the source state(s).
-- ../../envs/supermariobrosnes-turbo/SuperMarioBros-Nes-v0@train.environment
+- _env-supermariobrosnes-turbo@train.environment
 # Same EnvConfig composed into eval, with eval-only overrides below.
-- ../../envs/supermariobrosnes-turbo/SuperMarioBros-Nes-v0@eval.environment
+- _env-supermariobrosnes-turbo@eval.environment
 # Apply this file after the env so goal-owned defaults can override env details deliberately.
 - _self_
 # Goal id is rendered from the goal directory name.

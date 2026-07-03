@@ -847,8 +847,11 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     for path in specs:
         _capture_issue(issues, path, repo_root, lambda path=path: load_spec_document(path))
 
-    env_configs_dir = experiments_dir / "envs"
-    env_configs = sorted(env_configs_dir.rglob("*.yaml")) if env_configs_dir.is_dir() else []
+    env_configs = sorted(
+        path
+        for path in goals_dir.glob("*/_env-*.yaml")
+        if _active_experiment_path(path)
+    )
     counts["env_configs"] = len(env_configs)
     for path in env_configs:
         _capture_issue(issues, path, repo_root, lambda path=path: validate_env_config_file(path))

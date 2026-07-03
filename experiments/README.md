@@ -7,7 +7,8 @@ Keep broad repo rules in the top-level runbooks:
 - `../AGENTS.md` for repo rules and stable-retro runtime cautions.
 - `../INSTANCES.md` for the human-facing hardware runbook.
 
-Use `goals/<goal-slug>/` for durable goal contracts, checked-in specs, recipe
+Use `goals/<env-id>/` for durable goal-family contracts, provider-specific
+environment fragments named `_env-<provider>.yaml`, checked-in specs, recipe
 evidence, reports, and decisions. Generated local run logs and outputs belong
 under ignored paths such as `runs/`, `logs/`, `models/`, or goal-local ignored
 scratch directories.
