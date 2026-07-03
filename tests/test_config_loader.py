@@ -4,10 +4,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rlab.config_loader import load_composed_mapping
+from rlab.config_loader import load_composed_mapping, template_context_from_path
 
 
 class ConfigLoaderTests(unittest.TestCase):
+    def test_template_context_does_not_infer_state_from_goal_path(self) -> None:
+        path = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/specs/base.yaml")
+
+        context = template_context_from_path(path)
+
+        self.assertEqual(context["goal_id"], "Level1-2")
+        self.assertNotIn("state", context)
+
     def test_load_composed_mapping_merges_parent_chain_and_tracks_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

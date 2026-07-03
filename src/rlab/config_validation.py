@@ -30,6 +30,7 @@ GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
         {"group_id", "seed", "spec_id", "timestamp", "utc"}
     ),
+    ("tags", "1"): frozenset({"slug", "spec_id", "spec_slug"}),
     (
         "release",
         "huggingface",

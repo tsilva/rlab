@@ -13,7 +13,3 @@ description: >-
   Seed {seed} runs the {goal_id} transfer of the successful {source_goal_id} {recipe_label} recipe,
   created to test whether that policy recipe transfers without changing PPO or reward
   hyperparameters while overriding only {goal_id} identity and reporting metadata.
-tags:
-- "goal_id:{goal_id}"
-- "spec_id:{spec_id}"
-- "env_id:{env_id}"

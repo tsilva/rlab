@@ -569,6 +569,8 @@ overrides:
 objective:
   rank:
   - max(eval/reward/mean)
+template_vars:
+  state: "{goal_id}"
 train:
   early_stop:
   - metric: train/info/level_complete/rate/min/last
@@ -1066,7 +1068,7 @@ train:
                     ],
                 )
 
-    def test_level1_transfer_specs_inherit_level1_1_policy_recipe(self) -> None:
+    def test_transfer_specs_inherit_level1_1_policy_recipe(self) -> None:
         level1_1 = job_queue.load_spec_document(
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
         )
@@ -1074,7 +1076,7 @@ train:
             level1_1["group_id"],
             "SuperMarioBros-Nes-v0_Level1-1",
         )
-        for level in ("Level1-2", "Level1-3"):
+        for level in ("Level1-2", "Level1-3", "Level2-2"):
             with self.subTest(level=level):
                 transfer = job_queue.load_spec_document(
                     Path(f"experiments/goals/SuperMarioBros-Nes-v0/{level}/specs/base.yaml")

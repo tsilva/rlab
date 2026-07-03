@@ -154,7 +154,6 @@ def template_context_from_path(
             "slug": spec_slug,
             "spec_id": spec_slug,
             "spec_slug": spec_slug,
-            "state": goal_id,
         }.items()
         if value
     }

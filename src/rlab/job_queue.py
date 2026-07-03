@@ -89,6 +89,10 @@ SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
         "checkpoint_filename",
     ): frozenset({"checkpoint_step"}),
 }
+GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    **SPEC_DEFERRED_TEMPLATE_FIELDS,
+    ("tags", "1"): frozenset({"slug", "spec_id", "spec_slug"}),
+}
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
     {
         "env_provider",
@@ -700,7 +704,7 @@ def _load_rendered_goal_composition(path: Path) -> ComposedDocument:
             composition.document,
             path=path,
             label=f"goal file {path}",
-            deferred_fields_by_path=SPEC_DEFERRED_TEMPLATE_FIELDS,
+            deferred_fields_by_path=GOAL_DEFERRED_TEMPLATE_FIELDS,
         ),
         sources=composition.sources,
     )
@@ -758,6 +762,8 @@ def _materialize_goal_train_environment(
 def _materialize_goal_queue_defaults(
     materialized: dict[str, Any],
     goal_document: Mapping[str, Any] | None,
+    *,
+    path: Path | None = None,
 ) -> None:
     if goal_document is None:
         return
@@ -767,6 +773,16 @@ def _materialize_goal_queue_defaults(
         value = goal_document.get(key)
         if isinstance(value, str) and value.strip():
             materialized[key] = value
+    if "tags" not in materialized:
+        tags = goal_document.get("tags")
+        if isinstance(tags, Sequence) and not isinstance(tags, str | bytes):
+            materialized["tags"] = list(tags)
+            if path is not None:
+                materialized["tags"] = render_template_vars(
+                    {"tags": materialized["tags"]},
+                    path=path,
+                    label=f"goal tags for spec file {path}",
+                )["tags"]
 
 
 def materialize_train_spec_document(
@@ -784,7 +800,7 @@ def materialize_train_spec_document(
         path=path,
         goal_composition=goal_composition,
     )
-    _materialize_goal_queue_defaults(materialized, goal_document)
+    _materialize_goal_queue_defaults(materialized, goal_document, path=path)
     _materialize_goal_train_environment(materialized, goal_document)
     train_config = _merge_train_config_sections(materialized, goal_document=goal_document)
     if train_config:

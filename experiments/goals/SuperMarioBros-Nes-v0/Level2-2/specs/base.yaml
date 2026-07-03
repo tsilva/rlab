@@ -4,7 +4,7 @@ defaults:
 - _self_
 spec_id: base
 template_vars:
-  batch_id: b273
+  batch_id: b274
   recipe: b55
   source_goal_id: Level1-1
   recipe_label: B55 low-KL late-decay

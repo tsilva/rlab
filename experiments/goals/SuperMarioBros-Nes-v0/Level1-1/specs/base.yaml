@@ -9,10 +9,6 @@ description: >-
   Seed {seed} trains the stable low-KL late-decay {goal_id} policy-search baseline, created
   to validate the recipe across seeds with the goal contract's clear-rate gate first and
   out-of-process eval ranking for checkpoint promotion.
-tags:
-- "goal_id:{goal_id}"
-- "spec_id:{spec_id}"
-- "env_id:{env_id}"
 train:
   policy:
     # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.

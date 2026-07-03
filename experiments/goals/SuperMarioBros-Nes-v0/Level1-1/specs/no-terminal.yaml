@@ -9,10 +9,6 @@ description: >-
   Seed {seed} trains the {goal_id} low-KL recipe without life-loss or level-change terminal
   boundaries, created to test whether longer continuous rollouts help while preserving the
   baseline PPO and reward-shaping settings.
-tags:
-- "goal_id:{goal_id}"
-- "spec_id:{spec_id}"
-- "env_id:{env_id}"
 train:
   environment:
     env_config:
