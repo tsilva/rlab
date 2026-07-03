@@ -745,19 +745,6 @@ def materialize_train_recipe_document(
     return materialized
 
 
-def materialize_train_spec_document(
-    document: Mapping[str, Any],
-    *,
-    path: Path | None = None,
-    goal_composition: ComposedDocument | None = None,
-) -> dict[str, Any]:
-    return materialize_train_recipe_document(
-        document,
-        path=path,
-        goal_composition=goal_composition,
-    )
-
-
 def _recipe_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
     return [
         {
@@ -810,14 +797,6 @@ def load_recipe_document(path: Path) -> dict[str, Any]:
         label=f"recipe file {path} train_config",
     )
     return document
-
-
-def _spec_source_metadata(sources: Sequence[Path]) -> list[dict[str, str]]:
-    return _recipe_source_metadata(sources)
-
-
-def load_spec_document(path: Path) -> dict[str, Any]:
-    return load_recipe_document(path)
 
 
 def file_sha256(path: Path) -> str:
@@ -874,14 +853,6 @@ def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
         "repo_dirty": repo_is_dirty(),
         "spec_payload": payload,
     }
-
-
-def spec_slug(document: Mapping[str, Any]) -> str:
-    return recipe_slug(document)
-
-
-def spec_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
-    return recipe_metadata(path, document)
 
 
 def record_job_event(
@@ -1173,35 +1144,6 @@ def enqueue_train_jobs_from_recipe_document(
     return rows
 
 
-def enqueue_train_jobs_from_spec_document(
-    conn,
-    *,
-    document: Mapping[str, Any],
-    runtime_image_ref: str,
-    spec_path: str | None = None,
-    spec_sha256: str | None = None,
-    repo_git_commit: str | None = None,
-    repo_dirty: bool = False,
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    instances_path: Path | None = None,
-    seeds: Sequence[int] = (),
-) -> list[dict[str, Any]]:
-    return enqueue_train_jobs_from_recipe_document(
-        conn,
-        document=document,
-        runtime_image_ref=runtime_image_ref,
-        recipe_path=spec_path,
-        recipe_sha256=spec_sha256,
-        repo_git_commit=repo_git_commit,
-        repo_dirty=repo_dirty,
-        profile_id=profile_id,
-        run_target=run_target,
-        instances_path=instances_path,
-        seeds=seeds,
-    )
-
-
 def enqueue_train_jobs_from_recipe_file(
     conn,
     *,
@@ -1222,27 +1164,6 @@ def enqueue_train_jobs_from_recipe_file(
         recipe_sha256=metadata["recipe_sha256"],
         repo_git_commit=metadata["repo_git_commit"],
         repo_dirty=metadata["repo_dirty"],
-        profile_id=profile_id,
-        run_target=run_target,
-        instances_path=instances_path,
-        seeds=seeds,
-    )
-
-
-def enqueue_train_jobs_from_spec_file(
-    conn,
-    *,
-    path: Path,
-    runtime_image_ref: str,
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    instances_path: Path | None = None,
-    seeds: Sequence[int] = (),
-) -> list[dict[str, Any]]:
-    return enqueue_train_jobs_from_recipe_file(
-        conn,
-        path=path,
-        runtime_image_ref=runtime_image_ref,
         profile_id=profile_id,
         run_target=run_target,
         instances_path=instances_path,

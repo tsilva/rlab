@@ -114,7 +114,7 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         description="Create queue-backed train jobs from a checked-in recipe file.",
     )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-    parser.add_argument("--recipe-file", "--spec-file", dest="recipe_file", type=Path, required=True)
+    parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--profile", help=argparse.SUPPRESS)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(

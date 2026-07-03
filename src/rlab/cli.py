@@ -54,8 +54,6 @@ TRAIN_VALUE_OPTIONS = {
     "observation_size": "--observation-size",
     "hud_crop_top": "--hud-crop-top",
     "obs_crop": "--obs-crop",
-    "eval_freq": "--eval-freq",
-    "eval_episodes": "--eval-episodes",
     "checkpoint_freq": "--checkpoint-freq",
     "post_train_eval_episodes": "--post-train-eval-episodes",
     "post_train_eval_n_envs": "--post-train-eval-n-envs",
@@ -228,18 +226,9 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv_list)
     apply_train_config_json(args, parser, explicit_dests)
     args = apply_preset(args)
-    validate_training_eval_disabled(args)
     validate_early_stop_args(args)
     validate_training_seed(args.seed, label="--seed", seed_span=args.n_envs)
     return args
-
-
-def validate_training_eval_disabled(args: argparse.Namespace) -> None:
-    if int(args.eval_freq) != 0 or int(args.eval_episodes) != 0:
-        raise ValueError(
-            "training-loop eval is disabled; keep --eval-freq 0 and "
-            "--eval-episodes 0, then evaluate checkpoints out of process",
-        )
 
 
 def validate_early_stop_args(args: argparse.Namespace) -> None:
@@ -401,31 +390,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=parser_defaults_env.obs_crop,
         help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
     )
-    parser.add_argument(
-        "--eval-freq",
-        type=int,
-        default=0,
-        help="Deprecated training-loop eval setting; must remain 0.",
-    )
-    parser.add_argument(
-        "--eval-episodes",
-        type=int,
-        default=0,
-        help="Deprecated training-loop eval setting; must remain 0.",
-    )
-    parser.add_argument(
-        "--eval-stochastic",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Legacy no-op; training never runs eval.",
-    )
-    parser.add_argument(
-        "--no-eval-videos",
-        action="store_true",
-        help="Legacy no-op; training never records eval videos.",
-    )
-    parser.add_argument("--eval-video-fps", type=float, default=30.0, help=argparse.SUPPRESS)
-    parser.add_argument("--eval-video-scale", type=int, default=4, help=argparse.SUPPRESS)
     parser.add_argument("--checkpoint-freq", type=int, default=500_000)
     parser.add_argument(
         "--post-train-eval",

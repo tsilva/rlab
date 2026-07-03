@@ -37,8 +37,6 @@ train_config:
       - levelLo
     - change
   done_on_events: life_loss,level_change
-  eval_freq: 0
-  eval_episodes: 0
   checkpoint_freq: 0
   timesteps: 100000
   wandb: false

@@ -167,12 +167,9 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             _require_int(config, "timesteps", label=f"{label}.train_config")
 
     if kind == "fleet_capacity":
-        if not payload.get("recipe_file") and not payload.get("spec_file"):
+        if not payload.get("recipe_file"):
             raise ValueError(f"{label}.recipe_file must be a non-empty string")
-        if payload.get("recipe_file"):
-            _require_string(payload, "recipe_file", label=label)
-        else:
-            _require_string(payload, "spec_file", label=label)
+        _require_string(payload, "recipe_file", label=label)
         _require_string(payload, "runtime_image_ref_file", label=label)
 
     if kind == "eval_contract":
@@ -300,8 +297,6 @@ def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand
     config = dict(_require_mapping(profile["train_config"], label="train_config"))
     config.setdefault("run_name", f"benchmark_{_slug(str(profile['name']))}")
     config.setdefault("run_description", f"Benchmark profile {profile['name']} PPO loop probe.")
-    config.setdefault("eval_freq", 0)
-    config.setdefault("eval_episodes", 0)
     return [_command("train", _python_train_command(config))]
 
 
@@ -320,7 +315,7 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
 
 
 def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    recipe_file = str(profile.get("recipe_file") or profile.get("spec_file"))
+    recipe_file = str(profile["recipe_file"])
     commands = [
         _command(
             "enqueue-train",

@@ -39,12 +39,6 @@ TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
     }
 )
 
-TRAIN_SPEC_SCHEMA_VERSION = TRAIN_RECIPE_SCHEMA_VERSION
-TRAIN_SPEC_REQUIRED_FIELDS = TRAIN_RECIPE_REQUIRED_FIELDS
-TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
-TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS
-TRAIN_SPEC_REMOVED_FIELDS = TRAIN_RECIPE_REMOVED_FIELDS
-
 
 def _label_path(label: str, key: str) -> str:
     if not label:
@@ -292,9 +286,3 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         raise ValueError(
             f"{_label_path(label, 'train_config.wandb_artifact_storage_uri')} must be a string"
         )
-
-
-def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
-    """Backward-compatible alias for older callers."""
-
-    validate_train_recipe_schema(document, label=label)

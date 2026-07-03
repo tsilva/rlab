@@ -1385,8 +1385,9 @@ logging:
                 with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
                     parser.parse_args([command])
 
-    def test_train_parser_uses_spec_file_for_train_enqueue(self) -> None:
-        args = rlab_main.build_train_enqueue_parser().parse_args(
+    def test_train_parser_uses_recipe_file_for_train_enqueue(self) -> None:
+        parser = rlab_main.build_train_enqueue_parser()
+        args = parser.parse_args(
             [
                 "--recipe-file",
                 "experiments/goals/example/recipes/candidate.yaml",
@@ -1396,6 +1397,15 @@ logging:
         )
 
         self.assertEqual(args.recipe_file, Path("experiments/goals/example/recipes/candidate.yaml"))
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            parser.parse_args(
+                [
+                    "--spec-file",
+                    "experiments/goals/example/recipes/candidate.yaml",
+                    "--runtime-image-ref-file",
+                    "rlab-train-image.json",
+                ]
+            )
 
     def test_jobs_parser_no_longer_owns_train_enqueue(self) -> None:
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
@@ -1457,7 +1467,7 @@ logging:
             job_queue.eval_selection_score(slower_higher_reward),
         )
 
-    def test_enqueue_train_jobs_from_spec_derives_group_run_names(self) -> None:
+    def test_enqueue_train_jobs_from_recipe_derives_group_run_names(self) -> None:
         calls = []
         old_enqueue = job_queue.enqueue_train_job
         old_utc = job_queue._utc_stamp

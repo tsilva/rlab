@@ -187,7 +187,7 @@ These come from Stable-Baselines3 PPO and `VecMonitor`.
 | `time/fps` | Cumulative SB3 training throughput in environment steps per second. |
 | `time/iterations` | Number of PPO learn iterations completed. |
 | `time/time_elapsed` | Wall-clock seconds elapsed in the SB3 learn loop. Explicitly mirrored to W&B at rollout end with `global_step` as the step. |
-| `time/total_timesteps` | Total environment steps reached by SB3 or the in-loop eval callback. |
+| `time/total_timesteps` | Total environment steps reached by SB3 training. |
 | `train/approx_kl` | Approximate KL divergence between old and updated policies for the last PPO update. Spikes indicate large policy updates. |
 | `train/clip_fraction` | Fraction of policy updates clipped by PPO's ratio clipping. High values mean many updates hit the trust-region bound. |
 | `train/clip_range` | Active PPO policy clip range. |
@@ -314,8 +314,7 @@ Reward share metrics compare absolute component magnitudes within a rollout.
 
 ## Evaluation Metrics
 
-These are logged by the in-training `RetroEvalCallback` when training-loop eval is enabled, and
-by `rlab-eval` artifact mode when evaluating checkpoint artifacts out of process.
+These are logged by `rlab eval` artifact mode and by post-training checkpoint eval.
 Evaluation env construction forces `done_on_events=()` and does not pass native terminal
 `done_on` rules to Stable Retro. The eval loop also
 keeps running after observed life-loss and level-change events; it stops on native env done or the
@@ -378,7 +377,7 @@ previous-value tuple such as `0-0`.
 
 ## Eval JSON Summary Fields
 
-`rlab-eval` and in-training eval write richer JSON summaries to local files. These fields are
+`rlab eval` and post-training checkpoint eval write richer JSON summaries to local files. These fields are
 stored in eval history or stdout JSON; only the `eval/*` subset above is logged to W&B by default.
 
 | Field | Meaning |
@@ -405,9 +404,9 @@ stored in eval history or stdout JSON; only the `eval/*` subset above is logged 
 | `death_x_histogram` | Local JSON histogram of death X positions. W&B receives `eval/death/x_hist` when death positions exist. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
 | `best_episode` | Best episode record ranked by completion first, then max X, then reward. |
-| `best_model_score` | In-training eval ranking tuple: completion metric, solved checkpoint timesteps when available, reward mean. |
+| `best_model_score` | Checkpoint eval ranking tuple: completion metric, solved checkpoint timesteps when available, reward mean. |
 | `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
-| `timesteps` | Training timestep attached by in-training eval summaries. |
+| `timesteps` | Training timestep attached by legacy eval summaries when present. New checkpoint eval summaries use `checkpoint_step`. |
 | `eval_n_envs` | Number of vector env slots used by artifact/local eval summaries. |
 | `checkpoint_step` | Checkpoint step attached by artifact eval summaries. W&B receives `eval/checkpoint/step`. |
 | `checkpoint_artifact` | Checkpoint artifact name attached by artifact eval summaries. W&B receives `eval/checkpoint/artifact`. |

@@ -97,6 +97,24 @@ gates: {}
         self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "plan"))
         self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
 
+    def test_fleet_capacity_rejects_legacy_spec_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(
+                """
+schema_version: 1
+name: bad
+kind: fleet_capacity
+spec_file: experiments/goals/example/recipes/candidate.yaml
+runtime_image_ref_file: rlab-train-image.json
+gates: {}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "recipe_file"):
+                load_benchmark_profile(path)
+
     def test_benchmark_is_registered_on_unified_cli(self) -> None:
         self.assertIn("benchmark", COMMANDS)
 

@@ -8,6 +8,8 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest.mock import patch
 from pathlib import Path
 
@@ -705,21 +707,17 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIn("--obs-crop", command)
         self.assertIn("0,0,32,0", command)
 
-    def test_training_loop_eval_settings_must_stay_disabled(self) -> None:
-        args = parse_train_args(["--eval-freq", "0", "--eval-episodes", "0"])
-        self.assertEqual(args.eval_freq, 0)
-        self.assertEqual(args.eval_episodes, 0)
+    def test_training_loop_eval_settings_are_not_train_options(self) -> None:
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            parse_train_args(["--eval-freq", "0"])
 
-        with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
-            parse_train_args(["--eval-freq", "1"])
-
-        with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
-            parse_train_args(["--eval-episodes", "1"])
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            parse_train_args(["--eval-episodes", "0"])
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
             path.write_text(json.dumps({"eval_freq": 1}) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "training-loop eval is disabled"):
+            with self.assertRaisesRegex(ValueError, "unknown train config field"):
                 parse_train_args(["--train-config-json", str(path)])
 
     def test_train_parser_defaults_to_sparse_checkpoint_artifacts(self) -> None:
@@ -2170,9 +2168,11 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--wandb", cmd)
         self.assertIn("--no-normalize-advantage", cmd)
 
-    def test_build_train_command_omits_training_loop_eval_toggles(self) -> None:
+    def test_build_train_command_ignores_removed_training_loop_eval_toggles(self) -> None:
         cmd = build_train_command(
             {
+                "eval_freq": 0,
+                "eval_episodes": 0,
                 "eval_stochastic": False,
                 "no_eval_videos": True,
                 "eval_video_fps": 60,
@@ -2180,6 +2180,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             }
         )
 
+        self.assertNotIn("--eval-freq", cmd)
+        self.assertNotIn("--eval-episodes", cmd)
         self.assertNotIn("--no-eval-stochastic", cmd)
         self.assertNotIn("--no-eval-videos", cmd)
         self.assertNotIn("--eval-video-fps", cmd)

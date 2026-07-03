@@ -14,8 +14,6 @@ train_config:
   timesteps: 512
   max_episode_steps: 600
   checkpoint_freq: 256
-  eval_freq: 0
-  eval_episodes: 0
   wandb: true
   wandb_mode: online
   wandb_artifact_storage_uri: ${CHECKPOINT_BUCKET_URI}
