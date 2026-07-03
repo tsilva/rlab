@@ -161,11 +161,26 @@ class ReleaseModelCardTests(unittest.TestCase):
         self.assertIn("rlab import-roms ~/roms --game SuperMarioBros-Nes-v0", content)
         self.assertIn("rlab play hf://tsilva/SuperMarioBros-NES_Level1-1", content)
         self.assertNotIn("hf download", content)
+        self.assertIn("## Preview", content)
+        self.assertIn("## Input / Output", content)
+        self.assertIn("## Architecture", content)
+        self.assertIn("## Training Recipe", content)
+        self.assertIn("| Environment | `SuperMarioBros-Nes-v0`, state `Level1-1` |", content)
+        self.assertIn("| Input | 4 stacked grayscale `84 x 84` frames, channel-first |", content)
+        self.assertIn("| Output | Discrete action over the `simple` action set |", content)
+        self.assertNotIn("| W&B run |", content)
+        self.assertNotIn("| W&B artifact |", content)
         self.assertNotIn("For the original W&B artifact", content)
         self.assertNotIn("rlab leaders checkpoints", content)
         self.assertNotIn("Release staging re-evaluated", content)
+        self.assertNotIn("Validate on the Eval Profile", content)
+        self.assertNotIn("stable_retro_ppo.evaluate", content)
+        self.assertNotIn("Expected summary fields", content)
         self.assertNotIn("leaderboard", content.lower())
-        self.assertIn("| `replay.mp4` | Representative preview episode |", content)
+        self.assertIn(
+            "| `replay.mp4` | Hugging Face reinforcement-learning widget preview",
+            content,
+        )
 
     def test_copy_release_files_rewrites_model_metadata_filename(self) -> None:
         _config, _write_model_card, copy_release_files = import_release_card_symbols()

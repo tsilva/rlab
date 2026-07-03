@@ -57,21 +57,36 @@ def _environment_mapping_from_document(document: Mapping[str, Any]) -> Mapping[s
     return None
 
 
-def _env_id_from_document(document: Mapping[str, Any]) -> str:
+def _environment_template_context_from_document(document: Mapping[str, Any]) -> dict[str, str]:
     environment = _environment_mapping_from_document(document)
     if not isinstance(environment, Mapping):
-        return ""
-    env_id = _concrete_template_source(environment.get("env_id"))
+        return {}
+    env_provider = _concrete_template_source(
+        environment.get("env_provider") or environment.get("provider")
+    )
+    env_id = _concrete_template_source(
+        environment.get("provider_env_id") or environment.get("env_id")
+    )
     if env_id:
-        return env_id
-    provider = _concrete_template_source(environment.get("env_provider") or environment.get("provider"))
+        if ":" in env_id:
+            provider, provider_env_id = env_id.split(":", 1)
+            return {"env_provider": provider, "env_id": provider_env_id}
+        context = {"env_id": env_id}
+        if env_provider:
+            context["env_provider"] = env_provider
+        return context
     env_config = environment.get("env_config")
     game = (
         _concrete_template_source(env_config.get("game"))
         if isinstance(env_config, Mapping)
         else ""
     )
-    return f"{provider}:{game}" if provider and game else ""
+    context = {}
+    if env_provider:
+        context["env_provider"] = env_provider
+    if game:
+        context["env_id"] = game
+    return context
 
 
 def template_context_from_path(
@@ -96,7 +111,7 @@ def template_context_from_path(
         game = resolved.parent.parent.name if resolved.parent.parent.name != "goals" else ""
 
     if isinstance(document, Mapping):
-        env_id = _env_id_from_document(document)
+        environment_context = _environment_template_context_from_document(document)
         raw_goal = document.get("goal")
         if isinstance(raw_goal, Mapping):
             goal_id = (
@@ -126,7 +141,10 @@ def template_context_from_path(
     return {
         key: value
         for key, value in {
-            "env_id": env_id if isinstance(document, Mapping) else "",
+            "env_id": environment_context.get("env_id", "") if isinstance(document, Mapping) else "",
+            "env_provider": environment_context.get("env_provider", "")
+            if isinstance(document, Mapping)
+            else "",
             "game": game,
             "game_slug": game_slug,
             "goal_id": goal_id,

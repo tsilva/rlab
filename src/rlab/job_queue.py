@@ -71,7 +71,7 @@ RUNTIME_TRAIN_CONFIG_DEFAULTS = {
     "wandb_mode": "online",
     "wandb_artifact_storage_uri": "${CHECKPOINT_BUCKET_URI}",
 }
-QUEUE_TEMPLATE_FIELDS = frozenset({"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"})
+QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "spec_id", "timestamp", "utc"})
 SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
@@ -761,7 +761,7 @@ def _materialize_goal_queue_defaults(
 ) -> None:
     if goal_document is None:
         return
-    for key in ("wandb_group", "run_name_template"):
+    for key in ("group_id", "run_name_template"):
         if key in materialized:
             continue
         value = goal_document.get(key)
@@ -880,7 +880,7 @@ def repo_is_dirty(cwd: Path = Path(".")) -> bool:
 
 
 def spec_slug(document: Mapping[str, Any]) -> str:
-    return str(document.get("spec_id") or document.get("slug") or "").strip()
+    return str(document.get("spec_id") or "").strip()
 
 
 def spec_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
@@ -1011,10 +1011,10 @@ def spec_goal_slug(document: Mapping[str, Any]) -> str:
     )
 
 
-def spec_wandb_tags(document: Mapping[str, Any]) -> list[str]:
+def spec_tags(document: Mapping[str, Any]) -> list[str]:
     tags = []
     seen: set[str] = set()
-    for raw_tag in document.get("wandb_tags") or []:
+    for raw_tag in document.get("tags") or []:
         tag = str(raw_tag).strip()
         if not tag or tag in seen:
             continue
@@ -1028,17 +1028,16 @@ def _utc_stamp() -> str:
 
 
 def _format_seed_template(
-    template: str | None, *, seed: int | None, slug: str, utc: str, wandb_group: str = ""
+    template: str | None, *, seed: int | None, spec_id: str, utc: str, group_id: str = ""
 ) -> str | None:
     if not template:
         return None
     return str(template).format(
         seed="" if seed is None else seed,
-        slug=slug,
-        spec_id=slug,
+        spec_id=spec_id,
         timestamp=utc,
         utc=utc,
-        wandb_group=wandb_group,
+        group_id=group_id,
     )
 
 
@@ -1046,19 +1045,18 @@ def _format_run_name_template(
     template: str | None,
     *,
     seed: int | None,
-    slug: str,
+    spec_id: str,
     utc: str,
-    wandb_group: str,
+    group_id: str,
 ) -> str | None:
     if not template:
         return None
     return str(template).format(
         seed="" if seed is None else seed,
-        slug=slug,
-        spec_id=slug,
+        spec_id=spec_id,
         timestamp=utc,
         utc=utc,
-        wandb_group=wandb_group,
+        group_id=group_id,
     )
 
 
@@ -1073,20 +1071,20 @@ def _run_name_slug(value: str, *, limit: int = 32) -> str:
     return slug[:limit].strip("-") or "run"
 
 
-def _run_name_batch_id(wandb_group: str) -> str:
-    group = _run_name_slug(wandb_group)
+def _run_name_batch_id(group_id: str) -> str:
+    group = _run_name_slug(group_id)
     match = re.match(r"^(b\d+)(?:-|$)", group)
     return match.group(1) if match else group
 
 
 def _format_default_run_name(
-    wandb_group: str,
+    group_id: str,
     *,
     label: str,
     seed: int | None,
     utc: str,
 ) -> str:
-    batch_id = _run_name_batch_id(wandb_group)
+    batch_id = _run_name_batch_id(group_id)
     description = _run_name_slug(label, limit=24)
     seed_label = f"s{seed}" if seed is not None else "s"
     return f"{batch_id}-{description}-{seed_label}-{utc}"
@@ -1134,7 +1132,7 @@ def enqueue_train_jobs_from_spec_document(
                 seed_span=train_config.get("n_envs", 1),
             )
             train_config["seed"] = seed
-        wandb_group = str(document["wandb_group"])
+        group_id = str(document["group_id"])
         row = enqueue_train_job(
             conn,
             goal_slug=goal_slug,
@@ -1153,12 +1151,12 @@ def enqueue_train_jobs_from_spec_document(
                 _format_run_name_template(
                     document.get("run_name_template"),
                     seed=seed,
-                    slug=document_slug,
+                    spec_id=document_slug,
                     utc=utc,
-                    wandb_group=wandb_group,
+                    group_id=group_id,
                 )
                 or _format_default_run_name(
-                    wandb_group,
+                    group_id,
                     label=str(document.get("run_name_label") or document_slug),
                     seed=seed,
                     utc=utc,
@@ -1167,13 +1165,13 @@ def enqueue_train_jobs_from_spec_document(
             run_description=_format_seed_template(
                 document.get("description"),
                 seed=seed,
-                slug=document_slug,
+                spec_id=document_slug,
                 utc=utc,
-                wandb_group=wandb_group,
+                group_id=group_id,
             ),
             seed=seed,
-            wandb_group=wandb_group,
-            wandb_tags=spec_wandb_tags(document),
+            wandb_group=group_id,
+            wandb_tags=spec_tags(document),
         )
         rows.append(row)
     return rows

@@ -201,6 +201,86 @@ def format_checkpoint_filename(template: str, checkpoint_step: int | None) -> st
     return template.format(checkpoint_step=checkpoint_step)
 
 
+def _format_bool(value: Any) -> str:
+    return "enabled" if bool(value) else "disabled"
+
+
+def _format_completion(completion_rate: float, metrics: Mapping[str, Any]) -> str:
+    completion_count = metrics.get("completion_count")
+    episodes = metrics.get("episodes")
+    if completion_count is not None and episodes:
+        return f"`{int(completion_count)}/{int(episodes)}` episodes"
+    return f"{100.0 * completion_rate:.1f}%"
+
+
+def _format_seed_start(metrics: Mapping[str, Any]) -> str:
+    for key in ("seed_start", "eval_seed"):
+        value = metrics.get(key)
+        if value is not None:
+            return str(value)
+    episode_results = metrics.get("episode_results")
+    if isinstance(episode_results, Sequence):
+        seeds = [
+            int(episode["seed"])
+            for episode in episode_results
+            if isinstance(episode, Mapping) and episode.get("seed") is not None
+        ]
+        if seeds:
+            return str(min(seeds))
+    return ""
+
+
+def _format_episodes(metrics: Mapping[str, Any]) -> str:
+    value = metrics.get("episodes")
+    if value is not None:
+        return str(value)
+    episode_results = metrics.get("episode_results")
+    if isinstance(episode_results, Sequence):
+        return str(len(episode_results))
+    return ""
+
+
+def _format_eval_profile(leader, metrics: Mapping[str, Any]) -> str:
+    profile = metrics.get("profile") or leader.eval_source or "checkpoint promotion"
+    deterministic = metrics.get("deterministic")
+    if deterministic is None:
+        return str(profile)
+    mode = "deterministic policy" if deterministic else "stochastic policy sampling"
+    return f"`{profile}`, {mode}"
+
+
+def _format_preview_summary(metrics: Mapping[str, Any]) -> str:
+    best_episode = metrics.get("best_episode")
+    if not isinstance(best_episode, Mapping):
+        return "Preview episode is uploaded as `replay.mp4` for Hugging Face's reinforcement-learning widget."
+    seed = best_episode.get("seed")
+    max_x = best_episode.get("max_x_pos")
+    reward = best_episode.get("reward")
+    completed = bool(best_episode.get("level_complete"))
+    died = best_episode.get("died")
+    parts = []
+    if seed is not None:
+        parts.append(f"seed `{seed}`")
+    if completed:
+        parts.append("completed the level")
+    if max_x is not None:
+        parts.append(f"`max_x_pos={float(max_x):.0f}`")
+    if reward is not None:
+        parts.append(f"reward `{float(reward):.2f}`")
+    if died is False:
+        parts.append("no death recorded")
+    return "Preview episode: " + "; ".join(parts) + "."
+
+
+def _format_done_on(env_config: Mapping[str, Any]) -> str:
+    done_on = env_config.get("done_on") or env_config.get("done_on_events")
+    if isinstance(done_on, Sequence) and not isinstance(done_on, str):
+        return ", ".join(str(item).replace("_", " ") for item in done_on)
+    if env_config.get("terminate_on_life_loss") and env_config.get("terminate_on_completion"):
+        return "life loss and completion"
+    return str(done_on or "goal-specific termination")
+
+
 def write_model_card(
     *,
     path: Path,
@@ -213,39 +293,61 @@ def write_model_card(
     env_config = goal["train"]["environment"]["env_config"]
     game = str(env_config.get("game", "SuperMarioBros-Nes-v0"))
     level = str(env_config.get("state", goal["goal_id"]))
-    completion = 100.0 * float(leader.completion_rate)
     reward = float(leader.reward_mean)
     max_x = float(leader.max_x_max)
+    obs_size = int(env_config.get("observation_size", 84))
+    frame_stack = int(env_config.get("frame_stack", 4))
+    frame_skip = int(env_config.get("frame_skip", 4))
+    hud_crop_top = int(env_config.get("hud_crop_top", 32))
+    action_set = str(env_config.get("action_set", "simple"))
+    reward_mode = str(env_config.get("reward_mode", "score"))
+    max_pool_frames = bool(env_config.get("max_pool_frames", False))
+    max_episode_steps = env_config.get("max_episode_steps", "")
+    env_provider = str(env_config.get("env_provider", "Stable Retro"))
+    completion_text = _format_completion(float(leader.completion_rate), metrics)
+    episodes_text = _format_episodes(metrics)
+    seed_start_text = _format_seed_start(metrics)
+    eval_profile = _format_eval_profile(leader, metrics)
+    preview_summary = _format_preview_summary(metrics)
+    checkpoint_step = leader.checkpoint_step or ""
+    model_name = release.repo.removeprefix("SuperMarioBros-NES_").replace("Level", "Level ")
     content = f"""---
 library_name: stable-baselines3
 pipeline_tag: reinforcement-learning
 tags:
   - reinforcement-learning
   - stable-baselines3
+  - ppo
   - stable-retro
   - rlab
+  - super-mario-bros
+  - nes
   - {game}
 metrics:
-  - reward
+  - completion-rate
 ---
 
-# {game} {level} PPO
+# SuperMarioBros-NES {model_name}
 
-PPO policy checkpoint for `{game}` `{level}`, trained with [`rlab`](https://github.com/tsilva/rlab).
+PPO policy checkpoint for completing `{game}` `{level}` with Stable Retro, trained with [`rlab`](https://github.com/tsilva/rlab).
 
 ## At a Glance
 
 | Item | Value |
 |---|---|
-| Task | Complete `{game}` `{level}` |
-| Model | Stable-Baselines3 PPO |
-| Format | SB3 `.zip` checkpoint |
-| Checkpoint | `{checkpoint_filename}` |
-| Completion rate | {completion:.1f}% |
-| Mean reward | {reward:.3f} |
-| Max x-position | {max_x:.0f} |
-| W&B run | [{leader.run_name}]({leader.url}) |
-| W&B artifact | `{leader.artifact_ref}` |
+| Task | Reinforcement learning policy for `{game}` `{level}` completion |
+| Environment | `{game}`, state `{level}` |
+| Model | Stable Baselines3 PPO |
+| Format | PyTorch checkpoint inside SB3 `.zip` |
+| Input | {frame_stack} stacked grayscale `{obs_size} x {obs_size}` frames, channel-first |
+| Output | Discrete action over the `{action_set}` action set |
+| Eval completion rate | {completion_text} |
+| Eval profile | {eval_profile} |
+| Uploaded checkpoint | `{leader.run_name}`, checkpoint `{checkpoint_step}` timesteps |
+
+## Preview
+
+{preview_summary}
 
 ## Quick Start
 
@@ -259,21 +361,52 @@ rlab play hf://{release.repo_id}
 
 ## Results
 
-| Metric | Value |
+| Eval profile | Episodes | Seed start | Completion rate | Max x | Mean reward | Checkpoint step |
+|---|---:|---:|---:|---:|---:|---:|
+| {eval_profile} | {episodes_text} | {seed_start_text} | {completion_text} | {max_x:.0f} | {reward:.3f} | {checkpoint_step} |
+
+This is a checkpoint promotion metric from the current [`rlab`](https://github.com/tsilva/rlab) release process.
+
+## Input / Output
+
+The policy receives observations produced by the project eval wrapper:
+
+- Game: `{game}`
+- State: `{level}`
+- Preprocessing: crop top `{hud_crop_top}` pixels, grayscale, resize to `{obs_size} x {obs_size}`
+- Frame stack: `{frame_stack}`
+- Frame skip: `{frame_skip}`
+- Max-pool last two frames: {_format_bool(max_pool_frames)}
+- Observation layout: channel-first stack, shape `({frame_stack}, {obs_size}, {obs_size})`
+- Action set: `{action_set}`
+- Reward mode for reported eval: `{reward_mode}`
+
+## Architecture
+
+- Algorithm: PPO from Stable Baselines3.
+- Policy checkpoint: SB3 PyTorch `.zip`.
+- Training used `{env_provider}` vector environments.
+- The uploaded file contains the policy, optimizer state, SB3 metadata, and system info.
+
+## Training Recipe
+
+| Setting | Value |
 |---|---:|
-| Completion rate | {completion:.1f}% |
-| Completion rate mean | {100.0 * float(leader.completion_rate_mean):.1f}% |
-| Mean reward | {reward:.3f} |
-| Max x-position | {max_x:.0f} |
-| Checkpoint step | {leader.checkpoint_step or ""} |
+| Goal | `{goal["goal_id"]}` |
+| Spec | `{leader.spec_slug}` |
+| Checkpoint step | {checkpoint_step} |
+| Frame skip | {frame_skip} |
+| Max episode steps | {max_episode_steps} |
+| Reward mode | `{reward_mode}` |
+| Termination | {_format_done_on(env_config)} |
 
 ## Files
 
 | File | Description |
 |---|---|
 | `{checkpoint_filename}` | SB3 PPO checkpoint |
-| `{release.preview_filename}` | Representative preview episode |
-| `model_metadata.json` | Downloaded W&B artifact metadata when available |
+| `{release.preview_filename}` | Hugging Face reinforcement-learning widget preview of a representative episode |
+| `model_metadata.json` | Provenance, eval profile, and checksum metadata when available |
 | `release_manifest.json` | Release provenance and verification inputs |
 
 ## Provenance
@@ -281,15 +414,16 @@ rlab play hf://{release.repo_id}
 - Source project: [`rlab`](https://github.com/tsilva/rlab)
 - Goal: `{goal["goal_id"]}`
 - Goal title: `{goal.get("title", "")}`
-- W&B run: `{leader.run_name}`
+- W&B run: [`{leader.run_name}`]({leader.url})
 - W&B artifact: `{leader.artifact_ref}`
 - Eval source: `{leader.eval_source or ""}`
 
 ## Limitations
 
-This is a single selected checkpoint for a specific Stable Retro task. Reported
-metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated
-as cross-environment benchmark results.
+- No ROM is included; users must provide and import their own legally obtained ROM.
+- The checkpoint was selected by eval performance on this project-specific setup, not by a standardized public benchmark.
+- This card reports one selected checkpoint evaluation, not a multi-seed aggregate.
+- Reported metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated as cross-environment benchmark results.
 """
     path.write_text(content, encoding="utf-8")
 

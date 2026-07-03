@@ -28,7 +28,7 @@ ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_prov
 ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | STABLE_RETRO_TURBO_ENV_CONFIG_KEYS | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
-        {"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"}
+        {"group_id", "seed", "spec_id", "timestamp", "utc"}
     ),
     (
         "release",

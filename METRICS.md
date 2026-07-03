@@ -154,6 +154,12 @@ rather than the clean-clear counters:
 - `train/done/all` is the exhaustive terminal episode count. Reason counters are explanatory, so
   `train/done/life_loss + train/done/level_change` can exceed `train/done/all` when the same terminal
   info payload reports both events.
+- In native-vector training, clearing `done_on_events` also removes the normal life-loss/level-change
+  reset boundaries. If no other provider `done=True` boundary occurs, `train/done/*` can stay absent
+  while rollout reward collapses into sparse components such as `train/reward_share/death`. In that
+  regime, use `train/reward/prog_x/*`, `train/reward/score/*`, and
+  `train/info/level_complete/*` to confirm whether the agent is still receiving progress and clean
+  clear signal.
 - `train/info/level_complete/from/<prev>/count` should be less than or equal to
   `train/done/level_change/from/<prev>` when level changes are terminal. Any excess
   `train/done/level_change/from/<prev>` over clean `level_complete` count is terminal level-change

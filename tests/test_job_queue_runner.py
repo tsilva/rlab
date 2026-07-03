@@ -142,9 +142,9 @@ def valid_train_spec() -> dict:
             "to rank by completion rate, then reward."
         ),
         "seeds": [23, 24],
-        "wandb_group": "b-test",
-        "run_name_template": "{wandb_group}_{spec_id}_s{seed}_{timestamp}",
-        "wandb_tags": ["b55", "confirm"],
+        "group_id": "b-test",
+        "run_name_template": "{group_id}_{spec_id}_s{seed}_{timestamp}",
+        "tags": ["b55", "confirm"],
         "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": {
             "game": "SuperMarioBros-Nes-v0",
@@ -533,8 +533,8 @@ description: Candidate seed {seed} reproduces the expected completion signal and
 seeds: [23, 24]
 run_target: rtx4090
 state: Level1-1
-wandb_group: b-test
-wandb_tags: [mario, confirm]
+group_id: b-test
+tags: [mario, confirm]
 selection_metrics: [train/completion_episode_rate, train/reward/mean]
 overrides:
   train:
@@ -637,9 +637,9 @@ template_vars:
   batch_id: b272
   recipe: b55
 description: "{goal_id} {recipe} seed {seed} transfer run created to validate recipe transfer."
-wandb_group: "{batch_id}-{level_short}-{recipe}"
-run_name_template: "{wandb_group}_{spec_id}_s{seed}_{timestamp}"
-wandb_tags: ["goal_id:{goal_id}", "spec_id:{spec_id}", "env_id:{env_id}", "recipe:{recipe}"]
+group_id: "{batch_id}-{level_short}-{recipe}"
+run_name_template: "{group_id}_{spec_id}_s{seed}_{timestamp}"
+tags: ["goal_id:{goal_id}", "spec_id:{spec_id}", "env_id:{env_id}"]
 selection_metrics: [eval/reward/mean]
 """,
                 encoding="utf-8",
@@ -649,14 +649,13 @@ selection_metrics: [eval/reward/mean]
 
         self.assertFalse(contains_key(loaded, "template_vars"))
         self.assertEqual(loaded["goal"]["goal_id"], "Level1-2")
-        self.assertEqual(loaded["wandb_group"], "b272-l12-b55")
+        self.assertEqual(loaded["group_id"], "b272-l12-b55")
         self.assertEqual(
-            loaded["wandb_tags"],
+            loaded["tags"],
             [
                 "goal_id:Level1-2",
                 "spec_id:candidate",
-                "env_id:stable-retro-turbo:SuperMarioBros-Nes-v0",
-                "recipe:b55",
+                "env_id:SuperMarioBros-Nes-v0",
             ],
         )
         self.assertEqual(
@@ -699,8 +698,8 @@ environment:
   reward:
     reward_mode: score
     death_penalty: 25
-wandb_group: b-test
-wandb_tags: [mario, env-hash]
+group_id: b-test
+tags: [mario, env-hash]
 selection_metrics: [train/completion_episode_rate]
 train:
   timesteps: 1024
@@ -744,8 +743,8 @@ spec_id: candidate
 description: Candidate seed {seed} reproduces the expected completion signal and was created to rank by completion rate, then reward.
 seeds: [23]
 run_target: rtx4090
-wandb_group: b-test
-wandb_tags: [mario, env-config]
+group_id: b-test
+tags: [mario, env-config]
 selection_metrics: [train/completion_episode_rate]
 train:
   environment:
@@ -838,8 +837,8 @@ defaults:
 spec_id: candidate
 description: Candidate seed {seed} inherits the goal contract and was created to verify queue materialization of env identity and training policy.
 seeds: [23]
-wandb_group: b-test
-wandb_tags: [mario, env-config]
+group_id: b-test
+tags: [mario, env-config]
 state: WrongState
 train_config:
   game: WrongGame
@@ -925,8 +924,8 @@ defaults:
 spec_id: candidate
 description: Candidate seed {seed} disables native terminal boundaries and was created to verify spec overrides on the goal contract.
 seeds: [23]
-wandb_group: b-test
-wandb_tags: [mario, no-terminal]
+group_id: b-test
+tags: [mario, no-terminal]
 train:
   environment:
     env_config:
@@ -951,7 +950,15 @@ train:
                 job_queue.load_spec_document(path)
 
     def test_load_spec_document_rejects_removed_spec_fields(self) -> None:
-        for field in ("hypothesis", "parent_spec_slug", "parent_spec_id", "run_description_template"):
+        for field in (
+            "hypothesis",
+            "parent_spec_slug",
+            "parent_spec_id",
+            "run_description_template",
+            "slug",
+            "wandb_tags",
+            "wandb_group",
+        ):
             with self.subTest(field=field):
                 spec = valid_train_spec()
                 spec[field] = "removed"
@@ -1006,7 +1013,7 @@ train:
             return {"run_name": kwargs["run_name"]}
 
         document = valid_train_spec()
-        document["wandb_group"] = "b82-l11-b55-post21-revalidate"
+        document["group_id"] = "b82-l11-b55-post21-revalidate"
 
         old_enqueue = job_queue.enqueue_train_job
         old_utc = job_queue._utc_stamp
@@ -1064,8 +1071,8 @@ train:
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/specs/base.yaml")
         )
         self.assertEqual(
-            level1_1["wandb_group"],
-            "supermariobrosnes-turbo:SuperMarioBros-Nes-v0_Level1-1",
+            level1_1["group_id"],
+            "SuperMarioBros-Nes-v0_Level1-1",
         )
         for level in ("Level1-2", "Level1-3"):
             with self.subTest(level=level):
@@ -1077,8 +1084,8 @@ train:
                 self.assertEqual(transfer["goal"]["goal_id"], level)
                 self.assertEqual(transfer["train"]["environment"]["env_config"]["state"], level)
                 self.assertEqual(
-                    transfer["wandb_group"],
-                    f"supermariobrosnes-turbo:SuperMarioBros-Nes-v0_{level}",
+                    transfer["group_id"],
+                    f"SuperMarioBros-Nes-v0_{level}",
                 )
                 self.assertFalse(contains_key(transfer, "template_vars"))
                 self.assertEqual(
@@ -1090,13 +1097,11 @@ train:
                     "model.zip",
                 )
                 self.assertEqual(
-                    transfer["wandb_tags"],
+                    transfer["tags"],
                     [
                         f"goal_id:{level}",
                         "spec_id:base",
-                        "env_id:supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
-                        "recipe:b55",
-                        "phase:transfer",
+                        "env_id:SuperMarioBros-Nes-v0",
                     ],
                 )
                 self.assertIn(level, transfer["description"])

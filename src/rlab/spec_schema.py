@@ -12,8 +12,8 @@ TRAIN_SPEC_REQUIRED_FIELDS = (
     "goal",
     "spec_id",
     "description",
-    "wandb_group",
-    "wandb_tags",
+    "group_id",
+    "tags",
     "train_config",
 )
 TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
@@ -23,10 +23,18 @@ TRAIN_SPEC_REQUIRED_TRAIN_CONFIG_FIELDS = (
     "wandb_mode",
 )
 TRAIN_SPEC_ALLOWED_TEMPLATE_FIELDS = frozenset(
-    {"seed", "slug", "spec_id", "timestamp", "utc", "wandb_group"}
+    {"group_id", "seed", "spec_id", "timestamp", "utc"}
 )
 TRAIN_SPEC_REMOVED_FIELDS = frozenset(
-    {"hypothesis", "parent_spec_slug", "parent_spec_id", "run_description_template"}
+    {
+        "hypothesis",
+        "parent_spec_slug",
+        "parent_spec_id",
+        "run_description_template",
+        "slug",
+        "wandb_tags",
+        "wandb_group",
+    }
 )
 
 
@@ -56,10 +64,10 @@ TRAIN_SPEC_SCHEMA: dict[str, Any] = {
             "minItems": 1,
             "items": {"type": "integer", "minimum": TRAIN_SEED_MIN, "maximum": TRAIN_SEED_MAX},
         },
-        "wandb_group": {"type": "string", "minLength": 1},
+        "group_id": {"type": "string", "minLength": 1},
         "run_name_label": {"type": "string", "minLength": 1},
         "run_name_template": {"type": "string", "minLength": 1},
-        "wandb_tags": {
+        "tags": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
         },
@@ -217,11 +225,10 @@ def _require_template(
     try:
         template.format(
             seed=123,
-            slug="candidate",
             spec_id="candidate",
             timestamp="20260626T120000Z",
             utc="20260626T120000Z",
-            wandb_group="b-test",
+            group_id="b-test",
         )
     except (IndexError, KeyError, ValueError) as exc:
         raise ValueError(f"{_label_path(label, key)} is not a valid format template: {exc}") from exc
@@ -259,7 +266,7 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
     if "max_attempts" in document:
         _require_int(document, "max_attempts", label=label, minimum=1)
     seed_values = _require_int_list(document, "seeds", label=label) if "seeds" in document else []
-    _require_non_empty_string(document, "wandb_group", label=label)
+    _require_non_empty_string(document, "group_id", label=label)
     if "run_name_label" in document:
         _require_non_empty_string(document, "run_name_label", label=label)
     if "run_name_template" in document:
@@ -269,7 +276,7 @@ def validate_train_spec_schema(document: Mapping[str, Any], *, label: str = "spe
             label=label,
             required_fields=set(),
         )
-    _require_string_list(document, "wandb_tags", label=label)
+    _require_string_list(document, "tags", label=label)
     if "selection_metrics" in document:
         metrics = _require_string_list(document, "selection_metrics", label=label)
         if not metrics:
