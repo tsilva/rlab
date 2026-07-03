@@ -879,6 +879,59 @@ train_config:
         source_paths = [source["path"] for source in loaded["_composition"]["source_files"]]
         self.assertTrue(any(path.endswith("_goal.yaml") for path in source_paths))
 
+    def test_explicit_train_environment_overrides_goal_done_on_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            goal_dir = root / "experiments" / "goals" / "Level1-1"
+            specs_dir = goal_dir / "specs"
+            specs_dir.mkdir(parents=True)
+            goal_dir.joinpath("_goal.yaml").write_text(
+                """
+goal_id: Level1-1
+title: Level 1-1
+objective:
+  rank:
+  - max(eval/reward/mean)
+train:
+  environment:
+    env_config:
+      env_provider: stable-retro-turbo
+      game: SuperMarioBros-Nes-v0
+      state: Level1-1
+      n_envs: 16
+      info_events:
+        life_loss: [lives, decrease]
+        level_change: [[levelHi, levelLo], change]
+      done_on_events: [life_loss, level_change]
+""",
+                encoding="utf-8",
+            )
+            spec = specs_dir / "candidate.yaml"
+            spec.write_text(
+                """
+schema_version: 1
+defaults:
+- ../_goal@goal
+- _self_
+slug: candidate
+hypothesis: Candidate should disable native terminal boundaries from the goal contract.
+seeds: [23]
+wandb_group: b-test
+wandb_tags: [mario, no-terminal]
+run_description_template: candidate seed {seed}
+train:
+  environment:
+    env_config:
+      done_on: []
+""",
+                encoding="utf-8",
+            )
+
+            loaded = job_queue.load_spec_document(spec)
+
+        self.assertEqual(loaded["train"]["environment"]["env_config"]["done_on"], [])
+        self.assertEqual(loaded["train_config"]["done_on_events"], [])
+
     def test_load_spec_document_rejects_missing_mandatory_schema_field(self) -> None:
         spec = valid_train_spec()
         del spec["run_description_template"]

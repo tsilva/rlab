@@ -20,11 +20,8 @@ train:
     env_config:
       # Empty list overrides the goal default of [life_loss, level_change].
       done_on: []
-      # With terminal transitions disabled, expose info on nonterminal steps too.
-      info_filter: all
 eval:
   environment:
     env_config:
       # Keep eval aligned with the no-terminal training environment.
       done_on: []
-      info_filter: all

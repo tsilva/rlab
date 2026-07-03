@@ -98,6 +98,18 @@ class ReleaseModelCardTests(unittest.TestCase):
 
         self.assertNotIn("<video", content)
         self.assertNotIn("resolve/main/replay.mp4", content)
+        self.assertIn(
+            "trained with [`rlab`](https://github.com/tsilva/rlab).",
+            content,
+        )
+        self.assertIn(
+            "- Source project: [`rlab`](https://github.com/tsilva/rlab)",
+            content,
+        )
+        self.assertIn(
+            "current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract",
+            content,
+        )
         self.assertIn("| `replay.mp4` | Representative preview episode |", content)
 
 

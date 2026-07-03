@@ -154,6 +154,17 @@ class EnvConfigAliasTests(unittest.TestCase):
         self.assertNotIn("action_sticky_prob", config)
         self.assertNotIn("reset_noops", config)
 
+    def test_done_on_alias_overrides_inherited_done_on_events(self) -> None:
+        config = normalize_provider_env_config_aliases(
+            {
+                "done_on": [],
+                "done_on_events": ["life_loss", "level_change"],
+            }
+        )
+
+        self.assertEqual(config["done_on_events"], [])
+        self.assertNotIn("done_on", config)
+
     def test_reward_env_wrapper_resolves_to_mario_reward_config(self) -> None:
         config = resolve_env_config(
             EnvConfig(

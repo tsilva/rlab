@@ -537,6 +537,16 @@ def _train_config_from_train_section(section: Mapping[str, Any]) -> dict[str, An
     return config
 
 
+def _explicit_train_environment_config(document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    train = document.get("train")
+    if not isinstance(train, Mapping):
+        return None
+    environment = train.get("environment")
+    if not isinstance(environment, Mapping):
+        return None
+    return _train_environment_section_config(environment)
+
+
 def _top_level_train_config_items(
     document: Mapping[str, Any],
     *,
@@ -583,6 +593,10 @@ def _merge_train_config_sections(
         value = _train_config_section_value(document, key, strip_goal_owned=strip_goal_owned)
         if isinstance(value, Mapping):
             train_config = deep_merge(train_config, value)
+    if strip_goal_owned:
+        explicit_environment = _explicit_train_environment_config(document)
+        if isinstance(explicit_environment, Mapping):
+            train_config = deep_merge(train_config, explicit_environment)
 
     existing_train_config = _train_config_mapping_value(
         document,
@@ -614,6 +628,10 @@ def _merge_train_config_sections(
             )
             if isinstance(value, Mapping):
                 train_config = deep_merge(train_config, value)
+        if strip_goal_owned:
+            explicit_environment = _explicit_train_environment_config(overrides)
+            if isinstance(explicit_environment, Mapping):
+                train_config = deep_merge(train_config, explicit_environment)
         train_config = deep_merge(
             train_config,
             _top_level_train_config_items(overrides, strip_goal_owned=strip_goal_owned),

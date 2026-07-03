@@ -232,7 +232,7 @@ metrics:
 
 # {game} {level} PPO
 
-PPO policy checkpoint for `{game}` `{level}`, trained with `rlab`.
+PPO policy checkpoint for `{game}` `{level}`, trained with [`rlab`](https://github.com/tsilva/rlab).
 
 ## At a Glance
 
@@ -293,7 +293,7 @@ episode(s). See `release_manifest.json` for exact metrics and provenance.
 
 ## Provenance
 
-- Source project: `rlab`
+- Source project: [`rlab`](https://github.com/tsilva/rlab)
 - Goal: `{goal["goal_id"]}`
 - Goal title: `{goal.get("title", "")}`
 - W&B run: `{leader.run_name}`
@@ -303,7 +303,7 @@ episode(s). See `release_manifest.json` for exact metrics and provenance.
 ## Limitations
 
 This is a single selected checkpoint for a specific Stable Retro task. Reported leaderboard
-metrics come from the current `rlab` checkpoint promotion contract and should not be treated
+metrics come from the current [`rlab`](https://github.com/tsilva/rlab) checkpoint promotion contract and should not be treated
 as cross-environment benchmark results.
 """
     path.write_text(content, encoding="utf-8")
