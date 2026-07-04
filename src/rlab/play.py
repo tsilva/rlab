@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import replace
 from itertools import count
 from types import ModuleType
@@ -113,10 +114,18 @@ def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
     return np.stack([frame[..., 0] for frame in frames], axis=0)[None, ...]
 
 
+def fast_env_image_obs(obs) -> np.ndarray:
+    if isinstance(obs, Mapping):
+        if "image" not in obs:
+            raise ValueError(f"dict fast env obs is missing 'image'; keys={tuple(obs)}")
+        obs = obs["image"]
+    return np.asarray(obs)
+
+
 def fast_env_obs(obs: np.ndarray) -> np.ndarray:
     # Older native envs may expose HWC stacks; post12 exposes CHW stacks.
     # The policy always receives SB3's channel-first batch layout.
-    arr = np.asarray(obs)
+    arr = fast_env_image_obs(obs)
     if arr.ndim == 4 and arr.shape[0] == 1 and arr.shape[-1] == 4:
         return np.transpose(arr, (0, 3, 1, 2))
     if arr.ndim == 4 and arr.shape[0] == 1 and arr.shape[1] == 4:
@@ -129,7 +138,7 @@ def fast_env_obs(obs: np.ndarray) -> np.ndarray:
 
 
 def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
-    arr = np.asarray(obs)
+    arr = fast_env_image_obs(obs)
     if arr.ndim == 4 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.ndim == 3 and arr.shape[-1] == 4:

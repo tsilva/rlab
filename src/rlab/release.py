@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -33,6 +34,24 @@ HUGGINGFACE_OWNER_ENV_KEYS = (
     "HUGGINGFACE_OWNER",
     "HF_OWNER",
 )
+YOUTUBE_METADATA_ACRONYMS = {
+    "ai": "AI",
+    "gb": "GB",
+    "gba": "GBA",
+    "gbc": "GBC",
+    "n64": "N64",
+    "nes": "NES",
+    "ppo": "PPO",
+    "snes": "SNES",
+}
+YOUTUBE_BASE_TAGS = (
+    "reinforcement learning",
+    "deep reinforcement learning",
+    "AI gameplay",
+    "stable-baselines3",
+    "Stable Retro",
+    "rlab",
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,14 @@ class HuggingFaceReleaseConfig:
     @property
     def repo_id(self) -> str:
         return f"{self.owner}/{self.repo}"
+
+
+@dataclass(frozen=True)
+class YouTubeReleaseMetadata:
+    title: str
+    human_description: str
+    details: str
+    tags: tuple[str, ...]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -168,6 +195,107 @@ def goal_eval_episodes(goal: Mapping[str, Any], override: int | None) -> int:
     _provider, eval_config = _section_env(goal.get("eval", {}))
     value = eval_config.get("max_episodes", 1)
     return int(value)
+
+
+def _split_camel_words(value: str) -> str:
+    value = re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", value)
+    value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
+    value = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", value)
+    value = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", value)
+    return value
+
+
+def _canonical_display_word(value: str) -> str:
+    normalized = value.lower()
+    if normalized in YOUTUBE_METADATA_ACRONYMS:
+        return YOUTUBE_METADATA_ACRONYMS[normalized]
+    return value[:1].upper() + value[1:]
+
+
+def _humanize_game_id(game: str) -> str:
+    raw = game.split(":", 1)[-1]
+    raw = re.sub(r"-v\d+$", "", raw, flags=re.IGNORECASE)
+    words: list[str] = []
+    for part in re.split(r"[-_.\s]+", raw):
+        part = part.strip()
+        if not part:
+            continue
+        words.extend(_split_camel_words(part).split())
+    return " ".join(_canonical_display_word(word) for word in words) or game
+
+
+def _humanize_task_id(task: str) -> str:
+    value = task.replace("_", " ").replace(".", " ")
+    value = re.sub(r"(?i)\blevel(?=\d)", "Level ", value)
+    value = re.sub(r"(?i)\bworld(?=\d)", "World ", value)
+    value = _split_camel_words(value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return " ".join(_canonical_display_word(word) for word in value.split()) or task
+
+
+def _hashtag(value: str) -> str:
+    compact = "".join(part for part in re.findall(r"[A-Za-z0-9]+", value) if part)
+    return f"#{compact}" if compact else ""
+
+
+def _unique_nonempty(values: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+    return tuple(result)
+
+
+def youtube_release_metadata(
+    *,
+    game: str,
+    level: str,
+    algorithm: str,
+    completion_rate: float,
+) -> YouTubeReleaseMetadata:
+    game_title = _humanize_game_id(game)
+    level_title = _humanize_task_id(level)
+    algorithm_title = algorithm.upper()
+    win_rate = f"{100.0 * completion_rate:.0f}%"
+    solved = completion_rate >= 0.995
+    title_action = "Solved by" if solved else "Played by"
+    description_action = "completes" if solved else "plays"
+    title = f"{game_title} {level_title} {title_action} {algorithm_title} - {win_rate} Win Rate"
+    human_description = (
+        f"A {algorithm_title} reinforcement learning agent trained with rlab "
+        f"{description_action} {game_title} {level_title} with a {win_rate} "
+        "local eval win rate."
+    )
+    hashtags = _unique_nonempty(
+        (
+            "#ReinforcementLearning",
+            f"#{algorithm_title}",
+            _hashtag(game_title),
+        )
+    )
+    details = " ".join(hashtags)
+    tags = _unique_nonempty(
+        (
+            *YOUTUBE_BASE_TAGS,
+            algorithm_title,
+            game_title,
+            game,
+            level_title,
+            level,
+            f"{game_title} {level_title}",
+        )
+    )
+    return YouTubeReleaseMetadata(
+        title=title,
+        human_description=human_description,
+        details=details,
+        tags=tags,
+    )
 
 
 def best_checkpoint_for_goal(goal_id: str, project: str):
@@ -471,18 +599,27 @@ def upload_to_youtube(
     env_config = goal["train"]["environment"]["env_config"]
     game = str(env_config.get("game", "SuperMarioBros-Nes-v0"))
     level = str(env_config.get("state", goal["goal_id"]))
-    win_rate = f"{100.0 * float(leader.completion_rate):.0f}%"
+    metadata = youtube_release_metadata(
+        game=game,
+        level=level,
+        algorithm="PPO",
+        completion_rate=float(leader.completion_rate),
+    )
     run_command(
         [
             "python3",
             str(script),
             str(video_path),
             "--title",
-            f"{game}, {level}, PPO, {win_rate} win rate",
+            metadata.title,
             "--human-description",
-            f"PPO policy checkpoint completing {game} {level}, trained with `rlab`.",
+            metadata.human_description,
             "--model-page",
             f"Model: https://huggingface.co/{release.repo_id}\nrlab: https://github.com/tsilva/rlab",
+            "--description",
+            metadata.details,
+            "--tags",
+            ",".join(metadata.tags),
             "--playlist-title",
             "rlab",
             "--privacy-status",

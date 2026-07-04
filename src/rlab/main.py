@@ -77,6 +77,12 @@ def _play(argv: Sequence[str]) -> int:
     return _run(play_main, argv, prog="rlab play")
 
 
+def _distill(argv: Sequence[str]) -> int:
+    from rlab.distill import main as distill_main
+
+    return _run(distill_main, argv, prog="rlab distill")
+
+
 def _import_roms(argv: Sequence[str]) -> int:
     from rlab.import_roms import main as import_roms_main
 
@@ -159,6 +165,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
     "monitor": ("print read-only queue and fleet state", _monitor),
     "run-job": ("run one claimed job payload inside a container", _run_job),
+    "distill": ("distill and verify Mario policies from teacher checkpoints", _distill),
 }
 
 

@@ -16,7 +16,7 @@ def make_stub_module(name: str, **attrs) -> types.ModuleType:
     return module
 
 
-def import_release_card_symbols():
+def import_release_module():
     stubs = {
         "rlab.config_validation": make_stub_module(
             "rlab.config_validation",
@@ -68,8 +68,7 @@ def import_release_card_symbols():
     try:
         sys.modules.pop("rlab.release", None)
         sys.modules.update(stubs)
-        module = importlib.import_module("rlab.release")
-        return module.HuggingFaceReleaseConfig, module.write_model_card, module.copy_release_files
+        return importlib.import_module("rlab.release")
     finally:
         for name, module in saved_modules.items():
             if module is None:
@@ -83,6 +82,11 @@ def import_release_card_symbols():
                     setattr(rlab_package, attr, saved_attrs[attr])
                 elif hasattr(rlab_package, attr):
                     delattr(rlab_package, attr)
+
+
+def import_release_card_symbols():
+    module = import_release_module()
+    return module.HuggingFaceReleaseConfig, module.write_model_card, module.copy_release_files
 
 
 class ReleaseModelCardTests(unittest.TestCase):
@@ -227,6 +231,57 @@ class ReleaseModelCardTests(unittest.TestCase):
                 metadata_path.read_text(encoding="utf-8"),
                 '{\n  "filename": "model.zip"\n}\n',
             )
+
+    def test_youtube_metadata_uses_human_generic_game_and_level_names(self) -> None:
+        module = import_release_module()
+
+        mario = module.youtube_release_metadata(
+            game="SuperMarioBros-Nes-v0",
+            level="Level1-2",
+            algorithm="ppo",
+            completion_rate=1.0,
+        )
+
+        self.assertEqual(
+            mario.title,
+            "Super Mario Bros NES Level 1-2 Solved by PPO - 100% Win Rate",
+        )
+        self.assertEqual(
+            mario.human_description,
+            (
+                "A PPO reinforcement learning agent trained with rlab completes "
+                "Super Mario Bros NES Level 1-2 with a 100% local eval win rate."
+            ),
+        )
+        self.assertEqual(
+            mario.details,
+            "#ReinforcementLearning #PPO #SuperMarioBrosNES",
+        )
+        self.assertIn("SuperMarioBros-Nes-v0", mario.tags)
+        self.assertIn("Super Mario Bros NES", mario.tags)
+        self.assertIn("Level1-2", mario.tags)
+        self.assertIn("Level 1-2", mario.tags)
+
+        megaman = module.youtube_release_metadata(
+            game="MegaMan-Nes-v0",
+            level="CutMan",
+            algorithm="ppo",
+            completion_rate=0.87,
+        )
+
+        self.assertEqual(
+            megaman.title,
+            "Mega Man NES Cut Man Played by PPO - 87% Win Rate",
+        )
+        self.assertIn("trained with rlab plays Mega Man NES Cut Man", megaman.human_description)
+        self.assertEqual(
+            megaman.details,
+            "#ReinforcementLearning #PPO #MegaManNES",
+        )
+        self.assertIn("MegaMan-Nes-v0", megaman.tags)
+        self.assertIn("Mega Man NES", megaman.tags)
+        self.assertIn("CutMan", megaman.tags)
+        self.assertIn("Cut Man", megaman.tags)
 
 
 if __name__ == "__main__":

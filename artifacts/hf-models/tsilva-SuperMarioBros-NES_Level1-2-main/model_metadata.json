@@ -1,0 +1,326 @@
+{
+  "artifact_storage_uri": "s3://wandb/rlab/SuperMarioBros-Nes-v0/b272-l12-b55-transfer-s6-20260703T171021Z/checkpoint/ppo_supermariobros-nes-v0_4500000_steps.zip",
+  "canonical_checkpoint_filename": "model.zip",
+  "checkpoint_step": 4500000,
+  "env_config": {
+    "action_set": "simple",
+    "clip_rewards": false,
+    "completion_reward": 0.0,
+    "death_penalty": 25.0,
+    "done_on_events": [
+      "life_loss",
+      "level_change"
+    ],
+    "env_provider": "supermariobrosnes-turbo",
+    "env_threads": 4,
+    "env_wrappers": [
+      {
+        "id": "SuperMarioBrosNesProgressInfoWrapper",
+        "kwargs": {}
+      },
+      {
+        "id": "SuperMarioBrosNesRewardEnvWrapper",
+        "kwargs": {
+          "completion_reward": 0.0,
+          "death_penalty": 25.0,
+          "progress_reward_scale": 1.0,
+          "reward_mode": "score",
+          "reward_scale": 10.0,
+          "score_progress_clipped": false,
+          "terminal_reward": 50.0
+        }
+      }
+    ],
+    "frame_skip": 4,
+    "game": "SuperMarioBros-Nes-v0",
+    "hud_crop_top": 32,
+    "info_events": {},
+    "max_episode_steps": 4500,
+    "max_pool_frames": false,
+    "no_progress_min_delta": 0,
+    "no_progress_timeout_steps": 0,
+    "obs_resize_algorithm": "area",
+    "observation_size": 84,
+    "progress_reward_cap": 30.0,
+    "progress_reward_scale": 1.0,
+    "reward_mode": "score",
+    "reward_scale": 10.0,
+    "score_progress_clipped": false,
+    "state": "Level1-2",
+    "state_distribution": [],
+    "state_probs": [],
+    "state_sampling_mode": "single",
+    "states": [],
+    "sticky_action_prob": 0.0,
+    "task_conditioning": false,
+    "task_conditioning_info_values": [],
+    "task_conditioning_info_vars": [],
+    "terminal_reward": 50.0,
+    "time_penalty": 0.0,
+    "use_retro_reward": false
+  },
+  "environment": {
+    "action": {
+      "action_set": "simple"
+    },
+    "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
+    "preprocessing": {
+      "frame_skip": 4,
+      "frame_stack": 4,
+      "max_pool_frames": false,
+      "maxpool_last_two": false,
+      "obs_copy": "safe_view",
+      "obs_crop": [
+        32,
+        0,
+        0,
+        0
+      ],
+      "obs_grayscale": true,
+      "obs_resize": [
+        84,
+        84
+      ],
+      "obs_resize_algorithm": "area",
+      "pipeline": "supermariobrosnes_turbo_native_vec_env",
+      "policy_observation_layout": "channel_first",
+      "sticky_action_prob": 0.0
+    },
+    "reward": {
+      "clip_rewards": false,
+      "completion_reward": 0.0,
+      "death_penalty": 25.0,
+      "env_wrappers": [
+        {
+          "id": "SuperMarioBrosNesProgressInfoWrapper",
+          "kwargs": {}
+        },
+        {
+          "id": "SuperMarioBrosNesRewardEnvWrapper",
+          "kwargs": {
+            "completion_reward": 0.0,
+            "death_penalty": 25.0,
+            "progress_reward_scale": 1.0,
+            "reward_mode": "score",
+            "reward_scale": 10.0,
+            "score_progress_clipped": false,
+            "terminal_reward": 50.0
+          }
+        }
+      ],
+      "progress_reward_cap": 30.0,
+      "progress_reward_scale": 1.0,
+      "reward_mode": "score",
+      "reward_scale": 10.0,
+      "score_progress_clipped": false,
+      "terminal_reward": 50.0,
+      "time_penalty": 0.0,
+      "use_retro_reward": false
+    },
+    "schema_version": 1,
+    "state": "Level1-2",
+    "state_probs": [],
+    "states": [],
+    "task_conditioning": {
+      "task_conditioning": false,
+      "task_conditioning_info_values": [],
+      "task_conditioning_info_vars": []
+    },
+    "termination": {
+      "done_on_events": [
+        "life_loss",
+        "level_change"
+      ],
+      "info_events": {},
+      "max_episode_steps": 4500,
+      "no_progress_min_delta": 0,
+      "no_progress_timeout_steps": 0
+    }
+  },
+  "environment_hash": "sha256:24189df154a9b4e09521a674eb4147577412ef49d6652ec4683b523ed33a93a2",
+  "filename": "model.zip",
+  "goal_slug": "Level1-2",
+  "kind": "checkpoint",
+  "metadata_version": 2,
+  "publish_note": "Selected by seed-6 training peak, then freshly evaluated during publication staging.",
+  "queue_train_job_id": 338,
+  "run_description": "Seed 6 runs the Level1-2 transfer of the successful Level1-1 B55 low-KL late-decay recipe, created to test whether that policy recipe transfers without changing PPO or reward hyperparameters while overriding only Level1-2 identity and reporting metadata.",
+  "run_name": "b272-l12-b55-transfer-s6-20260703T171021Z",
+  "source_checkpoint_filename": "ppo_supermariobros-nes-v0_4500000_steps.zip",
+  "spec_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-2/specs/base.yaml",
+  "spec_slug": "b55-lowkl-lrdecay-transfer",
+  "training_metadata": {
+    "env_config": {
+      "action_set": "simple",
+      "clip_rewards": false,
+      "completion_reward": 0.0,
+      "death_penalty": 25.0,
+      "done_on_events": [
+        "life_loss",
+        "level_change"
+      ],
+      "env_provider": "supermariobrosnes-turbo",
+      "env_threads": 4,
+      "env_wrappers": [
+        {
+          "id": "SuperMarioBrosNesProgressInfoWrapper",
+          "kwargs": {}
+        },
+        {
+          "id": "SuperMarioBrosNesRewardEnvWrapper",
+          "kwargs": {
+            "completion_reward": 0.0,
+            "death_penalty": 25.0,
+            "progress_reward_scale": 1.0,
+            "reward_mode": "score",
+            "reward_scale": 10.0,
+            "score_progress_clipped": false,
+            "terminal_reward": 50.0
+          }
+        }
+      ],
+      "frame_skip": 4,
+      "game": "SuperMarioBros-Nes-v0",
+      "hud_crop_top": 32,
+      "info_events": {},
+      "max_episode_steps": 4500,
+      "max_pool_frames": false,
+      "no_progress_min_delta": 0,
+      "no_progress_timeout_steps": 0,
+      "obs_resize_algorithm": "area",
+      "observation_size": 84,
+      "progress_reward_cap": 30.0,
+      "progress_reward_scale": 1.0,
+      "reward_mode": "score",
+      "reward_scale": 10.0,
+      "score_progress_clipped": false,
+      "state": "Level1-2",
+      "state_distribution": [],
+      "state_probs": [],
+      "state_sampling_mode": "single",
+      "states": [],
+      "sticky_action_prob": 0.0,
+      "task_conditioning": false,
+      "task_conditioning_info_values": [],
+      "task_conditioning_info_vars": [],
+      "terminal_reward": 50.0,
+      "time_penalty": 0.0,
+      "use_retro_reward": false
+    },
+    "environment": {
+      "action": {
+        "action_set": "simple"
+      },
+      "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
+      "preprocessing": {
+        "frame_skip": 4,
+        "frame_stack": 4,
+        "max_pool_frames": false,
+        "maxpool_last_two": false,
+        "obs_copy": "safe_view",
+        "obs_crop": [
+          32,
+          0,
+          0,
+          0
+        ],
+        "obs_grayscale": true,
+        "obs_resize": [
+          84,
+          84
+        ],
+        "obs_resize_algorithm": "area",
+        "pipeline": "supermariobrosnes_turbo_native_vec_env",
+        "policy_observation_layout": "channel_first",
+        "sticky_action_prob": 0.0
+      },
+      "reward": {
+        "clip_rewards": false,
+        "completion_reward": 0.0,
+        "death_penalty": 25.0,
+        "env_wrappers": [
+          {
+            "id": "SuperMarioBrosNesProgressInfoWrapper",
+            "kwargs": {}
+          },
+          {
+            "id": "SuperMarioBrosNesRewardEnvWrapper",
+            "kwargs": {
+              "completion_reward": 0.0,
+              "death_penalty": 25.0,
+              "progress_reward_scale": 1.0,
+              "reward_mode": "score",
+              "reward_scale": 10.0,
+              "score_progress_clipped": false,
+              "terminal_reward": 50.0
+            }
+          }
+        ],
+        "progress_reward_cap": 30.0,
+        "progress_reward_scale": 1.0,
+        "reward_mode": "score",
+        "reward_scale": 10.0,
+        "score_progress_clipped": false,
+        "terminal_reward": 50.0,
+        "time_penalty": 0.0,
+        "use_retro_reward": false
+      },
+      "schema_version": 1,
+      "state": "Level1-2",
+      "state_probs": [],
+      "states": [],
+      "task_conditioning": {
+        "task_conditioning": false,
+        "task_conditioning_info_values": [],
+        "task_conditioning_info_vars": []
+      },
+      "termination": {
+        "done_on_events": [
+          "life_loss",
+          "level_change"
+        ],
+        "info_events": {},
+        "max_episode_steps": 4500,
+        "no_progress_min_delta": 0,
+        "no_progress_timeout_steps": 0
+      }
+    },
+    "environment_hash": "sha256:24189df154a9b4e09521a674eb4147577412ef49d6652ec4683b523ed33a93a2",
+    "preprocessing": {
+      "frame_skip": 4,
+      "frame_stack": 4,
+      "maxpool_last_two": false,
+      "obs_copy": "safe_view",
+      "obs_crop": [
+        32,
+        0,
+        0,
+        0
+      ],
+      "obs_grayscale": true,
+      "obs_resize": [
+        84,
+        84
+      ],
+      "obs_resize_algorithm": "area",
+      "pipeline": "supermariobrosnes_turbo_native_vec_env",
+      "policy_observation_layout": "channel_first",
+      "sticky_action_prob": 0.0
+    },
+    "versions": {
+      "stable_baselines3": "2.8.0",
+      "stable_retro_turbo": "1.0.1.post3",
+      "supermariobrosnes_turbo": "0.2.4"
+    }
+  },
+  "training_metadata_hash": "c1f5422dc94d0d47e295005c98377b6832bd503ffa9de1e012cc84eaac8bd13a",
+  "training_peak": {
+    "first_step": 4741488,
+    "last_step": 4745680,
+    "metric": "train/info/level_complete/rate/min/last",
+    "nearest_uploaded_checkpoint_step": 4500000,
+    "value": 0.98
+  },
+  "wandb_run_id": "jxagl23z",
+  "wandb_run_path": "tsilva/SuperMarioBros-NES/jxagl23z"
+}

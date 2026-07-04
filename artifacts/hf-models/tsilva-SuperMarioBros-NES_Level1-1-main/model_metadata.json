@@ -1,0 +1,76 @@
+{
+  "checkpoint_file": "ppo_supermariobros-nes-v0_4500000_steps.zip",
+  "checkpoint_sha256": "75eb50015295f887c7faae7dbbb80b9a024052581c443fbc0ce5b72e0be47f11",
+  "checkpoint_size_bytes": 21054428,
+  "env_config": {
+    "action_set": "simple",
+    "env_provider": "stable-retro-turbo",
+    "frame_skip": 4,
+    "game": "SuperMarioBros-Nes-v0",
+    "hud_crop_top": 32,
+    "max_episode_steps": 2500,
+    "max_pool_frames": true,
+    "obs_resize_algorithm": "area",
+    "observation_size": 84,
+    "reward_mode": "score",
+    "state": "Level1-1",
+    "sticky_action_prob": 0.0
+  },
+  "environment": {
+    "action_set": "simple",
+    "completion_x_threshold": 3160,
+    "frame_skip": 4,
+    "frame_stack": 4,
+    "game": "SuperMarioBros-Nes-v0",
+    "hud_crop_top": 32,
+    "max_pool_frames": true,
+    "observation_size": 84,
+    "reward_mode": "score",
+    "state": "Level1-1",
+    "terminate_on_completion": true,
+    "terminate_on_life_loss": true
+  },
+  "eval": {
+    "completion_count": 100,
+    "completion_rate": 1.0,
+    "death_count": 0,
+    "deterministic": false,
+    "episodes": 100,
+    "max_x_max": 6264,
+    "profile": "mario_level1_v1",
+    "reward_mean": 3398.5530015126615,
+    "seed_start": 10007,
+    "sticky_actions": false
+  },
+  "filename": "model.zip",
+  "format": "stable-baselines3 PPO zip",
+  "model_name": "SuperMarioBros-NES_Level1-1",
+  "repo_id": "tsilva/SuperMarioBros-NES_Level1-1",
+  "source_repo": "https://github.com/tsilva/sandbox-sb3",
+  "training": {
+    "batch_size": 512,
+    "clip_range": 0.15,
+    "ent_coef_final": 0.0003,
+    "ent_coef_schedule_timesteps": 2000000,
+    "ent_coef_start": 0.01,
+    "gae_lambda": 1.0,
+    "gamma": 0.9,
+    "learning_rate": 0.00015,
+    "n_envs": 16,
+    "n_epochs": 10,
+    "n_steps": 512,
+    "seed": 23,
+    "target_kl": 0.12
+  },
+  "wandb": {
+    "artifact_aliases": [
+      "step-4500000"
+    ],
+    "artifact_ref": "tsilva/SuperMarioBros-NES/b31_post12_loosekl_5m_stop100ep100_clip015_targetkl012_clippeddx_seed23_20260618_192135-checkpoint:v44",
+    "checkpoint_step": 4500000,
+    "project": "tsilva/SuperMarioBros-NES",
+    "run_id": "9j4r2h3g",
+    "run_name": "b31_post12_loosekl_5m_stop100ep100_clip015_targetkl012_clippeddx_seed23_20260618_192135",
+    "run_url": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/9j4r2h3g"
+  }
+}
