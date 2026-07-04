@@ -3715,6 +3715,75 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(run.summary["leader/checkpoint/reward_mean"], 10.0)
         self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
 
+    def test_post_train_checkpoint_summary_handles_wandb_summary_without_pop(self) -> None:
+        class WandbLikeSummary:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {
+                    "leader/checkpoint/steps_to_completion_goal": 500000,
+                }
+
+            def get(self, key: str, default: object = None) -> object:
+                return self.values.get(key, default)
+
+            def __getitem__(self, key: str) -> object:
+                return self.values[key]
+
+            def __setitem__(self, key: str, value: object) -> None:
+                self.values[key] = value
+
+            def __delitem__(self, key: str) -> None:
+                del self.values[key]
+
+            def __contains__(self, key: str) -> bool:
+                return key in self.values
+
+            def __getattr__(self, key: str) -> object:
+                raise KeyError(key)
+
+        class FakeRun:
+            def __init__(self) -> None:
+                self.payload: dict[str, object] | None = None
+                self.kwargs: dict[str, object] | None = None
+                self.summary = WandbLikeSummary()
+
+            def log(self, payload: dict[str, object], **kwargs: object) -> None:
+                self.payload = payload
+                self.kwargs = kwargs
+
+        run = FakeRun()
+        metrics = {
+            "checkpoint_step": 120000,
+            "checkpoint_artifact": "entity/project/run-checkpoint:step-120000",
+            "reward_mean": 10.0,
+            "reward_std": 1.0,
+            "reward_max": 12.0,
+            "max_x_mean": 300.0,
+            "max_x_max": 400.0,
+            "max_level_x_mean": 300.0,
+            "max_level_x_max": 400.0,
+            "death_count": 1,
+            "death_rate": 0.1,
+            "best_episode": {"reward": 12.0, "max_x_pos": 400.0},
+            "eval/done/all": 10,
+            "eval/done/level_change": 9,
+            "eval/done/level_change/rate": 0.9,
+            "eval/done/level_change/from_rate/min": 0.8,
+            "eval/done/level_change/from_rate/mean": 0.9,
+            "eval/reward/mean": 10.0,
+        }
+
+        log_checkpoint_eval_metrics(
+            wandb_run=run,
+            args=argparse.Namespace(hud_crop_top=32),
+            metrics=metrics,
+            checkpoint_path=Path("/tmp/model_120000_steps.zip"),
+            checkpoint_step_value=120000,
+            artifact_ref="entity/project/run-checkpoint:step-120000",
+        )
+
+        self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+
     def test_post_train_checkpoint_summary_tracks_steps_to_completion_goal(self) -> None:
         class FakeRun:
             def __init__(self) -> None:

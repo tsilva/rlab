@@ -232,6 +232,12 @@ def update_best_checkpoint_summary(
     if wandb_run is None:
         return
 
+    def remove_summary_key(key: str) -> None:
+        try:
+            del wandb_run.summary[key]
+        except (AttributeError, KeyError):
+            pass
+
     def summary_float(key: str) -> float:
         try:
             value = wandb_run.summary.get(key)
@@ -271,8 +277,8 @@ def update_best_checkpoint_summary(
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
     if score[2] > float("-inf"):
         wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL] = checkpoint_step_value
-    elif hasattr(wandb_run.summary, "pop"):
-        wandb_run.summary.pop(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL, None)
+    else:
+        remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
     wandb_run.summary[LEADER_CHECKPOINT_ARTIFACT_REF] = artifact_ref
     wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
     wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = "post_train_inline"
