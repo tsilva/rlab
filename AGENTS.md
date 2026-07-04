@@ -9,7 +9,7 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
-- Current forward runtime is `stable-retro-turbo==1.0.1.post4`.
+- Current forward runtime is `stable-retro-turbo==1.0.1.post5`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime pin source of truth: `pyproject.toml` and `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.
@@ -46,4 +46,4 @@ When the user gives a game plus target and asks Codex to find a reproducible mod
 ## Dependencies
 
 Use `uv` for dependency resolution and keep `uv.lock` committed. Preserve Python supply-chain hardening in `pyproject.toml`.
-The intentional exceptions to the seven-day `exclude-newer` window are `stable-retro-turbo` and `supermariobrosnes-turbo`, because this project pins the current forward Stable Retro and Mario runtimes. Keep the per-package cutoffs in `[tool.uv.exclude-newer-package]`, `uv-tool.toml`, and the user-level uv config in sync so `uv tool install . --editable` remains installable without extra flags.
+The intentional exceptions to the seven-day `exclude-newer` window are `stable-retro-turbo` and `supermariobrosnes-turbo`, because this project tracks current forward Stable Retro and Mario runtimes while keeping the rest of the dependency graph age-gated. Keep the per-package cutoffs in `[tool.uv.exclude-newer-package]`, `uv-tool.toml`, and the user-level uv config in sync so `uv tool install . --editable` remains installable without extra flags.
