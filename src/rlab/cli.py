@@ -54,6 +54,7 @@ TRAIN_VALUE_OPTIONS = {
     "observation_size": "--observation-size",
     "hud_crop_top": "--hud-crop-top",
     "obs_crop": "--obs-crop",
+    "obs_resize_algorithm": "--obs-resize-algorithm",
     "checkpoint_freq": "--checkpoint-freq",
     "post_train_eval_episodes": "--post-train-eval-episodes",
     "post_train_eval_n_envs": "--post-train-eval-n-envs",
@@ -389,6 +390,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_obs_crop,
         default=parser_defaults_env.obs_crop,
         help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
+    )
+    parser.add_argument(
+        "--obs-resize-algorithm",
+        default=parser_defaults_env.obs_resize_algorithm,
+        help="Resize algorithm for native frame preprocessing.",
     )
     parser.add_argument("--checkpoint-freq", type=int, default=500_000)
     parser.add_argument(

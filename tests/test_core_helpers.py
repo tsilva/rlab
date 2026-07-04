@@ -533,6 +533,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                         "state": "Level1-2",
                         "timesteps": 1024,
                         "states": ["Level1-1", "Level1-2"],
+                        "obs_resize_algorithm": "area",
                         "wandb_tags": ["from-json", "config-file"],
                     },
                 )
@@ -553,6 +554,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.state, "Level1-2")
         self.assertEqual(args.timesteps, 2048)
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
+        self.assertEqual(args.obs_resize_algorithm, "area")
         self.assertEqual(args.wandb_tags, "from-json,config-file")
 
     def test_train_config_json_accepts_env_wrappers(self) -> None:
@@ -706,6 +708,12 @@ class EnvConfigFromArgsTests(unittest.TestCase):
 
         self.assertIn("--obs-crop", command)
         self.assertIn("0,0,32,0", command)
+
+    def test_build_train_command_includes_obs_resize_algorithm(self) -> None:
+        command = build_train_command({"obs_resize_algorithm": "area"})
+
+        self.assertIn("--obs-resize-algorithm", command)
+        self.assertIn("area", command)
 
     def test_training_loop_eval_settings_are_not_train_options(self) -> None:
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
