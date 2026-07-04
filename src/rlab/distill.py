@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from stable_baselines3 import PPO
 
@@ -193,6 +194,73 @@ def concatenate_datasets(datasets: Sequence[dict[str, np.ndarray]]) -> dict[str,
     }
 
 
+def _copy_teacher_module(
+    student_state: dict[str, torch.Tensor],
+    teacher_state: dict[str, torch.Tensor],
+    *,
+    student_prefix: str,
+    teacher_prefix: str,
+) -> None:
+    for suffix in (
+        "cnn.0.weight",
+        "cnn.0.bias",
+        "cnn.2.weight",
+        "cnn.2.bias",
+        "cnn.4.weight",
+        "cnn.4.bias",
+        "linear.0.weight",
+        "linear.0.bias",
+    ):
+        student_state[f"{student_prefix}.{suffix}"] = teacher_state[f"{teacher_prefix}.{suffix}"].clone()
+
+
+def initialize_student_from_teacher(student: PPO, teacher: PPO) -> None:
+    student_state = student.policy.state_dict()
+    teacher_state = teacher.policy.state_dict()
+    feature_dim = teacher_state["action_net.weight"].shape[1]
+    for teacher_prefix, student_prefix in (
+        ("features_extractor", "features_extractor.extractors.image"),
+        ("pi_features_extractor", "pi_features_extractor.extractors.image"),
+        ("vf_features_extractor", "vf_features_extractor.extractors.image"),
+    ):
+        _copy_teacher_module(
+            student_state,
+            teacher_state,
+            student_prefix=student_prefix,
+            teacher_prefix=teacher_prefix,
+        )
+    for branch in ("policy_net", "value_net"):
+        for key in sorted(student_state):
+            prefix = f"mlp_extractor.{branch}."
+            if not key.startswith(prefix) or not key.endswith(".weight"):
+                continue
+            layer_idx = key[len(prefix) : -len(".weight")]
+            if not layer_idx.isdigit():
+                continue
+            weight_key = key
+            bias_key = f"mlp_extractor.{branch}.{layer_idx}.bias"
+            weight = student_state[weight_key]
+            bias = student_state[bias_key]
+            if int(weight.shape[0]) != feature_dim:
+                raise ValueError(
+                    f"teacher initialization needs {branch} layer {layer_idx} output dim "
+                    f"{feature_dim}, got {tuple(weight.shape)}",
+                )
+            weight.zero_()
+            bias.zero_()
+            input_dim = min(int(weight.shape[1]), feature_dim)
+            weight[:input_dim, :input_dim] = torch.eye(
+                input_dim,
+                dtype=weight.dtype,
+                device=weight.device,
+            )
+    student_state["action_net.weight"] = teacher_state["action_net.weight"].clone()
+    student_state["action_net.bias"] = teacher_state["action_net.bias"].clone()
+    student_state["value_net.weight"] = teacher_state["value_net.weight"].clone()
+    student_state["value_net.bias"] = teacher_state["value_net.bias"].clone()
+    student.policy.load_state_dict(student_state)
+
+
 def train_student(
     *,
     dataset: dict[str, np.ndarray],
@@ -204,6 +272,9 @@ def train_student(
     seed: int,
     device: str,
     net_arch: Sequence[int],
+    init_teacher: PPO | None = None,
+    freeze_image_features: bool = False,
+    action_logit_scale: float = 1.0,
 ) -> dict[str, Any]:
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
@@ -221,12 +292,26 @@ def train_student(
             ent_coef=0.0,
             vf_coef=0.0,
             normalize_advantage=False,
-            policy_kwargs={"net_arch": {"pi": list(net_arch), "vf": list(net_arch)}},
+            policy_kwargs={
+                "activation_fn": nn.ReLU,
+                "features_extractor_kwargs": {"cnn_output_dim": 512},
+                "net_arch": {"pi": list(net_arch), "vf": list(net_arch)},
+            },
             device=resolve_sb3_device(device),
             seed=seed,
             verbose=0,
         )
-        optimizer = torch.optim.Adam(model.policy.parameters(), lr=learning_rate, eps=1e-8)
+        if init_teacher is not None:
+            initialize_student_from_teacher(model, init_teacher)
+        if freeze_image_features:
+            for name, parameter in model.policy.named_parameters():
+                if "features_extractor" in name and ".extractors.image." in name:
+                    parameter.requires_grad = False
+        optimizer = torch.optim.Adam(
+            (parameter for parameter in model.policy.parameters() if parameter.requires_grad),
+            lr=learning_rate,
+            eps=1e-8,
+        )
         sample_count = int(dataset["action"].shape[0])
         losses: list[float] = []
         accuracies: list[float] = []
@@ -254,6 +339,12 @@ def train_student(
                     pred = torch.argmax(distribution.logits, dim=1)
                     accuracies.append(float((pred == action_tensor).float().mean().item()))
                     losses.append(float(loss.item()))
+        if action_logit_scale <= 0.0:
+            raise ValueError("--action-logit-scale must be > 0")
+        if action_logit_scale != 1.0:
+            with torch.no_grad():
+                model.policy.action_net.weight.mul_(action_logit_scale)
+                model.policy.action_net.bias.mul_(action_logit_scale)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         model.save(output_path)
         args = argparse.Namespace(
@@ -276,6 +367,8 @@ def train_student(
         "batch_size": batch_size,
         "loss": float(np.mean(losses[-10:])) if losses else None,
         "accuracy": float(np.mean(accuracies[-10:])) if accuracies else None,
+        "action_logit_scale": action_logit_scale,
+        "freeze_image_features": freeze_image_features,
         "model": str(output_path),
     }
 
@@ -300,12 +393,14 @@ def run_sequence_episode(
         died = False
         terminated = False
         for step in range(1, max_steps + 1):
-            if isinstance(obs, dict):
+            observation_spaces = getattr(model.observation_space, "spaces", None)
+            if isinstance(obs, dict) and isinstance(observation_spaces, dict):
                 model_obs = obs
             else:
+                image_obs = obs["image"] if isinstance(obs, dict) else obs
                 model_obs = model_observation(
                     model,
-                    np.asarray(obs),
+                    np.asarray(image_obs),
                     config,
                     active_info_value=active_info_value,
                 )
@@ -359,6 +454,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     datasets: list[dict[str, np.ndarray]] = []
     collection_summaries: list[dict[str, Any]] = []
     teacher_paths: dict[str, str] = {}
+    teacher_models: dict[str, PPO] = {}
     for idx, (state, ref) in enumerate(teachers):
         teacher, model_path, config = resolve_model_ref(
             ref,
@@ -378,7 +474,14 @@ def cmd_train(args: argparse.Namespace) -> int:
         datasets.append(dataset)
         collection_summaries.append(summary)
         teacher_paths[state] = str(model_path)
+        teacher_models[state] = teacher
         print(json.dumps(summary, sort_keys=True), flush=True)
+    init_teacher = None
+    if args.init_from_teacher:
+        init_teacher = teacher_models.get(args.init_from_teacher)
+        if init_teacher is None:
+            choices = ", ".join(sorted(teacher_models))
+            raise SystemExit(f"--init-from-teacher must match one of: {choices}")
     dataset = concatenate_datasets(datasets)
     started_at = time.perf_counter()
     train_summary = train_student(
@@ -391,11 +494,15 @@ def cmd_train(args: argparse.Namespace) -> int:
         seed=args.seed,
         device=args.device,
         net_arch=tuple(args.net_arch),
+        init_teacher=init_teacher,
+        freeze_image_features=args.freeze_image_features,
+        action_logit_scale=args.action_logit_scale,
     )
     summary = {
         "kind": "distill_train",
         "elapsed_seconds": time.perf_counter() - started_at,
         "teachers": teacher_paths,
+        "init_from_teacher": args.init_from_teacher or None,
         "collection": collection_summaries,
         "train": train_summary,
     }
@@ -450,6 +557,9 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int, default=123)
     train.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
     train.add_argument("--net-arch", type=int, nargs="+", default=[512, 512])
+    train.add_argument("--init-from-teacher", choices=DEFAULT_STATES)
+    train.add_argument("--freeze-image-features", action="store_true")
+    train.add_argument("--action-logit-scale", type=float, default=1.0)
     train.add_argument("--deterministic-teacher", action=argparse.BooleanOptionalAction, default=True)
     train.set_defaults(func=cmd_train)
 
