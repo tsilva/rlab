@@ -730,7 +730,7 @@ def validate_fleet_and_capacity(repo_root: Path) -> None:
         _require_non_empty_string(lane, "name", label=label)
         _require_non_empty_string(lane, "target", label=label)
         _require_non_empty_string(lane, "manager", label=label)
-        _require_int(lane, "max_runner_workers", label=label, minimum=1)
+        _require_int(lane, "max_train_containers", label=label, minimum=1)
         _require_int(lane, "env_threads", label=label, minimum=1)
         _require_string_list(lane, "use_for", label=label)
 

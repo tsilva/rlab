@@ -316,6 +316,7 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
 
 def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     recipe_file = str(profile["recipe_file"])
+    host = str(profile["host"])
     commands = [
         _command(
             "enqueue-train",
@@ -330,8 +331,33 @@ def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                 str(profile["runtime_image_ref_file"]),
             ],
         ),
-        _command("fleet-plan", [sys.executable, "-m", "rlab.main", "fleet", "plan"]),
-        _command("fleet-reconcile", [sys.executable, "-m", "rlab.main", "fleet", "reconcile"]),
+        _command(
+            "fleet-reconcile",
+            [
+                sys.executable,
+                "-m",
+                "rlab.main",
+                "fleet",
+                "reconcile",
+                "--machine",
+                host,
+                "--dry-run",
+            ],
+        ),
+        _command(
+            "fleet-watch",
+            [
+                sys.executable,
+                "-m",
+                "rlab.main",
+                "fleet",
+                "watch",
+                "--machine",
+                host,
+                "--once",
+                "--no-tui",
+            ],
+        ),
     ]
     return commands
 

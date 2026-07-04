@@ -94,8 +94,14 @@ gates: {}
         commands = build_benchmark_commands(profile)
 
         self.assertEqual(commands[0].argv[1:4], ("-m", "rlab.main", "train"))
-        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "plan"))
-        self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
+        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
+        self.assertIn("--machine", commands[1].argv)
+        self.assertIn("--dry-run", commands[1].argv)
+        self.assertIn("beast-3", commands[1].argv)
+        self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "watch"))
+        self.assertIn("--machine", commands[2].argv)
+        self.assertIn("--once", commands[2].argv)
+        self.assertIn("--no-tui", commands[2].argv)
 
     def test_fleet_capacity_rejects_legacy_spec_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

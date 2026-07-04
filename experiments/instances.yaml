@@ -18,9 +18,9 @@ instances:
     - 3
     - 4
     notes:
-    - Mac-side rlab fleet manages Docker runner containers on this host.
-    - Use 5 workers with env_threads=4 for screening queues.
-    - Use 3-4 workers with env_threads=4 when individual latency or lower contention matters.
+    - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
+    - Use 5 train containers with env_threads=4 for screening queues.
+    - Use 3-4 train containers with env_threads=4 when individual latency or lower contention matters.
   rtx2060:
     aliases:
     - beast-2
@@ -38,7 +38,7 @@ instances:
     fast_turnaround_workers: 2
     fast_turnaround_env_threads: 4
     notes:
-    - Mac-side rlab fleet manages Docker runner containers on this host.
+    - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
     - Use ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26 until hostname resolution is restored.
     - The local-8332822-dirty image tag is a legacy k3s/containerd artifact; use pushed immutable GHCR digest refs for Docker fleet jobs.
   local-macbook:

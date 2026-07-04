@@ -1,26 +1,27 @@
 # GPU Instances
 
-This repo currently supports local Docker fleet runners only. Training jobs are
-created in the queue DB with `rlab jobs`; Mac-side `rlab fleet` reconciles
-Docker containers on `beast-3` and `beast-2` over SSH. Do not use provider
-launchers for this project while the beast path is being hardened.
+This repo currently supports local one-job Docker containers only. Training jobs
+are created in the queue DB with `rlab train`; Mac-side `rlab fleet shepherd`
+claims queued jobs and reconciles Docker containers on `beast-3` and `beast-2`
+over SSH. Do not use provider launchers for this project while the beast path is
+being hardened.
 
 ## Quick Choice
 
 | Use case | Target | Shape |
 | --- | --- | --- |
-| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 5 runner workers, `env_threads=4` |
-| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 runner workers, `env_threads=4` |
-| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 runner workers, `env_threads=2` |
-| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 runner workers, `env_threads=4` |
+| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 5 train containers, `env_threads=4` |
+| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 train containers, `env_threads=4` |
+| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 train containers, `env_threads=2` |
+| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers, `env_threads=4` |
 | Smoke, debugging, playback | `local-macbook` | direct local CLI |
 
 Machine-readable target defaults live in `experiments/instances.yaml`; these
 use `default_workers` and `hardware_max_workers` for descriptive capacity.
 Concrete beast host operation lives in `experiments/machines.yaml`: backend,
 SSH/Docker access, payload/output paths, env file, mounts, enforced
-`max_parallel_containers` slot caps, and profile host routing. Scheduling lanes
-and policy checks live in `experiments/policies/capacity_policy.yaml`.
+`max_parallel_containers` slot caps, and host runtime paths. Scheduling lanes and
+policy checks live in `experiments/policies/capacity_policy.yaml`.
 
 ## Standard Workflow
 
@@ -38,12 +39,11 @@ Inspect and reconcile local capacity from the MacBook:
 UV_CACHE_DIR=.uv-cache uv run rlab fleet policy
 UV_CACHE_DIR=.uv-cache uv run rlab fleet status
 UV_CACHE_DIR=.uv-cache uv run rlab fleet ps
-UV_CACHE_DIR=.uv-cache uv run rlab fleet plan
-UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile
-UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
+UV_CACHE_DIR=.uv-cache uv run rlab fleet watch --machine beast-3
+UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd --machine beast-3 --limit 5
 ```
 
-For recoverable one-job-per-container launches:
+For manual recoverable one-job-per-container launches:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run rlab fleet launch \
@@ -75,38 +75,6 @@ containers and currently demanded immutable runtime image digests. `launch-next`
 is the manual one-shot dispatcher, and `reconcile --machine` is the manual
 one-shot repair/finalization command.
 
-For managed runner reconciliation, a long-running local loop is:
-
-```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile --watch --interval 30
-```
-
-For a live terminal dashboard that keeps each reachable beast host on the latest
-successful train image and removes idle old managed containers:
-
-```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet watch
-```
-
-After publishing a new train image, roll active hosts to the latest successful
-digest:
-
-```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-latest
-```
-
-To warm a host even before matching queue demand:
-
-```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet ensure-runner \
-  --host beast-3 \
-  --image latest
-```
-
-Use `--profile <profile-id>` only for an intentionally profile-locked lane.
-Default train jobs and runners should be profileless and locked by immutable
-`runtime_image_ref` plus optional `run_target`.
-
 ## Host Setup
 
 Bootstrap each host after OS/Docker changes or when validating a new runtime
@@ -134,7 +102,7 @@ queue service and do not schedule experiments.
 - Fleet role: primary screening and confirmation host.
 - Enforced host capacity: `max_parallel_containers=5` in
   `experiments/machines.yaml`.
-- Default operating shape: 5 runner workers.
+- Default operating shape: 5 train containers.
 - Default runtime shape: `env_threads=4`, `torch_num_threads=1`.
 - Lower-contention shape: 3-4 workers with `env_threads=4`.
 - Current benchmark expectation: about 6200 aggregate wall FPS for the current
@@ -155,7 +123,7 @@ intentionally testing small-GPU behavior.
 - Fleet role: cheaper small ablations, smoke jobs, and RTX2060-specific checks.
 - Enforced host capacity: `max_parallel_containers=4` in
   `experiments/machines.yaml`.
-- Default operating shape: 4 runner workers.
+- Default operating shape: 4 train containers.
 - Default runtime shape: `env_threads=2`, `torch_num_threads=1`.
 - Fast-turnaround shape: 2 workers with `env_threads=4`.
 - Docker command: configured in `experiments/machines.yaml`; currently

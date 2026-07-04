@@ -1,7 +1,7 @@
 schema_version: 1
 name: fleet-capacity-rtx4090
 kind: fleet_capacity
-description: Queue-backed Beast3 capacity check for the standard five-worker RTX4090 shape.
+description: Queue-backed Beast3 capacity check for the standard five-container RTX4090 shape.
 target: rtx4090
 host: beast-3
 workers: 5

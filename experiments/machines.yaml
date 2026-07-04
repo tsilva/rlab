@@ -48,8 +48,3 @@ machines:
       container_payloads_dir: /input/payloads
       container_outputs_dir: /output
       container_roms_dir: /roms
-profile_policies:
-- profile_id: '*'
-  hosts:
-  - beast-3
-  - beast-2

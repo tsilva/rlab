@@ -4,7 +4,7 @@
   **Reinforcement-learning workbench for training game agents**
 </div>
 
-rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed GPU runners, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
+rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed one-job GPU containers, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
 
 The normal workflow is to install the CLI once with `uv tool install .`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
 
@@ -92,9 +92,8 @@ rlab leaders checkpoints --goal <goal-slug>
 rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
 rlab jobs cancel-train <train_job_id>
 rlab fleet policy
-rlab fleet plan
-rlab fleet reconcile
-rlab fleet watch
+rlab fleet shepherd --machine beast-3
+rlab fleet watch --machine beast-3
 rlab monitor --view all
 rlab benchmark list
 rlab benchmark run retro-env-throughput-mario-l11 --dry-run
@@ -106,7 +105,7 @@ The command surface is intentionally one binary:
 - `rlab train local` runs direct local training.
 - `rlab eval` runs local evaluation; queued train jobs evaluate their checkpoints inline after training.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
-- `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and runner fleet.
+- `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and one-job container fleet.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
@@ -138,15 +137,15 @@ UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06
 
 ## Fleet
 
-Queue-backed training is the supported GPU workflow. `rlab train` creates train jobs, and `rlab fleet` reconciles digest-pinned Docker runner containers on the configured beast hosts.
+Queue-backed training is the supported GPU workflow. `rlab train` creates train jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned one-job Docker containers on the configured beast hosts.
 
 ```bash
 rlab fleet status
 rlab fleet ps
-rlab fleet plan
-rlab fleet reconcile
-rlab fleet reconcile --watch --interval 30
-rlab fleet watch
+rlab fleet launch-next --machine beast-3 --limit 5
+rlab fleet reconcile --machine beast-3
+rlab fleet shepherd --machine beast-3 --limit 5
+rlab fleet watch --machine beast-3
 ```
 
 Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.

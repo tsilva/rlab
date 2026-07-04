@@ -297,7 +297,7 @@ class FleetQueueTests(unittest.TestCase):
                         "name": "rtx4090-screening",
                         "target": "rtx4090",
                         "manager": "rlab-fleet",
-                        "max_runner_workers": 5,
+                        "max_train_containers": 5,
                         "env_threads": 4,
                     }
                 ],
@@ -307,7 +307,7 @@ class FleetQueueTests(unittest.TestCase):
 
         self.assertIn("capacity_policy schema=1", text)
         self.assertIn("rtx4090-screening target=rtx4090", text)
-        self.assertIn("max_runner_workers=5", text)
+        self.assertIn("max_train_containers=5", text)
         self.assertIn("promote by eval", text)
 
     def test_capacity_policy_rejects_lane_above_host_cap(self) -> None:
@@ -315,7 +315,7 @@ class FleetQueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "max_runner_workers=6 exceeds beast-3 max_workers=5",
+            "max_train_containers=6 exceeds beast-3 max_workers=5",
         ):
             fleet.validate_capacity_policy(
                 {
@@ -324,7 +324,7 @@ class FleetQueueTests(unittest.TestCase):
                             "name": "rtx4090-too-wide",
                             "host": "beast-3",
                             "manager": "rlab-fleet",
-                            "max_runner_workers": 6,
+                            "max_train_containers": 6,
                         }
                     ]
                 },
@@ -1097,121 +1097,11 @@ class FleetPlanTests(unittest.TestCase):
         self.assertIn("failed", output)
         self.assertIn("132", output)
 
-    def test_watch_latest_prints_starting_frame_before_first_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = Namespace(
-                repo_root=tmp,
-                execute=False,
-                interval=30,
-                host=None,
-                image="latest",
-                image_file=None,
-                runtime_image_ref=None,
-                runtime_image_ref_file=None,
-                no_color=True,
-                no_tui=True,
-                width=120,
-                once=True,
-                fail_fast=False,
-            )
-            frames = []
-
-            def fake_write_frame(text, *, enabled):
-                frames.append(text)
-
-            with (
-                mock.patch.object(fleet, "write_tui_frame", side_effect=fake_write_frame),
-                mock.patch.object(fleet, "build_latest_watch_snapshot", side_effect=RuntimeError("boom")),
-            ):
-                status = fleet.cmd_watch_latest(args)
-
-        self.assertEqual(status, 1)
-        self.assertGreaterEqual(len(frames), 2)
-        self.assertIn("status=starting", frames[0])
-        self.assertIn("polling now", frames[0])
-        self.assertIn("snapshot failed: boom", frames[1])
-
-    def test_watch_latest_lock_rejects_second_session(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = Namespace(
-                repo_root=tmp,
-                execute=False,
-                interval=5,
-                host=None,
-                image="latest",
-                image_file=None,
-                runtime_image_ref=None,
-                runtime_image_ref_file=None,
-                no_color=True,
-                no_tui=True,
-                width=120,
-                once=True,
-                fail_fast=False,
-            )
-            lock = fleet.acquire_watch_latest_lock(args)
-            try:
-                with self.assertRaises(fleet.WatchLatestLockBusy) as raised:
-                    fleet.acquire_watch_latest_lock(args)
-            finally:
-                fleet.release_watch_latest_lock(lock)
-
-        self.assertIn("watch.lock", str(raised.exception.path))
-        self.assertIn('"pid"', raised.exception.owner)
-
-    def test_watch_latest_busy_lock_exits_without_polling(self) -> None:
-        args = Namespace(
-            repo_root=".",
-            execute=False,
-            interval=5,
-            host=None,
-            image="latest",
-            image_file=None,
-            runtime_image_ref=None,
-            runtime_image_ref_file=None,
-            no_color=True,
-            no_tui=True,
-            width=120,
-            once=True,
-            fail_fast=False,
-        )
-        frames = []
-        lock_error = fleet.WatchLatestLockBusy(Path("/tmp/watch.lock"), '{"pid": 123}')
-
-        def fake_write_frame(text, *, enabled):
-            frames.append(text)
-
-        with (
-            mock.patch.object(fleet, "acquire_watch_latest_lock", side_effect=lock_error),
-            mock.patch.object(fleet, "build_latest_watch_snapshot") as build_snapshot,
-            mock.patch.object(fleet, "write_tui_frame", side_effect=fake_write_frame),
-        ):
-            status = fleet.cmd_watch_latest(args)
-
-        self.assertEqual(status, 2)
-        build_snapshot.assert_not_called()
-        self.assertIn("already owns the lock", frames[0])
-        self.assertIn('"pid": 123', frames[0])
-
-    def test_watch_latest_default_interval_is_fifteen_seconds(self) -> None:
-        args = fleet.build_parser().parse_args(["watch"])
+    def test_watch_machine_default_interval_is_fifteen_seconds(self) -> None:
+        args = fleet.build_parser().parse_args(["watch", "--machine", "beast-3"])
 
         self.assertEqual(args.interval, 15.0)
-        self.assertTrue(args.execute)
-        self.assertTrue(args.claim_stale_jobs)
-        self.assertEqual(args.stale_older_than_seconds, 300)
-        self.assertEqual(args.stale_limit, 50)
-
-    def test_dry_run_replaces_execute_flag(self) -> None:
-        args = fleet.build_parser().parse_args(["watch", "--dry-run"])
-
-        self.assertFalse(args.execute)
-        args = fleet.build_parser().parse_args(["watch", "--dry-run", "--execute"])
-        self.assertTrue(args.execute)
-
-    def test_watch_latest_can_disable_stale_job_claims(self) -> None:
-        args = fleet.build_parser().parse_args(["watch", "--no-claim-stale-jobs"])
-
-        self.assertFalse(args.claim_stale_jobs)
+        self.assertEqual(args.machine, "beast-3")
 
     def test_watch_latest_skips_later_actions_on_failed_host(self) -> None:
         config = sample_config()
@@ -1446,7 +1336,7 @@ class FleetHostSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 os.chdir(tmp)
-                args = fleet.build_parser().parse_args(["watch"])
+                args = fleet.build_parser().parse_args(["watch", "--machine", "beast-3"])
                 root = fleet.repo_root_from_args(args)
             finally:
                 os.chdir(old_cwd)

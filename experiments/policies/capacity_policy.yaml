@@ -1,16 +1,16 @@
 schema_version: 1
 updated_at: '2026-06-26'
-purpose: Keep beast-2 and beast-3 queue capacity full without mixing incomparable runtime envelopes.
+purpose: Keep beast-2 and beast-3 one-job container capacity full without mixing incomparable runtime envelopes.
 defaults:
   runtime_image_ref: digest-pinned GHCR train image from rlab-train-image.json
-  queue_reconcile_interval_seconds: 30
+  shepherd_interval_seconds: 30
   manual_shell_trainers: forbidden_for_comparable_results
 lanes:
 - name: rtx4090-screening
   target: rtx4090
   host: beast-3
-  manager: rlab_fleet
-  max_runner_workers: 5
+  manager: rlab_fleet_shepherd
+  max_train_containers: 5
   env_threads: 4
   use_for:
   - screen
@@ -20,8 +20,8 @@ lanes:
 - name: rtx4090-low-contention-confirm
   target: rtx4090
   host: beast-3
-  manager: rlab_fleet
-  max_runner_workers: 4
+  manager: rlab_fleet_shepherd
+  max_train_containers: 4
   env_threads: 4
   use_for:
   - confirm
@@ -31,15 +31,15 @@ lanes:
 - name: rtx2060-screening
   target: rtx2060
   host: beast-2
-  manager: rlab_fleet
-  max_runner_workers: 4
+  manager: rlab_fleet_shepherd
+  max_train_containers: 4
   env_threads: 2
   use_for:
   - cheap_screen
   - small_ablation
   reserve_workers: 0
 policy_checks:
-- Do not launch a runner unless a matching pending job exists, except explicit local ensure-runner warm capacity.
+- Do not launch a train container unless a matching pending job exists.
 - Group queue compatibility by runtime_image_ref only; host placement remains an operator/fleet decision.
 - Use digest image refs for comparable runs.
 - Backfill finished slots only while the next queued run still has decision value.

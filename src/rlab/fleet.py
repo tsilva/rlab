@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -470,26 +470,26 @@ def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> 
         manager = str(lane.get("manager") or "").strip()
         host_name = str(lane.get("host") or "").strip()
         if not host_name:
-            if manager in {"rlab_fleet", "rlab fleet"}:
+            if manager in {"rlab_fleet", "rlab fleet", "rlab_fleet_shepherd"}:
                 raise ValueError(f"capacity_policy lane {name!r} uses rlab_fleet but has no host")
             continue
         if host_name not in config.hosts:
             raise ValueError(f"capacity_policy lane {name!r} references unknown host {host_name!r}")
-        max_runner_workers = lane.get("max_runner_workers")
-        if max_runner_workers is None:
+        max_train_containers = lane.get("max_train_containers", lane.get("max_runner_workers"))
+        if max_train_containers is None:
             continue
         try:
-            runner_limit = int(max_runner_workers)
+            runner_limit = int(max_train_containers)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"capacity_policy lane {name!r} max_runner_workers must be an integer"
+                f"capacity_policy lane {name!r} max_train_containers must be an integer"
             ) from exc
         if runner_limit < 1:
-            raise ValueError(f"capacity_policy lane {name!r} max_runner_workers must be at least 1")
+            raise ValueError(f"capacity_policy lane {name!r} max_train_containers must be at least 1")
         host_limit = config.hosts[host_name].max_workers
         if runner_limit > host_limit:
             raise ValueError(
-                f"capacity_policy lane {name!r} max_runner_workers={runner_limit} "
+                f"capacity_policy lane {name!r} max_train_containers={runner_limit} "
                 f"exceeds {host_name} max_workers={host_limit}"
             )
 
@@ -1459,7 +1459,7 @@ def setup_host_script(host: HostConfig, *, runtime_image_ref: str | None = None)
         "fi",
         f"if [ ! -f {shlex.quote(host.env_file)} ]; then",
         f"  umask 077; cat > {shlex.quote(host.env_file)} <<'EOF'",
-        "# rlab runner secrets live here; fill values on the host.",
+        "# rlab job-container secrets live here; fill values on the host.",
         "TRAIN_QUEUE_DATABASE_URL=",
         "WANDB_API_KEY=",
         "AWS_ACCESS_KEY_ID=",
@@ -1813,7 +1813,8 @@ def format_capacity_policy(policy: Mapping[str, Any]) -> str:
             lines.append(
                 "  "
                 f"{lane.get('name')} target={lane.get('target')} "
-                f"manager={lane.get('manager')} max_runner_workers={lane.get('max_runner_workers')} "
+                f"manager={lane.get('manager')} "
+                f"max_train_containers={lane.get('max_train_containers', lane.get('max_runner_workers'))} "
                 f"env_threads={lane.get('env_threads')}"
             )
     checks = policy.get("policy_checks")
@@ -3164,24 +3165,32 @@ def cmd_container_watch_dashboard(args: argparse.Namespace) -> int:
 
 
 def cmd_ps(args: argparse.Namespace) -> int:
-    config = filter_config_to_host(_load_config_from_args(args), getattr(args, "host", None))
-    existing, warnings = collect_existing_containers(config, host_filter=None, local=False)
-    jobs: list[RunningJob] = []
-    conn = None
-    try:
-        conn = _connect_from_args(args)
-        jobs = running_jobs(conn)
-    except Exception as exc:
-        warnings.append(f"failed to list running jobs: {exc}")
-    finally:
-        if conn is not None:
-            conn.close()
-    print(format_containers(existing, jobs, warnings))
-    return 0
-
-
-def cmd_plan(args: argparse.Namespace) -> int:
-    print(format_plan(build_live_plan(args)))
+    registry = load_registry_from_args(args)
+    machines = (
+        [resolve_machine(registry, args.machine)]
+        if getattr(args, "machine", None)
+        else list(registry.machines.values())
+    )
+    lines: list[str] = []
+    for machine in machines:
+        try:
+            containers = sorted(list_job_containers(machine), key=lambda item: item.name)
+        except Exception as exc:
+            lines.append(f"{machine.name}: failed to list job containers: {exc}")
+            continue
+        if not containers:
+            lines.append(f"{machine.name}: job containers: none")
+            continue
+        lines.append(f"{machine.name}: job containers:")
+        for container in containers:
+            lines.append(
+                "  "
+                f"name={container.name} state={container.state or 'unknown'} "
+                f"status={container.status or 'unknown'} "
+                f"job={container.labels.get(JOB_ID_LABEL, 'unknown')} "
+                f"launch={container.launch_id or 'unknown'}"
+            )
+    print("\n".join(lines) if lines else "job containers: none")
     return 0
 
 
@@ -3218,13 +3227,7 @@ def _run_reconcile_once(args: argparse.Namespace, *, local: bool = False) -> int
 
 
 def cmd_reconcile(args: argparse.Namespace) -> int:
-    if getattr(args, "machine", None):
-        return cmd_container_reconcile(args)
-    while True:
-        status = _run_reconcile_once(args, local=False)
-        if status != 0 or not args.watch:
-            return status
-        time.sleep(args.interval)
+    return cmd_container_reconcile(args)
 
 
 def cmd_ensure_runner(args: argparse.Namespace) -> int:
@@ -4375,64 +4378,7 @@ def cmd_ensure_latest(args: argparse.Namespace) -> int:
 
 
 def cmd_watch_latest(args: argparse.Namespace) -> int:
-    if getattr(args, "machine", None):
-        return cmd_container_watch_dashboard(args)
-    color = not args.no_color
-    tui = not args.no_tui
-    try:
-        lock = acquire_watch_latest_lock(args)
-    except WatchLatestLockBusy as exc:
-        write_tui_frame(
-            render_watch_latest_lock_busy(exc, color=color, max_width=args.width),
-            enabled=tui,
-        )
-        return 2
-    try:
-        write_tui_frame(
-            render_latest_watch_starting_dashboard(args, color=color, max_width=args.width),
-            enabled=tui,
-        )
-        image_resolver = RuntimeImageResolver(args, default_latest=True)
-        while True:
-            try:
-                snapshot = build_latest_watch_snapshot(
-                    args,
-                    image_resolver=image_resolver,
-                )
-                action_results: tuple[ActionResult, ...] = ()
-                if args.execute:
-                    action_results = run_latest_watch_actions(snapshot.config, snapshot.plan)
-                    snapshot = replace(snapshot, action_results=action_results)
-                write_tui_frame(
-                    render_latest_watch_dashboard(snapshot, color=color, max_width=args.width),
-                    enabled=tui,
-                )
-                exit_code = max((result.exit_code for result in action_results), default=0)
-                if args.once:
-                    return exit_code
-                if exit_code != 0 and args.fail_fast:
-                    return exit_code
-            except KeyboardInterrupt:
-                print("\nwatch stopped")
-                return 130
-            except Exception as exc:
-                width = args.width or shutil.get_terminal_size((120, 30)).columns
-                message = (
-                    colorize("rlab fleet watch", "bright_cyan", enabled=color)
-                    + "\n"
-                    + dashboard_divider(width, color=color)
-                    + "\n"
-                    + colorize(f"snapshot failed: {exc}", "bright_red", enabled=color)
-                    + "\n\nCtrl-C to stop."
-                )
-                write_tui_frame(message, enabled=tui)
-                if args.once:
-                    return 1
-                if args.fail_fast:
-                    return 1
-            time.sleep(args.interval)
-    finally:
-        release_watch_latest_lock(lock)
+    return cmd_container_watch_dashboard(args)
 
 
 def cmd_setup_host(args: argparse.Namespace) -> int:
@@ -4535,85 +4481,35 @@ def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_reconcile_args(parser: argparse.ArgumentParser, *, host_required: bool = False) -> None:
-    parser.add_argument(
-        "--host",
-        required=host_required,
-        help="Limit reconciliation to one fleet host.",
-    )
-    add_dry_run_arg(parser)
-    parser.add_argument("--watch", action="store_true", help="Run repeatedly.")
-    parser.add_argument("--interval", type=float, default=30.0, help="Watch interval in seconds.")
-
-
-def add_runtime_image_args(
-    parser: argparse.ArgumentParser,
-    *,
-    allow_latest: bool = False,
-) -> None:
+def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--runtime-image-ref")
     group.add_argument("--runtime-image-ref-file", type=Path)
-    if allow_latest:
-        group.add_argument(
-            "--latest-image",
-            action="store_true",
-            help="Use the latest successful train-image CI artifact; default for ensure-runner.",
-        )
-        parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-        parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
-        parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-
-
-def add_ensure_image_args(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--image",
-        help="'latest' or an immutable docker:...@sha256:... runtime image ref. Defaults to latest.",
-    )
-    group.add_argument(
-        "--image-file",
-        type=Path,
-        help="JSON artifact or plain-text file containing the immutable runtime image ref.",
-    )
-    group.add_argument("--runtime-image-ref", help=argparse.SUPPRESS)
-    group.add_argument("--runtime-image-ref-file", type=Path, help=argparse.SUPPRESS)
-    group.add_argument("--latest-image", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
-    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage rlab runner containers from queue state.")
+    parser = argparse.ArgumentParser(description="Manage one-job rlab containers from queue state.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    status = subparsers.add_parser("status", help="Print digest-pinned train queue demand.")
+    status = subparsers.add_parser("status", help="Print train queue demand and active leases.")
     add_common_args(status)
     status.set_defaults(func=cmd_status)
 
-    ps = subparsers.add_parser("ps", help="List managed runner containers across fleet hosts.")
+    ps = subparsers.add_parser("ps", help="List one-job containers across configured machines.")
     add_common_args(ps)
-    ps.add_argument("--host", help="Limit listing to one fleet host.")
+    ps.add_argument("--machine", help="Limit listing to one machine.")
     ps.set_defaults(func=cmd_ps)
-
-    plan = subparsers.add_parser("plan", help="Plan runner container changes.")
-    add_common_args(plan)
-    plan.add_argument("--host", help="Limit planning to one fleet host.")
-    plan.set_defaults(func=cmd_plan)
 
     policy = subparsers.add_parser("policy", help="Print the repo capacity policy.")
     add_common_args(policy)
     policy.add_argument("--policy", type=Path, default=DEFAULT_CAPACITY_POLICY)
     policy.set_defaults(func=cmd_policy)
 
-    reconcile = subparsers.add_parser("reconcile", help="Reconcile remote Docker hosts over SSH.")
+    reconcile = subparsers.add_parser("reconcile", help="Finalize or repair one-job launch rows.")
     add_common_args(reconcile)
-    add_reconcile_args(reconcile)
-    reconcile.add_argument(
-        "--machine",
-        help="Use one-job-container reconciliation for this machine.",
-    )
+    reconcile.add_argument("--machine", required=True)
+    reconcile.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    add_dry_run_arg(reconcile)
     reconcile.set_defaults(func=cmd_reconcile)
 
     launch = subparsers.add_parser("launch", help="Launch one claimed job as one container.")
@@ -4654,50 +4550,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(shepherd)
     shepherd.set_defaults(func=cmd_container_shepherd)
 
-    ensure = subparsers.add_parser(
-        "ensure-runner",
-        help="Ensure one managed runner exists for a host/profile/image.",
-    )
-    add_common_args(ensure)
-    ensure.add_argument("--host", required=True, help="Fleet host to run the container on.")
-    ensure.add_argument("--profile", help="Optional exact train_jobs.profile_id to claim.")
-    ensure.add_argument("--target", help="Run target; defaults to the host canonical target.")
-    ensure.add_argument("--workers", type=int, help="Workers inside the runner; defaults to host capacity.")
-    add_dry_run_arg(ensure)
-    add_ensure_image_args(ensure)
-    ensure.set_defaults(func=cmd_ensure_runner)
-
-    ensure_latest = subparsers.add_parser(
-        "ensure-latest",
-        help="Ensure selected fleet hosts run the latest image and remove idle old-image runners.",
-    )
-    add_common_args(ensure_latest)
-    ensure_latest.add_argument("--host", help="Limit rollout to one fleet host.")
-    ensure_latest.add_argument("--workers", type=int, help="Workers inside each latest runner; defaults to host capacity.")
-    add_dry_run_arg(ensure_latest)
-    ensure_latest.add_argument("--watch", action="store_true", help="Run repeatedly.")
-    ensure_latest.add_argument("--interval", type=float, default=30.0, help="Watch interval in seconds.")
-    add_ensure_image_args(ensure_latest)
-    ensure_latest.set_defaults(func=cmd_ensure_latest)
-
     watch_latest = subparsers.add_parser(
         "watch",
-        help="Run a live dashboard; machine mode is read-only.",
+        help="Run a read-only one-job-container dashboard.",
     )
     add_common_args(watch_latest)
-    watch_latest.add_argument("--host", help="Limit monitoring to one fleet host.")
     watch_latest.add_argument(
         "--machine",
-        help="Use recoverable one-job-container orchestration for this machine.",
+        required=True,
+        help="Machine to monitor.",
     )
-    watch_latest.add_argument("--job-kind", choices=("train",), default="train")
-    watch_latest.add_argument("--limit", type=int, default=1, help="Max jobs to launch per poll.")
-    watch_latest.add_argument(
-        "--workers",
-        type=int,
-        help="Workers inside each latest runner; defaults to host capacity.",
-    )
-    add_dry_run_arg(watch_latest)
     watch_latest.add_argument(
         "--interval",
         type=float,
@@ -4710,28 +4572,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit when a poll or action fails instead of retrying forever.",
     )
-    watch_latest.add_argument(
-        "--no-claim-stale-jobs",
-        dest="claim_stale_jobs",
-        action="store_false",
-        help="Disable stale running train job detection and failure marking.",
-    )
-    watch_latest.add_argument(
-        "--stale-older-than-seconds",
-        type=int,
-        default=DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS,
-        help="Treat running train jobs with no recent heartbeat as stale after this many seconds.",
-    )
-    watch_latest.add_argument(
-        "--stale-limit",
-        type=int,
-        default=DEFAULT_WATCH_STALE_LIMIT,
-        help="Maximum stale train jobs to inspect or fail per host; 0 means no limit.",
-    )
     watch_latest.add_argument("--no-tui", action="store_true", help="Do not clear/redraw the terminal.")
     watch_latest.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     watch_latest.add_argument("--width", type=int, help="Override dashboard width.")
-    add_ensure_image_args(watch_latest)
     watch_latest.set_defaults(func=cmd_watch_latest)
 
     mark_stale = subparsers.add_parser(
@@ -4751,7 +4594,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(mark_stale)
     mark_stale.set_defaults(func=cmd_mark_stale_failed)
 
-    setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for runners.")
+    setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for job containers.")
     add_common_args(setup)
     setup.add_argument("--host", required=True, help="Fleet host to set up.")
     add_dry_run_arg(setup)

@@ -1285,6 +1285,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] in {"-h", "--help"}:
+        build_parser().print_help()
+        return
+    raise SystemExit(
+        "rlab train worker is retired; queue jobs with `rlab train` and run them with "
+        "`rlab fleet shepherd --machine <name>`"
+    )
+
+
+def _retired_worker_main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.status_goal:
         conn = connect(database_url(args.direct))

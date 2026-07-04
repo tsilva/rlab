@@ -25,9 +25,10 @@ def _train(argv: Sequence[str]) -> int:
 
         return _run(train_main, argv[1:], prog="rlab train local")
     if argv and argv[0] == "worker":
-        from rlab.train_runner import main as worker_main
-
-        return _run(worker_main, argv[1:], prog="rlab train worker")
+        raise SystemExit(
+            "rlab train worker has been retired; use one-job containers via "
+            "`rlab fleet shepherd --machine <name>`"
+        )
 
     from rlab.job_queue import cmd_enqueue_train
 
@@ -155,7 +156,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
     "jobs": ("manage queue schema, status, cancellation, and stale jobs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
-    "fleet": ("manage remote runner containers from queue state", _fleet),
+    "fleet": ("manage one-job Docker containers from queue state", _fleet),
     "monitor": ("print read-only queue and fleet state", _monitor),
     "run-job": ("run one claimed job payload inside a container", _run_job),
 }
