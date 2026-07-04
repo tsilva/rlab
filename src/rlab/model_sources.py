@@ -34,6 +34,7 @@ from rlab.wandb_utils import default_wandb_project_path, load_wandb_env
 MODEL_KIND_CHOICES = ("final", "best", "checkpoint")
 HUGGINGFACE_MODEL_SCHEME = "hf://"
 HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
+WANDB_RUN_URL_HOST = "wandb.ai"
 MODEL_ARTIFACT_KIND_SUFFIXES = tuple(f"-{kind}" for kind in MODEL_KIND_CHOICES)
 
 
@@ -44,6 +45,12 @@ class ResolvedModelSource:
     artifact_name: str | None = None
     checkpoint_step: int | None = None
     run_config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WandbRunRef:
+    project_path: str
+    run_id: str
 
 
 def artifact_ref_arg(value: str) -> str:
@@ -64,8 +71,37 @@ def is_huggingface_model_ref(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and parsed.netloc == HUGGINGFACE_MODEL_URL_HOST
 
 
+def parse_wandb_run_ref(value: str, *, default_project: str | None = None) -> WandbRunRef | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"}:
+        if parsed.netloc != WANDB_RUN_URL_HOST:
+            return None
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+    else:
+        parts = [unquote(part) for part in text.split("/") if part]
+
+    if len(parts) >= 4 and parts[2] == "runs":
+        return WandbRunRef(project_path=f"{parts[0]}/{parts[1]}", run_id=parts[3])
+    if default_project and len(parts) >= 2 and parts[0] == "runs":
+        return WandbRunRef(project_path=default_project, run_id=parts[1])
+    if default_project and len(parts) >= 3 and parts[1] == "runs":
+        entity = default_project.split("/", 1)[0]
+        return WandbRunRef(project_path=f"{entity}/{parts[0]}", run_id=parts[2])
+    return None
+
+
+def is_wandb_run_ref(value: str) -> bool:
+    return parse_wandb_run_ref(value) is not None
+
+
 def positional_model_source_arg(value: str) -> str:
     if is_huggingface_model_ref(value):
+        return value
+    if is_wandb_run_ref(value):
         return value
     if "/" not in value and ":" not in value:
         return value
@@ -91,7 +127,7 @@ def add_model_source_args(
             nargs="?",
             type=positional_model_source_arg,
             help=(
-                "W&B run name, or a full artifact ref like "
+                "W&B run name or run URL, or a full artifact ref like "
                 "entity/project/run-checkpoint:latest."
             ),
         )
@@ -159,6 +195,14 @@ def model_ref_from_run_path(
     kind: str,
     version: str,
 ) -> str | None:
+    run_ref = wandb_run_artifact_ref(
+        value,
+        default_project=default_project,
+        kind=kind,
+        version=version,
+    )
+    if run_ref is not None:
+        return run_ref
     if ":" in value:
         return None
     parts = value.split("/")
@@ -186,6 +230,53 @@ def model_ref_from_run_path(
     )
 
 
+def _wandb_run_config_value(run: Any, key: str) -> Any:
+    config = getattr(run, "config", {}) or {}
+    if isinstance(config, Mapping):
+        return config.get(key)
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:
+            return None
+    return None
+
+
+def wandb_run_artifact_ref(
+    value: str,
+    *,
+    default_project: str,
+    kind: str,
+    version: str,
+) -> str | None:
+    run_ref = parse_wandb_run_ref(value, default_project=default_project)
+    if run_ref is None:
+        return None
+
+    load_wandb_env()
+
+    import wandb
+
+    run_path = f"{run_ref.project_path}/{run_ref.run_id}"
+    try:
+        run = wandb.Api().run(run_path)
+    except Exception as exc:
+        raise SystemExit(f"Could not resolve W&B run {run_path}: {exc}") from exc
+    run_name = (
+        _wandb_run_config_value(run, "run_name")
+        or getattr(run, "name", None)
+        or getattr(run, "id", None)
+        or run_ref.run_id
+    )
+    return model_artifact_ref(
+        project=run_ref.project_path,
+        run_name=safe_artifact_stem(str(run_name)),
+        kind=kind,
+        version=version,
+    )
+
+
 def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
     artifacts = artifact_values(args)
     if artifacts:
@@ -195,8 +286,6 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
         positional_ref = str(positional)
         if is_huggingface_model_ref(positional_ref):
             return None
-        if ":" in positional_ref:
-            return positional_ref
         ref = model_ref_from_run_path(
             positional_ref,
             default_project=artifact_project_from_args(args),
@@ -205,11 +294,21 @@ def single_model_artifact_ref(args: argparse.Namespace) -> str | None:
         )
         if ref is not None:
             return ref
+        if ":" in positional_ref:
+            return positional_ref
         if "/" in positional_ref:
             return positional_ref
     run_name = getattr(args, "artifact_run", None)
     if not run_name:
         return None
+    ref = model_ref_from_run_path(
+        str(run_name),
+        default_project=artifact_project_from_args(args),
+        kind=getattr(args, "artifact_kind", "checkpoint"),
+        version=getattr(args, "artifact_version", "latest"),
+    )
+    if ref is not None:
+        return ref
     return model_artifact_ref(
         project=artifact_project_from_args(args),
         run_name=str(run_name),

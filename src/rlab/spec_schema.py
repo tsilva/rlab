@@ -5,6 +5,7 @@ from string import Formatter
 from typing import Any
 
 from rlab.seeds import validate_training_seed
+from rlab.train_config import queue_required_train_config_fields
 
 
 TRAIN_RECIPE_SCHEMA_VERSION = 1
@@ -16,13 +17,7 @@ TRAIN_RECIPE_REQUIRED_FIELDS = (
     "tags",
     "train_config",
 )
-TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = (
-    "game",
-    "timesteps",
-    "wandb",
-    "wandb_mode",
-    "wandb_artifact_storage_uri",
-)
+TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = queue_required_train_config_fields()
 EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
 TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS = frozenset(
     {"group_id", "seed", "recipe_id", "timestamp", "utc", "spec_id"}
@@ -152,8 +147,7 @@ def _require_template(
     unknown = sorted(field_names - TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS)
     if unknown:
         raise ValueError(
-            f"{_label_path(label, key)} uses unsupported template field(s): "
-            f"{', '.join(unknown)}"
+            f"{_label_path(label, key)} uses unsupported template field(s): {', '.join(unknown)}"
         )
     missing = sorted(required_fields - field_names)
     if missing:
@@ -170,7 +164,9 @@ def _require_template(
             group_id="b-test",
         )
     except (IndexError, KeyError, ValueError) as exc:
-        raise ValueError(f"{_label_path(label, key)} is not a valid format template: {exc}") from exc
+        raise ValueError(
+            f"{_label_path(label, key)} is not a valid format template: {exc}"
+        ) from exc
     return template
 
 
@@ -189,15 +185,19 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
     removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
     if removed_fields:
         raise ValueError(f"{label} uses removed train recipe field(s): {', '.join(removed_fields)}")
-    if "schema_version" in document and (
-        schema_version := _require_int(document, "schema_version", label=label, minimum=1)
-    ) != TRAIN_RECIPE_SCHEMA_VERSION:
+    if (
+        "schema_version" in document
+        and (schema_version := _require_int(document, "schema_version", label=label, minimum=1))
+        != TRAIN_RECIPE_SCHEMA_VERSION
+    ):
         raise ValueError(
             f"{_label_path(label, 'schema_version')} must be "
             f"{TRAIN_RECIPE_SCHEMA_VERSION}, got {schema_version}"
         )
 
-    goal = _require_mapping(_require_key(document, "goal", label=label), label=_label_path(label, "goal"))
+    goal = _require_mapping(
+        _require_key(document, "goal", label=label), label=_label_path(label, "goal")
+    )
     _require_non_empty_string(goal, "goal_id", label=_label_path(label, "goal"))
     if not train_recipe_id(document):
         raise ValueError(f"{label}.recipe_id is required by train recipe schema")

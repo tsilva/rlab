@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from rlab.env import EnvConfig, InfoEventRules, validate_obs_crop
+from rlab.train_config import env_config_arg_fields
 
 
 def parse_states(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -27,7 +28,10 @@ def parse_task_conditioning_info_vars(value: str | list[str] | tuple[str, ...]) 
 
 
 def parse_task_conditioning_info_values(
-    value: str | list[list[int | str]] | list[tuple[int | str, ...]] | tuple[tuple[int | str, ...], ...],
+    value: str
+    | list[list[int | str]]
+    | list[tuple[int | str, ...]]
+    | tuple[tuple[int | str, ...], ...],
 ) -> tuple[tuple[int | str, ...], ...]:
     if not value:
         return ()
@@ -134,7 +138,9 @@ def parse_event_names(value: str | list[str] | tuple[str, ...]) -> tuple[str, ..
     return tuple(dict.fromkeys(names))
 
 
-def parse_obs_crop(value: str | list[int] | tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
+def parse_obs_crop(
+    value: str | list[int] | tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int] | None:
     if value is None or value == "":
         return None
     raw: Any = value
@@ -164,47 +170,34 @@ def env_config_from_args(
     def value(name: str, default: Any = None) -> Any:
         return getattr(args, name, getattr(defaults, name, default))
 
-    max_episode_steps = value(max_episode_steps_attr, defaults.max_episode_steps)
-    config_kwargs: dict[str, Any] = {
-        "env_provider": value("env_provider"),
-        "game": value("game"),
-        "state": value("state"),
-        "task_conditioning": value("task_conditioning"),
-        "task_conditioning_info_vars": parse_task_conditioning_info_vars(
-            value("task_conditioning_info_vars", ""),
-        ),
-        "task_conditioning_info_values": parse_task_conditioning_info_values(
-            value("task_conditioning_info_values", ""),
-        ),
-        "frame_skip": value("frame_skip"),
-        "max_pool_frames": value("max_pool_frames"),
-        "sticky_action_prob": value("sticky_action_prob"),
-        "max_episode_steps": max_episode_steps,
-        "hud_crop_top": value("hud_crop_top"),
-        "obs_crop": parse_obs_crop(value("obs_crop")),
-        "use_retro_reward": value("use_retro_reward"),
-        "clip_rewards": value("clip_rewards"),
-        "reward_mode": value("reward_mode"),
-        "progress_reward_cap": value("progress_reward_cap"),
-        "progress_reward_scale": value("progress_reward_scale"),
-        "terminal_reward": value("terminal_reward"),
-        "reward_scale": value("reward_scale"),
-        "time_penalty": value("time_penalty"),
-        "death_penalty": value("death_penalty"),
-        "completion_reward": value("completion_reward"),
-        "score_progress_clipped": value("score_progress_clipped"),
-        "env_wrappers": value("env_wrappers"),
-        "no_progress_timeout_steps": value("no_progress_timeout_steps"),
-        "no_progress_min_delta": value("no_progress_min_delta"),
-        "info_events": parse_info_events(
-            value("info_events_json", value("info_events", "")),
-        ),
-        "done_on_events": parse_event_names(value("done_on_events", "")),
-        "action_set": value("action_set"),
-    }
-    if include_states:
-        config_kwargs["states"] = parse_states(value("states", ""))
-        config_kwargs["state_probs"] = parse_state_probs(value("state_probs", ""))
-    if include_env_threads:
-        config_kwargs["env_threads"] = value("env_threads")
+    config_kwargs: dict[str, Any] = {}
+    for field in env_config_arg_fields():
+        if field.dest in {"states", "state_probs"} and not include_states:
+            continue
+        if field.dest == "env_threads" and not include_env_threads:
+            continue
+        key = field.env_config_key or field.dest
+        raw_value = (
+            value(max_episode_steps_attr, defaults.max_episode_steps)
+            if field.dest == "max_episode_steps"
+            else value(field.dest)
+        )
+        if field.dest == "states":
+            config_kwargs[key] = parse_states(raw_value)
+        elif field.dest == "state_probs":
+            config_kwargs[key] = parse_state_probs(raw_value)
+        elif field.dest == "task_conditioning_info_vars":
+            config_kwargs[key] = parse_task_conditioning_info_vars(raw_value)
+        elif field.dest == "task_conditioning_info_values":
+            config_kwargs[key] = parse_task_conditioning_info_values(raw_value)
+        elif field.dest == "obs_crop":
+            config_kwargs[key] = parse_obs_crop(raw_value)
+        elif field.dest == "info_events_json":
+            config_kwargs[key] = parse_info_events(
+                value("info_events_json", value("info_events", ""))
+            )
+        elif field.dest == "done_on_events":
+            config_kwargs[key] = parse_event_names(raw_value)
+        else:
+            config_kwargs[key] = raw_value
     return EnvConfig(**config_kwargs)

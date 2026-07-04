@@ -16,7 +16,8 @@ Prefer the repo uploader script at `scripts/upload_youtube_video.py`. It uses `.
 1. Confirm the local video path, title, model page URL, and privacy status. Default privacy to `public` unless the user asks otherwise.
 2. For model preview videos, prefer adding them to the `rlab` playlist unless the user asks for a different playlist.
 3. Check the model page URL is direct and fully qualified. Prefer `https://huggingface.co/<owner>/<repo>` over redirect/short domains such as `https://hf.co/...`.
-4. If the user needs OAuth again, run the uploader with `--no-browser` only when appropriate and relay the printed authorization URL. After the user says they authorized it, continue the waiting process; do not restart unless the callback failed.
+4. For gameplay preview videos, set a custom YouTube thumbnail from the local video at 10 seconds by default. The repo uploader does this automatically unless `--no-thumbnail` is passed. If the video is shorter than 10 seconds, use the last safe frame the uploader selects.
+5. If the user needs OAuth again, run the uploader with `--no-browser` only when appropriate and relay the printed authorization URL. After the user says they authorized it, continue the waiting process; do not restart unless the callback failed.
 
 ## Description Format
 
@@ -66,6 +67,8 @@ python3 scripts/upload_youtube_video.py <video.mp4> \
   --output runs/<artifact-dir>/youtube_upload_result.json
 ```
 
+The script captures and uploads a custom thumbnail from second `10` of the video by default. Override with `--thumbnail-time <seconds>`, provide an explicit `--thumbnail <image.jpg>`, or disable with `--no-thumbnail`.
+
 If the OAuth callback cannot open a browser or the user asks for the OAuth URL:
 
 ```bash
@@ -97,8 +100,9 @@ After upload or update:
 
 1. Read the JSON output and report the YouTube URL, playlist URL when present, and the final description shape.
 2. Verify the model link is direct `https://huggingface.co/...` and appears on a `Model:` line.
-3. Run `python3 -m py_compile scripts/upload_youtube_video.py` after changing the uploader script.
-4. If the user reports link issues and the stored description is correct, distinguish visual truncation from actual clickability. For clickability issues, check account verification, Shorts vs normal video, direct URL formatting, redirect domains, and whether the issue is only in a collapsed/mobile view.
+3. For new gameplay uploads, verify the JSON includes `thumbnail.path` and a successful `thumbnail.upload` response, or report the thumbnail API failure clearly if the account does not allow custom thumbnails.
+4. Run `python3 -m py_compile scripts/upload_youtube_video.py` after changing the uploader script.
+5. If the user reports link issues and the stored description is correct, distinguish visual truncation from actual clickability. For clickability issues, check account verification, Shorts vs normal video, direct URL formatting, redirect domains, and whether the issue is only in a collapsed/mobile view.
 
 ## Repo Rules
 

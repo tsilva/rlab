@@ -5,6 +5,7 @@ import http.server
 import json
 import mimetypes
 import secrets
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,8 @@ YOUTUBE_UPLOAD_SCOPES = (
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3"
+YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+DEFAULT_THUMBNAIL_TIME_SECONDS = 10.0
 
 
 class OAuthRequestError(RuntimeError):
@@ -103,7 +106,8 @@ def request_json(
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
+            return {} if not body.strip() else json.loads(body)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise SystemExit(f"YouTube API request failed: HTTP {exc.code}: {body}") from exc
@@ -277,6 +281,98 @@ def upload_video(upload_url: str, token: str, video_path: Path) -> dict[str, Any
         raise SystemExit(f"YouTube upload failed: HTTP {exc.code}: {body}") from exc
 
 
+def video_duration_seconds(video_path: Path) -> float | None:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    try:
+        return float(completed.stdout.strip())
+    except ValueError:
+        return None
+
+
+def thumbnail_seek_time(video_path: Path, requested_seconds: float) -> float:
+    duration = video_duration_seconds(video_path)
+    if duration is None or duration <= 0:
+        return max(0.0, requested_seconds)
+    return max(0.0, min(requested_seconds, max(0.0, duration - 0.25)))
+
+
+def extract_thumbnail(
+    *,
+    video_path: Path,
+    thumbnail_path: Path,
+    seconds: float,
+) -> Path:
+    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+    seek_seconds = thumbnail_seek_time(video_path, seconds)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{seek_seconds:.3f}",
+                "-i",
+                str(video_path),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(thumbnail_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit("ffmpeg is required to generate YouTube thumbnails") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip()
+        raise SystemExit(f"Could not generate thumbnail from {video_path}: {stderr}") from exc
+    if not thumbnail_path.is_file() or thumbnail_path.stat().st_size == 0:
+        raise SystemExit(f"ffmpeg did not write thumbnail: {thumbnail_path}")
+    return thumbnail_path
+
+
+def upload_thumbnail(*, token: str, video_id: str, thumbnail_path: Path) -> dict[str, Any]:
+    data = thumbnail_path.read_bytes()
+    mime_type = mimetypes.guess_type(thumbnail_path.name)[0] or "image/jpeg"
+    url = f"{YOUTUBE_THUMBNAIL_URL}?{urllib.parse.urlencode({'videoId': video_id})}"
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": mime_type,
+            "Content-Length": str(len(data)),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = response.read().decode("utf-8")
+            return {} if not body.strip() else json.loads(body)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise SystemExit(f"Could not upload YouTube thumbnail: HTTP {exc.code}: {body}") from exc
+
+
 def build_description(
     *,
     human_description: str,
@@ -381,6 +477,8 @@ def update_video_metadata(
     category_id: str,
     privacy_status: str,
 ) -> dict[str, Any]:
+    existing = get_video_metadata(token=token, video_id=video_id)
+    existing_status = existing.get("status", {})
     payload = {
         "id": video_id,
         "snippet": {
@@ -392,6 +490,9 @@ def update_video_metadata(
         "status": {
             "privacyStatus": privacy_status,
             "selfDeclaredMadeForKids": False,
+            "embeddable": existing_status.get("embeddable", True),
+            "publicStatsViewable": existing_status.get("publicStatsViewable", True),
+            **({"license": existing_status["license"]} if "license" in existing_status else {}),
         },
     }
     return request_json(
@@ -431,10 +532,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--playlist-title",
         help="Find or create this playlist and add the uploaded video to it.",
     )
+    parser.add_argument("--privacy-status", choices=["private", "public", "unlisted"])
     parser.add_argument(
-        "--privacy-status",
-        choices=["private", "public", "unlisted"],
-        default="unlisted",
+        "--thumbnail",
+        type=Path,
+        help="Custom thumbnail image to upload after the video is available.",
+    )
+    parser.add_argument(
+        "--thumbnail-time",
+        type=float,
+        default=DEFAULT_THUMBNAIL_TIME_SECONDS,
+        help=(
+            "Seconds into the local video to capture for the default custom thumbnail. "
+            "Defaults to 10 seconds."
+        ),
+    )
+    parser.add_argument(
+        "--no-thumbnail",
+        action="store_true",
+        help="Do not generate or upload a custom thumbnail.",
     )
     parser.add_argument("--output", type=Path, default=Path("runs/youtube_upload_result.json"))
     parser.add_argument("--no-browser", action="store_true")
@@ -448,6 +564,10 @@ def main() -> None:
 
     client_config = load_client_config(args.client_secret)
     token = access_token(client_config, args.token, no_browser=args.no_browser)
+    description_provided = any(
+        value is not None and value != ""
+        for value in (args.human_description, args.model_page, args.description)
+    )
     description = build_description(
         human_description=args.human_description or args.description,
         model_page=args.model_page or "",
@@ -472,12 +592,34 @@ def main() -> None:
             token=token,
             video_id=args.video_id,
             title=args.title or existing_snippet.get("title", args.video_id),
-            description=description,
+            description=description if description_provided else existing_snippet.get("description", ""),
             tags=tags,
             category_id=args.category_id or existing_snippet.get("categoryId", "20"),
             privacy_status=args.privacy_status or existing_status.get("privacyStatus", "unlisted"),
         )
         result["youtube_url"] = f"https://www.youtube.com/watch?v={args.video_id}"
+        if not args.no_thumbnail and (args.thumbnail or args.video):
+            thumbnail_path = args.thumbnail
+            if thumbnail_path is None:
+                if not args.video or not args.video.is_file():
+                    raise SystemExit("local video is required to generate thumbnail for --video-id")
+                thumbnail_path = args.output.with_name(f"{args.output.stem}_thumbnail.jpg")
+                thumbnail_path = extract_thumbnail(
+                    video_path=args.video,
+                    thumbnail_path=thumbnail_path,
+                    seconds=float(args.thumbnail_time),
+                )
+            elif not args.thumbnail.is_file():
+                raise SystemExit(f"thumbnail not found: {args.thumbnail}")
+            result["thumbnail"] = {
+                "path": str(thumbnail_path),
+                "time_seconds": None if args.thumbnail else float(args.thumbnail_time),
+                "upload": upload_thumbnail(
+                    token=token,
+                    video_id=args.video_id,
+                    thumbnail_path=thumbnail_path,
+                ),
+            }
         save_json(args.output, result)
         print(json.dumps(result, indent=2, sort_keys=True), flush=True)
         return
@@ -496,7 +638,7 @@ def main() -> None:
         description=description,
         tags=tags,
         category_id=args.category_id or "20",
-        privacy_status=args.privacy_status,
+        privacy_status=args.privacy_status or "unlisted",
     )
     result = upload_video(upload_url, token, args.video)
     video_id = result.get("id")
@@ -506,7 +648,7 @@ def main() -> None:
             playlist_id = find_or_create_playlist(
                 token=token,
                 title=args.playlist_title,
-                privacy_status=args.privacy_status,
+                privacy_status=args.privacy_status or "unlisted",
             )
             playlist_result = add_video_to_playlist(
                 token=token,
@@ -518,6 +660,26 @@ def main() -> None:
                 "id": playlist_id,
                 "url": f"https://www.youtube.com/playlist?list={playlist_id}",
                 **playlist_result,
+            }
+        if not args.no_thumbnail:
+            thumbnail_path = args.thumbnail
+            if thumbnail_path is None:
+                thumbnail_path = args.output.with_name(f"{args.output.stem}_thumbnail.jpg")
+                thumbnail_path = extract_thumbnail(
+                    video_path=args.video,
+                    thumbnail_path=thumbnail_path,
+                    seconds=float(args.thumbnail_time),
+                )
+            elif not thumbnail_path.is_file():
+                raise SystemExit(f"thumbnail not found: {thumbnail_path}")
+            result["thumbnail"] = {
+                "path": str(thumbnail_path),
+                "time_seconds": None if args.thumbnail else float(args.thumbnail_time),
+                "upload": upload_thumbnail(
+                    token=token,
+                    video_id=str(video_id),
+                    thumbnail_path=thumbnail_path,
+                ),
             }
     save_json(args.output, result)
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)

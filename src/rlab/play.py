@@ -287,6 +287,10 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     return bool(terminated or truncated)
 
 
+def playback_env_config(config):
+    return replace(config, done_on_events=())
+
+
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
     if scale < 1:
         raise ValueError("--obs-stack-scale must be >= 1")
@@ -667,12 +671,14 @@ def main(argv: list[str] | None = None) -> None:
         infer_artifact_config=True,
         print_loaded_metadata=True,
     )
-    config = resolve_env_config(
-        env_config_from_args(
-            args,
-            max_episode_steps_attr="max_steps",
-            include_states=True,
-            include_env_threads=True,
+    config = playback_env_config(
+        resolve_env_config(
+            env_config_from_args(
+                args,
+                max_episode_steps_attr="max_steps",
+                include_states=True,
+                include_env_threads=True,
+            )
         )
     )
     effective_policy_env = args.policy_env

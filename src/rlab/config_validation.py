@@ -14,17 +14,16 @@ from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document, render_template_vars
 from rlab.early_stop import normalize_early_stop_config
-from rlab.env import EnvConfig
 from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
+from rlab.train_config import env_config_allowed_keys
 
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
-ENV_CONFIG_ALLOWED_KEYS = frozenset(EnvConfig.__dataclass_fields__) | {"env_provider"}
-ENV_CONFIG_ALLOWED_KEYS = ENV_CONFIG_ALLOWED_KEYS | {"n_envs"}
+ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
         {"group_id", "seed", "recipe_id", "spec_id", "timestamp", "utc"}
@@ -530,9 +529,7 @@ def _validate_goal_release(document: Mapping[str, Any], *, label: str) -> None:
         label=f"{label}.release.huggingface",
     )
     if not checkpoint_filename.endswith(".zip"):
-        raise ValueError(
-            f"{label}.release.huggingface.checkpoint_filename must end with .zip"
-        )
+        raise ValueError(f"{label}.release.huggingface.checkpoint_filename must end with .zip")
     _require_non_empty_string(
         huggingface,
         "preview_filename",
@@ -815,9 +812,7 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
         _capture_issue(issues, path, repo_root, lambda path=path: load_recipe_document(path))
 
     env_configs = sorted(
-        path
-        for path in goals_dir.glob("*/_env-*.yaml")
-        if _active_experiment_path(path)
+        path for path in goals_dir.glob("*/_env-*.yaml") if _active_experiment_path(path)
     )
     counts["env_configs"] = len(env_configs)
     for path in env_configs:
