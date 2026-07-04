@@ -162,6 +162,19 @@ def native_obs_crop(config: EnvConfig) -> tuple[int, int, int, int] | None:
     return None
 
 
+def rendered_preprocess_hud_crop_top(config: EnvConfig) -> int:
+    obs_crop = validate_obs_crop(config.obs_crop)
+    if obs_crop is None:
+        return config.hud_crop_top
+    top, right, bottom, left = obs_crop
+    if right or bottom or left:
+        raise ValueError(
+            "rendered replay preprocessing only supports obs_crop top cropping; "
+            f"got obs_crop={list(obs_crop)}",
+        )
+    return top
+
+
 def resolve_env_config(config: EnvConfig) -> EnvConfig:
     if not config.game:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
@@ -969,7 +982,11 @@ def wrap_retro_env(env: gym.Env, config: EnvConfig, seed: int | None = None) -> 
     if config.sticky_action_prob > 0.0:
         env = StickyAction(env, config.sticky_action_prob)
     env = RetroProgressInfo(env, config=config)
-    env = RetroPreprocess(env, config.observation_size, hud_crop_top=config.hud_crop_top)
+    env = RetroPreprocess(
+        env,
+        config.observation_size,
+        hud_crop_top=rendered_preprocess_hud_crop_top(config),
+    )
     env = gym.wrappers.TimeLimit(env, max_episode_steps=config.max_episode_steps)
     if config.clip_rewards:
         env = ClipRewardEnv(env)

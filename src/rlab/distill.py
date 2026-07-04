@@ -194,6 +194,40 @@ def concatenate_datasets(datasets: Sequence[dict[str, np.ndarray]]) -> dict[str,
     }
 
 
+def empty_sequence_dataset() -> dict[str, list[np.ndarray] | list[int]]:
+    return {"image": [], "task": [], "action": []}
+
+
+def append_model_sample(
+    samples: dict[str, list[np.ndarray] | list[int]],
+    model_obs: dict[str, np.ndarray],
+    action: int,
+) -> None:
+    images = samples["image"]
+    tasks = samples["task"]
+    actions = samples["action"]
+    assert isinstance(images, list)
+    assert isinstance(tasks, list)
+    assert isinstance(actions, list)
+    images.append(np.asarray(model_obs["image"][0], dtype=np.uint8).copy())
+    tasks.append(np.asarray(model_obs["task"][0], dtype=np.float32).copy())
+    actions.append(int(action))
+
+
+def materialize_sequence_dataset(samples: dict[str, list[np.ndarray] | list[int]]) -> dict[str, np.ndarray]:
+    images = samples["image"]
+    tasks = samples["task"]
+    actions = samples["action"]
+    assert isinstance(images, list)
+    assert isinstance(tasks, list)
+    assert isinstance(actions, list)
+    return {
+        "image": np.stack(images, axis=0),
+        "task": np.stack(tasks, axis=0),
+        "action": np.asarray(actions, dtype=np.int64),
+    }
+
+
 def _copy_teacher_module(
     student_state: dict[str, torch.Tensor],
     teacher_state: dict[str, torch.Tensor],
@@ -261,6 +295,89 @@ def initialize_student_from_teacher(student: PPO, teacher: PPO) -> None:
     student.policy.load_state_dict(student_state)
 
 
+def fit_policy_supervised(
+    *,
+    model: PPO,
+    dataset: dict[str, np.ndarray],
+    env_config: EnvConfig,
+    output_path: Path,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    seed: int,
+    freeze_image_features: bool,
+    action_logit_scale: float,
+    run_description: str,
+    recipe_slug: str,
+) -> dict[str, Any]:
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    if freeze_image_features:
+        for name, parameter in model.policy.named_parameters():
+            if "features_extractor" in name and ".extractors.image." in name:
+                parameter.requires_grad = False
+    trainable_parameters = [parameter for parameter in model.policy.parameters() if parameter.requires_grad]
+    if not trainable_parameters:
+        raise ValueError("no trainable policy parameters remain")
+    optimizer = torch.optim.Adam(trainable_parameters, lr=learning_rate, eps=1e-8)
+    sample_count = int(dataset["action"].shape[0])
+    losses: list[float] = []
+    accuracies: list[float] = []
+    for _epoch in range(epochs):
+        indices = rng.permutation(sample_count)
+        for start in range(0, sample_count, batch_size):
+            batch_idx = indices[start : start + batch_size]
+            obs_batch = {
+                "image": dataset["image"][batch_idx],
+                "task": dataset["task"][batch_idx],
+            }
+            obs_tensor, _ = model.policy.obs_to_tensor(obs_batch)
+            action_tensor = torch.as_tensor(
+                dataset["action"][batch_idx],
+                dtype=torch.long,
+                device=model.policy.device,
+            )
+            distribution = model.policy.get_distribution(obs_tensor).distribution
+            loss = F.cross_entropy(distribution.logits, action_tensor)
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(trainable_parameters, 0.5)
+            optimizer.step()
+            with torch.no_grad():
+                pred = torch.argmax(distribution.logits, dim=1)
+                accuracies.append(float((pred == action_tensor).float().mean().item()))
+                losses.append(float(loss.item()))
+    if action_logit_scale <= 0.0:
+        raise ValueError("--action-logit-scale must be > 0")
+    if action_logit_scale != 1.0:
+        with torch.no_grad():
+            model.policy.action_net.weight.mul_(action_logit_scale)
+            model.policy.action_net.bias.mul_(action_logit_scale)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(output_path)
+    metadata_args = argparse.Namespace(
+        run_name=output_path.stem,
+        run_description=run_description,
+        goal_slug="Levels_1-1_1-2",
+        recipe_slug=recipe_slug,
+        recipe_path="",
+        queue_train_job_id=0,
+        runtime_image_ref="",
+        run_target="local-macbook",
+    )
+    write_model_metadata(output_path, metadata_args, env_config, "final")
+    return {
+        "samples": sample_count,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "loss": float(np.mean(losses[-10:])) if losses else None,
+        "accuracy": float(np.mean(accuracies[-10:])) if accuracies else None,
+        "action_logit_scale": action_logit_scale,
+        "freeze_image_features": freeze_image_features,
+        "model": str(output_path),
+    }
+
+
 def train_student(
     *,
     dataset: dict[str, np.ndarray],
@@ -277,7 +394,6 @@ def train_student(
     action_logit_scale: float = 1.0,
 ) -> dict[str, Any]:
     torch.manual_seed(seed)
-    rng = np.random.default_rng(seed)
     env = make_eval_vec_env(config=env_config, n_envs=1, seed=seed)
     try:
         model = PPO(
@@ -303,74 +419,22 @@ def train_student(
         )
         if init_teacher is not None:
             initialize_student_from_teacher(model, init_teacher)
-        if freeze_image_features:
-            for name, parameter in model.policy.named_parameters():
-                if "features_extractor" in name and ".extractors.image." in name:
-                    parameter.requires_grad = False
-        optimizer = torch.optim.Adam(
-            (parameter for parameter in model.policy.parameters() if parameter.requires_grad),
-            lr=learning_rate,
-            eps=1e-8,
-        )
-        sample_count = int(dataset["action"].shape[0])
-        losses: list[float] = []
-        accuracies: list[float] = []
-        for _epoch in range(epochs):
-            indices = rng.permutation(sample_count)
-            for start in range(0, sample_count, batch_size):
-                batch_idx = indices[start : start + batch_size]
-                obs_batch = {
-                    "image": dataset["image"][batch_idx],
-                    "task": dataset["task"][batch_idx],
-                }
-                obs_tensor, _ = model.policy.obs_to_tensor(obs_batch)
-                action_tensor = torch.as_tensor(
-                    dataset["action"][batch_idx],
-                    dtype=torch.long,
-                    device=model.policy.device,
-                )
-                distribution = model.policy.get_distribution(obs_tensor).distribution
-                loss = F.cross_entropy(distribution.logits, action_tensor)
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.policy.parameters(), 0.5)
-                optimizer.step()
-                with torch.no_grad():
-                    pred = torch.argmax(distribution.logits, dim=1)
-                    accuracies.append(float((pred == action_tensor).float().mean().item()))
-                    losses.append(float(loss.item()))
-        if action_logit_scale <= 0.0:
-            raise ValueError("--action-logit-scale must be > 0")
-        if action_logit_scale != 1.0:
-            with torch.no_grad():
-                model.policy.action_net.weight.mul_(action_logit_scale)
-                model.policy.action_net.bias.mul_(action_logit_scale)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        model.save(output_path)
-        args = argparse.Namespace(
-            run_name=output_path.stem,
+        return fit_policy_supervised(
+            model=model,
+            dataset=dataset,
+            env_config=env_config,
+            output_path=output_path,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            seed=seed,
+            freeze_image_features=freeze_image_features,
+            action_logit_scale=action_logit_scale,
             run_description="Behavior-cloned Mario Level1-1/Level1-2 distilled policy",
-            goal_slug="Levels_1-1_1-2",
             recipe_slug="distill-bc",
-            recipe_path="",
-            queue_train_job_id=0,
-            runtime_image_ref="",
-            run_target="local-macbook",
         )
-        write_model_metadata(output_path, args, env_config, "final")
     finally:
         env.close()
-
-    return {
-        "samples": int(dataset["action"].shape[0]),
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "loss": float(np.mean(losses[-10:])) if losses else None,
-        "accuracy": float(np.mean(accuracies[-10:])) if accuracies else None,
-        "action_logit_scale": action_logit_scale,
-        "freeze_image_features": freeze_image_features,
-        "model": str(output_path),
-    }
 
 
 def run_sequence_episode(
@@ -446,6 +510,130 @@ def run_sequence_episode(
         }
     finally:
         env.close()
+
+
+def collect_success_sequence_samples(
+    *,
+    model: PPO,
+    config: EnvConfig,
+    seed: int,
+    successes: int,
+    max_attempts: int,
+    max_steps: int,
+    deterministic: bool,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    collected = empty_sequence_dataset()
+    success_summaries: list[dict[str, Any]] = []
+    failure_summaries: list[dict[str, Any]] = []
+    for attempt in range(max_attempts):
+        env = make_eval_vec_env(
+            config=replace(config, state="Level1-1", states=(), state_probs=()),
+            n_envs=1,
+            seed=seed + attempt,
+        )
+        episode_samples = empty_sequence_dataset()
+        try:
+            obs = env.reset()
+            active_info_value: tuple[int | str, ...] | None = (0, 0)
+            reward_total = 0.0
+            max_x = 0
+            max_completed_level_count = 0
+            final_info: dict[str, Any] = {}
+            died = False
+            terminated = False
+            steps = 0
+            for step in range(1, max_steps + 1):
+                steps = step
+                observation_spaces = getattr(model.observation_space, "spaces", None)
+                if isinstance(obs, dict) and isinstance(observation_spaces, dict):
+                    model_obs = obs
+                else:
+                    image_obs = obs["image"] if isinstance(obs, dict) else obs
+                    model_obs = model_observation(
+                        model,
+                        np.asarray(image_obs),
+                        config,
+                        active_info_value=active_info_value,
+                    )
+                if not isinstance(model_obs, dict):
+                    raise ValueError("self-imitation requires a task-conditioned dict-observation model")
+                action, _ = model.predict(model_obs, deterministic=deterministic)
+                action_value = single_env_action(action)
+                append_model_sample(episode_samples, model_obs, action_value)
+                obs, rewards, dones, infos = env.step(np.asarray([action_value]))
+                info = dict(infos[0])
+                final_info = info
+                reward_total += float(rewards[0])
+                max_x = max(max_x, int(info.get("max_x_pos", 0)))
+                next_info_value = task_info_value_from_info(info, config)
+                if next_info_value is not None:
+                    active_info_value = next_info_value
+                if bool(info.get("died")):
+                    died = True
+                terminated = bool(dones[0])
+                completed_count = int(info.get("completed_level_count") or max_completed_level_count)
+                max_completed_level_count = max(max_completed_level_count, completed_count)
+                if max_completed_level_count >= 2 or died or terminated:
+                    break
+            episode_summary = {
+                "attempt": attempt + 1,
+                "seed": seed + attempt,
+                "steps": steps,
+                "reward": reward_total,
+                "max_x_pos": max_x,
+                "completed_level_count": max_completed_level_count,
+                "success": max_completed_level_count >= 2 and not died,
+                "died": died,
+                "terminated": terminated,
+                "final_info": final_info,
+            }
+            if episode_summary["success"]:
+                for key in ("image", "task", "action"):
+                    target = collected[key]
+                    source = episode_samples[key]
+                    assert isinstance(target, list)
+                    assert isinstance(source, list)
+                    target.extend(source)
+                success_summaries.append(episode_summary)
+                print(json.dumps({"kind": "self_success", **episode_summary}, sort_keys=True), flush=True)
+                if len(success_summaries) >= successes:
+                    break
+            else:
+                failure_summaries.append(episode_summary)
+                if (attempt + 1) % 20 == 0:
+                    recent = failure_summaries[-20:]
+                    print(
+                        json.dumps(
+                            {
+                                "kind": "self_collect_progress",
+                                "attempts": attempt + 1,
+                                "successes": len(success_summaries),
+                                "recent_max_x_pos": max(item["max_x_pos"] for item in recent),
+                                "recent_cleared_level1": sum(
+                                    1 for item in recent if int(item["completed_level_count"]) >= 1
+                                ),
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+        finally:
+            env.close()
+    image_samples = collected["image"]
+    assert isinstance(image_samples, list)
+    if not success_summaries or not image_samples:
+        raise RuntimeError(f"collected no successful sequence trajectories in {max_attempts} attempts")
+    return (
+        materialize_sequence_dataset(collected),
+        {
+            "attempts": len(success_summaries) + len(failure_summaries),
+            "requested_successes": successes,
+            "successes": len(success_summaries),
+            "failures": len(failure_summaries),
+            "success_episodes": success_summaries,
+            "failure_summary_tail": failure_summaries[-10:],
+        },
+    )
 
 
 def cmd_train(args: argparse.Namespace) -> int:
@@ -541,6 +729,58 @@ def cmd_sequence_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_self_train(args: argparse.Namespace) -> int:
+    config = mario_student_config()
+    env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+    try:
+        model = PPO.load(args.model, env=env, device=resolve_sb3_device(args.device))
+        started_at = time.perf_counter()
+        dataset, collection_summary = collect_success_sequence_samples(
+            model=model,
+            config=config,
+            seed=args.seed,
+            successes=args.successes,
+            max_attempts=args.max_attempts,
+            max_steps=args.max_steps,
+            deterministic=args.deterministic,
+        )
+        if args.dataset_output:
+            Path(args.dataset_output).parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                args.dataset_output,
+                image=dataset["image"],
+                task=dataset["task"],
+                action=dataset["action"],
+            )
+        train_summary = fit_policy_supervised(
+            model=model,
+            dataset=dataset,
+            env_config=config,
+            output_path=Path(args.output),
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            seed=args.seed,
+            freeze_image_features=args.freeze_image_features,
+            action_logit_scale=args.action_logit_scale,
+            run_description="Self-imitation distilled Mario Level1-1 into Level1-2 sequence policy",
+            recipe_slug="distill-self-imitation",
+        )
+    finally:
+        env.close()
+    summary = {
+        "kind": "distill_self_train",
+        "base_model": args.model,
+        "elapsed_seconds": time.perf_counter() - started_at,
+        "collection": collection_summary,
+        "train": train_summary,
+    }
+    summary_path = Path(args.output).with_suffix(".self_distill.json")
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rlab distill")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -572,6 +812,26 @@ def build_parser() -> argparse.ArgumentParser:
     seq.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False)
     seq.add_argument("--output")
     seq.set_defaults(func=cmd_sequence_eval)
+
+    self_train = subparsers.add_parser(
+        "self-train",
+        help="collect successful stochastic sequence rollouts and clone them back into the policy",
+    )
+    self_train.add_argument("--model", required=True)
+    self_train.add_argument("--output", default="runs/distill/levels_1_1_1_2_self/model.zip")
+    self_train.add_argument("--dataset-output")
+    self_train.add_argument("--successes", type=int, default=3)
+    self_train.add_argument("--max-attempts", type=int, default=200)
+    self_train.add_argument("--max-steps", type=int, default=9000)
+    self_train.add_argument("--epochs", type=int, default=80)
+    self_train.add_argument("--batch-size", type=int, default=256)
+    self_train.add_argument("--learning-rate", type=float, default=3e-5)
+    self_train.add_argument("--seed", type=int, default=10000)
+    self_train.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
+    self_train.add_argument("--freeze-image-features", action="store_true")
+    self_train.add_argument("--action-logit-scale", type=float, default=5.0)
+    self_train.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False)
+    self_train.set_defaults(func=cmd_self_train)
     return parser
 
 

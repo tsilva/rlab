@@ -11,7 +11,7 @@ description: >-
   contract's bottleneck clear-rate gate before out-of-process eval ranking.
 train:
   policy:
-    timesteps: 10000000
+    timesteps: 50000000
     torch_num_threads: 1
     n_steps: 512
     batch_size: 512

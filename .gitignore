@@ -65,3 +65,5 @@ events.out.tfevents.*
 *.swo
 
 .secret/
+
+artifacts/

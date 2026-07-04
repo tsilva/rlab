@@ -895,6 +895,34 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         frame_skip.assert_called_once()
         retro_preprocess.assert_not_called()
 
+    def test_rendered_replay_preprocess_uses_top_obs_crop(self) -> None:
+        class FakeSpace:
+            def seed(self, seed):
+                self.seed_value = seed
+
+        class FakeEnv:
+            action_space = FakeSpace()
+            observation_space = FakeSpace()
+
+        sentinel = FakeEnv()
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            obs_crop=(32, 0, 0, 0),
+        )
+
+        with (
+            patch("rlab.env.make_provider_env", return_value=sentinel),
+            patch("rlab.env.FrameSkip", side_effect=lambda env, skip, max_pool: env),
+            patch("rlab.env.RetroProgressInfo", side_effect=lambda env, config: env),
+            patch("rlab.env.RetroPreprocess", side_effect=lambda env, size, hud_crop_top: env) as preprocess,
+            patch("rlab.env.gym.wrappers.TimeLimit", side_effect=lambda env, max_episode_steps: env),
+        ):
+            env = make_rendered_replay_env(config=config, seed=7)
+
+        self.assertIs(env, sentinel)
+        preprocess.assert_called_once_with(sentinel, 84, hud_crop_top=32)
+
     def test_make_vec_envs_uses_provider_factory(self) -> None:
         class FakeNative:
             observation_space = gym.spaces.Box(

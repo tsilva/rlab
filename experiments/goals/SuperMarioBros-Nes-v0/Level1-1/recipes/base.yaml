@@ -12,7 +12,7 @@ description: >-
 train:
   policy:
     # Queue-backed training caps must be explicit in recipes; no runtime default is supplied.
-    timesteps: 10000000
+    timesteps: 50000000
     # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.
     torch_num_threads: 1
     # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
@@ -25,7 +25,7 @@ train:
     learning_rate: 1.5e-4
     # Decays to a smaller late learning rate so the policy can consolidate near-clear behavior instead of overshooting it.
     learning_rate_final: 1.0e-4
-    # Spreads the learning-rate decay across the early part of the 10M cap, keeping exploration active while tapering before final promotion.
+    # Spreads the learning-rate decay across the early part of the 50M cap, keeping exploration active while tapering before final promotion.
     learning_rate_schedule_timesteps: 4000000
     # Encourages early action diversity so the policy keeps trying jump/run timing variants before it has reliable clears.
     ent_coef: 0.01
