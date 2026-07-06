@@ -244,12 +244,14 @@ def resolve_mixed_state_config(config: EnvConfig, n_envs: int) -> EnvConfig:
                 f"({len(config.state_probs)} != {len(config.states)})",
             )
         probs = np.asarray(config.state_probs, dtype=np.float64)
-        if not np.all(np.isfinite(probs)) or np.any(probs <= 0.0):
-            raise ValueError("--state-probs values must be positive finite numbers")
+        if not np.all(np.isfinite(probs)) or np.any(probs < 0.0):
+            raise ValueError(
+                "--state-probs values must be non-negative finite numbers",
+            )
         total = float(probs.sum())
         if not np.isfinite(total) or total <= 0.0:
             raise ValueError("--state-probs must have a positive finite sum")
-        return replace(config, state_probs=tuple(float(prob / total) for prob in probs))
+        return config
 
     if len(config.states) != n_envs:
         raise ValueError(
@@ -266,12 +268,22 @@ def state_distribution_metadata(config: EnvConfig) -> list[dict[str, float | str
         distribution: dict[str, float] = {}
         for state, prob in zip(config.states, config.state_probs, strict=True):
             distribution[state] = distribution.get(state, 0.0) + float(prob)
+        total = float(sum(distribution.values()))
         return [
-            {"state": state, "probability": probability}
+            {"state": state, "probability": probability / total}
             for state, probability in distribution.items()
         ]
     probability = 1.0 / len(config.states)
     return [{"state": state, "probability": probability} for state in config.states]
+
+
+def state_weight_mapping(config: EnvConfig) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    if not config.states or not config.state_probs:
+        return weights
+    for state, weight in zip(config.states, config.state_probs, strict=True):
+        weights[state] = weights.get(state, 0.0) + float(weight)
+    return weights
 
 
 def state_name_candidates_from_level_id(level_id: str) -> tuple[str, ...]:
@@ -1084,10 +1096,7 @@ def _native_vec_kwargs(
     }
     if config.states:
         native_kwargs["state"] = (
-            {
-                item["state"]: item["probability"]
-                for item in state_distribution_metadata(config)
-            }
+            state_weight_mapping(config)
             if config.state_probs
             else list(config.states)
         )

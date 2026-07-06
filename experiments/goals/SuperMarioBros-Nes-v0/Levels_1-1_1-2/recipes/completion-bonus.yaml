@@ -1,0 +1,30 @@
+defaults:
+- base@_global_
+- _self_
+recipe_id: completion-bonus
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: task-conditioned-lowkl
+  schedule: lrdecay
+  variant: completion-bonus
+description: >-
+  Seed {seed} trains the task-conditioned {goal_id} baseline with an explicit
+  clean-clear reward bonus in score reward mode, testing whether the Level1-2
+  bottleneck needs direct completion credit while preserving the same starts,
+  task conditioning, done events, and PPO envelope as the base recipe.
+train:
+  environment:
+    env_config:
+      env_wrappers:
+      - id: SuperMarioBrosNesProgressInfoWrapper
+      - id: SuperMarioBrosNesRewardEnvWrapper
+        kwargs:
+          reward_mode: score
+          progress_reward_scale: 1.0
+          terminal_reward: 50
+          death_penalty: 25
+          completion_reward: 50.0
+          reward_scale: 10
+          score_progress_clipped: false
+reward:
+  completion_reward: 50.0

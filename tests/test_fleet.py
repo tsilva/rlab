@@ -40,6 +40,9 @@ class FakeCursor:
     def fetchall(self):
         return self.rows
 
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
 
 class FakeConnection:
     def __init__(self, rows) -> None:
@@ -309,6 +312,74 @@ class FleetQueueTests(unittest.TestCase):
         self.assertIn("rtx4090-screening target=rtx4090", text)
         self.assertIn("max_train_containers=5", text)
         self.assertIn("promote by eval", text)
+
+    def test_existing_container_protects_runtime_image_from_prune(self) -> None:
+        config = sample_config()
+        machine = config.hosts["beast-3"]
+        image = fleet.RuntimeHostImage(
+            machine="beast-3",
+            repository="ghcr.io/tsilva/rlab/rlab-train",
+            digest="sha256:" + "c" * 64,
+            image_id="sha256:" + "1" * 64,
+        )
+        container = fleet.JobContainer(
+            machine="beast-3",
+            name="rlab-job-beast-3-train-old",
+            state="exited",
+            status="Exited (0)",
+            labels={
+                "rlab.runtime-image-ref": image.runtime_image_ref,
+            },
+        )
+
+        stale = fleet.stale_runtime_host_images(
+            machine=machine,
+            images=[image],
+            demands=[],
+            containers=[container],
+            job_kind="train",
+        )
+
+        self.assertEqual(stale, ())
+
+    def test_reconcile_cancels_running_launch_when_cancel_requested(self) -> None:
+        config = sample_config()
+        machine = config.hosts["beast-3"]
+        conn = FakeConnection([{"cancel_requested": True}])
+        launch = {
+            "launch_id": "train-cancelme",
+            "job_kind": "train",
+            "job_id": 42,
+        }
+        container = fleet.JobContainer(
+            machine="beast-3",
+            name="rlab-job-beast-3-train-train-cancelme",
+            state="running",
+            status="Up 1 hour",
+            labels={
+                "rlab.launch-id": "train-cancelme",
+                "rlab.job-kind": "train",
+                "rlab.job-id": "42",
+            },
+        )
+
+        with (
+            mock.patch.object(fleet, "active_job_launches", return_value=[launch]),
+            mock.patch.object(fleet, "list_job_containers", return_value=[container]),
+            mock.patch.object(fleet, "cancel_running_job_launch", return_value=True) as cancel_launch,
+            mock.patch.object(fleet, "mark_job_launch_running") as mark_running,
+        ):
+            reconciled = fleet.reconcile_machine_launches(conn, machine)
+
+        self.assertEqual(reconciled, 1)
+        cancel_launch.assert_called_once_with(
+            conn,
+            machine,
+            launch=launch,
+            container=container,
+            color=None,
+        )
+        mark_running.assert_not_called()
 
     def test_capacity_policy_rejects_lane_above_host_cap(self) -> None:
         config = sample_config()

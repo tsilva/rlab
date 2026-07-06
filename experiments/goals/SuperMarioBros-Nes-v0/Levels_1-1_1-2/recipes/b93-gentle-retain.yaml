@@ -1,0 +1,23 @@
+defaults:
+- b93-slowent-l12bias@_global_
+- _self_
+recipe_id: b93-gentle-retain
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: historical-b93
+  schedule: gentle-update-retention
+  variant: l12bias-gentle-retain
+description: >-
+  Seed {seed} keeps the historical B93/B116 mixed Level1-1/Level1-2 reward,
+  sampling, entropy schedule, and network shape, but narrows the PPO update
+  envelope. The hypothesis is that B93 discovers both levels but late policy
+  updates are large enough to knock one rolling 100-attempt completion window
+  below the other; slightly lower learning rate, clip range, and target KL
+  should improve retention without changing the task contract.
+train:
+  policy:
+    timesteps: 50000000
+    learning_rate: 1.25e-4
+    learning_rate_final: 1.25e-4
+    clip_range: 0.12
+    target_kl: 0.12

@@ -60,8 +60,13 @@ def parse_state_probs(value: str | list[float] | tuple[float, ...]) -> tuple[flo
         return ()
     if isinstance(value, (list, tuple)):
         probs = tuple(float(prob) for prob in value)
-        if any(not math.isfinite(prob) or prob <= 0.0 for prob in probs):
-            raise ValueError("--state-probs values must be positive finite numbers")
+        if any(not math.isfinite(prob) or prob < 0.0 for prob in probs) or not any(
+            prob > 0.0 for prob in probs
+        ):
+            raise ValueError(
+                "--state-probs values must be non-negative finite numbers with "
+                "at least one positive value",
+            )
         return probs
     probs: list[float] = []
     for item in value.split(","):
@@ -72,9 +77,17 @@ def parse_state_probs(value: str | list[float] | tuple[float, ...]) -> tuple[flo
             prob = float(item)
         except ValueError as exc:
             raise ValueError(f"--state-probs contains a non-numeric value: {item!r}") from exc
-        if not math.isfinite(prob) or prob <= 0.0:
-            raise ValueError("--state-probs values must be positive finite numbers")
+        if not math.isfinite(prob) or prob < 0.0:
+            raise ValueError(
+                "--state-probs values must be non-negative finite numbers with "
+                "at least one positive value",
+            )
         probs.append(prob)
+    if not any(prob > 0.0 for prob in probs):
+        raise ValueError(
+            "--state-probs values must be non-negative finite numbers with "
+            "at least one positive value",
+        )
     return tuple(probs)
 
 

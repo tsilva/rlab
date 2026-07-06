@@ -1,0 +1,19 @@
+defaults:
+- b93-slowent-l12bias@_global_
+- _self_
+recipe_id: b93-slowent-l12bias-extended
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: historical-b93
+  schedule: slowent
+  variant: l12bias-extended
+description: >-
+  Seed {seed} extends the reproduced historical B93/B116 Level1-1/Level1-2
+  mixed PPO settings beyond the original 5M-step high-watermark cap, preserving
+  the same 40/60 sampling, slow entropy floor, PPO envelope, clipped score
+  progress, and no-completion-reward contract while letting the current goal's
+  100/100 bottleneck early-stop gate decide whether the shared policy fully
+  solves both levels.
+train:
+  policy:
+    timesteps: 50000000

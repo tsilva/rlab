@@ -1,0 +1,20 @@
+defaults:
+- level2-medium@_global_
+- _self_
+recipe_id: level2-medium-conservative
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: task-conditioned-lowkl
+  schedule: lrdecay
+  variant: level2-medium-conservative
+description: >-
+  Seed {seed} trains the task-conditioned {goal_id} 40/60 Level1-2-medium
+  sampling recipe with a more conservative PPO update envelope, testing whether
+  the balanced sampling mix keeps both levels improving while reducing
+  rolling-window regressions from large policy updates.
+train:
+  policy:
+    learning_rate: 1.0e-4
+    learning_rate_final: 7.0e-5
+    clip_range: 0.1
+    target_kl: 0.08

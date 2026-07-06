@@ -247,7 +247,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="csv",
         env_config_key="state_probs",
-        help="Comma-separated positive weights for --states. Values are normalized and sampled by the native vector env independently on each episode reset.",
+        help="Comma-separated non-negative sampling weights for --states. The native vector env normalizes weights and samples independently on each episode reset.",
     ),
     TrainConfigField(
         "info_events_json",

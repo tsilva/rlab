@@ -10,8 +10,8 @@ machines:
       - docker
       pull_policy: always
     limits:
-      max_parallel_containers: 5
-      max_train_containers: 5
+      max_parallel_containers: 6
+      max_train_containers: 6
     paths:
       host_root: /home/tsilva/rlab
       payloads_dir: /home/tsilva/rlab/payloads

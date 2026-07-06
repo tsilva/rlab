@@ -108,7 +108,7 @@ def env_config_metadata(config: EnvConfig) -> dict[str, Any]:
         for spec in config.env_wrappers
     ]
     if config.state_probs:
-        metadata["state_sampling_mode"] = "probability"
+        metadata["state_sampling_mode"] = "weighted"
     elif config.states:
         metadata["state_sampling_mode"] = "fixed_per_env"
     else:
@@ -426,7 +426,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
             list(value) for value in config.task_conditioning_info_values
         ],
         "state_sampling_mode": (
-            "probability" if config.state_probs else "fixed_per_env" if config.states else "single"
+            "weighted" if config.state_probs else "fixed_per_env" if config.states else "single"
         ),
         "state_distribution": state_distribution_metadata(config),
         "frame_skip": config.frame_skip,

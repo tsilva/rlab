@@ -296,11 +296,13 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty state"):
             parse_states("A, ,C")
 
-    def test_parse_state_probs_normalizes_later_but_validates_positive_finite(self) -> None:
+    def test_parse_state_probs_accepts_native_sampling_weights(self) -> None:
         self.assertEqual(parse_state_probs("1, 3"), (1.0, 3.0))
-        self.assertEqual(parse_state_probs([0.5, 1]), (0.5, 1.0))
-        with self.assertRaisesRegex(ValueError, "positive finite"):
-            parse_state_probs("1,0")
+        self.assertEqual(parse_state_probs([0.5, 0]), (0.5, 0.0))
+        with self.assertRaisesRegex(ValueError, "non-negative finite"):
+            parse_state_probs("1,-1")
+        with self.assertRaisesRegex(ValueError, "at least one positive"):
+            parse_state_probs("0,0")
 
     def test_parse_obs_crop_accepts_bottom_crop(self) -> None:
         self.assertEqual(parse_obs_crop("0,0,32,0"), (0, 0, 32, 0))
@@ -1106,7 +1108,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                     n_envs=3,
                 )
 
-    def test_state_probs_are_normalized_and_count_checked(self) -> None:
+    def test_state_probs_are_native_weights_and_count_checked(self) -> None:
         with patch(
             "rlab.env.retro.data.list_states",
             return_value=["Level1-1", "Level1-2"],
@@ -1119,7 +1121,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 ),
                 n_envs=8,
             )
-            self.assertEqual(config.state_probs, (0.25, 0.75))
+            self.assertEqual(config.state_probs, (1.0, 3.0))
 
             with self.assertRaisesRegex(ValueError, "count must match"):
                 resolve_mixed_state_config(
@@ -1130,6 +1132,16 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                     ),
                     n_envs=8,
                 )
+
+            config = resolve_mixed_state_config(
+                EnvConfig(
+                    game="SuperMarioBros-Nes-v0",
+                    states=("Level1-1", "Level1-2"),
+                    state_probs=(1.0, 0.0),
+                ),
+                n_envs=8,
+            )
+            self.assertEqual(config.state_probs, (1.0, 0.0))
 
     def test_state_probs_require_states(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires --states"):
@@ -1597,6 +1609,46 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
         self.assertEqual(created[0]["state"], {"Level1-1": 0.5, "Level1-2": 0.5})
         self.assertNotIn("states", created[0])
         self.assertNotIn("state_probs", created[0])
+
+    def test_training_vec_env_passes_raw_state_weights_to_native_vec_env(self) -> None:
+        created: list[dict[str, object]] = []
+
+        class FakeNative:
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.MultiBinary(2)
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                created.append(kwargs)
+
+            def seed(self, seed):
+                return [seed]
+
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            action_set="native",
+            reward_mode="native",
+            states=("Level1-1", "Level1-2"),
+            state_probs=(1.0, 3.0),
+        )
+        with (
+            patch("rlab.env.RetroVecEnv", FakeNative),
+            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
+            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
+            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
+            patch(
+                "rlab.env.retro.data.list_states",
+                return_value=["Level1-1", "Level1-2"],
+            ),
+        ):
+            make_training_vec_env(config, n_envs=16, seed=7)
+
+        self.assertEqual(created[0]["state"], {"Level1-1": 1.0, "Level1-2": 3.0})
 
     def test_training_vec_env_passes_fixed_lane_states_as_native_state_list(self) -> None:
         created: list[dict[str, object]] = []
@@ -2680,7 +2732,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 4,
             )
             self.assertTrue(metadata["training_metadata"]["preprocessing"]["obs_grayscale"])
-            self.assertEqual(metadata["env_config"]["state_sampling_mode"], "probability")
+            self.assertEqual(metadata["env_config"]["state_sampling_mode"], "weighted")
             self.assertEqual(metadata["env_config"]["state_probs"], [0.25, 0.75])
             self.assertEqual(
                 metadata["env_config"]["state_distribution"],

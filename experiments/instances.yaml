@@ -9,17 +9,18 @@ instances:
     cpus: 12+
     memory: 48+
     image_id: ''
-    default_workers: 5
-    hardware_max_workers: 5
+    default_workers: 6
+    hardware_max_workers: 6
     env_threads: 4
     torch_num_threads: 1
-    expected_aggregate_wall_fps: 6200
+    expected_aggregate_wall_fps: null
     lower_contention_workers:
     - 3
     - 4
     notes:
     - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
-    - Use 5 train containers with env_threads=4 for screening queues.
+    - Use 6 train containers with env_threads=4 for screening queues.
+    - Re-measure aggregate wall FPS for six containers; the older five-container expectation was about 6200.
     - Use 3-4 train containers with env_threads=4 when individual latency or lower contention matters.
   rtx2060:
     aliases:

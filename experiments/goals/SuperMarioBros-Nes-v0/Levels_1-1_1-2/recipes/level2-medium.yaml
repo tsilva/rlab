@@ -1,0 +1,20 @@
+defaults:
+- base@_global_
+- _self_
+recipe_id: level2-medium
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: task-conditioned-lowkl
+  schedule: lrdecay
+  variant: level2-medium
+description: >-
+  Seed {seed} trains the task-conditioned {goal_id} baseline with a moderate
+  Level1-2 sampling bias, preserving one shared policy and the same termination,
+  reward, and PPO contract while testing whether 40/60 exposure improves the
+  Level1-2 bottleneck without starving Level1-1.
+train:
+  environment:
+    env_config:
+      state_probs:
+      - 0.4
+      - 0.6

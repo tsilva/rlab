@@ -10,13 +10,13 @@ lanes:
   target: rtx4090
   host: beast-3
   manager: rlab_fleet_shepherd
-  max_train_containers: 5
+  max_train_containers: 6
   env_threads: 4
   use_for:
   - screen
   - confirm_when_total_throughput_matters
   reserve_workers: 0
-  notes: Highest aggregate throughput for the current n_envs=16, n_steps=512 Mario PPO shape.
+  notes: Highest aggregate throughput for the current n_envs=16, n_steps=512 Mario PPO shape; six-container throughput should be re-measured against the older five-container 6200 wall-FPS reference.
 - name: rtx4090-low-contention-confirm
   target: rtx4090
   host: beast-3

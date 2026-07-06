@@ -10,7 +10,7 @@ being hardened.
 
 | Use case | Target | Shape |
 | --- | --- | --- |
-| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 5 train containers, `env_threads=4` |
+| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 6 train containers, `env_threads=4` |
 | Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 train containers, `env_threads=4` |
 | Small-GPU batch screening | `rtx2060` / `beast-2` | 4 train containers, `env_threads=2` |
 | Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers, `env_threads=4` |
@@ -100,13 +100,14 @@ queue service and do not schedule experiments.
 - Target: `rtx4090`, alias `beast-3`.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
-- Enforced host capacity: `max_parallel_containers=5` in
+- Enforced host capacity: `max_parallel_containers=6` in
   `experiments/machines.yaml`.
-- Default operating shape: 5 train containers.
+- Default operating shape: 6 train containers.
 - Default runtime shape: `env_threads=4`, `torch_num_threads=1`.
 - Lower-contention shape: 3-4 workers with `env_threads=4`.
-- Current benchmark expectation: about 6200 aggregate wall FPS for the current
-  Mario PPO shape.
+- Current five-container benchmark expectation: about 6200 aggregate wall FPS
+  for the current Mario PPO shape. Re-measure aggregate wall FPS after the
+  six-container shape has enough steady-state samples.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.

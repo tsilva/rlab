@@ -1,0 +1,21 @@
+defaults:
+- b93-slowent-l12bias@_global_
+- _self_
+recipe_id: b93-lowent-finish
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: historical-b93
+  schedule: lower-late-entropy
+  variant: l12bias-lowent-finish
+description: >-
+  Seed {seed} keeps the reproduced historical B93/B116 mixed Level1-1/Level1-2
+  recipe but lowers the late entropy floor after the discovery phase. The
+  hypothesis is that the shared policy already discovers both tasks under the
+  B93 settings, while the final 100-attempt bottleneck window needs less
+  stochasticity to retain near-perfect clears on both levels at once. Sampling,
+  reward shaping, PPO clip/KL, and network shapes stay unchanged.
+train:
+  policy:
+    timesteps: 50000000
+    ent_coef_final: 1.0e-4
+    ent_coef_schedule_timesteps: 6000000

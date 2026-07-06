@@ -1,0 +1,21 @@
+defaults:
+- level2-medium@_global_
+- _self_
+recipe_id: level2-medium-gentle-kl
+template_vars:
+  env_id: SuperMarioBros-Nes-v0
+  recipe: task-conditioned-lowkl
+  schedule: lrdecay
+  variant: level2-medium-gentle-kl
+description: >-
+  Seed {seed} trains the task-conditioned {goal_id} 40/60 Level1-2-medium
+  sampling recipe with an intermediate PPO update envelope, testing whether
+  gentler learning rate, clip range, and target KL reduce the late clear-rate
+  regressions seen in the best medium run without slowing early discovery as
+  much as the conservative arm.
+train:
+  policy:
+    learning_rate: 1.25e-4
+    learning_rate_final: 8.5e-5
+    clip_range: 0.12
+    target_kl: 0.1

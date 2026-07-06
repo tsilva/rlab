@@ -2217,6 +2217,30 @@ def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContain
     return containers
 
 
+def parse_runtime_image_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
+    containers: list[JobContainer] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        labels = parse_docker_labels(str(row.get("Labels") or ""))
+        if not labels.get(f"{LABEL_PREFIX}runtime-image-ref"):
+            continue
+        containers.append(
+            JobContainer(
+                machine=machine.name,
+                name=str(row.get("Names") or row.get("Name") or ""),
+                state=str(row.get("State") or "").lower(),
+                status=str(row.get("Status") or ""),
+                labels=labels,
+            )
+        )
+    return containers
+
+
 def list_job_containers(machine: MachineConfig) -> list[JobContainer]:
     result = run_machine_docker(
         machine,
@@ -2233,6 +2257,24 @@ def list_job_containers(machine: MachineConfig) -> list[JobContainer]:
     if result.returncode != 0:
         raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
     return parse_job_containers(machine, result.stdout)
+
+
+def list_runtime_image_containers(machine: MachineConfig) -> list[JobContainer]:
+    result = run_machine_docker(
+        machine,
+        [
+            "ps",
+            "-a",
+            "--filter",
+            f"label={LABEL_PREFIX}runtime-image-ref",
+            "--format",
+            "{{json .}}",
+        ],
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
+    return parse_runtime_image_containers(machine, result.stdout)
 
 
 def parse_runtime_host_images(
@@ -2298,9 +2340,7 @@ def protected_runtime_image_refs(
             continue
         protected.add(normalize_runtime_image_ref(demand.runtime_image_ref))
     for container in containers:
-        if container.job_kind != job_kind:
-            continue
-        if container.state not in {"created", "restarting", "running"}:
+        if container.state in {"removing", "dead"}:
             continue
         runtime_image_ref = container.labels.get(f"{LABEL_PREFIX}runtime-image-ref")
         if not runtime_image_ref:
@@ -2361,7 +2401,7 @@ def prune_stale_runtime_images(
     color: bool | None = None,
 ) -> int:
     demands = queue_demands(conn)
-    containers = list_job_containers(machine)
+    containers = list_runtime_image_containers(machine)
     protected = protected_runtime_image_refs(
         machine=machine,
         demands=demands,
@@ -2765,6 +2805,63 @@ def launch_claimed_job_container(
         raise
 
 
+def launch_cancel_requested(conn, launch: Mapping[str, Any]) -> bool:
+    if str(launch.get("job_kind") or "") != "train":
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT cancel_requested
+            FROM train_jobs
+            WHERE id = %(job_id)s
+            """,
+            {"job_id": launch["job_id"]},
+        )
+        row = cur.fetchone()
+    return bool(row and row.get("cancel_requested"))
+
+
+def cancel_running_job_launch(
+    conn,
+    machine: MachineConfig,
+    *,
+    launch: Mapping[str, Any],
+    container: JobContainer,
+    color: bool | None = None,
+) -> bool:
+    launch_id = str(launch["launch_id"])
+    result = run_machine_docker(machine, ["stop", container.name], capture=True)
+    if result.returncode != 0:
+        log_shepherd_event(
+            machine=machine.name,
+            action="cancel",
+            result="failed",
+            launch_id=launch_id,
+            container=container.name,
+            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
+            color=color,
+        )
+        return False
+    synthetic = {
+        "job_kind": launch["job_kind"],
+        "job_id": launch["job_id"],
+        "launch_id": launch_id,
+        "status": "canceled",
+        "exit_code": 130,
+        "error": "cancel requested",
+    }
+    finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
+    log_shepherd_event(
+        machine=machine.name,
+        action="cancel",
+        result="ok",
+        launch_id=launch_id,
+        container=container.name,
+        color=color,
+    )
+    return True
+
+
 def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | None = None) -> int:
     launches = active_job_launches(conn, machine=machine.name)
     containers = {container.launch_id: container for container in list_job_containers(machine)}
@@ -2814,6 +2911,19 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
                 )
             reconciled += 1
             continue
+        if (
+            container.state in {"created", "restarting", "running"}
+            and launch_cancel_requested(conn, launch)
+        ):
+            if cancel_running_job_launch(
+                conn,
+                machine,
+                launch=launch,
+                container=container,
+                color=color,
+            ):
+                reconciled += 1
+                continue
         if container.state == "running":
             mark_job_launch_running(
                 conn,
