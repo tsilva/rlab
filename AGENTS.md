@@ -9,7 +9,7 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
-- Current forward runtime is `stable-retro-turbo==1.0.1.post6`.
+- Current forward runtime is `stable-retro-turbo==1.0.1.post7`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime pin source of truth: `pyproject.toml` and `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.

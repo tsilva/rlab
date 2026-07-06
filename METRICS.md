@@ -421,7 +421,7 @@ The run config is not a metric, but W&B stores all train CLI args plus resolved 
 configuration fields such as `game`, `state`, `states`, `state_probs`, `task_conditioning`,
 frame skip, action set, reward settings, termination settings, preprocessing settings, and
 state-distribution metadata.
-For post6+ Stable Retro Turbo, `state_probs` is the legacy field name for native
+For post7+ Stable Retro Turbo, `state_probs` is the legacy field name for native
 state sampling weights; `state_sampling_mode=weighted` marks this path, while
 `state_distribution` records the normalized probabilities derived from those weights.
 
