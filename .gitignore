@@ -53,6 +53,7 @@ experiments/goals/*/artifacts/
 *.onnx
 *.pt
 *.pth
+*.npz
 *.safetensors
 *.tfevents.*
 events.out.tfevents.*
