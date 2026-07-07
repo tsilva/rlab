@@ -19,6 +19,7 @@ EARLY_STOP_OPERATOR_CHOICES = (">", ">=", "<", "<=")
 FieldKind = Literal["value", "store_true", "bool_optional"]
 TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
+SequenceItemKind = Literal["str", "number", "rows"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,12 @@ class TrainConfigField:
     serialize: SerializeMode = "str"
     env_config_key: str | None = None
     queue_required: bool = False
+    non_empty: bool = False
+    validation_min: float | None = None
+    validation_max: float | None = None
+    sequence_items: SequenceItemKind | None = None
+    allow_empty_sequence: bool = False
+    mapping_value: bool = False
 
     @property
     def command_flag(self) -> str:
@@ -155,6 +162,13 @@ def train_config_field_names() -> frozenset[str]:
     return frozenset(field.dest for field in TRAIN_CONFIG_FIELDS)
 
 
+def train_config_field_for_key(key: str, *, include_env_aliases: bool = True) -> TrainConfigField | None:
+    for field in TRAIN_CONFIG_FIELDS:
+        if field.dest == key or (include_env_aliases and field.env_config_key == key):
+            return field
+    return None
+
+
 def queue_required_train_config_fields() -> tuple[str, ...]:
     return tuple(field.dest for field in TRAIN_CONFIG_FIELDS if field.queue_required)
 
@@ -172,18 +186,203 @@ def env_config_allowed_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
+def _label_path(label: str, key: str) -> str:
+    return f"{label}.{key}" if label else key
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_number_bounds(
+    *,
+    key: str,
+    label: str,
+    number: float,
+    minimum: float | None,
+    maximum: float | None,
+) -> None:
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{_label_path(label, key)} must be >= {minimum:g}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{_label_path(label, key)} must be <= {maximum:g}")
+
+
+def _validate_string_sequence(
+    *,
+    key: str,
+    label: str,
+    value: Any,
+    allow_empty: bool,
+) -> None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise ValueError(f"{_label_path(label, key)} must be a list")
+    if not value and not allow_empty:
+        raise ValueError(f"{_label_path(label, key)} must not be empty")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-empty string")
+
+
+def _validate_number_sequence(
+    *,
+    key: str,
+    label: str,
+    value: Any,
+    allow_empty: bool,
+) -> None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise ValueError(f"{_label_path(label, key)} must be a list")
+    if not value and not allow_empty:
+        raise ValueError(f"{_label_path(label, key)} must not be empty")
+    for index, item in enumerate(value):
+        if not isinstance(item, int | float) or isinstance(item, bool):
+            raise ValueError(f"{_label_path(label, key)}[{index}] must be a number")
+
+
+def _validate_row_sequence(
+    *,
+    key: str,
+    label: str,
+    value: Any,
+    allow_empty: bool,
+) -> None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise ValueError(f"{_label_path(label, key)} must be a list")
+    if not value and not allow_empty:
+        raise ValueError(f"{_label_path(label, key)} must not be empty")
+    for row_index, row in enumerate(value):
+        if not isinstance(row, Sequence) or isinstance(row, str | bytes) or not row:
+            raise ValueError(f"{_label_path(label, key)}[{row_index}] must be a non-empty list")
+        for column_index, item in enumerate(row):
+            if not isinstance(item, int | str) or isinstance(item, bool):
+                raise ValueError(
+                    f"{_label_path(label, key)}[{row_index}][{column_index}] "
+                    "must be an integer or string"
+                )
+
+
+def _validate_obs_crop_value(*, key: str, label: str, value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or len(value) != 4:
+        raise ValueError(f"{_label_path(label, key)} must be [top, right, bottom, left]")
+    for index, item in enumerate(value):
+        if not _is_int(item) or item < 0:
+            raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-negative integer")
+
+
+def validate_train_config_value(
+    key: str,
+    value: Any,
+    *,
+    label: str = "train_config",
+) -> None:
+    field = train_config_field_for_key(key)
+    if field is None:
+        raise ValueError(f"{_label_path(label, key)} is not a known train config field")
+    if field.sequence_items == "str":
+        _validate_string_sequence(
+            key=key,
+            label=label,
+            value=value,
+            allow_empty=field.allow_empty_sequence,
+        )
+        return
+    if field.sequence_items == "number":
+        _validate_number_sequence(
+            key=key,
+            label=label,
+            value=value,
+            allow_empty=field.allow_empty_sequence,
+        )
+        return
+    if field.sequence_items == "rows":
+        _validate_row_sequence(
+            key=key,
+            label=label,
+            value=value,
+            allow_empty=field.allow_empty_sequence,
+        )
+        return
+    if field.mapping_value:
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{_label_path(label, key)} must be an object")
+        return
+    if field.kind in {"store_true", "bool_optional"}:
+        if not isinstance(value, bool):
+            raise ValueError(f"{_label_path(label, key)} must be a boolean")
+        return
+    if field.type_name == "int":
+        if not _is_int(value):
+            raise ValueError(f"{_label_path(label, key)} must be an integer")
+        _validate_number_bounds(
+            key=key,
+            label=label,
+            number=float(value),
+            minimum=field.validation_min,
+            maximum=field.validation_max,
+        )
+        return
+    if field.type_name == "float":
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            raise ValueError(f"{_label_path(label, key)} must be a number")
+        _validate_number_bounds(
+            key=key,
+            label=label,
+            number=float(value),
+            minimum=field.validation_min,
+            maximum=field.validation_max,
+        )
+        return
+    if field.type_name == "obs_crop":
+        _validate_obs_crop_value(key=key, label=label, value=value)
+        return
+    if field.type_name == "json":
+        return
+    if not isinstance(value, str):
+        raise ValueError(f"{_label_path(label, key)} must be a string")
+    if field.non_empty and not value.strip():
+        raise ValueError(f"{_label_path(label, key)} must be a non-empty string")
+    if field.choices and value not in field.choices:
+        choices = ", ".join(field.choices)
+        raise ValueError(f"{_label_path(label, key)} must be one of {choices}")
+
+
+def validate_train_config_fields(
+    train_config: Mapping[str, Any],
+    *,
+    label: str = "train_config",
+    keys: Sequence[str] | None = None,
+    required_keys: Sequence[str] = (),
+) -> None:
+    missing = [key for key in required_keys if key not in train_config]
+    if missing:
+        raise ValueError(f"{label} missing required field(s): {', '.join(missing)}")
+    selected_keys = tuple(keys) if keys is not None else tuple(train_config)
+    for key in selected_keys:
+        if key in train_config:
+            validate_train_config_value(key, train_config[key], label=label)
+
+
 TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField("preset", ("--preset",), default=None),
     TrainConfigField(
-        "timesteps", ("--timesteps",), type_name="int", default=1_000_000, queue_required=True
+        "timesteps",
+        ("--timesteps",),
+        type_name="int",
+        default=1_000_000,
+        queue_required=True,
+        validation_min=1,
     ),
-    TrainConfigField("n_envs", ("--n-envs",), type_name="int", default=8),
+    TrainConfigField("n_envs", ("--n-envs",), type_name="int", default=8, validation_min=1),
     TrainConfigField(
         "env_threads",
         ("--env-threads",),
         type_name="int",
         default=0,
         env_config_key="env_threads",
+        validation_min=0,
         help="Native stable-retro env threads; <=0 keeps min(n_envs, 16).",
     ),
     TrainConfigField(
@@ -216,6 +415,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ("--env-provider",),
         env_default="env_provider",
         env_config_key="env_provider",
+        non_empty=True,
         help="Environment provider id. Supported: stable-retro-turbo, supermariobrosnes-turbo.",
     ),
     TrainConfigField(
@@ -224,6 +424,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="game",
         env_config_key="game",
         queue_required=True,
+        non_empty=True,
         help="Stable Retro game id. Defaults to RETRO_GAME when set.",
     ),
     TrainConfigField(
@@ -231,6 +432,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ("--state",),
         env_default="state",
         env_config_key="state",
+        non_empty=True,
         help="Stable Retro state. If omitted, registered targets may provide a default.",
     ),
     TrainConfigField(
@@ -239,6 +441,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="csv",
         env_config_key="states",
+        sequence_items="str",
         help="Comma-separated native-vector training states. Without --state-probs, provide exactly one state per env slot in order.",
     ),
     TrainConfigField(
@@ -247,6 +450,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="csv",
         env_config_key="state_probs",
+        sequence_items="number",
         help="Comma-separated non-negative sampling weights for --states. The native vector env normalizes weights and samples independently on each episode reset.",
     ),
     TrainConfigField(
@@ -255,6 +459,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="json",
         env_config_key="info_events",
+        mapping_value=True,
         help="JSON object mapping event names to [key_or_keys, op]. Events are observed without ending episodes unless also listed in --done-on-events.",
     ),
     TrainConfigField(
@@ -263,6 +468,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="csv",
         env_config_key="done_on_events",
+        sequence_items="str",
+        allow_empty_sequence=True,
         help="Comma-separated info event names that should terminate the current episode.",
     ),
     TrainConfigField(
@@ -279,6 +486,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="csv",
         env_config_key="task_conditioning_info_vars",
+        sequence_items="str",
+        allow_empty_sequence=True,
         help="Comma-separated info keys used to map task-conditioned one-hot vectors.",
     ),
     TrainConfigField(
@@ -287,10 +496,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         serialize="rows",
         env_config_key="task_conditioning_info_values",
+        sequence_items="rows",
+        allow_empty_sequence=True,
         help="Semicolon-separated info-value rows for task conditioning, for example '0,0;0,1'. Omit when values can be derived from states.",
     ),
     TrainConfigField(
-        "frame_skip", ("--frame-skip",), type_name="int", default=4, env_config_key="frame_skip"
+        "frame_skip",
+        ("--frame-skip",),
+        type_name="int",
+        default=4,
+        env_config_key="frame_skip",
+        validation_min=1,
     ),
     TrainConfigField(
         "sticky_action_prob",
@@ -315,6 +531,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=4500,
         env_config_key="max_episode_steps",
+        validation_min=0,
     ),
     TrainConfigField(
         "observation_size",
@@ -322,6 +539,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         env_default="observation_size",
         env_config_key="observation_size",
+        validation_min=0,
     ),
     TrainConfigField(
         "hud_crop_top",
@@ -329,6 +547,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         env_default="hud_crop_top",
         env_config_key="hud_crop_top",
+        validation_min=0,
         help="Crop this many pixels from the top of raw frames before grayscale resize; -1 uses the target default.",
     ),
     TrainConfigField(
@@ -346,6 +565,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="obs_crop_mode",
         choices=("remove", "mask"),
         env_config_key="obs_crop_mode",
+        non_empty=True,
         help="Whether obs_crop removes pixels or masks them before resize.",
     ),
     TrainConfigField(
@@ -354,6 +574,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         env_default="obs_crop_fill",
         env_config_key="obs_crop_fill",
+        validation_min=0,
+        validation_max=255,
         help="Pixel fill value for obs_crop_mode=mask.",
     ),
     TrainConfigField(
@@ -361,9 +583,12 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ("--obs-resize-algorithm",),
         env_default="obs_resize_algorithm",
         env_config_key="obs_resize_algorithm",
+        non_empty=True,
         help="Resize algorithm for native frame preprocessing.",
     ),
-    TrainConfigField("checkpoint_freq", ("--checkpoint-freq",), type_name="int", default=500_000),
+    TrainConfigField(
+        "checkpoint_freq", ("--checkpoint-freq",), type_name="int", default=500_000, validation_min=0
+    ),
     TrainConfigField(
         "post_train_eval",
         ("--post-train-eval",),
@@ -447,7 +672,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField("n_steps", ("--n-steps",), type_name="int", default=512),
     TrainConfigField("batch_size", ("--batch-size",), type_name="int", default=256),
     TrainConfigField("n_epochs", ("--n-epochs",), type_name="int", default=10),
-    TrainConfigField("device", ("--device",), default="auto", choices=DEVICE_CHOICES),
+    TrainConfigField("device", ("--device",), default="auto", choices=DEVICE_CHOICES, non_empty=True),
     TrainConfigField("gamma", ("--gamma",), type_name="float", default=0.9),
     TrainConfigField("gae_lambda", ("--gae-lambda",), type_name="float", default=1.0),
     TrainConfigField("ent_coef", ("--ent-coef",), type_name="float", default=0.01),
@@ -499,6 +724,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ("--advantage-normalization",),
         default="auto",
         choices=ADVANTAGE_NORMALIZATION_CHOICES,
+        non_empty=True,
         help="PPO advantage normalization mode. auto preserves --normalize-advantage; per-task normalizes each task-conditioned rollout slice once before PPO epochs.",
     ),
     TrainConfigField("adam_eps", ("--adam-eps",), type_name="float", default=1e-8),
@@ -529,6 +755,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="reward_mode",
         choices=REWARD_MODE_CHOICES,
         env_config_key="reward_mode",
+        non_empty=True,
         help="Target reward mode. Use native for unknown games without a custom target tracker.",
     ),
     TrainConfigField(
@@ -603,6 +830,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=0,
         env_config_key="no_progress_timeout_steps",
+        validation_min=0,
         help="Truncate an episode after this many env steps without new x progress; <=0 disables.",
     ),
     TrainConfigField(
@@ -611,6 +839,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=0,
         env_config_key="no_progress_min_delta",
+        validation_min=0,
         help="Minimum progress_delta that resets the no-progress timeout.",
     ),
     TrainConfigField(
@@ -618,6 +847,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ("--action-set",),
         env_default="action_set",
         env_config_key="action_set",
+        non_empty=True,
         help="Target-specific action set name, native, or auto for the target default.",
     ),
     TrainConfigField(
@@ -641,6 +871,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="online",
         choices=WANDB_MODE_CHOICES,
         queue_required=True,
+        non_empty=True,
     ),
     TrainConfigField(
         "runtime_image_ref",

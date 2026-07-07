@@ -59,11 +59,8 @@ rlab eval \
   --max-steps 600
 
 rlab play \
-  --game <GameId> \
   --model runs/local_smoke/final_model.zip \
-  --max-steps 1200 \
-  --fps 30 \
-  --scale 4
+  --fps 30
 ```
 
 Queue comparable experiments from checked-in recipe files:
@@ -84,7 +81,7 @@ rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
-rlab play <entity>/<project>/<run-name>-checkpoint:latest --policy-env fast
+rlab play <entity>/<project>/<run-name>-checkpoint:latest
 rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
 rlab jobs status --goal <goal-slug>
 rlab leaders runs --goal <goal-slug> --min-seeds 3

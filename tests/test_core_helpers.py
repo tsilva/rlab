@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from collections import deque
 from contextlib import redirect_stderr
 from io import StringIO
 from unittest.mock import patch
@@ -23,8 +24,6 @@ from rlab.artifacts import (
     build_s3_artifact_uri,
     checkpoint_step,
     env_config_from_config_dict,
-    env_config_from_model_metadata,
-    env_config_from_metadata,
     explicit_arg_dests,
     init_wandb,
     load_model_metadata,
@@ -80,7 +79,6 @@ from rlab.metric_names import (
 )
 from rlab.model_sources import (
     ResolvedModelSource,
-    apply_model_source_defaults,
     download_huggingface_model_source,
     model_artifact_checkpoint_step,
     model_source_ref,
@@ -91,9 +89,11 @@ from rlab.model_sources import (
 )
 from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
+from rlab.play import metadata_playback_config
 from rlab.play import model_observation
 from rlab.play import playback_env_config
 from rlab.play import playback_should_end_episode
+from rlab.play import render_obs_stack
 from rlab.play import resolved_play_launch_lines
 from rlab.play import task_conditioning_change_message
 from rlab.play import task_conditioning_start_message
@@ -787,55 +787,36 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parse_info_events(value)
 
-    def test_sticky_action_probability_defaults_to_disabled(self) -> None:
-        self.assertEqual(build_play_parser().parse_args([]).sticky_action_prob, 0.0)
-        self.assertEqual(
-            build_play_parser()
-            .parse_args(["tsilva/SuperMarioBros-NES/run-checkpoint:latest"])
-            .sticky_action_prob,
-            0.0,
+    def test_play_parser_rejects_environment_overrides(self) -> None:
+        parser = build_play_parser()
+        rejected_flags = (
+            "--sticky-action-prob",
+            "--states",
+            "--task-conditioning",
+            "--env-provider",
+            "--done-on-events",
+            "--policy-env",
         )
 
-    def test_sticky_action_probability_parses_for_playback(self) -> None:
-        self.assertEqual(
-            build_play_parser().parse_args(["--sticky-action-prob", "0.25"]).sticky_action_prob,
-            0.25,
-        )
-        self.assertEqual(
-            build_play_parser()
-            .parse_args(
-                [
-                    "tsilva/SuperMarioBros-NES/run-checkpoint:latest",
-                    "--sticky-action-prob",
-                    "0.25",
-                ]
-            )
-            .sticky_action_prob,
-            0.25,
-        )
+        for flag in rejected_flags:
+            with self.subTest(flag=flag):
+                with redirect_stderr(StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args([flag])
 
-    def test_task_conditioning_parses_for_playback(self) -> None:
-        args = build_play_parser().parse_args(
-            [
-                "--states",
-                "Level1-1,Level1-2",
-                "--state-probs",
-                "0.5,0.5",
-                "--task-conditioning",
-                "--task-conditioning-info-vars",
-                "levelHi,levelLo",
-            ]
-        )
-        config = env_config_from_args(
-            args,
-            max_episode_steps_attr="max_steps",
-            include_states=True,
-        )
+    def test_play_parser_exposes_only_metadata_safe_controls(self) -> None:
+        help_text = build_play_parser().format_help()
 
-        self.assertEqual(config.states, ("Level1-1", "Level1-2"))
-        self.assertEqual(config.state_probs, (0.5, 0.5))
-        self.assertTrue(config.task_conditioning)
-        self.assertEqual(config.task_conditioning_info_vars, ("levelHi", "levelLo"))
+        self.assertIn("--episodes", help_text)
+        self.assertIn("--seed", help_text)
+        self.assertIn("--fps", help_text)
+        self.assertIn("--device", help_text)
+        self.assertIn("--deterministic", help_text)
+        self.assertIn("--show-obs", help_text)
+        self.assertNotIn("--show-obs-stack", help_text)
+        self.assertNotIn("--sticky-action-prob", help_text)
+        self.assertNotIn("--task-conditioning", help_text)
+        self.assertNotIn("--policy-env", help_text)
 
     def test_task_conditioning_info_values_validate_arity(self) -> None:
         with self.assertRaisesRegex(ValueError, "row length"):
@@ -2757,47 +2738,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 96,
             )
 
-    def test_saved_playback_config_applies_unless_cli_overrides(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
-        metadata = {
-            "env_config": {
-                "game": "SuperMarioBros-Nes-v0",
-                "states": ["Level1-1", "Level1-2"],
-                "state_probs": [0.5, 0.5],
-                "task_conditioning": True,
-                "max_pool_frames": False,
-                "observation_size": 96,
-                "hud_crop_top": 32,
-                "obs_crop": [32, 0, 0, 0],
-                "obs_crop_mode": "mask",
-                "obs_crop_fill": 7,
-            }
-        }
-
-        args = parser.parse_args(["--model", "model.zip"])
-        apply_config_defaults(args, env_config_from_metadata(metadata), parser_defaults, set())
-        self.assertFalse(args.max_pool_frames)
-        self.assertEqual(args.observation_size, 96)
-        self.assertEqual(args.hud_crop_top, 32)
-        self.assertEqual(args.obs_crop, [32, 0, 0, 0])
-        self.assertEqual(args.obs_crop_mode, "mask")
-        self.assertEqual(args.obs_crop_fill, 7)
-        self.assertEqual(args.states, ["Level1-1", "Level1-2"])
-        self.assertEqual(args.state_probs, [0.5, 0.5])
-        self.assertTrue(args.task_conditioning)
-
-        argv = ["--model", "model.zip", "--max-pool-frames"]
-        args = parser.parse_args(argv)
-        explicit_dests = explicit_arg_dests(parser, argv)
-        apply_config_defaults(
-            args, env_config_from_metadata(metadata), parser_defaults, explicit_dests
-        )
-        self.assertTrue(args.max_pool_frames)
-
-    def test_model_metadata_defaults_apply_to_env_parser_args(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
+    def test_playback_config_loads_from_model_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
             model_path.write_bytes(b"zip")
@@ -2805,9 +2746,12 @@ class CommandAndArtifactTests(unittest.TestCase):
                 model_path,
                 argparse.Namespace(run_name="run", run_description="description"),
                 EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
                     game="SuperMarioBros-Nes-v0",
                     state="Level2-1",
+                    env_threads=4,
                     max_pool_frames=False,
+                    max_episode_steps=2345,
                     observation_size=96,
                     obs_crop=(32, 0, 0, 0),
                     obs_crop_mode="mask",
@@ -2819,152 +2763,31 @@ class CommandAndArtifactTests(unittest.TestCase):
                 kind="checkpoint",
             )
 
-            argv = ["--model", str(model_path)]
-            args = parser.parse_args(argv)
-            explicit_dests = explicit_arg_dests(parser, argv)
+            config = metadata_playback_config(model_path)
 
-            self.assertTrue(
-                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
-            )
-            self.assertEqual(args.state, "Level2-1")
-            self.assertFalse(args.max_pool_frames)
-            self.assertEqual(args.observation_size, 96)
-            self.assertEqual(args.obs_crop, [32, 0, 0, 0])
-            self.assertEqual(args.obs_crop_mode, "mask")
-            self.assertEqual(args.obs_crop_fill, 7)
-            self.assertTrue(args.score_progress_clipped)
-            restored_args_config = env_config_from_args(
-                args,
-                max_episode_steps_attr="max_steps",
-                include_states=True,
-            )
-            self.assertEqual(
-                restored_args_config.info_events,
-                {"level_change": (("levelHi", "levelLo"), "change")},
-            )
-            self.assertEqual(restored_args_config.done_on_events, ("level_change",))
-
-            config = env_config_from_model_metadata(
-                model_path, fallback=EnvConfig(state="fallback")
-            )
-            self.assertIsNotNone(config)
-            assert config is not None
+            self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
+            self.assertEqual(config.env_threads, 4)
             self.assertEqual(config.state, "Level2-1")
+            self.assertFalse(config.max_pool_frames)
+            self.assertEqual(config.max_episode_steps, 2345)
             self.assertEqual(config.observation_size, 96)
             self.assertEqual(config.obs_crop, (32, 0, 0, 0))
             self.assertEqual(config.obs_crop_mode, "mask")
             self.assertEqual(config.obs_crop_fill, 7)
+            self.assertTrue(config.score_progress_clipped)
             self.assertEqual(
                 config.info_events,
                 {"level_change": (("levelHi", "levelLo"), "change")},
             )
-            self.assertEqual(config.done_on_events, ("level_change",))
+            self.assertEqual(config.done_on_events, ())
 
-    def test_model_metadata_preserves_native_done_on_events_without_info_events(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
-        metadata = {
-            "env_config": {
-                "game": "SuperMarioBros3-Nes-v0",
-                "state": "1Player.World1.Level1",
-                "obs_crop": [0, 0, 32, 0],
-                "done_on_events": ["life_loss", "level_change"],
-            }
-        }
-
-        args = parser.parse_args(["--model", "model.zip"])
-        apply_config_defaults(args, env_config_from_metadata(metadata), parser_defaults, set())
-        config = env_config_from_args(
-            args,
-            max_episode_steps_attr="max_steps",
-            include_states=True,
-        )
-
-        self.assertEqual(config.obs_crop, (0, 0, 32, 0))
-        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
-
-    def test_model_metadata_defaults_apply_env_provider_and_threads_to_playback(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
+    def test_playback_requires_model_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
             model_path.write_bytes(b"zip")
-            write_model_metadata(
-                model_path,
-                argparse.Namespace(run_name="run", run_description="description"),
-                EnvConfig(
-                    env_provider="supermariobrosnes-turbo",
-                    game="SuperMarioBros-Nes-v0",
-                    state="Level1-1",
-                    env_threads=4,
-                    obs_crop_mode="mask",
-                    obs_crop_fill=7,
-                ),
-                kind="checkpoint",
-            )
 
-            argv = ["--model", str(model_path)]
-            args = parser.parse_args(argv)
-            explicit_dests = explicit_arg_dests(parser, argv)
-
-            self.assertTrue(
-                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
-            )
-            self.assertEqual(args.env_provider, "supermariobrosnes-turbo")
-            self.assertEqual(args.env_threads, 4)
-            config = env_config_from_args(
-                args,
-                max_episode_steps_attr="max_steps",
-                include_states=True,
-                include_env_threads=True,
-            )
-            self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
-            self.assertEqual(config.env_threads, 4)
-            self.assertEqual(config.obs_crop_mode, "mask")
-            self.assertEqual(config.obs_crop_fill, 7)
-
-    def test_explicit_env_provider_overrides_model_metadata(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
-            model_path.write_bytes(b"zip")
-            write_model_metadata(
-                model_path,
-                argparse.Namespace(run_name="run", run_description="description"),
-                EnvConfig(
-                    env_provider="supermariobrosnes-turbo",
-                    game="SuperMarioBros-Nes-v0",
-                    state="Level1-1",
-                    env_threads=4,
-                    obs_crop_mode="mask",
-                    obs_crop_fill=7,
-                ),
-                kind="checkpoint",
-            )
-
-            argv = [
-                "--model",
-                str(model_path),
-                "--env-provider",
-                "stable-retro-turbo",
-                "--env-threads",
-                "2",
-                "--obs-crop-mode",
-                "remove",
-                "--obs-crop-fill",
-                "3",
-            ]
-            args = parser.parse_args(argv)
-            explicit_dests = explicit_arg_dests(parser, argv)
-
-            self.assertTrue(
-                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
-            )
-            self.assertEqual(args.env_provider, "stable-retro-turbo")
-            self.assertEqual(args.env_threads, 2)
-            self.assertEqual(args.obs_crop_mode, "remove")
-            self.assertEqual(args.obs_crop_fill, 3)
+            with self.assertRaisesRegex(SystemExit, "missing playback metadata"):
+                metadata_playback_config(model_path)
 
     def test_eval_model_metadata_defaults_apply_env_provider_and_threads(self) -> None:
         parser = build_eval_parser()
@@ -3105,18 +2928,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(playback_config.done_on_events, ())
         self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
 
-        args = build_play_parser().parse_args(
-            ["--game", "SuperMarioBros-Nes-v0", "--done-on-events", "life_loss,level_change"]
-        )
-        cli_config = env_config_from_args(
-            args,
-            max_episode_steps_attr="max_steps",
-            include_states=True,
-            include_env_threads=True,
-        )
-        self.assertEqual(cli_config.done_on_events, ("life_loss", "level_change"))
-        self.assertEqual(playback_env_config(cli_config).done_on_events, ())
-
     def test_model_observation_wraps_task_conditioned_policy_input(self) -> None:
         class FakeModel:
             observation_space = gym.spaces.Dict(
@@ -3240,8 +3051,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
 
     def test_playback_metadata_ignores_legacy_done_on_info(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
         with tempfile.TemporaryDirectory() as tmp_dir:
             model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
             model_path.write_bytes(b"zip")
@@ -3263,62 +3072,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            args = parser.parse_args(["--model", str(model_path)])
-            explicit_dests = explicit_arg_dests(parser, [])
+            config = metadata_playback_config(model_path)
 
-            self.assertTrue(
-                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
-            )
-            config = env_config_from_args(
-                args,
-                max_episode_steps_attr="max_steps",
-                include_states=True,
-            )
-            self.assertEqual(config.state, "Level1-1")
-            self.assertEqual(config.info_events, {})
-            self.assertEqual(config.done_on_events, ())
-
-    def test_artifact_run_config_ignores_legacy_done_on_info(self) -> None:
-        parser = build_play_parser()
-        parser_defaults = vars(parser.parse_args([]))
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
-            model_path.write_bytes(b"zip")
-            source = ResolvedModelSource(
-                model_path=model_path,
-                artifact_ref="entity/project/run-checkpoint:v0",
-            )
-            args = parser.parse_args(["--model", str(model_path)])
-            legacy_run_config = {
-                "game": "SuperMarioBros-Nes-v0",
-                "state": "Level1-1",
-                "done_on_info": {
-                    "life_loss": ["lives", "decrease"],
-                    "level_change": [["levelHi", "levelLo"], "change"],
-                },
-                "done_on_events": ["life_loss", "level_change"],
-            }
-
-            with (
-                patch("rlab.model_sources.artifact_run_config", return_value=legacy_run_config),
-                patch("sys.stdout", new=io.StringIO()),
-            ):
-                self.assertTrue(
-                    apply_model_source_defaults(
-                        args,
-                        source,
-                        parser,
-                        parser_defaults,
-                        set(),
-                        infer_artifact_config=True,
-                    )
-                )
-
-            config = env_config_from_args(
-                args,
-                max_episode_steps_attr="max_steps",
-                include_states=True,
-            )
             self.assertEqual(config.state, "Level1-1")
             self.assertEqual(config.info_events, {})
             self.assertEqual(config.done_on_events, ())
@@ -3337,6 +3092,23 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--episodes", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
+
+    def test_obs_stack_render_has_no_label_band(self) -> None:
+        frames = deque(
+            [
+                np.full((3, 2, 1), value, dtype=np.uint8)
+                for value in (10, 20, 30, 40)
+            ],
+            maxlen=4,
+        )
+
+        image = render_obs_stack(frames, scale=2)
+
+        self.assertEqual(image.shape, (6, 16, 3))
+        self.assertTrue(np.all(image[:, 0:4, :] == 10))
+        self.assertTrue(np.all(image[:, 4:8, :] == 20))
+        self.assertTrue(np.all(image[:, 8:12, :] == 30))
+        self.assertTrue(np.all(image[:, 12:16, :] == 40))
 
     def test_eval_defaults_to_stochastic(self) -> None:
         with patch("rlab.eval.os.cpu_count", return_value=12):
@@ -3438,19 +3210,13 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
         parser = build_play_parser()
         args = parser.parse_args(
-            [
-                "https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl",
-                "--artifact-kind",
-                "best",
-                "--artifact-version",
-                "v8",
-            ]
+            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"]
         )
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
             self.assertEqual(
                 model_source_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/Run-With-Spaces-best:v8",
+                "tsilva/SuperMarioBros-Nes-v0/Run-With-Spaces-checkpoint:latest",
             )
 
     def test_parse_wandb_run_ref_accepts_project_run_path(self) -> None:
@@ -3620,9 +3386,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             "tsilva/SuperMarioBros-Nes-v0/run-checkpoint:latest",
         )
 
-    def test_model_source_ref_uses_positional_run_name_kind_and_version(self) -> None:
+    def test_model_source_ref_uses_positional_full_artifact_ref(self) -> None:
         parser = build_play_parser()
-        args = parser.parse_args(["run", "--artifact-kind", "best", "--artifact-version", "v8"])
+        args = parser.parse_args(["tsilva/SuperMarioBros-Nes-v0/run-best:v8"])
 
         self.assertEqual(
             single_model_artifact_ref(args),
@@ -3635,16 +3401,6 @@ class CommandAndArtifactTests(unittest.TestCase):
                 default_wandb_project_path("SuperMarioBros3-Nes-v0"),
                 "env-entity/SuperMarioBros3-Nes-v0",
             )
-
-    def test_model_source_ref_uses_explicit_run_kind_and_version(self) -> None:
-        parser = build_play_parser()
-        argv = ["--artifact-run", "run", "--artifact-kind", "best", "--artifact-version", "v8"]
-        args = parser.parse_args(argv)
-
-        self.assertEqual(
-            single_model_artifact_ref(args),
-            "tsilva/SuperMarioBros-Nes-v0/run-best:v8",
-        )
 
     def test_wandb_artifact_metadata_requires_artifact_training_metadata(self) -> None:
         class FakeRun:

@@ -24,31 +24,32 @@ import torch
 if TYPE_CHECKING:
     from stable_baselines3 import PPO
 
-from rlab.artifacts import explicit_arg_dests
-from rlab.cli_args import add_env_config_args
+from rlab.artifacts import (
+    env_config_from_config_dict,
+    env_config_from_metadata,
+    load_model_metadata,
+)
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_rom_imported,
     info_value_from_state_name,
     make_eval_vec_env,
-    make_rendered_replay_env,
     make_visual_replay_env,
     native_vec_env_supports_rgb_render,
     resolve_env_config,
     state_name_candidates_from_level_id,
     task_conditioning_info_values,
 )
-from rlab.env_config import env_config_from_args
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (
-    add_model_source_args,
-    apply_model_source_defaults,
     model_source_ref,
+    positional_model_source_arg,
     resolve_single_model_source,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
+from rlab.wandb_utils import default_wandb_project_path
 
 
 ANSI_RESET = "\033[0m"
@@ -61,6 +62,8 @@ ANSI_STYLES = {
     "yellow": "\033[33m",
     "magenta": "\033[35m",
 }
+DEFAULT_VIEWER_SCALE = 4
+DEFAULT_OBS_VIEWER_SCALE = 4
 
 
 def _color(text: str, style: str) -> str:
@@ -107,11 +110,6 @@ def import_pygame() -> ModuleType:
     with _suppress_native_stderr():
         import pygame
     return pygame
-
-
-def stacked_obs(frames: deque[np.ndarray]) -> np.ndarray:
-    # Rendered replay stacks grayscale frames into the channel-first model layout.
-    return np.stack([frame[..., 0] for frame in frames], axis=0)[None, ...]
 
 
 def fast_env_image_obs(obs) -> np.ndarray:
@@ -302,38 +300,15 @@ def playback_env_config(config):
 
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
     if scale < 1:
-        raise ValueError("--obs-stack-scale must be >= 1")
+        raise ValueError("obs viewer scale must be >= 1")
     panels = []
-    for idx, frame in enumerate(frames):
+    for frame in frames:
         gray = frame[..., 0]
         panel = np.repeat(gray[..., None], 3, axis=2)
         if scale != 1:
             panel = np.repeat(np.repeat(panel, scale, axis=0), scale, axis=1)
         panels.append(panel)
-    image = np.concatenate(panels, axis=1)
-
-    try:
-        import cv2
-    except ImportError:
-        return image
-
-    label_height = max(18, 14 * scale)
-    canvas = np.zeros((image.shape[0] + label_height, image.shape[1], 3), dtype=np.uint8)
-    canvas[label_height:, :, :] = image
-    panel_width = panels[0].shape[1]
-    labels = ["t-3", "t-2", "t-1", "t"]
-    for idx, label in enumerate(labels):
-        cv2.putText(
-            canvas,
-            label,
-            (idx * panel_width + 4, label_height - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.35 * scale,
-            (220, 220, 220),
-            max(1, scale),
-            cv2.LINE_AA,
-        )
-    return canvas
+    return np.concatenate(panels, axis=1)
 
 
 class PygameViewer:
@@ -341,7 +316,7 @@ class PygameViewer:
         self, frame_shape: tuple[int, int, int], scale: int, position: tuple[int, int] | None = None
     ):
         if scale < 1:
-            raise ValueError("--scale must be >= 1")
+            raise ValueError("viewer scale must be >= 1")
         self.pygame = import_pygame()
         height, width, _channels = frame_shape
         self.size = (width * scale, height * scale)
@@ -381,90 +356,6 @@ class PygameViewer:
         self.pygame.quit()
 
 
-class OptionsPanel:
-    def __init__(self, fps: float, show_obs_stack: bool, position: tuple[int, int] | None = None):
-        self.window_name = "rlab controls"
-        self.cv2 = None
-        self.show_obs_stack = show_obs_stack
-        self.obs_button_rect = (10, 8, 170, 28)
-
-        try:
-            import cv2
-        except ImportError:
-            print("cv2 is not installed; --control-panel is disabled.", flush=True)
-            return
-
-        self.cv2 = cv2
-        cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
-        if position is not None:
-            cv2.moveWindow(self.window_name, position[0], position[1])
-        cv2.createTrackbar(
-            "FPS", self.window_name, int(max(0, min(round(fps), 240))), 240, lambda _v: None
-        )
-        cv2.setMouseCallback(self.window_name, self._on_mouse)
-
-    def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param: object) -> None:
-        if self.cv2 is None or event != self.cv2.EVENT_LBUTTONDOWN:
-            return
-        rect_x, rect_y, rect_w, rect_h = self.obs_button_rect
-        if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h:
-            self.show_obs_stack = not self.show_obs_stack
-
-    def poll(self, actual_fps: float | None = None) -> tuple[bool, float, bool]:
-        if self.cv2 is None:
-            return True, 0.0, False
-
-        fps_pos = self.cv2.getTrackbarPos("FPS", self.window_name)
-        fps = 0.0 if fps_pos <= 0 else float(fps_pos)
-
-        canvas = np.zeros((94, 260, 3), dtype=np.uint8)
-
-        rect_x, rect_y, rect_w, rect_h = self.obs_button_rect
-        button_color = (40, 130, 70) if self.show_obs_stack else (70, 70, 70)
-        border_color = (90, 220, 120) if self.show_obs_stack else (170, 170, 170)
-        self.cv2.rectangle(
-            canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), button_color, -1
-        )
-        self.cv2.rectangle(
-            canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), border_color, 1
-        )
-        label = f"Obs stack: {'ON' if self.show_obs_stack else 'OFF'}"
-        self.cv2.putText(
-            canvas,
-            label,
-            (rect_x + 10, rect_y + 20),
-            self.cv2.FONT_HERSHEY_PLAIN,
-            1.2,
-            (255, 255, 255),
-            1,
-            self.cv2.LINE_AA,
-        )
-
-        lines = [
-            f"target_fps   : {'max' if fps <= 0 else int(fps)}",
-            f"measured_fps : {'...' if actual_fps is None else f'{actual_fps:.1f}'}",
-        ]
-        for idx, line in enumerate(lines):
-            self.cv2.putText(
-                canvas,
-                line,
-                (10, 56 + idx * 18),
-                self.cv2.FONT_HERSHEY_PLAIN,
-                1.0,
-                (210, 210, 210),
-                1,
-                self.cv2.LINE_AA,
-            )
-        self.cv2.imshow(self.window_name, canvas)
-        key = self.cv2.waitKey(1) & 0xFF
-        return key not in {27, ord("q")}, fps, self.show_obs_stack
-
-    def close(self) -> None:
-        if self.cv2 is None:
-            return
-        self.cv2.destroyWindow(self.window_name)
-
-
 class ObsStackViewer:
     def __init__(self, scale: int, position: tuple[int, int] | None = None):
         self.scale = scale
@@ -474,7 +365,7 @@ class ObsStackViewer:
         try:
             import cv2
         except ImportError:
-            print("cv2 is not installed; --show-obs-stack is disabled.", flush=True)
+            print("cv2 is not installed; --show-obs is disabled.", flush=True)
             return
 
         self.cv2 = cv2
@@ -496,18 +387,39 @@ class ObsStackViewer:
         self.cv2.destroyWindow(self.window_name)
 
 
+def add_play_source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "artifact_ref",
+        nargs="?",
+        type=positional_model_source_arg,
+        help=(
+            "Model source: W&B run name or URL, full W&B artifact ref, Hugging Face "
+            "model ref, or use --model for a local checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default="runs/smoke/final_model.zip",
+        help="Local SB3 checkpoint path. The checkpoint must have a .metadata.json sidecar.",
+    )
+    parser.set_defaults(
+        artifact=None,
+        artifact_run=None,
+        artifact_project=default_wandb_project_path(),
+        artifact_kind="checkpoint",
+        artifact_version="latest",
+        artifact_root="runs/wandb_artifacts",
+        hf_file=None,
+        hf_revision=None,
+        hf_model_root="runs/hf_models",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Show a PPO checkpoint playing a Stable Retro game in a GUI window"
     )
-    add_model_source_args(
-        parser,
-        positional_artifact=True,
-        model_default="runs/smoke/final_model.zip",
-        default_kind="checkpoint",
-    )
-    parser.add_argument("--download-only", action="store_true")
-    add_env_config_args(parser, max_steps_default=1200)
+    add_play_source_args(parser)
     parser.add_argument(
         "--episodes", type=int, default=0, help="Number of episodes; use 0 to run forever"
     )
@@ -521,30 +433,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    parser.add_argument(
-        "--random-seeds", action="store_true", help="Use a fresh random seed each episode"
-    )
     parser.add_argument("--fps", type=float, default=0.0)
-    parser.add_argument("--scale", type=int, default=4)
     parser.add_argument(
-        "--show-obs-stack",
+        "--show-obs",
         action="store_true",
         help="Open a second window showing the four preprocessed frames fed to the policy.",
-    )
-    parser.add_argument("--obs-stack-scale", type=int, default=4)
-    parser.add_argument(
-        "--control-panel",
-        action="store_true",
-        help="Open controls for FPS and the observation framestack diagnostic window.",
-    )
-    parser.add_argument(
-        "--policy-env",
-        choices=["fast", "rendered"],
-        default="fast",
-        help=(
-            "Observation path used for the model. 'fast' matches native-vector training "
-            "preprocessing; 'rendered' uses the older manual GUI frame stack."
-        ),
     )
     parser.add_argument(
         "--deterministic",
@@ -599,9 +492,9 @@ def resolved_play_launch_lines(
         _summary_line(
             "▶",
             "policy",
-            f"policy_env={args.policy_env} device={args.device} "
-            f"stochastic={not args.deterministic} seed={args.seed} "
-            f"episodes={args.episodes} max_steps={args.max_steps}",
+            f"device={args.device} stochastic={not args.deterministic} "
+            f"seed={args.seed} episodes={args.episodes} "
+            f"max_steps={policy_config.max_episode_steps}",
             "green",
         ),
         _summary_line(
@@ -658,11 +551,23 @@ def print_resolved_play_launch(
     print("\n".join(lines), flush=True)
 
 
+def metadata_playback_config(model_path) -> object:
+    metadata = load_model_metadata(model_path)
+    saved_config = env_config_from_metadata(metadata)
+    if not saved_config:
+        raise SystemExit(
+            f"{model_path} is missing playback metadata. Recreate or re-upload the "
+            "checkpoint with current model metadata before using rlab play."
+        )
+    config = env_config_from_config_dict(saved_config)
+    if config is None:
+        raise SystemExit(f"{model_path} playback metadata does not contain an environment config")
+    return playback_env_config(resolve_env_config(config))
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    parser_defaults = vars(parser.parse_args([]))
-    explicit_dests = explicit_arg_dests(parser, argv_list)
     args = parser.parse_args(argv_list)
     args.seed = validate_eval_seed(args.seed)
     ref = model_source_ref(args)
@@ -672,26 +577,7 @@ def main(argv: list[str] | None = None) -> None:
     args.model = str(source.model_path)
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
-    apply_model_source_defaults(
-        args,
-        source,
-        parser,
-        parser_defaults,
-        explicit_dests,
-        infer_artifact_config=True,
-        print_loaded_metadata=True,
-    )
-    config = playback_env_config(
-        resolve_env_config(
-            env_config_from_args(
-                args,
-                max_episode_steps_attr="max_steps",
-                include_states=True,
-                include_env_threads=True,
-            )
-        )
-    )
-    effective_policy_env = args.policy_env
+    config = metadata_playback_config(source.model_path)
     display_config = display_replay_config(config)
     print_resolved_play_launch(
         args,
@@ -700,50 +586,22 @@ def main(argv: list[str] | None = None) -> None:
         policy_config=config,
         display_config=display_config,
     )
-    if args.download_only:
-        if ref is None:
-            raise SystemExit(
-                "--download-only requires an hf:// model ref, positional artifact ref, "
-                "--artifact, or --artifact-run"
-            )
-        return
     assert_rom_imported(args.game)
     from stable_baselines3 import PPO
 
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
-    if (
-        effective_policy_env == "rendered"
-        and config.env_provider != STABLE_RETRO_TURBO_PROVIDER.provider_id
-    ):
-        raise SystemExit(
-            "--policy-env rendered only supports stable-retro-turbo; use --policy-env fast "
-            f"to replay policies trained with {config.env_provider}",
-        )
-    if args.policy_env == "fast":
-        display_env = make_visual_replay_env(config=display_config, seed=args.seed)
-        policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
-    else:
-        display_env = make_rendered_replay_env(config=display_config, seed=args.seed)
-        policy_env = display_env
-    seed_rng = np.random.default_rng() if args.random_seeds else None
+    display_env = make_visual_replay_env(config=display_config, seed=args.seed)
+    policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
 
-    if effective_policy_env == "fast":
-        policy_env.seed(args.seed)
-        policy_env.reset()
+    policy_env.seed(args.seed)
+    policy_env.reset()
     display_env.reset(seed=args.seed)
     first_frame = display_env.render()
-    game_position = (460, 60) if args.control_panel else None
-    controls_position = (40, 60)
     obs_stack_position = (40, 240)
-    viewer = PygameViewer(first_frame.shape, scale=args.scale, position=game_position)
+    viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
     obs_viewer = (
-        ObsStackViewer(scale=args.obs_stack_scale, position=obs_stack_position)
-        if args.show_obs_stack
-        else None
-    )
-    options_panel = (
-        OptionsPanel(fps=args.fps, show_obs_stack=args.show_obs_stack, position=controls_position)
-        if args.control_panel
+        ObsStackViewer(scale=DEFAULT_OBS_VIEWER_SCALE, position=obs_stack_position)
+        if args.show_obs
         else None
     )
     current_fps = args.fps
@@ -784,21 +642,6 @@ def main(argv: list[str] | None = None) -> None:
         last_frame_at = now
 
     def update_controls(frames: deque[np.ndarray] | None = None) -> bool:
-        nonlocal current_fps, obs_viewer
-        if options_panel is None:
-            if obs_viewer is not None and frames is not None:
-                return obs_viewer.show(frames)
-            return True
-
-        should_continue, fps, show_obs_stack = options_panel.poll(actual_fps=actual_fps)
-        if not should_continue:
-            return False
-        current_fps = fps
-        if show_obs_stack and obs_viewer is None:
-            obs_viewer = ObsStackViewer(scale=args.obs_stack_scale, position=obs_stack_position)
-        elif not show_obs_stack and obs_viewer is not None:
-            obs_viewer.close()
-            obs_viewer = None
         if obs_viewer is not None and frames is not None:
             return obs_viewer.show(frames)
         return True
@@ -811,20 +654,12 @@ def main(argv: list[str] | None = None) -> None:
         throttle()
         episode_iter = count() if args.episodes <= 0 else range(args.episodes)
         for episode in episode_iter:
-            episode_seed = (
-                int(seed_rng.integers(EVAL_SEED_START, np.iinfo(np.int32).max))
-                if seed_rng is not None
-                else args.seed + episode
-            )
+            episode_seed = args.seed + episode
             torch.manual_seed(episode_seed)
-            if effective_policy_env == "fast":
-                policy_env.seed(episode_seed)
-                policy_obs = policy_env.reset()
-                policy_reset_info = {}
-                display_obs, _ = display_env.reset(seed=episode_seed)
-            else:
-                policy_obs, policy_reset_info = policy_env.reset(seed=episode_seed)
-                display_obs = policy_obs
+            policy_env.seed(episode_seed)
+            policy_obs = policy_env.reset()
+            policy_reset_info = {}
+            display_env.reset(seed=episode_seed)
             frame = display_env.render()
             if not viewer.show(
                 frame,
@@ -838,11 +673,7 @@ def main(argv: list[str] | None = None) -> None:
             ):
                 break
             throttle()
-            frames: deque[np.ndarray] = (
-                fast_env_frames(policy_obs)
-                if effective_policy_env == "fast"
-                else deque([display_obs] * 4, maxlen=4)
-            )
+            frames: deque[np.ndarray] = fast_env_frames(policy_obs)
             configured_task_states = task_state_names(config) if config.task_conditioning else ()
             active_task_state = (
                 config.state or configured_task_states[0]
@@ -893,12 +724,8 @@ def main(argv: list[str] | None = None) -> None:
             total_reward = 0.0
             max_x_pos = 0
             final_info = {}
-            for step_idx in range(args.max_steps):
-                image_obs = (
-                    fast_env_obs(policy_obs)
-                    if effective_policy_env == "fast"
-                    else stacked_obs(frames)
-                )
+            for step_idx in range(config.max_episode_steps):
+                image_obs = fast_env_obs(policy_obs)
                 model_obs = model_observation(
                     model,
                     image_obs,
@@ -908,15 +735,12 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 action, _ = model.predict(model_obs, deterministic=args.deterministic)
                 env_action = single_env_action(action)
-                if effective_policy_env == "fast":
-                    policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
-                    reward = float(np.asarray(rewards)[0])
-                    done = bool(np.asarray(dones)[0])
-                    terminated = done
-                    truncated = bool(infos[0].get("TimeLimit.truncated", False))
-                    info = dict(infos[0])
-                else:
-                    policy_obs, reward, terminated, truncated, info = policy_env.step(env_action)
+                policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
+                reward = float(np.asarray(rewards)[0])
+                done = bool(np.asarray(dones)[0])
+                terminated = done
+                truncated = bool(infos[0].get("TimeLimit.truncated", False))
+                info = dict(infos[0])
                 if config.task_conditioning_info_vars:
                     next_info_value = task_info_value_from_info(info, config)
                     if next_info_value is not None and next_info_value != active_info_value:
@@ -948,12 +772,8 @@ def main(argv: list[str] | None = None) -> None:
                             flush=True,
                         )
                         active_task_state = next_task_state
-                if effective_policy_env == "rendered":
-                    display_obs = policy_obs
-                    frames.append(display_obs)
-                else:
-                    display_env.step(env_action)
-                    frames = fast_env_frames(policy_obs)
+                display_env.step(env_action)
+                frames = fast_env_frames(policy_obs)
                 if not update_controls(frames):
                     return
                 total_reward += float(reward)
@@ -994,14 +814,12 @@ def main(argv: list[str] | None = None) -> None:
                 print(
                     "episode="
                     f"{episode + 1} seed={episode_seed} reward={total_reward:.2f} "
-                    f"max_x={max_x_pos} steps={args.max_steps} status=max_steps "
+                    f"max_x={max_x_pos} steps={config.max_episode_steps} status=max_steps "
                     f"died={bool(final_info.get('died', False))} "
                     f"complete={bool(final_info.get('level_complete', False))}",
                     flush=True,
                 )
     finally:
-        if options_panel is not None:
-            options_panel.close()
         if obs_viewer is not None:
             obs_viewer.close()
         viewer.close()

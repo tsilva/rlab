@@ -19,7 +19,7 @@ from rlab.env_registry import qualify_env_id, resolve_env_id
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
-from rlab.train_config import env_config_allowed_keys
+from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
 
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
@@ -289,16 +289,27 @@ def _validate_env_config(
     extra_keys = sorted(set(env_config) - ENV_CONFIG_ALLOWED_KEYS - (allowed_extra_keys or set()))
     if extra_keys:
         raise ValueError(f"{label} has non-EnvConfig key(s): {extra_keys}")
+    required_keys = []
     if require_provider:
-        env_provider = _require_non_empty_string(env_config, "env_provider", label=label)
+        required_keys.append("env_provider")
+    if require_game:
+        required_keys.append("game")
+    validate_train_config_fields(
+        env_config,
+        label=label,
+        keys=tuple(set(env_config) & ENV_CONFIG_ALLOWED_KEYS),
+        required_keys=tuple(required_keys),
+    )
+    if require_provider:
+        env_provider = str(env_config["env_provider"]).strip()
     elif "env_provider" in env_config:
-        env_provider = _require_non_empty_string(env_config, "env_provider", label=label)
+        env_provider = str(env_config["env_provider"]).strip()
     else:
         env_provider = None
     if require_game:
-        game = _require_non_empty_string(env_config, "game", label=label)
+        game = str(env_config["game"]).strip()
     elif "game" in env_config:
-        game = _require_non_empty_string(env_config, "game", label=label)
+        game = str(env_config["game"]).strip()
     else:
         game = None
     if game and env_provider:
@@ -308,51 +319,6 @@ def _validate_env_config(
             raise ValueError(f"{label}.env_provider is invalid: {exc}") from exc
     if "state" in env_config and "states" in env_config:
         raise ValueError(f"{label} must define only one of state or states")
-    if "state" in env_config:
-        state = env_config["state"]
-        if not isinstance(state, str) or not state.strip():
-            raise ValueError(f"{label}.state must be a non-empty string")
-    if "states" in env_config:
-        _require_string_list(env_config, "states", label=label)
-    if "action_set" in env_config:
-        _require_non_empty_string(env_config, "action_set", label=label)
-    for key in (
-        "frame_skip",
-        "max_episode_steps",
-        "observation_size",
-        "hud_crop_top",
-        "no_progress_timeout_steps",
-        "no_progress_min_delta",
-    ):
-        if key in env_config:
-            minimum = 1 if key == "frame_skip" else 0
-            _require_int(env_config, key, label=label, minimum=minimum)
-    if "n_envs" in env_config:
-        _require_int(env_config, "n_envs", label=label, minimum=1)
-    if "env_threads" in env_config:
-        _require_int(env_config, "env_threads", label=label, minimum=0)
-    if "max_pool_frames" in env_config:
-        _require_bool(env_config, "max_pool_frames", label=label)
-    if "sticky_action_prob" in env_config:
-        _require_number(env_config, "sticky_action_prob", label=label)
-    if "obs_resize_algorithm" in env_config:
-        _require_non_empty_string(env_config, "obs_resize_algorithm", label=label)
-    if "obs_crop_mode" in env_config:
-        value = _require_non_empty_string(env_config, "obs_crop_mode", label=label)
-        if value not in {"remove", "mask"}:
-            raise ValueError(f"{label}.obs_crop_mode must be 'remove' or 'mask'")
-    if "obs_crop_fill" in env_config:
-        _require_int(env_config, "obs_crop_fill", label=label, minimum=0)
-        if int(env_config["obs_crop_fill"]) > 255:
-            raise ValueError(f"{label}.obs_crop_fill must be <= 255")
-    if "info_events" in env_config:
-        _require_mapping(env_config["info_events"], label=f"{label}.info_events")
-    if "info_events_json" in env_config:
-        _require_mapping(env_config["info_events_json"], label=f"{label}.info_events_json")
-    if "done_on_events" in env_config:
-        _require_string_list(env_config, "done_on_events", label=label, allow_empty=True)
-    if "obs_crop" in env_config:
-        _require_int_list(env_config, "obs_crop", label=label, length=4, minimum=0)
     if "env_wrappers" in env_config:
         normalize_env_wrapper_specs(env_config["env_wrappers"], label=f"{label}.env_wrappers")
 

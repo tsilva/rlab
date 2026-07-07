@@ -5,7 +5,7 @@ from string import Formatter
 from typing import Any
 
 from rlab.seeds import validate_training_seed
-from rlab.train_config import queue_required_train_config_fields
+from rlab.train_config import queue_required_train_config_fields, validate_train_config_fields
 
 
 TRAIN_RECIPE_SCHEMA_VERSION = 1
@@ -236,6 +236,21 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         _require_key(document, "train_config", label=label),
         label=_label_path(label, "train_config"),
     )
+    validate_train_config_fields(
+        train_config,
+        label=_label_path(label, "train_config"),
+        keys=(
+            "game",
+            "state",
+            "states",
+            "n_envs",
+            "timesteps",
+            "wandb",
+            "wandb_mode",
+            "wandb_artifact_storage_uri",
+        ),
+        required_keys=("game", "timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
+    )
     seed_span = train_config.get("n_envs", 1)
     for index, seed in enumerate(seed_values):
         validate_training_seed(
@@ -243,7 +258,6 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
             label=f"{_label_path(label, 'seeds')}[{index}]",
             seed_span=seed_span,
         )
-    _require_non_empty_string(train_config, "game", label=_label_path(label, "train_config"))
     has_state = isinstance(train_config.get("state"), str) and bool(train_config["state"].strip())
     states = train_config.get("states")
     has_states = (
@@ -256,30 +270,9 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         raise ValueError(
             f"{_label_path(label, 'train_config')} must define non-empty state or states"
         )
-    _require_int(train_config, "timesteps", label=_label_path(label, "train_config"), minimum=1)
     if "seed" in train_config and train_config["seed"] is not None:
         validate_training_seed(
             train_config["seed"],
             label=_label_path(label, "train_config.seed"),
             seed_span=train_config.get("n_envs", 1),
-        )
-    _require_bool(train_config, "wandb", label=_label_path(label, "train_config"))
-    wandb_mode = _require_non_empty_string(
-        train_config,
-        "wandb_mode",
-        label=_label_path(label, "train_config"),
-    )
-    if wandb_mode not in {"online", "offline", "disabled"}:
-        raise ValueError(
-            f"{_label_path(label, 'train_config.wandb_mode')} must be one of "
-            "online, offline, disabled"
-        )
-    artifact_uri = _require_key(
-        train_config,
-        "wandb_artifact_storage_uri",
-        label=_label_path(label, "train_config"),
-    )
-    if not isinstance(artifact_uri, str):
-        raise ValueError(
-            f"{_label_path(label, 'train_config.wandb_artifact_storage_uri')} must be a string"
         )
