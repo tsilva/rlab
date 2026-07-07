@@ -46,6 +46,7 @@ from rlab.cli import build_train_command
 from rlab.cli import parse_train_args
 from rlab.env import (
     EnvConfig,
+    GymVectorEnvToSb3VecEnv,
     StickyAction,
     VecRetroProgressInfo,
     VecTaskConditioning,
@@ -61,6 +62,7 @@ from rlab.env import (
     resolve_env_config,
     resolve_mixed_state_config,
     state_name_candidates_from_level_id,
+    vector_infos_to_list,
 )
 from rlab.env_config import (
     env_config_from_args,
@@ -1359,6 +1361,146 @@ class VecImageShapeTests(unittest.TestCase):
 
 
 class VecRetroProgressInfoEventTests(unittest.TestCase):
+    def test_vector_infos_to_list_preserves_masked_lane_values(self) -> None:
+        previous_lives = np.empty((2,), dtype=object)
+        previous_lives[:] = [[3], [0]]
+        infos = {
+            "state": np.asarray(["Level1-1", "Level1-2"], dtype=object),
+            "_state": np.asarray([True, False]),
+            "final_info": {
+                "score": np.asarray([100, 200]),
+                "done_on_info": {
+                    "life_loss": {
+                        "trigger": np.asarray(["lives_decrease", ""], dtype=object),
+                        "_trigger": np.asarray([True, False]),
+                        "prev": previous_lives,
+                        "_prev": np.asarray([True, False]),
+                    },
+                    "_life_loss": np.asarray([True, False]),
+                    "level_change": {
+                        "trigger": np.asarray(["", "level_change"], dtype=object),
+                        "_trigger": np.asarray([False, True]),
+                    },
+                    "_level_change": np.asarray([False, True]),
+                },
+            },
+            "_final_info": np.asarray([True, True]),
+        }
+
+        lanes = vector_infos_to_list(infos, 2)
+
+        self.assertEqual(lanes[0]["state"], "Level1-1")
+        self.assertNotIn("state", lanes[1])
+        self.assertEqual(lanes[0]["final_info"]["score"], 100)
+        self.assertEqual(
+            lanes[0]["final_info"]["done_on_info"],
+            {"life_loss": {"trigger": "lives_decrease", "prev": [3]}},
+        )
+        self.assertEqual(lanes[1]["final_info"]["score"], 200)
+        self.assertEqual(
+            lanes[1]["final_info"]["done_on_info"],
+            {"level_change": {"trigger": "level_change"}},
+        )
+
+    def test_gym_vector_adapter_emits_sb3_done_infos(self) -> None:
+        class FakeGymVectorEnv(gym.vector.VectorEnv):
+            metadata = {"autoreset_mode": "same-step"}
+
+            def __init__(self) -> None:
+                self.num_envs = 2
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(2,),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.Discrete(3)
+                self.observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(2, 2),
+                    dtype=np.uint8,
+                )
+                self.action_space = gym.spaces.MultiDiscrete([3, 3])
+                self.closed = False
+                self.reset_seed = None
+
+            def reset(self, *, seed=None, options=None):
+                self.reset_seed = seed
+                return (
+                    np.zeros((2, 2), dtype=np.uint8),
+                    {
+                        "state": np.asarray(["Level1-1", "Level1-2"], dtype=object),
+                        "_state": np.asarray([True, True]),
+                    },
+                )
+
+            def step(self, actions):
+                self.actions = actions
+                return (
+                    np.ones((2, 2), dtype=np.uint8),
+                    np.asarray([1.0, 2.0], dtype=np.float32),
+                    np.asarray([True, False]),
+                    np.asarray([False, True]),
+                    {
+                        "state": np.asarray(["Level1-3", "Level1-4"], dtype=object),
+                        "_state": np.asarray([True, True]),
+                        "final_obs": np.asarray(
+                            [
+                                np.asarray([9, 9], dtype=np.uint8),
+                                np.asarray([8, 8], dtype=np.uint8),
+                            ],
+                            dtype=object,
+                        ),
+                        "_final_obs": np.asarray([True, True]),
+                        "final_info": {
+                            "score": np.asarray([100, 200]),
+                            "done_on_info": np.asarray(
+                                [{"life_loss": {"prev": [3]}}, {"level_change": {}}],
+                                dtype=object,
+                            ),
+                        },
+                        "_final_info": np.asarray([True, True]),
+                    },
+                )
+
+            def close(self):
+                self.closed = True
+
+        source_env = FakeGymVectorEnv()
+        env = GymVectorEnvToSb3VecEnv(source_env)
+        env.seed(123)
+
+        obs = env.reset()
+        self.assertEqual(source_env.reset_seed, 123)
+        np.testing.assert_array_equal(obs, np.zeros((2, 2), dtype=np.uint8))
+        self.assertEqual(
+            env.reset_infos,
+            [
+                {"state": "Level1-1"},
+                {"state": "Level1-2"},
+            ],
+        )
+
+        env.step_async(np.asarray([0, 1]))
+        obs, rewards, dones, infos = env.step_wait()
+
+        np.testing.assert_array_equal(obs, np.ones((2, 2), dtype=np.uint8))
+        np.testing.assert_array_equal(rewards, np.asarray([1.0, 2.0], dtype=np.float32))
+        np.testing.assert_array_equal(dones, np.asarray([True, True]))
+        self.assertEqual(infos[0]["score"], 100)
+        self.assertEqual(infos[0]["done_on_info"], {"life_loss": {"prev": [3]}})
+        np.testing.assert_array_equal(
+            infos[0]["terminal_observation"],
+            np.asarray([9, 9], dtype=np.uint8),
+        )
+        self.assertEqual(infos[0]["reset_info"], {"state": "Level1-3"})
+        self.assertFalse(infos[0]["TimeLimit.truncated"])
+        self.assertEqual(infos[1]["score"], 200)
+        self.assertEqual(infos[1]["done_on_info"], {"level_change": {}})
+        self.assertEqual(infos[1]["reset_info"], {"state": "Level1-4"})
+        self.assertTrue(infos[1]["TimeLimit.truncated"])
+
     def test_emits_nonterminal_info_events_for_configured_level_change(self) -> None:
         class FakeVecEnv:
             num_envs = 1

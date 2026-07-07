@@ -16,7 +16,7 @@ import gymnasium as gym
 import numpy as np
 import stable_retro as retro
 from stable_retro import RetroVecEnv
-from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecTransposeImage
+from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from rlab.env_registry import (
     STABLE_RETRO_TURBO_PROVIDER,
@@ -46,7 +46,7 @@ def _super_mario_bros_nes_turbo_vec_env_type():
     except ImportError as exc:
         raise ImportError(
             "supermariobrosnes-turbo provider requires "
-            "supermariobrosnes-turbo==0.2.6",
+            "supermariobrosnes-turbo==0.2.10",
         ) from exc
     return SuperMarioBrosNesTurboVecEnv
 
@@ -387,7 +387,7 @@ def _stable_retro_turbo_make_env(
 
 
 class SingleLaneVecEnvAdapter(gym.Env):
-    """Adapt a one-lane SB3 VecEnv to the Gymnasium API used by replay display."""
+    """Adapt a one-lane vector env to the Gymnasium API used by replay display."""
 
     metadata = {"render_modes": ["rgb_array"]}
 
@@ -396,11 +396,19 @@ class SingleLaneVecEnvAdapter(gym.Env):
         if getattr(vec_env, "num_envs", 1) != 1:
             raise ValueError("SingleLaneVecEnvAdapter requires num_envs=1")
         self.vec_env = vec_env
-        self.action_space = vec_env.action_space
-        self.observation_space = vec_env.observation_space
+        self.action_space = getattr(vec_env, "single_action_space", vec_env.action_space)
+        self.observation_space = getattr(
+            vec_env,
+            "single_observation_space",
+            vec_env.observation_space,
+        )
         self.render_mode = getattr(vec_env, "render_mode", None)
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        if isinstance(self.vec_env, gym.vector.VectorEnv):
+            obs, infos = self.vec_env.reset(seed=seed, options=options)
+            info_list = vector_infos_to_list(infos, self.vec_env.num_envs)
+            return np.asarray(obs)[0], dict(info_list[0]) if info_list else {}
         if seed is not None:
             self.vec_env.seed(seed)
         if options is not None and hasattr(self.vec_env, "set_options"):
@@ -416,6 +424,23 @@ class SingleLaneVecEnvAdapter(gym.Env):
             action_batch = action_batch.reshape((1, *action_batch.shape))
         elif action_batch.ndim == 0:
             action_batch = action_batch.reshape((1,))
+        if isinstance(self.vec_env, gym.vector.VectorEnv):
+            obs, rewards, terminations, truncations, infos = self.vec_env.step(action_batch)
+            info_list = vector_infos_to_list(infos, self.vec_env.num_envs)
+            info = dict(info_list[0]) if info_list else {}
+            terminated = bool(np.asarray(terminations)[0])
+            truncated = bool(np.asarray(truncations)[0])
+            step_obs = np.asarray(obs)[0]
+            if terminated or truncated:
+                final_info = info.pop("final_info", {})
+                final_obs = info.pop("final_obs", None)
+                reset_info = dict(info)
+                info = dict(final_info) if isinstance(final_info, Mapping) else {}
+                if reset_info:
+                    info["reset_info"] = reset_info
+                if final_obs is not None:
+                    step_obs = final_obs
+            return step_obs, float(np.asarray(rewards)[0]), terminated, truncated, info
         obs, rewards, dones, infos = self.vec_env.step(action_batch)
         info = dict(infos[0]) if infos else {}
         done = bool(np.asarray(dones)[0])
@@ -533,6 +558,166 @@ class VecDiscreteRetroActions(VecEnvWrapper):
 
     def step_wait(self):
         return self.venv.step_wait()
+
+
+def _array_item(value: Any, index: int) -> Any:
+    if isinstance(value, np.ndarray):
+        item = value[index]
+        if isinstance(item, np.generic):
+            return item.item()
+        return item
+    if isinstance(value, (list, tuple)) and len(value) > index:
+        return value[index]
+    return value
+
+
+def vector_infos_to_list(infos: Any, num_envs: int) -> list[dict[str, Any]]:
+    """Convert Gymnasium vector info dictionaries to lane-wise dictionaries."""
+
+    if isinstance(infos, (list, tuple)):
+        return [dict(info or {}) for info in infos]
+    if not isinstance(infos, Mapping):
+        return [{} for _ in range(num_envs)]
+
+    result = [{} for _ in range(num_envs)]
+    masks: dict[str, np.ndarray] = {}
+    for key, value in infos.items():
+        if isinstance(key, str) and key.startswith("_"):
+            masks[key[1:]] = np.asarray(value, dtype=bool)
+
+    for key, value in infos.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        mask = masks.get(key)
+        if isinstance(value, Mapping):
+            values = vector_infos_to_list(value, num_envs)
+        else:
+            values = [_array_item(value, index) for index in range(num_envs)]
+        for index in range(num_envs):
+            if mask is not None and index < len(mask) and not bool(mask[index]):
+                continue
+            result[index][key] = values[index]
+    return result
+
+
+class GymVectorEnvToSb3VecEnv(VecEnv):
+    """Adapt Gymnasium VectorEnv output to the SB3 VecEnv contract used by PPO."""
+
+    def __init__(self, env: gym.vector.VectorEnv):
+        self.env = env
+        self.waiting = False
+        self._actions = None
+        super().__init__(
+            int(env.num_envs),
+            getattr(env, "single_observation_space", env.observation_space),
+            getattr(env, "single_action_space", env.action_space),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "env":
+            raise AttributeError(name)
+        return getattr(self.env, name)
+
+    @staticmethod
+    def _pending_seed(seeds: list[int | None]) -> int | None:
+        return next((int(seed) for seed in seeds if seed is not None), None)
+
+    @staticmethod
+    def _pending_options(options: list[dict[str, Any]]) -> dict[str, Any] | None:
+        non_empty = [option for option in options if option]
+        if not non_empty:
+            return None
+        if all(option == non_empty[0] for option in non_empty):
+            return dict(non_empty[0])
+        return {"options": list(options)}
+
+    def reset(self):
+        seed = self._pending_seed(getattr(self, "_seeds", []))
+        options = self._pending_options(getattr(self, "_options", []))
+        obs, infos = self.env.reset(seed=seed, options=options)
+        self.reset_infos = vector_infos_to_list(infos, self.num_envs)
+        self._reset_seeds()
+        self._reset_options()
+        return obs
+
+    def step_async(self, actions):
+        self._actions = actions
+        self.waiting = True
+
+    def step_wait(self):
+        obs, rewards, terminations, truncations, infos = self.env.step(self._actions)
+        self._actions = None
+        self.waiting = False
+        terminations = np.asarray(terminations, dtype=bool)
+        truncations = np.asarray(truncations, dtype=bool)
+        dones = np.logical_or(terminations, truncations)
+        lane_infos = vector_infos_to_list(infos, self.num_envs)
+        sb3_infos: list[dict[str, Any]] = []
+        for index, raw_info in enumerate(lane_infos):
+            info = dict(raw_info)
+            if bool(dones[index]):
+                final_info = info.pop("final_info", {})
+                final_obs = info.pop("final_obs", None)
+                reset_info = dict(info)
+                info = dict(final_info) if isinstance(final_info, Mapping) else {}
+                if final_obs is not None:
+                    info["terminal_observation"] = final_obs
+                info["reset_info"] = reset_info
+                info["TimeLimit.truncated"] = bool(truncations[index])
+                self.reset_infos[index] = reset_info
+            sb3_infos.append(info)
+        return (
+            obs,
+            np.asarray(rewards, dtype=np.float32),
+            dones,
+            sb3_infos,
+        )
+
+    def close(self):
+        return self.env.close()
+
+    def get_images(self):
+        if hasattr(self.env, "get_images"):
+            return self.env.get_images()
+        frame = self.env.render()
+        if frame is None:
+            return [None for _ in range(self.num_envs)]
+        return [frame]
+
+    def render(self, mode: str | None = None):
+        if mode is not None:
+            return self.env.render()
+        return self.env.render()
+
+    def get_attr(self, attr_name: str, indices=None) -> list[Any]:
+        value = getattr(self.env, attr_name)
+        return [value for _ in self._get_indices(indices)]
+
+    def set_attr(self, attr_name: str, value: Any, indices=None) -> None:
+        setattr(self.env, attr_name, value)
+
+    def env_method(
+        self,
+        method_name: str,
+        *method_args,
+        indices=None,
+        **method_kwargs,
+    ) -> list[Any]:
+        method = getattr(self.env, method_name)
+        return [
+            method(*method_args, **method_kwargs) for _ in self._get_indices(indices)
+        ]
+
+    def env_is_wrapped(self, wrapper_class, indices=None) -> list[bool]:
+        return [False for _ in self._get_indices(indices)]
+
+
+def adapt_provider_vec_env_for_sb3(vec_env):
+    if isinstance(vec_env, VecEnv):
+        return vec_env
+    if isinstance(vec_env, gym.vector.VectorEnv):
+        return GymVectorEnvToSb3VecEnv(vec_env)
+    return vec_env
 
 
 def _validate_sticky_action_prob(sticky_action_prob: float) -> float:
@@ -1186,6 +1371,7 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
         native_done_on_rules=native_done_on_rules,
     )
     vec_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
+    vec_env = adapt_provider_vec_env_for_sb3(vec_env)
     vec_env.seed(seed)
     if target.uses_discrete_actions(config.action_set):
         vec_env = VecDiscreteRetroActions(vec_env, config=config)
