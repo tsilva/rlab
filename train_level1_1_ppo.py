@@ -250,8 +250,8 @@ class NaturePPO(nn.Module):
             nn.Linear(64 * 7 * 7, 512),
             nn.ReLU(),
         )
-        self.pi = nn.Linear(512, n_actions)
-        self.v = nn.Linear(512, 1)
+        self.policy_head = nn.Linear(512, n_actions)
+        self.value_head = nn.Linear(512, 1)
         self._init()
 
     def _init(self):
@@ -262,32 +262,37 @@ class NaturePPO(nn.Module):
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.orthogonal_(m.weight, math.sqrt(2))
                 nn.init.zeros_(m.bias)
-        nn.init.orthogonal_(self.pi.weight, 0.01)
-        nn.init.orthogonal_(self.v.weight, 1.0)
+        nn.init.orthogonal_(self.policy_head.weight, 0.01)
+        nn.init.orthogonal_(self.value_head.weight, 1.0)
 
-    def forward(self, obs):
+    def forward(self, observations):
         # Observations arrive as uint8 pixels in [0, 255].  Neural nets train on
         # floats, so normalize to roughly [0, 1].
-        z = self.cnn(obs.float() / 255.0)
-        return self.pi(z), self.v(z).squeeze(-1)
+        visual_features = self.cnn(observations.float() / 255.0)
+        return self.policy_head(visual_features), self.value_head(visual_features).squeeze(-1)
 
-    def act_value(self, obs):
+    def act_value(self, observations):
         # Categorical(logits=...) represents a probability distribution over the
         # 7 discrete actions.  Sampling makes rollout behavior stochastic.
-        logits, value = self(obs)
-        dist = Categorical(logits=logits)
-        action = dist.sample()
+        action_logits, state_value = self(observations)
+        action_distribution = Categorical(logits=action_logits)
+        action = action_distribution.sample()
         # We save log_prob(action) because PPO later asks:
         # "How much more/less likely is this same action under the updated
         # policy compared with the policy that collected it?"
-        return action, dist.log_prob(action), dist.entropy(), value
+        return (
+            action,
+            action_distribution.log_prob(action),
+            action_distribution.entropy(),
+            state_value,
+        )
 
 
 def schedule(start, end, step, horizon):
     """Linear decay from start to end over horizon environment steps."""
 
-    p = min(max(step / horizon, 0.0), 1.0)
-    return start + (end - start) * p
+    progress = min(max(step / horizon, 0.0), 1.0)
+    return start + (end - start) * progress
 
 
 def make_env():
@@ -341,9 +346,9 @@ def main():
 
     # Each env lane needs its own progress/reward tracker.
     trackers = [MarioTracker() for _ in range(N_ENVS)]
-    obs = env.reset()
-    for i, info in enumerate(getattr(env, "reset_infos", [{} for _ in range(N_ENVS)])):
-        trackers[i].reset(info)
+    observations = env.reset()
+    for env_index, info in enumerate(getattr(env, "reset_infos", [{} for _ in range(N_ENVS)])):
+        trackers[env_index].reset(info)
 
     # Create actor-critic network and Adam optimizer.
     model = NaturePPO(N_ACTIONS).to(device)
@@ -357,20 +362,20 @@ def main():
     # Rollout buffers.  PPO is "on-policy": collect a fresh rollout, update from
     # it, then throw it away and collect a new one.  Buffers are preallocated to
     # avoid reallocating big tensors every update.
-    b_obs = torch.empty((N_STEPS, N_ENVS, 4, 84, 84), dtype=torch.uint8)
-    b_act = torch.empty((N_STEPS, N_ENVS), dtype=torch.long)
-    b_logp = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
-    b_rew = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
-    b_done = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
-    b_val = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
-    adv = torch.empty_like(b_rew)
+    rollout_observations = torch.empty((N_STEPS, N_ENVS, 4, 84, 84), dtype=torch.uint8)
+    rollout_actions = torch.empty((N_STEPS, N_ENVS), dtype=torch.long)
+    rollout_action_log_probs = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
+    rollout_rewards = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
+    rollout_dones = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
+    rollout_state_values = torch.empty((N_STEPS, N_ENVS), dtype=torch.float32)
+    rollout_advantages = torch.empty_like(rollout_rewards)
 
     while steps < TOTAL_STEPS:
         # Decay learning rate and entropy coefficient according to the recipe.
         lr = schedule(LR0, LR1, steps, LR_DECAY_STEPS)
         ent_coef = schedule(ENT0, ENT1, steps, ENT_DECAY_STEPS)
-        for g in opt.param_groups:
-            g["lr"] = lr
+        for param_group in opt.param_groups:
+            param_group["lr"] = lr
 
         # ------------------
         # 1. Collect rollout
@@ -378,19 +383,21 @@ def main():
         #
         # During rollout, gradients are disabled.  We are only using the current
         # policy to choose actions and record the data needed for PPO.
-        for t in range(N_STEPS):
-            obs_t = torch.as_tensor(obs, device=device)
+        for rollout_step in range(N_STEPS):
+            current_observations = torch.as_tensor(observations, device=device)
             with torch.inference_mode():
-                act, logp, _, val = model.act_value(obs_t)
+                actions, action_log_probs, _, state_values = model.act_value(current_observations)
 
             # Convert discrete action indices to NES button masks and step all
             # 16 env lanes together.
-            next_obs, _native_rew, done, infos = env.step(ACTIONS_NP[act.cpu().numpy()])
+            next_observations, _native_rewards, dones, info_dicts = env.step(
+                ACTIONS_NP[actions.cpu().numpy()]
+            )
 
-            for i, info in enumerate(infos):
+            for env_index, info in enumerate(info_dicts):
                 # Replace native reward with our shaped Mario learning signal.
-                b_rew[t, i] = trackers[i].shape(info)
-                if bool(done[i]):
+                rollout_rewards[rollout_step, env_index] = trackers[env_index].shape(info)
+                if bool(dones[env_index]):
                     # done means either death or level clear.  Track clears only.
                     completes.append(1 if info.get("level_complete") else 0)
 
@@ -398,7 +405,7 @@ def main():
                     # the first info dict of the new episode, so reset our
                     # Python-side tracker to match the lane's new episode.
                     reset_info = info.get("reset_info", {}) if isinstance(info, dict) else {}
-                    trackers[i].reset(reset_info if isinstance(reset_info, dict) else {})
+                    trackers[env_index].reset(reset_info if isinstance(reset_info, dict) else {})
 
             # Save exactly what PPO needs:
             # - observation before the action,
@@ -407,12 +414,14 @@ def main():
             # - shaped reward,
             # - done flag,
             # - critic value estimate before seeing the reward.
-            b_obs[t].copy_(torch.as_tensor(obs, dtype=torch.uint8))
-            b_act[t].copy_(act.cpu())
-            b_logp[t].copy_(logp.cpu())
-            b_done[t].copy_(torch.as_tensor(done, dtype=torch.float32))
-            b_val[t].copy_(val.cpu())
-            obs = next_obs
+            rollout_observations[rollout_step].copy_(
+                torch.as_tensor(observations, dtype=torch.uint8)
+            )
+            rollout_actions[rollout_step].copy_(actions.cpu())
+            rollout_action_log_probs[rollout_step].copy_(action_log_probs.cpu())
+            rollout_dones[rollout_step].copy_(torch.as_tensor(dones, dtype=torch.float32))
+            rollout_state_values[rollout_step].copy_(state_values.cpu())
+            observations = next_observations
             steps += N_ENVS
 
         # ------------------------------------
@@ -430,23 +439,34 @@ def main():
         #
         # and then smooths deltas backward through time.
         with torch.inference_mode():
-            _, last_val = model(torch.as_tensor(obs, device=device))
-        last_val = last_val.cpu()
-        last_gae = torch.zeros(N_ENVS)
-        for t in reversed(range(N_STEPS)):
-            next_nonterminal = 1.0 - b_done[t]
-            next_value = last_val if t == N_STEPS - 1 else b_val[t + 1]
-            delta = b_rew[t] + GAMMA * next_value * next_nonterminal - b_val[t]
-            last_gae = delta + GAMMA * GAE_LAMBDA * next_nonterminal * last_gae
-            adv[t] = last_gae
-        ret = adv + b_val
+            _, final_state_values = model(torch.as_tensor(observations, device=device))
+        final_state_values = final_state_values.cpu()
+        next_advantage_estimate = torch.zeros(N_ENVS)
+        for rollout_step in reversed(range(N_STEPS)):
+            next_nonterminal = 1.0 - rollout_dones[rollout_step]
+            next_state_values = (
+                final_state_values
+                if rollout_step == N_STEPS - 1
+                else rollout_state_values[rollout_step + 1]
+            )
+            temporal_difference_error = (
+                rollout_rewards[rollout_step]
+                + GAMMA * next_state_values * next_nonterminal
+                - rollout_state_values[rollout_step]
+            )
+            next_advantage_estimate = (
+                temporal_difference_error
+                + GAMMA * GAE_LAMBDA * next_nonterminal * next_advantage_estimate
+            )
+            rollout_advantages[rollout_step] = next_advantage_estimate
+        rollout_returns = rollout_advantages + rollout_state_values
 
         # Flatten rollout from [time, env] into one big training table.
-        flat_obs = b_obs.reshape(-1, 4, 84, 84).to(device)
-        flat_act = b_act.flatten().to(device)
-        flat_old_logp = b_logp.flatten().to(device)
-        flat_adv = adv.flatten().to(device)
-        flat_ret = ret.flatten().to(device)
+        training_observations = rollout_observations.reshape(-1, 4, 84, 84).to(device)
+        training_actions = rollout_actions.flatten().to(device)
+        training_old_action_log_probs = rollout_action_log_probs.flatten().to(device)
+        training_advantages = rollout_advantages.flatten().to(device)
+        training_returns = rollout_returns.flatten().to(device)
         approx_kl = torch.tensor(0.0)
 
         # -----------------------------
@@ -467,33 +487,48 @@ def main():
         for _ in range(EPOCHS):
             # Shuffle indices so each minibatch sees a different mix of times
             # and env lanes.
-            order = torch.randperm(flat_act.numel(), device=device)
-            for start in range(0, order.numel(), BATCH):
-                idx = order[start : start + BATCH]
-                logits, value = model(flat_obs[idx])
-                dist = Categorical(logits=logits)
-                logp = dist.log_prob(flat_act[idx])
-                entropy = dist.entropy().mean()
-                old_logp = flat_old_logp[idx]
+            shuffled_indices = torch.randperm(training_actions.numel(), device=device)
+            for batch_start in range(0, shuffled_indices.numel(), BATCH):
+                batch_indices = shuffled_indices[batch_start : batch_start + BATCH]
+                action_logits, predicted_state_values = model(
+                    training_observations[batch_indices]
+                )
+                action_distribution = Categorical(logits=action_logits)
+                new_action_log_probs = action_distribution.log_prob(
+                    training_actions[batch_indices]
+                )
+                entropy = action_distribution.entropy().mean()
+                old_action_log_probs = training_old_action_log_probs[batch_indices]
 
                 # Probability ratio between new policy and rollout policy.
-                ratio = (logp - old_logp).exp()
-                a = flat_adv[idx]
+                probability_ratio = (new_action_log_probs - old_action_log_probs).exp()
+                batch_advantages = training_advantages[batch_indices]
 
                 # Actor loss.  The min() implements PPO clipping:
                 # use the clipped objective whenever the unclipped objective
                 # would reward a too-large policy move.
-                pg_loss = -torch.min(a * ratio, a * ratio.clamp(1 - CLIP, 1 + CLIP)).mean()
+                unclipped_policy_objective = batch_advantages * probability_ratio
+                clipped_policy_objective = batch_advantages * probability_ratio.clamp(
+                    1 - CLIP,
+                    1 + CLIP,
+                )
+                policy_loss = -torch.min(
+                    unclipped_policy_objective,
+                    clipped_policy_objective,
+                ).mean()
 
                 # Critic loss.  The value head learns to predict rollout returns.
-                v_loss = 0.5 * (flat_ret[idx] - value).pow(2).mean()
+                value_loss = (
+                    0.5
+                    * (training_returns[batch_indices] - predicted_state_values).pow(2).mean()
+                )
 
                 # Entropy bonus rewards randomness.  Early in training this helps
                 # Mario keep trying varied jump/run timings.
-                loss = pg_loss + VF_COEF * v_loss - ent_coef * entropy
+                total_loss = policy_loss + VF_COEF * value_loss - ent_coef * entropy
 
                 opt.zero_grad(set_to_none=True)
-                loss.backward()
+                total_loss.backward()
 
                 # Gradient clipping prevents rare huge gradients from exploding
                 # the update.
@@ -503,7 +538,10 @@ def main():
                 with torch.inference_mode():
                     # Approximate KL is a drift meter: how far did the updated
                     # policy move away from the rollout policy?
-                    approx_kl = ((ratio - 1) - (logp - old_logp)).mean().cpu()
+                    log_prob_difference = new_action_log_probs - old_action_log_probs
+                    approx_kl = (
+                        (probability_ratio - 1) - log_prob_difference
+                    ).mean().cpu()
 
             # If KL is too high, stop reusing this rollout and collect fresh
             # experience.  This is one of the recipe's stability tricks.
