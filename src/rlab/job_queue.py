@@ -62,9 +62,7 @@ PROVIDER_OWNED_INFO_EVENTS = {
     "supermariobrosnes-turbo": frozenset({"life_loss", "level_change"}),
 }
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
-QUEUE_TEMPLATE_FIELDS = frozenset(
-    {"group_id", "seed", "recipe_id", "spec_id", "timestamp", "utc"}
-)
+QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
 SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
@@ -84,7 +82,7 @@ SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
 }
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     **SPEC_DEFERRED_TEMPLATE_FIELDS,
-    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug", "spec_id", "spec_slug"}),
+    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
 }
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
     {
@@ -129,13 +127,12 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS train_jobs (
   id BIGSERIAL PRIMARY KEY,
   goal_slug TEXT NOT NULL,
-  spec_slug TEXT,
-  spec_path TEXT,
-  spec_sha256 TEXT,
+  recipe_slug TEXT,
+  recipe_path TEXT,
+  recipe_sha256 TEXT,
   repo_git_commit TEXT,
   repo_dirty BOOLEAN NOT NULL DEFAULT FALSE,
-  spec_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  profile_id TEXT,
+  recipe_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   runtime_image_ref TEXT NOT NULL,
   run_target TEXT,
   train_config JSONB NOT NULL,
@@ -189,13 +186,14 @@ CREATE TABLE IF NOT EXISTS job_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-DROP INDEX IF EXISTS train_jobs_claim_idx;
 DROP INDEX IF EXISTS train_jobs_runtime_claim_idx;
+DROP INDEX IF EXISTS train_jobs_claim_idx;
+DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
-  ON train_jobs (profile_id, status, id)
+  ON train_jobs (status, id)
   WHERE status IN ('pending', 'running');
 
 CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
@@ -205,8 +203,8 @@ CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
 
-CREATE INDEX IF NOT EXISTS train_jobs_spec_status_idx
-  ON train_jobs (goal_slug, spec_slug, status);
+CREATE INDEX IF NOT EXISTS train_jobs_recipe_status_idx
+  ON train_jobs (goal_slug, recipe_slug, status);
 
 CREATE INDEX IF NOT EXISTS job_launches_machine_state_idx
   ON job_launches (machine, state, created_at);
@@ -223,33 +221,6 @@ RESET_TABLES = (
     "job_launches",
     "train_jobs",
 )
-
-
-CLAIM_TRAIN_JOB_SQL = """
-WITH next_job AS (
-  SELECT id
-  FROM train_jobs
-  WHERE
-    runtime_image_ref = %(runtime_image_ref)s
-    AND cancel_requested = FALSE
-    AND status = 'pending'
-  ORDER BY id ASC
-  LIMIT 1
-  FOR UPDATE SKIP LOCKED
-)
-UPDATE train_jobs AS job
-SET
-  status = 'running',
-  lease_owner = %(worker_id)s,
-  lease_expires_at = now() + (%(lease_seconds)s || ' seconds')::interval,
-  attempts = attempts + 1,
-  started_at = COALESCE(started_at, now()),
-  heartbeat_at = now(),
-  error = NULL
-FROM next_job
-WHERE job.id = next_job.id
-RETURNING job.*;
-"""
 
 
 def json_arg(value: Any) -> psycopg2.extras.Json:
@@ -839,19 +810,15 @@ def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(document)
     if slug and "recipe_id" not in payload:
         payload["recipe_id"] = slug
+    digest = file_sha256(path)
     return {
         "goal_slug": spec_goal_slug(document),
         "recipe_slug": slug,
         "recipe_path": str(path),
-        "recipe_sha256": file_sha256(path),
+        "recipe_sha256": digest,
         "recipe_payload": payload,
-        # Queue storage still uses these legacy column names for existing DB compatibility.
-        "spec_slug": slug,
-        "spec_path": str(path),
-        "spec_sha256": file_sha256(path),
         "repo_git_commit": repo_git_commit(),
         "repo_dirty": repo_is_dirty(),
-        "spec_payload": payload,
     }
 
 
@@ -995,7 +962,6 @@ def _format_seed_template(
     return str(template).format(
         seed="" if seed is None else seed,
         recipe_id=recipe_id,
-        spec_id=recipe_id,
         timestamp=utc,
         utc=utc,
         group_id=group_id,
@@ -1015,7 +981,6 @@ def _format_run_name_template(
     return str(template).format(
         seed="" if seed is None else seed,
         recipe_id=recipe_id,
-        spec_id=recipe_id,
         timestamp=utc,
         utc=utc,
         group_id=group_id,
@@ -1075,9 +1040,6 @@ def enqueue_train_jobs_from_recipe_document(
     recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
     repo_dirty: bool = False,
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    instances_path: Path | None = None,
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     validate_train_recipe_schema(document)
@@ -1103,15 +1065,13 @@ def enqueue_train_jobs_from_recipe_document(
         row = enqueue_train_job(
             conn,
             goal_slug=goal_slug,
-            spec_slug=document_slug,
-            spec_path=recipe_path,
-            spec_sha256=recipe_sha256,
+            recipe_slug=document_slug,
+            recipe_path=recipe_path,
+            recipe_sha256=recipe_sha256,
             repo_git_commit=repo_git_commit,
             repo_dirty=repo_dirty,
-            spec_payload=payload,
-            profile_id=None,
+            recipe_payload=payload,
             runtime_image_ref=runtime_image_ref,
-            run_target=None,
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
             run_name=(
@@ -1149,9 +1109,6 @@ def enqueue_train_jobs_from_recipe_file(
     *,
     path: Path,
     runtime_image_ref: str,
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    instances_path: Path | None = None,
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     document = load_recipe_document(path)
@@ -1164,9 +1121,6 @@ def enqueue_train_jobs_from_recipe_file(
         recipe_sha256=metadata["recipe_sha256"],
         repo_git_commit=metadata["repo_git_commit"],
         repo_dirty=metadata["repo_dirty"],
-        profile_id=profile_id,
-        run_target=run_target,
-        instances_path=instances_path,
         seeds=seeds,
     )
 
@@ -1175,13 +1129,12 @@ def enqueue_train_job(
     conn,
     *,
     goal_slug: str,
-    spec_slug: str | None = None,
-    spec_path: str | None = None,
-    spec_sha256: str | None = None,
+    recipe_slug: str | None = None,
+    recipe_path: str | None = None,
+    recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
     repo_dirty: bool = False,
-    spec_payload: Mapping[str, Any] | None = None,
-    profile_id: str | None,
+    recipe_payload: Mapping[str, Any] | None = None,
     runtime_image_ref: str,
     train_config: Mapping[str, Any],
     run_target: str | None = None,
@@ -1197,27 +1150,26 @@ def enqueue_train_job(
         raise ValueError("goal_slug is required")
     config = dict(train_config)
     assert_no_secrets(config, label="train_config")
-    assert_no_secrets(spec_payload or {}, label="spec_payload")
+    assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
     validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
-    profile_id = None
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    run_target = None
+    run_target = normalize_run_target(run_target)
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO train_jobs (
-                  goal_slug, spec_slug, spec_path, spec_sha256, repo_git_commit,
-                  repo_dirty, spec_payload_json, profile_id, runtime_image_ref,
+                  goal_slug, recipe_slug, recipe_path, recipe_sha256, repo_git_commit,
+                  repo_dirty, recipe_payload_json, runtime_image_ref,
                   run_target, train_config, max_attempts, run_name,
                   run_description, seed, wandb_group, wandb_tags
                 )
                 VALUES (
-                  %(goal_slug)s, %(spec_slug)s, %(spec_path)s, %(spec_sha256)s,
-                  %(repo_git_commit)s, %(repo_dirty)s, %(spec_payload_json)s,
-                  %(profile_id)s, %(runtime_image_ref)s, %(run_target)s,
+                  %(goal_slug)s, %(recipe_slug)s, %(recipe_path)s, %(recipe_sha256)s,
+                  %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
+                  %(runtime_image_ref)s, %(run_target)s,
                   %(train_config)s, %(max_attempts)s, %(run_name)s,
                   %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
                 )
@@ -1225,13 +1177,12 @@ def enqueue_train_job(
                 """,
                 {
                     "goal_slug": goal_slug,
-                    "spec_slug": spec_slug,
-                    "spec_path": spec_path,
-                    "spec_sha256": spec_sha256,
+                    "recipe_slug": recipe_slug,
+                    "recipe_path": recipe_path,
+                    "recipe_sha256": recipe_sha256,
                     "repo_git_commit": repo_git_commit,
                     "repo_dirty": bool(repo_dirty),
-                    "spec_payload_json": json_arg(dict(spec_payload or {})),
-                    "profile_id": profile_id,
+                    "recipe_payload_json": json_arg(dict(recipe_payload or {})),
                     "runtime_image_ref": runtime_image_ref,
                     "run_target": run_target,
                     "train_config": json_arg(config),
@@ -1250,33 +1201,9 @@ def enqueue_train_job(
                 job_id=int(row["id"]),
                 event_type="enqueued",
                 message="train job enqueued",
-                metadata={"goal_slug": goal_slug, "spec_slug": spec_slug},
+                metadata={"goal_slug": goal_slug, "recipe_slug": recipe_slug},
             )
             return row
-
-
-def claim_train_job(
-    conn,
-    *,
-    runtime_image_ref: str,
-    worker_id: str,
-    lease_seconds: int,
-    profile_id: str | None = None,
-    run_target: str | None = None,
-) -> dict[str, Any] | None:
-    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                CLAIM_TRAIN_JOB_SQL,
-                {
-                    "runtime_image_ref": runtime_image_ref,
-                    "worker_id": worker_id,
-                    "lease_seconds": lease_seconds,
-                },
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
 
 
 def new_launch_id(job_kind: str, job_id: int | None = None) -> str:
@@ -1540,31 +1467,6 @@ def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) ->
     return json_safe(payload)
 
 
-def heartbeat_train_job(
-    conn,
-    *,
-    job_id: int,
-    worker_id: str,
-    lease_seconds: int,
-) -> dict[str, Any] | None:
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE train_jobs
-                SET heartbeat_at = now(),
-                    lease_expires_at = now() + (%(lease_seconds)s || ' seconds')::interval
-                WHERE id = %(job_id)s
-                  AND lease_owner = %(worker_id)s
-                  AND status = 'running'
-                RETURNING id, cancel_requested, drain_requested
-                """,
-                {"job_id": job_id, "worker_id": worker_id, "lease_seconds": lease_seconds},
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-
 def request_cancel_train_job(conn, *, job_id: int) -> int:
     with conn:
         with conn.cursor() as cur:
@@ -1594,216 +1496,6 @@ def _normalize_stale_limit(value: int | None) -> int | None:
     if value is None or int(value) <= 0:
         return None
     return int(value)
-
-
-def _like_prefix(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"{escaped}%"
-
-
-def _stale_job_filters(
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-) -> tuple[list[str], dict[str, Any]]:
-    if older_than_seconds < 0:
-        raise ValueError("older_than_seconds must be non-negative")
-    normalized_ids = _normalize_positive_ids(job_ids)
-    profile_id = str(profile_id).strip() if profile_id else None
-    lease_owner_prefix = str(lease_owner_prefix).strip() if lease_owner_prefix else None
-    filters = [
-        "status = 'running'",
-        (
-            "COALESCE(heartbeat_at, started_at, created_at) <= "
-            "now() - (%(older_than_seconds)s || ' seconds')::interval"
-        ),
-    ]
-    params: dict[str, Any] = {
-        "older_than_seconds": int(older_than_seconds),
-        "limit": _normalize_stale_limit(limit),
-    }
-    if normalized_ids:
-        filters.append("id = ANY(%(job_ids)s)")
-        params["job_ids"] = list(normalized_ids)
-    if profile_id is not None:
-        filters.append("profile_id = %(profile_id)s")
-        params["profile_id"] = profile_id
-    if lease_owner_prefix is not None:
-        filters.append("lease_owner LIKE %(lease_owner_like)s ESCAPE '\\'")
-        params["lease_owner_like"] = _like_prefix(lease_owner_prefix)
-    return filters, params
-
-
-def _stale_train_candidate_sql(
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-    lock: bool = False,
-) -> tuple[str, dict[str, Any]]:
-    filters, params = _stale_job_filters(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-    )
-    run_target = normalize_run_target(run_target)
-    if run_target is not None:
-        filters.append("run_target = %(run_target)s")
-        params["run_target"] = run_target
-    lock_clause = "FOR UPDATE SKIP LOCKED" if lock else ""
-    where = "\n    AND ".join(filters)
-    return (
-        f"""
-        SELECT
-          id, goal_slug, spec_slug, profile_id, runtime_image_ref,
-          run_target, run_name, lease_owner AS stale_lease_owner,
-          lease_expires_at AS stale_lease_expires_at,
-          started_at AS stale_started_at, heartbeat_at AS stale_heartbeat_at
-        FROM train_jobs
-        WHERE {where}
-        ORDER BY id ASC
-        LIMIT %(limit)s
-        {lock_clause}
-        """,
-        params,
-    )
-
-
-def list_stale_train_jobs(
-    conn,
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-) -> list[dict[str, Any]]:
-    sql, params = _stale_train_candidate_sql(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        run_target=run_target,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-        lock=False,
-    )
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return [dict(row) for row in cur.fetchall()]
-
-
-def mark_stale_train_jobs_failed(
-    conn,
-    *,
-    job_ids: Sequence[int] = (),
-    profile_id: str | None = None,
-    run_target: str | None = None,
-    lease_owner_prefix: str | None = None,
-    older_than_seconds: int = 300,
-    limit: int | None = 50,
-    error: str | None = None,
-) -> list[dict[str, Any]]:
-    candidate_sql, params = _stale_train_candidate_sql(
-        job_ids=job_ids,
-        profile_id=profile_id,
-        run_target=run_target,
-        lease_owner_prefix=lease_owner_prefix,
-        older_than_seconds=older_than_seconds,
-        limit=limit,
-        lock=True,
-    )
-    error = error or "worker_lost: stale train job marked failed by rlab jobs"
-    params["error"] = error
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                WITH candidates AS (
-                  {candidate_sql}
-                ),
-                updated AS (
-                  UPDATE train_jobs AS job
-                  SET status = 'failed',
-                      lease_owner = NULL,
-                      lease_expires_at = NULL,
-                      finished_at = now(),
-                      error = %(error)s
-                  FROM candidates
-                  WHERE job.id = candidates.id
-                  RETURNING job.*
-                )
-                SELECT
-                  updated.id, updated.profile_id, updated.runtime_image_ref,
-                  updated.run_target, updated.run_name,
-                  candidates.stale_lease_owner, candidates.stale_lease_expires_at,
-                  candidates.stale_started_at, candidates.stale_heartbeat_at,
-                  updated.finished_at, updated.error
-                FROM updated
-                JOIN candidates ON candidates.id = updated.id
-                ORDER BY updated.id ASC
-                """,
-                params,
-            )
-            return [dict(row) for row in cur.fetchall()]
-
-
-def finish_train_job(
-    conn,
-    *,
-    job: Mapping[str, Any],
-    worker_id: str,
-    status: str,
-    exit_code: int | None,
-    result: Mapping[str, Any],
-    error: str | None = None,
-) -> None:
-    if status not in {"succeeded", "failed", "canceled"}:
-        raise ValueError(f"invalid train job terminal status: {status}")
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE train_jobs
-                SET status = %(status)s,
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    finished_at = now(),
-                    error = %(error)s
-                WHERE id = %(job_id)s
-                  AND lease_owner = %(worker_id)s
-                  AND status = 'running'
-                """,
-                {
-                    "status": status,
-                    "error": error,
-                    "job_id": job["id"],
-                    "worker_id": worker_id,
-                },
-            )
-            if cur.rowcount != 1:
-                raise RuntimeError(f"could not finish train job {job['id']} for worker {worker_id}")
-            record_job_event(
-                conn,
-                job_kind="train",
-                job_id=int(job["id"]),
-                event_type=status,
-                message=error,
-                metadata={
-                    "exit_code": exit_code,
-                    "run_name": result.get("run_name") or job.get("run_name"),
-                    "wandb_run_id": result.get("wandb_run_id"),
-                    "wandb_url": result.get("wandb_url"),
-                },
-            )
 
 
 def _terminal_status_from_result(result: Mapping[str, Any]) -> str:
@@ -1988,7 +1680,7 @@ def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
         train_jobs = {row["status"]: int(row["count"]) for row in cur.fetchall()}
         cur.execute(
             """
-            SELECT id, goal_slug, spec_slug, profile_id, status, run_name,
+            SELECT id, goal_slug, recipe_slug, status, run_name,
                    run_target, lease_owner, heartbeat_at, created_at
             FROM train_jobs
             WHERE goal_slug = %(goal_slug)s
@@ -2043,33 +1735,6 @@ def build_parser() -> argparse.ArgumentParser:
     cancel = subparsers.add_parser("cancel-train", help="Request cancellation for a train job")
     cancel.add_argument("job_id", type=int)
     cancel.set_defaults(func=cmd_cancel_train)
-
-    stale = subparsers.add_parser(
-        "mark-stale-failed",
-        help="Mark stale running queue jobs failed after their worker is known lost.",
-    )
-    stale.add_argument("--job-kind", choices=("train",), default="train")
-    stale.add_argument("--job-id", type=int, action="append", default=[])
-    stale.add_argument("--profile", help="Restrict to one profile_id.")
-    stale.add_argument("--target", dest="run_target", help="Restrict train jobs to one run_target.")
-    stale.add_argument(
-        "--instances",
-        type=Path,
-        default=Path("experiments/instances.yaml"),
-        help="Target config used to canonicalize --target.",
-    )
-    stale.add_argument(
-        "--lease-owner-prefix",
-        help="Restrict to running jobs whose lease_owner starts with this prefix.",
-    )
-    stale.add_argument("--older-than-seconds", type=int, default=300)
-    stale.add_argument(
-        "--limit", type=int, default=50, help="Maximum rows to affect; 0 means no limit."
-    )
-    stale.add_argument("--error", help="Failure message to store on job/result rows.")
-    stale.add_argument("--all", action="store_true", help="Allow an unscoped apply.")
-    add_dry_run_arg(stale)
-    stale.set_defaults(func=cmd_mark_stale_failed)
 
     status = subparsers.add_parser("status", help="Print compact queue status")
     status.add_argument("--goal", required=True, dest="goal_slug")
@@ -2148,7 +1813,6 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             conn,
             path=args.recipe_file,
             runtime_image_ref=runtime_image_ref,
-            instances_path=args.instances,
             seeds=args.seed,
         )
     finally:
@@ -2171,61 +1835,6 @@ def cmd_cancel_train(args: argparse.Namespace) -> int:
     return 0
 
 
-def _stale_scope_selected(args: argparse.Namespace) -> bool:
-    return bool(args.job_id or args.profile or args.lease_owner_prefix or args.run_target)
-
-
-def _print_stale_rows(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    job_kind: str,
-    execute: bool,
-) -> None:
-    action = "failed" if execute else "would_fail"
-    print(f"stale_{job_kind}_jobs_{action}={len(rows)}")
-    for row in rows:
-        name = row.get("run_name") or row.get("candidate_label") or ""
-        target = row.get("run_target") or ""
-        print(
-            "  "
-            f"{job_kind}_job_id={row['id']} "
-            f"profile={row.get('profile_id') or 'any'} "
-            f"target={target or 'any'} "
-            f"owner={row.get('stale_lease_owner') or 'unknown'} "
-            f"heartbeat={row.get('stale_heartbeat_at') or 'unknown'} "
-            f"name={name}"
-        )
-
-
-def cmd_mark_stale_failed(args: argparse.Namespace) -> int:
-    if args.execute and not args.all and not _stale_scope_selected(args):
-        raise SystemExit(
-            "refusing unscoped apply; pass --job-id, --profile, "
-            "--target, --lease-owner-prefix, or --all"
-        )
-    run_target = canonicalize_run_target(args.run_target, instances_path=args.instances)
-    conn = _connect_from_args(args)
-    try:
-        common = {
-            "job_ids": args.job_id,
-            "profile_id": args.profile,
-            "run_target": run_target,
-            "lease_owner_prefix": args.lease_owner_prefix,
-            "older_than_seconds": args.older_than_seconds,
-            "limit": args.limit,
-        }
-        if args.execute:
-            rows = mark_stale_train_jobs_failed(conn, **common, error=args.error)
-        else:
-            rows = list_stale_train_jobs(conn, **common)
-    finally:
-        conn.close()
-    _print_stale_rows(rows, job_kind=args.job_kind, execute=args.execute)
-    if not args.execute:
-        print("dry_run: rerun without --dry-run to mark these stale jobs failed")
-    return 0
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
@@ -2242,10 +1851,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     raise SystemExit(args.func(args))
-
-
-def new_worker_id(prefix: str = "train-runner") -> str:
-    return f"{prefix}-{uuid.uuid4()}"
 
 
 if __name__ == "__main__":

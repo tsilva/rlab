@@ -32,19 +32,20 @@ docker run --rm --gpus all \
   rlab-container-entrypoint rlab-container-smoke
 ```
 
-Run a train queue worker:
+Run one claimed job payload:
 
 ```bash
 docker run --rm --gpus all \
-  --env-file .env.runner \
+  --env-file .env.fleet \
   -e RLAB_ROM_DIR=/roms \
+  -v /home/tsilva/rlab/payloads:/root/rlab/payloads:ro \
+  -v /home/tsilva/rlab/outputs:/root/rlab/outputs \
   -v /home/tsilva/roms:/roms:ro \
-  -v /home/tsilva/sandbox-runs:/root/rlab/runs \
   ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   rlab-container-entrypoint \
-  rlab train worker \
-    --runtime-image-ref docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
-    --run-target rtx2060
+  rlab run-job \
+    --payload /root/rlab/payloads/<launch-id>.json \
+    --output-dir /root/rlab/outputs/<launch-id>
 ```
 
 `rlab-container-entrypoint` imports ROMs from `RLAB_ROM_DIR` before executing
@@ -71,14 +72,16 @@ depend on mutable tags.
 
 For `beast-2` and `beast-3`, Mac-side `rlab fleet` reconciles Docker containers
 directly over SSH and keeps the queue in charge of scheduling; the beast hosts
-only need Docker, NVIDIA runtime support, mounts, and the runner env file.
+only need Docker, NVIDIA runtime support, mounts, and the fleet env file.
 
 ```bash
-uv run rlab fleet plan
-uv run rlab fleet reconcile
+uv run rlab fleet setup-host --host beast-3
+uv run rlab fleet shepherd --machine beast-3 --limit 1
+uv run rlab fleet watch --machine beast-3
 ```
 
-The managed containers are labeled with `rlab.managed=true`,
-`rlab.profile`, `rlab.runtime-image-ref`, `rlab.run-target`, and a config hash.
-They are removed only after there are no pending or running queue jobs for that
-profile/digest/target and no active lease owned by that container's worker id.
+Each launched container owns exactly one queue launch and is labeled with
+`rlab.job-container=true`, `rlab.job-id`, `rlab.launch-id`, `rlab.machine`, and
+`rlab.runtime-image-ref`. The shepherd finalizes completed launches from
+`result.json` and prunes stale host runtime images that are not demanded by the
+queue or used by active containers.

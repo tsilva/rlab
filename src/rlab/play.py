@@ -610,6 +610,7 @@ def resolved_play_launch_lines(
             f"frame_skip={policy_config.frame_skip} max_pool={policy_config.max_pool_frames} "
             f"sticky={policy_config.sticky_action_prob} "
             f"obs={policy_config.observation_size} crop={_format_sequence(policy_config.obs_crop)} "
+            f"crop_mode={policy_config.obs_crop_mode} crop_fill={policy_config.obs_crop_fill} "
             f"crop_top={policy_config.hud_crop_top} "
             f"resize={policy_config.obs_resize_algorithm}",
             "yellow",

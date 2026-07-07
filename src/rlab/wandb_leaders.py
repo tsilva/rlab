@@ -49,10 +49,6 @@ class RunScore:
     seed: int | None
     objective: float
 
-    @property
-    def spec_slug(self) -> str:
-        return self.recipe_slug
-
 
 @dataclass(frozen=True)
 class RunLeader:
@@ -63,10 +59,6 @@ class RunLeader:
     mean_seed: float
     best_seed: float
     runs: tuple[RunScore, ...]
-
-    @property
-    def spec_slug(self) -> str:
-        return self.recipe_slug
 
 
 @dataclass(frozen=True)
@@ -84,10 +76,6 @@ class CheckpointLeader:
     checkpoint_step: int | None
     artifact_ref: str
     eval_source: str
-
-    @property
-    def spec_slug(self) -> str:
-        return self.recipe_slug
 
 
 def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
@@ -198,7 +186,7 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
         _tag_value(tags, "goal_id:"),
         _tag_value(tags, "goal:"),
     )
-    recipe_slug = _first_text(config.get("recipe_slug"), config.get("spec_slug"), getattr(run, "group", ""))
+    recipe_slug = _first_text(config.get("recipe_slug"), getattr(run, "group", ""))
     if not goal_slug or not recipe_slug:
         return None
     return RunScore(
@@ -264,7 +252,7 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
             _tag_value(tags, "goal_id:"),
             _tag_value(tags, "goal:"),
         ),
-        recipe_slug=_first_text(config.get("recipe_slug"), config.get("spec_slug"), getattr(run, "group", "")),
+        recipe_slug=_first_text(config.get("recipe_slug"), getattr(run, "group", "")),
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),

@@ -26,9 +26,9 @@ BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs"}
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("run_name_template",): frozenset(
-        {"group_id", "seed", "recipe_id", "spec_id", "timestamp", "utc"}
+        {"group_id", "seed", "recipe_id", "timestamp", "utc"}
     ),
-    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug", "spec_id", "spec_slug"}),
+    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
     (
         "release",
         "huggingface",

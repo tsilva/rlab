@@ -124,8 +124,6 @@ def template_context_from_path(
         )
         recipe_slug = (
             _concrete_template_source(document.get("recipe_id"))
-            or _concrete_template_source(document.get("spec_id"))
-            or _concrete_template_source(document.get("slug"))
             or recipe_slug
         )
 
@@ -151,8 +149,6 @@ def template_context_from_path(
             "slug": recipe_slug,
             "recipe_id": recipe_slug,
             "recipe_slug": recipe_slug,
-            "spec_id": recipe_slug,
-            "spec_slug": recipe_slug,
         }.items()
         if value
     }

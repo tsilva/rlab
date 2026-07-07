@@ -20,13 +20,11 @@ TRAIN_RECIPE_REQUIRED_FIELDS = (
 TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = queue_required_train_config_fields()
 EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
 TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS = frozenset(
-    {"group_id", "seed", "recipe_id", "timestamp", "utc", "spec_id"}
+    {"group_id", "seed", "recipe_id", "timestamp", "utc"}
 )
 TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
     {
         "hypothesis",
-        "parent_spec_slug",
-        "parent_spec_id",
         "run_description_template",
         "slug",
         "wandb_tags",
@@ -158,7 +156,6 @@ def _require_template(
         template.format(
             seed=123,
             recipe_id="candidate",
-            spec_id="candidate",
             timestamp="20260626T120000Z",
             utc="20260626T120000Z",
             group_id="b-test",
@@ -171,7 +168,7 @@ def _require_template(
 
 
 def train_recipe_id(document: Mapping[str, Any]) -> str:
-    return str(document.get("recipe_id") or document.get("spec_id") or "").strip()
+    return str(document.get("recipe_id") or "").strip()
 
 
 def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:

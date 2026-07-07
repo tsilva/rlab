@@ -87,10 +87,10 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertIn("rtx2060", by_id)
         self.assertIn("local-macbook", by_id)
         self.assertEqual(by_id["rtx4090"]["target"], "docker/beast-3")
-        self.assertEqual(by_id["rtx4090"]["capacity"], "5 workers")
+        self.assertEqual(by_id["rtx4090"]["capacity"], "6 workers")
         self.assertEqual(by_id["rtx4090"]["details"]["manager"], "rlab fleet")
         self.assertEqual(by_id["rtx4090"]["details"]["machine"], "beast-3")
-        self.assertEqual(by_id["rtx4090"]["details"]["runner_capacity"], 5)
+        self.assertEqual(by_id["rtx4090"]["details"]["runner_capacity"], 6)
         self.assertEqual(by_id["local-macbook"]["target"], "local CLI")
         self.assertEqual(by_id["local-macbook"]["details"]["manager"], "local")
 
@@ -116,21 +116,20 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(by_id["rtx2060"]["state"], "busy")
         self.assertEqual(by_id["rtx2060"]["current_job"], "train-9")
 
-    def test_profile_with_4090_routes_to_beast_3(self) -> None:
+    def test_target_with_4090_routes_to_beast_3(self) -> None:
         device_key = infer_device_key(
             "train",
-            "mario-ppo/post21/rtx4090-screening-v1",
-            "train-runner",
+            "train-launch",
             {"device": "cuda"},
+            run_target="rtx4090",
         )
 
         self.assertEqual(device_key, "rtx4090")
 
-    def test_explicit_run_target_overrides_profile_device_inference(self) -> None:
+    def test_explicit_run_target_drives_device_inference(self) -> None:
         device_key = infer_device_key(
             "train",
-            "mario-ppo/post21/rtx4090-screening-v1",
-            "train-runner",
+            "train-launch",
             {"device": "cuda"},
             run_target="rtx2060",
         )
@@ -168,8 +167,7 @@ class MonitoringStateTests(unittest.TestCase):
             {
                 "id": 12,
                 "goal_slug": "goal",
-                "spec_slug": "spec",
-                "profile_id": "rtx4090-screening",
+                "recipe_slug": "rtx4090-screening",
                 "train_config": {"game": "SuperMarioBros-Nes-v0", "n_envs": 32},
                 "status": "pending",
                 "lease_owner": None,
@@ -182,7 +180,7 @@ class MonitoringStateTests(unittest.TestCase):
                 "run_name": "run-12",
                 "job_payload": {
                     "id": 12,
-                    "profile_id": "rtx4090-screening",
+                    "recipe_slug": "rtx4090-screening",
                     "train_config": {"game": "SuperMarioBros-Nes-v0", "n_envs": 32},
                     "status": "pending",
                 },
@@ -200,8 +198,7 @@ class MonitoringStateTests(unittest.TestCase):
             {
                 "id": 12,
                 "goal_slug": "goal",
-                "spec_slug": "spec",
-                "profile_id": "rtx4090-screening",
+                "recipe_slug": "rtx4090-screening",
                 "run_target": "rtx4090",
                 "train_config": {"game": "SuperMarioBros-Nes-v0", "n_envs": 32},
                 "status": "running",
@@ -212,7 +209,7 @@ class MonitoringStateTests(unittest.TestCase):
                 "run_name": "run-12",
                 "job_payload": {
                     "id": 12,
-                    "profile_id": "rtx4090-screening",
+                    "recipe_slug": "rtx4090-screening",
                     "train_config": {"game": "SuperMarioBros-Nes-v0", "n_envs": 32},
                     "status": "running",
                 },
@@ -232,8 +229,7 @@ class MonitoringStateTests(unittest.TestCase):
             {
                 "id": 13,
                 "goal_slug": "goal",
-                "spec_slug": "spec",
-                "profile_id": None,
+                "recipe_slug": None,
                 "runtime_image_ref": "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
                 + "a" * 64,
                 "run_target": "rtx4090",
@@ -253,7 +249,7 @@ class MonitoringStateTests(unittest.TestCase):
                 "run_name": "run-13",
                 "job_payload": {
                     "id": 13,
-                    "profile_id": None,
+                    "recipe_slug": None,
                     "runtime_image_ref": "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
                     + "a" * 64,
                     "run_target": "rtx4090",
@@ -268,7 +264,6 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(job["device"], "beast-3")
         self.assertEqual(job["container"], "")
         self.assertEqual(job["attention"], "cancel requested")
-        self.assertEqual(job["details"]["profile"], "any")
         self.assertEqual(job["details"]["device"], "beast-3")
         self.assertEqual(job["details"]["container"], "")
         self.assertEqual(job["details"]["run_target"], "rtx4090")

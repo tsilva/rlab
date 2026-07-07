@@ -78,6 +78,18 @@ def add_env_config_args(
         default=defaults.obs_crop,
         help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
     )
+    parser.add_argument(
+        "--obs-crop-mode",
+        choices=("remove", "mask"),
+        default=defaults.obs_crop_mode,
+        help="Whether obs_crop removes pixels or masks them before resize.",
+    )
+    parser.add_argument(
+        "--obs-crop-fill",
+        type=int,
+        default=defaults.obs_crop_fill,
+        help="Pixel fill value for obs_crop_mode=mask.",
+    )
     parser.add_argument("--obs-resize-algorithm", default=defaults.obs_resize_algorithm)
     parser.add_argument("--use-retro-reward", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--clip-rewards", action=argparse.BooleanOptionalAction, default=False)

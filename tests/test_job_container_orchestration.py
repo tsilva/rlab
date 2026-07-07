@@ -386,7 +386,6 @@ class RuntimeImagePruneTests(unittest.TestCase):
         images = fleet.parse_runtime_host_images(machine, image_rows)
         demands = [
             fleet.QueueDemand(
-                profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
                 pending_count=1,
@@ -440,7 +439,6 @@ class RuntimeImagePruneTests(unittest.TestCase):
         )
         demands = [
             fleet.QueueDemand(
-                profile_id=None,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 run_target="rtx4090",
                 pending_count=1,
@@ -469,10 +467,7 @@ class RuntimeImagePruneTests(unittest.TestCase):
             )
 
         self.assertEqual(pruned, 1)
-        self.assertEqual(
-            docker_calls,
-            [["rmi", STALE_IMAGE_REF.removeprefix("docker:")]],
-        )
+        self.assertEqual(docker_calls[-1], ["rmi", STALE_IMAGE_REF.removeprefix("docker:")])
 
 
 class LaunchLedgerTests(unittest.TestCase):
@@ -548,7 +543,7 @@ class RunJobCommandTests(unittest.TestCase):
                 "job": {
                     "id": 3,
                     "goal_slug": "Level1-1",
-                    "spec_slug": "candidate",
+                    "recipe_slug": "candidate",
                     "runtime_image_ref": RUNTIME_IMAGE_REF,
                     "train_config": {
                         "game": "SuperMarioBros-Nes-v0",

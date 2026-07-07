@@ -24,11 +24,6 @@ def _train(argv: Sequence[str]) -> int:
         from rlab.train import main as train_main
 
         return _run(train_main, argv[1:], prog="rlab train local")
-    if argv and argv[0] == "worker":
-        raise SystemExit(
-            "rlab train worker has been retired; use one-job containers via "
-            "`rlab fleet shepherd --machine <name>`"
-        )
 
     from rlab.job_queue import cmd_enqueue_train
 
@@ -122,7 +117,6 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
-    parser.add_argument("--profile", help=argparse.SUPPRESS)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(
         "--runtime-image-ref-file",
@@ -140,13 +134,6 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
     parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    parser.add_argument("--target", dest="run_target", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--instances",
-        type=Path,
-        default=Path("experiments/instances.yaml"),
-        help="Target config used to canonicalize --target.",
-    )
     parser.add_argument("--seed", type=int, action="append", default=[])
     return parser
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.json_utils import json_safe
-from rlab.train_runner import (
+from rlab.job_execution import (
     collect_result_metadata,
     train_command_for_job,
     write_train_config_file,

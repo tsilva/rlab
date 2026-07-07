@@ -365,11 +365,6 @@ def metric_value(metrics: dict[str, Any], *keys: str) -> Any:
     return None
 
 
-def profile_label(profile_id: Any) -> str:
-    value = str(profile_id or "").strip()
-    return value or "any"
-
-
 def run_target_label(run_target: Any) -> str:
     value = str(run_target or "").strip()
     return value or "any"
@@ -396,7 +391,7 @@ def payload_from_row(
         payload = {key: value for key, value in row.items() if key not in {"job_payload", "result_payload"}}
     context = {
         "goal_slug": row.get("goal_slug"),
-        "recipe_slug": row.get("recipe_slug") or row.get("spec_slug"),
+        "recipe_slug": row.get("recipe_slug"),
     }
     return {
         "table": table,
@@ -420,7 +415,6 @@ def device_key_from_run_target(run_target: Any) -> str | None:
 
 def infer_device_key(
     kind: str,
-    profile: str,
     worker: str,
     config: dict[str, Any],
     *,
@@ -432,7 +426,6 @@ def infer_device_key(
     text = " ".join(
         [
             kind,
-            profile.lower(),
             worker.lower(),
             str(config.get("device") or "").lower(),
             str(config.get("runner") or "").lower(),
@@ -505,11 +498,10 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     status = str(row.get("status") or "")
     worker = str(row.get("lease_owner") or "")
-    profile = str(row.get("profile_id") or "")
     run_target = row.get("run_target")
     runtime_image_ref = row.get("runtime_image_ref")
     wandb_url = str(config.get("wandb_url") or "").strip()
-    device_key = infer_device_key("train", profile, worker, config, run_target=run_target)
+    device_key = infer_device_key("train", worker, config, run_target=run_target)
     device = device_label(device_key)
     container = container_label(worker)
     return {
@@ -533,8 +525,7 @@ def job_from_train_row(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "details": {
             "goal": row.get("goal_slug") or "",
-            "recipe": row.get("recipe_slug") or row.get("spec_slug") or "",
-            "profile": profile_label(profile),
+            "recipe": row.get("recipe_slug") or "",
             "device": device,
             "container": container,
             "run_target": run_target_label(run_target),
@@ -612,7 +603,7 @@ def sample_jobs() -> list[dict[str, Any]]:
             "kind": "train",
             "target": "Mario L1 mixed",
             "device": "beast-3",
-            "container": "rlab-runner-rtx4090-latest",
+            "container": "rlab-job-beast-3-train-sample",
             "device_key": "rtx4090",
             "state": "running",
             "progress": "42%",
@@ -620,9 +611,8 @@ def sample_jobs() -> list[dict[str, Any]]:
             "attention": "W&B stale",
             "details": {
                 "host": "beast-3",
-                "container": "rlab-runner-rtx4090-latest",
-                "worker": "train-runner-2",
-                "lease": "11m",
+                "container": "rlab-job-beast-3-train-sample",
+                "launch": "train-184-sample",
                 "wandb": "https://wandb.ai/tsilva/SuperMarioBros-NES/runs/sample-train-184",
                 "docker": "running",
                 "artifact": "R2 ref",
@@ -630,11 +620,11 @@ def sample_jobs() -> list[dict[str, Any]]:
             },
             "payload": {
                 "table": "train_jobs",
-                "schema": ["id", "profile_id", "train_config", "status"],
+                "schema": ["id", "recipe_slug", "train_config", "status"],
                 "config_key": "train_config",
                 "job": {
                     "id": 184,
-                    "profile_id": "rtx4090-screening",
+                    "recipe_slug": "rtx4090-screening",
                     "train_config": {"game": "SuperMarioBros-Nes-v0"},
                     "status": "running",
                 },
@@ -651,7 +641,7 @@ def sample_jobs() -> list[dict[str, Any]]:
             "state": "pending",
             "progress": "",
             "attention": "",
-            "details": {"profile": "rtx4090-screening"},
+            "details": {"recipe": "rtx4090-screening"},
         },
         {
             "id": "train-181",

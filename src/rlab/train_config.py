@@ -669,8 +669,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         help="Experiment recipe path recorded in W&B config.",
     ),
-    TrainConfigField("spec_slug", ("--spec-slug",), default="", suppress_help=True),
-    TrainConfigField("spec_path", ("--spec-path",), default="", suppress_help=True),
     TrainConfigField(
         "queue_train_job_id",
         ("--queue-train-job-id",),
