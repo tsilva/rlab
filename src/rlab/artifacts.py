@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.env import EnvConfig, native_obs_crop, state_distribution_metadata
+from rlab.env import EnvConfig, native_obs_crop, state_distribution_metadata, validate_obs_crop
 from rlab.env_config import parse_event_names, parse_info_events
 from rlab.env_identity import environment_hash, environment_identity_from_train_config
 from rlab.metric_names import (
@@ -294,7 +294,11 @@ def env_config_from_config_dict(
 
     for field_name in field_names:
         if field_name in config and config[field_name] is not None:
-            config_values[field_name] = config[field_name]
+            config_values[field_name] = (
+                validate_obs_crop(config[field_name])
+                if field_name == "obs_crop"
+                else config[field_name]
+            )
             matched = True
 
     if "info_events" in config and config.get("info_events") is not None:

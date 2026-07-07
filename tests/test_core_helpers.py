@@ -2687,6 +2687,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                 max_pool_frames=False,
                 observation_size=96,
                 obs_crop=(0, 0, 32, 0),
+                obs_crop_mode="mask",
+                obs_crop_fill=7,
                 action_set="simple",
             )
 
@@ -2698,10 +2700,14 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(metadata["env_config"]["max_pool_frames"], False)
             self.assertEqual(metadata["env_config"]["observation_size"], 96)
             self.assertEqual(metadata["env_config"]["obs_crop"], [0, 0, 32, 0])
+            self.assertEqual(metadata["env_config"]["obs_crop_mode"], "mask")
+            self.assertEqual(metadata["env_config"]["obs_crop_fill"], 7)
             self.assertEqual(
                 metadata["environment"]["preprocessing"]["obs_crop"],
                 [0, 0, 32, 0],
             )
+            self.assertEqual(metadata["environment"]["preprocessing"]["obs_crop_mode"], "mask")
+            self.assertEqual(metadata["environment"]["preprocessing"]["obs_crop_fill"], 7)
             self.assertEqual(
                 metadata["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
             )
@@ -2714,6 +2720,11 @@ class CommandAndArtifactTests(unittest.TestCase):
                 metadata["training_metadata"]["preprocessing"]["sticky_action_prob"],
                 0.0,
             )
+            self.assertEqual(
+                metadata["training_metadata"]["preprocessing"]["obs_crop_mode"],
+                "mask",
+            )
+            self.assertEqual(metadata["training_metadata"]["preprocessing"]["obs_crop_fill"], 7)
             self.assertEqual(
                 metadata["training_metadata"]["preprocessing"]["obs_copy"], "safe_view"
             )
@@ -2758,6 +2769,9 @@ class CommandAndArtifactTests(unittest.TestCase):
                 "max_pool_frames": False,
                 "observation_size": 96,
                 "hud_crop_top": 32,
+                "obs_crop": [32, 0, 0, 0],
+                "obs_crop_mode": "mask",
+                "obs_crop_fill": 7,
             }
         }
 
@@ -2766,6 +2780,9 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertFalse(args.max_pool_frames)
         self.assertEqual(args.observation_size, 96)
         self.assertEqual(args.hud_crop_top, 32)
+        self.assertEqual(args.obs_crop, [32, 0, 0, 0])
+        self.assertEqual(args.obs_crop_mode, "mask")
+        self.assertEqual(args.obs_crop_fill, 7)
         self.assertEqual(args.states, ["Level1-1", "Level1-2"])
         self.assertEqual(args.state_probs, [0.5, 0.5])
         self.assertTrue(args.task_conditioning)
@@ -2792,6 +2809,9 @@ class CommandAndArtifactTests(unittest.TestCase):
                     state="Level2-1",
                     max_pool_frames=False,
                     observation_size=96,
+                    obs_crop=(32, 0, 0, 0),
+                    obs_crop_mode="mask",
+                    obs_crop_fill=7,
                     score_progress_clipped=True,
                     info_events={"level_change": (("levelHi", "levelLo"), "change")},
                     done_on_events=("level_change",),
@@ -2809,6 +2829,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(args.state, "Level2-1")
             self.assertFalse(args.max_pool_frames)
             self.assertEqual(args.observation_size, 96)
+            self.assertEqual(args.obs_crop, [32, 0, 0, 0])
+            self.assertEqual(args.obs_crop_mode, "mask")
+            self.assertEqual(args.obs_crop_fill, 7)
             self.assertTrue(args.score_progress_clipped)
             restored_args_config = env_config_from_args(
                 args,
@@ -2828,6 +2851,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             assert config is not None
             self.assertEqual(config.state, "Level2-1")
             self.assertEqual(config.observation_size, 96)
+            self.assertEqual(config.obs_crop, (32, 0, 0, 0))
+            self.assertEqual(config.obs_crop_mode, "mask")
+            self.assertEqual(config.obs_crop_fill, 7)
             self.assertEqual(
                 config.info_events,
                 {"level_change": (("levelHi", "levelLo"), "change")},
@@ -2871,6 +2897,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                     game="SuperMarioBros-Nes-v0",
                     state="Level1-1",
                     env_threads=4,
+                    obs_crop_mode="mask",
+                    obs_crop_fill=7,
                 ),
                 kind="checkpoint",
             )
@@ -2892,6 +2920,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.env_threads, 4)
+            self.assertEqual(config.obs_crop_mode, "mask")
+            self.assertEqual(config.obs_crop_fill, 7)
 
     def test_explicit_env_provider_overrides_model_metadata(self) -> None:
         parser = build_play_parser()
@@ -2907,6 +2937,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                     game="SuperMarioBros-Nes-v0",
                     state="Level1-1",
                     env_threads=4,
+                    obs_crop_mode="mask",
+                    obs_crop_fill=7,
                 ),
                 kind="checkpoint",
             )
@@ -2918,6 +2950,10 @@ class CommandAndArtifactTests(unittest.TestCase):
                 "stable-retro-turbo",
                 "--env-threads",
                 "2",
+                "--obs-crop-mode",
+                "remove",
+                "--obs-crop-fill",
+                "3",
             ]
             args = parser.parse_args(argv)
             explicit_dests = explicit_arg_dests(parser, argv)
@@ -2927,6 +2963,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(args.env_provider, "stable-retro-turbo")
             self.assertEqual(args.env_threads, 2)
+            self.assertEqual(args.obs_crop_mode, "remove")
+            self.assertEqual(args.obs_crop_fill, 3)
 
     def test_eval_model_metadata_defaults_apply_env_provider_and_threads(self) -> None:
         parser = build_eval_parser()
@@ -2942,6 +2980,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                     game="SuperMarioBros-Nes-v0",
                     state="Level1-1",
                     env_threads=4,
+                    obs_crop_mode="mask",
+                    obs_crop_fill=7,
                 ),
                 kind="checkpoint",
             )
@@ -2961,6 +3001,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.env_threads, 4)
+            self.assertEqual(config.obs_crop_mode, "mask")
+            self.assertEqual(config.obs_crop_fill, 7)
 
     def test_non_stable_playback_uses_native_display_when_rgb_supported(self) -> None:
         policy_config = EnvConfig(

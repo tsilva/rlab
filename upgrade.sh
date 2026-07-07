@@ -34,11 +34,11 @@ uv lock \
     --upgrade-package stable-retro-turbo \
     --upgrade-package supermariobrosnes-turbo
 
-uv sync --frozen
+uv tool install . \
+    --editable \
+    --force \
+    --upgrade-package stable-retro-turbo \
+    --upgrade-package supermariobrosnes-turbo
 
-uv run python - <<'PY'
-from importlib.metadata import version
-
-for package in ("stable-retro-turbo", "supermariobrosnes-turbo"):
-    print(f"{package}=={version(package)}")
-PY
+rlab --help >/dev/null
+uv tool list | grep -A1 '^rlab '
