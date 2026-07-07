@@ -57,6 +57,9 @@ train:
         - 0
         - 0
         - 0
+        # Keep full source geometry and hide the HUD region before resize.
+        obs_crop_mode: mask
+        obs_crop_fill: 0
         # Resize kernel; area downsampling is the expected image resizer for this contract.
         obs_resize_algorithm: area
         # Default Mario reward shaping contract.

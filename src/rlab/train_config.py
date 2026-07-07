@@ -341,6 +341,22 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
     ),
     TrainConfigField(
+        "obs_crop_mode",
+        ("--obs-crop-mode",),
+        env_default="obs_crop_mode",
+        choices=("remove", "mask"),
+        env_config_key="obs_crop_mode",
+        help="Whether obs_crop removes pixels or masks them before resize.",
+    ),
+    TrainConfigField(
+        "obs_crop_fill",
+        ("--obs-crop-fill",),
+        type_name="int",
+        env_default="obs_crop_fill",
+        env_config_key="obs_crop_fill",
+        help="Pixel fill value for obs_crop_mode=mask.",
+    ),
+    TrainConfigField(
         "obs_resize_algorithm",
         ("--obs-resize-algorithm",),
         env_default="obs_resize_algorithm",

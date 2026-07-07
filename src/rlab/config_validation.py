@@ -337,6 +337,14 @@ def _validate_env_config(
         _require_number(env_config, "sticky_action_prob", label=label)
     if "obs_resize_algorithm" in env_config:
         _require_non_empty_string(env_config, "obs_resize_algorithm", label=label)
+    if "obs_crop_mode" in env_config:
+        value = _require_non_empty_string(env_config, "obs_crop_mode", label=label)
+        if value not in {"remove", "mask"}:
+            raise ValueError(f"{label}.obs_crop_mode must be 'remove' or 'mask'")
+    if "obs_crop_fill" in env_config:
+        _require_int(env_config, "obs_crop_fill", label=label, minimum=0)
+        if int(env_config["obs_crop_fill"]) > 255:
+            raise ValueError(f"{label}.obs_crop_fill must be <= 255")
     if "info_events" in env_config:
         _require_mapping(env_config["info_events"], label=f"{label}.info_events")
     if "info_events_json" in env_config:

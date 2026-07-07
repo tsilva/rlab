@@ -20,6 +20,8 @@ PREPROCESSING_KEYS = (
     "observation_size",
     "hud_crop_top",
     "obs_crop",
+    "obs_crop_mode",
+    "obs_crop_fill",
     "obs_resize_algorithm",
 )
 TASK_CONDITIONING_KEYS = (

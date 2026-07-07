@@ -112,6 +112,8 @@ class EnvConfig:
     observation_size: int = 84
     hud_crop_top: int = -1
     obs_crop: tuple[int, int, int, int] | None = None
+    obs_crop_mode: str = "remove"
+    obs_crop_fill: int = 0
     obs_resize_algorithm: str = DEFAULT_OBS_RESIZE_ALGORITHM
     use_retro_reward: bool = False
     clip_rewards: bool = False
@@ -153,6 +155,18 @@ def validate_obs_crop(value: tuple[int, int, int, int] | list[int] | None) -> tu
     return tuple(result)  # type: ignore[return-value]
 
 
+def validate_obs_crop_mode(value: str) -> str:
+    if value not in {"remove", "mask"}:
+        raise ValueError("obs_crop_mode must be 'remove' or 'mask'")
+    return value
+
+
+def validate_obs_crop_fill(value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 255:
+        raise ValueError("obs_crop_fill must be an integer in [0, 255]")
+    return int(value)
+
+
 def native_obs_crop(config: EnvConfig) -> tuple[int, int, int, int] | None:
     obs_crop = validate_obs_crop(config.obs_crop)
     if obs_crop is not None:
@@ -180,6 +194,8 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
     qualify_env_id(config.env_provider, config.game)
     _validate_sticky_action_prob(config.sticky_action_prob)
+    validate_obs_crop_mode(config.obs_crop_mode)
+    validate_obs_crop_fill(config.obs_crop_fill)
     if config.task_conditioning_info_vars and not config.task_conditioning:
         raise ValueError("--task-conditioning-info-vars requires --task-conditioning")
     if config.task_conditioning_info_values and not config.task_conditioning_info_vars:
@@ -1094,6 +1110,14 @@ def _native_vec_kwargs(
         "obs_copy": "safe_view",
         "obs_layout": "chw",
     }
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
+        native_kwargs.update(
+            {
+                "obs_crop_mode": config.obs_crop_mode,
+                "obs_crop_fill": config.obs_crop_fill,
+            }
+        )
     if config.states:
         native_kwargs["state"] = (
             state_weight_mapping(config)
