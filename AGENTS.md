@@ -25,7 +25,7 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 - Every training run needs a specific description via `--run-description`.
 - Queue-backed train jobs should be profileless by default: do not pass or persist a `profile_id` unless the user explicitly asks for a profile-locked lane. Lock train jobs to immutable runtime image digests instead, resolving to the latest successful train image by default when no digest is specified.
 - Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `b82-b55reval-s6-20260702T150934Z`. Keep target/scope, runtime versions, and long recipe context in W&B groups, tags, descriptions, and recipe metadata rather than the run name.
-- Do not run robust evals inside remote training by default. Evaluate checkpoints out of process; promote by completion rate, then mean reward, then max x-position.
+- Post-train checkpoint eval is the only supported checkpoint-promotion eval workflow for now. Keep it enabled for normal queue-backed training; promote by per-start completion minimum, then per-start completion mean, then least timesteps to the completion goal, then eval reward.
 
 ## Metrics
 

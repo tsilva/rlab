@@ -112,6 +112,12 @@ def positional_model_source_arg(value: str) -> str:
     return artifact_ref_arg(value)
 
 
+def positional_huggingface_model_arg(value: str) -> str:
+    if is_huggingface_model_ref(value):
+        return value
+    raise argparse.ArgumentTypeError("expected Hugging Face model ref like hf://owner/repo")
+
+
 def add_model_source_args(
     parser: argparse.ArgumentParser,
     *,
@@ -120,23 +126,43 @@ def add_model_source_args(
     model_default: str | None = None,
     model_help: str | None = None,
     default_kind: str = "checkpoint",
+    include_wandb_artifacts: bool = True,
 ) -> None:
     if positional_artifact:
-        parser.add_argument(
-            "artifact_ref",
-            nargs="?",
-            type=positional_model_source_arg,
-            help=(
-                "W&B run name or run URL, or a full artifact ref like "
-                "entity/project/run-checkpoint:latest."
-            ),
-        )
+        if include_wandb_artifacts:
+            parser.add_argument(
+                "artifact_ref",
+                nargs="?",
+                type=positional_model_source_arg,
+                help=(
+                    "W&B run name or run URL, or a full artifact ref like "
+                    "entity/project/run-checkpoint:latest."
+                ),
+            )
+        else:
+            parser.add_argument(
+                "model_ref",
+                nargs="?",
+                type=positional_huggingface_model_arg,
+                help="Hugging Face model ref, for example hf://owner/repo.",
+            )
     model_kwargs: dict[str, Any] = {}
     if model_default is not None:
         model_kwargs["default"] = model_default
     if model_help is not None:
         model_kwargs["help"] = model_help
     parser.add_argument("--model", **model_kwargs)
+    if not include_wandb_artifacts:
+        parser.add_argument(
+            "--hf-file",
+            help=(
+                "Checkpoint filename to download from a Hugging Face model repo. "
+                "Required only when the repo contains multiple .zip checkpoints."
+            ),
+        )
+        parser.add_argument("--hf-revision", help="Hugging Face model revision. Defaults to main.")
+        parser.add_argument("--hf-model-root", default="runs/hf_models")
+        return
     artifact_kwargs: dict[str, Any] = {
         "type": artifact_ref_arg,
         "help": "Full W&B model artifact ref, for example entity/project/run-checkpoint:latest.",
@@ -162,11 +188,6 @@ def add_model_source_args(
     )
     parser.add_argument("--hf-revision", help="Hugging Face model revision. Defaults to main.")
     parser.add_argument("--hf-model-root", default="runs/hf_models")
-
-
-def slug(value: str) -> str:
-    return safe_artifact_stem(value)
-
 
 def split_project(value: str) -> tuple[str | None, str]:
     parts = value.split("/", 1)
@@ -321,6 +342,9 @@ def single_huggingface_model_ref(args: argparse.Namespace) -> str | None:
     positional = getattr(args, "artifact_ref", None)
     if positional and is_huggingface_model_ref(str(positional)):
         return str(positional)
+    positional = getattr(args, "model_ref", None)
+    if positional and is_huggingface_model_ref(str(positional)):
+        return str(positional)
     model = getattr(args, "model", None)
     if model and is_huggingface_model_ref(str(model)):
         return str(model)
@@ -329,62 +353,6 @@ def single_huggingface_model_ref(args: argparse.Namespace) -> str | None:
 
 def model_source_ref(args: argparse.Namespace) -> str | None:
     return single_huggingface_model_ref(args) or single_model_artifact_ref(args)
-
-
-def checkpoint_series_ref(args: argparse.Namespace) -> str:
-    run_name = getattr(args, "artifact_run", None)
-    if not run_name:
-        raise SystemExit("--artifact-run is required unless --artifact is provided")
-    return f"{artifact_project_from_args(args)}/{slug(str(run_name))}-checkpoint"
-
-
-def checkpoint_artifact_ref(args: argparse.Namespace) -> str:
-    if getattr(args, "checkpoint_series", False):
-        return checkpoint_series_ref(args)
-    ref = single_model_artifact_ref(args)
-    if ref is None:
-        raise SystemExit("--artifact-run is required unless --artifact is provided")
-    return ref
-
-
-def artifact_eval_name(args: argparse.Namespace) -> str:
-    if getattr(args, "artifact_run", None):
-        return slug(str(args.artifact_run))
-    artifacts = artifact_values(args)
-    if artifacts:
-        leaf = artifacts[0].split("/")[-1].split(":", 1)[0]
-        for suffix in ("-checkpoint", "-final", "-best"):
-            if suffix in leaf:
-                leaf = leaf.split(suffix, 1)[0]
-                break
-        return slug(leaf)
-    raise ValueError("artifact eval requires --artifact or --artifact-run")
-
-
-def find_model_artifacts(args: argparse.Namespace):
-    load_wandb_env()
-
-    import wandb
-
-    api = wandb.Api()
-    artifacts = artifact_values(args)
-    if artifacts:
-        return [api.artifact(ref, type="model") for ref in artifacts]
-
-    ref = checkpoint_artifact_ref(args)
-    if not getattr(args, "checkpoint_series", False):
-        return [api.artifact(ref, type="model")]
-
-    try:
-        versions = list(api.artifact_versions("model", ref))
-    except Exception as exc:
-        raise SystemExit(f"Could not list W&B checkpoint artifacts for {ref}: {exc}") from exc
-
-    versions.sort(key=lambda artifact: checkpoint_step_from_artifact(artifact) or -1)
-    max_checkpoints = int(getattr(args, "max_checkpoints", 0) or 0)
-    if max_checkpoints > 0:
-        versions = versions[:max_checkpoints]
-    return versions
 
 
 def _optional_int(value: Any) -> int | None:

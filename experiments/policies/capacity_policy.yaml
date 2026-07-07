@@ -43,4 +43,4 @@ policy_checks:
 - Group queue compatibility by runtime_image_ref only; host placement remains an operator/fleet decision.
 - Use digest image refs for comparable runs.
 - Backfill finished slots only while the next queued run still has decision value.
-- Treat training metrics as diagnostics; promote by out-of-process eval.
+- Treat training metrics as diagnostics; promote by post-train checkpoint eval.

@@ -27,7 +27,7 @@ database.
 - `env_throughput`: Stable Retro saved-state environment throughput probe.
 - `ppo_loop_throughput`: bounded PPO loop probe for rollout/update throughput.
 - `fleet_capacity`: queue-backed capacity check for a target host/runner shape.
-- `eval_contract`: out-of-process eval reconstruction check for a known model or
+- `eval_contract`: eval-environment reconstruction check for a known model or
   artifact.
 - `artifact_storage_smoke`: tiny checkpoint-producing W&B/R2 reference-artifact
   check.

@@ -100,7 +100,7 @@ The command surface is intentionally one binary:
 
 - `rlab train` enqueues queue-backed train jobs from checked-in recipes.
 - `rlab train local` runs direct local training.
-- `rlab eval` runs local evaluation; queued train jobs evaluate their checkpoints inline after training.
+- `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate checkpoints after training, and that post-train checkpoint eval is the supported checkpoint-promotion path.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and one-job container fleet.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.

@@ -68,16 +68,23 @@ gates: {}
             with self.assertRaisesRegex(ValueError, "actual saved state"):
                 load_benchmark_profile(path)
 
-    def test_local_smoke_command_uses_active_python_and_eval_model_path(self) -> None:
+    def test_local_smoke_command_uses_installed_cli_and_eval_model_path_by_default(self) -> None:
         profile = find_benchmark_profile("local-smoke-mario-l11")
         commands = build_benchmark_commands(profile)
 
         self.assertEqual([command.label for command in commands], ["train-smoke", "eval-smoke"])
-        self.assertIn("-m", commands[0].argv)
-        self.assertIn("rlab.main", commands[0].argv)
+        self.assertEqual(commands[0].argv[:3], ("rlab", "train", "local"))
         self.assertIn("local", commands[0].argv)
         self.assertIn("--preset", commands[0].argv)
+        self.assertEqual(commands[1].argv[:2], ("rlab", "eval"))
         self.assertIn("runs/benchmark_local_smoke_mario_l11/final_model.zip", commands[1].argv)
+
+    def test_local_smoke_command_can_use_source_module_execution_mode(self) -> None:
+        profile = find_benchmark_profile("local-smoke-mario-l11")
+        commands = build_benchmark_commands(profile, execution_mode="source-module")
+
+        self.assertEqual(commands[0].argv[1:4], ("-m", "rlab.main", "train"))
+        self.assertEqual(commands[1].argv[1:4], ("-m", "rlab.main", "eval"))
 
     def test_env_throughput_generates_mode_env_matrix(self) -> None:
         profile = find_benchmark_profile("retro-env-throughput-mario-l11")
@@ -93,15 +100,23 @@ gates: {}
         profile = find_benchmark_profile("fleet-capacity-rtx4090")
         commands = build_benchmark_commands(profile)
 
-        self.assertEqual(commands[0].argv[1:4], ("-m", "rlab.main", "train"))
-        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
+        self.assertEqual(commands[0].argv[:2], ("rlab", "train"))
+        self.assertEqual(commands[1].argv[:3], ("rlab", "fleet", "reconcile"))
         self.assertIn("--machine", commands[1].argv)
         self.assertIn("--dry-run", commands[1].argv)
         self.assertIn("beast-3", commands[1].argv)
-        self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "watch"))
+        self.assertEqual(commands[2].argv[:3], ("rlab", "fleet", "watch"))
         self.assertIn("--machine", commands[2].argv)
         self.assertIn("--once", commands[2].argv)
         self.assertIn("--no-tui", commands[2].argv)
+
+    def test_fleet_capacity_can_use_source_module_execution_mode(self) -> None:
+        profile = find_benchmark_profile("fleet-capacity-rtx4090")
+        commands = build_benchmark_commands(profile, execution_mode="source-module")
+
+        self.assertEqual(commands[0].argv[1:4], ("-m", "rlab.main", "train"))
+        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
+        self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "watch"))
 
     def test_fleet_capacity_rejects_legacy_spec_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,6 +147,28 @@ gates: {}
         self.assertEqual(exit_code, 0)
         payload = json.loads(stdout.getvalue())
         self.assertIn("retro-env-throughput-mario-l11", {row["name"] for row in payload})
+
+    def test_benchmark_show_defaults_to_installed_cli_execution_mode(self) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = benchmark_main(["show", "fleet-capacity-rtx4090"])
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["execution_mode"], "installed")
+        self.assertEqual(payload["commands"][0]["argv"][:2], ["rlab", "train"])
+
+    def test_benchmark_show_accepts_source_module_execution_mode(self) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = benchmark_main(
+                ["show", "fleet-capacity-rtx4090", "--execution-mode", "source-module"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["execution_mode"], "source-module")
+        self.assertEqual(payload["commands"][0]["argv"][1:4], ["-m", "rlab.main", "train"])
 
 
 if __name__ == "__main__":

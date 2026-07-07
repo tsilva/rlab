@@ -314,7 +314,7 @@ Reward share metrics compare absolute component magnitudes within a rollout.
 
 ## Evaluation Metrics
 
-These are logged by `rlab eval` artifact mode and by post-training checkpoint eval.
+These are logged by post-training checkpoint eval and by local `rlab eval` model checks.
 Evaluation env construction forces `done_on_events=()` and does not pass native terminal
 `done_on` rules to Stable Retro. The eval loop also
 keeps running after observed life-loss and level-change events; it stops on native env done or the
@@ -342,8 +342,8 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
 | `eval/best/x` | Max global X position of the best eval episode. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
-| `eval/checkpoint/step` | Checkpoint or final-artifact timestep being evaluated by post-train checkpoint eval or local artifact eval. Artifact eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
-| `eval/checkpoint/artifact` | W&B model artifact name being evaluated by post-train checkpoint eval or local artifact eval. This can be a `checkpoint`, `final`, or `best` artifact. |
+| `eval/checkpoint/step` | Checkpoint timestep being evaluated by post-train checkpoint eval. Post-train eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
+| `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by post-train checkpoint eval. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
 | `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, using `eval/done/level_change/from_rate/min` when available. Used by `rlab leaders checkpoints`. |
 | `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, using `eval/done/level_change/from_rate/mean` when available. |
@@ -377,8 +377,8 @@ previous-value tuple such as `0-0`.
 
 ## Eval JSON Summary Fields
 
-`rlab eval` and post-training checkpoint eval write richer JSON summaries to local files. These fields are
-stored in eval history or stdout JSON; only the `eval/*` subset above is logged to W&B by default.
+`rlab eval` and post-training checkpoint eval write richer JSON summaries. These fields are
+stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above is logged to W&B by default.
 
 | Field | Meaning |
 | --- | --- |
@@ -407,13 +407,13 @@ stored in eval history or stdout JSON; only the `eval/*` subset above is logged 
 | `best_model_score` | Checkpoint eval ranking tuple: completion metric, solved checkpoint timesteps when available, reward mean. |
 | `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
 | `timesteps` | Training timestep attached by legacy eval summaries when present. New checkpoint eval summaries use `checkpoint_step`. |
-| `eval_n_envs` | Number of vector env slots used by artifact/local eval summaries. |
-| `checkpoint_step` | Checkpoint step attached by artifact eval summaries. W&B receives `eval/checkpoint/step`. |
-| `checkpoint_artifact` | Checkpoint artifact name attached by artifact eval summaries. W&B receives `eval/checkpoint/artifact`. |
-| `model` | Local model path used by local or artifact eval summaries. |
+| `eval_n_envs` | Number of vector env slots used by post-train or local eval summaries. |
+| `checkpoint_step` | Checkpoint step attached by post-train eval summaries. W&B receives `eval/checkpoint/step`. |
+| `checkpoint_artifact` | Checkpoint artifact or local checkpoint ref attached by post-train eval summaries. W&B receives `eval/checkpoint/artifact`. |
+| `model` | Local model path used by local or post-train eval summaries. |
 | `policy` | Scripted policy name for scripted eval, or `ppo` for model eval. |
-| `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in artifact eval. |
-| `eval_seed` | Seed used for a specific artifact checkpoint eval. Default eval runs use `10007` in the eval-reserved `10000+` range; train seeds are forbidden from that range. |
+| `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in post-train checkpoint eval. |
+| `eval_seed` | Seed used for checkpoint or local eval. Default eval runs use `10007` in the eval-reserved `10000+` range; train seeds are forbidden from that range. |
 
 ## W&B Config And Artifacts
 
@@ -435,7 +435,7 @@ Training logs model artifacts when W&B artifacts are enabled:
 | Artifact kind | When logged | Contents and metadata |
 | --- | --- | --- |
 | `<run>-checkpoint` | New checkpoint zip files under the run checkpoint directory | Model zip plus metadata sidecar. Aliases include `latest` and `step-<step>` when the step can be parsed. |
-| `<run>-best` | In-training best model or out-of-process promoted best checkpoint | Model zip plus metadata. Aliases include `best`, `latest`, and sometimes `step-<step>`. |
+| `<run>-best` | In-training best model or post-train promoted best checkpoint | Model zip plus metadata. Aliases include `best`, `latest`, and sometimes `step-<step>`. |
 | `<run>-final` | End of training | Final model zip plus metadata. Aliases include `final` and `latest`. |
 
 When `--wandb-artifact-storage-uri`, `WANDB_ARTIFACT_STORAGE_URI`, or `CHECKPOINT_BUCKET_URI`

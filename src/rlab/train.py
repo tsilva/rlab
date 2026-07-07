@@ -581,7 +581,7 @@ def main(argv: list[str] | None = None) -> None:
                 else args.timesteps,
             ),
         )
-    print("training-loop eval disabled; evaluate checkpoint artifacts out of process")
+    print("training-loop eval disabled; post-training checkpoint eval handles promotion metrics")
 
     final_model_path = Path(run_dir, "final_model.zip")
     env_closed = False

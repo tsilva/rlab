@@ -1,0 +1,600 @@
+from __future__ import annotations
+
+import argparse
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+
+from rlab.env import EnvConfig
+from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
+from rlab.eval_runner import evaluate_model_episodes
+from rlab.metric_names import metric_path_segment
+from rlab.train import (
+    eval_config_from_training_config,
+    eval_score as eval_checkpoint_score,
+    log_checkpoint_eval_metrics,
+    update_best_checkpoint_summary,
+)
+
+
+class FakeWandbRun:
+    def __init__(self, summary: object | None = None) -> None:
+        self.payload: dict[str, object] | None = None
+        self.kwargs: dict[str, object] | None = None
+        self.summary = {} if summary is None else summary
+
+    def log(self, payload: dict[str, object], **kwargs: object) -> None:
+        self.payload = payload
+        self.kwargs = kwargs
+
+
+class WandbLikeSummary:
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {"leader/checkpoint/steps_to_completion_goal": 500000}
+
+    def get(self, key: str, default: object = None) -> object:
+        return self.values.get(key, default)
+
+    def __getitem__(self, key: str) -> object:
+        return self.values[key]
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self.values[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.values[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.values
+
+    def __getattr__(self, key: str) -> object:
+        raise KeyError(key)
+
+
+def checkpoint_metrics(**overrides: object) -> dict[str, object]:
+    metrics: dict[str, object] = {
+        "checkpoint_step": 120000,
+        "checkpoint_artifact": "entity/project/run-checkpoint:step-120000",
+        "reward_mean": 10.0,
+        "reward_std": 1.0,
+        "reward_max": 12.0,
+        "max_x_mean": 300.0,
+        "max_x_max": 400.0,
+        "max_level_x_mean": 300.0,
+        "max_level_x_max": 400.0,
+        "death_count": 1,
+        "death_rate": 0.1,
+        "best_episode": {"reward": 12.0, "max_x_pos": 400.0},
+        "eval/done/all": 10,
+        "eval/done/level_change": 9,
+        "eval/done/level_change/rate": 0.9,
+        "eval/done/level_change/from_rate/min": 0.8,
+        "eval/done/level_change/from_rate/mean": 0.9,
+        "eval/reward/mean": 10.0,
+    }
+    metrics.update(overrides)
+    return metrics
+
+
+def log_checkpoint_eval(
+    run: FakeWandbRun,
+    metrics: dict[str, object] | None = None,
+    *,
+    step: int = 120000,
+    artifact_ref: str = "entity/project/run-checkpoint:step-120000",
+) -> None:
+    log_checkpoint_eval_metrics(
+        wandb_run=run,
+        args=argparse.Namespace(hud_crop_top=32),
+        metrics=checkpoint_metrics() if metrics is None else metrics,
+        checkpoint_path=Path(f"/tmp/model_{step}_steps.zip"),
+        checkpoint_step_value=step,
+        artifact_ref=artifact_ref,
+    )
+
+
+class EvalMetricTests(unittest.TestCase):
+    def test_checkpoint_score_prefers_min_completion_rate_when_available(self) -> None:
+        metrics = {
+            "completion_rate": 0.95,
+            "eval/done/level_change/from_rate/min": 0.80,
+            "eval/done/level_change/from_rate/mean": 0.90,
+            "checkpoint_step": 5000000,
+            "max_x_max": 3200,
+            "reward_mean": 1200.0,
+        }
+
+        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, float("-inf"), 1200.0))
+
+    def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
+        slower_higher_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 5000000,
+            "reward_mean": 1200.0,
+        }
+        faster_lower_reward = {
+            "completion_rate": 1.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+            "checkpoint_step": 3500000,
+            "reward_mean": 900.0,
+        }
+
+        self.assertGreater(
+            eval_checkpoint_score(faster_lower_reward),
+            eval_checkpoint_score(slower_higher_reward),
+        )
+
+    def test_post_train_checkpoint_eval_logs_checkpoint_step_as_metric(self) -> None:
+        run = FakeWandbRun()
+
+        log_checkpoint_eval(run)
+
+        assert run.payload is not None
+        self.assertEqual(run.kwargs, {})
+        self.assertEqual(run.payload["global_step"], 120000)
+        self.assertEqual(run.payload["eval/checkpoint/step"], 120000)
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+        self.assertEqual(run.summary["leader/checkpoint/completion_rate"], 0.8)
+        self.assertEqual(run.summary["leader/checkpoint/completion_rate_mean"], 0.9)
+        self.assertEqual(run.summary["leader/checkpoint/reward_mean"], 10.0)
+        self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
+
+    def test_post_train_checkpoint_summary_handles_wandb_summary_without_pop(self) -> None:
+        run = FakeWandbRun(summary=WandbLikeSummary())
+
+        log_checkpoint_eval(run)
+
+        self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+
+    def test_post_train_checkpoint_summary_tracks_steps_to_completion_goal(self) -> None:
+        run = FakeWandbRun()
+        metrics = checkpoint_metrics(
+            **{
+                "checkpoint_step": 3500000,
+                "checkpoint_artifact": "entity/project/run-checkpoint:step-3500000",
+                "eval/done/level_change": 10,
+                "eval/done/level_change/rate": 1.0,
+                "eval/done/level_change/from_rate/min": 1.0,
+                "eval/done/level_change/from_rate/mean": 1.0,
+            }
+        )
+
+        log_checkpoint_eval(
+            run,
+            metrics,
+            step=3500000,
+            artifact_ref="entity/project/run-checkpoint:step-3500000",
+        )
+
+        self.assertEqual(run.summary["leader/checkpoint/steps_to_completion_goal"], 3500000)
+
+    def test_checkpoint_summary_uses_legacy_step_as_previous_steps_to_goal(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.summary: dict[str, object] = {
+                    "leader/checkpoint/completion_rate": 1.0,
+                    "leader/checkpoint/completion_rate_mean": 1.0,
+                    "leader/checkpoint/reward_mean": 10.0,
+                    "leader/checkpoint/step": 3500000,
+                    "leader/checkpoint/artifact_ref": "entity/project/run-checkpoint:step-3500000",
+                }
+
+        run = FakeRun()
+        metrics = {
+            "checkpoint_step": 5000000,
+            "reward_mean": 999.0,
+            "max_x_max": 400.0,
+            "eval/done/level_change/from_rate/min": 1.0,
+            "eval/done/level_change/from_rate/mean": 1.0,
+        }
+
+        update_best_checkpoint_summary(
+            run,
+            metrics=metrics,
+            checkpoint_path=Path("/tmp/model_5000000_steps.zip"),
+            checkpoint_step_value=5000000,
+            artifact_ref="entity/project/run-checkpoint:step-5000000",
+        )
+
+        self.assertEqual(run.summary["leader/checkpoint/step"], 3500000)
+        self.assertEqual(
+            run.summary["leader/checkpoint/artifact_ref"],
+            "entity/project/run-checkpoint:step-3500000",
+        )
+
+    def test_post_train_eval_config_clears_training_done_on_events(self) -> None:
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            info_events={
+                "life_loss": ("lives", "decrease"),
+                "level_change": (("levelHi", "levelLo"), "change"),
+            },
+            done_on_events=("life_loss", "level_change"),
+        )
+
+        eval_config = eval_config_from_training_config(config)
+
+        self.assertEqual(eval_config.info_events, config.info_events)
+        self.assertEqual(eval_config.done_on_events, ())
+        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
+
+    def test_metric_path_segment_preserves_retro_state_names(self) -> None:
+        self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")
+        self.assertEqual(metric_path_segment("Level 1/2"), "Level_1_2")
+
+    def test_episode_rank_prefers_completion_then_progress_then_reward(self) -> None:
+        incomplete = {"level_complete": False, "max_x_pos": 4000, "reward": 1000.0}
+        complete = {"level_complete": True, "max_x_pos": 100, "reward": -10.0}
+        better_progress = {"level_complete": False, "max_x_pos": 4500, "reward": 0.0}
+        self.assertGreater(episode_rank(complete), episode_rank(incomplete))
+        self.assertGreater(episode_rank(better_progress), episode_rank(incomplete))
+
+    def test_level_complete_uses_explicit_completion_flag(self) -> None:
+        self.assertFalse(
+            is_level_complete(
+                {"level_complete": False, "level_changed": False, "level_max_x_pos": 5000},
+            )
+        )
+        self.assertFalse(
+            is_level_complete(
+                {"level_complete": False, "level_changed": True},
+            )
+        )
+        self.assertTrue(
+            is_level_complete(
+                {"level_complete": True, "level_changed": True},
+            )
+        )
+
+    def test_level_complete_fallback_rejects_death_level_change(self) -> None:
+        self.assertFalse(
+            is_level_complete(
+                {"level_changed": True, "died": True},
+            )
+        )
+        self.assertTrue(
+            is_level_complete(
+                {"level_changed": True, "died": False},
+            )
+        )
+
+    def test_run_eval_episode_does_not_stop_on_completion(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.array([0], dtype=np.int64), None
+
+        class FakeEnv:
+            def __init__(self) -> None:
+                self.step_count = 0
+
+            def seed(self, seed: int) -> None:
+                self.seed_value = seed
+
+            def reset(self):
+                self.step_count = 0
+                return np.zeros((1, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.step_count += 1
+                obs = np.zeros((1, 4, 84, 84), dtype=np.uint8)
+                if self.step_count == 1:
+                    return (
+                        obs,
+                        np.array([1.0], dtype=np.float32),
+                        np.array([False]),
+                        [
+                            {
+                                "start_state": "Level1-1",
+                                "state": "Level1-1",
+                                "max_x_pos": 100,
+                                "level_max_x_pos": 100,
+                                "level_changed": True,
+                                "score": 10,
+                                "lives": 3,
+                                "time": 300,
+                            }
+                        ],
+                    )
+                return (
+                    obs,
+                    np.array([2.0], dtype=np.float32),
+                    np.array([False]),
+                    [
+                        {
+                            "state": "Level1-2",
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                            "score": 20,
+                            "lives": 3,
+                            "time": 299,
+                        }
+                    ],
+                )
+
+        result = run_eval_episode(
+            FakeEnv(),
+            FakeModel(),
+            max_steps=2,
+            deterministic=True,
+            seed=7,
+            default_start_state="Level1-1",
+        )
+
+        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["reward"], 3.0)
+        self.assertEqual(result["max_x_pos"], 250)
+        self.assertEqual(result["start_state"], "Level1-1")
+        self.assertTrue(result["level_complete"])
+        self.assertFalse(result["terminated"])
+        self.assertTrue(result["truncated"])
+
+    def test_vector_eval_accumulates_completed_slots_independently(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.zeros(obs.shape[0], dtype=np.int64), None
+
+        class FakeVecEnv:
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.step_count = 0
+
+            def reset(self):
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.step_count += 1
+                obs = np.zeros((2, 4, 84, 84), dtype=np.uint8)
+                if self.step_count == 1:
+                    return (
+                        obs,
+                        np.array([1.0, 2.0], dtype=np.float32),
+                        np.array([False, True]),
+                        [
+                            {"max_x_pos": 10, "level_max_x_pos": 10},
+                            {
+                                "start_state": "Level1-2",
+                                "max_x_pos": 20,
+                                "level_max_x_pos": 20,
+                                "died": True,
+                                "death_x_pos": 20,
+                                "TimeLimit.truncated": True,
+                                "score": 100,
+                                "lives": 2,
+                            },
+                        ],
+                    )
+                return (
+                    obs,
+                    np.array([3.0, 4.0], dtype=np.float32),
+                    np.array([True, False]),
+                    [
+                        {
+                            "start_state": "Level1-1",
+                            "max_x_pos": 30,
+                            "level_max_x_pos": 30,
+                            "level_changed": True,
+                            "score": 200,
+                            "lives": 3,
+                        },
+                        {"max_x_pos": 40, "level_max_x_pos": 40},
+                    ],
+                )
+
+            def close(self) -> None:
+                pass
+
+        config = EnvConfig(game="SuperMarioBros-Nes-v0")
+        with patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeVecEnv()):
+            metrics, video_path = evaluate_model_episodes(
+                model=FakeModel(),
+                config=config,
+                episodes=2,
+                seed=7,
+                max_steps=10,
+                deterministic=True,
+                n_envs=2,
+            )
+
+        self.assertIsNone(video_path)
+        self.assertEqual(metrics["eval_n_envs"], 2)
+        self.assertEqual(metrics["episodes"], 2)
+        self.assertEqual(metrics["reward_mean"], 3.0)
+        self.assertEqual(metrics["completion_count"], 1)
+        self.assertEqual(metrics["death_count"], 1)
+        self.assertEqual(metrics["terminated_count"], 1)
+        self.assertEqual(metrics["terminated_rate"], 0.5)
+        self.assertEqual(metrics["truncated_count"], 1)
+        self.assertEqual(metrics["truncated_rate"], 0.5)
+        self.assertEqual(metrics["eval/done/all"], 2)
+        self.assertEqual(metrics["eval/done/level_change"], 1)
+        self.assertEqual(metrics["eval/done/level_change/rate"], 0.5)
+        self.assertEqual(metrics["eval/done/max_steps"], 1)
+        self.assertEqual(metrics["eval/done/max_steps/rate"], 0.5)
+        self.assertEqual(metrics["eval/done/unclassified"], 0)
+        self.assertEqual(metrics["eval/done/unclassified/rate"], 0.0)
+        self.assertEqual(metrics["eval/done/all/from/Level1-1"], 1)
+        self.assertEqual(metrics["eval/done/level_change/from/Level1-1"], 1)
+        self.assertEqual(metrics["eval/done/level_change/from/Level1-1/rate"], 1.0)
+        self.assertEqual(metrics["eval/done/max_steps/from/Level1-1"], 0)
+        self.assertEqual(metrics["eval/done/max_steps/from/Level1-1/rate"], 0.0)
+        self.assertEqual(metrics["eval/done/all/from/Level1-2"], 1)
+        self.assertEqual(metrics["eval/done/level_change/from/Level1-2"], 0)
+        self.assertEqual(metrics["eval/done/level_change/from/Level1-2/rate"], 0.0)
+        self.assertEqual(metrics["eval/done/max_steps/from/Level1-2"], 1)
+        self.assertEqual(metrics["eval/done/max_steps/from/Level1-2/rate"], 1.0)
+        self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
+        self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
+        self.assertEqual(metrics["eval/info/level_complete/rate/min/last"], 0.0)
+        self.assertEqual(metrics["eval/info/level_complete/rate/mean/last"], 0.5)
+        self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
+        self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-2")
+        self.assertEqual(metrics["episode_results"][0]["reward"], 2.0)
+        self.assertEqual(metrics["episode_results"][1]["env_index"], 0)
+        self.assertEqual(metrics["episode_results"][1]["start_state"], "Level1-1")
+        self.assertEqual(metrics["episode_results"][1]["reward"], 4.0)
+
+    def test_vector_eval_does_not_stop_on_completion(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.zeros(obs.shape[0], dtype=np.int64), None
+
+        class FakeVecEnv:
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.step_count = 0
+
+            def reset(self):
+                self.step_count = 0
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.step_count += 1
+                obs = np.zeros((2, 4, 84, 84), dtype=np.uint8)
+                if self.step_count == 1:
+                    return (
+                        obs,
+                        np.array([1.0, 10.0], dtype=np.float32),
+                        np.array([False, False]),
+                        [
+                            {
+                                "start_state": "Level1-1",
+                                "state": "Level1-1",
+                                "max_x_pos": 100,
+                                "level_max_x_pos": 100,
+                                "level_changed": True,
+                            },
+                            {
+                                "start_state": "Level1-2",
+                                "state": "Level1-2",
+                                "max_x_pos": 110,
+                                "level_max_x_pos": 110,
+                                "level_changed": True,
+                            },
+                        ],
+                    )
+                return (
+                    obs,
+                    np.array([2.0, 20.0], dtype=np.float32),
+                    np.array([False, False]),
+                    [
+                        {
+                            "state": "Level1-2",
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                        },
+                        {
+                            "state": "Level1-3",
+                            "max_x_pos": 260,
+                            "level_max_x_pos": 160,
+                        },
+                    ],
+                )
+
+            def close(self) -> None:
+                pass
+
+        fake_env = FakeVecEnv()
+        config = EnvConfig(game="SuperMarioBros-Nes-v0")
+        with patch("rlab.eval_runner.make_eval_vec_env", return_value=fake_env):
+            metrics, video_path = evaluate_model_episodes(
+                model=FakeModel(),
+                config=config,
+                episodes=1,
+                seed=7,
+                max_steps=2,
+                deterministic=True,
+                n_envs=2,
+            )
+
+        self.assertIsNone(video_path)
+        self.assertEqual(fake_env.step_count, 2)
+        self.assertEqual(metrics["episodes"], 1)
+        self.assertEqual(metrics["completion_count"], 1)
+        self.assertEqual(metrics["terminated_count"], 0)
+        self.assertEqual(metrics["truncated_count"], 1)
+        self.assertEqual(metrics["eval/done/level_change"], 1)
+        self.assertEqual(metrics["eval/done/max_steps"], 1)
+        self.assertEqual(metrics["episode_results"][0]["steps"], 2)
+        self.assertEqual(metrics["episode_results"][0]["reward"], 3.0)
+        self.assertEqual(metrics["episode_results"][0]["max_x_pos"], 250)
+        self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-1")
+        self.assertTrue(metrics["episode_results"][0]["level_complete"])
+        self.assertFalse(metrics["episode_results"][0]["terminated"])
+        self.assertTrue(metrics["episode_results"][0]["truncated"])
+
+    def test_evaluate_model_episodes_updates_progress_bar(self) -> None:
+        class FakeEnv:
+            def close(self) -> None:
+                pass
+
+        class FakeProgressBar:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+                self.updates: list[int] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                pass
+
+            def update(self, count: int) -> None:
+                self.updates.append(count)
+
+        progress_bars: list[FakeProgressBar] = []
+
+        def fake_tqdm(**kwargs) -> FakeProgressBar:
+            progress_bar = FakeProgressBar(**kwargs)
+            progress_bars.append(progress_bar)
+            return progress_bar
+
+        def fake_run_eval_episode(*args, **kwargs) -> dict:
+            return {
+                "actions": [],
+                "start_state": "Level1-1",
+                "reward": 1.0,
+                "max_x_pos": 10,
+                "max_level_x_pos": 10,
+                "score": 0,
+                "lives": 3,
+                "time": 399,
+                "steps": 1,
+                "terminated": True,
+                "truncated": False,
+                "level_complete": True,
+                "died": False,
+                "death_x_pos": None,
+                "final_info": {"start_state": "Level1-1"},
+            }
+
+        with (
+            patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeEnv()),
+            patch("rlab.eval_runner.run_eval_episode", side_effect=fake_run_eval_episode),
+            patch("rlab.eval_runner.tqdm", side_effect=fake_tqdm),
+        ):
+            metrics, video_path = evaluate_model_episodes(
+                model=object(),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0"),
+                episodes=3,
+                seed=7,
+                max_steps=10,
+                deterministic=True,
+                progress=True,
+                progress_description="eval checkpoint 4100000",
+            )
+
+        self.assertIsNone(video_path)
+        self.assertEqual(metrics["episodes"], 3)
+        self.assertEqual(len(progress_bars), 1)
+        self.assertEqual(progress_bars[0].kwargs["total"], 3)
+        self.assertEqual(progress_bars[0].kwargs["desc"], "eval checkpoint 4100000")
+        self.assertEqual(progress_bars[0].kwargs["disable"], False)
+        self.assertEqual(progress_bars[0].updates, [1, 1, 1])
