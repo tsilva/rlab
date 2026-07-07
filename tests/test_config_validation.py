@@ -13,6 +13,7 @@ from rlab.config_validation import (
     validate_experiment_tree,
     validate_goal_contract,
 )
+from rlab.job_queue import load_recipe_document
 from rlab.main import COMMANDS
 
 
@@ -27,6 +28,16 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["goals"], 1)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)
+
+    def test_breakout_recipe_loads_without_state(self) -> None:
+        document = load_recipe_document(Path("experiments/goals/ale-py/breakout/recipes/base.yaml"))
+
+        train_config = document["train_config"]
+        self.assertEqual(train_config["env_provider"], "ale-py")
+        self.assertEqual(train_config["game"], "breakout")
+        self.assertNotIn("state", train_config)
+        self.assertNotIn("states", train_config)
+        self.assertEqual(document["environment"]["env_id"], "ale-py:breakout")
 
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

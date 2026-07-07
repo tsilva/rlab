@@ -416,7 +416,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="env_provider",
         env_config_key="env_provider",
         non_empty=True,
-        help="Environment provider id. Supported: stable-retro-turbo, supermariobrosnes-turbo.",
+        help="Environment provider id. Supported: stable-retro-turbo, supermariobrosnes-turbo, ale-py.",
     ),
     TrainConfigField(
         "game",
@@ -425,7 +425,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_config_key="game",
         queue_required=True,
         non_empty=True,
-        help="Stable Retro game id. Defaults to RETRO_GAME when set.",
+        help="Provider game id. Defaults to RETRO_GAME when set.",
     ),
     TrainConfigField(
         "state",
@@ -433,7 +433,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="state",
         env_config_key="state",
         non_empty=True,
-        help="Stable Retro state. If omitted, registered targets may provide a default.",
+        help="Provider state. If omitted, registered targets may provide a default.",
     ),
     TrainConfigField(
         "states",
@@ -442,7 +442,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         serialize="csv",
         env_config_key="states",
         sequence_items="str",
-        help="Comma-separated native-vector training states. Without --state-probs, provide exactly one state per env slot in order.",
+        help="Comma-separated provider states. Without --state-probs, provide exactly one state per env slot in order.",
     ),
     TrainConfigField(
         "state_probs",

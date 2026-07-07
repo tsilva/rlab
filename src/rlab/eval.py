@@ -18,7 +18,7 @@ from rlab.cli_args import add_env_config_args
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     action_names_for_set,
-    assert_rom_imported,
+    assert_provider_runtime_available,
     make_eval_vec_env,
     resolve_env_config,
 )
@@ -117,7 +117,7 @@ def run_scripted_episode(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate PPO or scripted Stable Retro baselines")
+    parser = argparse.ArgumentParser(description="Evaluate PPO or scripted provider baselines")
     add_model_source_args(
         parser,
         positional_artifact=True,
@@ -190,7 +190,6 @@ def main(argv: list[str] | None = None) -> None:
             parser_defaults,
             explicit_dests,
         )
-    assert_rom_imported(args.game)
     config = resolve_env_config(
         env_config_from_args(
             args,
@@ -199,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
             include_env_threads=True,
         )
     )
+    assert_provider_runtime_available(config)
     model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
 
     if model is not None:

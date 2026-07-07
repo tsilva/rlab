@@ -15,7 +15,7 @@ from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document, render_template_vars
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_wrappers import normalize_env_wrapper_specs
-from rlab.env_registry import qualify_env_id, resolve_env_id
+from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
 from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
@@ -624,6 +624,12 @@ def _validate_goal_contract_document(
         if isinstance(environment.get("env_config"), Mapping)
         else environment
     )
+    env_provider = (
+        str(environment["env_provider"]).strip()
+        if "env_provider" in environment
+        else str(env_config.get("env_provider", "")).strip()
+    )
+    supports_states = resolve_env_provider(env_provider).supports_states
     if "state" in env_config and "states" in env_config:
         raise ValueError(
             f"{label}.train.environment.env_config must define only one of state or states"
@@ -639,6 +645,8 @@ def _validate_goal_contract_document(
         environment_states = _require_string_list(
             env_config, "states", label=f"{label}.train.environment.env_config"
         )
+    elif not supports_states:
+        environment_states = []
     else:
         raise ValueError(f"{label}.train.environment.env_config must define state or states")
     if "states" in objective:

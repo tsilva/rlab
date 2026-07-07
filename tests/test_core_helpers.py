@@ -59,6 +59,7 @@ from rlab.env import (
     native_vec_env_supports_done_on,
     native_vec_env_supports_rgb_render,
     needs_vec_transpose_image,
+    provider_native_vec_kwargs,
     resolve_env_config,
     resolve_mixed_state_config,
     state_name_candidates_from_level_id,
@@ -88,6 +89,7 @@ from rlab.model_sources import (
 )
 from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
+from rlab.play import main as play_main
 from rlab.play import metadata_playback_config
 from rlab.play import model_observation
 from rlab.play import playback_env_config
@@ -984,6 +986,49 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["obs_resize"], (84, 84))
         self.assertEqual(native_kwargs["maxpool_last_two"], False)
 
+    def test_ale_py_native_vec_kwargs_map_env_config(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                game="breakout",
+                state="",
+                action_set="native",
+                reward_mode="native",
+                frame_skip=4,
+                max_pool_frames=True,
+                sticky_action_prob=0.25,
+                max_episode_steps=27000,
+                observation_size=84,
+                clip_rewards=True,
+            )
+        )
+
+        native_kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=16,
+            num_threads=4,
+            native_done_on_rules={},
+        )
+
+        self.assertEqual(native_kwargs["num_envs"], 16)
+        self.assertEqual(native_kwargs["num_threads"], 4)
+        self.assertEqual(native_kwargs["max_num_frames_per_episode"], 108000)
+        self.assertEqual(native_kwargs["repeat_action_probability"], 0.25)
+        self.assertEqual(native_kwargs["img_height"], 84)
+        self.assertEqual(native_kwargs["img_width"], 84)
+        self.assertEqual(native_kwargs["grayscale"], True)
+        self.assertEqual(native_kwargs["stack_num"], 4)
+        self.assertEqual(native_kwargs["frameskip"], 4)
+        self.assertEqual(native_kwargs["maxpool"], True)
+        self.assertEqual(native_kwargs["reward_clipping"], True)
+
+    def test_ale_py_provider_rejects_state_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not support state"):
+            resolve_mixed_state_config(
+                EnvConfig(env_provider="ale-py", game="breakout", state="Level1-1"),
+                n_envs=2,
+            )
+
     def test_supermariobrosnes_turbo_rgb_render_support_uses_metadata(self) -> None:
         class FakeSuperMarioNative:
             metadata = {"render_modes": ["rgb_array"]}
@@ -1482,7 +1527,7 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
             ],
         )
 
-        env.step_async(np.asarray([0, 1]))
+        env.step_async([0, 1])
         obs, rewards, dones, infos = env.step_wait()
 
         np.testing.assert_array_equal(obs, np.ones((2, 2), dtype=np.uint8))
@@ -3204,6 +3249,40 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
 
+    def test_play_main_checks_runtime_from_playback_metadata(self) -> None:
+        class StopPlayback(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                    env_threads=4,
+                ),
+                kind="checkpoint",
+            )
+
+            with (
+                patch(
+                    "rlab.play.assert_provider_runtime_available",
+                    side_effect=StopPlayback,
+                ) as assert_runtime,
+                patch.object(sys, "stdout", io.StringIO()),
+            ):
+                with self.assertRaises(StopPlayback):
+                    play_main(["--model", str(model_path)])
+
+            assert_runtime.assert_called_once()
+            runtime_config = assert_runtime.call_args.args[0]
+            self.assertEqual(runtime_config.env_provider, "supermariobrosnes-turbo")
+            self.assertEqual(runtime_config.game, "SuperMarioBros-Nes-v0")
+
     def test_obs_stack_render_has_no_label_band(self) -> None:
         frames = deque(
             [
@@ -3424,7 +3503,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             with (
                 patch("rlab.eval.resolve_single_model_source", side_effect=fake_resolve),
                 patch("rlab.eval.apply_model_source_defaults", side_effect=fake_apply),
-                patch("rlab.eval.assert_rom_imported") as assert_rom,
+                patch("rlab.eval.assert_provider_runtime_available") as assert_runtime,
                 patch("rlab.eval.PPO.load", return_value="ppo"),
                 patch(
                     "rlab.eval.evaluate_model_episodes", side_effect=fake_evaluate_model_episodes
@@ -3441,7 +3520,9 @@ class CommandAndArtifactTests(unittest.TestCase):
                     ]
                 )
 
-            assert_rom.assert_called_once_with("SuperMarioBros-Nes-v0")
+            assert_runtime.assert_called_once()
+            runtime_config = assert_runtime.call_args.args[0]
+            self.assertEqual(runtime_config.game, "SuperMarioBros-Nes-v0")
             text = output.getvalue()
             self.assertIn("Downloading hf://tsilva/SuperMarioBros-NES_Level1-1", text)
             self.assertIn(f"Downloaded model: {model_path}", text)

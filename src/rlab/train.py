@@ -41,7 +41,7 @@ from rlab.callbacks import (
 from rlab.cli import parse_train_args
 from rlab.device import resolve_sb3_device
 from rlab.env import (
-    assert_rom_imported,
+    assert_provider_runtime_available,
     default_run_dir,
     make_training_vec_env,
     resolve_env_config,
@@ -448,7 +448,6 @@ class GracefulStopCallback(BaseCallback):
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_train_args(argv)
-    assert_rom_imported(args.game)
     set_random_seed(args.seed)
 
     run_dir = default_run_dir(args.run_name, args.runs_dir)
@@ -464,6 +463,7 @@ def main(argv: list[str] | None = None) -> None:
         env_config_from_args(args, include_states=True, include_env_threads=True)
     )
     config = resolve_mixed_state_config(config, n_envs=args.n_envs)
+    assert_provider_runtime_available(config)
     wandb_run = init_wandb(args, run_dir, config)
     graceful_stop_flag = GracefulStopFlag()
     graceful_stop_signal = install_graceful_stop_handler(graceful_stop_flag)

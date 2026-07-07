@@ -31,7 +31,7 @@ from rlab.artifacts import (
 )
 from rlab.device import resolve_sb3_device
 from rlab.env import (
-    assert_rom_imported,
+    assert_provider_runtime_available,
     info_value_from_state_name,
     make_eval_vec_env,
     make_visual_replay_env,
@@ -417,7 +417,7 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Show a PPO checkpoint playing a Stable Retro game in a GUI window"
+        description="Show a PPO checkpoint playing a provider environment in a GUI window"
     )
     add_play_source_args(parser)
     parser.add_argument(
@@ -586,7 +586,7 @@ def main(argv: list[str] | None = None) -> None:
         policy_config=config,
         display_config=display_config,
     )
-    assert_rom_imported(args.game)
+    assert_provider_runtime_available(config)
     from stable_baselines3 import PPO
 
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))

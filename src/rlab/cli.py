@@ -119,7 +119,7 @@ def validate_early_stop_args(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train PPO on an imported Stable Retro game")
+    parser = argparse.ArgumentParser(description="Train PPO on a registered provider environment")
     parser.add_argument(
         "--train-config-json",
         type=Path,

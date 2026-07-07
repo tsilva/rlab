@@ -1,0 +1,39 @@
+defaults:
+- _self_
+goal_id: breakout
+group_id: "{goal_id}"
+run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
+tags:
+- "goal_id:{goal_id}"
+- "recipe_id:{recipe_id}"
+- "env_id:{env_id}"
+title: Baseline ALE Breakout PPO training
+objective:
+  rank:
+  - max(eval/reward/mean)
+  - max(eval/best/reward)
+  - min(leader/checkpoint/steps_to_completion_goal)
+train:
+  checkpoint_freq: 500000
+  environment:
+    env_provider: &atari_env_provider ale-py
+    env_config:
+      <<: &atari_breakout_env_config
+        game: breakout
+        n_envs: 16
+        env_threads: 4
+        frame_skip: 4
+        max_pool_frames: true
+        sticky_action_prob: 0.25
+        observation_size: 84
+        obs_resize_algorithm: area
+        max_episode_steps: 27000
+        action_set: native
+        reward_mode: native
+        clip_rewards: true
+eval:
+  environment:
+    env_provider: *atari_env_provider
+    env_config:
+      <<: *atari_breakout_env_config
+      max_episodes: 100

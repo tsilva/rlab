@@ -19,6 +19,7 @@ from stable_retro import RetroVecEnv
 from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecMonitor, VecTransposeImage
 
 from rlab.env_registry import (
+    ALE_PY_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER,
     qualify_env_id,
@@ -51,6 +52,16 @@ def _super_mario_bros_nes_turbo_vec_env_type():
     return SuperMarioBrosNesTurboVecEnv
 
 
+def _ale_py_atari_vector_env_type():
+    try:
+        from ale_py.vector_env import AtariVectorEnv
+    except ImportError as exc:
+        raise ImportError(
+            "ale-py provider requires ale-py with native vector env support",
+        ) from exc
+    return AtariVectorEnv
+
+
 def _provider_vec_env_type(config: EnvConfig | None = None):
     provider_id = (config or EnvConfig()).env_provider
     provider = resolve_env_provider(provider_id)
@@ -58,6 +69,8 @@ def _provider_vec_env_type(config: EnvConfig | None = None):
         return RetroVecEnv
     if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
         return _super_mario_bros_nes_turbo_vec_env_type()
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        return _ale_py_atari_vector_env_type()
     raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
 
 
@@ -247,6 +260,12 @@ def resolve_mixed_state_config(config: EnvConfig, n_envs: int) -> EnvConfig:
     config = resolve_env_config(config)
     if n_envs < 1:
         raise ValueError("n_envs must be >= 1")
+    provider = resolve_env_provider(config.env_provider)
+    if not provider.supports_states and (config.state or config.states or config.state_probs):
+        raise ValueError(
+            f"environment provider {provider.provider_id!r} does not support "
+            "state, states, or state_probs",
+        )
     if not config.states:
         if config.state_probs:
             raise ValueError("--state-probs requires --states")
@@ -641,7 +660,7 @@ class GymVectorEnvToSb3VecEnv(VecEnv):
         return obs
 
     def step_async(self, actions):
-        self._actions = actions
+        self._actions = np.asarray(actions)
         self.waiting = True
 
     def step_wait(self):
@@ -1318,6 +1337,61 @@ def _native_vec_kwargs(
     return native_kwargs
 
 
+def _ale_py_native_vec_kwargs(
+    config: EnvConfig,
+    *,
+    n_envs: int,
+    num_threads: int,
+    native_done_on_rules: NativeDoneOnRules,
+) -> dict[str, Any]:
+    if config.state or config.states or config.state_probs:
+        raise ValueError("ale-py provider does not support state, states, or state_probs")
+    if native_done_on_rules:
+        raise ValueError("ale-py provider does not support done_on_events")
+    obs_crop = native_obs_crop(config)
+    if obs_crop is not None:
+        raise ValueError("ale-py provider does not support obs_crop or hud_crop_top")
+    max_num_frames_per_episode = 108_000
+    if config.max_episode_steps > 0:
+        max_num_frames_per_episode = config.max_episode_steps * config.frame_skip
+    return {
+        "num_envs": n_envs,
+        "num_threads": num_threads,
+        "max_num_frames_per_episode": max_num_frames_per_episode,
+        "repeat_action_probability": config.sticky_action_prob,
+        "img_height": config.observation_size,
+        "img_width": config.observation_size,
+        "grayscale": True,
+        "stack_num": 4,
+        "frameskip": config.frame_skip,
+        "maxpool": config.max_pool_frames,
+        "reward_clipping": config.clip_rewards,
+    }
+
+
+def provider_native_vec_kwargs(
+    config: EnvConfig,
+    *,
+    n_envs: int,
+    num_threads: int,
+    native_done_on_rules: NativeDoneOnRules,
+) -> dict[str, Any]:
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        return _ale_py_native_vec_kwargs(
+            config,
+            n_envs=n_envs,
+            num_threads=num_threads,
+            native_done_on_rules=native_done_on_rules,
+        )
+    return _native_vec_kwargs(
+        config,
+        n_envs=n_envs,
+        num_threads=num_threads,
+        native_done_on_rules=native_done_on_rules,
+    )
+
+
 def _stable_retro_turbo_make_vec_env(
     config: EnvConfig,
     *,
@@ -1341,6 +1415,20 @@ def _super_mario_bros_nes_turbo_make_vec_env(
     return _super_mario_bros_nes_turbo_vec_env_type()(config.game, **dict(native_kwargs))
 
 
+def _ale_py_make_vec_env(
+    config: EnvConfig,
+    *,
+    native_kwargs: Mapping[str, Any],
+):
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id != ALE_PY_PROVIDER.provider_id:
+        raise ValueError(
+            f"unsupported environment provider {provider.provider_id!r}; "
+            f"expected {ALE_PY_PROVIDER.provider_id}",
+        )
+    return _ale_py_atari_vector_env_type()(config.game, **dict(native_kwargs))
+
+
 def make_provider_vec_env(
     config: EnvConfig,
     *,
@@ -1351,6 +1439,8 @@ def make_provider_vec_env(
         return _stable_retro_turbo_make_vec_env(config, native_kwargs=native_kwargs)
     if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
         return _super_mario_bros_nes_turbo_make_vec_env(config, native_kwargs=native_kwargs)
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        return _ale_py_make_vec_env(config, native_kwargs=native_kwargs)
     raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
 
 
@@ -1364,7 +1454,7 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
         done_on_supported=native_vec_env_supports_done_on(config),
         named_done_on_supported=native_vec_env_supports_named_done_on(config),
     )
-    native_kwargs = _native_vec_kwargs(
+    native_kwargs = provider_native_vec_kwargs(
         config,
         n_envs=n_envs,
         num_threads=num_threads,
@@ -1406,6 +1496,22 @@ def assert_rom_imported(game: str = GAME) -> str:
             f"{game} is not imported in this rlab runtime. "
             f"Run: rlab import-roms ~/Desktop/roms --game {game}",
         ) from exc
+
+
+def assert_provider_runtime_available(config: EnvConfig) -> None:
+    provider = resolve_env_provider(config.env_provider)
+    if provider.uses_stable_retro_roms:
+        assert_rom_imported(config.game)
+        return
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        from ale_py import roms
+
+        if roms.get_rom_path(config.game) is None:
+            raise FileNotFoundError(
+                f"{config.game} is not available to ale-py. "
+                "Install an ALE ROM package or import ROMs with ale-import-roms.",
+            )
+        return
 
 
 

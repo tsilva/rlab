@@ -8,6 +8,8 @@ class EnvProvider:
     provider_id: str
     import_name: str
     env_ids: tuple[str, ...]
+    supports_states: bool = True
+    uses_stable_retro_roms: bool = False
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     provider_id="stable-retro-turbo",
     import_name="stable_retro",
     env_ids=("SuperMarioBros-Nes-v0", "SuperMarioBros3-Nes-v0"),
+    uses_stable_retro_roms=True,
 )
 
 SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
@@ -30,9 +33,17 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     env_ids=("SuperMarioBros-Nes-v0",),
 )
 
+ALE_PY_PROVIDER = EnvProvider(
+    provider_id="ale-py",
+    import_name="ale_py",
+    env_ids=("breakout",),
+    supports_states=False,
+)
+
 ENV_PROVIDERS: dict[str, EnvProvider] = {
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id: SUPERMARIOBROS_NES_TURBO_PROVIDER,
+    ALE_PY_PROVIDER.provider_id: ALE_PY_PROVIDER,
 }
 
 

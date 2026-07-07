@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from string import Formatter
 from typing import Any
 
+from rlab.env_registry import resolve_env_provider
 from rlab.seeds import validate_training_seed
 from rlab.train_config import queue_required_train_config_fields, validate_train_config_fields
 
@@ -266,7 +267,9 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         and bool(states)
         and all(isinstance(state, str) and bool(state.strip()) for state in states)
     )
-    if not has_state and not has_states:
+    provider_id = str(train_config.get("env_provider") or "").strip()
+    supports_states = resolve_env_provider(provider_id).supports_states if provider_id else True
+    if supports_states and not has_state and not has_states:
         raise ValueError(
             f"{_label_path(label, 'train_config')} must define non-empty state or states"
         )
