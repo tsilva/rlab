@@ -23,6 +23,7 @@ from rlab.env_providers import (
     ale_py_atari_vector_env_type as _ale_py_atari_vector_env_type,
     super_mario_bros_nes_turbo_vec_env_type as _super_mario_bros_nes_turbo_vec_env_type,
 )
+from rlab.event_payloads import event_payloads
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
@@ -1063,14 +1064,7 @@ class VecRetroProgressInfo(VecEnvWrapper):
 
     @staticmethod
     def native_event_payloads(info: Mapping[str, Any]) -> dict[str, Any]:
-        done_on_info = info.get("done_on_info")
-        if isinstance(done_on_info, dict):
-            return {str(name): payload for name, payload in done_on_info.items() if str(name)}
-        if isinstance(done_on_info, (list, tuple, set)):
-            return {str(name): {} for name in done_on_info if str(name)}
-        if isinstance(done_on_info, str) and done_on_info:
-            return {done_on_info: {}}
-        return {}
+        return event_payloads(info.get("done_on_info"))
 
     def annotate_info_events(self, index: int, info: dict[str, Any]) -> None:
         event_payloads = self.native_event_payloads(info)

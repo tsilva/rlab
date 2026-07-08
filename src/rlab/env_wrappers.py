@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
+
+from rlab.event_payloads import info_event_payloads
+from rlab.wrapper_specs import normalize_wrapper_spec_sequence, wrapper_spec_id
 
 
 WRAPPER_SPEC_ID_KEYS = ("id", "wrapper", "class", "name", "type")
@@ -200,7 +203,7 @@ class SuperMarioBrosNesProgressInfoWrapper:
         if self.current_level is None:
             self.current_level = level
 
-        info_events = info.get("info_events") or info.get("done_on_info") or {}
+        info_events = info_event_payloads(info)
         life_loss_event = self.keys["life_loss_event"]
         level_change_event = self.keys["level_change_event"]
         died = life_loss_event in info_events or bool(info.get(life_loss_event, False))
@@ -314,7 +317,7 @@ class SuperMarioBros3NesProgressInfoWrapper:
         del native_reward
         x_pos = int(info.get(self.keys["hpos_key"], 0))
         lives = info.get(self.keys["lives_key"])
-        info_events = info.get("info_events") or info.get("done_on_info") or {}
+        info_events = info_event_payloads(info)
         life_loss_event = self.keys["life_loss_event"]
         died = life_loss_event in info_events or bool(info.get(life_loss_event, False))
         if self.prev_lives is not None and lives is not None and int(lives) < self.prev_lives:
@@ -368,13 +371,7 @@ ENV_WRAPPER_REGISTRY = {
 
 
 def _wrapper_id(spec: Mapping[str, Any], *, label: str) -> str:
-    for key in WRAPPER_SPEC_ID_KEYS:
-        value = spec.get(key)
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{label}.{key} must be a non-empty string")
-            return value.strip()
-    raise ValueError(f"{label} must include one of: {', '.join(WRAPPER_SPEC_ID_KEYS)}")
+    return wrapper_spec_id(spec, label=label, id_keys=WRAPPER_SPEC_ID_KEYS)
 
 
 def _wrapper_kwargs(spec: Mapping[str, Any], *, label: str) -> dict[str, Any]:
@@ -398,24 +395,16 @@ def normalize_env_wrapper_specs(
     *,
     label: str = "env_wrappers",
 ) -> tuple[dict[str, Any], ...]:
-    if value in (None, "", ()):
-        return ()
-    if isinstance(value, str):
-        value = [{"id": value}]
-    elif isinstance(value, Mapping):
-        value = [value]
-    elif not isinstance(value, Sequence):
-        raise ValueError(f"{label} must be a list of wrapper specs")
-
     specs: list[dict[str, Any]] = []
-    for index, item in enumerate(value):
+    for index, spec in enumerate(
+        normalize_wrapper_spec_sequence(
+            value,
+            label=label,
+            id_keys=WRAPPER_SPEC_ID_KEYS,
+            item_kind="wrapper",
+        )
+    ):
         item_label = f"{label}[{index}]"
-        if isinstance(item, str):
-            spec = {"id": item}
-        elif isinstance(item, Mapping):
-            spec = deepcopy(dict(item))
-        else:
-            raise ValueError(f"{item_label} must be an object or wrapper id string")
         wrapper_id = _wrapper_id(spec, label=item_label)
         wrapper_cls = ENV_WRAPPER_REGISTRY.get(wrapper_id)
         if wrapper_cls is None:

@@ -7,6 +7,15 @@ from typing import Any
 from rlab.env_registry import resolve_env_provider
 from rlab.seeds import validate_training_seed
 from rlab.train_config import queue_required_train_config_fields, validate_train_config_fields
+from rlab.validation import (
+    int_list,
+    label_path,
+    require_int,
+    require_key,
+    require_mapping,
+    require_non_empty_string,
+    string_list,
+)
 
 
 TRAIN_RECIPE_SCHEMA_VERSION = 1
@@ -34,57 +43,6 @@ TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
 )
 
 
-def _label_path(label: str, key: str) -> str:
-    if not label:
-        return key
-    return f"{label}.{key}"
-
-
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _require_key(document: Mapping[str, Any], key: str, *, label: str) -> Any:
-    if key not in document:
-        raise ValueError(f"{_label_path(label, key)} is required by train recipe schema")
-    return document[key]
-
-
-def _require_mapping(value: Any, *, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be an object")
-    return value
-
-
-def _require_non_empty_string(document: Mapping[str, Any], key: str, *, label: str) -> str:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{_label_path(label, key)} must be a non-empty string")
-    return value
-
-
-def _require_int(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    label: str,
-    minimum: int | None = None,
-) -> int:
-    value = _require_key(document, key, label=label)
-    if not _is_int(value):
-        raise ValueError(f"{_label_path(label, key)} must be an integer")
-    if minimum is not None and value < minimum:
-        raise ValueError(f"{_label_path(label, key)} must be >= {minimum}")
-    return value
-
-
-def _require_bool(document: Mapping[str, Any], key: str, *, label: str) -> bool:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, bool):
-        raise ValueError(f"{_label_path(label, key)} must be a boolean")
-    return value
-
-
 def require_explicit_queue_train_config(
     train_config: Mapping[str, Any],
     *,
@@ -96,32 +54,6 @@ def require_explicit_queue_train_config(
             f"{label} missing required recipe-defined field(s): "
             f"{', '.join(missing)}; queue-backed train jobs must define train values in recipes"
         )
-
-
-def _require_string_list(document: Mapping[str, Any], key: str, *, label: str) -> list[str]:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{_label_path(label, key)} must be a list")
-    values: list[str] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-empty string")
-        values.append(item)
-    return values
-
-
-def _require_int_list(document: Mapping[str, Any], key: str, *, label: str) -> list[int]:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{_label_path(label, key)} must be a list")
-    if not value:
-        raise ValueError(f"{_label_path(label, key)} must contain at least one seed")
-    values: list[int] = []
-    for index, item in enumerate(value):
-        if not _is_int(item):
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be an integer")
-        values.append(item)
-    return values
 
 
 def _format_field_names(template: str) -> set[str]:
@@ -141,17 +73,17 @@ def _require_template(
     label: str,
     required_fields: set[str],
 ) -> str:
-    template = _require_non_empty_string(document, key, label=label)
+    template = require_non_empty_string(document, key, label=label, strip=False)
     field_names = _format_field_names(template)
     unknown = sorted(field_names - TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS)
     if unknown:
         raise ValueError(
-            f"{_label_path(label, key)} uses unsupported template field(s): {', '.join(unknown)}"
+            f"{label_path(label, key)} uses unsupported template field(s): {', '.join(unknown)}"
         )
     missing = sorted(required_fields - field_names)
     if missing:
         raise ValueError(
-            f"{_label_path(label, key)} must include template field(s): {', '.join(missing)}"
+            f"{label_path(label, key)} must include template field(s): {', '.join(missing)}"
         )
     try:
         template.format(
@@ -163,7 +95,7 @@ def _require_template(
         )
     except (IndexError, KeyError, ValueError) as exc:
         raise ValueError(
-            f"{_label_path(label, key)} is not a valid format template: {exc}"
+            f"{label_path(label, key)} is not a valid format template: {exc}"
         ) from exc
     return template
 
@@ -179,24 +111,24 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
     research metadata can keep flowing into the persisted queue payload.
     """
 
-    _require_mapping(document, label=label)
+    require_mapping(document, label=label)
     removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
     if removed_fields:
         raise ValueError(f"{label} uses removed train recipe field(s): {', '.join(removed_fields)}")
     if (
         "schema_version" in document
-        and (schema_version := _require_int(document, "schema_version", label=label, minimum=1))
+        and (schema_version := require_int(document, "schema_version", label=label, minimum=1))
         != TRAIN_RECIPE_SCHEMA_VERSION
     ):
         raise ValueError(
-            f"{_label_path(label, 'schema_version')} must be "
+            f"{label_path(label, 'schema_version')} must be "
             f"{TRAIN_RECIPE_SCHEMA_VERSION}, got {schema_version}"
         )
 
-    goal = _require_mapping(
-        _require_key(document, "goal", label=label), label=_label_path(label, "goal")
+    goal = require_mapping(
+        require_key(document, "goal", label=label), label=label_path(label, "goal")
     )
-    _require_non_empty_string(goal, "goal_id", label=_label_path(label, "goal"))
+    require_non_empty_string(goal, "goal_id", label=label_path(label, "goal"))
     if not train_recipe_id(document):
         raise ValueError(f"{label}.recipe_id is required by train recipe schema")
     _require_template(
@@ -206,11 +138,15 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         required_fields=set(),
     )
     if "max_attempts" in document:
-        _require_int(document, "max_attempts", label=label, minimum=1)
-    seed_values = _require_int_list(document, "seeds", label=label) if "seeds" in document else []
-    _require_non_empty_string(document, "group_id", label=label)
+        require_int(document, "max_attempts", label=label, minimum=1)
+    seed_values = (
+        int_list(require_key(document, "seeds", label=label), label=label_path(label, "seeds"))
+        if "seeds" in document
+        else []
+    )
+    require_non_empty_string(document, "group_id", label=label)
     if "run_name_label" in document:
-        _require_non_empty_string(document, "run_name_label", label=label)
+        require_non_empty_string(document, "run_name_label", label=label)
     if "run_name_template" in document:
         _require_template(
             document,
@@ -218,28 +154,31 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
             label=label,
             required_fields=set(),
         )
-    _require_string_list(document, "tags", label=label)
+    string_list(require_key(document, "tags", label=label), label=label_path(label, "tags"))
     if "selection_metrics" in document:
-        metrics = _require_string_list(document, "selection_metrics", label=label)
+        metrics = string_list(
+            require_key(document, "selection_metrics", label=label),
+            label=label_path(label, "selection_metrics"),
+        )
         if not metrics:
-            raise ValueError(f"{_label_path(label, 'selection_metrics')} must not be empty")
+            raise ValueError(f"{label_path(label, 'selection_metrics')} must not be empty")
     elif "selection_policy" in document:
-        _require_mapping(
-            _require_key(document, "selection_policy", label=label),
-            label=_label_path(label, "selection_policy"),
+        require_mapping(
+            require_key(document, "selection_policy", label=label),
+            label=label_path(label, "selection_policy"),
         )
     else:
         raise ValueError(
             f"{label} must define selection_metrics or inherit goal-owned selection_policy"
         )
 
-    train_config = _require_mapping(
-        _require_key(document, "train_config", label=label),
-        label=_label_path(label, "train_config"),
+    train_config = require_mapping(
+        require_key(document, "train_config", label=label),
+        label=label_path(label, "train_config"),
     )
     validate_train_config_fields(
         train_config,
-        label=_label_path(label, "train_config"),
+        label=label_path(label, "train_config"),
         keys=(
             "game",
             "state",
@@ -256,7 +195,7 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
     for index, seed in enumerate(seed_values):
         validate_training_seed(
             seed,
-            label=f"{_label_path(label, 'seeds')}[{index}]",
+            label=f"{label_path(label, 'seeds')}[{index}]",
             seed_span=seed_span,
         )
     has_state = isinstance(train_config.get("state"), str) and bool(train_config["state"].strip())
@@ -271,11 +210,11 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
     supports_states = resolve_env_provider(provider_id).supports_states if provider_id else True
     if supports_states and not has_state and not has_states:
         raise ValueError(
-            f"{_label_path(label, 'train_config')} must define non-empty state or states"
+            f"{label_path(label, 'train_config')} must define non-empty state or states"
         )
     if "seed" in train_config and train_config["seed"] is not None:
         validate_training_seed(
             train_config["seed"],
-            label=_label_path(label, "train_config.seed"),
+            label=label_path(label, "train_config.seed"),
             seed_span=train_config.get("n_envs", 1),
         )

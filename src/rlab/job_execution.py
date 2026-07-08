@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.seeds import validate_training_seed
-from rlab.spec_schema import require_explicit_queue_train_config
+from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 

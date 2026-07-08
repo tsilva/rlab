@@ -6,18 +6,9 @@ import gymnasium as gym
 import numpy as np
 
 from rlab.env_wrappers import SuperMarioBrosNesProgressInfoWrapper
+from rlab.event_payloads import event_payloads
 from rlab.fused_vec import FusedVectorHooks, HookStep, VectorInfoView
 from rlab.targets import target_for_game
-
-
-def _event_payloads(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return {str(name): payload for name, payload in value.items() if str(name)}
-    if isinstance(value, (list, tuple, set)):
-        return {str(name): {} for name in value if str(name)}
-    if isinstance(value, str) and value:
-        return {value: {}}
-    return {}
 
 
 class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
@@ -195,7 +186,7 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
         self.episode_steps += 1
 
         lane_infos: dict[int, dict[str, Any]] = {}
-        for index, event_payloads in enumerate(event_payloads_by_lane):
+        for index, lane_event_payloads in enumerate(event_payloads_by_lane):
             progress_info = self._progress_info(
                 index=index,
                 native_reward=float(rewards[index]),
@@ -209,15 +200,15 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
                 level_lo=int(level_lo[index]),
                 level_changed=bool(level_changed[index]),
             )
-            if event_payloads:
-                progress_info["info_events"] = event_payloads
+            if lane_event_payloads:
+                progress_info["info_events"] = lane_event_payloads
             lane_infos[index] = progress_info
         if self.config.clip_rewards:
             shaped_rewards = np.sign(shaped_rewards).astype(np.float32)
         return HookStep(shaped_rewards.astype(np.float32), lane_infos)
 
     def _vector_event_payloads(self, infos: VectorInfoView) -> list[dict[str, Any]]:
-        payloads = [_event_payloads(infos.value("done_on_info", index)) for index in range(self.num_envs)]
+        payloads = [event_payloads(infos.value("done_on_info", index)) for index in range(self.num_envs)]
         current_values_by_name: dict[str, list[Any]] = {}
         for name, rule in self.config.info_events.items():
             key_or_keys, _op = rule
@@ -306,11 +297,11 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
         return False
 
     def _annotate_info_events(self, index: int, info: Mapping[str, Any]) -> dict[str, Any]:
-        event_payloads = _event_payloads(info.get("done_on_info"))
+        payloads = event_payloads(info.get("done_on_info"))
         previous_values = self.previous_event_values[index]
         current_values = self._event_values(info)
         for name, rule in self.config.info_events.items():
-            if name in event_payloads:
+            if name in payloads:
                 continue
             if name not in previous_values or name not in current_values:
                 continue
@@ -319,14 +310,14 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
             current = current_values[name]
             if not self._event_rule_fired(previous, current, op):
                 continue
-            event_payloads[name] = {
+            payloads[name] = {
                 "op": op,
                 "keys": key_or_keys,
                 "prev": previous,
                 "next": current,
             }
         self.previous_event_values[index].update(current_values)
-        return event_payloads
+        return payloads
 
     def _shape_lane(
         self,

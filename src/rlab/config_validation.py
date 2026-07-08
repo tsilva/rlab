@@ -20,6 +20,16 @@ from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacit
 from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
+from rlab.validation import (
+    is_int as _is_int,
+    label_path as _label_path,
+    require_int as _require_int,
+    require_key as _require_key,
+    require_mapping as _require_mapping,
+    require_non_empty_string as _require_non_empty_string,
+    require_schema_version as _require_schema_version,
+    string_list,
+)
 from rlab.vec_wrappers import normalize_vec_wrapper_specs
 
 
@@ -71,48 +81,6 @@ def _display_path(path: Path, repo_root: Path) -> str:
         return str(path)
 
 
-def _label_path(label: str, key: str) -> str:
-    return f"{label}.{key}" if label else key
-
-
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _require_key(document: Mapping[str, Any], key: str, *, label: str) -> Any:
-    if key not in document:
-        raise ValueError(f"{_label_path(label, key)} is required")
-    return document[key]
-
-
-def _require_mapping(value: Any, *, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be an object")
-    return value
-
-
-def _require_non_empty_string(document: Mapping[str, Any], key: str, *, label: str) -> str:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{_label_path(label, key)} must be a non-empty string")
-    return value.strip()
-
-
-def _require_int(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    label: str,
-    minimum: int | None = None,
-) -> int:
-    value = _require_key(document, key, label=label)
-    if not _is_int(value):
-        raise ValueError(f"{_label_path(label, key)} must be an integer")
-    if minimum is not None and value < minimum:
-        raise ValueError(f"{_label_path(label, key)} must be >= {minimum}")
-    return value
-
-
 def _require_number(
     document: Mapping[str, Any],
     key: str,
@@ -144,16 +112,7 @@ def _require_string_list(
     allow_empty: bool = False,
 ) -> list[str]:
     value = _require_key(document, key, label=label)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{_label_path(label, key)} must be a list")
-    if not value and not allow_empty:
-        raise ValueError(f"{_label_path(label, key)} must not be empty")
-    result: list[str] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-empty string")
-        result.append(item.strip())
-    return result
+    return string_list(value, label=_label_path(label, key), allow_empty=allow_empty)
 
 
 def _require_int_list(
@@ -205,12 +164,6 @@ def _validate_obs_resize(preprocessing: Mapping[str, Any], *, label: str) -> Non
     for index, item in enumerate(value):
         if not _is_int(item) or item <= 0:
             raise ValueError(f"{label}.obs_resize[{index}] must be a positive integer")
-
-
-def _require_schema_version(document: Mapping[str, Any], expected: int, *, label: str) -> None:
-    schema_version = _require_int(document, "schema_version", label=label, minimum=1)
-    if schema_version != expected:
-        raise ValueError(f"{_label_path(label, 'schema_version')} must be {expected}")
 
 
 def _validate_environment_identity(
@@ -607,12 +560,7 @@ def _validate_goal_contract_document(
         raise ValueError(f"{label}.train.max_train_timesteps is not part of goal contracts")
     policy = train.get("policy")
     if isinstance(policy, Mapping):
-        policy_early_stop_keys = {
-            "early_stop",
-            "early_stop_metric",
-            "early_stop_operator",
-            "early_stop_threshold",
-        }
+        policy_early_stop_keys = {"early_stop"}
         present = sorted(set(policy) & policy_early_stop_keys)
         if present:
             raise ValueError(

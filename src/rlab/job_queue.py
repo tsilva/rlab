@@ -38,7 +38,7 @@ from rlab.runtime_refs import (
     runtime_image_ref_from_file,
 )
 from rlab.seeds import validate_training_seed
-from rlab.spec_schema import (
+from rlab.recipe_schema import (
     require_explicit_queue_train_config,
     train_recipe_id,
     validate_train_recipe_schema,
@@ -64,7 +64,7 @@ PROVIDER_OWNED_INFO_EVENTS = {
 }
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
 QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
-SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
     ("run_name_template",): QUEUE_TEMPLATE_FIELDS,
@@ -82,7 +82,7 @@ SPEC_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ): frozenset({"checkpoint_step"}),
 }
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
-    **SPEC_DEFERRED_TEMPLATE_FIELDS,
+    **RECIPE_DEFERRED_TEMPLATE_FIELDS,
     ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
 }
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
@@ -117,9 +117,6 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
     {
         "early_stop",
-        "early_stop_metric",
-        "early_stop_operator",
-        "early_stop_threshold",
     }
 )
 
@@ -755,7 +752,7 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
         composed.document,
         path=path,
         label=f"recipe file {path}",
-        deferred_fields_by_path=SPEC_DEFERRED_TEMPLATE_FIELDS,
+        deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
     )
     sources = list(composed.sources)
     goal_composition = _goal_composition_for_recipe(path, document)

@@ -38,15 +38,15 @@ class BenchmarkProfileTests(unittest.TestCase):
         )
         self.assertTrue(all(profile.path.suffix == ".yaml" for profile in profiles))
 
-    def test_checked_in_benchmark_specs_are_yaml_not_json(self) -> None:
+    def test_checked_in_benchmark_profiles_are_yaml_not_json(self) -> None:
         benchmark_files = sorted(Path("experiments/benchmarks").rglob("*"))
-        json_specs = [
+        json_profiles = [
             path
             for path in benchmark_files
             if path.suffix == ".json"
             and path.parent.name in {"benchmarks", "profiles"}
         ]
-        self.assertEqual(json_specs, [])
+        self.assertEqual(json_profiles, [])
 
     def test_env_throughput_profile_rejects_state_none_without_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,39 +1,13 @@
 from __future__ import annotations
 
-# ruff: noqa: F401
-
-import argparse
-import io
-import json
 import re
-import sys
 import tempfile
-import types
 import unittest
-from collections import deque
-from contextlib import redirect_stderr
-from io import StringIO
-from unittest.mock import patch
 from pathlib import Path
 
-import gymnasium as gym
 import numpy as np
 
 import rlab.metric_names as metric_names
-from rlab.artifacts import (
-    apply_model_config_defaults,
-    apply_config_defaults,
-    build_s3_artifact_uri,
-    checkpoint_step,
-    env_config_from_config_dict,
-    explicit_arg_dests,
-    init_wandb,
-    load_model_metadata,
-    log_wandb_model_artifact,
-    model_metadata_path,
-    require_training_metadata,
-    write_model_metadata,
-)
 from rlab.callbacks import (
     DoneCounterCallback,
     LevelCompleteInfoCallback,
@@ -43,84 +17,11 @@ from rlab.callbacks import (
     ThroughputCallback,
     TimeElapsedCallback,
 )
-from rlab.cli import build_parser as build_train_parser
-from rlab.cli import build_train_command
-from rlab.cli import parse_train_args
-from rlab.env import (
-    EnvConfig,
-    GymVectorEnvToSb3VecEnv,
-    StickyAction,
-    VecDiscreteRetroActions,
-    VecRetroProgressInfo,
-    VecTaskConditioning,
-    make_eval_vec_env,
-    make_retro_env,
-    make_rendered_replay_env,
-    make_training_vec_env,
-    make_visual_replay_env,
-    make_vec_envs,
-    native_vec_env_supports_done_on,
-    native_vec_env_supports_rgb_render,
-    needs_vec_transpose_image,
-    provider_native_vec_kwargs,
-    resolve_env_config,
-    resolve_mixed_state_config,
-    state_name_candidates_from_level_id,
-    vector_infos_to_list,
-)
-from rlab.env_config import (
-    env_config_from_args,
-    parse_info_events,
-    parse_obs_crop,
-    parse_state_probs,
-    parse_states,
-)
-from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
-from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
 )
-from rlab.model_sources import (
-    ResolvedModelSource,
-    download_huggingface_model_source,
-    model_artifact_checkpoint_step,
-    model_source_ref,
-    parse_wandb_run_ref,
-    parse_huggingface_model_ref,
-    single_model_artifact_ref,
-    single_huggingface_model_ref,
-)
-from rlab.play import build_parser as build_play_parser
-from rlab.vec_wrappers import normalize_vec_wrapper_specs
-from rlab.play import display_replay_config
-from rlab.play import main as play_main
-from rlab.play import metadata_playback_config
-from rlab.play import model_observation
-from rlab.play import playback_env_config
-from rlab.play import playback_should_end_episode
-from rlab.play import render_obs_stack
-from rlab.play import resolved_play_launch_lines
-from rlab.play import task_conditioning_change_message
-from rlab.play import task_conditioning_start_message
-from rlab.eval import build_parser as build_eval_parser
-from rlab.eval import main as eval_main
-from rlab.seeds import DEFAULT_EVAL_SEED
-from rlab.task_advantage import normalize_advantages_by_task
-from rlab.targets import SuperMarioBros3NesV0Target, SuperMarioBrosNesV0Target, target_for_game
-from rlab.train import (
-    Sb3HumanOutputFormatCallback,
-    disable_sb3_human_output_truncation,
-    eval_checkpoint_artifact_ref,
-)
-from rlab.wandb_artifacts import (
-    artifact_download_dir,
-    model_artifact_ref,
-    safe_artifact_stem,
-)
-from rlab.wandb_artifacts import metadata_from_wandb_artifact
-from rlab.wandb_utils import default_wandb_project_path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -784,9 +685,13 @@ class MetricThresholdStopCallbackTests(unittest.TestCase):
     def make_callback(self, marker_path: Path) -> tuple[MetricThresholdStopCallback, FakeModel]:
         model = self.FakeModel()
         callback = MetricThresholdStopCallback(
-            metric_name=TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-            threshold=0.99,
-            operator=">",
+            detector=[
+                {
+                    "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    "operator": ">",
+                    "threshold": 0.99,
+                }
+            ],
             marker_path=marker_path,
         )
         callback.model = model  # type: ignore[assignment]

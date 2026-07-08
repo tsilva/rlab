@@ -285,7 +285,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(document["train_config"]["done_on_events"], [])
         self.assertEqual(document["recipe_overrides"], overrides)
 
-    def test_recipe_schema_rejects_spec_template_alias(self) -> None:
+    def test_recipe_schema_rejects_removed_template_alias(self) -> None:
         document = valid_train_recipe()
         document["description"] = "Candidate {" + "spec" + "_id}"
 

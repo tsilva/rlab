@@ -2281,7 +2281,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     reconcile = subparsers.add_parser(
         "reconcile",
-        help="Compatibility helper to finalize/repair launch rows; prefer shepherd --once.",
+        help="Diagnostic helper to finalize/repair launch rows; prefer shepherd --once.",
     )
     add_common_args(reconcile)
     reconcile.add_argument("--machine", required=True)
@@ -2299,7 +2299,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     launch_next = subparsers.add_parser(
         "launch-next",
-        help="Compatibility helper to fill open slots; prefer shepherd --once.",
+        help="Diagnostic helper to fill open slots; prefer shepherd --once.",
     )
     add_common_args(launch_next)
     launch_next.add_argument("--machine", required=True)

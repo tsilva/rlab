@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
+
+from rlab.wrapper_specs import normalize_wrapper_spec_sequence
 
 
 VEC_WRAPPER_SPEC_ID_KEYS = ("id", "wrapper", "class", "name", "type")
@@ -41,40 +42,22 @@ DEFAULT_VEC_WRAPPER_SPECS: tuple[dict[str, Any], ...] = (
 )
 
 
-def _vec_wrapper_id(spec: Mapping[str, Any], *, label: str) -> str:
-    for key in VEC_WRAPPER_SPEC_ID_KEYS:
-        value = spec.get(key)
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{label}.{key} must be a non-empty string")
-            return value.strip()
-    raise ValueError(f"{label} must include one of: {', '.join(VEC_WRAPPER_SPEC_ID_KEYS)}")
-
-
 def normalize_vec_wrapper_specs(
     value: Any,
     *,
     label: str = "vec_wrappers",
 ) -> tuple[dict[str, Any], ...]:
-    if value in (None, "", ()):
-        return ()
-    if isinstance(value, str):
-        value = [{"id": value}]
-    elif isinstance(value, Mapping):
-        value = [value]
-    elif not isinstance(value, Sequence):
-        raise ValueError(f"{label} must be a list of vector wrapper specs")
-
     specs: list[dict[str, Any]] = []
-    for index, item in enumerate(value):
+    for index, spec in enumerate(
+        normalize_wrapper_spec_sequence(
+            value,
+            label=label,
+            id_keys=VEC_WRAPPER_SPEC_ID_KEYS,
+            item_kind="vector wrapper",
+        )
+    ):
         item_label = f"{label}[{index}]"
-        if isinstance(item, str):
-            spec = {"id": item}
-        elif isinstance(item, Mapping):
-            spec = deepcopy(dict(item))
-        else:
-            raise ValueError(f"{item_label} must be an object or vector wrapper id string")
-        wrapper_id = _vec_wrapper_id(spec, label=item_label)
+        wrapper_id = spec["id"]
         if wrapper_id not in KNOWN_VEC_WRAPPER_IDS:
             known = ", ".join(sorted(KNOWN_VEC_WRAPPER_IDS))
             raise ValueError(

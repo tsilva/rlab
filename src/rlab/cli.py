@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -101,21 +100,8 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def validate_early_stop_args(args: argparse.Namespace) -> None:
     early_stop = getattr(args, "early_stop", None)
-    metric = str(getattr(args, "early_stop_metric", "") or "").strip()
-    threshold = getattr(args, "early_stop_threshold", None)
-    args.early_stop_metric = metric
     if early_stop is not None:
-        if metric or threshold is not None:
-            raise ValueError(
-                "--early-stop cannot be combined with --early-stop-metric/--early-stop-threshold"
-            )
         args.early_stop = normalize_early_stop_config(early_stop, label="--early-stop")
-        return
-    if bool(metric) == (threshold is not None):
-        if threshold is not None and not math.isfinite(float(threshold)):
-            raise ValueError("--early-stop-threshold must be finite")
-        return
-    raise ValueError("--early-stop-metric and --early-stop-threshold must be provided together")
 
 
 def build_parser() -> argparse.ArgumentParser:

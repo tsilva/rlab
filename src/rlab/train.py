@@ -561,12 +561,9 @@ def main(argv: list[str] | None = None) -> None:
                 MetricThresholdStopCallback(
                     marker_path=Path(run_dir) / "early_stop.txt",
                     detector=args.early_stop,
-                    metric_name=args.early_stop_metric,
-                    threshold=args.early_stop_threshold,
-                    operator=args.early_stop_operator,
                 )
             ]
-            if args.early_stop or args.early_stop_metric
+            if args.early_stop
             else []
         ),
         RolloutDiagnosticsCallback(wandb_run=wandb_run),

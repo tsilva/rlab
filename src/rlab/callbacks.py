@@ -18,6 +18,7 @@ from rlab.early_stop import (
     flat_metric_rule_from_early_stop,
     normalize_early_stop_config,
 )
+from rlab.event_payloads import event_payloads, info_event_payloads
 from rlab.env import DoneOnInfoRules, EnvConfig
 from rlab.metric_names import (
     GLOBAL_STEP,
@@ -291,22 +292,9 @@ class MetricThresholdStopCallback(BaseCallback):
         self,
         *,
         marker_path: Path,
-        metric_name: str | None = None,
-        threshold: float | None = None,
-        operator: str = ">=",
-        detector: Mapping[str, Any] | None = None,
+        detector: Any,
     ) -> None:
         super().__init__()
-        if detector is None:
-            metric_name = str(metric_name or "").strip()
-            if not metric_name:
-                raise ValueError("metric_name is required")
-            detector = {
-                "metric": metric_name,
-                "operator": operator,
-                "threshold": threshold,
-            }
-            detector = [detector]
         self.detector = normalize_early_stop_config(detector, label="early_stop")
         self.flat_rule = flat_metric_rule_from_early_stop(self.detector)
         self.metric_name = str(self.flat_rule["metric"]) if self.flat_rule else ""
@@ -544,14 +532,7 @@ class DoneCounterCallback(BaseCallback):
 
     @staticmethod
     def done_reason_payloads(info: dict[str, Any]) -> dict[str, Any]:
-        done_on_info = info.get("done_on_info")
-        if isinstance(done_on_info, dict):
-            return {str(reason): payload for reason, payload in done_on_info.items() if str(reason)}
-        if isinstance(done_on_info, (list, tuple, set)):
-            return {str(reason): {} for reason in done_on_info if str(reason)}
-        if isinstance(done_on_info, str) and done_on_info:
-            return {done_on_info: {}}
-        return {}
+        return event_payloads(info.get("done_on_info"))
 
     def record_done(
         self,
@@ -734,10 +715,7 @@ class LevelCompleteInfoCallback(BaseCallback):
 
     @staticmethod
     def info_event_payloads(info: Mapping[str, Any]) -> dict[str, Any]:
-        info_events = info.get("info_events")
-        if isinstance(info_events, dict):
-            return {str(reason): payload for reason, payload in info_events.items() if str(reason)}
-        return DoneCounterCallback.done_reason_payloads(dict(info))
+        return info_event_payloads(info)
 
     def record_step(
         self,

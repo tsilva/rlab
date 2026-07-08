@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-# ruff: noqa: F401
-
 import argparse
-import io
 import json
 import re
 import sys
 import tempfile
-import types
 import unittest
-from collections import deque
 from contextlib import redirect_stderr
 from io import StringIO
 from unittest.mock import patch
@@ -19,29 +14,9 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 
-import rlab.metric_names as metric_names
 from rlab.artifacts import (
-    apply_model_config_defaults,
-    apply_config_defaults,
-    build_s3_artifact_uri,
-    checkpoint_step,
     env_config_from_config_dict,
-    explicit_arg_dests,
     init_wandb,
-    load_model_metadata,
-    log_wandb_model_artifact,
-    model_metadata_path,
-    require_training_metadata,
-    write_model_metadata,
-)
-from rlab.callbacks import (
-    DoneCounterCallback,
-    LevelCompleteInfoCallback,
-    MetricThresholdStopCallback,
-    RewardComponentDiagnosticsCallback,
-    RolloutDiagnosticsCallback,
-    ThroughputCallback,
-    TimeElapsedCallback,
 )
 from rlab.cli import build_parser as build_train_parser
 from rlab.cli import build_train_command
@@ -65,7 +40,6 @@ from rlab.env import (
     provider_native_vec_kwargs,
     resolve_env_config,
     resolve_mixed_state_config,
-    state_name_candidates_from_level_id,
     vector_infos_to_list,
 )
 from rlab.env_config import (
@@ -78,49 +52,15 @@ from rlab.env_config import (
 from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
 from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
 from rlab.metric_names import (
-    TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
-    TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-)
-from rlab.model_sources import (
-    ResolvedModelSource,
-    download_huggingface_model_source,
-    model_artifact_checkpoint_step,
-    model_source_ref,
-    parse_wandb_run_ref,
-    parse_huggingface_model_ref,
-    single_model_artifact_ref,
-    single_huggingface_model_ref,
 )
 from rlab.play import build_parser as build_play_parser
 from rlab.vec_wrappers import normalize_vec_wrapper_specs
-from rlab.play import display_replay_config
-from rlab.play import main as play_main
-from rlab.play import metadata_playback_config
-from rlab.play import model_observation
-from rlab.play import playback_env_config
-from rlab.play import playback_should_end_episode
-from rlab.play import render_obs_stack
-from rlab.play import resolved_play_launch_lines
-from rlab.play import task_conditioning_change_message
-from rlab.play import task_conditioning_start_message
-from rlab.eval import build_parser as build_eval_parser
-from rlab.eval import main as eval_main
 from rlab.seeds import DEFAULT_EVAL_SEED
-from rlab.task_advantage import normalize_advantages_by_task
 from rlab.targets import SuperMarioBros3NesV0Target, SuperMarioBrosNesV0Target, target_for_game
 from rlab.train import (
-    Sb3HumanOutputFormatCallback,
-    disable_sb3_human_output_truncation,
     eval_checkpoint_artifact_ref,
 )
-from rlab.wandb_artifacts import (
-    artifact_download_dir,
-    model_artifact_ref,
-    safe_artifact_stem,
-)
-from rlab.wandb_artifacts import metadata_from_wandb_artifact
-from rlab.wandb_utils import default_wandb_project_path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -564,7 +504,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.vec_wrappers, vec_wrappers)
         self.assertEqual(config.vec_wrappers, tuple(vec_wrappers))
 
-    def test_train_config_json_accepts_metric_early_stop(self) -> None:
+    def test_train_config_json_rejects_scalar_early_stop_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
             path.write_text(
@@ -579,11 +519,8 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            args = parse_train_args(["--train-config-json", str(path)])
-
-        self.assertEqual(args.early_stop_metric, TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST)
-        self.assertEqual(args.early_stop_threshold, 0.99)
-        self.assertEqual(args.early_stop_operator, ">")
+            with self.assertRaisesRegex(ValueError, "unknown train config field"):
+                parse_train_args(["--train-config-json", str(path)])
 
     def test_train_config_json_accepts_structured_early_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -605,49 +542,16 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             args = parse_train_args(["--train-config-json", str(path)])
 
         self.assertEqual(args.early_stop, early_stop)
-        self.assertEqual(args.early_stop_metric, "")
-        self.assertIsNone(args.early_stop_threshold)
 
-    def test_train_config_json_rejects_incomplete_metric_early_stop(self) -> None:
-        with self.assertRaisesRegex(ValueError, "early-stop-metric"):
+    def test_train_parser_rejects_scalar_early_stop_flags(self) -> None:
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
             parse_train_args(["--early-stop-metric", TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST])
 
-        with self.assertRaisesRegex(ValueError, "early-stop-metric"):
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
             parse_train_args(["--early-stop-threshold", "0.99"])
 
-        with self.assertRaisesRegex(ValueError, "cannot be combined"):
-            parse_train_args(
-                [
-                    "--early-stop",
-                    json.dumps(
-                        {
-                            "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-                            "operator": ">",
-                            "threshold": 0.99,
-                        }
-                    ),
-                    "--early-stop-metric",
-                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-                    "--early-stop-threshold",
-                    "0.99",
-                ]
-            )
-
-    def test_build_train_command_includes_metric_early_stop_flags(self) -> None:
-        command = build_train_command(
-            {
-                "early_stop_metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-                "early_stop_threshold": 0.99,
-                "early_stop_operator": ">",
-            }
-        )
-
-        self.assertIn("--early-stop-metric", command)
-        self.assertIn(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST, command)
-        self.assertIn("--early-stop-threshold", command)
-        self.assertIn("0.99", command)
-        self.assertIn("--early-stop-operator", command)
-        self.assertIn(">", command)
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            parse_train_args(["--early-stop-operator", ">"])
 
     def test_build_train_command_includes_structured_early_stop(self) -> None:
         early_stop = [

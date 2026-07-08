@@ -14,7 +14,6 @@ ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
 REWARD_MODE_CHOICES = ("auto", "baseline", "bounded", "additive", "score", "native")
 DEVICE_CHOICES = ("auto", "cpu", "cuda", "mps")
 WANDB_MODE_CHOICES = ("online", "offline", "disabled")
-EARLY_STOP_OPERATOR_CHOICES = (">", ">=", "<", "<=")
 
 FieldKind = Literal["value", "store_true", "bool_optional"]
 TypeName = Literal["str", "int", "float", "json", "obs_crop"]
@@ -670,26 +669,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=None,
         serialize="json",
         help="JSON early-stop list of AND-combined metric threshold rules.",
-    ),
-    TrainConfigField(
-        "early_stop_metric",
-        ("--early-stop-metric",),
-        default="",
-        help="Training metric key that can stop training once it crosses --early-stop-threshold.",
-    ),
-    TrainConfigField(
-        "early_stop_threshold",
-        ("--early-stop-threshold",),
-        type_name="float",
-        default=None,
-        help="Numeric threshold for --early-stop-metric. Provide both or neither.",
-    ),
-    TrainConfigField(
-        "early_stop_operator",
-        ("--early-stop-operator",),
-        default=">=",
-        choices=EARLY_STOP_OPERATOR_CHOICES,
-        help="Comparison for the early-stop metric threshold.",
     ),
     TrainConfigField("learning_rate", ("--learning-rate",), type_name="float", default=1e-4),
     TrainConfigField(

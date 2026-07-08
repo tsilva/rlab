@@ -40,7 +40,7 @@ UV_CACHE_DIR=.uv-cache uv run rlab fleet policy
 UV_CACHE_DIR=.uv-cache uv run rlab fleet status
 UV_CACHE_DIR=.uv-cache uv run rlab fleet ps
 UV_CACHE_DIR=.uv-cache uv run rlab fleet watch --machine beast-3
-UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd --machine beast-3 --limit 5
+UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd --machine beast-3 --limit 5 --once
 ```
 
 For manual recoverable one-job-per-container launches:
@@ -50,30 +50,20 @@ UV_CACHE_DIR=.uv-cache uv run rlab fleet launch \
   --machine beast-3 \
   --job-id <train-job-id>
 
-UV_CACHE_DIR=.uv-cache uv run rlab fleet launch-next \
-  --machine beast-3 \
-  --limit 5
-
-UV_CACHE_DIR=.uv-cache uv run rlab fleet reconcile \
-  --machine beast-3
-
-UV_CACHE_DIR=.uv-cache uv run rlab fleet watch \
-  --machine beast-3
-
 UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd \
   --machine beast-3 \
-  --limit 5
+  --limit 5 \
+  --once
 ```
 
 In the job-container path, `watch --machine` is read-only: it shows machine
 capacity, queued demand, launch rows, labeled containers, result presence, and
-which rows need shepherd action. `shepherd --machine` is the long-running
-mutating orchestrator: it reconciles, claims, launches, finalizes, and streams a
-line-oriented action log. It should also prune stale Docker images from the
-host once no active container or queued demand needs them, preserving active
-containers and currently demanded immutable runtime image digests. `launch-next`
-is the manual one-shot dispatcher, and `reconcile --machine` is the manual
-one-shot repair/finalization command.
+which rows need shepherd action. Use `shepherd --once` for a single
+reconcile-and-fill pass, or omit `--once` for the long-running mutating
+orchestrator. Shepherd reconciles, claims, launches, finalizes, streams a
+line-oriented action log, and prunes stale Docker images from the host once no
+active container or queued demand needs them. `launch-next` and `reconcile`
+remain available as lower-level diagnostic helpers.
 
 ## Host Setup
 
