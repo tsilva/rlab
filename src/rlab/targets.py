@@ -30,6 +30,25 @@ class ProgressStep:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class EvalProgressField:
+    info_key: str
+    result_key: str
+    rank: bool = False
+
+
+@dataclass(frozen=True)
+class EvalSemantics:
+    completion_reason: str | None = None
+    completion_info_keys: tuple[str, ...] = ()
+    completion_fallback_info_key: str | None = None
+    completion_blocking_info_keys: tuple[str, ...] = ()
+    progress_fields: tuple[EvalProgressField, ...] = ()
+    death_flag_key: str | None = None
+    death_position_key: str | None = None
+    best_episode_rank: tuple[str, ...] = ("reward",)
+
+
 class RetroProgressTracker:
     def __init__(self, target: type[RetroTarget], config: Any):
         self.target = target
@@ -213,6 +232,7 @@ class RetroTarget:
     action_sets: ClassVar[dict[str, tuple[str, ...]]] = {}
     default_env_wrappers: ClassVar[tuple[dict[str, Any], ...]] = ()
     tracker_cls: ClassVar[type[RetroProgressTracker]] = RetroProgressTracker
+    eval_semantics: ClassVar[EvalSemantics] = EvalSemantics()
 
     @classmethod
     def action_names_for_set(cls, action_set: str) -> tuple[str, ...]:
@@ -254,6 +274,19 @@ class SuperMarioBrosNesV0Target(RetroTarget):
     native_level_variables = ("levelHi", "levelLo")
     default_env_wrappers = ({"id": "SuperMarioBrosNesProgressInfoWrapper"},)
     tracker_cls = RetroProgressTracker
+    eval_semantics = EvalSemantics(
+        completion_reason="level_change",
+        completion_info_keys=("completion_event", "level_complete"),
+        completion_fallback_info_key="level_changed",
+        completion_blocking_info_keys=("died", "life_loss"),
+        progress_fields=(
+            EvalProgressField("max_x_pos", "max_x_pos", rank=True),
+            EvalProgressField("level_max_x_pos", "max_level_x_pos"),
+        ),
+        death_flag_key="died",
+        death_position_key="death_x_pos",
+        best_episode_rank=("completion", "progress", "reward"),
+    )
 
     # stable-retro button order for NES:
     # ['B', None, 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A']

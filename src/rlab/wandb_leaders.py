@@ -22,6 +22,12 @@ CHECKPOINT_COMPLETION_KEYS = (
 CHECKPOINT_COMPLETION_MEAN_KEYS = (
     "leader/checkpoint/completion_rate_mean",
 )
+CHECKPOINT_OBJECTIVE_KEYS = (
+    "leader/checkpoint/objective",
+)
+CHECKPOINT_OBJECTIVE_NAME_KEYS = (
+    "leader/checkpoint/objective_name",
+)
 CHECKPOINT_MAX_X_KEYS = (
     "leader/checkpoint/max_x_max",
 )
@@ -34,7 +40,7 @@ CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS = (
 CHECKPOINT_STEP_KEYS = (
     "leader/checkpoint/step",
 )
-CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/completion_rate"
+CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/objective"
 COMPLETION_GOAL_RATE = 0.99
 WANDB_RUNS_PER_PAGE = 200
 
@@ -68,9 +74,11 @@ class CheckpointLeader:
     run_id: str
     run_name: str
     url: str
-    completion_rate: float
-    completion_rate_mean: float
-    max_x_max: float
+    objective: float
+    objective_name: str
+    completion_rate: float | None
+    completion_rate_mean: float | None
+    max_x_max: float | None
     reward_mean: float
     steps_to_completion_goal: float | None
     checkpoint_step: int | None
@@ -165,9 +173,12 @@ def run_query_objective_keys(args: argparse.Namespace) -> tuple[str, ...]:
 def checkpoint_summary_filter() -> dict[str, Any]:
     return {
         "$and": [
-            _exists_filter("leader/checkpoint/completion_rate"),
-            _exists_filter("leader/checkpoint/completion_rate_mean"),
-            _exists_filter("leader/checkpoint/max_x_max"),
+            {
+                "$or": [
+                    _exists_filter("leader/checkpoint/objective"),
+                    _exists_filter("leader/checkpoint/completion_rate"),
+                ]
+            },
             _exists_filter("leader/checkpoint/reward_mean"),
             _exists_filter("leader/checkpoint/artifact_ref"),
         ]
@@ -234,6 +245,8 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     summary = getattr(run, "summary", {}) or {}
     completion = _first_float(summary, CHECKPOINT_COMPLETION_KEYS)
     completion_mean = _first_float(summary, CHECKPOINT_COMPLETION_MEAN_KEYS)
+    objective = _first_float(summary, CHECKPOINT_OBJECTIVE_KEYS)
+    objective_name = _first_text(_mapping_value(summary, "leader/checkpoint/objective_name"))
     max_x = _first_float(summary, CHECKPOINT_MAX_X_KEYS)
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
     checkpoint_step = _optional_int(_first_float(summary, CHECKPOINT_STEP_KEYS))
@@ -243,7 +256,10 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     artifact_ref = _first_text(
         _mapping_value(summary, "leader/checkpoint/artifact_ref"),
     )
-    if completion is None or completion_mean is None or max_x is None or reward is None or not artifact_ref:
+    if objective is None:
+        objective = completion
+        objective_name = "leader/checkpoint/completion_rate" if completion is not None else ""
+    if objective is None or reward is None or not artifact_ref:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
     return CheckpointLeader(
@@ -256,6 +272,8 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
+        objective=objective,
+        objective_name=objective_name,
         completion_rate=completion,
         completion_rate_mean=completion_mean,
         max_x_max=max_x,
@@ -271,8 +289,11 @@ def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[Checkpo
     return sorted(
         leaders,
         key=lambda item: (
-            item.completion_rate,
-            item.completion_rate_mean,
+            item.objective,
+            item.completion_rate if item.completion_rate is not None else float("-inf"),
+            item.completion_rate_mean
+            if item.completion_rate_mean is not None
+            else float("-inf"),
             -item.steps_to_completion_goal
             if item.steps_to_completion_goal is not None
             else float("-inf"),
@@ -319,8 +340,8 @@ def print_run_leaders(rows: Sequence[RunLeader]) -> None:
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
     print(
-        "goal_slug\trecipe_slug\tcompletion_min\tcompletion_mean\tsteps_to_goal\t"
-        "reward\tmax_x\tstep\trun\tartifact_ref"
+        "goal_slug\trecipe_slug\tobjective\tobjective_name\tcompletion_min\t"
+        "completion_mean\tsteps_to_goal\treward\tmax_x\tstep\trun\tartifact_ref"
     )
     for row in rows:
         steps_to_goal = (
@@ -328,10 +349,20 @@ def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
             if row.steps_to_completion_goal is not None
             else ""
         )
+        completion_rate = (
+            f"{row.completion_rate:.6g}" if row.completion_rate is not None else ""
+        )
+        completion_rate_mean = (
+            f"{row.completion_rate_mean:.6g}"
+            if row.completion_rate_mean is not None
+            else ""
+        )
+        max_x = f"{row.max_x_max:.6g}" if row.max_x_max is not None else ""
         print(
-            f"{row.goal_slug}\t{row.recipe_slug}\t{row.completion_rate:.6g}\t"
-            f"{row.completion_rate_mean:.6g}\t{steps_to_goal}\t{row.reward_mean:.6g}\t"
-            f"{row.max_x_max:.6g}\t"
+            f"{row.goal_slug}\t{row.recipe_slug}\t{row.objective:.6g}\t"
+            f"{row.objective_name}\t{completion_rate}\t"
+            f"{completion_rate_mean}\t{steps_to_goal}\t{row.reward_mean:.6g}\t"
+            f"{max_x}\t"
             f"{row.checkpoint_step or ''}\t{row.run_name}\t{row.artifact_ref}"
         )
 

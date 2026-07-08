@@ -20,6 +20,7 @@ from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacit
 from rlab.job_queue import load_recipe_document
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
+from rlab.vec_wrappers import normalize_vec_wrapper_specs
 
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
@@ -321,6 +322,8 @@ def _validate_env_config(
         raise ValueError(f"{label} must define only one of state or states")
     if "env_wrappers" in env_config:
         normalize_env_wrapper_specs(env_config["env_wrappers"], label=f"{label}.env_wrappers")
+    if "vec_wrappers" in env_config:
+        normalize_vec_wrapper_specs(env_config["vec_wrappers"], label=f"{label}.vec_wrappers")
 
 
 def _goal_train_section(document: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:

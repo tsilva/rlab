@@ -8,9 +8,15 @@ from unittest.mock import patch
 import numpy as np
 
 from rlab.env import EnvConfig
-from rlab.eval_metrics import episode_rank, is_level_complete, run_eval_episode
+from rlab.eval_metrics import (
+    episode_rank,
+    is_level_complete,
+    run_eval_episode,
+    summarize_episode_results,
+)
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import metric_path_segment
+from rlab.targets import target_for_game
 from rlab.train import (
     eval_config_from_training_config,
     eval_score as eval_checkpoint_score,
@@ -107,6 +113,49 @@ class EvalMetricTests(unittest.TestCase):
         }
 
         self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, float("-inf"), 1200.0))
+
+    def test_checkpoint_score_uses_reward_when_completion_is_absent(self) -> None:
+        metrics = {
+            "reward_mean": 34.0,
+            "reward_max": 55.0,
+            "checkpoint_step": 5000000,
+        }
+
+        self.assertEqual(eval_checkpoint_score(metrics), (34.0, 55.0, -5000000.0, 34.0))
+
+    def test_generic_eval_summary_does_not_emit_mario_completion_metrics(self) -> None:
+        summary = summarize_episode_results(
+            [
+                {
+                    "start_state": "default",
+                    "reward": 10.0,
+                    "steps": 100,
+                    "terminated": True,
+                    "truncated": False,
+                    "final_info": {"ale.lives": 4},
+                },
+                {
+                    "start_state": "default",
+                    "reward": 4.0,
+                    "steps": 200,
+                    "terminated": False,
+                    "truncated": True,
+                    "final_info": {"ale.lives": 3},
+                },
+            ],
+            deterministic=True,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertEqual(summary["reward_mean"], 7.0)
+        self.assertEqual(summary["eval/done/all"], 2)
+        self.assertEqual(summary["eval/done/terminated"], 1)
+        self.assertEqual(summary["eval/done/terminated/rate"], 0.5)
+        self.assertEqual(summary["eval/done/max_steps"], 1)
+        self.assertNotIn("completion_count", summary)
+        self.assertNotIn("eval/done/level_change", summary)
+        self.assertNotIn("max_x_mean", summary)
+        self.assertNotIn("death_count", summary)
 
     def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
         slower_higher_reward = {

@@ -48,6 +48,7 @@ from rlab.env import (
     EnvConfig,
     GymVectorEnvToSb3VecEnv,
     StickyAction,
+    VecDiscreteRetroActions,
     VecRetroProgressInfo,
     VecTaskConditioning,
     make_eval_vec_env,
@@ -72,6 +73,8 @@ from rlab.env_config import (
     parse_state_probs,
     parse_states,
 )
+from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
+from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
@@ -88,6 +91,7 @@ from rlab.model_sources import (
     single_huggingface_model_ref,
 )
 from rlab.play import build_parser as build_play_parser
+from rlab.vec_wrappers import normalize_vec_wrapper_specs
 from rlab.play import display_replay_config
 from rlab.play import main as play_main
 from rlab.play import metadata_playback_config
@@ -174,6 +178,29 @@ class EnvConfigTests(unittest.TestCase):
                     env_wrappers=({"id": "MissingRewardWrapper", "kwargs": {}},),
                 )
             )
+
+    def test_unknown_vec_wrapper_fails_loudly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "known vector wrappers"):
+            resolve_env_config(
+                EnvConfig(
+                    game="SuperMarioBros-Nes-v0",
+                    vec_wrappers=({"id": "missing_vec_wrapper"},),
+                )
+            )
+
+    def test_vec_wrapper_specs_normalize_inline_fields(self) -> None:
+        self.assertEqual(
+            normalize_vec_wrapper_specs(
+                [{"id": "sb3_fused", "hooks": "super_mario_bros_nes", "info_mode": "terminal"}]
+            ),
+            (
+                {
+                    "id": "sb3_fused",
+                    "hooks": "super_mario_bros_nes",
+                    "info_mode": "terminal",
+                },
+            ),
+        )
 
     def test_metadata_config_dict_preserves_env_wrappers(self) -> None:
         config = env_config_from_config_dict(
@@ -597,6 +624,29 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(args.env_wrappers, env_wrappers)
         self.assertEqual(config.reward_mode, "score")
         self.assertEqual(config.death_penalty, 12.0)
+
+    def test_train_config_json_accepts_vec_wrappers(self) -> None:
+        vec_wrappers = [
+            {"id": "sb3_fused", "hooks": "super_mario_bros_nes", "info_mode": "terminal"}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "game": "SuperMarioBros-Nes-v0",
+                        "vec_wrappers": vec_wrappers,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = parse_train_args(["--train-config-json", str(path)])
+            config = resolve_env_config(env_config_from_args(args))
+
+        self.assertEqual(args.vec_wrappers, vec_wrappers)
+        self.assertEqual(config.vec_wrappers, tuple(vec_wrappers))
 
     def test_train_config_json_accepts_metric_early_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1108,6 +1158,80 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 EnvConfig(env_provider="ale-py", game="breakout", state="Level1-1"),
                 n_envs=2,
             )
+
+    def test_ale_py_identity_fused_native_config_builds_sb3_fused_env(self) -> None:
+        class FakeAtariVectorEnv(gym.vector.VectorEnv):
+            num_envs = 2
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                self.kwargs = kwargs
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(4, 84, 84),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.Discrete(4)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiDiscrete([4, 4])
+
+            def reset(self, *, seed=None, options=None):
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8), {}
+
+            def step(self, actions):
+                return (
+                    np.ones((2, 4, 84, 84), dtype=np.uint8),
+                    np.asarray([1.0, 0.0], dtype=np.float32),
+                    np.asarray([False, False]),
+                    np.asarray([False, False]),
+                    {},
+                )
+
+        config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            action_set="native",
+            reward_mode="native",
+            obs_crop=None,
+            vec_wrappers=({"id": "sb3_fused"},),
+        )
+        with patch("rlab.env._ale_py_atari_vector_env_type", return_value=FakeAtariVectorEnv):
+            env = make_training_vec_env(config, n_envs=2, seed=7)
+
+        self.assertIsInstance(env, Sb3FusedVecEnv)
+
+    def test_ale_py_masked_preprocess_rejects_requested_fused_env(self) -> None:
+        class FakeAtariVectorEnv(gym.vector.VectorEnv):
+            num_envs = 2
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                self.kwargs = kwargs
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(210, 160, 3),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.Discrete(4)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiDiscrete([4, 4])
+
+        config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            action_set="native",
+            reward_mode="native",
+            obs_crop=(34, 0, 0, 0),
+            obs_crop_mode="mask",
+            vec_wrappers=({"id": "sb3_fused"},),
+        )
+        with (
+            patch("rlab.env._ale_py_atari_vector_env_type", return_value=FakeAtariVectorEnv),
+            self.assertRaisesRegex(ValueError, "ale-py masked preprocessing is not fused yet"),
+        ):
+            make_training_vec_env(config, n_envs=2, seed=7)
 
     def test_supermariobrosnes_turbo_rgb_render_support_uses_metadata(self) -> None:
         class FakeSuperMarioNative:
@@ -1671,6 +1795,106 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
             },
         )
 
+    def test_vector_info_view_lazily_reads_masked_terminal_info(self) -> None:
+        final_obs = np.asarray(
+            [np.asarray([9, 9], dtype=np.uint8), np.asarray([8, 8], dtype=np.uint8)],
+            dtype=object,
+        )
+        view = VectorInfoView(
+            {
+                "state": np.asarray(["Level1-3", "Level1-4"], dtype=object),
+                "_state": np.asarray([True, False]),
+                "final_obs": final_obs,
+                "_final_obs": np.asarray([True, True]),
+                "final_info": {"score": np.asarray([100, 200])},
+                "_final_info": np.asarray([True, True]),
+            },
+            2,
+        )
+
+        self.assertEqual(view.value("state", 0), "Level1-3")
+        self.assertIsNone(view.value("state", 1))
+        self.assertEqual(view.lane_mapping("final_info", 1), {"score": 200})
+        terminal = view.terminal_info(0, truncated=False)
+        self.assertEqual(terminal["score"], 100)
+        self.assertEqual(terminal["reset_info"], {"state": "Level1-3"})
+        np.testing.assert_array_equal(
+            terminal["terminal_observation"],
+            np.asarray([9, 9], dtype=np.uint8),
+        )
+
+    def test_sb3_fused_vec_env_preserves_sb3_terminal_contract(self) -> None:
+        class FakeGymVectorEnv(gym.vector.VectorEnv):
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(2,),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.Discrete(3)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiDiscrete([3, 3])
+                self.reset_seed = None
+
+            def reset(self, *, seed=None, options=None):
+                self.reset_seed = seed
+                return (
+                    np.zeros((2, 2), dtype=np.uint8),
+                    {
+                        "state": np.asarray(["Level1-1", "Level1-2"], dtype=object),
+                        "_state": np.asarray([True, True]),
+                    },
+                )
+
+            def step(self, actions):
+                self.actions = actions
+                return (
+                    np.ones((2, 2), dtype=np.uint8),
+                    np.asarray([1.0, 2.0], dtype=np.float32),
+                    np.asarray([True, False]),
+                    np.asarray([False, True]),
+                    {
+                        "state": np.asarray(["Level1-3", "Level1-4"], dtype=object),
+                        "_state": np.asarray([True, True]),
+                        "final_obs": np.asarray(
+                            [
+                                np.asarray([9, 9], dtype=np.uint8),
+                                np.asarray([8, 8], dtype=np.uint8),
+                            ],
+                            dtype=object,
+                        ),
+                        "_final_obs": np.asarray([True, True]),
+                        "final_info": {"score": np.asarray([100, 200])},
+                        "_final_info": np.asarray([True, True]),
+                    },
+                )
+
+        source_env = FakeGymVectorEnv()
+        pipeline = FusedGymVectorPipeline(source_env, IdentityFusedHooks(None, source_env))
+        env = Sb3FusedVecEnv(pipeline)
+        env.seed(123)
+
+        obs = env.reset()
+        self.assertEqual(source_env.reset_seed, 123)
+        np.testing.assert_array_equal(obs, np.zeros((2, 2), dtype=np.uint8))
+        self.assertEqual(env.reset_infos, [{"state": "Level1-1"}, {"state": "Level1-2"}])
+
+        env.step_async([0, 1])
+        obs, rewards, dones, infos = env.step_wait()
+
+        np.testing.assert_array_equal(obs, np.ones((2, 2), dtype=np.uint8))
+        np.testing.assert_array_equal(rewards, np.asarray([1.0, 2.0], dtype=np.float32))
+        np.testing.assert_array_equal(dones, np.asarray([True, True]))
+        self.assertEqual(infos[0]["score"], 100)
+        self.assertEqual(infos[0]["reset_info"], {"state": "Level1-3"})
+        self.assertEqual(infos[0]["episode"]["l"], 1)
+        self.assertFalse(infos[0]["TimeLimit.truncated"])
+        self.assertTrue(infos[1]["TimeLimit.truncated"])
+        self.assertEqual(env.native_step_stats()["calls_total"], 1)
+
     def test_emits_nonterminal_info_events_for_configured_level_change(self) -> None:
         class FakeVecEnv:
             num_envs = 1
@@ -1734,6 +1958,181 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
             },
         )
         self.assertTrue(infos[0]["level_complete"])
+
+    def test_mario_fused_hooks_match_old_stack_for_level_change_reward(self) -> None:
+        class FakeMarioVectorEnv(gym.vector.VectorEnv):
+            num_envs = 1
+
+            def __init__(self) -> None:
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(4, 84, 84),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.MultiBinary(9)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiBinary(9)
+                self.actions = None
+                self.step_count = 0
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                return (
+                    np.zeros((1, 4, 84, 84), dtype=np.uint8),
+                    {
+                        "lives": np.asarray([3]),
+                        "score": np.asarray([0]),
+                        "levelHi": np.asarray([0]),
+                        "levelLo": np.asarray([0]),
+                        "xscrollHi": np.asarray([0]),
+                        "xscrollLo": np.asarray([0]),
+                    },
+                )
+
+            def step(self, actions):
+                self.actions = np.asarray(actions)
+                self.step_count += 1
+                level_lo = 0 if self.step_count == 1 else 1
+                score = 0 if self.step_count == 1 else 40
+                xscroll_lo = 0 if self.step_count == 1 else 10
+                return (
+                    np.ones((1, 4, 84, 84), dtype=np.uint8),
+                    np.asarray([0.0], dtype=np.float32),
+                    np.asarray([False]),
+                    np.asarray([False]),
+                    {
+                        "lives": np.asarray([3]),
+                        "score": np.asarray([score]),
+                        "levelHi": np.asarray([0]),
+                        "levelLo": np.asarray([level_lo]),
+                        "xscrollHi": np.asarray([0]),
+                        "xscrollLo": np.asarray([xscroll_lo]),
+                    },
+                )
+
+            def close(self):
+                pass
+
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="supermariobrosnes-turbo",
+                game="SuperMarioBros-Nes-v0",
+                action_set="simple",
+                reward_mode="baseline",
+                max_episode_steps=0,
+                info_events={"level_change": (("levelHi", "levelLo"), "change")},
+            )
+        )
+
+        old_env = VecRetroProgressInfo(
+            VecDiscreteRetroActions(GymVectorEnvToSb3VecEnv(FakeMarioVectorEnv()), config=config),
+            config=config,
+        )
+        old_env.reset()
+        old_env.step_async(np.asarray([0], dtype=np.int64))
+        old_env.step_wait()
+        old_env.step_async(np.asarray([0], dtype=np.int64))
+        _old_obs, old_rewards, old_dones, old_infos = old_env.step_wait()
+
+        native_env = FakeMarioVectorEnv()
+        fused_env = Sb3FusedVecEnv(
+            FusedGymVectorPipeline(
+                native_env,
+                SuperMarioBrosNesFusedHooks(config, native_env),
+            )
+        )
+        fused_env.reset()
+        fused_env.step_async(np.asarray([0], dtype=np.int64))
+        fused_env.step_wait()
+        fused_env.step_async(np.asarray([0], dtype=np.int64))
+        _new_obs, new_rewards, new_dones, new_infos = fused_env.step_wait()
+
+        np.testing.assert_allclose(new_rewards, old_rewards)
+        np.testing.assert_array_equal(new_dones, old_dones)
+        self.assertEqual(new_infos[0]["info_events"], old_infos[0]["info_events"])
+        self.assertEqual(new_infos[0]["level_complete"], old_infos[0]["level_complete"])
+
+    def test_mario_fused_hooks_emit_nonterminal_reward_component_info(self) -> None:
+        class FakeMarioVectorEnv(gym.vector.VectorEnv):
+            num_envs = 1
+
+            def __init__(self) -> None:
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(4, 84, 84),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.MultiBinary(9)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiBinary(9)
+                self.step_count = 0
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                return (
+                    np.zeros((1, 4, 84, 84), dtype=np.uint8),
+                    {},
+                )
+
+            def step(self, actions):
+                del actions
+                self.step_count += 1
+                return (
+                    np.ones((1, 4, 84, 84), dtype=np.uint8),
+                    np.asarray([0.0], dtype=np.float32),
+                    np.asarray([False]),
+                    np.asarray([False]),
+                    {
+                        "lives": np.asarray([2]),
+                        "score": np.asarray([0]),
+                        "levelHi": np.asarray([0]),
+                        "levelLo": np.asarray([0]),
+                        "xscrollHi": np.asarray([0]),
+                        "xscrollLo": np.asarray([self.step_count * 5]),
+                    },
+                )
+
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="supermariobrosnes-turbo",
+                game="SuperMarioBros-Nes-v0",
+                action_set="simple",
+                reward_mode="score",
+                max_episode_steps=0,
+            )
+        )
+        old_env = VecRetroProgressInfo(
+            VecDiscreteRetroActions(GymVectorEnvToSb3VecEnv(FakeMarioVectorEnv()), config=config),
+            config=config,
+        )
+        old_env.reset()
+        old_env.step_async(np.asarray([0], dtype=np.int64))
+        _old_obs, old_rewards, old_dones, old_infos = old_env.step_wait()
+
+        native_env = FakeMarioVectorEnv()
+        fused_env = Sb3FusedVecEnv(
+            FusedGymVectorPipeline(
+                native_env,
+                SuperMarioBrosNesFusedHooks(config, native_env),
+            )
+        )
+        fused_env.reset()
+        fused_env.step_async(np.asarray([0], dtype=np.int64))
+        _new_obs, new_rewards, new_dones, new_infos = fused_env.step_wait()
+
+        np.testing.assert_allclose(new_rewards, old_rewards)
+        np.testing.assert_array_equal(new_dones, old_dones)
+        for key in (
+            "progress_delta",
+            "progress_component",
+            "progress_reward_component",
+            "death_penalty_component",
+            "raw_reward",
+            "shaped_reward",
+        ):
+            self.assertEqual(new_infos[0][key], old_infos[0][key])
 
     def test_vector_progress_does_not_apply_python_truncation_or_global_reset(self) -> None:
         class FakeVecEnv:

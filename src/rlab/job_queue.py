@@ -27,6 +27,7 @@ from rlab.config_loader import (
 from rlab.compute_targets import instance_defaults, load_json_file
 from rlab.dotenv import load_env_file
 from rlab.env_identity import attach_environment_identity, train_config_from_environment
+from rlab.eval_metrics import eval_selection_score as shared_eval_selection_score
 from rlab.json_utils import json_safe
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
@@ -1637,42 +1638,10 @@ def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("
         return default
 
 
-COMPLETION_GOAL_RATE = 0.99
-
-
 def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float, float]:
-    """Eval-first policy ranking: completion, solved timestep, then reward."""
+    """Eval-first policy ranking, using completion when present and reward otherwise."""
 
-    completion_min = _metric_float(
-        metrics,
-        "eval/done/level_change/from_rate/min",
-        default=_metric_float(
-            metrics,
-            "eval/done/level_change/rate",
-            default=_metric_float(metrics, "completion_rate"),
-        ),
-    )
-    completion_mean = _metric_float(
-        metrics,
-        "eval/done/level_change/from_rate/mean",
-        default=_metric_float(
-            metrics,
-            "eval/done/level_change/rate",
-            default=_metric_float(metrics, "completion_rate"),
-        ),
-    )
-    checkpoint_step = _metric_float(metrics, "checkpoint_step")
-    steps_to_goal = (
-        checkpoint_step
-        if completion_min >= COMPLETION_GOAL_RATE and checkpoint_step > float("-inf")
-        else float("inf")
-    )
-    return (
-        completion_min,
-        completion_mean,
-        -steps_to_goal,
-        _metric_float(metrics, "reward_mean"),
-    )
+    return shared_eval_selection_score(dict(metrics))
 
 
 def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:

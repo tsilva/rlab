@@ -34,7 +34,7 @@ train:
         obs_crop_mode: mask
         obs_crop_fill: 0
         obs_resize_algorithm: area
-        max_episode_steps: 27000
+        max_episode_steps: 54000
         action_set: native
         reward_mode: native
         clip_rewards: true

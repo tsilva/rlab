@@ -3,12 +3,13 @@ defaults:
 - _self_
 recipe_id: base
 description: >-
-  Seed {seed} trains a basic PPO Breakout policy on ale-py's native AtariVectorEnv.
-  The environment contract is provider-native and intentionally keeps Atari choices
-  in YAML rather than borrowing Mario-specific wrappers or state semantics.
+  Seed {seed} trains a PPO Breakout policy for 50M steps on ale-py's native
+  AtariVectorEnv with masked HUD cropping. The environment contract is
+  provider-native and intentionally keeps Atari choices in YAML rather than
+  borrowing Mario-specific wrappers or state semantics.
 train:
   policy:
-    timesteps: 10000000
+    timesteps: 50000000
     torch_num_threads: 1
     n_steps: 128
     batch_size: 256

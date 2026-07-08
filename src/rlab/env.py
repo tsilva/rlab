@@ -27,7 +27,20 @@ from rlab.env_registry import (
     resolve_env_provider,
 )
 from rlab.env_wrappers import resolve_configured_env_wrappers, with_default_env_wrapper_specs
+from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv
 from rlab.targets import GenericRetroTarget, target_for_game
+from rlab.vec_wrappers import (
+    ALE_MASKED_PREPROCESS,
+    DEFAULT_VEC_WRAPPER_SPECS,
+    DISCRETE_ACTIONS,
+    GYM_VECTOR_TO_SB3,
+    RETRO_PROGRESS_INFO,
+    SB3_FUSED,
+    TASK_CONDITIONING,
+    TRANSPOSE_IMAGE,
+    VEC_MONITOR,
+    normalize_vec_wrapper_specs,
+)
 
 GAME = os.environ.get("RETRO_GAME", "")
 DEFAULT_STATE = os.environ.get("RETRO_STATE", "")
@@ -48,7 +61,7 @@ def _super_mario_bros_nes_turbo_vec_env_type():
     except ImportError as exc:
         raise ImportError(
             "supermariobrosnes-turbo provider requires "
-            "supermariobrosnes-turbo==0.2.12",
+            "supermariobrosnes-turbo",
         ) from exc
     return SuperMarioBrosNesTurboVecEnv
 
@@ -141,6 +154,7 @@ class EnvConfig:
     completion_reward: float = 0.0
     score_progress_clipped: bool = False
     env_wrappers: tuple[dict[str, Any], ...] = ()
+    vec_wrappers: tuple[dict[str, Any], ...] = ()
     no_progress_timeout_steps: int = 0
     no_progress_min_delta: int = 0
     info_events: InfoEventRules = field(default_factory=dict)
@@ -241,6 +255,9 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         )
     config = replace(config, **updates) if updates else config
     config = resolve_configured_env_wrappers(config)
+    vec_wrappers = normalize_vec_wrapper_specs(config.vec_wrappers)
+    if vec_wrappers != config.vec_wrappers:
+        config = replace(config, vec_wrappers=vec_wrappers)
     return normalize_event_config(config)
 
 
@@ -1614,10 +1631,100 @@ def make_provider_vec_env(
     raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
 
 
+def _vec_wrapper_specs(config: EnvConfig) -> tuple[dict[str, Any], ...]:
+    return normalize_vec_wrapper_specs(config.vec_wrappers) or DEFAULT_VEC_WRAPPER_SPECS
+
+
+def _identity_fused_hooks_supported(config: EnvConfig) -> None:
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id and native_obs_crop(config) is not None:
+        raise ValueError("ale-py masked preprocessing is not fused yet")
+    if config.action_set != "native":
+        raise ValueError("identity fused hooks require action_set='native'")
+    if config.reward_mode != "native":
+        raise ValueError("identity fused hooks require reward_mode='native'")
+    if config.task_conditioning:
+        raise ValueError("identity fused hooks do not support task_conditioning")
+
+
+def _make_fused_hooks(config: EnvConfig, native_env, spec: Mapping[str, Any]):
+    if not isinstance(native_env, gym.vector.VectorEnv):
+        raise ValueError("sb3_fused requires a Gymnasium VectorEnv provider")
+    hooks_id = str(spec.get("hooks", "identity")).strip()
+    if hooks_id == "identity":
+        _identity_fused_hooks_supported(config)
+        return IdentityFusedHooks(config, native_env)
+    if hooks_id == "super_mario_bros_nes":
+        from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
+
+        return SuperMarioBrosNesFusedHooks(config, native_env)
+    raise ValueError(f"unknown fused hooks {hooks_id!r}")
+
+
+def _apply_vec_wrapper_stack(vec_env, config: EnvConfig, seed: int):
+    target = target_for_game(config.game)
+    specs = _vec_wrapper_specs(config)
+    fused_seen = False
+    sb3_ready = isinstance(vec_env, VecEnv)
+    for index, spec in enumerate(specs):
+        wrapper_id = spec["id"]
+        if wrapper_id == SB3_FUSED:
+            if index != 0:
+                raise ValueError("sb3_fused must be the first vec wrapper")
+            hooks = _make_fused_hooks(config, vec_env, spec)
+            info_mode = str(spec.get("info_mode", "terminal")).strip() or "terminal"
+            pipeline = FusedGymVectorPipeline(vec_env, hooks, info_mode=info_mode)
+            vec_env = Sb3FusedVecEnv(pipeline)
+            vec_env.seed(seed)
+            fused_seen = True
+            sb3_ready = True
+            continue
+        if fused_seen and wrapper_id != TRANSPOSE_IMAGE:
+            raise ValueError("sb3_fused can only be followed by transpose_image")
+        if wrapper_id == GYM_VECTOR_TO_SB3:
+            vec_env = adapt_provider_vec_env_for_sb3(vec_env)
+            vec_env.seed(seed)
+            sb3_ready = True
+        elif wrapper_id == DISCRETE_ACTIONS:
+            if not sb3_ready:
+                raise ValueError("discrete_actions requires gym_vector_to_sb3 first")
+            if target.uses_discrete_actions(config.action_set):
+                vec_env = VecDiscreteRetroActions(vec_env, config=config)
+        elif wrapper_id == ALE_MASKED_PREPROCESS:
+            if not sb3_ready:
+                raise ValueError("ale_masked_preprocess requires gym_vector_to_sb3 first")
+            if (
+                resolve_env_provider(config.env_provider).provider_id == ALE_PY_PROVIDER.provider_id
+                and native_obs_crop(config) is not None
+            ):
+                vec_env = VecAleMaskedPreprocess(vec_env, config=config)
+        elif wrapper_id == RETRO_PROGRESS_INFO:
+            if not sb3_ready:
+                raise ValueError("retro_progress_info requires gym_vector_to_sb3 first")
+            vec_env = VecRetroProgressInfo(vec_env, config=config)
+        elif wrapper_id == VEC_MONITOR:
+            if not sb3_ready:
+                raise ValueError("vec_monitor requires gym_vector_to_sb3 first")
+            vec_env = VecMonitor(vec_env)
+        elif wrapper_id == TASK_CONDITIONING:
+            if not sb3_ready:
+                raise ValueError("task_conditioning requires gym_vector_to_sb3 first")
+            if config.task_conditioning:
+                vec_env = VecTaskConditioning(vec_env, config=config)
+        elif wrapper_id == TRANSPOSE_IMAGE:
+            if not sb3_ready:
+                raise ValueError("transpose_image requires an SB3 VecEnv first")
+            vec_env = maybe_transpose_vec_image(vec_env)
+        else:
+            raise ValueError(f"unknown vec wrapper {wrapper_id!r}")
+    if not sb3_ready:
+        raise ValueError("vec_wrappers must produce an SB3 VecEnv")
+    return vec_env
+
+
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
-    target = target_for_game(config.game)
     num_threads = config.env_threads if config.env_threads > 0 else min(max(n_envs, 1), 16)
     native_done_on_rules = _native_done_on_rules(
         config,
@@ -1631,20 +1738,7 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
         native_done_on_rules=native_done_on_rules,
     )
     vec_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
-    vec_env = adapt_provider_vec_env_for_sb3(vec_env)
-    vec_env.seed(seed)
-    if target.uses_discrete_actions(config.action_set):
-        vec_env = VecDiscreteRetroActions(vec_env, config=config)
-    if (
-        resolve_env_provider(config.env_provider).provider_id == ALE_PY_PROVIDER.provider_id
-        and native_obs_crop(config) is not None
-    ):
-        vec_env = VecAleMaskedPreprocess(vec_env, config=config)
-    vec_env = VecRetroProgressInfo(vec_env, config=config)
-    vec_env = VecMonitor(vec_env)
-    if config.task_conditioning:
-        vec_env = VecTaskConditioning(vec_env, config=config)
-    return maybe_transpose_vec_image(vec_env)
+    return _apply_vec_wrapper_stack(vec_env, config, seed)
 
 
 def make_training_vec_env(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):

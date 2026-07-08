@@ -1,0 +1,56 @@
+schema_version: 1
+name: ppo-loop-throughput-mario-l11-fused-vec
+kind: ppo_loop_throughput
+description: PPO loop throughput probe using the fused Mario SB3 vector wrapper.
+train_config:
+  game: SuperMarioBros-Nes-v0
+  state: Level1-1
+  n_envs: 16
+  env_threads: 4
+  torch_num_threads: 1
+  n_steps: 512
+  batch_size: 512
+  n_epochs: 10
+  learning_rate: 0.00015
+  gamma: 0.9
+  gae_lambda: 1.0
+  clip_range: 0.15
+  target_kl: 0.16
+  vf_coef: 1.0
+  adam_eps: 1.0e-08
+  normalize_advantage: false
+  reward_mode: score
+  terminal_reward: 50
+  death_penalty: 25
+  reward_scale: 10
+  action_set: simple
+  frame_skip: 4
+  max_pool_frames: false
+  hud_crop_top: 32
+  max_episode_steps: 4500
+  vec_wrappers:
+  - id: sb3_fused
+    hooks: super_mario_bros_nes
+    info_mode: terminal
+  - id: transpose_image
+  info_events_json:
+    life_loss:
+    - lives
+    - decrease
+    level_change:
+    - - levelHi
+      - levelLo
+    - change
+  done_on_events: life_loss,level_change
+  checkpoint_freq: 0
+  timesteps: 100000
+  wandb: false
+  wandb_mode: disabled
+  run_name: benchmark_ppo_loop_mario_l11_fused_vec
+  run_description: Benchmark PPO loop throughput probe for Mario Level1-1 fused vector stack.
+gates:
+  exit_code: 0
+  required_metrics:
+  - throughput/rollout_fps
+  - throughput/loop_fps
+  - time/fps

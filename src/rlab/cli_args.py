@@ -107,6 +107,7 @@ def add_env_config_args(
     parser.add_argument("--completion-reward", type=float, default=0.0)
     parser.add_argument("--score-progress-clipped", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--env-wrappers", type=parse_json_value, default=defaults.env_wrappers)
+    parser.add_argument("--vec-wrappers", type=parse_json_value, default=defaults.vec_wrappers)
     parser.add_argument("--no-progress-timeout-steps", type=int, default=0)
     parser.add_argument("--no-progress-min-delta", type=int, default=0)
     parser.add_argument(

@@ -65,8 +65,10 @@ Training level-complete metrics live under `train/info/level_complete/*` and cou
 episodes. Use them for live training clear counts/rates when a policy can clear multiple levels
 inside one episode. Use `train/done/*` only to understand what is ending training episodes.
 
-`eval/done/level_change/from_rate/min` is the eval selection metric for multi-start-state
-policies. `eval/info/level_complete/rate/min/last` and
+`eval/done/level_change/from_rate/min` is the eval selection metric for Mario-style multi-start-state
+policies that define a clean completion event. Environments without a target-level completion
+contract, such as Breakout, use `eval/reward/mean` as the checkpoint objective instead.
+`eval/info/level_complete/rate/min/last` and
 `eval/info/level_complete/rate/mean/last` mirror the train `info/level_complete` aggregate names
 for dashboards that compare train and eval surfaces side by side. The top-level eval metrics are
 pooled summaries and should be treated as secondary when per-start-state eval done metrics exist.
@@ -349,19 +351,23 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/done/level_change/rate` | `eval/done/level_change / eval/done/all`. |
 | `eval/done/max_steps` | Eval episodes that hit the max-step limit. Can overlap with `eval/done/level_change` when eval continues after completion until the horizon. |
 | `eval/done/max_steps/rate` | `eval/done/max_steps / eval/done/all`. |
+| `eval/done/terminated` | Eval episodes that ended via native env termination without being marked as max-step truncations. This is generic and is emitted for all target types. |
+| `eval/done/terminated/rate` | `eval/done/terminated / eval/done/all`. |
 | `eval/done/unclassified` | Eval episodes that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/rate` | `eval/done/unclassified / eval/done/all`. |
-| `eval/death/count` | Eval episodes where death was observed at least once during the eval horizon. |
-| `eval/death/rate` | `eval/death/count / eval episodes`. |
-| `eval/death/x_hist` | W&B histogram of death X positions. Logged when death positions exist. |
-| `eval/best/reward` | Return of the best eval episode, ranked by completion first, then max X, then reward. |
-| `eval/best/x` | Max global X position of the best eval episode. |
+| `eval/death/count` | Eval episodes where the target-specific death flag was observed at least once during the eval horizon. Currently Mario-specific. |
+| `eval/death/rate` | `eval/death/count / eval episodes`. Currently Mario-specific. |
+| `eval/death/x_hist` | W&B histogram of death X positions. Logged when target semantics define death positions and positions exist. |
+| `eval/best/reward` | Return of the best eval episode. Mario ranks best episodes by completion, then max X, then reward; generic targets rank by reward. |
+| `eval/best/x` | Max global X position of the best eval episode. Logged only when the target defines global X progress. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
 | `eval/checkpoint/step` | Checkpoint timestep being evaluated by post-train checkpoint eval. Post-train eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by post-train checkpoint eval. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
-| `leader/checkpoint/completion_rate` | W&B summary field for the best evaluated checkpoint on a source run, using `eval/done/level_change/from_rate/min` when available. Used by `rlab leaders checkpoints`. |
-| `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, using `eval/done/level_change/from_rate/mean` when available. |
+| `leader/checkpoint/objective` | W&B summary field for the best evaluated checkpoint on a source run. Uses the target-specific primary eval objective: Mario completion bottleneck when present, otherwise `eval/reward/mean`. Used by `rlab leaders checkpoints`. |
+| `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/done/level_change/from_rate/min` or `eval/reward/mean`. |
+| `leader/checkpoint/completion_rate` | W&B summary field for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/min` when available. Omitted for generic targets without a completion event. |
+| `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/mean` when available. Omitted for generic targets without a completion event. |
 | `leader/checkpoint/steps_to_completion_goal` | Checkpoint timestep for the source run's best evaluated checkpoint once `leader/checkpoint/completion_rate >= 0.99`. Lower is better and is used after min and mean per-start completion, before eval reward, so solved runs are ranked by sample efficiency. |
 | `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, after min and mean per-start completion and solved checkpoint timesteps. |
 | `leader/checkpoint/max_x_max` | Progress field for the source run's best evaluated checkpoint. Reported for inspection but not part of the current objective rank. |
@@ -387,6 +393,8 @@ previous-value tuple such as `0-0`.
 | `eval/info/level_complete/rate/mean/last` | Alias of `eval/done/level_change/from_rate/mean`, named to mirror `train/info/level_complete/rate/mean/last`. |
 | `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. Can overlap with level-change counts. |
 | `eval/done/max_steps/from/<start>/rate` | `eval/done/max_steps/from/<start> / eval/done/all/from/<start>`. |
+| `eval/done/terminated/from/<start>` | Eval episodes from `<start>` that ended via native env termination without max-step truncation. |
+| `eval/done/terminated/from/<start>/rate` | `eval/done/terminated/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/unclassified/from/<start>` | Eval episodes from `<start>` that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/from/<start>/rate` | `eval/done/unclassified/from/<start> / eval/done/all/from/<start>`. |
 
@@ -402,14 +410,14 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `reward_mean` | Mean eval episode return before mapping to `eval/reward/mean`. |
 | `reward_std` | Standard deviation of eval episode returns before mapping to `eval/reward/std`. |
 | `reward_max` | Maximum eval episode return before mapping to `eval/reward/max`. |
-| `max_x_mean` | Mean max global X position before mapping to `eval/progress/x/mean`. |
-| `max_x_max` | Maximum global X position before mapping to `eval/progress/x/max`. |
-| `max_level_x_mean` | Mean max level-local X position before mapping to `eval/progress/level_x/mean`. |
-| `max_level_x_max` | Maximum level-local X position before mapping to `eval/progress/level_x/max`. |
-| `completion_count` | Eval episodes where a clean natural level transition was observed at least once. Same count as `eval/done/level_change`. |
-| `completion_rate` | `completion_count / episodes`. Same rate as `eval/done/level_change/rate`. |
-| `death_count` | Eval episodes where death was observed at least once. Same count as `eval/death/count`. |
-| `death_rate` | `death_count / episodes`. Same rate as `eval/death/rate`. |
+| `max_x_mean` | Mean max global X position before mapping to `eval/progress/x/mean`. Emitted only when target eval semantics define global X progress. |
+| `max_x_max` | Maximum global X position before mapping to `eval/progress/x/max`. Emitted only when target eval semantics define global X progress. |
+| `max_level_x_mean` | Mean max level-local X position before mapping to `eval/progress/level_x/mean`. Emitted only when target eval semantics define level-local X progress. |
+| `max_level_x_max` | Maximum level-local X position before mapping to `eval/progress/level_x/max`. Emitted only when target eval semantics define level-local X progress. |
+| `completion_count` | Eval episodes where a target-specific clean completion event was observed at least once. Currently emitted for Mario-style targets only. |
+| `completion_rate` | `completion_count / episodes`. Same rate as `eval/done/level_change/rate` for Mario-style targets. |
+| `death_count` | Eval episodes where target-specific death was observed at least once. Currently emitted for Mario-style targets only. |
+| `death_rate` | `death_count / episodes`. Same rate as `eval/death/rate` when death semantics exist. |
 | `terminated_count` | Eval episodes that hit native env done without being marked as max-step truncations. Completion alone does not increment this. |
 | `terminated_rate` | `terminated_count / episodes`. |
 | `truncated_count` | Eval episodes that hit the max-step limit. Same count as `eval/done/max_steps`; can overlap with `completion_count`. |
@@ -418,8 +426,8 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/done/unclassified/rate`. |
 | `death_x_histogram` | Local JSON histogram of death X positions. W&B receives `eval/death/x_hist` when death positions exist. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
-| `best_episode` | Best episode record ranked by completion first, then max X, then reward. |
-| `best_model_score` | Checkpoint eval ranking tuple: completion metric, solved checkpoint timesteps when available, reward mean. |
+| `best_episode` | Best episode record ranked by target eval semantics. Mario uses completion, then max X, then reward; generic targets use reward. |
+| `best_model_score` | Checkpoint eval ranking tuple. Completion-aware targets use completion, solved checkpoint timesteps when available, then reward; generic targets use reward. |
 | `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
 | `timesteps` | Training timestep attached by legacy eval summaries when present. New checkpoint eval summaries use `checkpoint_step`. |
 | `eval_n_envs` | Number of vector env slots used by post-train or local eval summaries. |

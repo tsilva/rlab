@@ -24,7 +24,8 @@ from rlab.env import (
 )
 from rlab.env_config import env_config_from_args
 from rlab.eval_metrics import (
-    is_level_complete,
+    default_eval_semantics,
+    is_completion_event,
     summarize_episode_results,
 )
 from rlab.eval_runner import evaluate_model_episodes
@@ -36,6 +37,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
+from rlab.targets import EvalSemantics, target_for_game
 
 
 def json_default(value):
@@ -76,11 +78,12 @@ def run_scripted_episode(
     max_steps: int,
     action_names: tuple[str, ...],
     default_start_state: str | None = None,
+    semantics: EvalSemantics | None = None,
 ):
+    semantics = semantics or default_eval_semantics()
     obs = env.reset()
     total_reward = 0.0
-    max_x = 0
-    max_level_x = 0
+    progress_values = {field.result_key: 0 for field in semantics.progress_fields}
     final_info = {}
     for step_idx in range(max_steps):
         if policy == "random":
@@ -90,30 +93,44 @@ def run_scripted_episode(
         obs, rewards, dones, infos = env.step([action])
         info = dict(infos[0])
         total_reward += float(rewards[0])
-        max_x = max(max_x, int(info.get("max_x_pos", 0)))
-        max_level_x = max(max_level_x, int(info.get("level_max_x_pos", 0)))
+        for field in semantics.progress_fields:
+            progress_values[field.result_key] = max(
+                progress_values[field.result_key],
+                int(info.get(field.info_key, 0)),
+            )
         final_info = info
         if bool(dones[0]):
             break
-    completed = is_level_complete(final_info)
-    died = bool(final_info.get("died", False))
-    death_x_pos = final_info.get("death_x_pos")
+    completed = is_completion_event(final_info, semantics)
+    died = (
+        bool(final_info.get(semantics.death_flag_key, False))
+        if semantics.death_flag_key
+        else False
+    )
+    death_x_pos = (
+        final_info.get(semantics.death_position_key)
+        if semantics.death_position_key
+        else None
+    )
     if died and death_x_pos is None:
-        death_x_pos = max_x
-    return {
+        death_x_pos = progress_values.get("max_x_pos", 0)
+    result = {
         "start_state": final_info.get("start_state")
         or final_info.get("state")
         or default_start_state,
         "reward": total_reward,
-        "max_x_pos": max_x,
-        "max_level_x_pos": max_level_x,
         "score": int(final_info.get("score", 0)),
         "lives": int(final_info.get("lives", 0)),
         "steps": step_idx + 1,
-        "level_complete": completed,
-        "died": died,
-        "death_x_pos": int(death_x_pos) if death_x_pos is not None else None,
     }
+    if semantics.completion_reason:
+        result["level_complete"] = completed
+    for field in semantics.progress_fields:
+        result[field.result_key] = progress_values[field.result_key]
+    if semantics.death_flag_key:
+        result["died"] = died
+        result["death_x_pos"] = int(death_x_pos) if death_x_pos is not None else None
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -199,6 +216,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
     assert_provider_runtime_available(config)
+    eval_semantics = target_for_game(config.game).eval_semantics
     model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
 
     if model is not None:
@@ -219,7 +237,7 @@ def main(argv: list[str] | None = None) -> None:
             },
         )
     else:
-        action_names = action_names_for_set(args.action_set, game=args.game)
+        action_names = action_names_for_set(config.action_set, game=config.game)
         env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
         episodes = [
             run_scripted_episode(
@@ -228,6 +246,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_steps=args.max_steps,
                 action_names=action_names,
                 default_start_state=config.state,
+                semantics=eval_semantics,
             )
             for _ in range(args.episodes)
         ]
@@ -240,6 +259,7 @@ def main(argv: list[str] | None = None) -> None:
                 "policy": args.policy,
                 "hud_crop_top": args.hud_crop_top,
             },
+            semantics=eval_semantics,
         )
     if args.summary_only:
         summary.pop("episode_results", None)

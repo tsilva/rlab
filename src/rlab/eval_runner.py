@@ -12,11 +12,12 @@ from rlab.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
 from rlab.eval_metrics import (
     episode_rank,
-    is_level_complete,
+    is_completion_event,
     run_eval_episode,
     serializable_info,
     summarize_episode_results,
 )
+from rlab.targets import EvalSemantics, target_for_game
 from rlab.video import replay_actions_for_video, write_video
 
 
@@ -29,6 +30,7 @@ def _evaluate_model_episodes_vector(
     n_envs: int,
     max_steps: int,
     deterministic: bool,
+    semantics: EvalSemantics,
     progress_bar: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     vec_config = replace(
@@ -41,8 +43,10 @@ def _evaluate_model_episodes_vector(
     best_episode_result: dict[str, Any] | None = None
     rewards = np.zeros(n_envs, dtype=np.float64)
     steps = np.zeros(n_envs, dtype=np.int64)
-    max_x_positions = np.zeros(n_envs, dtype=np.int64)
-    max_level_x_positions = np.zeros(n_envs, dtype=np.int64)
+    progress_values = {
+        field.result_key: np.zeros(n_envs, dtype=np.int64)
+        for field in semantics.progress_fields
+    }
     completed = np.zeros(n_envs, dtype=bool)
     died_flags = np.zeros(n_envs, dtype=bool)
     death_x_positions: list[Any | None] = [None] * n_envs
@@ -58,8 +62,8 @@ def _evaluate_model_episodes_vector(
                 active[:] = True
                 rewards[:] = 0.0
                 steps[:] = 0
-                max_x_positions[:] = 0
-                max_level_x_positions[:] = 0
+                for values in progress_values.values():
+                    values[:] = 0
                 completed[:] = False
                 died_flags[:] = False
                 death_x_positions = [None] * n_envs
@@ -79,22 +83,29 @@ def _evaluate_model_episodes_vector(
                     start_states[env_index] = (
                         info.get("start_state") or info.get("state") or config.state
                     )
-                max_x_positions[env_index] = max(
-                    max_x_positions[env_index],
-                    int(info.get("max_x_pos", 0)),
-                )
-                max_level_x_positions[env_index] = max(
-                    max_level_x_positions[env_index],
-                    int(info.get("level_max_x_pos", 0)),
-                )
+                for field in semantics.progress_fields:
+                    values = progress_values[field.result_key]
+                    values[env_index] = max(values[env_index], int(info.get(field.info_key, 0)))
 
-                completed[env_index] = bool(completed[env_index]) or is_level_complete(info)
-                if bool(info.get("died", False)):
+                completed[env_index] = bool(completed[env_index]) or is_completion_event(
+                    info,
+                    semantics,
+                )
+                if semantics.death_flag_key and bool(info.get(semantics.death_flag_key, False)):
                     died_flags[env_index] = True
                     if death_x_positions[env_index] is None:
-                        death_x_positions[env_index] = info.get("death_x_pos")
+                        death_x_positions[env_index] = (
+                            info.get(semantics.death_position_key)
+                            if semantics.death_position_key
+                            else None
+                        )
                         if death_x_positions[env_index] is None:
-                            death_x_positions[env_index] = int(max_x_positions[env_index])
+                            death_x_positions[env_index] = int(
+                                progress_values.get(
+                                    "max_x_pos",
+                                    np.zeros(n_envs, dtype=np.int64),
+                                )[env_index]
+                            )
                 timed_out = steps[env_index] >= max_steps
                 if bool(dones[env_index]) or timed_out:
                     result_completed = bool(completed[env_index])
@@ -110,31 +121,41 @@ def _evaluate_model_episodes_vector(
                         or info.get("state")
                         or config.state,
                         "reward": float(rewards[env_index]),
-                        "max_x_pos": int(max_x_positions[env_index]),
-                        "max_level_x_pos": int(max_level_x_positions[env_index]),
                         "score": int(info.get("score", 0)),
                         "lives": int(info.get("lives", 0)),
                         "time": int(info.get("time", 0)),
                         "steps": int(steps[env_index]),
                         "terminated": bool(dones[env_index]),
                         "truncated": timed_out or bool(info.get("TimeLimit.truncated", False)),
-                        "level_complete": result_completed,
-                        "died": result_died,
-                        "death_x_pos": int(death_x_pos) if death_x_pos is not None else None,
                         "final_info": serializable_info(info),
                     }
+                    if semantics.completion_reason:
+                        result["level_complete"] = result_completed
+                    for field in semantics.progress_fields:
+                        result[field.result_key] = int(
+                            progress_values[field.result_key][env_index]
+                        )
+                    if semantics.death_flag_key:
+                        result["died"] = result_died
+                        result["death_x_pos"] = (
+                            int(death_x_pos) if death_x_pos is not None else None
+                        )
                     episode_results.append(result)
                     if progress_bar is not None:
                         progress_bar.update(1)
-                    if best_episode_result is None or episode_rank(result) > episode_rank(
-                        best_episode_result
+                    if best_episode_result is None or episode_rank(
+                        result,
+                        semantics,
+                    ) > episode_rank(
+                        best_episode_result,
+                        semantics,
                     ):
                         best_episode_result = result
 
                     rewards[env_index] = 0.0
                     steps[env_index] = 0
-                    max_x_positions[env_index] = 0
-                    max_level_x_positions[env_index] = 0
+                    for values in progress_values.values():
+                        values[env_index] = 0
                     completed[env_index] = False
                     died_flags[env_index] = False
                     death_x_positions[env_index] = None
@@ -175,6 +196,7 @@ def evaluate_model_episodes(
         raise ValueError("n_envs must be >= 1")
     if n_envs > 1 and capture_best_video:
         raise ValueError("capture_best_video requires n_envs=1")
+    semantics = target_for_game(config.game).eval_semantics
 
     with tqdm(
         total=episodes,
@@ -202,13 +224,18 @@ def evaluate_model_episodes(
                         seed=episode_seed,
                         capture_actions=capture_best_video,
                         default_start_state=eval_config.state,
+                        semantics=semantics,
                     )
                     actions = result.pop("actions")
                     result = {"episode": episode_idx + 1, "seed": episode_seed, **result}
                     episode_results.append(result)
                     progress_bar.update(1)
-                    if best_episode_result is None or episode_rank(result) > episode_rank(
-                        best_episode_result
+                    if best_episode_result is None or episode_rank(
+                        result,
+                        semantics,
+                    ) > episode_rank(
+                        best_episode_result,
+                        semantics,
                     ):
                         best_episode_result = result
                         best_episode_actions = actions
@@ -225,12 +252,14 @@ def evaluate_model_episodes(
                 max_steps=max_steps,
                 deterministic=deterministic,
                 progress_bar=progress_bar,
+                semantics=semantics,
             )
 
     metrics = summarize_episode_results(
         episode_results,
         deterministic=deterministic,
         extra={"eval_n_envs": n_envs, **(extra or {})},
+        semantics=semantics,
     )
     metrics["best_episode"] = best_episode_result
 

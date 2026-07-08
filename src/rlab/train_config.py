@@ -825,6 +825,15 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         suppress_help=True,
     ),
     TrainConfigField(
+        "vec_wrappers",
+        ("--vec-wrappers",),
+        type_name="json",
+        env_default="vec_wrappers",
+        serialize="json",
+        env_config_key="vec_wrappers",
+        suppress_help=True,
+    ),
+    TrainConfigField(
         "no_progress_timeout_steps",
         ("--no-progress-timeout-steps",),
         type_name="int",
