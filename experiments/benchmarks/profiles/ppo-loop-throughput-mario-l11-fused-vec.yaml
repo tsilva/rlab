@@ -31,7 +31,7 @@ train_config:
   vec_wrappers:
   - id: sb3_fused
     hooks: super_mario_bros_nes
-    info_mode: terminal
+    info_mode: hook_with_terminal_native
   - id: transpose_image
   info_events_json:
     life_loss:

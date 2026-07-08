@@ -165,15 +165,26 @@ class FusedStep:
 class FusedGymVectorPipeline:
     """Trainer-agnostic fast path for Gymnasium VectorEnv stepping."""
 
+    HOOK_WITH_TERMINAL_NATIVE = "hook_with_terminal_native"
+    INFO_MODE_ALIASES = {
+        "terminal": HOOK_WITH_TERMINAL_NATIVE,
+        "events": HOOK_WITH_TERMINAL_NATIVE,
+    }
+    INFO_MODES = frozenset({HOOK_WITH_TERMINAL_NATIVE, "full", *INFO_MODE_ALIASES})
+
     def __init__(
         self,
         env: gym.vector.VectorEnv,
         hooks: FusedVectorHooks,
         *,
-        info_mode: str = "terminal",
+        info_mode: str = HOOK_WITH_TERMINAL_NATIVE,
     ):
-        if info_mode not in {"terminal", "events", "full"}:
-            raise ValueError("info_mode must be one of: terminal, events, full")
+        info_mode = self.INFO_MODE_ALIASES.get(info_mode, info_mode)
+        if info_mode not in self.INFO_MODES:
+            raise ValueError(
+                "info_mode must be one of: hook_with_terminal_native, full "
+                "(legacy aliases: terminal, events)"
+            )
         self.env = env
         self.hooks = hooks
         self.info_mode = info_mode

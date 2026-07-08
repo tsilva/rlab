@@ -1470,7 +1470,15 @@ def _apply_vec_wrapper_stack(vec_env, config: EnvConfig, seed: int):
             if index != 0:
                 raise ValueError("sb3_fused must be the first vec wrapper")
             hooks = _make_fused_hooks(config, vec_env, spec)
-            info_mode = str(spec.get("info_mode", "terminal")).strip() or "terminal"
+            info_mode = (
+                str(
+                    spec.get(
+                        "info_mode",
+                        FusedGymVectorPipeline.HOOK_WITH_TERMINAL_NATIVE,
+                    )
+                ).strip()
+                or FusedGymVectorPipeline.HOOK_WITH_TERMINAL_NATIVE
+            )
             pipeline = FusedGymVectorPipeline(vec_env, hooks, info_mode=info_mode)
             vec_env = Sb3FusedVecEnv(pipeline)
             vec_env.seed(seed)

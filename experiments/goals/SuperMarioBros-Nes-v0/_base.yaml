@@ -78,7 +78,7 @@ train:
         vec_wrappers:
         - id: sb3_fused
           hooks: super_mario_bros_nes
-          info_mode: terminal
+          info_mode: hook_with_terminal_native
       # Stable Retro state id; single-state Mario goals use the goal id as the source state.
       state: "{state}"
       # Training attempts terminate on death or level clear.

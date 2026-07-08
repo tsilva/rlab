@@ -4,6 +4,7 @@ import inspect
 from collections.abc import Mapping
 from typing import Any
 
+from gymnasium.vector import AutoresetMode
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
 from rlab.env_registry import (
@@ -12,6 +13,44 @@ from rlab.env_registry import (
     SUPERMARIOBROS_NES_TURBO_PROVIDER,
     resolve_env_provider,
 )
+
+
+def _is_same_step_autoreset_mode(value: Any) -> bool:
+    name = getattr(value, "name", None)
+    if isinstance(name, str) and name == "SAME_STEP":
+        return True
+    raw_value = getattr(value, "value", value)
+    normalized = "".join(char for char in str(raw_value).lower() if char.isalnum())
+    return normalized == "samestep"
+
+
+def _force_same_step_autoreset_kwargs(
+    env_type: type,
+    native_kwargs: Mapping[str, Any],
+) -> dict[str, Any]:
+    kwargs = dict(native_kwargs)
+    try:
+        signature = inspect.signature(env_type.__init__)
+    except (OSError, TypeError, ValueError):
+        return kwargs
+    if "autoreset_mode" in signature.parameters:
+        kwargs["autoreset_mode"] = AutoresetMode.SAME_STEP
+    return kwargs
+
+
+def _require_same_step_autoreset_mode(env: Any, provider_id: str):
+    mode = getattr(env, "autoreset_mode", None)
+    metadata = getattr(env, "metadata", None)
+    if mode is None and isinstance(metadata, Mapping):
+        mode = metadata.get("autoreset_mode")
+    if mode is None:
+        return env
+    if not _is_same_step_autoreset_mode(mode):
+        raise RuntimeError(
+            f"{provider_id} vector env must use same-step autoreset mode; "
+            f"got {mode!r}",
+        )
+    return env
 
 
 def super_mario_bros_nes_turbo_vec_env_type():
@@ -141,7 +180,12 @@ def _stable_retro_turbo_make_vec_env(
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
 ):
     _require_provider(config, STABLE_RETRO_TURBO_PROVIDER.provider_id)
-    return retro_vec_env_type(config.game, **dict(native_kwargs))
+    env_type = retro_vec_env_type
+    env = env_type(
+        config.game,
+        **_force_same_step_autoreset_kwargs(env_type, native_kwargs),
+    )
+    return _require_same_step_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
 
 
 def _super_mario_bros_nes_turbo_make_vec_env(
@@ -151,7 +195,12 @@ def _super_mario_bros_nes_turbo_make_vec_env(
     super_mario_vec_env_type=super_mario_bros_nes_turbo_vec_env_type,
 ):
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
-    return super_mario_vec_env_type()(config.game, **dict(native_kwargs))
+    env_type = super_mario_vec_env_type()
+    env = env_type(
+        config.game,
+        **_force_same_step_autoreset_kwargs(env_type, native_kwargs),
+    )
+    return _require_same_step_autoreset_mode(env, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
 
 
 def _ale_py_make_vec_env(
@@ -161,7 +210,12 @@ def _ale_py_make_vec_env(
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
 ):
     _require_provider(config, ALE_PY_PROVIDER.provider_id)
-    return ale_py_vec_env_type()(config.game, **dict(native_kwargs))
+    env_type = ale_py_vec_env_type()
+    env = env_type(
+        config.game,
+        **_force_same_step_autoreset_kwargs(env_type, native_kwargs),
+    )
+    return _require_same_step_autoreset_mode(env, ALE_PY_PROVIDER.provider_id)
 
 
 def make_provider_vec_env(

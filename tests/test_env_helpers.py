@@ -51,6 +51,7 @@ from rlab.env_config import (
     parse_states,
 )
 from rlab.env_vec import provider_native_vec_kwargs
+from rlab.env_providers import make_provider_vec_env as make_raw_provider_vec_env
 from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
 from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
 from rlab.metric_names import (
@@ -134,13 +135,19 @@ class EnvConfigTests(unittest.TestCase):
     def test_vec_wrapper_specs_normalize_inline_fields(self) -> None:
         self.assertEqual(
             normalize_vec_wrapper_specs(
-                [{"id": "sb3_fused", "hooks": "super_mario_bros_nes", "info_mode": "terminal"}]
+                [
+                    {
+                        "id": "sb3_fused",
+                        "hooks": "super_mario_bros_nes",
+                        "info_mode": "hook_with_terminal_native",
+                    }
+                ]
             ),
             (
                 {
                     "id": "sb3_fused",
                     "hooks": "super_mario_bros_nes",
-                    "info_mode": "terminal",
+                    "info_mode": "hook_with_terminal_native",
                 },
             ),
         )
@@ -485,7 +492,11 @@ class EnvConfigFromArgsTests(unittest.TestCase):
 
     def test_train_config_json_accepts_vec_wrappers(self) -> None:
         vec_wrappers = [
-            {"id": "sb3_fused", "hooks": "super_mario_bros_nes", "info_mode": "terminal"}
+            {
+                "id": "sb3_fused",
+                "hooks": "super_mario_bros_nes",
+                "info_mode": "hook_with_terminal_native",
+            }
         ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
@@ -903,6 +914,59 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["frame_skip"], 4)
         self.assertEqual(native_kwargs["obs_resize"], (84, 84))
         self.assertEqual(native_kwargs["maxpool_last_two"], False)
+
+    def test_provider_factory_forces_same_step_autoreset_when_supported(self) -> None:
+        class FakeAtariVectorEnv:
+            calls = []
+
+            def __init__(
+                self,
+                game,
+                *,
+                num_envs,
+                autoreset_mode=gym.vector.AutoresetMode.NEXT_STEP,
+            ):
+                self.game = game
+                self.num_envs = num_envs
+                self.autoreset_mode = autoreset_mode
+                self.metadata = {"autoreset_mode": autoreset_mode}
+                self.__class__.calls.append((game, num_envs, autoreset_mode))
+
+        config = EnvConfig(env_provider="ale-py", game="breakout")
+        env = make_raw_provider_vec_env(
+            config,
+            native_kwargs={
+                "num_envs": 2,
+                "autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP,
+            },
+            ale_py_vec_env_type=lambda: FakeAtariVectorEnv,
+        )
+
+        self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.SAME_STEP)
+        self.assertEqual(
+            FakeAtariVectorEnv.calls,
+            [("breakout", 2, gym.vector.AutoresetMode.SAME_STEP)],
+        )
+
+    def test_provider_factory_rejects_non_same_step_autoreset_mode(self) -> None:
+        class FakeSuperMarioNative:
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP}
+
+            def __init__(self, game, **kwargs):
+                self.game = game
+                self.kwargs = kwargs
+
+        config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "same-step autoreset mode"):
+            make_raw_provider_vec_env(
+                config,
+                native_kwargs={"num_envs": 2},
+                super_mario_vec_env_type=lambda: FakeSuperMarioNative,
+            )
 
     def test_ale_py_native_vec_kwargs_map_env_config(self) -> None:
         config = resolve_env_config(
@@ -1645,6 +1709,45 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
             terminal["terminal_observation"],
             np.asarray([9, 9], dtype=np.uint8),
         )
+
+    def test_fused_pipeline_uses_canonical_hook_info_mode(self) -> None:
+        class FakeGymVectorEnv(gym.vector.VectorEnv):
+            num_envs = 1
+            single_observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(1,),
+                dtype=np.uint8,
+            )
+            single_action_space = gym.spaces.Discrete(2)
+            observation_space = single_observation_space
+            action_space = single_action_space
+
+            def reset(self, *, seed=None, options=None):
+                return np.zeros((1, 1), dtype=np.uint8), {}
+
+            def step(self, actions):
+                return (
+                    np.ones((1, 1), dtype=np.uint8),
+                    np.asarray([0.0], dtype=np.float32),
+                    np.asarray([False]),
+                    np.asarray([False]),
+                    {},
+                )
+
+        source_env = FakeGymVectorEnv()
+        default_pipeline = FusedGymVectorPipeline(
+            source_env,
+            IdentityFusedHooks(None, source_env),
+        )
+        self.assertEqual(default_pipeline.info_mode, "hook_with_terminal_native")
+
+        legacy_pipeline = FusedGymVectorPipeline(
+            source_env,
+            IdentityFusedHooks(None, source_env),
+            info_mode="terminal",
+        )
+        self.assertEqual(legacy_pipeline.info_mode, "hook_with_terminal_native")
 
     def test_sb3_fused_vec_env_preserves_sb3_terminal_contract(self) -> None:
         class FakeGymVectorEnv(gym.vector.VectorEnv):
