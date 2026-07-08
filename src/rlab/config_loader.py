@@ -117,7 +117,7 @@ def template_context_from_path(
     goal_id = ""
     game = ""
     recipe_slug = ""
-    if resolved.parent.name in {"recipes", "specs"}:
+    if resolved.parent.name == "recipes":
         recipe_slug = resolved.stem
         goal_id = resolved.parent.parent.name
         game = (

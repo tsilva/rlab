@@ -573,7 +573,7 @@ def _merge_train_config_sections(
 def _infer_goal_slug_from_path(path: Path) -> str:
     parts = path.parts
     for index, part in enumerate(parts):
-        if part in {"recipes", "specs"} and index > 0:
+        if part == "recipes" and index > 0:
             return parts[index - 1]
     for index, part in enumerate(parts):
         if part == "goals" and index + 1 < len(parts):
@@ -604,7 +604,7 @@ def _goal_composition_for_recipe(path: Path, document: Mapping[str, Any]) -> Com
     if not goal_slug:
         return None
     inferred_path = path.resolve()
-    if inferred_path.parent.name in {"recipes", "specs"}:
+    if inferred_path.parent.name == "recipes":
         goal_dir = inferred_path.parent.parent
         for filename in ("_goal.yaml", "goal.yaml"):
             candidate = goal_dir / filename
@@ -630,6 +630,11 @@ def _load_rendered_goal_composition(path: Path) -> ComposedDocument:
         ),
         sources=composition.sources,
     )
+
+
+def _reject_active_specs_path(path: Path) -> None:
+    if "specs" in path.parts and ".deprecated" not in path.parts:
+        raise ValueError(f"{path} is under removed active specs/ layout; use recipes/ instead")
 
 
 def _materialize_goal_owned_fields(
@@ -739,6 +744,7 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
 
 
 def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) -> dict[str, Any]:
+    _reject_active_specs_path(path)
     recipe_override_list = [str(item).strip() for item in recipe_overrides if str(item).strip()]
     composed = load_composed_mapping(
         path,
@@ -820,7 +826,7 @@ def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
         payload["recipe_id"] = slug
     digest = file_sha256(path)
     return {
-        "goal_slug": spec_goal_slug(document),
+        "goal_slug": recipe_goal_slug(document),
         "recipe_slug": slug,
         "recipe_path": str(path),
         "recipe_sha256": digest,
@@ -940,13 +946,13 @@ def validate_launch_seed_config(
         validate_training_seed(seed, label="seed", seed_span=seed_span)
 
 
-def spec_goal_slug(document: Mapping[str, Any]) -> str:
+def recipe_goal_slug(document: Mapping[str, Any]) -> str:
     return _goal_slug_from_value(document.get("goal")) or _goal_slug_from_value(
         document.get("goal_slug")
     )
 
 
-def spec_tags(document: Mapping[str, Any]) -> list[str]:
+def recipe_tags(document: Mapping[str, Any]) -> list[str]:
     tags = []
     seen: set[str] = set()
     for raw_tag in document.get("tags") or []:
@@ -1051,7 +1057,7 @@ def enqueue_train_jobs_from_recipe_document(
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     validate_train_recipe_schema(document)
-    goal_slug = spec_goal_slug(document)
+    goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
     utc = _utc_stamp()
     rows = []
@@ -1109,7 +1115,7 @@ def enqueue_train_jobs_from_recipe_document(
             ),
             seed=seed,
             wandb_group=group_id,
-            wandb_tags=spec_tags(document),
+            wandb_tags=recipe_tags(document),
         )
         rows.append(row)
     return rows

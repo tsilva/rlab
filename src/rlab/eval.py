@@ -14,7 +14,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 from stable_baselines3 import PPO
 
-from rlab.cli_args import add_env_config_args
+from rlab.cli import parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     action_names_for_set,
@@ -22,7 +22,7 @@ from rlab.env import (
     make_eval_vec_env,
     resolve_env_config,
 )
-from rlab.env_config import env_config_from_args
+from rlab.env_config import env_config_from_args, parse_obs_crop
 from rlab.eval_metrics import (
     default_eval_semantics,
     is_completion_event,
@@ -38,6 +38,7 @@ from rlab.model_sources import (
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.targets import EvalSemantics, target_for_game
+from rlab.train_config import add_env_config_args
 
 
 def json_default(value):
@@ -144,7 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--policy", choices=["random", "right", "noop"], default="random")
     parser.add_argument("--episodes", type=int, default=20)
-    add_env_config_args(parser, max_steps_default=4500)
+    add_env_config_args(
+        parser,
+        max_steps_default=4500,
+        parse_json_value=parse_json_value,
+        parse_obs_crop=parse_obs_crop,
+    )
     parser.add_argument(
         "--seed",
         type=int,

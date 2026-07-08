@@ -11,14 +11,13 @@ from urllib.parse import unquote, urlparse
 
 from rlab.artifacts import (
     apply_config_defaults,
-    env_config_from_metadata,
     explicit_arg_dests,
     load_model_metadata,
-    sanitize_env_config_metadata,
     write_model_metadata,
 )
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
+from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     artifact_qualified_name,

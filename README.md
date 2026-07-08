@@ -105,7 +105,7 @@ rlab leaders checkpoints --goal <goal-slug>
 rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
 rlab jobs cancel-train <train_job_id>
 rlab fleet policy
-rlab fleet shepherd --machine beast-3
+rlab fleet shepherd --machine beast-3 --once
 rlab fleet watch --machine beast-3
 rlab monitor --view all
 rlab benchmark list
@@ -155,11 +155,13 @@ Queue-backed training is the supported GPU workflow. `rlab train` creates train 
 ```bash
 rlab fleet status
 rlab fleet ps
-rlab fleet launch-next --machine beast-3 --limit 5
-rlab fleet reconcile --machine beast-3
+rlab fleet shepherd --machine beast-3 --limit 5 --once
 rlab fleet shepherd --machine beast-3 --limit 5
 rlab fleet watch --machine beast-3
 ```
+
+Use `shepherd --once` for a single reconcile-and-fill pass. `launch-next` and
+`reconcile` remain available as lower-level diagnostic helpers.
 
 Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
 

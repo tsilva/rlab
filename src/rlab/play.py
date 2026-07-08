@@ -24,11 +24,7 @@ import torch
 if TYPE_CHECKING:
     from stable_baselines3 import PPO
 
-from rlab.artifacts import (
-    env_config_from_config_dict,
-    env_config_from_metadata,
-    load_model_metadata,
-)
+from rlab.artifacts import load_model_metadata
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -41,6 +37,7 @@ from rlab.env import (
     task_conditioning_info_values,
 )
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id
+from rlab.env_metadata import env_config_from_config_dict, env_config_from_metadata
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (

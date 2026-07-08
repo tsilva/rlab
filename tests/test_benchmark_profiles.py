@@ -31,6 +31,8 @@ class BenchmarkProfileTests(unittest.TestCase):
                 "fleet-capacity-rtx4090",
                 "local-smoke-mario-l11",
                 "ppo-loop-throughput-mario-l11",
+                "ppo-loop-throughput-mario-l11-fused-vec",
+                "ppo-loop-throughput-mario-l11-legacy-vec",
                 "retro-env-throughput-mario-l11",
             ],
         )
@@ -101,8 +103,11 @@ gates: {}
         commands = build_benchmark_commands(profile)
 
         self.assertEqual(commands[0].argv[:2], ("rlab", "train"))
-        self.assertEqual(commands[1].argv[:3], ("rlab", "fleet", "reconcile"))
+        self.assertEqual(commands[1].argv[:3], ("rlab", "fleet", "shepherd"))
         self.assertIn("--machine", commands[1].argv)
+        self.assertIn("--limit", commands[1].argv)
+        self.assertIn("5", commands[1].argv)
+        self.assertIn("--once", commands[1].argv)
         self.assertIn("--dry-run", commands[1].argv)
         self.assertIn("beast-3", commands[1].argv)
         self.assertEqual(commands[2].argv[:3], ("rlab", "fleet", "watch"))
@@ -115,7 +120,7 @@ gates: {}
         commands = build_benchmark_commands(profile, execution_mode="source-module")
 
         self.assertEqual(commands[0].argv[1:4], ("-m", "rlab.main", "train"))
-        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "reconcile"))
+        self.assertEqual(commands[1].argv[1:5], ("-m", "rlab.main", "fleet", "shepherd"))
         self.assertEqual(commands[2].argv[1:5], ("-m", "rlab.main", "fleet", "watch"))
 
     def test_fleet_capacity_rejects_legacy_spec_file(self) -> None:

@@ -296,6 +296,10 @@ class JobQueueTests(unittest.TestCase):
                 runtime_image_ref=RUNTIME_IMAGE_REF,
             )
 
+    def test_load_recipe_document_rejects_active_specs_path(self) -> None:
+        with self.assertRaisesRegex(ValueError, "removed active specs/ layout"):
+            job_queue.load_recipe_document(Path("experiments/goals/demo/specs/base.yaml"))
+
     def test_queue_status_selects_recipe_without_profile(self) -> None:
         conn = FakeConnection(rows=[])
 

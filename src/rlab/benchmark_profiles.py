@@ -321,13 +321,16 @@ def _fleet_capacity_commands(profile: Mapping[str, Any], *, execution_mode: str)
             ],
         ),
         _command(
-            "fleet-reconcile",
+            "fleet-shepherd-once",
             [
                 *_cli_command(["rlab"], execution_mode=execution_mode),
                 "fleet",
-                "reconcile",
+                "shepherd",
                 "--machine",
                 host,
+                "--limit",
+                str(profile.get("workers", 1)),
+                "--once",
                 "--dry-run",
             ],
         ),

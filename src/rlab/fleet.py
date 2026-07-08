@@ -2279,7 +2279,10 @@ def build_parser() -> argparse.ArgumentParser:
     policy.add_argument("--policy", type=Path, default=DEFAULT_CAPACITY_POLICY)
     policy.set_defaults(func=cmd_policy)
 
-    reconcile = subparsers.add_parser("reconcile", help="Finalize or repair one-job launch rows.")
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="Compatibility helper to finalize/repair launch rows; prefer shepherd --once.",
+    )
     add_common_args(reconcile)
     reconcile.add_argument("--machine", required=True)
     reconcile.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
@@ -2296,7 +2299,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     launch_next = subparsers.add_parser(
         "launch-next",
-        help="Fill available machine container slots with pending jobs.",
+        help="Compatibility helper to fill open slots; prefer shepherd --once.",
     )
     add_common_args(launch_next)
     launch_next.add_argument("--machine", required=True)

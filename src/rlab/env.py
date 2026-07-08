@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
-import inspect
 import os
 import time
 from dataclasses import dataclass
@@ -16,9 +15,14 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import gymnasium as gym
 import numpy as np
 import stable_retro as retro
-from stable_retro import RetroVecEnv
 from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecMonitor, VecTransposeImage
 
+from rlab import env_providers as provider_runtime
+from rlab.env_providers import (
+    DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
+    ale_py_atari_vector_env_type as _ale_py_atari_vector_env_type,
+    super_mario_bros_nes_turbo_vec_env_type as _super_mario_bros_nes_turbo_vec_env_type,
+)
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
@@ -55,67 +59,31 @@ InfoEventRule = DoneOnInfoRule
 InfoEventRules = DoneOnInfoRules
 
 
-def _super_mario_bros_nes_turbo_vec_env_type():
-    try:
-        from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
-    except ImportError as exc:
-        raise ImportError(
-            "supermariobrosnes-turbo provider requires "
-            "supermariobrosnes-turbo",
-        ) from exc
-    return SuperMarioBrosNesTurboVecEnv
-
-
-def _ale_py_atari_vector_env_type():
-    try:
-        from ale_py.vector_env import AtariVectorEnv
-    except ImportError as exc:
-        raise ImportError(
-            "ale-py provider requires ale-py with native vector env support",
-        ) from exc
-    return AtariVectorEnv
-
-
-def _provider_vec_env_type(config: EnvConfig | None = None):
-    provider_id = (config or EnvConfig()).env_provider
-    provider = resolve_env_provider(provider_id)
-    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-        return RetroVecEnv
-    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
-        return _super_mario_bros_nes_turbo_vec_env_type()
-    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
-        return _ale_py_atari_vector_env_type()
-    raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
-
-
 def native_vec_env_supports_done_on(config: EnvConfig | None = None) -> bool:
-    try:
-        signature = inspect.signature(_provider_vec_env_type(config).__init__)
-    except (OSError, TypeError):
-        return False
-    return "done_on" in signature.parameters
+    return provider_runtime.native_vec_env_supports_done_on(
+        config,
+        retro_vec_env_type=RetroVecEnv,
+        super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
+        ale_py_vec_env_type=_ale_py_atari_vector_env_type,
+    )
 
 
 def native_vec_env_supports_named_done_on(config: EnvConfig | None = None) -> bool:
-    provider_id = (config or EnvConfig()).env_provider
-    provider = resolve_env_provider(provider_id)
-    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
-        return True
-    return callable(getattr(_provider_vec_env_type(config), "resolve_info_event_rules", None))
+    return provider_runtime.native_vec_env_supports_named_done_on(
+        config,
+        retro_vec_env_type=RetroVecEnv,
+        super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
+        ale_py_vec_env_type=_ale_py_atari_vector_env_type,
+    )
 
 
 def native_vec_env_supports_rgb_render(config: EnvConfig | None = None) -> bool:
-    provider_id = (config or EnvConfig()).env_provider
-    provider = resolve_env_provider(provider_id)
-    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-        return True
-    try:
-        env_type = _provider_vec_env_type(config)
-    except (ImportError, ValueError):
-        return False
-    metadata = getattr(env_type, "metadata", {})
-    render_modes = metadata.get("render_modes", ()) if isinstance(metadata, Mapping) else ()
-    return "rgb_array" in render_modes
+    return provider_runtime.native_vec_env_supports_rgb_render(
+        config,
+        retro_vec_env_type=RetroVecEnv,
+        super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
+        ale_py_vec_env_type=_ale_py_atari_vector_env_type,
+    )
 
 
 def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
@@ -1579,56 +1547,18 @@ def provider_native_vec_kwargs(
     )
 
 
-def _stable_retro_turbo_make_vec_env(
-    config: EnvConfig,
-    *,
-    native_kwargs: Mapping[str, Any],
-):
-    _require_stable_retro_turbo_provider(config)
-    return RetroVecEnv(config.game, **dict(native_kwargs))
-
-
-def _super_mario_bros_nes_turbo_make_vec_env(
-    config: EnvConfig,
-    *,
-    native_kwargs: Mapping[str, Any],
-):
-    provider = resolve_env_provider(config.env_provider)
-    if provider.provider_id != SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
-        raise ValueError(
-            f"unsupported environment provider {provider.provider_id!r}; "
-            f"expected {SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id}",
-        )
-    return _super_mario_bros_nes_turbo_vec_env_type()(config.game, **dict(native_kwargs))
-
-
-def _ale_py_make_vec_env(
-    config: EnvConfig,
-    *,
-    native_kwargs: Mapping[str, Any],
-):
-    provider = resolve_env_provider(config.env_provider)
-    if provider.provider_id != ALE_PY_PROVIDER.provider_id:
-        raise ValueError(
-            f"unsupported environment provider {provider.provider_id!r}; "
-            f"expected {ALE_PY_PROVIDER.provider_id}",
-        )
-    return _ale_py_atari_vector_env_type()(config.game, **dict(native_kwargs))
-
-
 def make_provider_vec_env(
     config: EnvConfig,
     *,
     native_kwargs: Mapping[str, Any],
 ):
-    provider = resolve_env_provider(config.env_provider)
-    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-        return _stable_retro_turbo_make_vec_env(config, native_kwargs=native_kwargs)
-    if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
-        return _super_mario_bros_nes_turbo_make_vec_env(config, native_kwargs=native_kwargs)
-    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
-        return _ale_py_make_vec_env(config, native_kwargs=native_kwargs)
-    raise ValueError(f"unsupported environment provider {provider.provider_id!r}")
+    return provider_runtime.make_provider_vec_env(
+        config,
+        native_kwargs=native_kwargs,
+        retro_vec_env_type=RetroVecEnv,
+        super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
+        ale_py_vec_env_type=_ale_py_atari_vector_env_type,
+    )
 
 
 def _vec_wrapper_specs(config: EnvConfig) -> tuple[dict[str, Any], ...]:
