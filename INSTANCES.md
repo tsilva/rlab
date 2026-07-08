@@ -43,13 +43,9 @@ UV_CACHE_DIR=.uv-cache uv run rlab fleet watch --machine beast-3
 UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd --machine beast-3 --limit 5 --once
 ```
 
-For manual recoverable one-job-per-container launches:
+For a manual recoverable one-job-per-container pass:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet launch \
-  --machine beast-3 \
-  --job-id <train-job-id>
-
 UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd \
   --machine beast-3 \
   --limit 5 \
@@ -62,9 +58,8 @@ which rows need shepherd action. Use `shepherd --once` for a single
 reconcile-and-fill pass, or omit `--once` for the long-running mutating
 orchestrator. Shepherd reconciles, claims, launches, finalizes, streams a
 line-oriented action log, and prunes stale Docker images from the host once no
-active container or queued demand needs them. Lower-level `launch-next` and
-`reconcile` helpers live under `rlab fleet diagnostics`, with direct aliases
-preserved for existing scripts.
+active container or queued demand needs them. Lower-level helpers live under
+`rlab fleet diagnostics reconcile` and `rlab fleet diagnostics launch-next`.
 
 ## Host Setup
 

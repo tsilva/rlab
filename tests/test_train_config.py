@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from rlab.train_config import (
+    build_train_command_from_fields,
     train_config_field_for_key,
     validate_train_config_fields,
     validate_train_config_value,
@@ -16,6 +17,19 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertIsNotNone(field)
         self.assertEqual(field.dest, "info_events_json")
         self.assertEqual(field.env_config_key, "info_events")
+
+    def test_build_train_command_accepts_env_config_aliases(self) -> None:
+        command = build_train_command_from_fields(
+            {
+                "info_events": {"life_loss": ["lives", "decrease"]},
+                "done_on_events": ["life_loss"],
+            }
+        )
+
+        self.assertIn("--info-events-json", command)
+        self.assertIn('{"life_loss":["lives","decrease"]}', command)
+        self.assertIn("--done-on-events", command)
+        self.assertIn("life_loss", command)
 
     def test_field_validation_uses_choices_and_numeric_bounds(self) -> None:
         validate_train_config_fields(

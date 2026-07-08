@@ -171,12 +171,21 @@ def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
     return str(value)
 
 
+def _canonical_train_command_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = dict(options)
+    for field in TRAIN_CONFIG_FIELDS:
+        if field.env_config_key and field.env_config_key in canonical and field.dest not in canonical:
+            canonical[field.dest] = canonical[field.env_config_key]
+    return canonical
+
+
 def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
     cmd = ["rlab", "train", "local"]
+    canonical_options = _canonical_train_command_options(options)
     for field in TRAIN_CONFIG_FIELDS:
-        if field.dest not in options:
+        if field.dest not in canonical_options:
             continue
-        value = options[field.dest]
+        value = canonical_options[field.dest]
         if field.kind == "store_true":
             if value:
                 cmd.append(field.command_flag)

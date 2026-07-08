@@ -634,7 +634,7 @@ def _configured_info_event_map(value: Any, *, label: str) -> Mapping[str, Any]:
         parsed = json.loads(value)
         if isinstance(parsed, Mapping):
             return parsed
-    raise ValueError(f"{label} must define info_events_json as an object")
+    raise ValueError(f"{label} must define info_events as an object")
 
 
 def _provider_owned_info_event_names(train_config: Mapping[str, Any]) -> frozenset[str]:
@@ -653,7 +653,7 @@ def validate_launch_event_config(
     if legacy_keys:
         raise ValueError(
             f"{label} uses legacy event key(s) {', '.join(legacy_keys)}; "
-            "use info_events_json plus done_on_events for new launches"
+            "use info_events plus done_on_events for new launches"
         )
     done_event_names = _configured_event_names(
         train_config.get("done_on_events"),
@@ -662,7 +662,7 @@ def validate_launch_event_config(
     if not done_event_names:
         return
     provider_owned_events = _provider_owned_info_event_names(train_config)
-    info_events_value = train_config.get("info_events_json")
+    info_events_value = train_config.get("info_events", train_config.get("info_events_json"))
     if _non_empty_config_value(info_events_value):
         info_events = _configured_info_event_map(info_events_value, label=label)
     else:

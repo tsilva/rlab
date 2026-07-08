@@ -35,7 +35,7 @@ train_config:
   - id: vec_monitor
   - id: task_conditioning
   - id: transpose_image
-  info_events_json:
+  info_events:
     life_loss:
     - lives
     - decrease

@@ -40,10 +40,6 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 - Published model cards should include a preview video when the model has a visual or interactive behavior. For Stable Retro policies, record a representative completed episode and upload it with the model files as root `replay.mp4` so Hugging Face's reinforcement-learning widget can show the page preview; do not also embed the video in the README body unless the widget is unavailable.
 - For uploading, updating, or troubleshooting YouTube model-preview videos, use the project-level `$upload-youtube-video` skill in `.codex/skills/upload-youtube-video`. Encode future YouTube upload and description-rule changes in that skill first.
 
-## Autoresearch
-
-When the user gives a game plus target and asks Codex to find a reproducible model-training recipe, use the project-level `$autoresearch` skill in `.codex/skills/autoresearch`. That workflow is RTX4090-only, allows only reward-function and hyperparameter changes by default, and requires three fresh successful seeds before declaring the target solved.
-
 ## Dependencies
 
 Use `uv` for dependency resolution and keep `uv.lock` committed. Preserve Python supply-chain hardening in `pyproject.toml`.

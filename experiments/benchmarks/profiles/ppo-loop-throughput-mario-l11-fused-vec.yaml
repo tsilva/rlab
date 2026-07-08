@@ -33,7 +33,7 @@ train_config:
     hooks: super_mario_bros_nes
     info_mode: hook_with_terminal_native
   - id: transpose_image
-  info_events_json:
+  info_events:
     life_loss:
     - lives
     - decrease
