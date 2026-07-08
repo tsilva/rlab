@@ -71,6 +71,22 @@ rlab train \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
+For short-lived queue-backed ablations, keep the checked-in recipe as the base and
+apply repeatable Hydra/OmegaConf dotlist overrides from the CLI:
+
+```bash
+rlab train \
+  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
+  --set recipe_id=lr2e4 \
+  --set group_id=Level1-1-lr2e4 \
+  --set train.policy.learning_rate=2e-4 \
+  --seed 1
+```
+
+Overrides are recorded in the queued recipe payload and W&B config as
+`recipe_overrides`. Give each comparable variant a distinct `recipe_id` so
+leaderboards do not mix sweep arms.
+
 If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab train` will resolve the latest successful train-image artifact by default.
 
 ## Commands

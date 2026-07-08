@@ -239,6 +239,52 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(calls[0]["recipe_path"], "experiments/goals/mario/recipes/candidate.yaml")
         self.assertEqual(calls[0]["recipe_sha256"], "abc123")
 
+    def test_enqueue_train_jobs_records_recipe_overrides_in_worker_config(self) -> None:
+        calls = []
+        old_enqueue = job_queue.enqueue_train_job
+        overrides = ["train.policy.learning_rate=2e-4", "recipe_id=lr2e4"]
+        document = valid_train_recipe()
+        document["recipe_overrides"] = overrides
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"id": 100 + len(calls), "run_name": kwargs["run_name"]}
+
+        job_queue.enqueue_train_job = fake_enqueue
+        try:
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+        finally:
+            job_queue.enqueue_train_job = old_enqueue
+
+        self.assertEqual(calls[0]["train_config"]["recipe_overrides"], overrides)
+        self.assertEqual(calls[0]["recipe_payload"]["recipe_overrides"], overrides)
+
+    def test_load_recipe_document_applies_hydra_dotlist_overrides(self) -> None:
+        overrides = [
+            "recipe_id=lr2e4",
+            "group_id=Level1-1-lr2e4",
+            "train.policy.learning_rate=2e-4",
+            "train.policy.normalize_advantage=true",
+            "train.environment.env_config.done_on_events=[]",
+        ]
+
+        document = job_queue.load_recipe_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml"),
+            recipe_overrides=overrides,
+        )
+
+        self.assertEqual(document["recipe_id"], "lr2e4")
+        self.assertEqual(document["group_id"], "Level1-1-lr2e4")
+        self.assertEqual(document["tags"][1], "recipe_id:lr2e4")
+        self.assertEqual(document["train_config"]["learning_rate"], 2e-4)
+        self.assertIs(document["train_config"]["normalize_advantage"], True)
+        self.assertEqual(document["train_config"]["done_on_events"], [])
+        self.assertEqual(document["recipe_overrides"], overrides)
+
     def test_recipe_schema_rejects_spec_template_alias(self) -> None:
         document = valid_train_recipe()
         document["description"] = "Candidate {" + "spec" + "_id}"

@@ -901,6 +901,14 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Experiment recipe path recorded in W&B config.",
     ),
     TrainConfigField(
+        "recipe_overrides",
+        ("--recipe-overrides",),
+        type_name="json",
+        default=(),
+        serialize="json",
+        help="Hydra/OmegaConf dotlist overrides applied to the checked-in recipe.",
+    ),
+    TrainConfigField(
         "queue_train_job_id",
         ("--queue-train-job-id",),
         type_name="int",

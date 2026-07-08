@@ -48,7 +48,7 @@ def _super_mario_bros_nes_turbo_vec_env_type():
     except ImportError as exc:
         raise ImportError(
             "supermariobrosnes-turbo provider requires "
-            "supermariobrosnes-turbo==0.2.11",
+            "supermariobrosnes-turbo==0.2.12",
         ) from exc
     return SuperMarioBrosNesTurboVecEnv
 

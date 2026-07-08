@@ -135,6 +135,17 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
     parser.add_argument("--seed", type=int, action="append", default=[])
+    parser.add_argument(
+        "--set",
+        dest="recipe_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Hydra/OmegaConf dotlist recipe override. Repeat for sweeps, for example "
+            "--set recipe_id=lr2e4 --set train.policy.learning_rate=2e-4."
+        ),
+    )
     return parser
 
 

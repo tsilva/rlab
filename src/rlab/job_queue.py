@@ -737,8 +737,13 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
             assert_no_template_vars(nested, label=f"{label}[{index}]")
 
 
-def load_recipe_document(path: Path) -> dict[str, Any]:
-    composed = load_composed_mapping(path, cycle_label="recipe")
+def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) -> dict[str, Any]:
+    recipe_override_list = [str(item).strip() for item in recipe_overrides if str(item).strip()]
+    composed = load_composed_mapping(
+        path,
+        cycle_label="recipe",
+        overrides=recipe_override_list,
+    )
     document = render_template_vars(
         composed.document,
         path=path,
@@ -755,6 +760,8 @@ def load_recipe_document(path: Path) -> dict[str, Any]:
         goal_composition=goal_composition,
     )
     document = attach_environment_identity(document)
+    if recipe_override_list:
+        document["recipe_overrides"] = recipe_override_list
     if path.suffix.lower() in YAML_EXTENSIONS or len(sources) > 1:
         document["_composition"] = {
             "root_path": str(path.resolve()),
@@ -1049,6 +1056,9 @@ def enqueue_train_jobs_from_recipe_document(
     rows = []
     for seed in _document_seeds(document, seeds):
         train_config = dict(document["train_config"])
+        recipe_overrides = document.get("recipe_overrides")
+        if isinstance(recipe_overrides, Sequence) and not isinstance(recipe_overrides, str | bytes):
+            train_config["recipe_overrides"] = [str(item) for item in recipe_overrides]
         if seed is not None:
             validate_training_seed(
                 seed,
@@ -1110,8 +1120,9 @@ def enqueue_train_jobs_from_recipe_file(
     path: Path,
     runtime_image_ref: str,
     seeds: Sequence[int] = (),
+    recipe_overrides: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
-    document = load_recipe_document(path)
+    document = load_recipe_document(path, recipe_overrides=recipe_overrides)
     metadata = recipe_metadata(path, document)
     return enqueue_train_jobs_from_recipe_document(
         conn,
@@ -1814,6 +1825,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             path=args.recipe_file,
             runtime_image_ref=runtime_image_ref,
             seeds=args.seed,
+            recipe_overrides=args.recipe_overrides,
         )
     finally:
         conn.close()

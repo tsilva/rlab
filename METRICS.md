@@ -224,6 +224,14 @@ FPS is steady but loop FPS drops, PPO optimization, GPU scheduling, or host cont
 rollout collection is more likely. Use `time/fps` only as a cumulative SB3 sanity check, and discount
 points near checkpoint/final artifact events by checking `train/artifact/stall_seconds`.
 
+Do not compare `throughput/native_env_step_fps` directly with the default
+`SuperMarioBros-Nes-turbo` `scripts/benchmark_sps.py` output unless the benchmark is configured to
+match the training contract. The default benchmark can use the fast stepping path without per-lane
+info dictionaries and without native `done_on` event reporting. Mario training uses full
+`env.step(...)` with `done_on_events` such as `life_loss` and `level_change`, so the native-step
+timer includes provider work for terminal/event reporting and autoreset metadata even though it
+still excludes PPO policy inference, rollout-buffer writes, callbacks, and optimizer time.
+
 ## Artifact Timing Metrics
 
 These sparse metrics are logged when training logs model artifacts. Checkpoint rows use the checkpoint

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from string import Formatter
@@ -28,6 +28,29 @@ class ComposedDocument:
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     cfg = OmegaConf.merge(OmegaConf.create(dict(base)), OmegaConf.create(dict(override)))
     return _plain_dict(cfg)
+
+
+def dotlist_to_mapping(overrides: Sequence[str], *, label: str = "overrides") -> dict[str, Any]:
+    cleaned = [str(item).strip() for item in overrides if str(item).strip()]
+    if not cleaned:
+        return {}
+    try:
+        cfg = OmegaConf.from_dotlist(cleaned)
+    except Exception as exc:
+        raise ValueError(f"failed to parse {label}: {exc}") from exc
+    return _plain_dict(cfg)
+
+
+def apply_dotlist_overrides(
+    document: Mapping[str, Any],
+    overrides: Sequence[str],
+    *,
+    label: str = "overrides",
+) -> dict[str, Any]:
+    override_mapping = dotlist_to_mapping(overrides, label=label)
+    if not override_mapping:
+        return dict(document)
+    return deep_merge(document, override_mapping)
 
 
 def slugify_template_value(value: Any) -> str:
@@ -414,13 +437,19 @@ def load_composed_mapping(
     *,
     stack: tuple[Path, ...] = (),
     cycle_label: str = "config",
+    overrides: Sequence[str] = (),
 ) -> ComposedDocument:
     resolved_path = path.resolve()
     if stack:
         raise ValueError("load_composed_mapping no longer accepts recursive stack callers")
     if resolved_path.suffix.lower() not in YAML_EXTENSIONS:
+        document = load_mapping_document(resolved_path, label=str(path))
         return ComposedDocument(
-            document=load_mapping_document(resolved_path, label=str(path)),
+            document=apply_dotlist_overrides(
+                document,
+                overrides,
+                label=f"{cycle_label} overrides for {path}",
+            ),
             sources=(resolved_path,),
         )
     try:
@@ -429,4 +458,9 @@ def load_composed_mapping(
             cfg = compose(config_name=resolved_path.stem)
     except Exception as exc:
         raise ValueError(f"failed to compose {cycle_label} config {path}: {exc}") from exc
-    return ComposedDocument(document=_plain_dict(cfg), sources=sources)
+    document = apply_dotlist_overrides(
+        _plain_dict(cfg),
+        overrides,
+        label=f"{cycle_label} overrides for {path}",
+    )
+    return ComposedDocument(document=document, sources=sources)
