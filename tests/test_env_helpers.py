@@ -37,9 +37,10 @@ from rlab.env import (
     native_vec_env_supports_done_on,
     native_vec_env_supports_rgb_render,
     needs_vec_transpose_image,
-    provider_native_vec_kwargs,
+    native_obs_crop,
     resolve_env_config,
     resolve_mixed_state_config,
+    state_weight_mapping,
     vector_infos_to_list,
 )
 from rlab.env_config import (
@@ -49,6 +50,7 @@ from rlab.env_config import (
     parse_state_probs,
     parse_states,
 )
+from rlab.env_vec import provider_native_vec_kwargs
 from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
 from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
 from rlab.metric_names import (
@@ -924,6 +926,8 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             n_envs=16,
             num_threads=4,
             native_done_on_rules={},
+            native_obs_crop=native_obs_crop,
+            state_weight_mapping=state_weight_mapping,
         )
 
         self.assertEqual(native_kwargs["num_envs"], 16)
@@ -963,6 +967,8 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             n_envs=16,
             num_threads=4,
             native_done_on_rules={},
+            native_obs_crop=native_obs_crop,
+            state_weight_mapping=state_weight_mapping,
         )
 
         self.assertEqual(native_kwargs["img_height"], 210)

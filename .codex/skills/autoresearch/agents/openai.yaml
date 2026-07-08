@@ -1,4 +1,0 @@
-interface:
-  display_name: "Autoresearch"
-  short_description: "Goal-driven RL recipe search until reproducible success"
-  default_prompt: "Use $autoresearch to achieve <goal-slug> by iterating checked-in specs, queue runs, evals, and decisions."

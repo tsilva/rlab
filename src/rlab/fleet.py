@@ -25,7 +25,6 @@ from rlab.job_queue import (
     new_launch_id,
     release_job_launch,
 )
-from rlab.compute_targets import instance_defaults, load_instance_config
 from rlab.json_utils import json_safe
 from rlab.machines import (
     DEFAULT_MACHINE_REGISTRY,
@@ -34,14 +33,13 @@ from rlab.machines import (
     load_machine_registry,
     resolve_machine,
 )
-from rlab.monitoring.state import device_key_from_run_target
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
+    RuntimeImageInfo,
     latest_runtime_image_ref,
     normalize_runtime_image_ref,
-    RuntimeImageInfo,
     recent_runtime_images,
     runtime_image_digest_slug,
     runtime_image_ref_from_file,
@@ -67,42 +65,11 @@ from rlab.fleet_rendering import (
 )
 
 
-
-
-DEFAULT_INSTANCES_CONFIG = Path("experiments/instances.yaml")
 DEFAULT_CAPACITY_POLICY = Path("experiments/policies/capacity_policy.yaml")
 DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
 DEFAULT_WATCH_STALE_LIMIT = 50
-
-
-@dataclass(frozen=True)
-class HostConfig:
-    name: str
-    ssh_target: str
-    ssh_options: tuple[str, ...]
-    run_target: str
-    max_workers: int
-    base_dir: str
-    env_file: str
-    runs_dir: str
-    logs_dir: str
-    rom_dir: str
-    state_dir: str
-    container_runs_dir: str
-    container_logs_dir: str
-    container_rom_dir: str
-    log_dir_in_container: str
-    gpu_test_image: str
-    docker_command: tuple[str, ...]
-    docker_network: str | None
-    pull_policy: str
-    extra_env: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class FleetConfig:
-    hosts: dict[str, HostConfig]
+GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
 
 
 @dataclass(frozen=True)
@@ -141,79 +108,11 @@ def load_json_file(path: Path) -> dict[str, Any]:
     return data
 
 
-def _tuple(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, list | tuple):
-        return tuple(str(item) for item in value)
-    raise ValueError(f"expected string or list, got {type(value).__name__}")
-
-
-def _host_config_from_machine(
-    *,
-    machine: MachineConfig,
-    instances: Mapping[str, Any],
-) -> HostConfig:
-    if machine.backend != "docker_ssh":
-        raise ValueError(f"fleet host {machine.name!r} must use backend docker_ssh")
-    run_target = machine.run_target
-    instance = instance_defaults(dict(instances), run_target)
-    max_workers = int(machine.limits.max_parallel_containers)
-    if max_workers < 1:
-        raise ValueError(f"machine {machine.name!r} max_parallel_containers must be at least 1")
-    return HostConfig(
-        name=machine.name,
-        ssh_target=machine.ssh_target,
-        ssh_options=machine.ssh_options,
-        run_target=str(instance.get("name", run_target)),
-        max_workers=max_workers,
-        base_dir=machine.paths.host_root,
-        env_file=machine.paths.env_file,
-        runs_dir=f"{machine.paths.host_root.rstrip('/')}/runs",
-        logs_dir=machine.paths.logs_dir,
-        rom_dir=machine.paths.roms_dir,
-        state_dir=f"{machine.paths.host_root.rstrip('/')}/fleet",
-        container_runs_dir="/root/rlab/runs",
-        container_logs_dir="/root/rlab/logs",
-        container_rom_dir=machine.paths.container_roms_dir,
-        log_dir_in_container="/root/rlab/logs/run_job",
-        gpu_test_image="nvidia/cuda:12.9.1-base-ubuntu22.04",
-        docker_command=machine.docker_command,
-        docker_network=None,
-        pull_policy=machine.pull_policy,
-        extra_env=(),
-    )
-
-
-def load_fleet_config(
-    repo_root: Path,
-    *,
-    instances_path: Path | None = None,
-    machines_path: Path | None = None,
-) -> FleetConfig:
-    machines_config_path = resolve_repo_path(repo_root, machines_path, DEFAULT_MACHINE_REGISTRY)
-    registry = load_machine_registry(machines_config_path)
-    instances = load_instance_config(
-        repo_root,
-        resolve_repo_path(repo_root, instances_path, DEFAULT_INSTANCES_CONFIG),
-    )
-    hosts = {
-        name: _host_config_from_machine(machine=machine, instances=instances)
-        for name, machine in registry.machines.items()
-        if machine.backend == "docker_ssh"
-    }
-    if not hosts:
-        raise ValueError(f"{machines_config_path} must define at least one docker_ssh machine")
-    return FleetConfig(hosts=hosts)
-
-
 def load_capacity_policy(repo_root: Path, path: Path | None = None) -> dict[str, Any]:
     return load_json_file(resolve_repo_path(repo_root, path, DEFAULT_CAPACITY_POLICY))
 
 
-def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> None:
+def validate_capacity_policy(policy: Mapping[str, Any], registry: MachineRegistry) -> None:
     lanes = policy.get("lanes", [])
     if not isinstance(lanes, list):
         raise ValueError("capacity_policy lanes must be a list")
@@ -227,8 +126,13 @@ def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> 
             if manager in {"rlab_fleet", "rlab fleet", "rlab_fleet_shepherd"}:
                 raise ValueError(f"capacity_policy lane {name!r} uses rlab_fleet but has no host")
             continue
-        if host_name not in config.hosts:
-            raise ValueError(f"capacity_policy lane {name!r} references unknown host {host_name!r}")
+        if host_name not in registry.machines:
+            raise ValueError(f"capacity_policy lane {name!r} references unknown machine {host_name!r}")
+        machine = registry.machines[host_name]
+        if machine.backend != "docker_ssh":
+            raise ValueError(
+                f"capacity_policy lane {name!r} references non-docker_ssh machine {host_name!r}"
+            )
         max_train_containers = lane.get("max_train_containers")
         if max_train_containers is None:
             continue
@@ -240,11 +144,11 @@ def validate_capacity_policy(policy: Mapping[str, Any], config: FleetConfig) -> 
             ) from exc
         if runner_limit < 1:
             raise ValueError(f"capacity_policy lane {name!r} max_train_containers must be at least 1")
-        host_limit = config.hosts[host_name].max_workers
-        if runner_limit > host_limit:
+        machine_limit = machine.max_containers_for_kind("train")
+        if runner_limit > machine_limit:
             raise ValueError(
                 f"capacity_policy lane {name!r} max_train_containers={runner_limit} "
-                f"exceeds {host_name} max_workers={host_limit}"
+                f"exceeds {host_name} max_train_containers={machine_limit}"
             )
 
 
@@ -272,15 +176,6 @@ def default_repo_root() -> Path:
     return Path.cwd().resolve()
 
 
-def filter_config_to_host(config: FleetConfig, host_name: str | None) -> FleetConfig:
-    if not host_name:
-        return config
-    if host_name not in config.hosts:
-        known = ", ".join(sorted(config.hosts))
-        raise ValueError(f"unknown fleet host {host_name!r}; known hosts: {known}")
-    return FleetConfig(hosts={host_name: config.hosts[host_name]})
-
-
 def docker_image_ref(runtime_image_ref: str) -> str:
     normalized = normalize_runtime_image_ref(runtime_image_ref)
     return normalized.removeprefix("docker:")
@@ -299,10 +194,6 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
 
 def shell_join(parts: Sequence[str]) -> str:
     return shlex.join([str(part) for part in parts])
-
-
-def docker_command(host: HostConfig, args: Sequence[str]) -> list[str]:
-    return [*host.docker_command, *args]
 
 
 QUEUE_DEMAND_SQL = """
@@ -337,18 +228,18 @@ def queue_demands(conn) -> list[QueueDemand]:
     ]
 
 
-def host_command(host: HostConfig, remote_args: Sequence[str]) -> list[str]:
-    return ["ssh", *host.ssh_options, host.ssh_target, shell_join(remote_args)]
+def host_command(machine: MachineConfig, remote_args: Sequence[str]) -> list[str]:
+    return ["ssh", *machine.ssh_options, machine.ssh_target, shell_join(remote_args)]
 
 
 def run_host_script(
-    host: HostConfig,
+    machine: MachineConfig,
     script: str,
     *,
     local: bool = False,
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    command = ["bash", "-lc", script] if local else host_command(host, ["bash", "-lc", script])
+    command = ["bash", "-lc", script] if local else host_command(machine, ["bash", "-lc", script])
     return subprocess.run(
         command,
         check=False,
@@ -358,25 +249,33 @@ def run_host_script(
     )
 
 
-def selected_hosts(config: FleetConfig, host_filter: str | None) -> list[HostConfig]:
-    if host_filter:
-        if host_filter not in config.hosts:
-            known = ", ".join(sorted(config.hosts))
-            raise ValueError(f"unknown fleet host {host_filter!r}; known hosts: {known}")
-        return [config.hosts[host_filter]]
-    return [config.hosts[name] for name in config.hosts]
+def selected_setup_machines(registry: MachineRegistry, machine_filter: str | None) -> list[MachineConfig]:
+    machines = (
+        [resolve_machine(registry, machine_filter)]
+        if machine_filter
+        else list(registry.machines.values())
+    )
+    selected = [machine for machine in machines if machine.backend == "docker_ssh"]
+    if not selected:
+        raise ValueError("no docker_ssh machines selected for setup-host")
+    return selected
 
 
-def setup_host_script(host: HostConfig, *, runtime_image_ref: str | None = None) -> str:
-    docker_info = shell_join(docker_command(host, ["info"]))
+def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None = None) -> str:
+    if machine.backend != "docker_ssh":
+        raise ValueError(f"setup-host requires a docker_ssh machine, got {machine.name!r}")
+    host_root = machine.paths.host_root.rstrip("/")
+    runs_dir = f"{host_root}/runs"
+    state_dir = f"{host_root}/fleet"
+    docker_info = shell_join(machine_docker_command(machine, ["info"]))
     gpu_test = shell_join(
-        docker_command(host, ["run", "--rm", "--gpus", "all", host.gpu_test_image, "nvidia-smi"])
+        machine_docker_command(machine, ["run", "--rm", "--gpus", "all", GPU_TEST_IMAGE, "nvidia-smi"])
     )
     lines = [
         "set -euo pipefail",
-        f"mkdir -p {shlex.quote(host.base_dir)}",
-        f"mkdir -p {shlex.quote(host.runs_dir)} {shlex.quote(host.logs_dir)} "
-        f"{shlex.quote(host.rom_dir)} {shlex.quote(host.state_dir)}",
+        f"mkdir -p {shlex.quote(machine.paths.host_root)}",
+        f"mkdir -p {shlex.quote(runs_dir)} {shlex.quote(machine.paths.logs_dir)} "
+        f"{shlex.quote(machine.paths.roms_dir)} {shlex.quote(state_dir)}",
         "if ! command -v docker >/dev/null 2>&1; then",
         "  if command -v apt-get >/dev/null 2>&1; then",
         "    sudo -n apt-get update",
@@ -418,8 +317,8 @@ def setup_host_script(host: HostConfig, *, runtime_image_ref: str | None = None)
         f"if ! {gpu_test} >/dev/null; then",
         f"  {gpu_test} >/dev/null",
         "fi",
-        f"if [ ! -f {shlex.quote(host.env_file)} ]; then",
-        f"  umask 077; cat > {shlex.quote(host.env_file)} <<'EOF'",
+        f"if [ ! -f {shlex.quote(machine.paths.env_file)} ]; then",
+        f"  umask 077; cat > {shlex.quote(machine.paths.env_file)} <<'EOF'",
         "# rlab job-container secrets live here; fill values on the host.",
         "TRAIN_QUEUE_DATABASE_URL=",
         "WANDB_API_KEY=",
@@ -430,27 +329,27 @@ def setup_host_script(host: HostConfig, *, runtime_image_ref: str | None = None)
         "CHECKPOINT_BUCKET_URI=",
         "EOF",
         "fi",
-        f"test -f {shlex.quote(host.env_file)}",
+        f"test -f {shlex.quote(machine.paths.env_file)}",
     ]
     if runtime_image_ref:
         image = docker_image_ref(runtime_image_ref)
         lines.extend(
             [
-                shell_join(docker_command(host, ["pull", image])),
+                shell_join(machine_docker_command(machine, ["pull", image])),
                 shell_join(
-                    docker_command(
-                        host,
+                    machine_docker_command(
+                        machine,
                         [
                             "run",
                             "--rm",
                             "--gpus",
                             "all",
                             "--env-file",
-                            host.env_file,
+                            machine.paths.env_file,
                             "-e",
-                            f"RLAB_ROM_DIR={host.container_rom_dir}",
+                            f"RLAB_ROM_DIR={machine.paths.container_roms_dir}",
                             "-v",
-                            f"{host.rom_dir}:{host.container_rom_dir}:ro",
+                            f"{machine.paths.roms_dir}:{machine.paths.container_roms_dir}:ro",
                             image,
                             "rlab-container-entrypoint",
                             "rlab-container-smoke",
@@ -533,28 +432,11 @@ def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(getattr(args, "direct", False)))
 
 
-def _load_config_from_args(args: argparse.Namespace) -> FleetConfig:
-    return load_fleet_config(
-        repo_root_from_args(args),
-        instances_path=getattr(args, "instances", DEFAULT_INSTANCES_CONFIG),
-        machines_path=getattr(args, "machines", DEFAULT_MACHINE_REGISTRY),
-    )
-
-
 def repo_root_from_args(args: argparse.Namespace) -> Path:
     repo_root = getattr(args, "repo_root", None)
     if repo_root:
         return Path(repo_root).expanduser().resolve()
     return default_repo_root()
-
-
-def config_device_keys(config: FleetConfig) -> set[str]:
-    keys: set[str] = set()
-    for host in config.hosts.values():
-        key = device_key_from_run_target(host.run_target) or host.run_target
-        if key:
-            keys.add(key)
-    return keys
 
 
 def format_demands(demands: Sequence[QueueDemand]) -> str:
@@ -1823,9 +1705,9 @@ def cmd_ps(args: argparse.Namespace) -> int:
 
 def cmd_policy(args: argparse.Namespace) -> int:
     repo_root = repo_root_from_args(args)
-    config = _load_config_from_args(args)
+    registry = load_registry_from_args(args)
     policy = load_capacity_policy(repo_root, args.policy)
-    validate_capacity_policy(policy, config)
+    validate_capacity_policy(policy, registry)
     print(format_capacity_policy(policy))
     return 0
 
@@ -1839,17 +1721,17 @@ def cmd_watch_latest(args: argparse.Namespace) -> int:
 
 
 def cmd_setup_host(args: argparse.Namespace) -> int:
-    config = _load_config_from_args(args)
+    registry = load_registry_from_args(args)
     runtime_image_ref = image_ref_from_args(args)
     status = 0
-    for host in selected_hosts(config, args.host):
-        script = setup_host_script(host, runtime_image_ref=runtime_image_ref)
-        print(f"host: {host.name}")
+    for machine in selected_setup_machines(registry, args.host):
+        script = setup_host_script(machine, runtime_image_ref=runtime_image_ref)
+        print(f"host: {machine.name}")
         print(script.rstrip())
         if not args.execute:
             print("dry_run: rerun without --dry-run to run setup over SSH")
             continue
-        result = run_host_script(host, script)
+        result = run_host_script(machine, script)
         if result.returncode != 0:
             status = int(result.returncode)
     return status
@@ -1857,7 +1739,6 @@ def cmd_setup_host(args: argparse.Namespace) -> int:
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo-root", default=None)
-    parser.add_argument("--instances", type=Path, default=DEFAULT_INSTANCES_CONFIG)
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
 
@@ -2001,8 +1882,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    if argv_list and argv_list[0] in {"reconcile", "launch-next"}:
-        argv_list.insert(0, "diagnostics")
     args = build_parser().parse_args(argv_list)
     return int(args.func(args))
 

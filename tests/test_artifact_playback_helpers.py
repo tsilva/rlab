@@ -22,9 +22,11 @@ from rlab.artifacts import (
     build_s3_artifact_uri,
     checkpoint_step,
     explicit_arg_dests,
+    load_playback_env_config,
     load_model_metadata,
     log_wandb_model_artifact,
     model_metadata_path,
+    playback_env_config,
     require_training_metadata,
     write_model_metadata,
 )
@@ -50,9 +52,7 @@ from rlab.model_sources import (
 from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
 from rlab.play import main as play_main
-from rlab.play import metadata_playback_config
 from rlab.play import model_observation
-from rlab.play import playback_env_config
 from rlab.play import playback_should_end_episode
 from rlab.play import render_obs_stack
 from rlab.play import resolved_play_launch_lines
@@ -613,7 +613,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 kind="checkpoint",
             )
 
-            config = metadata_playback_config(model_path)
+            config = load_playback_env_config(model_path)
 
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.env_threads, 4)
@@ -637,7 +637,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path.write_bytes(b"zip")
 
             with self.assertRaisesRegex(SystemExit, "missing playback metadata"):
-                metadata_playback_config(model_path)
+                load_playback_env_config(model_path)
 
     def test_eval_model_metadata_defaults_apply_env_provider_and_threads(self) -> None:
         parser = build_eval_parser()
@@ -935,7 +935,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = metadata_playback_config(model_path)
+            config = load_playback_env_config(model_path)
 
             self.assertEqual(config.state, "Level1-1")
             self.assertEqual(config.info_events, {})

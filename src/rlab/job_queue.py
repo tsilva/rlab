@@ -15,7 +15,6 @@ import psycopg2.extras
 
 from rlab.compute_targets import instance_defaults, load_json_file
 from rlab.dotenv import load_env_file
-from rlab.eval_metrics import eval_selection_score as shared_eval_selection_score
 from rlab.json_utils import json_safe
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
@@ -934,22 +933,6 @@ def finish_job_launch_from_result(
         finish_train_launch_from_result(conn, launch_id=launch_id, result=result)
     else:
         raise ValueError(f"result does not identify train job kind: {job_kind!r}")
-
-
-def _metric_float(metrics: Mapping[str, Any], key: str, default: float = float("-inf")) -> float:
-    value = metrics.get(key)
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def eval_selection_score(metrics: Mapping[str, Any]) -> tuple[float, float, float, float]:
-    """Eval-first policy ranking, using completion when present and reward otherwise."""
-
-    return shared_eval_selection_score(dict(metrics))
 
 
 def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:

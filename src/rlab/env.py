@@ -33,7 +33,7 @@ from rlab.env_registry import (
 )
 from rlab.env_wrappers import resolve_configured_env_wrappers, with_default_env_wrapper_specs
 from rlab.env_vec import native_done_on_rules as build_native_done_on_rules
-from rlab.env_vec import provider_native_vec_kwargs as build_provider_native_vec_kwargs
+from rlab.env_vec import provider_native_vec_kwargs
 from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv
 from rlab.targets import GenericRetroTarget, target_for_game
 from rlab.vec_wrappers import (
@@ -1429,23 +1429,6 @@ def make_provider_vec_env(
     )
 
 
-def provider_native_vec_kwargs(
-    config: EnvConfig,
-    *,
-    n_envs: int,
-    num_threads: int,
-    native_done_on_rules: Mapping[str, Any],
-) -> dict[str, Any]:
-    return build_provider_native_vec_kwargs(
-        config,
-        n_envs=n_envs,
-        num_threads=num_threads,
-        native_done_on_rules=dict(native_done_on_rules),
-        native_obs_crop=native_obs_crop,
-        state_weight_mapping=state_weight_mapping,
-    )
-
-
 def _vec_wrapper_specs(config: EnvConfig) -> tuple[dict[str, Any], ...]:
     return normalize_vec_wrapper_specs(config.vec_wrappers) or DEFAULT_VEC_WRAPPER_SPECS
 
@@ -1551,6 +1534,8 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
         n_envs=n_envs,
         num_threads=num_threads,
         native_done_on_rules=native_done_on_rules,
+        native_obs_crop=native_obs_crop,
+        state_weight_mapping=state_weight_mapping,
     )
     vec_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
     return _apply_vec_wrapper_stack(vec_env, config, seed)

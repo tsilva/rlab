@@ -81,42 +81,33 @@ def write_registry(path: Path) -> None:
     )
 
 
-def sample_config() -> fleet.FleetConfig:
+def sample_registry_path(root: Path) -> Path:
+    (root / "experiments").mkdir()
+    path = root / "experiments" / "machines.yaml"
+    path.write_text(
+        json.dumps(
+            {
+                "machines": {
+                    "beast-3": {
+                        "backend": "docker_ssh",
+                        "ssh_target": "tsilva@beast-3",
+                        "run_target": "rtx4090",
+                        "docker": {"command": ["sudo", "-n", "docker"]},
+                        "limits": {"max_parallel_containers": 5, "max_train_containers": 5},
+                        "paths": {"roms_dir": "/roms-host"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def sample_registry():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        (root / "experiments").mkdir()
-        (root / "experiments" / "instances.yaml").write_text(
-            json.dumps(
-                {
-                    "instances": {
-                        "rtx4090": {
-                            "name": "rtx4090",
-                            "default_workers": 5,
-                            "hardware_max_workers": 5,
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        (root / "experiments" / "machines.yaml").write_text(
-            json.dumps(
-                {
-                    "machines": {
-                        "beast-3": {
-                            "backend": "docker_ssh",
-                            "ssh_target": "tsilva@beast-3",
-                            "run_target": "rtx4090",
-                            "docker": {"command": ["sudo", "-n", "docker"]},
-                            "limits": {"max_parallel_containers": 5},
-                            "paths": {"roms_dir": "/roms-host"},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        return fleet.load_fleet_config(root)
+        return load_machine_registry(sample_registry_path(root))
 
 
 class FleetQueueTests(unittest.TestCase):
@@ -159,9 +150,9 @@ class FleetQueueTests(unittest.TestCase):
 
 class FleetHostTests(unittest.TestCase):
     def test_setup_host_uses_configured_sudo_docker_command(self) -> None:
-        config = sample_config()
+        registry = sample_registry()
 
-        script = fleet.setup_host_script(config.hosts["beast-3"])
+        script = fleet.setup_host_script(resolve_machine(registry, "beast-3"))
 
         self.assertIn("sudo -n docker info", script)
         self.assertIn("/roms-host", script)
@@ -174,10 +165,10 @@ class FleetHostTests(unittest.TestCase):
             self.assertEqual(runtime_image_ref_from_file(path), RUNTIME_IMAGE_REF)
 
     def test_capacity_policy_renders_missing_container_limit_plainly(self) -> None:
-        config = sample_config()
+        registry = sample_registry()
         policy = {"lanes": [{"name": "beast", "manager": "rlab_fleet", "host": "beast-3"}]}
 
-        fleet.validate_capacity_policy(policy, config)
+        fleet.validate_capacity_policy(policy, registry)
         rendered = fleet.format_capacity_policy(policy)
 
         self.assertIn("max_train_containers=None", rendered)

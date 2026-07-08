@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from stable_baselines3 import PPO
 
 from rlab.artifacts import load_playback_env_config
-from rlab.artifacts import playback_env_config as _playback_env_config
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -290,10 +289,6 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     return bool(terminated or truncated)
 
 
-def playback_env_config(config):
-    return _playback_env_config(config)
-
-
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
     if scale < 1:
         raise ValueError("obs viewer scale must be >= 1")
@@ -551,10 +546,6 @@ def print_resolved_play_launch(
     print("\n".join(lines), flush=True)
 
 
-def metadata_playback_config(model_path) -> object:
-    return load_playback_env_config(model_path)
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
@@ -567,7 +558,7 @@ def main(argv: list[str] | None = None) -> None:
     args.model = str(source.model_path)
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
-    config = metadata_playback_config(source.model_path)
+    config = load_playback_env_config(source.model_path)
     display_config = display_replay_config(config)
     print_resolved_play_launch(
         args,

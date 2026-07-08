@@ -32,6 +32,32 @@ EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
 TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS = frozenset(
     {"group_id", "seed", "recipe_id", "timestamp", "utc"}
 )
+TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "seeds",
+        "run_name_label",
+        "run_name_template",
+        "selection_metrics",
+        "selection_policy",
+        "max_attempts",
+        "metadata",
+        "notes",
+        "recipe_overrides",
+        "_composition",
+        "environment",
+        "environment_hash",
+        "eval",
+        "goal_id",
+        "logging",
+        "objective",
+        "release",
+        "reward",
+        "title",
+        "train",
+    }
+)
+TRAIN_RECIPE_ALLOWED_FIELDS = frozenset(TRAIN_RECIPE_REQUIRED_FIELDS) | TRAIN_RECIPE_OPTIONAL_FIELDS
 TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
     {
         "hypothesis",
@@ -104,17 +130,20 @@ def train_recipe_id(document: Mapping[str, Any]) -> str:
     return str(document.get("recipe_id") or "").strip()
 
 
-def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
-    """Validate the non-negotiable queue-backed train recipe contract.
+def _reject_unknown_fields(document: Mapping[str, Any], *, label: str) -> None:
+    unknown = sorted(str(field) for field in document if field not in TRAIN_RECIPE_ALLOWED_FIELDS)
+    if unknown:
+        raise ValueError(f"{label} uses unknown train recipe field(s): {', '.join(unknown)}")
 
-    Unknown top-level and train_config fields are intentionally allowed so older
-    research metadata can keep flowing into the persisted queue payload.
-    """
+
+def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
+    """Validate the non-negotiable queue-backed train recipe contract."""
 
     require_mapping(document, label=label)
     removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
     if removed_fields:
         raise ValueError(f"{label} uses removed train recipe field(s): {', '.join(removed_fields)}")
+    _reject_unknown_fields(document, label=label)
     if (
         "schema_version" in document
         and (schema_version := require_int(document, "schema_version", label=label, minimum=1))
@@ -179,16 +208,6 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
     validate_train_config_fields(
         train_config,
         label=label_path(label, "train_config"),
-        keys=(
-            "game",
-            "state",
-            "states",
-            "n_envs",
-            "timesteps",
-            "wandb",
-            "wandb_mode",
-            "wandb_artifact_storage_uri",
-        ),
         required_keys=("game", "timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
     )
     seed_span = train_config.get("n_envs", 1)

@@ -195,6 +195,28 @@ class JobQueueTests(unittest.TestCase):
                 train_config=explicit_train_config(done_on_info_json={"level_change": ["bad"]}),
             )
 
+    def test_train_recipe_rejects_unknown_top_level_fields(self) -> None:
+        document = valid_train_recipe()
+        document["hypotesis"] = "typo"
+
+        with self.assertRaisesRegex(ValueError, "unknown train recipe field.*hypotesis"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+
+    def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["learnnig_rate"] = 1e-4
+
+        with self.assertRaisesRegex(ValueError, "learnnig_rate.*known train config field"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+
     def test_enqueue_train_job_rejects_eval_reserved_seed(self) -> None:
         with self.assertRaisesRegex(ValueError, "reserved for eval"):
             job_queue.enqueue_train_job(

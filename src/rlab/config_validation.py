@@ -16,7 +16,8 @@ from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
-from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
+from rlab.fleet import load_capacity_policy, validate_capacity_policy
+from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
@@ -632,10 +633,10 @@ def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
 
 
 def validate_fleet_and_capacity(repo_root: Path) -> None:
-    config = load_fleet_config(repo_root)
+    registry = load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
     policy = load_capacity_policy(repo_root)
     _require_schema_version(policy, 1, label="capacity policy")
-    validate_capacity_policy(policy, config)
+    validate_capacity_policy(policy, registry)
     lanes = policy.get("lanes")
     if not isinstance(lanes, Sequence) or isinstance(lanes, str | bytes) or not lanes:
         raise ValueError("capacity policy lanes must be a non-empty list")
@@ -651,7 +652,7 @@ def validate_fleet_and_capacity(repo_root: Path) -> None:
 
 
 def validate_machine_config(repo_root: Path) -> None:
-    load_fleet_config(repo_root)
+    load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
 
 
 def validate_benchmark_baselines(path: Path) -> None:
