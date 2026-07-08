@@ -24,7 +24,8 @@ import torch
 if TYPE_CHECKING:
     from stable_baselines3 import PPO
 
-from rlab.artifacts import load_model_metadata
+from rlab.artifacts import load_playback_env_config
+from rlab.artifacts import playback_env_config as _playback_env_config
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -32,12 +33,10 @@ from rlab.env import (
     make_eval_vec_env,
     make_visual_replay_env,
     native_vec_env_supports_rgb_render,
-    resolve_env_config,
     state_name_candidates_from_level_id,
     task_conditioning_info_values,
 )
 from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id
-from rlab.env_metadata import env_config_from_config_dict, env_config_from_metadata
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (
@@ -292,7 +291,7 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
 
 
 def playback_env_config(config):
-    return replace(config, done_on_events=())
+    return _playback_env_config(config)
 
 
 def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
@@ -553,17 +552,7 @@ def print_resolved_play_launch(
 
 
 def metadata_playback_config(model_path) -> object:
-    metadata = load_model_metadata(model_path)
-    saved_config = env_config_from_metadata(metadata)
-    if not saved_config:
-        raise SystemExit(
-            f"{model_path} is missing playback metadata. Recreate or re-upload the "
-            "checkpoint with current model metadata before using rlab play."
-        )
-    config = env_config_from_config_dict(saved_config)
-    if config is None:
-        raise SystemExit(f"{model_path} playback metadata does not contain an environment config")
-    return playback_env_config(resolve_env_config(config))
+    return load_playback_env_config(model_path)
 
 
 def main(argv: list[str] | None = None) -> None:

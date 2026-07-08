@@ -160,8 +160,9 @@ rlab fleet shepherd --machine beast-3 --limit 5
 rlab fleet watch --machine beast-3
 ```
 
-Use `shepherd --once` for a single reconcile-and-fill pass. `launch-next` and
-`reconcile` remain available as lower-level diagnostic helpers.
+Use `shepherd --once` for a single reconcile-and-fill pass. Lower-level repair
+helpers live under `rlab fleet diagnostics`, with direct `launch-next` and
+`reconcile` aliases preserved for existing scripts.
 
 Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
 

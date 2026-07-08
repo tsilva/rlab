@@ -1,0 +1,10 @@
+LABEL_PREFIX = "rlab."
+MANAGED_LABEL = f"{LABEL_PREFIX}managed"
+DEFAULT_RUNTIME_IMAGE_REPOSITORIES = ("ghcr.io/tsilva/rlab/rlab-train",)
+WORKER_KIND_TRAIN = "train"
+JOB_CONTAINER_LABEL = f"{LABEL_PREFIX}job-container"
+JOB_ID_LABEL = f"{LABEL_PREFIX}job-id"
+JOB_KIND_LABEL = f"{LABEL_PREFIX}job-kind"
+LAUNCH_ID_LABEL = f"{LABEL_PREFIX}launch-id"
+MACHINE_LABEL = f"{LABEL_PREFIX}machine"
+OUTPUT_URI_LABEL = f"{LABEL_PREFIX}output-uri"

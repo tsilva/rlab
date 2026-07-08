@@ -8,12 +8,12 @@ import re
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.env import EnvConfig
+from rlab.env import EnvConfig, resolve_env_config
 from rlab.env_metadata import (
     PLAYBACK_ENV_ARG_KEYS,
     env_config_from_config_dict,
@@ -163,6 +163,24 @@ def env_config_from_model_metadata(
     if not saved_config:
         return fallback
     return env_config_from_config_dict(saved_config, fallback=fallback)
+
+
+def playback_env_config(config: EnvConfig) -> EnvConfig:
+    return replace(config, done_on_events=())
+
+
+def load_playback_env_config(model_path: Path) -> EnvConfig:
+    metadata = load_model_metadata(model_path)
+    saved_config = env_config_from_metadata(metadata)
+    if not saved_config:
+        raise SystemExit(
+            f"{model_path} is missing playback metadata. Recreate or re-upload the "
+            "checkpoint with current model metadata before using rlab play."
+        )
+    config = env_config_from_config_dict(saved_config)
+    if config is None:
+        raise SystemExit(f"{model_path} playback metadata does not contain an environment config")
+    return playback_env_config(resolve_env_config(config))
 
 
 def apply_config_defaults(

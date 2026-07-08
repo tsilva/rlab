@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
-import shutil
 import shlex
 import subprocess
 import sys
@@ -15,23 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-try:  # Rich gives the watch TUI real terminal panels while keeping plain fallback available.
-    from rich import box as rich_box
-    from rich.columns import Columns as RichColumns
-    from rich.console import Console as RichConsole
-    from rich.console import Group as RichGroup
-    from rich.panel import Panel as RichPanel
-    from rich.table import Table as RichTable
-    from rich.text import Text as RichText
-except ImportError:  # pragma: no cover - exercised only when optional transitive dep is absent.
-    rich_box = None
-    RichColumns = None
-    RichConsole = None
-    RichGroup = None
-    RichPanel = None
-    RichTable = None
-    RichText = None
 
 from rlab.job_queue import (
     active_job_launches,
@@ -65,6 +46,27 @@ from rlab.runtime_refs import (
     runtime_image_digest_slug,
     runtime_image_ref_from_file,
 )
+from rlab.fleet_labels import (
+    JOB_CONTAINER_LABEL,
+    JOB_ID_LABEL,
+    JOB_KIND_LABEL,
+    DEFAULT_RUNTIME_IMAGE_REPOSITORIES,
+    LABEL_PREFIX,
+    LAUNCH_ID_LABEL,
+    MACHINE_LABEL,
+    MANAGED_LABEL,
+    OUTPUT_URI_LABEL,
+)
+from rlab.fleet_rendering import (
+    MachineWatchSnapshot,
+    colorize,
+    format_utc_second,
+    highlight_dashboard_text,
+    render_machine_watch_dashboard,
+    write_tui_frame,
+)
+
+
 
 
 DEFAULT_INSTANCES_CONFIG = Path("experiments/instances.yaml")
@@ -72,16 +74,6 @@ DEFAULT_CAPACITY_POLICY = Path("experiments/policies/capacity_policy.yaml")
 DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
 DEFAULT_WATCH_STALE_LIMIT = 50
-LABEL_PREFIX = "rlab."
-MANAGED_LABEL = f"{LABEL_PREFIX}managed"
-DEFAULT_RUNTIME_IMAGE_REPOSITORIES = ("ghcr.io/tsilva/rlab/rlab-train",)
-WORKER_KIND_TRAIN = "train"
-JOB_CONTAINER_LABEL = f"{LABEL_PREFIX}job-container"
-JOB_ID_LABEL = f"{LABEL_PREFIX}job-id"
-JOB_KIND_LABEL = f"{LABEL_PREFIX}job-kind"
-LAUNCH_ID_LABEL = f"{LABEL_PREFIX}launch-id"
-MACHINE_LABEL = f"{LABEL_PREFIX}machine"
-OUTPUT_URI_LABEL = f"{LABEL_PREFIX}output-uri"
 
 
 @dataclass(frozen=True)
@@ -136,17 +128,6 @@ class ShepherdLockBusy(RuntimeError):
     def __init__(self, machine: str) -> None:
         super().__init__(f"another shepherd is already running for machine={machine}")
         self.machine = machine
-
-
-@dataclass(frozen=True)
-class MachineWatchSnapshot:
-    captured_at: datetime
-    machine: MachineConfig
-    containers: tuple["JobContainer", ...]
-    launches: tuple[dict[str, Any], ...]
-    queue_counts: Mapping[str, Mapping[str, int]]
-    result_present: Mapping[str, bool]
-    warnings: tuple[str, ...] = ()
 
 
 def load_json_file(path: Path) -> dict[str, Any]:
@@ -675,18 +656,6 @@ def format_utc_minute(value: Any) -> str:
     return timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
-def format_utc_second(value: Any | None = None) -> str:
-    timestamp = value or datetime.now(UTC)
-    if not isinstance(timestamp, datetime):
-        try:
-            timestamp = datetime.fromisoformat(str(timestamp).strip().replace("Z", "+00:00"))
-        except ValueError:
-            return str(timestamp)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return timestamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
@@ -1212,149 +1181,6 @@ def build_machine_watch_snapshot(args: argparse.Namespace) -> MachineWatchSnapsh
         result_present=result_present,
         warnings=tuple(warnings),
     )
-
-
-def _job_container_active(container: JobContainer) -> bool:
-    return container.state in {"running", "created", "restarting"}
-
-
-def _watch_hint(
-    *,
-    launch: Mapping[str, Any] | None,
-    container: JobContainer | None,
-    result_present: bool,
-) -> str:
-    if launch is None:
-        return "orphaned_container"
-    if container is None:
-        if result_present:
-            return "needs_shepherd_finalize"
-        if launch.get("state") == "launching":
-            return "needs_shepherd_release"
-        return "needs_shepherd_fail_or_retry"
-    if container.state == "running":
-        return "ok"
-    if result_present:
-        return "needs_shepherd_finalize"
-    return "needs_shepherd_mark_failed"
-
-
-def watch_hint_icon(hint: str) -> str:
-    if hint == "ok":
-        return "✓"
-    if hint == "orphaned_container":
-        return "!"
-    if hint.startswith("needs_shepherd"):
-        return "→"
-    return "?"
-
-
-def render_machine_watch_dashboard(snapshot: MachineWatchSnapshot, *, color: bool = False) -> str:
-    machine = snapshot.machine
-    active_containers = [container for container in snapshot.containers if _job_container_active(container)]
-    active_by_kind: dict[str, int] = {"train": 0}
-    for container in active_containers:
-        if container.job_kind in active_by_kind:
-            active_by_kind[str(container.job_kind)] += 1
-    launches_by_id = {str(launch["launch_id"]): launch for launch in snapshot.launches}
-    containers_by_launch = {container.launch_id: container for container in snapshot.containers if container.launch_id}
-    train_counts = snapshot.queue_counts.get("train", {})
-    width = max(shutil.get_terminal_size((120, 30)).columns, 72)
-    captured = format_utc_second(snapshot.captured_at)
-    clock = colorize(captured, "white", enabled=color)
-    title = colorize("rlab fleet watch", "bright_cyan", enabled=color)
-    capacity = f"{len(active_containers)}/{machine.limits.max_parallel_containers}"
-    train_capacity = f"{active_by_kind['train']}/{machine.max_containers_for_kind('train')}"
-    header = [
-        f"{title} {colorize('◷', 'gray', enabled=color)} {clock}",
-        (
-            f"machine={colorize(machine.name, 'cyan', enabled=color)} "
-            f"{dashboard_chip('mode', 'read-only', 'blue', color=color)} "
-            f"{dashboard_chip('capacity', capacity, heat_style(used_total_ratio(capacity) or 0.0), color=color)} "
-            f"{dashboard_chip('train', train_capacity, heat_style(used_total_ratio(train_capacity) or 0.0), color=color)}"
-        ),
-        (
-            "queue "
-            f"{dashboard_chip('train_pending', str(int(train_counts.get('pending', 0))), 'bright_cyan', color=color)} "
-            f"{dashboard_chip('train_launching', str(int(train_counts.get('launching', 0))), 'bright_yellow', color=color)} "
-            f"{dashboard_chip('train_running', str(int(train_counts.get('running', 0))), 'bright_green', color=color)}"
-        ),
-        dashboard_divider(width, color=color),
-    ]
-    sections = ["\n".join(header)]
-
-    launch_rows: list[list[str]] = []
-    for launch in snapshot.launches:
-        launch_id = str(launch["launch_id"])
-        container = containers_by_launch.get(launch_id)
-        result_present = bool(snapshot.result_present.get(launch_id, False))
-        hint = _watch_hint(launch=launch, container=container, result_present=result_present)
-        launch_rows.append(
-            [
-                f"{watch_hint_icon(hint)} {hint}",
-                launch_id,
-                f"{launch['job_kind']}/{launch['job_id']}",
-                str(launch["state"]),
-                container.name if container else "missing",
-                container.state if container else "missing",
-                "yes" if result_present else "no",
-            ]
-        )
-    sections.append(
-        numbered_section(1, " launches:", "cyan", color=color)
-        + "\n"
-        + (
-            style_table(
-                format_table(
-                    ["hint", "launch_id", "job", "launch", "container", "state", "result"],
-                    launch_rows,
-                    max_width=width,
-                ),
-                color=color,
-            )
-            if launch_rows
-            else highlight_dashboard_text("none", color=color)
-        )
-    )
-
-    orphaned = [
-        container
-        for container in snapshot.containers
-        if container.launch_id and container.launch_id not in launches_by_id
-    ]
-    if orphaned:
-        orphan_rows = []
-        for container in orphaned:
-            result_present = bool(snapshot.result_present.get(str(container.launch_id), False))
-            orphan_rows.append(
-                [
-                    "! orphaned_container",
-                    container.name,
-                    container.launch_id or "unknown",
-                    f"{container.job_kind or 'unknown'}/{container.labels.get(JOB_ID_LABEL, 'unknown')}",
-                    container.state,
-                    "yes" if result_present else "no",
-                ]
-            )
-        sections.append(
-            numbered_section(2, " orphaned containers:", "bright_yellow", color=color)
-            + "\n"
-            + style_table(
-                format_table(
-                    ["hint", "container", "launch_id", "job", "state", "result"],
-                    orphan_rows,
-                    max_width=width,
-                ),
-                color=color,
-            )
-        )
-    if snapshot.warnings:
-        sections.append(
-            numbered_section(3, " warnings:", "yellow", color=color)
-            + "\n"
-            + "\n".join(highlight_dashboard_text(f"  ! {warning}", color=color) for warning in snapshot.warnings)
-        )
-    return "\n\n".join(sections)
 
 
 def shepherd_color_enabled(color: bool | None) -> bool:
@@ -2008,209 +1834,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return cmd_container_reconcile(args)
 
 
-ANSI_STYLES = {
-    "reset": "\033[0m",
-    "bold": "\033[1m",
-    "dim": "\033[2m",
-    "gray": "\033[90m",
-    "red": "\033[31m",
-    "bright_red": "\033[1;31m",
-    "green": "\033[32m",
-    "bright_green": "\033[1;32m",
-    "yellow": "\033[33m",
-    "bright_yellow": "\033[1;33m",
-    "blue": "\033[34m",
-    "bright_blue": "\033[1;34m",
-    "magenta": "\033[35m",
-    "bright_magenta": "\033[1;35m",
-    "cyan": "\033[36m",
-    "bright_cyan": "\033[1;36m",
-    "white": "\033[37m",
-    "orange": "\033[38;5;208m",
-}
-
-
-def colorize(text: str, style: str, *, enabled: bool) -> str:
-    if not enabled:
-        return text
-    return f"{ANSI_STYLES[style]}{text}{ANSI_STYLES['reset']}"
-
-
-def dashboard_divider(width: int, *, color: bool) -> str:
-    return colorize("-" * min(width, 120), "gray", enabled=color)
-
-
-def dashboard_chip(label: str, value: str, style: str, *, color: bool) -> str:
-    return f"{label}={colorize(value, style, enabled=color)}"
-
-
-def section_label(text: str, style: str, *, color: bool) -> str:
-    return colorize(text, style, enabled=color)
-
-
-def numbered_section(number: int, text: str, style: str, *, color: bool) -> str:
-    prefix = colorize(f"{number}", "bright_red", enabled=color)
-    return f"{prefix}{section_label(text, style, color=color)}"
-
-
-def heat_style(ratio: float) -> str:
-    if ratio >= 0.9:
-        return "bright_red"
-    if ratio >= 0.75:
-        return "orange"
-    if ratio >= 0.55:
-        return "bright_yellow"
-    return "bright_green"
-
-
-def percent_ratio(value: str) -> float | None:
-    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", value)
-    if not match:
-        return None
-    return max(0.0, min(1.0, float(match.group(1)) / 100.0))
-
-
-def used_total_ratio(value: str) -> float | None:
-    match = re.search(r"(-?\d+(?:\.\d+)?)\s*/\s*(-?\d+(?:\.\d+)?)", value)
-    if not match:
-        return None
-    total = float(match.group(2))
-    if total <= 0:
-        return None
-    return max(0.0, min(1.0, float(match.group(1)) / total))
-
-
-def usage_meter(value: str, *, ratio: float | None = None, color: bool, width: int = 10) -> str:
-    if not value or value == "unknown":
-        return colorize("unknown", "dim", enabled=color)
-    if ratio is None:
-        ratio = percent_ratio(value) or used_total_ratio(value)
-    if ratio is None:
-        return highlight_dashboard_text(value, color=color)
-    filled = max(0, min(width, round(ratio * width)))
-    empty = max(0, width - filled)
-    style = heat_style(ratio)
-    if color:
-        bar = f"[{colorize('#' * filled, style, enabled=True)}{colorize('-' * empty, 'dim', enabled=True)}]"
-        return f"{bar} {colorize(value, style, enabled=True)}"
-    return f"[{'#' * filled}{'-' * empty}] {value}"
-
-
-def highlight_dashboard_text(text: str, *, color: bool) -> str:
-    if not color:
-        return text
-    styles = [
-        (r"\bwould_fail\b", "bright_yellow"),
-        (r"\bneeds_shepherd_(?:finalize|release)\b", "bright_yellow"),
-        (r"\bneeds_shepherd_[a-z_]+\b", "bright_red"),
-        (r"\borphaned_container\b", "bright_red"),
-        (r"\bfailed\b", "bright_red"),
-        (r"\bexit=\d+\b", "bright_red"),
-        (r"\bdown\b", "bright_red"),
-        (r"\bmissing\b", "yellow"),
-        (r"\bbusy\b", "bright_green"),
-        (r"\bwarning\b", "bright_yellow"),
-        (r"\boffline\b", "bright_red"),
-        (r"\bunreachable\b", "bright_red"),
-        (r"\breachable\b", "bright_green"),
-        (r"\blive\b", "bright_green"),
-        (r"\bok\b", "bright_green"),
-        (r"\bsteady\b", "bright_green"),
-        (r"\bstart\b", "bright_cyan"),
-        (r"\brestart\b", "bright_yellow"),
-        (r"\bremove\b", "bright_yellow"),
-        (r"\bplanned\b", "bright_cyan"),
-        (r"\bnone\b", "dim"),
-        (r"\bunknown\b", "dim"),
-    ]
-    highlighted = text
-    for pattern, style in styles:
-        highlighted = re.sub(
-            pattern,
-            lambda match, style=style: colorize(match.group(0), style, enabled=True),
-            highlighted,
-        )
-    highlighted = re.sub(
-        r"\[[#-]{1,10}\]\s+(?:\d+(?:\.\d+)?%|\d+(?:\.\d+)?/\d+(?:\.\d+)?\s+[A-Za-z]+)",
-        lambda match: colorize(
-            match.group(0),
-            heat_style(percent_ratio(match.group(0)) or used_total_ratio(match.group(0)) or 0.0),
-            enabled=True,
-        ),
-        highlighted,
-    )
-    return re.sub(
-        r"\b[0-9a-f]{12}\b",
-        lambda match: colorize(match.group(0), "cyan", enabled=True),
-        highlighted,
-    )
-
-
-def style_table(table: str, *, color: bool) -> str:
-    if not color or not table:
-        return table
-    lines = table.splitlines()
-    if lines:
-        lines[0] = colorize(lines[0], "white", enabled=True)
-    if len(lines) > 1:
-        lines[1] = colorize(lines[1], "dim", enabled=True)
-    for index in range(2, len(lines)):
-        lines[index] = highlight_dashboard_text(lines[index], color=True)
-    return "\n".join(lines)
-
-
-def compact_ref(runtime_image_ref: str) -> str:
-    return runtime_image_digest_slug(runtime_image_ref)
-
-
-def truncate_cell(value: Any, width: int) -> str:
-    text = str(value)
-    if width < 4 or len(text) <= width:
-        return text
-    return f"{text[: width - 3]}..."
-
-
-def format_table(
-    headers: Sequence[str],
-    rows: Sequence[Sequence[Any]],
-    *,
-    max_width: int,
-) -> str:
-    if not headers:
-        return ""
-    string_rows = [[str(cell) for cell in row] for row in rows]
-    widths = [
-        max(
-            len(str(headers[index])),
-            *(len(row[index]) for row in string_rows),
-        )
-        for index in range(len(headers))
-    ]
-    min_widths = [min(len(str(header)), 10) for header in headers]
-    while sum(widths) + (3 * (len(widths) - 1)) > max_width and max(widths) > 10:
-        widest = max(range(len(widths)), key=lambda index: widths[index])
-        if widths[widest] <= min_widths[widest]:
-            break
-        widths[widest] -= 1
-    line_parts = [str(header).ljust(widths[index]) for index, header in enumerate(headers)]
-    lines = [" | ".join(line_parts)]
-    lines.append("-+-".join("-" * width for width in widths))
-    for row in string_rows:
-        lines.append(
-            " | ".join(
-                truncate_cell(row[index], widths[index]).ljust(widths[index])
-                for index in range(len(headers))
-            )
-        )
-    return "\n".join(lines)
-
-
-def write_tui_frame(text: str, *, enabled: bool) -> None:
-    if enabled and sys.stdout.isatty():
-        sys.stdout.write("\033[2J\033[H")
-    print(text, flush=True)
-
-
 def cmd_watch_latest(args: argparse.Namespace) -> int:
     return cmd_container_watch_dashboard(args)
 
@@ -2261,6 +1884,31 @@ def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--runtime-image-ref-file", type=Path)
 
 
+def add_reconcile_parser(subparsers: argparse._SubParsersAction) -> None:
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="Finalize or repair launch rows.",
+    )
+    add_common_args(reconcile)
+    reconcile.add_argument("--machine", required=True)
+    reconcile.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
+    add_dry_run_arg(reconcile)
+    reconcile.set_defaults(func=cmd_reconcile)
+
+
+def add_launch_next_parser(subparsers: argparse._SubParsersAction) -> None:
+    launch_next = subparsers.add_parser(
+        "launch-next",
+        help="Fill open slots once without the full shepherd loop.",
+    )
+    add_common_args(launch_next)
+    launch_next.add_argument("--machine", required=True)
+    launch_next.add_argument("--job-kind", choices=("train",), default="train")
+    launch_next.add_argument("--limit", type=int, default=1)
+    add_dry_run_arg(launch_next)
+    launch_next.set_defaults(func=cmd_container_launch_next)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage one-job rlab containers from queue state.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2279,16 +1927,6 @@ def build_parser() -> argparse.ArgumentParser:
     policy.add_argument("--policy", type=Path, default=DEFAULT_CAPACITY_POLICY)
     policy.set_defaults(func=cmd_policy)
 
-    reconcile = subparsers.add_parser(
-        "reconcile",
-        help="Diagnostic helper to finalize/repair launch rows; prefer shepherd --once.",
-    )
-    add_common_args(reconcile)
-    reconcile.add_argument("--machine", required=True)
-    reconcile.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    add_dry_run_arg(reconcile)
-    reconcile.set_defaults(func=cmd_reconcile)
-
     launch = subparsers.add_parser("launch", help="Launch one claimed job as one container.")
     add_common_args(launch)
     launch.add_argument("--machine", required=True)
@@ -2296,17 +1934,6 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--job-kind", choices=("train",), default="train")
     add_dry_run_arg(launch)
     launch.set_defaults(func=cmd_container_launch)
-
-    launch_next = subparsers.add_parser(
-        "launch-next",
-        help="Diagnostic helper to fill open slots; prefer shepherd --once.",
-    )
-    add_common_args(launch_next)
-    launch_next.add_argument("--machine", required=True)
-    launch_next.add_argument("--job-kind", choices=("train",), default="train")
-    launch_next.add_argument("--limit", type=int, default=1)
-    add_dry_run_arg(launch_next)
-    launch_next.set_defaults(func=cmd_container_launch_next)
 
     shepherd = subparsers.add_parser(
         "shepherd",
@@ -2361,11 +1988,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_runtime_image_args(setup)
     setup.set_defaults(func=cmd_setup_host)
 
+    diagnostics = subparsers.add_parser(
+        "diagnostics",
+        help="Run lower-level fleet repair helpers.",
+    )
+    diagnostic_subparsers = diagnostics.add_subparsers(dest="diagnostic_command", required=True)
+    add_reconcile_parser(diagnostic_subparsers)
+    add_launch_next_parser(diagnostic_subparsers)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    if argv_list and argv_list[0] in {"reconcile", "launch-next"}:
+        argv_list.insert(0, "diagnostics")
+    args = build_parser().parse_args(argv_list)
     return int(args.func(args))
 
 

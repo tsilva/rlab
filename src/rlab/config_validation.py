@@ -12,12 +12,12 @@ import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.compute_targets import load_instance_config
-from rlab.config_loader import load_composed_mapping, load_mapping_document, render_template_vars
+from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_wrappers import normalize_env_wrapper_specs
 from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
 from rlab.fleet import load_capacity_policy, load_fleet_config, validate_capacity_policy
-from rlab.job_queue import load_recipe_document
+from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
 from rlab.validation import (
@@ -35,19 +35,6 @@ from rlab.vec_wrappers import normalize_vec_wrapper_specs
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs"}
-GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
-    ("run_name_template",): frozenset(
-        {"group_id", "seed", "recipe_id", "timestamp", "utc"}
-    ),
-    ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
-    (
-        "release",
-        "huggingface",
-        "checkpoint_filename",
-    ): frozenset({"checkpoint_step"}),
-}
-
-
 @dataclass(frozen=True)
 class ValidationIssue:
     path: str
@@ -481,11 +468,9 @@ def load_goal_contract(
     """Return a goal contract with Hydra defaults resolved."""
     repo_root = (repo_root or Path(".")).resolve()
     path = path.resolve()
-    document = render_template_vars(
-        load_composed_mapping(path, cycle_label="goal").document,
-        path=path,
+    document = load_goal_contract_document(
+        path,
         label=f"goal file {_display_path(path, repo_root)}",
-        deferred_fields_by_path=GOAL_DEFERRED_TEMPLATE_FIELDS,
     )
     if validate:
         _validate_goal_contract_document(document, path, repo_root)

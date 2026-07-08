@@ -62,8 +62,9 @@ which rows need shepherd action. Use `shepherd --once` for a single
 reconcile-and-fill pass, or omit `--once` for the long-running mutating
 orchestrator. Shepherd reconciles, claims, launches, finalizes, streams a
 line-oriented action log, and prunes stale Docker images from the host once no
-active container or queued demand needs them. `launch-next` and `reconcile`
-remain available as lower-level diagnostic helpers.
+active container or queued demand needs them. Lower-level `launch-next` and
+`reconcile` helpers live under `rlab fleet diagnostics`, with direct aliases
+preserved for existing scripts.
 
 ## Host Setup
 

@@ -165,15 +165,33 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "run-job": ("run one claimed job payload inside a container", _run_job),
     "distill": ("distill and verify Mario policies from teacher checkpoints", _distill),
 }
+DEFAULT_HELP_COMMANDS = (
+    "train",
+    "eval",
+    "play",
+    "import-roms",
+    "benchmark",
+    "validate",
+    "jobs",
+    "leaders",
+    "fleet",
+    "monitor",
+)
+ADVANCED_HELP_COMMANDS = ("promote", "release", "distill", "run-job")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab",
         description="Unified command surface for rlab training, eval, playback, and ops.",
+        epilog=(
+            "Advanced commands remain available for goal promotion, release workflows, "
+            f"distillation, and container entrypoints: {', '.join(ADVANCED_HELP_COMMANDS)}."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
-    for name, (help_text, _handler) in COMMANDS.items():
+    for name in DEFAULT_HELP_COMMANDS:
+        help_text, _handler = COMMANDS[name]
         subparser = subparsers.add_parser(name, help=help_text, add_help=False)
         subparser.add_argument("args", nargs=argparse.REMAINDER)
     return parser
