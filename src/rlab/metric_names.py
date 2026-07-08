@@ -35,6 +35,8 @@ TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "train/done/level_change/from_rate/min"
 TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN = "train/done/level_change/from_rate/mean"
 
 TRAIN_INFO_LEVEL_COMPLETE_ROOT = "train/info/level_complete"
+TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_CURRENT = "train/info/level_complete/rate/min/current"
+TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT = "train/info/level_complete/rate/mean/current"
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate/min/last"
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "train/info/level_complete/rate/mean/last"
 
@@ -117,6 +119,14 @@ def train_info_level_complete_from_metric(value: object) -> str:
 
 def train_info_level_complete_count_metric(value: object) -> str:
     return f"{train_info_level_complete_from_metric(value)}/count"
+
+
+def train_info_level_complete_attempts_metric(value: object) -> str:
+    return f"{train_info_level_complete_from_metric(value)}/attempts"
+
+
+def train_info_level_complete_current_rate_metric(value: object) -> str:
+    return f"{train_info_level_complete_from_metric(value)}/rate/current"
 
 
 def train_info_level_complete_rate_metric(value: object) -> str:

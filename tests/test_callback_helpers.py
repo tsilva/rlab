@@ -397,6 +397,10 @@ class LevelCompleteInfoCallbackTests(unittest.TestCase):
         self.assertTrue(callback._on_step())
 
         self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/count"], 1)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/attempts"], 1)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate/current"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/min/current"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/current"], 1.0)
         self.assertNotIn("train/info/level_complete/from/0-0/rate", model.logger.records)
         self.assert_no_generic_info_metrics(model.logger.records)
 
@@ -592,6 +596,10 @@ class LevelCompleteInfoCallbackTests(unittest.TestCase):
             self.assertTrue(callback._on_step())
 
         self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/count"], 2)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/attempts"], 4)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate/current"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/min/current"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/current"], 0.5)
         self.assertEqual(
             model.logger.records["train/info/level_complete/from/0-0/rate"],
             0.5,
@@ -639,6 +647,9 @@ class LevelCompleteInfoCallbackTests(unittest.TestCase):
             self.assertTrue(callback._on_step())
 
         record_attempt(1, (0, 0), True)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate/current"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/min/current"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/current"], 1.0)
         self.assertNotIn("train/info/level_complete/rate/min/last", model.logger.records)
         self.assertNotIn("train/info/level_complete/rate/mean/last", model.logger.records)
 
@@ -648,11 +659,17 @@ class LevelCompleteInfoCallbackTests(unittest.TestCase):
         self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/last"], 1.0)
 
         record_attempt(3, (0, 0), False)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate/current"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/min/current"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/current"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/rate/min/last"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/last"], 0.5)
 
         record_attempt(4, (0, 1), True)
+        self.assertEqual(model.logger.records["train/info/level_complete/from/0-1/rate/current"], 1.0)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/min/current"], 0.5)
+        self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/current"], 0.75)
         self.assertEqual(model.logger.records["train/info/level_complete/from/0-0/rate"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/rate/min/last"], 0.5)
         self.assertEqual(model.logger.records["train/info/level_complete/rate/mean/last"], 0.5)

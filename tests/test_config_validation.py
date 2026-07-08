@@ -42,6 +42,34 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["obs_crop_fill"], 0)
         self.assertEqual(document["environment"]["env_id"], "ale-py:breakout")
 
+    def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
+        breakout = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
+        document = load_recipe_document(Path("experiments/goals/alepy__mspacman/recipes/base.yaml"))
+
+        train_config = document["train_config"]
+        self.assertEqual(train_config["env_provider"], "ale-py")
+        self.assertEqual(train_config["game"], "ms_pacman")
+        self.assertNotIn("state", train_config)
+        self.assertNotIn("states", train_config)
+        self.assertEqual(train_config["obs_crop"], [0, 0, 26, 0])
+        self.assertEqual(train_config["obs_crop_mode"], "mask")
+        self.assertEqual(train_config["obs_crop_fill"], 0)
+        for key in (
+            "n_envs",
+            "env_threads",
+            "frame_skip",
+            "max_pool_frames",
+            "sticky_action_prob",
+            "observation_size",
+            "obs_resize_algorithm",
+            "max_episode_steps",
+            "action_set",
+            "reward_mode",
+            "clip_rewards",
+        ):
+            self.assertEqual(train_config[key], breakout["train_config"][key])
+        self.assertEqual(document["environment"]["env_id"], "ale-py:ms_pacman")
+
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

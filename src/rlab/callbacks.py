@@ -36,12 +36,16 @@ from rlab.metric_names import (
     TRAIN_DONE_ALL,
     TRAIN_DONE_MAX_STEPS,
     TRAIN_DONE_UNCLASSIFIED,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_CURRENT,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
     TRAIN_REWARD_COMPONENT_ROOT,
     TRAIN_REWARD_SHARE_ROOT,
     stat_metric,
+    train_info_level_complete_attempts_metric,
     train_info_level_complete_count_metric,
+    train_info_level_complete_current_rate_metric,
     train_info_level_complete_from_metric,
     train_info_level_complete_rate_metric,
     train_done_from_rate_metric,
@@ -686,6 +690,7 @@ class LevelCompleteInfoCallback(BaseCallback):
         self.info_events = dict(info_events or {})
         self.complete_counts: dict[str, int] = {}
         self.attempt_windows: dict[str, deque[bool]] = {}
+        self.latest_current_rates: dict[str, float] = {}
         self.latest_rates: dict[str, float] = {}
         self.current_sources: list[Any | None] = []
 
@@ -822,13 +827,22 @@ class LevelCompleteInfoCallback(BaseCallback):
     def record_attempt(self, source: Any, *, completed: bool) -> dict[str, int | float]:
         metric = train_info_level_complete_from_metric(source)
         count_metric = train_info_level_complete_count_metric(source)
+        attempts_metric = train_info_level_complete_attempts_metric(source)
+        current_rate_metric = train_info_level_complete_current_rate_metric(source)
         window = self.attempt_windows.setdefault(metric, deque(maxlen=self.ep_window_size))
         window.append(completed)
         if completed:
             self.complete_counts[count_metric] = self.complete_counts.get(count_metric, 0) + 1
 
+        current_rate = sum(window) / len(window)
+        self.latest_current_rates[current_rate_metric] = current_rate
         payload: dict[str, int | float] = {
             count_metric: self.complete_counts.get(count_metric, 0),
+            attempts_metric: len(window),
+            current_rate_metric: current_rate,
+            TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_CURRENT: min(self.latest_current_rates.values()),
+            TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT: sum(self.latest_current_rates.values())
+            / len(self.latest_current_rates),
         }
         if len(window) >= self.ep_window_size:
             rate_metric = train_info_level_complete_rate_metric(source)

@@ -47,7 +47,11 @@ the queue database stores train-job state, not result metric projections.
 | `train/done/<reason>/from_rate/mean` | Mean across full per-source terminal episode-window rates for `<reason>`. |
 | `train/info/level_complete` | Root for Mario training level-complete metrics. This is the only `info_events`-derived training metric family. |
 | `train/info/level_complete/from/<prev>/count` | Cumulative clean level clears from native source value `<prev>`, e.g. `0-0` for Level1-1. Death or life-loss info always records as a failed attempt, even if an upstream completion flag is also present. |
+| `train/info/level_complete/from/<prev>/attempts` | Number of attempts currently represented in the rolling attempt window for `<prev>`, capped at 100. Emits from the first observed attempt and is useful for seeing whether the strict rate window has filled. |
+| `train/info/level_complete/from/<prev>/rate/current` | Fraction of the current rolling attempt window for `<prev>` that produced a clean `level_complete`, using the available denominator up to 100 attempts. This is for live monitoring, not strict promotion. |
 | `train/info/level_complete/from/<prev>/rate` | Fraction of the last 100 attempts from `<prev>` that produced a clean `level_complete`. Attempts can end at a clean completion, life loss, truncation, or episode done; death/life-loss attempts contribute `0`. Emits only after that source has a full 100-attempt window. |
+| `train/info/level_complete/rate/min/current` | Minimum across the latest available `train/info/level_complete/from/<prev>/rate/current` values. Emits from the first observed attempt and is intended for live charts while strict windows are still filling. |
+| `train/info/level_complete/rate/mean/current` | Mean across the latest available `train/info/level_complete/from/<prev>/rate/current` values. Emits alongside `rate/min/current`. |
 | `train/info/level_complete/rate/min/last` | Minimum across the latest available `train/info/level_complete/from/<prev>/rate` values. Emits after at least one per-source rate is available and updates whenever any per-source rate updates. |
 | `train/info/level_complete/rate/mean/last` | Mean across the latest available `train/info/level_complete/from/<prev>/rate` values. Emits alongside `rate/min/last` and updates whenever any per-source rate updates. |
 | `eval/done/level_change/rate` | Pooled eval episode completion fraction. |
@@ -88,12 +92,18 @@ training metrics as:
 | `Level1-3` | `train/info/level_complete/from/0-2/count` | `train/info/level_complete/from/0-2/rate` |
 | `Level1-4` | `train/info/level_complete/from/0-3/count` | `train/info/level_complete/from/0-3/rate` |
 
-For active multi-level training, use `train/info/level_complete/rate/min/last` as the live
-bottleneck. It is the minimum of the most recent full-window per-level rates that have emitted so
-far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate/min/last` is `0.30`. If
-Level1-1 later drops from `1.00` to `0.50` while Level1-2 drops from `0.60` to `0.55`, `rate/min/last`
-is `0.50`. Use `train/info/level_complete/rate/mean/last` as the companion average over those same
-latest per-level rates, mainly to distinguish policies with the same bottleneck. Training
+For active multi-level training, use `train/info/level_complete/rate/min/current` as the live
+bottleneck chart while attempt windows are still filling. It is the minimum of the currently
+available per-level partial-window rates, so it appears much earlier than the strict full-window
+metric. Use `train/info/level_complete/from/<prev>/attempts` next to it to see the current
+denominator.
+
+Use `train/info/level_complete/rate/min/last` as the strict training gate and comparable
+full-window bottleneck. It is the minimum of the most recent full-window per-level rates that have
+emitted so far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate/min/last` is
+`0.30`. If Level1-1 later drops from `1.00` to `0.50` while Level1-2 drops from `0.60` to `0.55`,
+`rate/min/last` is `0.50`. Use `train/info/level_complete/rate/mean/last` as the companion average
+over those same latest per-level rates, mainly to distinguish policies with the same bottleneck. Training
 intentionally no longer logs generic `train/event/*` or `train/outcome/*` metrics. Once post-train
 checkpoint eval has logged per-start metrics,
 use `eval/done/level_change/from_rate/min` as the balanced eval selection metric.
@@ -101,8 +111,10 @@ use `eval/done/level_change/from_rate/min` as the balanced eval selection metric
 `rate/min/last` and `rate/mean/last` are intentionally available-source live metrics. If only one
 source has a full attempt window so far, both report that source's rate; as more source windows emit,
 the minimum automatically tightens to include them and the mean averages across them. Use the companion
-`train/info/level_complete/from/<prev>/rate` and `/count` metrics to see which sources currently
-have coverage, but do not wait for every possible source before reading these summary metrics.
+`train/info/level_complete/from/<prev>/attempts`, `/rate/current`, `/rate`, and `/count` metrics to
+see which sources currently have coverage. On fast-solved single-level runs, `/rate/min/last` can
+have only one W&B history point because the first full 100-attempt window immediately satisfies the
+early-stop gate; use `/rate/min/current` for the live trace in that case.
 
 `train/done/level_change/from_rate/min` and `train/done/level_change/from_rate/mean` are terminal
 episode-window diagnostics. Keep them as done-reason diagnostics; for clear counts/rates, prefer

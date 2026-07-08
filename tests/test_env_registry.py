@@ -54,6 +54,18 @@ def test_resolves_registered_ale_py_env_id() -> None:
     assert resolved.import_name == "ale_py"
 
 
+def test_resolves_registered_ale_py_ms_pacman_env_id() -> None:
+    env_id = "ale-py:ms_pacman"
+
+    resolved = resolve_env_id(env_id)
+
+    assert env_id in registered_env_ids()
+    assert resolved.qualified_id == env_id
+    assert resolved.provider_id == "ale-py"
+    assert resolved.provider_env_id == "ms_pacman"
+    assert resolved.import_name == "ale_py"
+
+
 def test_rejects_unregistered_env_id() -> None:
     with pytest.raises(ValueError, match="does not register environment"):
         resolve_env_id("stable-retro-turbo:UnknownGame-v0")

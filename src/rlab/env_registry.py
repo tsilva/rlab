@@ -36,7 +36,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
 ALE_PY_PROVIDER = EnvProvider(
     provider_id="ale-py",
     import_name="ale_py",
-    env_ids=("breakout",),
+    env_ids=("breakout", "ms_pacman"),
     supports_states=False,
 )
 

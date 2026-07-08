@@ -1978,6 +1978,8 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         np.testing.assert_array_equal(new_dones, old_dones)
         self.assertEqual(new_infos[0]["info_events"], old_infos[0]["info_events"])
         self.assertEqual(new_infos[0]["level_complete"], old_infos[0]["level_complete"])
+        self.assertEqual(new_infos[0]["levelHi"], old_infos[0]["levelHi"])
+        self.assertEqual(new_infos[0]["levelLo"], old_infos[0]["levelLo"])
 
     def test_mario_fused_hooks_emit_nonterminal_reward_component_info(self) -> None:
         class FakeMarioVectorEnv(gym.vector.VectorEnv):
@@ -2051,6 +2053,8 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         np.testing.assert_allclose(new_rewards, old_rewards)
         np.testing.assert_array_equal(new_dones, old_dones)
         for key in (
+            "levelHi",
+            "levelLo",
             "progress_delta",
             "progress_component",
             "progress_reward_component",
