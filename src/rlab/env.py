@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import math
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -41,6 +42,7 @@ from rlab.vec_wrappers import (
     DEFAULT_VEC_WRAPPER_SPECS,
     DISCRETE_ACTIONS,
     GYM_VECTOR_TO_SB3,
+    OBSERVATION_MASK,
     RETRO_PROGRESS_INFO,
     SB3_FUSED,
     TASK_CONDITIONING,
@@ -1122,87 +1124,111 @@ class VecRetroProgressInfo(VecEnvWrapper):
         return obs, shaped_rewards, dones, infos
 
 
-class VecAleMaskedPreprocess(VecEnvWrapper):
-    """Mask raw ALE RGB observations before resize/grayscale/frame-stack."""
+class VecObservationMask(VecEnvWrapper):
+    """Mask configured observation borders across a batched image stack."""
 
-    def __init__(self, venv, config: EnvConfig):
+    def __init__(
+        self,
+        venv,
+        config: EnvConfig,
+        *,
+        source_shape: tuple[int, int] | None = None,
+    ):
         crop = native_obs_crop(config)
         if crop is None:
-            raise ValueError("VecAleMaskedPreprocess requires obs_crop or hud_crop_top")
+            raise ValueError("VecObservationMask requires obs_crop or hud_crop_top")
         if config.obs_crop_mode != "mask":
-            raise ValueError("ale-py obs_crop currently supports obs_crop_mode='mask' only")
+            raise ValueError("VecObservationMask requires obs_crop_mode='mask'")
         self.config = config
         self.crop = crop
-        self.size = int(config.observation_size)
+        self.source_shape = source_shape
         self.fill = int(config.obs_crop_fill)
-        self._frames: np.ndarray | None = None
-        observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(4, self.size, self.size),
-            dtype=np.uint8,
-        )
         super().__init__(
             venv,
-            observation_space=observation_space,
+            observation_space=venv.observation_space,
             action_space=venv.action_space,
         )
 
-    def _rgb_batch(self, obs: Any) -> np.ndarray:
-        batch = np.asarray(obs)
-        if batch.ndim == 5 and batch.shape[1] == 1:
-            batch = batch[:, 0]
-        if batch.ndim != 4 or batch.shape[-1] != 3:
-            raise ValueError(f"expected ALE RGB observation batch, got shape {batch.shape}")
+    @staticmethod
+    def _scaled_pixels(value: int, *, source: int, target: int) -> int:
+        if value <= 0:
+            return 0
+        return min(target, int(math.ceil(float(value) * float(target) / float(source))))
+
+    @staticmethod
+    def _image_axes(shape: tuple[int, ...]) -> tuple[int, int, int]:
+        if len(shape) != 3:
+            raise ValueError(f"expected image observation with 3 dimensions, got shape {shape}")
+        if int(shape[0]) in FRAME_STACK_CHANNELS and int(shape[-1]) not in FRAME_STACK_CHANNELS:
+            return 0, 1, 2
+        if int(shape[-1]) in FRAME_STACK_CHANNELS and int(shape[0]) not in FRAME_STACK_CHANNELS:
+            return 2, 0, 1
+        raise ValueError(
+            "could not infer observation channel order from shape "
+            f"{tuple(int(dim) for dim in shape)}; expected channel count in first or last axis",
+        )
+
+    def _scaled_crop(self, *, height: int, width: int) -> tuple[int, int, int, int]:
+        top, right, bottom, left = self.crop
+        source_height, source_width = self.source_shape or (height, width)
+        return (
+            self._scaled_pixels(top, source=source_height, target=height),
+            self._scaled_pixels(right, source=source_width, target=width),
+            self._scaled_pixels(bottom, source=source_height, target=height),
+            self._scaled_pixels(left, source=source_width, target=width),
+        )
+
+    def _mask_image_batch(self, obs: Any) -> np.ndarray:
+        batch = np.array(obs, copy=True)
+        if batch.ndim != 4:
+            raise ValueError(f"expected batched image observation, got shape {batch.shape}")
+        channel_axis, height_axis, width_axis = self._image_axes(tuple(batch.shape[1:]))
+        channel_axis += 1
+        height_axis += 1
+        width_axis += 1
+        height = int(batch.shape[height_axis])
+        width = int(batch.shape[width_axis])
+        top, right, bottom, left = self._scaled_crop(height=height, width=width)
+
+        def assign(axis: int, start: int | None, stop: int | None) -> None:
+            slices = [slice(None)] * batch.ndim
+            slices[axis] = slice(start, stop)
+            batch[tuple(slices)] = self.fill
+
+        if top:
+            assign(height_axis, 0, top)
+        if bottom:
+            assign(height_axis, -bottom, None)
+        if left:
+            assign(width_axis, 0, left)
+        if right:
+            assign(width_axis, -right, None)
         return batch
 
-    def _preprocess_rgb_batch(self, obs: Any) -> np.ndarray:
-        import cv2
-
-        batch = self._rgb_batch(obs).copy()
-        top, right, bottom, left = self.crop
-        if top:
-            batch[:, :top, :, :] = self.fill
-        if bottom:
-            batch[:, -bottom:, :, :] = self.fill
-        if left:
-            batch[:, :, :left, :] = self.fill
-        if right:
-            batch[:, :, -right:, :] = self.fill
-        gray = np.dot(batch[..., :3], np.array([0.299, 0.587, 0.114])).astype(np.uint8)
-        resized = [
-            cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_AREA)
-            for frame in gray
-        ]
-        return np.stack(resized, axis=0).astype(np.uint8, copy=False)
-
-    def _repeat_stack(self, frames: np.ndarray) -> np.ndarray:
-        return np.repeat(frames[:, None, :, :], 4, axis=1)
+    def _mask_observation(self, obs: Any) -> Any:
+        if isinstance(obs, Mapping):
+            masked = dict(obs)
+            if "image" in masked:
+                masked["image"] = self._mask_observation(masked["image"])
+            return masked
+        image = np.asarray(obs)
+        if image.ndim == 3:
+            return self._mask_image_batch(image[None, ...])[0]
+        if image.ndim == 4:
+            return self._mask_image_batch(image)
+        raise ValueError(f"expected image observation with 3 or 4 dimensions, got shape {image.shape}")
 
     def reset(self):
-        frames = self._preprocess_rgb_batch(self.venv.reset())
-        self._frames = self._repeat_stack(frames)
-        return self._frames.copy()
+        return self._mask_observation(self.venv.reset())
 
     def step_wait(self):
         obs, rewards, dones, infos = self.venv.step_wait()
-        frames = self._preprocess_rgb_batch(obs)
-        if self._frames is None:
-            self._frames = self._repeat_stack(frames)
-        else:
-            self._frames = np.roll(self._frames, shift=-1, axis=1)
-            self._frames[:, -1, :, :] = frames
-            done_indices = np.flatnonzero(np.asarray(dones, dtype=bool))
-            if len(done_indices):
-                self._frames[done_indices] = self._repeat_stack(frames[done_indices])
+        obs = self._mask_observation(obs)
         for index, info in enumerate(infos):
             terminal_obs = info.get("terminal_observation") if isinstance(info, dict) else None
             if terminal_obs is not None:
-                terminal_frame = self._preprocess_rgb_batch(np.asarray([terminal_obs]))[0]
-                info["terminal_observation"] = self._repeat_stack(
-                    terminal_frame[None, :, :]
-                )[0]
-        return self._frames.copy(), rewards, dones, infos
+                info["terminal_observation"] = self._mask_observation(terminal_obs)
+        return obs, rewards, dones, infos
 
 
 class FrameSkip(gym.Wrapper):
@@ -1434,9 +1460,6 @@ def _vec_wrapper_specs(config: EnvConfig) -> tuple[dict[str, Any], ...]:
 
 
 def _identity_fused_hooks_supported(config: EnvConfig) -> None:
-    provider = resolve_env_provider(config.env_provider)
-    if provider.provider_id == ALE_PY_PROVIDER.provider_id and native_obs_crop(config) is not None:
-        raise ValueError("ale-py masked preprocessing is not fused yet")
     if config.action_set != "native":
         raise ValueError("identity fused hooks require action_set='native'")
     if config.reward_mode != "native":
@@ -1485,8 +1508,8 @@ def _apply_vec_wrapper_stack(vec_env, config: EnvConfig, seed: int):
             fused_seen = True
             sb3_ready = True
             continue
-        if fused_seen and wrapper_id != TRANSPOSE_IMAGE:
-            raise ValueError("sb3_fused can only be followed by transpose_image")
+        if fused_seen and wrapper_id not in {OBSERVATION_MASK, ALE_MASKED_PREPROCESS, TRANSPOSE_IMAGE}:
+            raise ValueError("sb3_fused can only be followed by observation_mask or transpose_image")
         if wrapper_id == GYM_VECTOR_TO_SB3:
             vec_env = adapt_provider_vec_env_for_sb3(vec_env)
             vec_env.seed(seed)
@@ -1496,14 +1519,23 @@ def _apply_vec_wrapper_stack(vec_env, config: EnvConfig, seed: int):
                 raise ValueError("discrete_actions requires gym_vector_to_sb3 first")
             if target.uses_discrete_actions(config.action_set):
                 vec_env = VecDiscreteRetroActions(vec_env, config=config)
-        elif wrapper_id == ALE_MASKED_PREPROCESS:
+        elif wrapper_id in {OBSERVATION_MASK, ALE_MASKED_PREPROCESS}:
             if not sb3_ready:
-                raise ValueError("ale_masked_preprocess requires gym_vector_to_sb3 first")
-            if (
-                resolve_env_provider(config.env_provider).provider_id == ALE_PY_PROVIDER.provider_id
-                and native_obs_crop(config) is not None
-            ):
-                vec_env = VecAleMaskedPreprocess(vec_env, config=config)
+                raise ValueError(f"{wrapper_id} requires gym_vector_to_sb3 first")
+            provider = resolve_env_provider(config.env_provider)
+            source_shape = spec.get("source_shape")
+            if source_shape is not None:
+                source_shape = tuple(int(dim) for dim in source_shape)
+                if len(source_shape) != 2:
+                    raise ValueError(f"{wrapper_id}.source_shape must be [height, width]")
+            auto_apply = provider.provider_id == ALE_PY_PROVIDER.provider_id
+            if native_obs_crop(config) is not None and (auto_apply or spec.get("force")):
+                source_shape = (
+                    (210, 160)
+                    if source_shape is None and provider.provider_id == ALE_PY_PROVIDER.provider_id
+                    else source_shape
+                )
+                vec_env = VecObservationMask(vec_env, config=config, source_shape=source_shape)
         elif wrapper_id == RETRO_PROGRESS_INFO:
             if not sb3_ready:
                 raise ValueError("retro_progress_info requires gym_vector_to_sb3 first")

@@ -26,6 +26,7 @@ from rlab.env import (
     GymVectorEnvToSb3VecEnv,
     StickyAction,
     VecDiscreteRetroActions,
+    VecObservationMask,
     VecRetroProgressInfo,
     VecTaskConditioning,
     make_eval_vec_env,
@@ -1006,7 +1007,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["maxpool"], True)
         self.assertEqual(native_kwargs["reward_clipping"], True)
 
-    def test_ale_py_native_vec_kwargs_use_raw_rgb_for_masked_crop(self) -> None:
+    def test_ale_py_native_vec_kwargs_keep_native_preprocessing_for_masked_crop(self) -> None:
         config = resolve_env_config(
             EnvConfig(
                 env_provider="ale-py",
@@ -1035,12 +1036,93 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             state_weight_mapping=state_weight_mapping,
         )
 
-        self.assertEqual(native_kwargs["img_height"], 210)
-        self.assertEqual(native_kwargs["img_width"], 160)
-        self.assertEqual(native_kwargs["grayscale"], False)
-        self.assertEqual(native_kwargs["stack_num"], 1)
+        self.assertEqual(native_kwargs["img_height"], 84)
+        self.assertEqual(native_kwargs["img_width"], 84)
+        self.assertEqual(native_kwargs["grayscale"], True)
+        self.assertEqual(native_kwargs["stack_num"], 4)
         self.assertEqual(native_kwargs["frameskip"], 4)
         self.assertEqual(native_kwargs["maxpool"], True)
+
+    def test_observation_mask_masks_whole_chw_stack_in_scaled_raw_coordinates(self) -> None:
+        class FakeVecEnv:
+            num_envs = 2
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.Discrete(3)
+
+            def reset(self):
+                return np.full((2, 4, 84, 84), 9, dtype=np.uint8)
+
+            def step_async(self, actions) -> None:
+                self.actions = actions
+
+            def step_wait(self):
+                return (
+                    np.full((2, 4, 84, 84), 7, dtype=np.uint8),
+                    np.asarray([0.0, 1.0], dtype=np.float32),
+                    np.asarray([False, True]),
+                    [
+                        {},
+                        {
+                            "terminal_observation": np.full((4, 84, 84), 5, dtype=np.uint8),
+                        },
+                    ],
+                )
+
+        config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            obs_crop=(34, 0, 0, 0),
+            obs_crop_mode="mask",
+            obs_crop_fill=0,
+        )
+        env = VecObservationMask(FakeVecEnv(), config, source_shape=(210, 160))
+
+        obs = env.reset()
+        self.assertEqual(obs.shape, (2, 4, 84, 84))
+        np.testing.assert_array_equal(obs[:, :, :14, :], 0)
+        np.testing.assert_array_equal(obs[:, :, 14:, :], 9)
+
+        env.step_async(np.asarray([0, 1]))
+        obs, _rewards, _dones, infos = env.step_wait()
+
+        np.testing.assert_array_equal(obs[:, :, :14, :], 0)
+        np.testing.assert_array_equal(obs[:, :, 14:, :], 7)
+        terminal_obs = infos[1]["terminal_observation"]
+        np.testing.assert_array_equal(terminal_obs[:, :14, :], 0)
+        np.testing.assert_array_equal(terminal_obs[:, 14:, :], 5)
+
+    def test_observation_mask_scales_bottom_raw_crop(self) -> None:
+        class FakeVecEnv:
+            num_envs = 1
+            observation_space = gym.spaces.Box(
+                low=0,
+                high=255,
+                shape=(4, 84, 84),
+                dtype=np.uint8,
+            )
+            action_space = gym.spaces.Discrete(3)
+
+            def reset(self):
+                return np.full((1, 4, 84, 84), 11, dtype=np.uint8)
+
+        config = EnvConfig(
+            env_provider="ale-py",
+            game="ms_pacman",
+            obs_crop=(0, 0, 26, 0),
+            obs_crop_mode="mask",
+            obs_crop_fill=0,
+        )
+        env = VecObservationMask(FakeVecEnv(), config, source_shape=(210, 160))
+
+        obs = env.reset()
+
+        np.testing.assert_array_equal(obs[:, :, :-11, :], 11)
+        np.testing.assert_array_equal(obs[:, :, -11:, :], 0)
 
     def test_ale_py_provider_rejects_state_config(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not support state"):
@@ -1091,7 +1173,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
 
         self.assertIsInstance(env, Sb3FusedVecEnv)
 
-    def test_ale_py_masked_preprocess_rejects_requested_fused_env(self) -> None:
+    def test_ale_py_observation_mask_can_follow_requested_fused_env(self) -> None:
         class FakeAtariVectorEnv(gym.vector.VectorEnv):
             num_envs = 2
 
@@ -1101,7 +1183,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 self.single_observation_space = gym.spaces.Box(
                     low=0,
                     high=255,
-                    shape=(210, 160, 3),
+                    shape=(4, 84, 84),
                     dtype=np.uint8,
                 )
                 self.single_action_space = gym.spaces.Discrete(4)
@@ -1115,13 +1197,12 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             reward_mode="native",
             obs_crop=(34, 0, 0, 0),
             obs_crop_mode="mask",
-            vec_wrappers=({"id": "sb3_fused"},),
+            vec_wrappers=({"id": "sb3_fused"}, {"id": "observation_mask"}),
         )
-        with (
-            patch("rlab.env._ale_py_atari_vector_env_type", return_value=FakeAtariVectorEnv),
-            self.assertRaisesRegex(ValueError, "ale-py masked preprocessing is not fused yet"),
-        ):
-            make_training_vec_env(config, n_envs=2, seed=7)
+        with patch("rlab.env._ale_py_atari_vector_env_type", return_value=FakeAtariVectorEnv):
+            env = make_training_vec_env(config, n_envs=2, seed=7)
+
+        self.assertIsInstance(env, VecObservationMask)
 
     def test_supermariobrosnes_turbo_rgb_render_support_uses_metadata(self) -> None:
         class FakeSuperMarioNative:

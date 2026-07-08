@@ -11,6 +11,7 @@ VEC_WRAPPER_CONTROL_KEYS = frozenset(VEC_WRAPPER_SPEC_ID_KEYS)
 
 GYM_VECTOR_TO_SB3 = "gym_vector_to_sb3"
 DISCRETE_ACTIONS = "discrete_actions"
+OBSERVATION_MASK = "observation_mask"
 ALE_MASKED_PREPROCESS = "ale_masked_preprocess"
 RETRO_PROGRESS_INFO = "retro_progress_info"
 VEC_MONITOR = "vec_monitor"
@@ -22,6 +23,7 @@ KNOWN_VEC_WRAPPER_IDS = frozenset(
     {
         GYM_VECTOR_TO_SB3,
         DISCRETE_ACTIONS,
+        OBSERVATION_MASK,
         ALE_MASKED_PREPROCESS,
         RETRO_PROGRESS_INFO,
         VEC_MONITOR,
@@ -34,7 +36,7 @@ KNOWN_VEC_WRAPPER_IDS = frozenset(
 DEFAULT_VEC_WRAPPER_SPECS: tuple[dict[str, Any], ...] = (
     {"id": GYM_VECTOR_TO_SB3},
     {"id": DISCRETE_ACTIONS},
-    {"id": ALE_MASKED_PREPROCESS},
+    {"id": OBSERVATION_MASK},
     {"id": RETRO_PROGRESS_INFO},
     {"id": VEC_MONITOR},
     {"id": TASK_CONDITIONING},

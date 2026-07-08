@@ -99,8 +99,7 @@ def _ale_py_native_vec_kwargs(
     if native_done_on_rules:
         raise ValueError("ale-py provider does not support done_on_events")
     obs_crop = native_obs_crop(config)
-    use_masked_preprocess = obs_crop is not None
-    if use_masked_preprocess and config.obs_crop_mode != "mask":
+    if obs_crop is not None and config.obs_crop_mode != "mask":
         raise ValueError("ale-py provider only supports obs_crop_mode='mask'")
     max_num_frames_per_episode = 108_000
     if config.max_episode_steps > 0:
@@ -110,10 +109,10 @@ def _ale_py_native_vec_kwargs(
         "num_threads": num_threads,
         "max_num_frames_per_episode": max_num_frames_per_episode,
         "repeat_action_probability": config.sticky_action_prob,
-        "img_height": 210 if use_masked_preprocess else config.observation_size,
-        "img_width": 160 if use_masked_preprocess else config.observation_size,
-        "grayscale": not use_masked_preprocess,
-        "stack_num": 1 if use_masked_preprocess else 4,
+        "img_height": config.observation_size,
+        "img_width": config.observation_size,
+        "grayscale": True,
+        "stack_num": 4,
         "frameskip": config.frame_skip,
         "maxpool": config.max_pool_frames,
         "reward_clipping": config.clip_rewards,
