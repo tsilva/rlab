@@ -74,6 +74,11 @@ train:
             completion_reward: 0.0
             reward_scale: 10
             score_progress_clipped: false
+        # Use the fused SB3 vector adapter for single-level Mario recipes.
+        vec_wrappers:
+        - id: sb3_fused
+          hooks: super_mario_bros_nes
+          info_mode: terminal
       # Stable Retro state id; single-state Mario goals use the goal id as the source state.
       state: "{state}"
       # Training attempts terminate on death or level clear.
