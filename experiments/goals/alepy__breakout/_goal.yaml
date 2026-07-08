@@ -1,6 +1,6 @@
 defaults:
 - _self_
-goal_id: breakout
+goal_id: alepy__breakout
 group_id: "{goal_id}"
 run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
 tags:

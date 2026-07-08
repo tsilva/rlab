@@ -30,7 +30,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)
 
     def test_breakout_recipe_loads_without_state(self) -> None:
-        document = load_recipe_document(Path("experiments/goals/ale-py/breakout/recipes/base.yaml"))
+        document = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
 
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "ale-py")
