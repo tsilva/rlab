@@ -1545,6 +1545,51 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         self.assertEqual(infos[1]["done_on_info"], {"level_change": {}})
         self.assertEqual(infos[1]["reset_info"], {"state": "Level1-4"})
         self.assertTrue(infos[1]["TimeLimit.truncated"])
+        native_step_stats = env.native_step_stats()
+        self.assertGreater(native_step_stats["seconds_total"], 0.0)
+        self.assertEqual(native_step_stats["calls_total"], 1)
+        self.assertEqual(native_step_stats["num_envs"], 2)
+
+    def test_records_provider_step_timing(self) -> None:
+        class FakeGymVectorEnv(gym.vector.VectorEnv):
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(2, 2),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.Discrete(3)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiDiscrete([3, 3])
+
+            def reset(self, *, seed=None, options=None):
+                return np.zeros((2, 2), dtype=np.uint8), {}
+
+            def step(self, actions):
+                return (
+                    np.ones((2, 2), dtype=np.uint8),
+                    np.asarray([1.0, 2.0], dtype=np.float32),
+                    np.asarray([False, False]),
+                    np.asarray([False, False]),
+                    {},
+                )
+
+        env = GymVectorEnvToSb3VecEnv(FakeGymVectorEnv())
+        env.step_async([0, 1])
+        with patch("rlab.env.time.perf_counter", side_effect=[10.0, 10.25]):
+            env.step_wait()
+
+        self.assertEqual(
+            env.native_step_stats(),
+            {
+                "seconds_total": 0.25,
+                "calls_total": 1,
+                "num_envs": 2,
+            },
+        )
 
     def test_emits_nonterminal_info_events_for_configured_level_change(self) -> None:
         class FakeVecEnv:
@@ -4401,6 +4446,54 @@ class ThroughputCallbackTests(unittest.TestCase):
                 ("throughput/rollout_fps", 50.0),
                 ("throughput/rollout_fps", 60.0),
                 ("throughput/loop_fps", 20.0),
+            ],
+        )
+
+    def test_logs_native_env_step_throughput_when_available(self) -> None:
+        class Logger:
+            def __init__(self) -> None:
+                self.records: list[tuple[str, float]] = []
+
+            def record(self, key: str, value: float) -> None:
+                self.records.append((key, value))
+
+        class NativeStatsEnv:
+            def __init__(self) -> None:
+                self.stats = [
+                    {"seconds_total": 1.0, "calls_total": 10, "num_envs": 4},
+                    {"seconds_total": 3.0, "calls_total": 35, "num_envs": 4},
+                ]
+
+            def native_step_stats(self):
+                return self.stats.pop(0)
+
+        class Wrapper:
+            def __init__(self, env) -> None:
+                self.venv = env
+
+        class Model:
+            def __init__(self) -> None:
+                self.logger = Logger()
+                self.env = Wrapper(NativeStatsEnv())
+
+        times = iter([0.0, 5.0])
+        callback = ThroughputCallback(clock=lambda: next(times))
+        model = Model()
+        callback.model = model  # type: ignore[assignment]
+
+        callback.num_timesteps = 40
+        callback._on_rollout_start()
+        callback.num_timesteps = 140
+        callback._on_rollout_end()
+
+        self.assertEqual(
+            model.logger.records,
+            [
+                ("throughput/rollout_fps", 20.0),
+                ("throughput/native_env_step_seconds", 2.0),
+                ("throughput/native_env_step_fps", 50.0),
+                ("throughput/native_env_step_batch_fps", 12.5),
+                ("throughput/native_env_step_fraction", 0.4),
             ],
         )
 

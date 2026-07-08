@@ -8,6 +8,10 @@ TIME_TIME_ELAPSED = "time/time_elapsed"
 
 THROUGHPUT_ROLLOUT_FPS = "throughput/rollout_fps"
 THROUGHPUT_LOOP_FPS = "throughput/loop_fps"
+THROUGHPUT_NATIVE_ENV_STEP_FPS = "throughput/native_env_step_fps"
+THROUGHPUT_NATIVE_ENV_STEP_BATCH_FPS = "throughput/native_env_step_batch_fps"
+THROUGHPUT_NATIVE_ENV_STEP_SECONDS = "throughput/native_env_step_seconds"
+THROUGHPUT_NATIVE_ENV_STEP_FRACTION = "throughput/native_env_step_fraction"
 
 TRAIN_ARTIFACT_STALL_SECONDS = "train/artifact/stall_seconds"
 TRAIN_ARTIFACT_LOCAL_SAVE_SECONDS = "train/artifact/local_save_seconds"

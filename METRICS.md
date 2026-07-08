@@ -206,16 +206,23 @@ These come from Stable-Baselines3 PPO and `VecMonitor`.
 | Metric | Meaning |
 | --- | --- |
 | `throughput/rollout_fps` | Rollout-only environment-step throughput, measured from rollout start to rollout end. This excludes PPO optimization time. |
+| `throughput/native_env_step_fps` | Provider vector-env step throughput in environment steps per second, measured only around the underlying Gymnasium vector `env.step(...)` calls during rollout collection. This excludes PPO policy inference, callbacks, rollout-buffer work, and optimizer time. |
+| `throughput/native_env_step_batch_fps` | Provider vector-env batch-step throughput in vector steps per second. Multiply by `n_envs` to compare with environment-step throughput. |
+| `throughput/native_env_step_seconds` | Wall-clock seconds spent inside provider vector-env `env.step(...)` calls during the rollout. |
+| `throughput/native_env_step_fraction` | Fraction of rollout collection wall time spent inside provider vector-env `env.step(...)`. Values near `1` mean native env stepping dominates rollout time; lower values point to policy inference, Python wrappers, callbacks, or rollout-buffer overhead. |
 | `throughput/loop_fps` | Full-loop instantaneous throughput, measured from one rollout start to the next. This includes rollout collection plus PPO optimization overhead. |
 
 For training-speed and host-saturation comparisons, prefer `throughput/loop_fps` over total wall
 time. It is the closest per-run W&B metric to effective training throughput because it includes
 both environment rollout collection and PPO optimization. Use `throughput/rollout_fps` beside it to
-separate emulator/vector-env pressure from optimizer overhead: if rollout FPS drops as parallel jobs
-increase, the env/CPU side is the likely bottleneck; if rollout FPS is steady but loop FPS drops, PPO
-optimization, GPU scheduling, or host contention outside rollout collection is more likely. Use
-`time/fps` only as a cumulative SB3 sanity check, and discount points near checkpoint/final artifact
-events by checking `train/artifact/stall_seconds`.
+separate rollout collection from optimizer overhead. Use `throughput/native_env_step_fps` and
+`throughput/native_env_step_fraction` to isolate the provider vector-env call inside rollout
+collection: if native env-step FPS drops as parallel jobs increase, the emulator/native preprocessing
+path is the likely bottleneck; if native env-step FPS is high but rollout FPS is low, policy
+inference, Python wrappers, callback logging, or rollout-buffer overhead is more likely; if rollout
+FPS is steady but loop FPS drops, PPO optimization, GPU scheduling, or host contention outside
+rollout collection is more likely. Use `time/fps` only as a cumulative SB3 sanity check, and discount
+points near checkpoint/final artifact events by checking `train/artifact/stall_seconds`.
 
 ## Artifact Timing Metrics
 

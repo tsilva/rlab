@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import time
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -626,6 +627,8 @@ class GymVectorEnvToSb3VecEnv(VecEnv):
         self.env = env
         self.waiting = False
         self._actions = None
+        self._native_step_seconds_total = 0.0
+        self._native_step_calls_total = 0
         super().__init__(
             int(env.num_envs),
             getattr(env, "single_observation_space", env.observation_space),
@@ -664,7 +667,10 @@ class GymVectorEnvToSb3VecEnv(VecEnv):
         self.waiting = True
 
     def step_wait(self):
+        step_started_at = time.perf_counter()
         obs, rewards, terminations, truncations, infos = self.env.step(self._actions)
+        self._native_step_seconds_total += time.perf_counter() - step_started_at
+        self._native_step_calls_total += 1
         self._actions = None
         self.waiting = False
         terminations = np.asarray(terminations, dtype=bool)
@@ -691,6 +697,13 @@ class GymVectorEnvToSb3VecEnv(VecEnv):
             dones,
             sb3_infos,
         )
+
+    def native_step_stats(self) -> dict[str, float | int]:
+        return {
+            "seconds_total": self._native_step_seconds_total,
+            "calls_total": self._native_step_calls_total,
+            "num_envs": self.num_envs,
+        }
 
     def close(self):
         return self.env.close()

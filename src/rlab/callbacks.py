@@ -27,6 +27,10 @@ from rlab.metric_names import (
     ROLLOUT_VALUE_PRED_HIST,
     TIME_TIME_ELAPSED,
     THROUGHPUT_LOOP_FPS,
+    THROUGHPUT_NATIVE_ENV_STEP_BATCH_FPS,
+    THROUGHPUT_NATIVE_ENV_STEP_FPS,
+    THROUGHPUT_NATIVE_ENV_STEP_FRACTION,
+    THROUGHPUT_NATIVE_ENV_STEP_SECONDS,
     THROUGHPUT_ROLLOUT_FPS,
     TRAIN_DONE_ALL,
     TRAIN_DONE_MAX_STEPS,
@@ -165,6 +169,27 @@ class ThroughputCallback(BaseCallback):
         self.previous_rollout_start_time: float | None = None
         self.previous_rollout_start_timesteps: int | None = None
         self.pending_fps_instant: float | None = None
+        self.native_step_stats_start: Mapping[str, float | int] | None = None
+
+    @staticmethod
+    def _native_step_stats_source(env: Any) -> Any | None:
+        seen: set[int] = set()
+        current = env
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            native_step_stats = getattr(current, "native_step_stats", None)
+            if callable(native_step_stats):
+                return current
+            current = getattr(current, "venv", None) or getattr(current, "env", None)
+        return None
+
+    @classmethod
+    def _native_step_stats(cls, env: Any) -> Mapping[str, float | int] | None:
+        source = cls._native_step_stats_source(env)
+        if source is None:
+            return None
+        stats = source.native_step_stats()
+        return stats if isinstance(stats, Mapping) else None
 
     def _on_rollout_start(self) -> None:
         now = self.clock()
@@ -179,6 +204,7 @@ class ThroughputCallback(BaseCallback):
 
         self.rollout_start_time = now
         self.rollout_start_timesteps = self.num_timesteps
+        self.native_step_stats_start = self._native_step_stats(getattr(self.model, "env", None))
         self.previous_rollout_start_time = now
         self.previous_rollout_start_timesteps = self.num_timesteps
 
@@ -189,6 +215,10 @@ class ThroughputCallback(BaseCallback):
             steps = self.num_timesteps - self.rollout_start_timesteps
             if elapsed > 0 and steps > 0:
                 self.logger.record(THROUGHPUT_ROLLOUT_FPS, steps / elapsed)
+                self._record_native_step_throughput(
+                    steps=steps,
+                    rollout_elapsed=elapsed,
+                )
 
         if self.pending_fps_instant is not None:
             self.logger.record(THROUGHPUT_LOOP_FPS, self.pending_fps_instant)
@@ -196,6 +226,27 @@ class ThroughputCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         return True
+
+    def _record_native_step_throughput(self, *, steps: int, rollout_elapsed: float) -> None:
+        start = self.native_step_stats_start
+        end = self._native_step_stats(getattr(self.model, "env", None))
+        self.native_step_stats_start = None
+        if start is None or end is None:
+            return
+        native_seconds = float(end.get("seconds_total", 0.0)) - float(
+            start.get("seconds_total", 0.0)
+        )
+        native_calls = int(end.get("calls_total", 0)) - int(start.get("calls_total", 0))
+        if native_seconds <= 0 or native_calls <= 0:
+            return
+        self.logger.record(THROUGHPUT_NATIVE_ENV_STEP_SECONDS, native_seconds)
+        self.logger.record(THROUGHPUT_NATIVE_ENV_STEP_FPS, steps / native_seconds)
+        self.logger.record(THROUGHPUT_NATIVE_ENV_STEP_BATCH_FPS, native_calls / native_seconds)
+        if rollout_elapsed > 0:
+            self.logger.record(
+                THROUGHPUT_NATIVE_ENV_STEP_FRACTION,
+                min(native_seconds / rollout_elapsed, 1.0),
+            )
 
 
 class TimeElapsedCallback(BaseCallback):
