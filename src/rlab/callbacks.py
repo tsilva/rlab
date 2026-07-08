@@ -718,17 +718,13 @@ class LevelCompleteInfoCallback(BaseCallback):
         while len(self.current_sources) < count:
             self.current_sources.append(None)
 
-    @staticmethod
-    def info_event_payloads(info: Mapping[str, Any]) -> dict[str, Any]:
-        return info_event_payloads(info)
-
     def record_step(
         self,
         index: int,
         info: Mapping[str, Any],
         done: bool,
     ) -> dict[str, int | float]:
-        event_payloads = self.info_event_payloads(info)
+        event_payloads = info_event_payloads(info)
         level_payload = event_payloads.get(self.completion_source_event)
         completed = bool(info.get("completion_event", info.get("level_complete", False)))
         if self.failed_by_death_or_life_loss(event_payloads, info):

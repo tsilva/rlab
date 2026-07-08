@@ -28,7 +28,7 @@ policy checks live in `experiments/policies/capacity_policy.yaml`.
 Queue work from checked-in goal recipe files:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab train \
+rlab train \
   --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -36,17 +36,17 @@ UV_CACHE_DIR=.uv-cache uv run rlab train \
 Inspect and reconcile local capacity from the MacBook:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet policy
-UV_CACHE_DIR=.uv-cache uv run rlab fleet status
-UV_CACHE_DIR=.uv-cache uv run rlab fleet ps
-UV_CACHE_DIR=.uv-cache uv run rlab fleet watch --machine beast-3
-UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd --machine beast-3 --limit 5 --once
+rlab fleet policy
+rlab fleet status
+rlab fleet ps
+rlab fleet watch --machine beast-3
+rlab fleet shepherd --machine beast-3 --limit 5 --once
 ```
 
 For a manual recoverable one-job-per-container pass:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet shepherd \
+rlab fleet shepherd \
   --machine beast-3 \
   --limit 5 \
   --once
@@ -67,11 +67,11 @@ Bootstrap each host after OS/Docker changes or when validating a new runtime
 image:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
+rlab fleet setup-host \
   --host beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 
-UV_CACHE_DIR=.uv-cache uv run rlab fleet setup-host \
+rlab fleet setup-host \
   --host beast-2 \
   --runtime-image-ref-file rlab-train-image.json
 ```

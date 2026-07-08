@@ -10,9 +10,9 @@ baseline expectations live in `experiments/benchmarks/baselines.yaml`. Results
 belong under `logs/benchmarks/` and should stay out of source control.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run rlab benchmark list
-UV_CACHE_DIR=.uv-cache uv run rlab benchmark show retro-env-throughput-mario-l11
-UV_CACHE_DIR=.uv-cache uv run rlab benchmark run retro-env-throughput-mario-l11 --dry-run
+rlab benchmark list
+rlab benchmark show retro-env-throughput-mario-l11
+rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 ```
 
 Run a profile only when its scope is appropriate for the machine. Fleet and

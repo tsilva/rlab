@@ -75,9 +75,9 @@ directly over SSH and keeps the queue in charge of scheduling; the beast hosts
 only need Docker, NVIDIA runtime support, mounts, and the fleet env file.
 
 ```bash
-uv run rlab fleet setup-host --host beast-3
-uv run rlab fleet shepherd --machine beast-3 --limit 1
-uv run rlab fleet watch --machine beast-3
+rlab fleet setup-host --host beast-3
+rlab fleet shepherd --machine beast-3 --limit 1
+rlab fleet watch --machine beast-3
 ```
 
 Each launched container owns exactly one queue launch and is labeled with

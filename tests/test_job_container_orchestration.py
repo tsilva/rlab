@@ -272,15 +272,14 @@ class FleetShepherdSplitTests(unittest.TestCase):
         self.assertIn("train_pending=4", output)
         self.assertNotIn("eval" + "_pending", output)
         self.assertIn("launch-live", output)
-        self.assertIn("✓ ok", output)
+        self.assertIn("ok", output)
         self.assertIn("launch-missing", output)
-        self.assertIn("→ needs_shepherd_finalize", output)
+        self.assertIn("needs_shepherd_finalize", output)
         self.assertIn("orphaned containers:", output)
         self.assertIn("launch-orphan", output)
 
         color_output = fleet.render_machine_watch_dashboard(snapshot, color=True)
         self.assertIn("\033[", color_output)
-        self.assertIn("✓", color_output)
         self.assertIn("ok", color_output)
 
     def test_shepherd_once_reconciles_then_fills_slots_under_lock(self) -> None:

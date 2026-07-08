@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path
 
 
 CommandMain = Callable[[list[str] | None], object]
@@ -25,7 +24,7 @@ def _train(argv: Sequence[str]) -> int:
 
         return _run(train_main, argv[1:], prog="rlab train local")
 
-    from rlab.job_queue import cmd_enqueue_train
+    from rlab.job_queue import build_train_enqueue_parser, cmd_enqueue_train
 
     return int(cmd_enqueue_train(build_train_enqueue_parser().parse_args(list(argv))))
 
@@ -106,47 +105,6 @@ def _release(argv: Sequence[str]) -> int:
     from rlab.release import main as release_main
 
     return _run(release_main, argv, prog="rlab release")
-
-
-def build_train_enqueue_parser() -> argparse.ArgumentParser:
-    from rlab.runtime_refs import DEFAULT_IMAGE_ARTIFACT, DEFAULT_IMAGE_BRANCH, DEFAULT_IMAGE_WORKFLOW
-
-    parser = argparse.ArgumentParser(
-        prog="rlab train",
-        description="Create queue-backed train jobs from a checked-in recipe file.",
-    )
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-    parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
-    parser.add_argument("--runtime-image-ref")
-    parser.add_argument(
-        "--runtime-image-ref-file",
-        type=Path,
-        help=(
-            "JSON artifact or plain-text file containing the immutable runtime image ref; "
-            "defaults to latest."
-        ),
-    )
-    parser.add_argument(
-        "--latest-image",
-        action="store_true",
-        help="Resolve the latest successful train image digest.",
-    )
-    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
-    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    parser.add_argument("--seed", type=int, action="append", default=[])
-    parser.add_argument(
-        "--set",
-        dest="recipe_overrides",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help=(
-            "Hydra/OmegaConf dotlist recipe override. Repeat for sweeps, for example "
-            "--set recipe_id=lr2e4 --set train.policy.learning_rate=2e-4."
-        ),
-    )
-    return parser
 
 
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {

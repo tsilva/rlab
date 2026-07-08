@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -13,6 +12,7 @@ import yaml
 from rlab.cli import build_train_command
 from rlab.fleet import docker_image_ref
 from rlab.runtime_refs import runtime_image_ref_from_file
+from rlab.train_config import validate_train_config_fields
 from rlab.validation import int_list
 from rlab.validation import require_int
 from rlab.validation import require_mapping
@@ -34,7 +34,6 @@ ALLOWED_KINDS = {
     "ppo_loop_throughput",
 }
 STATE_NONE_VALUES = {"", "none", "state.none"}
-BENCHMARK_EXECUTION_MODES = ("installed", "source-module")
 
 
 @dataclass(frozen=True)
@@ -84,11 +83,9 @@ def _slug(value: str) -> str:
 
 
 def _profile_payload(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
-    if path.suffix.lower() in {".yaml", ".yml"}:
-        payload = yaml.safe_load(text)
-    else:
-        payload = json.loads(text)
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        raise ValueError(f"benchmark profile must be YAML: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a profile object")
     return payload
@@ -124,6 +121,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
 
     if kind in {"local_smoke", "ppo_loop_throughput", "artifact_storage_smoke"}:
         config = require_mapping(payload.get("train_config"), label=f"{label}.train_config")
+        validate_train_config_fields(config, label=f"{label}.train_config")
         require_non_empty_string(
             config,
             "game",
@@ -159,8 +157,6 @@ def load_benchmark_profiles(profile_dir: Path = DEFAULT_PROFILE_DIR) -> list[Ben
     if not profile_dir.is_dir():
         raise ValueError(f"benchmark profile directory does not exist: {profile_dir}")
     paths = sorted([*profile_dir.glob("*.yaml"), *profile_dir.glob("*.yml")])
-    if not paths:
-        paths = sorted(profile_dir.glob("*.json"))
     return [load_benchmark_profile(path) for path in paths]
 
 
@@ -178,34 +174,8 @@ def _command(label: str, argv: Sequence[str], *, cwd: Path | None = None, env: M
     return BenchmarkCommand(label=label, argv=tuple(str(part) for part in argv), cwd=cwd, env=env)
 
 
-def benchmark_execution_mode(value: str) -> str:
-    if value not in BENCHMARK_EXECUTION_MODES:
-        known = ", ".join(BENCHMARK_EXECUTION_MODES)
-        raise ValueError(f"benchmark execution mode must be one of {known}")
-    return value
-
-
-def _source_module_command(command: Sequence[str]) -> list[str]:
-    parts = list(command)
-    if parts[:3] == ["python", "-m", "rlab.train"]:
-        parts[0] = sys.executable
-    elif parts[:3] == ["rlab", "train", "local"]:
-        parts = [sys.executable, "-m", "rlab.main", *parts[1:]]
-    elif parts and parts[0] == "rlab":
-        parts = [sys.executable, "-m", "rlab.main", *parts[1:]]
-    return parts
-
-
-def _cli_command(command: Sequence[str], *, execution_mode: str) -> list[str]:
-    benchmark_execution_mode(execution_mode)
-    if execution_mode == "source-module":
-        return _source_module_command(command)
-    return list(command)
-
-
-def _train_command(config: Mapping[str, Any], *, execution_mode: str) -> list[str]:
-    command = build_train_command(config)
-    return _cli_command(command, execution_mode=execution_mode)
+def _train_command(config: Mapping[str, Any]) -> list[str]:
+    return build_train_command(config)
 
 
 def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
@@ -217,7 +187,7 @@ def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
     return docker_image_ref(runtime_image_ref_from_file(path))
 
 
-def _local_smoke_commands(profile: Mapping[str, Any], *, execution_mode: str) -> list[BenchmarkCommand]:
+def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     config = dict(require_mapping(profile["train_config"], label="train_config"))
     run_name = str(
         config.get("run_name")
@@ -230,14 +200,15 @@ def _local_smoke_commands(profile: Mapping[str, Any], *, execution_mode: str) ->
         "run_description",
         f"Benchmark profile {profile['name']} local smoke run.",
     )
-    commands = [_command("train-smoke", _train_command(config, execution_mode=execution_mode))]
+    commands = [_command("train-smoke", _train_command(config))]
     eval_cfg = dict(require_mapping(profile.get("eval", {}), label="eval"))
     if eval_cfg.get("enabled", True):
         commands.append(
             _command(
                 "eval-smoke",
                 [
-                    *_cli_command(["rlab", "eval"], execution_mode=execution_mode),
+                    "rlab",
+                    "eval",
                     "--game",
                     str(config["game"]),
                     "--model",
@@ -284,11 +255,11 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
     return commands
 
 
-def _train_profile_commands(profile: Mapping[str, Any], *, execution_mode: str) -> list[BenchmarkCommand]:
+def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     config = dict(require_mapping(profile["train_config"], label="train_config"))
     config.setdefault("run_name", f"benchmark_{_slug(str(profile['name']))}")
     config.setdefault("run_description", f"Benchmark profile {profile['name']} PPO loop probe.")
-    return [_command("train", _train_command(config, execution_mode=execution_mode))]
+    return [_command("train", _train_command(config))]
 
 
 def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
@@ -305,14 +276,14 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
     return [_command("container-smoke", argv)]
 
 
-def _fleet_capacity_commands(profile: Mapping[str, Any], *, execution_mode: str) -> list[BenchmarkCommand]:
+def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     recipe_file = str(profile["recipe_file"])
     host = str(profile["host"])
     commands = [
         _command(
             "enqueue-train",
             [
-                *_cli_command(["rlab"], execution_mode=execution_mode),
+                "rlab",
                 "train",
                 "--recipe-file",
                 recipe_file,
@@ -323,7 +294,7 @@ def _fleet_capacity_commands(profile: Mapping[str, Any], *, execution_mode: str)
         _command(
             "fleet-shepherd-once",
             [
-                *_cli_command(["rlab"], execution_mode=execution_mode),
+                "rlab",
                 "fleet",
                 "shepherd",
                 "--machine",
@@ -337,7 +308,7 @@ def _fleet_capacity_commands(profile: Mapping[str, Any], *, execution_mode: str)
         _command(
             "fleet-watch",
             [
-                *_cli_command(["rlab"], execution_mode=execution_mode),
+                "rlab",
                 "fleet",
                 "watch",
                 "--machine",
@@ -350,9 +321,10 @@ def _fleet_capacity_commands(profile: Mapping[str, Any], *, execution_mode: str)
     return commands
 
 
-def _eval_contract_commands(profile: Mapping[str, Any], *, execution_mode: str) -> list[BenchmarkCommand]:
+def _eval_contract_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     argv = [
-        *_cli_command(["rlab", "eval"], execution_mode=execution_mode),
+        "rlab",
+        "eval",
         "--game",
         str(profile.get("game", "SuperMarioBros-Nes-v0")),
         "--episodes",
@@ -367,24 +339,19 @@ def _eval_contract_commands(profile: Mapping[str, Any], *, execution_mode: str) 
     return [_command("eval-contract", argv)]
 
 
-def build_benchmark_commands(
-    profile: BenchmarkProfile,
-    *,
-    execution_mode: str = "installed",
-) -> list[BenchmarkCommand]:
-    benchmark_execution_mode(execution_mode)
+def build_benchmark_commands(profile: BenchmarkProfile) -> list[BenchmarkCommand]:
     payload = profile.payload
     kind = profile.kind
     if kind == "local_smoke":
-        return _local_smoke_commands(payload, execution_mode=execution_mode)
+        return _local_smoke_commands(payload)
     if kind == "container_smoke":
         return _container_smoke_commands(payload)
     if kind == "env_throughput":
         return _env_throughput_commands(payload)
     if kind in {"artifact_storage_smoke", "ppo_loop_throughput"}:
-        return _train_profile_commands(payload, execution_mode=execution_mode)
+        return _train_profile_commands(payload)
     if kind == "fleet_capacity":
-        return _fleet_capacity_commands(payload, execution_mode=execution_mode)
+        return _fleet_capacity_commands(payload)
     if kind == "eval_contract":
-        return _eval_contract_commands(payload, execution_mode=execution_mode)
+        return _eval_contract_commands(payload)
     raise ValueError(f"unsupported benchmark profile kind {kind!r}")

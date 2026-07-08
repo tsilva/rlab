@@ -1823,12 +1823,12 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         )
         self.assertEqual(default_pipeline.info_mode, "hook_with_terminal_native")
 
-        legacy_pipeline = FusedGymVectorPipeline(
-            source_env,
-            IdentityFusedHooks(None, source_env),
-            info_mode="terminal",
-        )
-        self.assertEqual(legacy_pipeline.info_mode, "hook_with_terminal_native")
+        with self.assertRaisesRegex(ValueError, "hook_with_terminal_native, full"):
+            FusedGymVectorPipeline(
+                source_env,
+                IdentityFusedHooks(None, source_env),
+                info_mode="terminal",
+            )
 
     def test_sb3_fused_vec_env_preserves_sb3_terminal_contract(self) -> None:
         class FakeGymVectorEnv(gym.vector.VectorEnv):

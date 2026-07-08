@@ -11,7 +11,6 @@ from typing import Any
 from rlab.benchmark_profiles import (
     DEFAULT_PROFILE_DIR,
     DEFAULT_RESULT_DIR,
-    BENCHMARK_EXECUTION_MODES,
     BenchmarkCommand,
     build_benchmark_commands,
     find_benchmark_profile,
@@ -53,11 +52,10 @@ def list_profiles(args: argparse.Namespace) -> int:
 
 def show_profile(args: argparse.Namespace) -> int:
     profile = find_benchmark_profile(args.profile, profile_dir=args.profile_dir)
-    commands = build_benchmark_commands(profile, execution_mode=args.execution_mode)
+    commands = build_benchmark_commands(profile)
     payload = {
         "profile": profile.payload,
         "path": str(profile.path),
-        "execution_mode": args.execution_mode,
         "commands": _command_plan(commands),
     }
     print(_json(payload))
@@ -93,7 +91,7 @@ def run_command(command: BenchmarkCommand) -> dict[str, Any]:
 
 def run_profile(args: argparse.Namespace) -> int:
     profile = find_benchmark_profile(args.profile, profile_dir=args.profile_dir)
-    commands = build_benchmark_commands(profile, execution_mode=args.execution_mode)
+    commands = build_benchmark_commands(profile)
     plan = _command_plan(commands)
     if args.dry_run:
         print(_json({"profile": profile.name, "dry_run": True, "commands": plan}))
@@ -135,22 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show", help="Show a profile and its command plan.")
     show_parser.add_argument("profile")
-    show_parser.add_argument(
-        "--execution-mode",
-        choices=BENCHMARK_EXECUTION_MODES,
-        default="installed",
-        help="Command contract to emit. Defaults to installed rlab commands.",
-    )
     show_parser.set_defaults(func=show_profile)
 
     run_parser = subparsers.add_parser("run", help="Run a benchmark profile.")
     run_parser.add_argument("profile")
-    run_parser.add_argument(
-        "--execution-mode",
-        choices=BENCHMARK_EXECUTION_MODES,
-        default="installed",
-        help="Command contract to execute. Defaults to installed rlab commands.",
-    )
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--keep-going", action="store_true")
     run_parser.add_argument("--output-dir", type=Path, default=DEFAULT_RESULT_DIR)

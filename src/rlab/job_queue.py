@@ -13,7 +13,6 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 
-from rlab.compute_targets import instance_defaults, load_json_file
 from rlab.dotenv import load_env_file
 from rlab.json_utils import json_safe
 from rlab.runtime_refs import (
@@ -164,20 +163,6 @@ def normalize_run_target(value: str | None) -> str | None:
     return text or None
 
 
-def canonicalize_run_target(
-    value: str | None,
-    *,
-    instances_path: Path | None = None,
-) -> str | None:
-    target = normalize_run_target(value)
-    if target is None:
-        return None
-    path = instances_path or Path("experiments/instances.yaml")
-    if not path.is_file():
-        return target
-    return str(instance_defaults(load_json_file(path), target).get("name", target))
-
-
 def connect(url: str):
     return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -269,27 +254,13 @@ def _utc_stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _format_seed_template(
-    template: str | None, *, seed: int | None, recipe_id: str, utc: str, group_id: str = ""
-) -> str | None:
-    if not template:
-        return None
-    return str(template).format(
-        seed="" if seed is None else seed,
-        recipe_id=recipe_id,
-        timestamp=utc,
-        utc=utc,
-        group_id=group_id,
-    )
-
-
-def _format_run_name_template(
+def _format_queue_template(
     template: str | None,
     *,
     seed: int | None,
     recipe_id: str,
     utc: str,
-    group_id: str,
+    group_id: str = "",
 ) -> str | None:
     if not template:
         return None
@@ -393,7 +364,7 @@ def enqueue_train_jobs_from_recipe_document(
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
             run_name=(
-                _format_run_name_template(
+                _format_queue_template(
                     document.get("run_name_template"),
                     seed=seed,
                     recipe_id=document_slug,
@@ -407,7 +378,7 @@ def enqueue_train_jobs_from_recipe_document(
                     utc=utc,
                 )
             ),
-            run_description=_format_seed_template(
+            run_description=_format_queue_template(
                 document.get("description"),
                 seed=seed,
                 recipe_id=document_slug,
@@ -983,6 +954,40 @@ def print_status(report: Mapping[str, Any]) -> None:
         )
 
 
+def build_train_enqueue_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="rlab train",
+        description="Create queue-backed train jobs from a checked-in recipe file.",
+    )
+    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
+    parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
+    parser.add_argument("--runtime-image-ref")
+    parser.add_argument(
+        "--runtime-image-ref-file",
+        type=Path,
+        help=(
+            "JSON artifact or plain-text file containing the immutable runtime image ref; "
+            "defaults to latest."
+        ),
+    )
+    parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
+    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
+    parser.add_argument("--seed", type=int, action="append", default=[])
+    parser.add_argument(
+        "--set",
+        dest="recipe_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Hydra/OmegaConf dotlist recipe override. Repeat for sweeps, for example "
+            "--set recipe_id=lr2e4 --set train.policy.learning_rate=2e-4."
+        ),
+    )
+    return parser
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage rlab train job queues.")
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
@@ -1034,7 +1039,7 @@ def runtime_image_ref_from_args(
         return runtime_image_ref_from_file(args.runtime_image_ref_file)
     if getattr(args, "runtime_image_ref", None):
         return normalize_runtime_image_ref(args.runtime_image_ref)
-    if default_latest or getattr(args, "latest_image", False):
+    if default_latest:
         return latest_runtime_image_ref(
             workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
             branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
