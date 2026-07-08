@@ -26,6 +26,13 @@ train:
         max_pool_frames: true
         sticky_action_prob: 0.25
         observation_size: 84
+        obs_crop:
+        - 34
+        - 0
+        - 0
+        - 0
+        obs_crop_mode: mask
+        obs_crop_fill: 0
         obs_resize_algorithm: area
         max_episode_steps: 27000
         action_set: native

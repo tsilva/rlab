@@ -423,12 +423,21 @@ class SingleLaneVecEnvAdapter(gym.Env):
             vec_env.observation_space,
         )
         self.render_mode = getattr(vec_env, "render_mode", None)
+        self._last_obs: np.ndarray | None = None
+
+    @staticmethod
+    def _single_obs(obs: Any) -> np.ndarray:
+        single = np.asarray(obs)[0]
+        if single.ndim == 4 and single.shape[0] == 1:
+            single = single[0]
+        return single
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if isinstance(self.vec_env, gym.vector.VectorEnv):
             obs, infos = self.vec_env.reset(seed=seed, options=options)
             info_list = vector_infos_to_list(infos, self.vec_env.num_envs)
-            return np.asarray(obs)[0], dict(info_list[0]) if info_list else {}
+            self._last_obs = self._single_obs(obs)
+            return self._last_obs, dict(info_list[0]) if info_list else {}
         if seed is not None:
             self.vec_env.seed(seed)
         if options is not None and hasattr(self.vec_env, "set_options"):
@@ -436,7 +445,8 @@ class SingleLaneVecEnvAdapter(gym.Env):
         obs = self.vec_env.reset()
         reset_infos = getattr(self.vec_env, "reset_infos", [{}])
         info = dict(reset_infos[0]) if reset_infos else {}
-        return np.asarray(obs)[0], info
+        self._last_obs = self._single_obs(obs)
+        return self._last_obs, info
 
     def step(self, action: Any):
         action_batch = np.asarray(action)
@@ -460,16 +470,23 @@ class SingleLaneVecEnvAdapter(gym.Env):
                     info["reset_info"] = reset_info
                 if final_obs is not None:
                     step_obs = final_obs
-            return step_obs, float(np.asarray(rewards)[0]), terminated, truncated, info
+            self._last_obs = self._single_obs([step_obs])
+            return self._last_obs, float(np.asarray(rewards)[0]), terminated, truncated, info
         obs, rewards, dones, infos = self.vec_env.step(action_batch)
         info = dict(infos[0]) if infos else {}
         done = bool(np.asarray(dones)[0])
         truncated = bool(info.get("TimeLimit.truncated", False))
         terminated = done and not truncated
-        return np.asarray(obs)[0], float(np.asarray(rewards)[0]), terminated, truncated, info
+        self._last_obs = self._single_obs(obs)
+        return self._last_obs, float(np.asarray(rewards)[0]), terminated, truncated, info
 
     def render(self):
-        return self.vec_env.render()
+        try:
+            return self.vec_env.render()
+        except NotImplementedError:
+            if self._last_obs is None:
+                raise
+            return self._last_obs
 
     def close(self):
         return self.vec_env.close()
@@ -519,6 +536,50 @@ def _super_mario_bros_nes_turbo_make_env(
     )
 
 
+def _ale_py_make_env(
+    config: EnvConfig,
+    *,
+    render_mode: str,
+    fast_observation_path: bool = False,
+) -> gym.Env:
+    if fast_observation_path:
+        raise ValueError("ale-py single-env display does not use fast_observation_path")
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id != ALE_PY_PROVIDER.provider_id:
+        raise ValueError(
+            f"unsupported environment provider {provider.provider_id!r}; "
+            f"expected {ALE_PY_PROVIDER.provider_id}",
+        )
+    if render_mode != "rgb_array":
+        raise ValueError("ale-py visual replay requires render_mode='rgb_array'")
+    if config.state or config.states or config.state_probs:
+        raise ValueError("ale-py visual replay does not support state, states, or state_probs")
+    if config.done_on_events:
+        raise ValueError("ale-py visual replay does not support done_on_events")
+
+    max_num_frames_per_episode = 108_000
+    if config.max_episode_steps > 0:
+        max_num_frames_per_episode = config.max_episode_steps * config.frame_skip
+    return SingleLaneVecEnvAdapter(
+        _ale_py_atari_vector_env_type()(
+            config.game,
+            num_envs=1,
+            num_threads=1,
+            max_num_frames_per_episode=max_num_frames_per_episode,
+            repeat_action_probability=config.sticky_action_prob,
+            full_action_space=False,
+            img_height=210,
+            img_width=160,
+            grayscale=False,
+            stack_num=1,
+            frameskip=config.frame_skip,
+            maxpool=False,
+            reward_clipping=False,
+            use_fire_reset=True,
+        )
+    )
+
+
 def make_provider_env(
     config: EnvConfig,
     *,
@@ -534,6 +595,12 @@ def make_provider_env(
         )
     if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
         return _super_mario_bros_nes_turbo_make_env(
+            config,
+            render_mode=render_mode,
+            fast_observation_path=fast_observation_path,
+        )
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        return _ale_py_make_env(
             config,
             render_mode=render_mode,
             fast_observation_path=fast_observation_path,
@@ -1076,6 +1143,89 @@ class VecRetroProgressInfo(VecEnvWrapper):
         return obs, shaped_rewards, dones, infos
 
 
+class VecAleMaskedPreprocess(VecEnvWrapper):
+    """Mask raw ALE RGB observations before resize/grayscale/frame-stack."""
+
+    def __init__(self, venv, config: EnvConfig):
+        crop = native_obs_crop(config)
+        if crop is None:
+            raise ValueError("VecAleMaskedPreprocess requires obs_crop or hud_crop_top")
+        if config.obs_crop_mode != "mask":
+            raise ValueError("ale-py obs_crop currently supports obs_crop_mode='mask' only")
+        self.config = config
+        self.crop = crop
+        self.size = int(config.observation_size)
+        self.fill = int(config.obs_crop_fill)
+        self._frames: np.ndarray | None = None
+        observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(4, self.size, self.size),
+            dtype=np.uint8,
+        )
+        super().__init__(
+            venv,
+            observation_space=observation_space,
+            action_space=venv.action_space,
+        )
+
+    def _rgb_batch(self, obs: Any) -> np.ndarray:
+        batch = np.asarray(obs)
+        if batch.ndim == 5 and batch.shape[1] == 1:
+            batch = batch[:, 0]
+        if batch.ndim != 4 or batch.shape[-1] != 3:
+            raise ValueError(f"expected ALE RGB observation batch, got shape {batch.shape}")
+        return batch
+
+    def _preprocess_rgb_batch(self, obs: Any) -> np.ndarray:
+        import cv2
+
+        batch = self._rgb_batch(obs).copy()
+        top, right, bottom, left = self.crop
+        if top:
+            batch[:, :top, :, :] = self.fill
+        if bottom:
+            batch[:, -bottom:, :, :] = self.fill
+        if left:
+            batch[:, :, :left, :] = self.fill
+        if right:
+            batch[:, :, -right:, :] = self.fill
+        gray = np.dot(batch[..., :3], np.array([0.299, 0.587, 0.114])).astype(np.uint8)
+        resized = [
+            cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_AREA)
+            for frame in gray
+        ]
+        return np.stack(resized, axis=0).astype(np.uint8, copy=False)
+
+    def _repeat_stack(self, frames: np.ndarray) -> np.ndarray:
+        return np.repeat(frames[:, None, :, :], 4, axis=1)
+
+    def reset(self):
+        frames = self._preprocess_rgb_batch(self.venv.reset())
+        self._frames = self._repeat_stack(frames)
+        return self._frames.copy()
+
+    def step_wait(self):
+        obs, rewards, dones, infos = self.venv.step_wait()
+        frames = self._preprocess_rgb_batch(obs)
+        if self._frames is None:
+            self._frames = self._repeat_stack(frames)
+        else:
+            self._frames = np.roll(self._frames, shift=-1, axis=1)
+            self._frames[:, -1, :, :] = frames
+            done_indices = np.flatnonzero(np.asarray(dones, dtype=bool))
+            if len(done_indices):
+                self._frames[done_indices] = self._repeat_stack(frames[done_indices])
+        for index, info in enumerate(infos):
+            terminal_obs = info.get("terminal_observation") if isinstance(info, dict) else None
+            if terminal_obs is not None:
+                terminal_frame = self._preprocess_rgb_batch(np.asarray([terminal_obs]))[0]
+                info["terminal_observation"] = self._repeat_stack(
+                    terminal_frame[None, :, :]
+                )[0]
+        return self._frames.copy(), rewards, dones, infos
+
+
 class FrameSkip(gym.Wrapper):
     """Repeat one action for several emulator frames and sum reward."""
 
@@ -1205,8 +1355,14 @@ def make_fast_retro_env(config: EnvConfig | None = None, seed: int | None = None
 
 def make_visual_replay_env(config: EnvConfig | None = None, seed: int | None = None) -> gym.Env:
     config = resolve_env_config(config or EnvConfig())
+    provider = resolve_env_provider(config.env_provider)
     target = target_for_game(config.game)
     env = make_provider_env(config, render_mode="rgb_array")
+    if provider.provider_id == ALE_PY_PROVIDER.provider_id:
+        if seed is not None:
+            env.action_space.seed(seed)
+            env.observation_space.seed(seed)
+        return env
     if target.uses_discrete_actions(config.action_set):
         env = DiscreteRetroActions(env, config=config)
     env = FrameSkip(env, config.frame_skip, max_pool=False)
@@ -1362,8 +1518,9 @@ def _ale_py_native_vec_kwargs(
     if native_done_on_rules:
         raise ValueError("ale-py provider does not support done_on_events")
     obs_crop = native_obs_crop(config)
-    if obs_crop is not None:
-        raise ValueError("ale-py provider does not support obs_crop or hud_crop_top")
+    use_masked_preprocess = obs_crop is not None
+    if use_masked_preprocess and config.obs_crop_mode != "mask":
+        raise ValueError("ale-py provider only supports obs_crop_mode='mask'")
     max_num_frames_per_episode = 108_000
     if config.max_episode_steps > 0:
         max_num_frames_per_episode = config.max_episode_steps * config.frame_skip
@@ -1372,10 +1529,10 @@ def _ale_py_native_vec_kwargs(
         "num_threads": num_threads,
         "max_num_frames_per_episode": max_num_frames_per_episode,
         "repeat_action_probability": config.sticky_action_prob,
-        "img_height": config.observation_size,
-        "img_width": config.observation_size,
-        "grayscale": True,
-        "stack_num": 4,
+        "img_height": 210 if use_masked_preprocess else config.observation_size,
+        "img_width": 160 if use_masked_preprocess else config.observation_size,
+        "grayscale": not use_masked_preprocess,
+        "stack_num": 1 if use_masked_preprocess else 4,
         "frameskip": config.frame_skip,
         "maxpool": config.max_pool_frames,
         "reward_clipping": config.clip_rewards,
@@ -1478,6 +1635,11 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
     vec_env.seed(seed)
     if target.uses_discrete_actions(config.action_set):
         vec_env = VecDiscreteRetroActions(vec_env, config=config)
+    if (
+        resolve_env_provider(config.env_provider).provider_id == ALE_PY_PROVIDER.provider_id
+        and native_obs_crop(config) is not None
+    ):
+        vec_env = VecAleMaskedPreprocess(vec_env, config=config)
     vec_env = VecRetroProgressInfo(vec_env, config=config)
     vec_env = VecMonitor(vec_env)
     if config.task_conditioning:

@@ -871,6 +871,52 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         frame_skip.assert_called_once()
         retro_preprocess.assert_not_called()
 
+    def test_visual_replay_env_supports_ale_py_provider(self) -> None:
+        class FakeSpace:
+            def seed(self, seed):
+                self.seed_value = seed
+
+        class FakeEnv:
+            action_space = FakeSpace()
+            observation_space = FakeSpace()
+
+        class FakeAtariVectorEnv:
+            call_args = None
+
+            def __init__(self, *args, **kwargs):
+                type(self).call_args = (args, kwargs)
+
+        sentinel = FakeEnv()
+        config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            action_set="native",
+            frame_skip=4,
+            sticky_action_prob=0.25,
+            obs_crop=(34, 0, 0, 0),
+            obs_crop_mode="mask",
+        )
+
+        with (
+            patch("rlab.env._ale_py_atari_vector_env_type", return_value=FakeAtariVectorEnv),
+            patch("rlab.env.SingleLaneVecEnvAdapter", return_value=sentinel),
+            patch("rlab.env.FrameSkip") as frame_skip,
+            patch("rlab.env.StickyAction") as sticky_action,
+        ):
+            env = make_visual_replay_env(config=config, seed=7)
+
+        self.assertIs(env, sentinel)
+        self.assertEqual(FakeAtariVectorEnv.call_args[0], ("breakout",))
+        kwargs = FakeAtariVectorEnv.call_args[1]
+        self.assertEqual(kwargs["num_envs"], 1)
+        self.assertEqual(kwargs["frameskip"], 4)
+        self.assertEqual(kwargs["repeat_action_probability"], 0.25)
+        self.assertTrue(kwargs["use_fire_reset"])
+        self.assertFalse(kwargs["grayscale"])
+        self.assertEqual(kwargs["stack_num"], 1)
+        frame_skip.assert_not_called()
+        sticky_action.assert_not_called()
+
     def test_rendered_replay_preprocess_uses_top_obs_crop(self) -> None:
         class FakeSpace:
             def seed(self, seed):
@@ -1021,6 +1067,40 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["frameskip"], 4)
         self.assertEqual(native_kwargs["maxpool"], True)
         self.assertEqual(native_kwargs["reward_clipping"], True)
+
+    def test_ale_py_native_vec_kwargs_use_raw_rgb_for_masked_crop(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                game="breakout",
+                state="",
+                action_set="native",
+                reward_mode="native",
+                frame_skip=4,
+                max_pool_frames=True,
+                sticky_action_prob=0.25,
+                max_episode_steps=27000,
+                observation_size=84,
+                obs_crop=(34, 0, 0, 0),
+                obs_crop_mode="mask",
+                obs_crop_fill=0,
+                clip_rewards=True,
+            )
+        )
+
+        native_kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=16,
+            num_threads=4,
+            native_done_on_rules={},
+        )
+
+        self.assertEqual(native_kwargs["img_height"], 210)
+        self.assertEqual(native_kwargs["img_width"], 160)
+        self.assertEqual(native_kwargs["grayscale"], False)
+        self.assertEqual(native_kwargs["stack_num"], 1)
+        self.assertEqual(native_kwargs["frameskip"], 4)
+        self.assertEqual(native_kwargs["maxpool"], True)
 
     def test_ale_py_provider_rejects_state_config(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not support state"):
@@ -3055,6 +3135,19 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(config.env_provider, "stable-retro-turbo")
         self.assertEqual(config.env_threads, 0)
+
+    def test_ale_playback_keeps_native_display_when_stable_retro_lacks_game(self) -> None:
+        policy_config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            env_threads=4,
+        )
+
+        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
+            config = display_replay_config(policy_config)
+
+        self.assertEqual(config.env_provider, "ale-py")
+        self.assertEqual(config.env_threads, 4)
 
     def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
         args = argparse.Namespace(

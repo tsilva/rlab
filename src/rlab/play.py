@@ -40,7 +40,7 @@ from rlab.env import (
     state_name_candidates_from_level_id,
     task_conditioning_info_values,
 )
-from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
+from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id
 from rlab.eval_metrics import single_env_action
 from rlab.eval_metrics import is_level_complete
 from rlab.model_sources import (
@@ -451,6 +451,10 @@ def display_replay_config(config):
     if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id:
         return config
     if native_vec_env_supports_rgb_render(config):
+        return config
+    try:
+        qualify_env_id(STABLE_RETRO_TURBO_PROVIDER.provider_id, config.game)
+    except ValueError:
         return config
     return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id, env_threads=0)
 

@@ -37,6 +37,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["game"], "breakout")
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
+        self.assertEqual(train_config["obs_crop"], [34, 0, 0, 0])
+        self.assertEqual(train_config["obs_crop_mode"], "mask")
+        self.assertEqual(train_config["obs_crop_fill"], 0)
         self.assertEqual(document["environment"]["env_id"], "ale-py:breakout")
 
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
