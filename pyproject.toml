@@ -7,8 +7,8 @@ requires-python = "==3.14.*"
 dependencies = [
     "stable-retro-turbo==1.0.1.post9; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "stable-retro-turbo==1.0.1.post9; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "supermariobrosnes-turbo==0.2.16; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "supermariobrosnes-turbo==0.2.16; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "supermariobrosnes-turbo==0.2.17; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "supermariobrosnes-turbo==0.2.17; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tensorboard>=2.16,<3",
