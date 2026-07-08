@@ -164,8 +164,9 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
             self.level_max_x_pos[completed_level] = 0
             self.current_level_completion_awarded[completed_level] = False
 
-        self.level_x_pos = x_pos
-        self.level_max_x_pos = np.maximum(self.level_max_x_pos, x_pos)
+        effective_x_pos = np.where(level_changed, 0, x_pos)
+        self.level_x_pos = effective_x_pos
+        self.level_max_x_pos = np.maximum(self.level_max_x_pos, effective_x_pos)
         global_x_pos = self.completed_level_base + self.level_x_pos
         global_max_x_pos = self.completed_level_base + self.level_max_x_pos
         progress_delta = np.maximum(0, global_max_x_pos - self.max_global_x_pos)
@@ -365,8 +366,9 @@ class SuperMarioBrosNesFusedHooks(FusedVectorHooks):
             self.level_max_x_pos[index] = 0
             self.current_level_completion_awarded[index] = False
 
-        self.level_x_pos[index] = x_pos
-        self.level_max_x_pos[index] = max(self.level_max_x_pos[index], x_pos)
+        effective_x_pos = 0 if level_changed else x_pos
+        self.level_x_pos[index] = effective_x_pos
+        self.level_max_x_pos[index] = max(self.level_max_x_pos[index], effective_x_pos)
         global_x_pos = self.completed_level_base[index] + self.level_x_pos[index]
         global_max_x_pos = self.completed_level_base[index] + self.level_max_x_pos[index]
         progress_delta = max(0, int(global_max_x_pos - self.max_global_x_pos[index]))

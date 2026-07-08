@@ -223,8 +223,9 @@ class SuperMarioBrosNesProgressInfoWrapper:
             self.level_max_x_pos = 0
             self.current_level_completion_awarded = False
 
-        self.level_x_pos = x_pos
-        self.level_max_x_pos = max(self.level_max_x_pos, x_pos)
+        effective_x_pos = 0 if level_changed else x_pos
+        self.level_x_pos = effective_x_pos
+        self.level_max_x_pos = max(self.level_max_x_pos, effective_x_pos)
         global_x_pos = self.completed_level_base + self.level_x_pos
         global_max_x_pos = self.completed_level_base + self.level_max_x_pos
         progress_delta = max(0, global_max_x_pos - self.max_global_x_pos)

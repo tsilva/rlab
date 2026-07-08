@@ -2062,6 +2062,102 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         self.assertEqual(new_infos[0]["levelHi"], old_infos[0]["levelHi"])
         self.assertEqual(new_infos[0]["levelLo"], old_infos[0]["levelLo"])
 
+    def test_mario_level_change_does_not_double_count_terminal_x_progress(self) -> None:
+        class FakeMarioVectorEnv(gym.vector.VectorEnv):
+            num_envs = 1
+
+            def __init__(self) -> None:
+                self.single_observation_space = gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(4, 84, 84),
+                    dtype=np.uint8,
+                )
+                self.single_action_space = gym.spaces.MultiBinary(9)
+                self.observation_space = self.single_observation_space
+                self.action_space = gym.spaces.MultiBinary(9)
+                self.step_count = 0
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                return (
+                    np.zeros((1, 4, 84, 84), dtype=np.uint8),
+                    {
+                        "lives": np.asarray([3]),
+                        "score": np.asarray([0]),
+                        "levelHi": np.asarray([0]),
+                        "levelLo": np.asarray([0]),
+                        "xscrollHi": np.asarray([0]),
+                        "xscrollLo": np.asarray([0]),
+                    },
+                )
+
+            def step(self, actions):
+                del actions
+                self.step_count += 1
+                level_lo = 0 if self.step_count == 1 else 1
+                score = 0 if self.step_count == 1 else 40
+                return (
+                    np.ones((1, 4, 84, 84), dtype=np.uint8),
+                    np.asarray([0.0], dtype=np.float32),
+                    np.asarray([False]),
+                    np.asarray([False]),
+                    {
+                        "lives": np.asarray([3]),
+                        "score": np.asarray([score]),
+                        "levelHi": np.asarray([0]),
+                        "levelLo": np.asarray([level_lo]),
+                        "xscrollHi": np.asarray([0]),
+                        "xscrollLo": np.asarray([250]),
+                    },
+                )
+
+            def close(self):
+                pass
+
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="supermariobrosnes-turbo",
+                game="SuperMarioBros-Nes-v0",
+                action_set="simple",
+                reward_mode="score",
+                max_episode_steps=0,
+                info_events={"level_change": (("levelHi", "levelLo"), "change")},
+            )
+        )
+
+        old_env = VecRetroProgressInfo(
+            VecDiscreteRetroActions(GymVectorEnvToSb3VecEnv(FakeMarioVectorEnv()), config=config),
+            config=config,
+        )
+        old_env.reset()
+        old_env.step_async(np.asarray([0], dtype=np.int64))
+        old_env.step_wait()
+        old_env.step_async(np.asarray([0], dtype=np.int64))
+        _old_obs, old_rewards, _old_dones, old_infos = old_env.step_wait()
+
+        native_env = FakeMarioVectorEnv()
+        fused_env = Sb3FusedVecEnv(
+            FusedGymVectorPipeline(
+                native_env,
+                SuperMarioBrosNesFusedHooks(config, native_env),
+            )
+        )
+        fused_env.reset()
+        fused_env.step_async(np.asarray([0], dtype=np.int64))
+        fused_env.step_wait()
+        fused_env.step_async(np.asarray([0], dtype=np.int64))
+        _new_obs, new_rewards, _new_dones, new_infos = fused_env.step_wait()
+
+        np.testing.assert_allclose(old_rewards, np.asarray([0.4], dtype=np.float32))
+        np.testing.assert_allclose(new_rewards, old_rewards)
+        self.assertEqual(old_infos[0]["progress_delta"], 0)
+        self.assertEqual(new_infos[0]["progress_delta"], 0)
+        self.assertEqual(old_infos[0]["global_x_pos"], 250)
+        self.assertEqual(new_infos[0]["global_x_pos"], 250)
+        self.assertTrue(old_infos[0]["level_complete"])
+        self.assertTrue(new_infos[0]["level_complete"])
+
     def test_mario_fused_hooks_emit_nonterminal_reward_component_info(self) -> None:
         class FakeMarioVectorEnv(gym.vector.VectorEnv):
             num_envs = 1
