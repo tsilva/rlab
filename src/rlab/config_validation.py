@@ -301,6 +301,8 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         _require_key(document, "eval", label=label),
         label=f"{label}.eval",
     )
+    if "episodes" in eval_section:
+        _require_int(eval_section, "episodes", label=f"{label}.eval", minimum=1)
     eval_environment = eval_section.get("environment")
     if isinstance(eval_environment, Mapping):
         eval_environment_keys = {
@@ -326,12 +328,13 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             require_game=True,
             allowed_extra_keys={"max_episodes", "seed", "n_envs", "max_steps"},
         )
-        _require_int(
-            eval_env_config,
-            "max_episodes",
-            label=f"{label}.eval.environment.env_config",
-            minimum=1,
-        )
+        if "max_episodes" in eval_env_config:
+            _require_int(
+                eval_env_config,
+                "max_episodes",
+                label=f"{label}.eval.environment.env_config",
+                minimum=1,
+            )
         if "seed" in eval_env_config:
             seed = _require_int(
                 eval_env_config,

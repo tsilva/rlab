@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from rlab.artifacts import (
+    build_s3_artifact_uri,
+    log_wandb_model_artifact,
+    sanitize_artifact_name,
+    wandb_artifact_storage_uri,
+)
+from rlab.cli import parse_train_args
+from rlab.env import resolve_env_config
+from rlab.env_config import env_config_from_args
+from rlab.metric_store import MetricStore, metric_store_path
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, load_wandb_env, resolve_wandb_project
+
+
+def artifact_aliases(kind: str, step: int | None) -> list[str]:
+    if kind == "checkpoint":
+        aliases = ["latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    if kind == "interrupted":
+        aliases = ["interrupted", "latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    return [kind, "latest"]
+
+
+def artifact_ref(args: argparse.Namespace, kind: str, aliases: list[str]) -> str | None:
+    if not getattr(args, "wandb", False) or getattr(args, "no_wandb_artifacts", False):
+        return None
+    entity = str(getattr(args, "wandb_entity", "") or DEFAULT_WANDB_ENTITY).strip()
+    project = resolve_wandb_project(getattr(args, "wandb_project", None), str(args.game))
+    if not entity or not project:
+        return None
+    alias = aliases[-1] if aliases else "latest"
+    return f"{entity}/{project}/{sanitize_artifact_name(args.run_name)}-{kind}:{alias}"
+
+
+def resume_wandb_run(args: argparse.Namespace, run_dir: Path):
+    if not getattr(args, "wandb", False):
+        return None
+    run_id_path = run_dir / "wandb_run_id.txt"
+    if not run_id_path.is_file():
+        raise RuntimeError(f"W&B run id not ready: {run_id_path}")
+    run_id = run_id_path.read_text(encoding="utf-8").strip()
+    if not run_id:
+        raise RuntimeError(f"W&B run id is empty: {run_id_path}")
+    load_wandb_env()
+    import wandb
+
+    run = wandb.init(
+        project=resolve_wandb_project(getattr(args, "wandb_project", None), str(args.game)),
+        entity=args.wandb_entity,
+        id=run_id,
+        resume="allow",
+        name=args.run_name,
+        dir=str(run_dir),
+        mode=args.wandb_mode,
+        reinit=True,
+    )
+    run.define_metric("global_step")
+    run.define_metric("*", step_metric="global_step")
+    return run
+
+
+def process_upload(
+    *,
+    store: MetricStore,
+    args: argparse.Namespace,
+    config,
+    run_dir: Path,
+    row: dict[str, Any],
+):
+    checkpoint_id = int(row["id"])
+    if not store.claim_artifact_upload(checkpoint_id):
+        return
+    path = Path(str(row["path"]))
+    kind = str(row["kind"])
+    step = row.get("step")
+    step_value = int(step) if step is not None else None
+    aliases = artifact_aliases(kind, step_value)
+    wandb_run = None
+    try:
+        if getattr(args, "wandb", False) and not getattr(args, "no_wandb_artifacts", False):
+            wandb_run = resume_wandb_run(args, run_dir)
+        log_wandb_model_artifact(
+            wandb_run,
+            args,
+            config,
+            path,
+            kind=kind,
+            aliases=aliases,
+            metric_step=step_value,
+        )
+        storage_uri = None
+        if wandb_artifact_storage_uri(args):
+            storage_uri = build_s3_artifact_uri(wandb_artifact_storage_uri(args), args, path, kind)
+        store.mark_artifact_uploaded(
+            checkpoint_id,
+            artifact_ref=artifact_ref(args, kind, aliases),
+            storage_uri=storage_uri,
+        )
+    except Exception as exc:
+        store.mark_artifact_failed(checkpoint_id, repr(exc))
+        print(f"artifact worker upload failed checkpoint_id={checkpoint_id}: {exc}", flush=True)
+    finally:
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Flush rlab checkpoint artifacts asynchronously.")
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--train-config-json", type=Path, required=True)
+    parser.add_argument("--stop-file", type=Path, required=True)
+    parser.add_argument("--poll-seconds", type=float, default=5.0)
+    parser.add_argument("--limit", type=int, default=10)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    train_args = parse_train_args(["--train-config-json", str(args.train_config_json)])
+    config = resolve_env_config(env_config_from_args(train_args, include_states=True))
+    store = MetricStore(metric_store_path(args.run_dir))
+    store.init()
+    while True:
+        rows = store.pending_artifact_uploads(limit=max(args.limit, 1))
+        if not rows and args.stop_file.exists():
+            return 0
+        for row in rows:
+            process_upload(
+                store=store,
+                args=train_args,
+                config=config,
+                run_dir=args.run_dir,
+                row=row,
+            )
+        if not rows:
+            time.sleep(max(args.poll_seconds, 0.25))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

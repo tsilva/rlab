@@ -480,6 +480,8 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["eval/done/max_steps/from/Level1-2/rate"], 1.0)
         self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
         self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
+        self.assertEqual(metrics["eval/info/level_complete/rate/min"], 0.0)
+        self.assertEqual(metrics["eval/info/level_complete/rate/mean"], 0.5)
         self.assertEqual(metrics["eval/info/level_complete/rate/min/last"], 0.0)
         self.assertEqual(metrics["eval/info/level_complete/rate/mean/last"], 0.5)
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)

@@ -151,7 +151,24 @@ def _goal_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     train = document.get("train")
     if isinstance(train, Mapping):
         config = deep_merge(config, _train_config_from_train_section(train))
+    config = deep_merge(config, _eval_train_defaults(document))
     return config
+
+
+def _eval_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
+    eval_section = document.get("eval")
+    if not isinstance(eval_section, Mapping):
+        return {}
+    episodes = eval_section.get("episodes")
+    if episodes is None:
+        environment = eval_section.get("environment")
+        if isinstance(environment, Mapping):
+            env_config = environment.get("env_config")
+            if isinstance(env_config, Mapping):
+                episodes = env_config.get("max_episodes")
+    if episodes is None:
+        return {}
+    return {"post_train_eval_episodes": copy.deepcopy(episodes)}
 
 
 def _selection_policy_from_goal(document: Mapping[str, Any]) -> Mapping[str, Any] | None:

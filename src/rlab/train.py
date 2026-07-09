@@ -6,7 +6,7 @@ import os
 import re
 import signal
 import time
-import json
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,22 +21,21 @@ from stable_baselines3.common.utils import set_random_seed
 from rlab.artifacts import (
     checkpoint_step,
     init_wandb,
-    log_wandb_model_artifact,
     sanitize_artifact_name,
+    write_model_metadata,
     write_run_description,
     write_wandb_url,
 )
 from rlab.callbacks import (
-    CheckpointArtifactTimingState,
     DoneCounterCallback,
+    LedgerCheckpointCallback,
     LevelCompleteInfoCallback,
+    MetricStoreMirrorCallback,
     MetricThresholdStopCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
     TimeElapsedCallback,
-    TimedCheckpointCallback,
-    WandbCheckpointArtifactCallback,
 )
 from rlab.cli import effective_n_envs, parse_train_args
 from rlab.device import resolve_sb3_device
@@ -82,6 +81,7 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
     LEADER_CHECKPOINT_UPDATED_AT,
 )
+from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 from rlab.schedules import (
     EntropyCoefficientScheduleCallback,
     apply_resume_hyperparameters,
@@ -129,6 +129,40 @@ def checkpoint_save_frequency(checkpoint_freq: int, n_envs: int) -> int | None:
     if checkpoint_freq <= 0:
         return None
     return max(checkpoint_freq // max(n_envs, 1), 1)
+
+
+def save_model_bundle(
+    *,
+    model,
+    args,
+    config,
+    model_path: Path,
+    kind: str,
+    step: int | None,
+    store: MetricStore,
+) -> Path:
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_base = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}"
+    temp_path = temp_base.with_suffix(".zip")
+    model.save(str(temp_base))
+    temp_path.replace(model_path)
+    metadata_path = write_model_metadata(
+        model_path,
+        args,
+        config,
+        kind,
+        checkpoint_step_value=step,
+    )
+    checkpoint_id = store.record_checkpoint(
+        run_name=str(getattr(args, "run_name", "")),
+        kind=kind,
+        step=step,
+        path=model_path,
+        metadata_path=metadata_path,
+        sha256=file_sha256(model_path),
+    )
+    print(f"{kind} model ready: id={checkpoint_id} step={step} path={model_path}", flush=True)
+    return model_path
 
 
 def signal_name(signum: int) -> str:
@@ -207,6 +241,7 @@ def update_best_checkpoint_summary(
     checkpoint_path: Path,
     checkpoint_step_value: int,
     artifact_ref: str,
+    eval_source: str = "post_train_inline",
 ) -> None:
     if wandb_run is None:
         return
@@ -284,7 +319,7 @@ def update_best_checkpoint_summary(
         remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
     wandb_run.summary[LEADER_CHECKPOINT_ARTIFACT_REF] = artifact_ref
     wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
-    wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = "post_train_inline"
+    wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = eval_source
     wandb_run.summary[LEADER_CHECKPOINT_UPDATED_AT] = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ",
         time.gmtime(),
@@ -299,6 +334,7 @@ def log_checkpoint_eval_metrics(
     checkpoint_path: Path,
     checkpoint_step_value: int,
     artifact_ref: str,
+    eval_source: str = "post_train_inline",
 ) -> None:
     if wandb_run is None:
         return
@@ -311,7 +347,7 @@ def log_checkpoint_eval_metrics(
         EVAL_REWARD_MAX: metrics["reward_max"],
         EVAL_BEST_REWARD: metrics["best_episode"]["reward"],
         EVAL_CONFIG_HUD_CROP_TOP: args.hud_crop_top,
-        "eval/source": "post_train_inline",
+        "eval/source": eval_source,
     }
     optional_metric_pairs = {
         EVAL_PROGRESS_X_MEAN: "max_x_mean",
@@ -337,6 +373,7 @@ def log_checkpoint_eval_metrics(
         checkpoint_path=checkpoint_path,
         checkpoint_step_value=checkpoint_step_value,
         artifact_ref=artifact_ref,
+        eval_source=eval_source,
     )
 
 
@@ -478,6 +515,9 @@ def main(argv: list[str] | None = None) -> None:
     run_dir = default_run_dir(args.run_name, args.runs_dir)
     checkpoint_dir = os.path.join(run_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
+    store_path = metric_store_path(run_dir)
+    metric_store = MetricStore(store_path)
+    metric_store.init()
     write_run_description(args, run_dir)
     if args.run_description.strip():
         print(f"run description: {args.run_description.strip()}", flush=True)
@@ -491,6 +531,7 @@ def main(argv: list[str] | None = None) -> None:
     config = resolve_mixed_state_config(config, n_envs=n_envs)
     assert_provider_runtime_available(config)
     wandb_run = init_wandb(args, run_dir, config)
+    write_wandb_url(wandb_run, run_dir)
     graceful_stop_flag = GracefulStopFlag()
     graceful_stop_signal = install_graceful_stop_handler(graceful_stop_flag)
     if graceful_stop_signal is not None:
@@ -552,11 +593,13 @@ def main(argv: list[str] | None = None) -> None:
             wandb_run=wandb_run,
             info_events=config.info_events,
         ),
+        MetricStoreMirrorCallback(store_path),
         *(
             [
                 MetricThresholdStopCallback(
                     marker_path=Path(run_dir) / "early_stop.txt",
                     detector=args.early_stop,
+                    metric_store_path=store_path,
                 )
             ]
             if args.early_stop
@@ -565,29 +608,17 @@ def main(argv: list[str] | None = None) -> None:
         RolloutDiagnosticsCallback(wandb_run=wandb_run),
         RewardComponentDiagnosticsCallback(),
     ]
-    artifact_callback = None
-    checkpoint_timing_state = None
     checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:
-        checkpoint_timing_state = CheckpointArtifactTimingState()
-        artifact_callback = WandbCheckpointArtifactCallback(
-            wandb_run,
-            args,
-            config,
-            checkpoint_dir,
-            scan_freq=checkpoint_save_freq,
-            timing_state=checkpoint_timing_state,
-        )
-        callbacks.extend(
-            [
-                TimedCheckpointCallback(
-                    save_freq=checkpoint_save_freq,
-                    save_path=checkpoint_dir,
-                    name_prefix=checkpoint_prefix(config.game),
-                    timing_state=checkpoint_timing_state,
-                ),
-                artifact_callback,
-            ]
+        callbacks.append(
+            LedgerCheckpointCallback(
+                args=args,
+                config=config,
+                save_freq=checkpoint_save_freq,
+                save_path=checkpoint_dir,
+                name_prefix=checkpoint_prefix(config.game),
+                metric_store_path=store_path,
+            )
         )
     if args.ent_coef_final is not None:
         callbacks.append(
@@ -599,7 +630,7 @@ def main(argv: list[str] | None = None) -> None:
                 else args.timesteps,
             ),
         )
-    print("training-loop eval disabled; post-training checkpoint eval handles promotion metrics")
+    print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
 
     final_model_path = Path(run_dir, "final_model.zip")
     env_closed = False
@@ -610,47 +641,27 @@ def main(argv: list[str] | None = None) -> None:
                 Path(checkpoint_dir)
                 / f"{checkpoint_prefix(config.game)}_interrupted_{model.num_timesteps}_steps.zip"
             )
-            save_started_at = time.perf_counter()
-            if checkpoint_timing_state is not None:
-                checkpoint_timing_state.begin(model.num_timesteps, save_started_at)
-            model.save(interrupted_checkpoint_path)
-            if checkpoint_timing_state is not None:
-                checkpoint_timing_state.record_save(
-                    model.num_timesteps,
-                    time.perf_counter() - save_started_at,
-                )
+            save_model_bundle(
+                model=model,
+                args=args,
+                config=config,
+                model_path=interrupted_checkpoint_path,
+                kind="interrupted",
+                step=model.num_timesteps,
+                store=metric_store,
+            )
             print(f"saved interrupted checkpoint {interrupted_checkpoint_path}", flush=True)
-        final_save_started_at = time.perf_counter()
-        model.save(os.path.join(run_dir, "final_model"))
-        final_save_seconds = time.perf_counter() - final_save_started_at
-        if artifact_callback is not None:
-            artifact_callback.log_new_checkpoints()
-        final_aliases = ["final", "latest"]
-        if graceful_stop_flag.requested:
-            final_aliases.append("interrupted")
-        log_wandb_model_artifact(
-            wandb_run,
-            args,
-            config,
-            final_model_path,
+        save_model_bundle(
+            model=model,
+            args=args,
+            config=config,
+            model_path=final_model_path,
             kind="final",
-            aliases=final_aliases,
-            metric_step=model.num_timesteps,
-            local_save_seconds=final_save_seconds,
+            step=model.num_timesteps,
+            store=metric_store,
         )
         env.close()
         env_closed = True
-        checkpoint_eval_results = evaluate_checkpoints_after_training(
-            args=args,
-            config=config,
-            checkpoint_dir=checkpoint_dir,
-            wandb_run=wandb_run,
-        )
-        if checkpoint_eval_results:
-            (Path(run_dir) / "checkpoint_eval_summary.json").write_text(
-                json.dumps(checkpoint_eval_results, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
         write_wandb_url(wandb_run, run_dir)
     finally:
         if not env_closed:

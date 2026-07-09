@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
-from rlab.artifacts import checkpoint_step, log_wandb_model_artifact
+from rlab.artifacts import checkpoint_step, log_wandb_model_artifact, write_model_metadata
 from rlab.early_stop import (
     evaluate_early_stop_config,
     flat_metric_rule_from_early_stop,
@@ -52,6 +53,7 @@ from rlab.metric_names import (
     train_done_value_metric,
     train_done_reason_metric,
 )
+from rlab.metric_store import MetricStore, file_sha256
 
 
 @dataclass
@@ -105,6 +107,73 @@ class TimedCheckpointCallback(CheckpointCallback):
         result = super()._on_step()
         self.timing_state.record_save(self.num_timesteps, self.clock() - started_at)
         return result
+
+
+class LedgerCheckpointCallback(BaseCallback):
+    def __init__(
+        self,
+        *,
+        args: Any,
+        config: EnvConfig,
+        save_freq: int,
+        save_path: str | Path,
+        name_prefix: str,
+        metric_store_path: Path | str,
+        timing_state: CheckpointArtifactTimingState | None = None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        super().__init__()
+        self.args = args
+        self.config = config
+        self.save_freq = save_freq
+        self.save_path = Path(save_path)
+        self.name_prefix = name_prefix
+        self.metric_store = MetricStore(metric_store_path)
+        self.timing_state = timing_state
+        self.clock = clock or time.perf_counter
+
+    def _init_callback(self) -> None:
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        self.metric_store.init()
+
+    def _on_step(self) -> bool:
+        if self.save_freq <= 0 or self.n_calls % self.save_freq != 0:
+            return True
+        self.save_checkpoint(self.num_timesteps, kind="checkpoint")
+        return True
+
+    def save_checkpoint(self, step: int, *, kind: str) -> Path:
+        started_at = self.clock()
+        if self.timing_state is not None:
+            self.timing_state.begin(step, started_at)
+        final_path = self.save_path / f"{self.name_prefix}_{step}_steps.zip"
+        temp_base = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}"
+        temp_path = temp_base.with_suffix(".zip")
+        self.model.save(str(temp_base))
+        temp_path.replace(final_path)
+        local_save_seconds = self.clock() - started_at
+        if self.timing_state is not None:
+            self.timing_state.record_save(step, local_save_seconds)
+        metadata_path = write_model_metadata(
+            final_path,
+            self.args,
+            self.config,
+            kind,
+            checkpoint_step_value=step,
+        )
+        checkpoint_id = self.metric_store.record_checkpoint(
+            run_name=str(getattr(self.args, "run_name", "")),
+            kind=kind,
+            step=step,
+            path=final_path,
+            metadata_path=metadata_path,
+            sha256=file_sha256(final_path),
+        )
+        print(
+            f"checkpoint ready: id={checkpoint_id} step={step} path={final_path}",
+            flush=True,
+        )
+        return final_path
 
 
 class WandbCheckpointArtifactCallback(BaseCallback):
@@ -297,6 +366,9 @@ class MetricThresholdStopCallback(BaseCallback):
         *,
         marker_path: Path,
         detector: Any,
+        metric_store_path: Path | None = None,
+        poll_seconds: float = 30.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__()
         self.detector = normalize_early_stop_config(detector, label="early_stop")
@@ -306,12 +378,33 @@ class MetricThresholdStopCallback(BaseCallback):
         self.operator = str(self.flat_rule["operator"]) if self.flat_rule else ""
         self.marker_path = marker_path
         self.triggered = False
+        self.stop_requested = False
+        self.metric_store = MetricStore(metric_store_path, timeout=0.05) if metric_store_path else None
+        self.poll_seconds = poll_seconds
+        self.clock = clock or time.perf_counter
+        self.last_poll: float | None = None
+        self.last_lookup_warning: float | None = None
 
     def _on_step(self) -> bool:
+        if self.metric_store is not None:
+            return not self.stop_requested
+        return self.evaluate_now()
+
+    def _on_rollout_end(self) -> None:
+        if self.metric_store is None or self.stop_requested:
+            return
+        now = self.clock()
+        if self.last_poll is not None and now - self.last_poll < self.poll_seconds:
+            return
+        self.last_poll = now
+        self.evaluate_now()
+
+    def evaluate_now(self) -> bool:
         result, values = evaluate_early_stop_config(self.detector, self.current_metric_value)
         if result is not True:
             return True
         self.triggered = True
+        self.stop_requested = True
         self.write_marker(values)
         print(
             "early stop: "
@@ -333,6 +426,18 @@ class MetricThresholdStopCallback(BaseCallback):
             except (TypeError, ValueError):
                 return None
             return value if math.isfinite(value) else None
+        if self.metric_store is not None:
+            try:
+                return self.metric_store.latest_metric(metric_name)
+            except Exception as exc:
+                now = self.clock()
+                if self.last_lookup_warning is None or now - self.last_lookup_warning >= 60:
+                    print(
+                        f"warning: metric store lookup failed for early stop metric "
+                        f"{metric_name}: {exc}",
+                        flush=True,
+                    )
+                    self.last_lookup_warning = now
         return None
 
     def describe_trigger(self, values: Mapping[str, float]) -> str:
@@ -370,6 +475,59 @@ class MetricThresholdStopCallback(BaseCallback):
             "\n".join(lines) + "\n",
             encoding="utf-8",
         )
+
+
+class MetricStoreMirrorCallback(BaseCallback):
+    def __init__(
+        self,
+        metric_store_path: Path | str,
+        *,
+        source: str = "train",
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        super().__init__()
+        self.metric_store = MetricStore(metric_store_path, timeout=0.05)
+        self.source = source
+        self.clock = clock or time.perf_counter
+        self.last_seen: dict[str, float] = {}
+        self.last_warning: float | None = None
+
+    def _on_training_start(self) -> None:
+        self.metric_store.init()
+
+    def _on_step(self) -> bool:
+        self.mirror_current_logger_values()
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self.mirror_current_logger_values()
+
+    def mirror_current_logger_values(self) -> None:
+        logger = getattr(self.model, "logger", None)
+        payload: dict[str, float] = {}
+        for attr in ("name_to_value", "records"):
+            values = getattr(logger, attr, None)
+            if not isinstance(values, Mapping):
+                continue
+            for key, value in values.items():
+                if isinstance(value, bool) or not isinstance(value, int | float):
+                    continue
+                numeric = float(value)
+                if not math.isfinite(numeric):
+                    continue
+                if self.last_seen.get(str(key)) == numeric:
+                    continue
+                self.last_seen[str(key)] = numeric
+                payload[str(key)] = numeric
+        if not payload:
+            return
+        try:
+            self.metric_store.append_metrics(payload, step=self.num_timesteps, source=self.source)
+        except Exception as exc:
+            now = self.clock()
+            if self.last_warning is None or now - self.last_warning >= 60:
+                print(f"warning: metric store write failed: {exc}", flush=True)
+                self.last_warning = now
 
 
 class RolloutDiagnosticsCallback(BaseCallback):

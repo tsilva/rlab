@@ -24,9 +24,9 @@ objective:
 train:
   checkpoint_freq: 500000
   early_stop:
-  - metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    threshold: 0.99
+  - metric: eval/info/level_complete/rate/min
+    operator: '>='
+    threshold: 1.0
   environment:
     env_provider: &mario_env_provider supermariobrosnes-turbo
     env_config:
@@ -71,11 +71,11 @@ train:
       - life_loss
       - level_change
 eval:
+  episodes: 100
   environment:
     env_provider: *mario_env_provider
     env_config:
       <<: *mario_env_config
-      max_episodes: 100
       done_on_events:
       - level_change
 release:

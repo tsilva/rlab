@@ -51,6 +51,8 @@ EVAL_DONE_TERMINATED = "eval/done/terminated"
 EVAL_DONE_TERMINATED_RATE = "eval/done/terminated/rate"
 EVAL_DONE_UNCLASSIFIED = "eval/done/unclassified"
 EVAL_DONE_UNCLASSIFIED_RATE = "eval/done/unclassified/rate"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MIN = "eval/info/level_complete/rate/min"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN = "eval/info/level_complete/rate/mean"
 EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "eval/info/level_complete/rate/min/last"
 EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "eval/info/level_complete/rate/mean/last"
 

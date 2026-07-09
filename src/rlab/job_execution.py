@@ -16,6 +16,7 @@ from rlab.job_metadata import (
 )
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import require_explicit_queue_train_config
+from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import validate_training_seed
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
@@ -197,6 +198,13 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
                 checkpoint_eval_summary = loaded_summary
         except json.JSONDecodeError:
             checkpoint_eval_summary = []
+    phase_counts = {}
+    store_path = metric_store_path(run_dir)
+    if store_path.is_file():
+        try:
+            phase_counts = MetricStore(store_path, timeout=0.05).phase_counts()
+        except Exception:
+            phase_counts = {}
     return {
         "run_name": run_name,
         "run_dir": str(run_dir),
@@ -208,6 +216,7 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         "artifact_refs": artifact_refs,
         "checkpoint_eval_summary": checkpoint_eval_summary,
         "metrics_json": metrics,
+        "phase_counts": phase_counts,
     }
 
 

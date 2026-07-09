@@ -11,15 +11,18 @@ import rlab.metric_names as metric_names
 from rlab.callbacks import (
     DoneCounterCallback,
     LevelCompleteInfoCallback,
+    MetricStoreMirrorCallback,
     MetricThresholdStopCallback,
     RewardComponentDiagnosticsCallback,
     RolloutDiagnosticsCallback,
     ThroughputCallback,
     TimeElapsedCallback,
 )
+from rlab.metric_store import MetricStore
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
 )
 
@@ -773,6 +776,65 @@ class MetricThresholdStopCallbackTests(unittest.TestCase):
             marker = marker_path.read_text(encoding="utf-8")
             self.assertIn("early_stop_detector_json=", marker)
             self.assertIn("early_stop_value/rollout/ep_rew_mean=1000", marker)
+
+    def test_polls_metric_store_at_rollout_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "run" / "rlab.sqlite"
+            marker_path = Path(tmp) / "run" / "early_stop.txt"
+            store = MetricStore(store_path)
+            store.init()
+            store.append_metrics(
+                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0},
+                step=120000,
+                source="eval",
+                checkpoint_step=120000,
+            )
+            model = self.FakeModel()
+            clock_value = 100.0
+            callback = MetricThresholdStopCallback(
+                detector=[
+                    {
+                        "metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+                        "operator": ">=",
+                        "threshold": 1.0,
+                    }
+                ],
+                marker_path=marker_path,
+                metric_store_path=store_path,
+                poll_seconds=30.0,
+                clock=lambda: clock_value,
+            )
+            callback.model = model  # type: ignore[assignment]
+            callback.num_timesteps = 130000
+
+            self.assertTrue(callback._on_step())
+            callback._on_rollout_end()
+            self.assertFalse(callback._on_step())
+
+            marker = marker_path.read_text(encoding="utf-8")
+            self.assertIn(f"early_stop_metric={EVAL_INFO_LEVEL_COMPLETE_RATE_MIN}", marker)
+            self.assertIn("early_stop_value=1", marker)
+            self.assertIn("timesteps=130000", marker)
+
+    def test_metric_store_mirror_writes_numeric_logger_values_once_per_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "run" / "rlab.sqlite"
+            model = self.FakeModel()
+            callback = MetricStoreMirrorCallback(store_path)
+            callback.model = model  # type: ignore[assignment]
+            callback.num_timesteps = 10
+            callback._on_training_start()
+
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.5
+            model.logger.records["ignored/text"] = "nope"
+            callback._on_step()
+            callback._on_step()
+
+            store = MetricStore(store_path)
+            self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST), 0.5)
+            with store.connection() as conn:
+                count = conn.execute("SELECT count(*) FROM metric_observations").fetchone()[0]
+            self.assertEqual(count, 1)
 
 class ThroughputCallbackTests(unittest.TestCase):
     def test_logs_rollout_fps_and_next_iteration_instant_fps(self) -> None:

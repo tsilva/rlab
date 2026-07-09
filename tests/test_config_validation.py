@@ -309,9 +309,9 @@ environment_hash: sha256:deadbeef
             document["train"]["early_stop"],
             [
                 {
-                    "metric": "train/info/level_complete/rate/min/last",
-                    "operator": ">",
-                    "threshold": 0.99,
+                    "metric": "eval/info/level_complete/rate/min",
+                    "operator": ">=",
+                    "threshold": 1.0,
                 }
             ],
         )
@@ -353,8 +353,8 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["eval"]["environment"]["env_config"]["observation_size"], 84)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["max_episodes"], 100)
-        self.assertNotIn("episodes", document["eval"]["environment"]["env_config"])
+        self.assertEqual(document["eval"]["episodes"], 100)
+        self.assertNotIn("max_episodes", document["eval"]["environment"]["env_config"])
         self.assertNotIn("seed", document["eval"]["environment"]["env_config"])
         self.assertNotIn("max_steps", document["eval"]["environment"]["env_config"])
         self.assertEqual(

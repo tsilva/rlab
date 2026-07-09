@@ -30,10 +30,9 @@ train:
   checkpoint_freq: 500000
   # The metric itself owns the 100-attempt FIFO semantics.
   early_stop:
-  - metric: train/info/level_complete/rate/min/last
-    operator: '>'
-    # >0.99 means the latest FIFO window is effectively full.
-    threshold: 0.99
+  - metric: eval/info/level_complete/rate/min
+    operator: '>='
+    threshold: 1.0
   environment:
     # SuperMarioBros-NES Turbo supplies SuperMarioBrosNesTurboVecEnv.
     env_provider: &mario_env_provider supermariobrosnes-turbo
@@ -86,12 +85,12 @@ train:
       - level_change
 # Goal-owned checkpoint eval protocol.
 eval:
+  episodes: 100
   environment:
     # SuperMarioBros-NES Turbo supplies SuperMarioBrosNesTurboVecEnv.
     env_provider: *mario_env_provider
     env_config:
       <<: *mario_env_config
-      max_episodes: 100
       # Eval episodes stop on observed level changes, not life loss.
       done_on_events:
       - level_change

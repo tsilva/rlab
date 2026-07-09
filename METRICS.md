@@ -57,8 +57,10 @@ the queue database stores train-job state, not result metric projections.
 | `eval/done/level_change/rate` | Pooled eval episode completion fraction. |
 | `eval/done/level_change/from/<start>/rate` | Eval completion fraction for episodes that started from `<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start eval completion fraction. Use this first when comparing multi-start-state policies. |
-| `eval/info/level_complete/rate/min/last` | Eval counterpart to `train/info/level_complete/rate/min/last`; alias of `eval/done/level_change/from_rate/min` for eval summaries. |
-| `eval/info/level_complete/rate/mean/last` | Eval counterpart to `train/info/level_complete/rate/mean/last`; alias of `eval/done/level_change/from_rate/mean` for eval summaries. |
+| `eval/info/level_complete/rate/min` | Eval counterpart to the train completion aggregate; alias of `eval/done/level_change/from_rate/min` for eval summaries and the preferred local early-stop metric. |
+| `eval/info/level_complete/rate/mean` | Eval counterpart to the train completion aggregate; alias of `eval/done/level_change/from_rate/mean` for eval summaries. |
+| `eval/info/level_complete/rate/min/last` | Backward-compatible eval alias of `eval/done/level_change/from_rate/min` for W&B charts and older reports. |
+| `eval/info/level_complete/rate/mean/last` | Backward-compatible eval alias of `eval/done/level_change/from_rate/mean` for W&B charts and older reports. |
 
 Current training does not log per-rollout done-count distribution stats such as `train/done/min`,
 `train/done/mean`, or `train/done/max`. The aggregate all-done counter is `train/done/all`.
@@ -255,7 +257,7 @@ path is the likely bottleneck; if native env-step FPS is high but rollout FPS is
 inference, Python wrappers, callback logging, or rollout-buffer overhead is more likely; if rollout
 FPS is steady but loop FPS drops, PPO optimization, GPU scheduling, or host contention outside
 rollout collection is more likely. Use `time/fps` only as a cumulative SB3 sanity check, and discount
-points near checkpoint/final artifact events by checking `train/artifact/stall_seconds`.
+points near checkpoint/final artifact events separately from artifact-worker timing.
 
 Do not compare `throughput/native_env_step_fps` directly with the default
 `SuperMarioBros-Nes-turbo` `scripts/benchmark_sps.py` output unless the benchmark is configured to
@@ -267,12 +269,13 @@ still excludes PPO policy inference, rollout-buffer writes, callbacks, and optim
 
 ## Artifact Timing Metrics
 
-These sparse metrics are logged when training logs model artifacts. Checkpoint rows use the checkpoint
-step as `global_step`; final and best artifacts use the model's current timestep.
+These sparse metrics are logged when the artifact worker flushes model artifacts. Checkpoint rows use
+the checkpoint step as `global_step`; final and best artifacts use the model's current timestep. They
+measure worker-side artifact latency, not trainer stall time.
 
 | Metric | Meaning |
 | --- | --- |
-| `train/artifact/stall_seconds` | Wall-clock time spent in the synchronous artifact boundary. For checkpoints this spans local checkpoint save plus artifact metadata/upload/logging; for final artifacts this spans final model save plus artifact metadata/upload/logging; for best artifacts this spans artifact metadata/upload/logging only. |
+| `train/artifact/stall_seconds` | Wall-clock artifact-worker flush duration reported for compatibility with older charts. It no longer represents trainer stall time for async checkpoint/final artifacts. |
 | `train/artifact/local_save_seconds` | Local SB3 checkpoint or final model save duration. Logged when the local save can be paired with the artifact log. |
 | `train/artifact/log_seconds` | Total wall-clock time spent inside artifact metadata/upload/logging after the model zip already exists. |
 | `train/artifact/metadata_seconds` | Time spent writing the checkpoint metadata sidecar. |
@@ -392,8 +395,8 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/best/reward` | Return of the best eval episode. Mario ranks best episodes by completion, then max X, then reward; generic targets rank by reward. |
 | `eval/best/x` | Max global X position of the best eval episode. Logged only when the target defines global X progress. |
 | `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
-| `eval/checkpoint/step` | Checkpoint timestep being evaluated by post-train checkpoint eval. Post-train eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
-| `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by post-train checkpoint eval. |
+| `eval/checkpoint/step` | Checkpoint timestep being evaluated by the async eval worker. Eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
+| `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by the async eval worker. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
 | `leader/checkpoint/objective` | W&B summary field for the best evaluated checkpoint on a source run. Uses the target-specific primary eval objective: Mario completion bottleneck when present, otherwise `eval/reward/mean`. Used by `rlab leaders checkpoints`. |
 | `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/done/level_change/from_rate/min` or `eval/reward/mean`. |
@@ -405,7 +408,7 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/local_path` | Local checkpoint path for the source run's current best evaluated checkpoint when it is available on the eval worker. |
-| `leader/checkpoint/eval_source` | Source that produced the current best-checkpoint summary update, currently `post_train_inline`. |
+| `leader/checkpoint/eval_source` | Source that produced the current best-checkpoint summary update, usually `async_worker`; legacy runs may show `post_train_inline`. |
 | `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 
 Per-start-state eval done metrics mirror the training done namespace as
@@ -420,8 +423,10 @@ previous-value tuple such as `0-0`.
 | `eval/done/level_change/from/<start>/rate` | `eval/done/level_change/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start-state level-change rate. Use this for balanced multi-state eval ranking. |
 | `eval/done/level_change/from_rate/mean` | Mean per-start-state level-change rate. |
-| `eval/info/level_complete/rate/min/last` | Alias of `eval/done/level_change/from_rate/min`, named to mirror `train/info/level_complete/rate/min/last`. |
-| `eval/info/level_complete/rate/mean/last` | Alias of `eval/done/level_change/from_rate/mean`, named to mirror `train/info/level_complete/rate/mean/last`. |
+| `eval/info/level_complete/rate/min` | Alias of `eval/done/level_change/from_rate/min`, named for local metric-store early stopping. |
+| `eval/info/level_complete/rate/mean` | Alias of `eval/done/level_change/from_rate/mean`, named for local metric-store consumers. |
+| `eval/info/level_complete/rate/min/last` | Backward-compatible alias of `eval/done/level_change/from_rate/min`, named to mirror older train `info/level_complete` reports. |
+| `eval/info/level_complete/rate/mean/last` | Backward-compatible alias of `eval/done/level_change/from_rate/mean`, named to mirror older train `info/level_complete` reports. |
 | `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. Can overlap with level-change counts. |
 | `eval/done/max_steps/from/<start>/rate` | `eval/done/max_steps/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/terminated/from/<start>` | Eval episodes from `<start>` that ended via native env termination without max-step truncation. |
@@ -466,7 +471,7 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `checkpoint_artifact` | Checkpoint artifact or local checkpoint ref attached by post-train eval summaries. W&B receives `eval/checkpoint/artifact`. |
 | `model` | Local model path used by local or post-train eval summaries. |
 | `policy` | Scripted policy name for scripted eval, or `ppo` for model eval. |
-| `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in post-train checkpoint eval. |
+| `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in checkpoint eval. |
 | `eval_seed` | Seed used for checkpoint or local eval. Default eval runs use `10007` in the eval-reserved `10000+` range; train seeds are forbidden from that range. |
 
 ## W&B Config And Artifacts

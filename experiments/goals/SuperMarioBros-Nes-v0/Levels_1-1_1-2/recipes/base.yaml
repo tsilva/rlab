@@ -8,7 +8,7 @@ template_vars:
 description: >-
   Seed {seed} trains a task-conditioned {goal_id} policy over Level1-1 and Level1-2
   with 50/50 weighted starts, per-task advantage normalization, and the goal
-  contract's bottleneck clear-rate gate before post-train checkpoint eval ranking.
+  contract's bottleneck clear-rate gate before async checkpoint eval ranking.
 train:
   policy:
     timesteps: 50000000

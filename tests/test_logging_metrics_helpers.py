@@ -99,6 +99,8 @@ class MetricsDocumentationTests(unittest.TestCase):
             "train/reward/<component>/<stat>",
             "train/reward_share/<component>",
             "eval/done/<reason>/from/<start>",
+            "eval/info/level_complete/rate/min",
+            "eval/info/level_complete/rate/mean",
             "eval/info/level_complete/rate/min/last",
             "eval/info/level_complete/rate/mean/last",
         ]

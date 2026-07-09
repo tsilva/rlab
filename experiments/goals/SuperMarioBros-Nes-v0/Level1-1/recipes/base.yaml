@@ -8,7 +8,7 @@ template_vars:
 description: >-
   Seed {seed} trains the stable low-KL late-decay {goal_id} policy-search baseline, created
   to validate the recipe across seeds with the goal contract's clear-rate gate first and
-  post-train checkpoint eval ranking for checkpoint promotion.
+  async checkpoint eval ranking for checkpoint promotion.
 train:
   policy:
     # Queue-backed training caps must be explicit in recipes; no runtime default is supplied.

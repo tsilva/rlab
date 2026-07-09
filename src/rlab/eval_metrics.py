@@ -16,7 +16,9 @@ from rlab.metric_names import (
     EVAL_DONE_TERMINATED_RATE,
     EVAL_DONE_UNCLASSIFIED,
     EVAL_DONE_UNCLASSIFIED_RATE,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
     eval_done_value_metric,
 )
@@ -136,6 +138,8 @@ def eval_done_from_metrics(
         completion_rate_mean = float(np.mean(completion_rates))
         metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN] = completion_rate_min
         metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN] = completion_rate_mean
+        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN] = completion_rate_min
+        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN] = completion_rate_mean
         metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = completion_rate_min
         metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST] = completion_rate_mean
     return metrics
