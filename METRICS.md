@@ -398,6 +398,13 @@ changes, on native env done, or at the configured max-step horizon.
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by the async eval worker. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
 | `eval/duration/seconds` | Wall-clock seconds spent inside `evaluate_model_episodes(...)`, including episode rollout and any requested best-episode video rendering. Logged to W&B for checkpoint eval when present. |
+| `checkpoint_eval/<stage>/<eval_metric_suffix>` | Training-time staged checkpoint eval metric. These mirror canonical `eval/*` metrics under a stage prefix, for example `checkpoint_eval/screen/info/level_complete/rate/min`. They are for cheap async screening and are not promotion-quality full eval metrics. |
+| `checkpoint_eval/<stage>/pass` | `1` when the stage pass rules matched for that checkpoint, otherwise `0`. The default Mario `screen` and `confirm` stages require perfect per-start completion. |
+| `checkpoint_eval/<stage>/stage_index` | Numeric order of the staged checkpoint eval step. Lower stages are cheaper screens; later stages are stronger confirmation gates. |
+| `checkpoint_eval/candidate/pass` | Candidate early-stop signal emitted only by a stage marked `candidate_stop` after its pass rules match. Mario training early stop watches this metric instead of canonical `eval/*`, so 10-episode screens cannot stop training by themselves. |
+| `checkpoint_eval/candidate/checkpoint_step` | Checkpoint timestep that produced the current candidate early-stop signal. |
+| `checkpoint_eval/candidate/stage_index` | Stage index that produced the current candidate early-stop signal. |
+| `checkpoint_eval/candidate/episodes` | Number of episodes used by the candidate-stop stage. |
 | `leader/checkpoint/objective` | W&B summary field for the best evaluated checkpoint on a source run. Uses the target-specific primary eval objective: Mario completion bottleneck when present, otherwise `eval/reward/mean`. Used by `rlab leaders checkpoints`. |
 | `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/done/level_change/from_rate/min` or `eval/reward/mean`. |
 | `leader/checkpoint/completion_rate` | W&B summary field for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/min` when available. Omitted for generic targets without a completion event. |

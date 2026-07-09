@@ -21,6 +21,10 @@ TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
 
+LEGACY_TRAIN_CONFIG_FIELD_ALIASES = {
+    "post_train_eval_n_envs": "checkpoint_eval_n_envs",
+}
+
 
 @dataclass(frozen=True)
 class TrainConfigField:
@@ -173,10 +177,24 @@ def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
 
 
 def _canonical_train_command_options(options: Mapping[str, Any]) -> dict[str, Any]:
-    canonical = dict(options)
+    canonical = normalize_train_config_aliases(options)
     for field in TRAIN_CONFIG_FIELDS:
         if field.env_config_key and field.env_config_key in canonical and field.dest not in canonical:
             canonical[field.dest] = canonical[field.env_config_key]
+    return canonical
+
+
+def normalize_train_config_aliases(options: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = dict(options)
+    for legacy_key, canonical_key in LEGACY_TRAIN_CONFIG_FIELD_ALIASES.items():
+        if legacy_key not in canonical:
+            continue
+        legacy_value = canonical.pop(legacy_key)
+        if canonical_key in canonical and canonical[canonical_key] != legacy_value:
+            raise ValueError(
+                f"train config fields {legacy_key!r} and {canonical_key!r} disagree",
+            )
+        canonical.setdefault(canonical_key, legacy_value)
     return canonical
 
 
@@ -209,6 +227,7 @@ def train_config_field_names() -> frozenset[str]:
 
 
 def train_config_field_for_key(key: str, *, include_env_aliases: bool = True) -> TrainConfigField | None:
+    key = LEGACY_TRAIN_CONFIG_FIELD_ALIASES.get(key, key)
     for field in TRAIN_CONFIG_FIELDS:
         if field.dest == key or (include_env_aliases and field.env_config_key == key):
             return field
@@ -656,11 +675,20 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Episodes per checkpoint for post-training checkpoint eval.",
     ),
     TrainConfigField(
-        "post_train_eval_n_envs",
-        ("--post-train-eval-n-envs",),
+        "checkpoint_eval_n_envs",
+        ("--checkpoint-eval-n-envs", "--post-train-eval-n-envs"),
         type_name="int",
         default=20,
-        help="Vector eval env count for post-training checkpoint eval.",
+        validation_min=1,
+        help="Vector env count for checkpoint eval. The old --post-train-eval-n-envs flag is accepted as an alias.",
+    ),
+    TrainConfigField(
+        "checkpoint_eval_stages",
+        ("--checkpoint-eval-stages",),
+        type_name="json",
+        default=None,
+        serialize="json",
+        help="JSON list of cheap checkpoint eval stages for async candidate-stop screening.",
     ),
     TrainConfigField(
         "post_train_eval_max_steps",

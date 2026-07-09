@@ -30,9 +30,25 @@ train:
   checkpoint_freq: 500000
   # The metric itself owns the 100-attempt FIFO semantics.
   early_stop:
-  - metric: eval/info/level_complete/rate/min
+  - metric: checkpoint_eval/candidate/pass
     operator: '>='
     threshold: 1.0
+  checkpoint_eval_stages:
+  - name: screen
+    episodes: 10
+    n_envs: 2
+    pass:
+    - metric: eval/info/level_complete/rate/min
+      operator: '>='
+      threshold: 1.0
+  - name: confirm
+    episodes: 30
+    n_envs: 4
+    pass:
+    - metric: eval/info/level_complete/rate/min
+      operator: '>='
+      threshold: 1.0
+    candidate_stop: true
   environment:
     # SuperMarioBros-NES Turbo supplies SuperMarioBrosNesTurboVecEnv.
     env_provider: &mario_env_provider supermariobrosnes-turbo

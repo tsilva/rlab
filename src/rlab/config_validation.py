@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
+from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
@@ -571,6 +572,11 @@ def _validate_goal_contract_document(
             )
     if "early_stop" in train:
         normalize_early_stop_config(train["early_stop"], label=f"{label}.train.early_stop")
+    if "checkpoint_eval_stages" in train:
+        normalize_checkpoint_eval_stages(
+            train["checkpoint_eval_stages"],
+            label=f"{label}.train.checkpoint_eval_stages",
+        )
     environment = _goal_train_environment(document, train, label=label)
     _validate_environment_identity({"environment": environment}, label=f"{label}.train")
     env_config = (

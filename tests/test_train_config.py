@@ -18,6 +18,12 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertEqual(field.dest, "info_events_json")
         self.assertEqual(field.env_config_key, "info_events")
 
+    def test_legacy_checkpoint_eval_n_envs_alias_resolves_to_canonical_field(self) -> None:
+        field = train_config_field_for_key("post_train_eval_n_envs")
+
+        self.assertIsNotNone(field)
+        self.assertEqual(field.dest, "checkpoint_eval_n_envs")
+
     def test_build_train_command_accepts_env_config_aliases(self) -> None:
         command = build_train_command_from_fields(
             {
@@ -31,6 +37,36 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertIn('{"life_loss":["lives","decrease"]}', command)
         self.assertIn("--done-on-events", command)
         self.assertIn("life_loss", command)
+
+    def test_build_train_command_emits_checkpoint_eval_n_envs_for_legacy_alias(self) -> None:
+        command = build_train_command_from_fields({"post_train_eval_n_envs": 4})
+
+        self.assertIn("--checkpoint-eval-n-envs", command)
+        self.assertIn("4", command)
+        self.assertNotIn("--post-train-eval-n-envs", command)
+
+    def test_build_train_command_emits_checkpoint_eval_stages_json(self) -> None:
+        stages = [
+            {
+                "name": "screen",
+                "episodes": 10,
+                "n_envs": 2,
+                "pass": [
+                    {
+                        "metric": "eval/info/level_complete/rate/min",
+                        "operator": ">=",
+                        "threshold": 1.0,
+                    }
+                ],
+            }
+        ]
+        command = build_train_command_from_fields({"checkpoint_eval_stages": stages})
+
+        self.assertIn("--checkpoint-eval-stages", command)
+        rendered = command[command.index("--checkpoint-eval-stages") + 1]
+        self.assertIn('"name":"screen"', rendered)
+        self.assertIn('"episodes":10', rendered)
+        self.assertIn('"metric":"eval/info/level_complete/rate/min"', rendered)
 
     def test_field_validation_uses_choices_and_numeric_bounds(self) -> None:
         validate_train_config_fields(

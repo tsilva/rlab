@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.env_config import parse_obs_crop
@@ -15,6 +16,7 @@ from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     add_train_config_args,
     build_train_command_from_fields,
+    normalize_train_config_aliases,
     train_config_field_names,
 )
 
@@ -63,7 +65,7 @@ def apply_train_config_json(
     if path is None:
         return args
 
-    payload = load_train_config_json(Path(path))
+    payload = normalize_train_config_aliases(load_train_config_json(Path(path)))
     args._train_config_json_fields = set(payload)
     valid_dests = train_config_field_names()
     unknown = sorted(str(key) for key in payload if key not in valid_dests)
@@ -98,6 +100,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     apply_train_config_json(args, parser, explicit_dests)
     args = apply_preset(args)
     validate_early_stop_args(args)
+    validate_checkpoint_eval_stage_args(args)
     validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
     return args
 
@@ -106,6 +109,15 @@ def validate_early_stop_args(args: argparse.Namespace) -> None:
     early_stop = getattr(args, "early_stop", None)
     if early_stop is not None:
         args.early_stop = normalize_early_stop_config(early_stop, label="--early-stop")
+
+
+def validate_checkpoint_eval_stage_args(args: argparse.Namespace) -> None:
+    stages = getattr(args, "checkpoint_eval_stages", None)
+    if stages is not None:
+        args.checkpoint_eval_stages = normalize_checkpoint_eval_stages(
+            stages,
+            label="--checkpoint-eval-stages",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

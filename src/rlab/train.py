@@ -402,12 +402,18 @@ def evaluate_checkpoints_after_training(
         print("post-training checkpoint eval skipped: no checkpoints found", flush=True)
         return []
     episodes = int(args.post_train_eval_episodes)
-    n_envs = int(args.post_train_eval_n_envs)
+    n_envs = int(
+        getattr(
+            args,
+            "checkpoint_eval_n_envs",
+            getattr(args, "post_train_eval_n_envs", 20),
+        )
+    )
     max_steps = int(args.post_train_eval_max_steps or args.max_episode_steps)
     if episodes < 1:
         raise ValueError("--post-train-eval-episodes must be >= 1")
     if n_envs < 1:
-        raise ValueError("--post-train-eval-n-envs must be >= 1")
+        raise ValueError("--checkpoint-eval-n-envs must be >= 1")
     if max_steps < 1:
         raise ValueError("--post-train-eval-max-steps/--max-episode-steps must be >= 1")
 

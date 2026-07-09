@@ -8,6 +8,23 @@ from pathlib import Path
 from rlab.metric_names import EVAL_INFO_LEVEL_COMPLETE_RATE_MIN
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 
+STAGES = [
+    {
+        "name": "screen",
+        "episodes": 10,
+        "n_envs": 2,
+        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "candidate_stop": False,
+    },
+    {
+        "name": "confirm",
+        "episodes": 30,
+        "n_envs": 4,
+        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "candidate_stop": True,
+    },
+]
+
 
 class MetricStoreTests(unittest.TestCase):
     def test_append_metrics_and_latest_lookup_keep_newest_duplicate(self) -> None:
@@ -99,6 +116,65 @@ class MetricStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN), 1.0)
+
+    def test_staged_eval_skips_old_screens_but_preserves_confirm_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            checkpoint_dir = run_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True)
+            store = MetricStore(metric_store_path(run_dir))
+            store.init()
+            for step in (100, 200, 300):
+                path = checkpoint_dir / f"model_{step}_steps.zip"
+                path.write_bytes(f"checkpoint-{step}".encode())
+                store.record_checkpoint(
+                    run_name="run",
+                    kind="checkpoint",
+                    step=step,
+                    path=path,
+                    metadata_path=None,
+                    sha256="sha",
+                )
+
+            store.ensure_checkpoint_eval_stages(STAGES)
+            rows = store.pending_checkpoint_eval_stages()
+            self.assertEqual(rows[0]["step"], 300)
+            self.assertEqual(rows[0]["stage_name"], "screen")
+
+            skipped = store.skip_stale_initial_checkpoint_eval_stages(
+                keep_checkpoint_id=int(rows[0]["id"]),
+            )
+            self.assertEqual(skipped, 2)
+            store.mark_checkpoint_eval_stage_succeeded(
+                int(rows[0]["eval_stage_id"]),
+                episodes=10,
+                n_envs=2,
+                metrics={"checkpoint_eval/screen/pass": 1.0},
+            )
+            store.enqueue_checkpoint_eval_stage(
+                int(rows[0]["id"]),
+                STAGES[1],
+                stage_index=1,
+            )
+            newer_path = checkpoint_dir / "model_400_steps.zip"
+            newer_path.write_bytes(b"checkpoint-400")
+            store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=400,
+                path=newer_path,
+                metadata_path=None,
+                sha256="sha",
+            )
+            store.ensure_checkpoint_eval_stages(STAGES)
+
+            rows = store.pending_checkpoint_eval_stages(limit=2)
+            self.assertEqual(rows[0]["step"], 300)
+            self.assertEqual(rows[0]["stage_name"], "confirm")
+            self.assertEqual(rows[1]["step"], 400)
+            self.assertEqual(rows[1]["stage_name"], "screen")
+            self.assertEqual(store.phase_counts()["evals:skipped_stale"], 2)
+            self.assertEqual(store.phase_counts()["eval_stages:skipped_stale"], 2)
 
 
 if __name__ == "__main__":

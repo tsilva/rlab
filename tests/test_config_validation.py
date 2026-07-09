@@ -309,12 +309,15 @@ environment_hash: sha256:deadbeef
             document["train"]["early_stop"],
             [
                 {
-                    "metric": "eval/info/level_complete/rate/min",
+                    "metric": "checkpoint_eval/candidate/pass",
                     "operator": ">=",
                     "threshold": 1.0,
                 }
             ],
         )
+        self.assertEqual(document["train"]["checkpoint_eval_stages"][0]["episodes"], 10)
+        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["episodes"], 30)
+        self.assertTrue(document["train"]["checkpoint_eval_stages"][1]["candidate_stop"])
         self.assertEqual(
             document["objective"]["rank"],
             [

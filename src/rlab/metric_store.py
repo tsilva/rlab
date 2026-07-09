@@ -58,6 +58,26 @@ CREATE TABLE IF NOT EXISTS eval_results (
 CREATE INDEX IF NOT EXISTS eval_results_status_idx
   ON eval_results (status, updated_at);
 
+CREATE TABLE IF NOT EXISTS checkpoint_eval_stages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  checkpoint_id INTEGER NOT NULL,
+  stage_name TEXT NOT NULL,
+  stage_index INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  episodes INTEGER,
+  n_envs INTEGER,
+  metrics_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(checkpoint_id, stage_name),
+  FOREIGN KEY(checkpoint_id) REFERENCES checkpoints(id)
+);
+
+CREATE INDEX IF NOT EXISTS checkpoint_eval_stages_status_idx
+  ON checkpoint_eval_stages (status, stage_index, updated_at);
+
 CREATE TABLE IF NOT EXISTS metric_observations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -233,6 +253,132 @@ class MetricStore:
             limit=limit,
         )
 
+    def ensure_checkpoint_eval_stages(
+        self,
+        stages: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not stages:
+            return
+        now = time.time()
+        first_stage = stages[0]
+        with self.connection() as conn:
+            checkpoint_rows = conn.execute(
+                """
+                SELECT c.id
+                FROM eval_results r
+                JOIN checkpoints c ON c.id = r.checkpoint_id
+                LEFT JOIN checkpoint_eval_stages s ON s.checkpoint_id = c.id
+                WHERE c.status = 'ready'
+                  AND r.status IN ('pending', 'failed_retryable')
+                  AND s.id IS NULL
+                """
+            ).fetchall()
+            conn.executemany(
+                """
+                INSERT INTO checkpoint_eval_stages
+                  (checkpoint_id, stage_name, stage_index, status, episodes, n_envs, created_at, updated_at)
+                VALUES (?, ?, 0, 'pending', ?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id, stage_name) DO NOTHING
+                """,
+                [
+                    (
+                        int(row["id"]),
+                        str(first_stage["name"]),
+                        int(first_stage["episodes"]),
+                        first_stage.get("n_envs"),
+                        now,
+                        now,
+                    )
+                    for row in checkpoint_rows
+                ],
+            )
+
+    def pending_checkpoint_eval_stages(self, *, limit: int = 1) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  c.*,
+                  s.id AS eval_stage_id,
+                  s.stage_name,
+                  s.stage_index,
+                  s.status AS stage_status,
+                  s.episodes AS stage_episodes,
+                  s.n_envs AS stage_n_envs,
+                  s.attempts AS stage_attempts,
+                  s.last_error AS stage_last_error,
+                  r.status AS worker_status,
+                  r.attempts,
+                  r.last_error
+                FROM checkpoint_eval_stages s
+                JOIN checkpoints c ON c.id = s.checkpoint_id
+                JOIN eval_results r ON r.checkpoint_id = c.id
+                WHERE c.status = 'ready'
+                  AND r.status IN ('pending', 'failed_retryable')
+                  AND s.status IN ('pending', 'failed_retryable')
+                ORDER BY
+                  CASE WHEN s.stage_index > 0 THEN 0 ELSE 1 END,
+                  c.step IS NULL,
+                  c.step DESC,
+                  c.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def skip_stale_initial_checkpoint_eval_stages(self, *, keep_checkpoint_id: int) -> int:
+        now = time.time()
+        with self.connection() as conn:
+            keep_row = conn.execute(
+                "SELECT step FROM checkpoints WHERE id = ?",
+                (keep_checkpoint_id,),
+            ).fetchone()
+            keep_step = None if keep_row is None else keep_row["step"]
+            if keep_step is None:
+                return 0
+            rows = conn.execute(
+                """
+                SELECT s.checkpoint_id
+                FROM checkpoint_eval_stages s
+                JOIN checkpoints c ON c.id = s.checkpoint_id
+                JOIN eval_results r ON r.checkpoint_id = c.id
+                WHERE s.stage_index = 0
+                  AND s.status = 'pending'
+                  AND s.attempts = 0
+                  AND r.status = 'pending'
+                  AND c.status = 'ready'
+                  AND c.step IS NOT NULL
+                  AND c.step < ?
+                """,
+                (int(keep_step),),
+            ).fetchall()
+            checkpoint_ids = [int(row["checkpoint_id"]) for row in rows]
+            if not checkpoint_ids:
+                return 0
+            placeholders = ",".join("?" for _ in checkpoint_ids)
+            conn.execute(
+                f"""
+                UPDATE checkpoint_eval_stages
+                SET status = 'skipped_stale', updated_at = ?
+                WHERE checkpoint_id IN ({placeholders})
+                  AND stage_index = 0
+                  AND status = 'pending'
+                  AND attempts = 0
+                """,
+                (now, *checkpoint_ids),
+            )
+            conn.execute(
+                f"""
+                UPDATE eval_results
+                SET status = 'skipped_stale', updated_at = ?
+                WHERE checkpoint_id IN ({placeholders})
+                  AND status = 'pending'
+                """,
+                (now, *checkpoint_ids),
+            )
+        return len(checkpoint_ids)
+
     def _pending_rows(
         self,
         *,
@@ -260,6 +406,20 @@ class MetricStore:
 
     def claim_eval(self, checkpoint_id: int) -> bool:
         return self._claim("eval_results", checkpoint_id)
+
+    def claim_checkpoint_eval_stage(self, stage_id: int) -> bool:
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE checkpoint_eval_stages
+                SET status = 'running', attempts = attempts + 1, updated_at = ?
+                WHERE id = ? AND status IN ('pending', 'failed_retryable')
+                """,
+                (now, stage_id),
+            )
+            changed = cursor.rowcount
+        return changed == 1
 
     def _claim(self, table: str, checkpoint_id: int) -> bool:
         now = time.time()
@@ -330,6 +490,154 @@ class MetricStore:
     def mark_eval_failed(self, checkpoint_id: int, error: str) -> None:
         self._mark_failed("eval_results", checkpoint_id, error)
 
+    def mark_checkpoint_eval_stage_succeeded(
+        self,
+        stage_id: int,
+        *,
+        episodes: int,
+        n_envs: int,
+        metrics: Mapping[str, object],
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE checkpoint_eval_stages
+                SET status = 'succeeded',
+                    episodes = ?,
+                    n_envs = ?,
+                    metrics_json = ?,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    int(episodes),
+                    int(n_envs),
+                    json.dumps(metrics, sort_keys=True, default=str),
+                    now,
+                    stage_id,
+                ),
+            )
+
+    def mark_checkpoint_eval_stage_failed(self, stage_id: int, error: str) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE checkpoint_eval_stages
+                SET status = 'failed_retryable',
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error[:4000], now, stage_id),
+            )
+            row = conn.execute(
+                "SELECT checkpoint_id FROM checkpoint_eval_stages WHERE id = ?",
+                (stage_id,),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    """
+                    UPDATE eval_results
+                    SET status = 'failed_retryable',
+                        last_error = ?,
+                        updated_at = ?
+                    WHERE checkpoint_id = ?
+                    """,
+                    (error[:4000], now, int(row["checkpoint_id"])),
+                )
+
+    def enqueue_checkpoint_eval_stage(
+        self,
+        checkpoint_id: int,
+        stage: Mapping[str, Any],
+        *,
+        stage_index: int,
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO checkpoint_eval_stages
+                  (checkpoint_id, stage_name, stage_index, status, episodes, n_envs, created_at, updated_at)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id, stage_name) DO NOTHING
+                """,
+                (
+                    checkpoint_id,
+                    str(stage["name"]),
+                    int(stage_index),
+                    int(stage["episodes"]),
+                    stage.get("n_envs"),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE eval_results
+                SET status = 'pending', last_error = NULL, updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (now, checkpoint_id),
+            )
+
+    def mark_checkpoint_eval_candidate(
+        self,
+        checkpoint_id: int,
+        *,
+        episodes: int,
+        metrics: Mapping[str, object],
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE eval_results
+                SET status = 'candidate',
+                    episodes = ?,
+                    metrics_json = ?,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (
+                    int(episodes),
+                    json.dumps(metrics, sort_keys=True, default=str),
+                    now,
+                    checkpoint_id,
+                ),
+            )
+
+    def mark_checkpoint_eval_non_candidate(
+        self,
+        checkpoint_id: int,
+        *,
+        episodes: int,
+        metrics: Mapping[str, object],
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE eval_results
+                SET status = 'non_candidate',
+                    episodes = ?,
+                    metrics_json = ?,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (
+                    int(episodes),
+                    json.dumps(metrics, sort_keys=True, default=str),
+                    now,
+                    checkpoint_id,
+                ),
+            )
+
     def _mark_failed(self, table: str, checkpoint_id: int, error: str) -> None:
         now = time.time()
         with self.connection() as conn:
@@ -358,6 +666,10 @@ class MetricStore:
                 UNION ALL
                 SELECT 'evals:' || status AS key, count(*) AS count
                 FROM eval_results
+                GROUP BY status
+                UNION ALL
+                SELECT 'eval_stages:' || status AS key, count(*) AS count
+                FROM checkpoint_eval_stages
                 GROUP BY status
                 """
             ).fetchall()

@@ -499,6 +499,64 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reserved for eval"):
                 parse_train_args(["--train-config-json", str(path)])
 
+    def test_checkpoint_eval_n_envs_accepts_new_flag_and_legacy_json_key(self) -> None:
+        args = parse_train_args(["--checkpoint-eval-n-envs", "3"])
+        self.assertEqual(args.checkpoint_eval_n_envs, 3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps({"post_train_eval_n_envs": 4}) + "\n",
+                encoding="utf-8",
+            )
+
+            legacy_args = parse_train_args(["--train-config-json", str(path)])
+
+        self.assertEqual(legacy_args.checkpoint_eval_n_envs, 4)
+        self.assertIn("checkpoint_eval_n_envs", legacy_args._train_config_json_fields)
+        self.assertNotIn("post_train_eval_n_envs", legacy_args._train_config_json_fields)
+
+    def test_train_config_json_accepts_checkpoint_eval_stages(self) -> None:
+        stages = [
+            {
+                "name": "screen",
+                "episodes": 10,
+                "n_envs": 2,
+                "pass": [
+                    {
+                        "metric": "eval/info/level_complete/rate/min",
+                        "operator": ">=",
+                        "threshold": 1.0,
+                    }
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps({"checkpoint_eval_stages": stages}) + "\n",
+                encoding="utf-8",
+            )
+
+            args = parse_train_args(["--train-config-json", str(path)])
+
+        self.assertEqual(args.checkpoint_eval_stages[0]["name"], "screen")
+        self.assertEqual(args.checkpoint_eval_stages[0]["episodes"], 10)
+        self.assertEqual(args.checkpoint_eval_stages[0]["n_envs"], 2)
+        self.assertIs(args.checkpoint_eval_stages[0]["candidate_stop"], False)
+
+    def test_train_config_json_rejects_invalid_checkpoint_eval_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps({"checkpoint_eval_stages": [{"name": "screen", "episodes": 0}]})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "checkpoint-eval-stages.*episodes"):
+                parse_train_args(["--train-config-json", str(path)])
+
     def test_train_config_json_rejects_retired_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"

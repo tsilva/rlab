@@ -96,6 +96,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
 )
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
     {
+        "checkpoint_eval_stages",
         "early_stop",
     }
 )
