@@ -115,6 +115,7 @@ def _ale_py_native_vec_kwargs(
         "stack_num": 4,
         "frameskip": config.frame_skip,
         "maxpool": config.max_pool_frames,
+        "episodic_life": config.episodic_life,
         "reward_clipping": config.clip_rewards,
     }
 

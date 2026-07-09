@@ -128,6 +128,7 @@ class EnvConfig:
     vec_wrappers: tuple[dict[str, Any], ...] = ()
     no_progress_timeout_steps: int = 0
     no_progress_min_delta: int = 0
+    episodic_life: bool = False
     info_events: InfoEventRules = field(default_factory=dict)
     done_on_events: tuple[str, ...] = ()
     action_set: str = "auto"

@@ -307,6 +307,23 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(document["train_config"]["done_on_events"], [])
         self.assertEqual(document["recipe_overrides"], overrides)
 
+    def test_load_recipe_document_allows_ale_episodic_life_override(self) -> None:
+        overrides = [
+            "recipe_id=episodic-life",
+            "train.environment.env_config.episodic_life=true",
+        ]
+
+        document = job_queue.load_recipe_document(
+            Path("experiments/goals/alepy__mspacman/recipes/base.yaml"),
+            recipe_overrides=overrides,
+        )
+
+        self.assertEqual(document["recipe_id"], "episodic-life")
+        self.assertEqual(document["train_config"]["timesteps"], 100000000)
+        self.assertIs(document["train_config"]["episodic_life"], True)
+        self.assertEqual(document["train_config"]["obs_crop"], [0, 0, 37, 0])
+        self.assertEqual(document["recipe_overrides"], overrides)
+
     def test_recipe_schema_rejects_removed_template_alias(self) -> None:
         document = valid_train_recipe()
         document["description"] = "Candidate {" + "spec" + "_id}"

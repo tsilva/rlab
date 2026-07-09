@@ -42,6 +42,7 @@ PLAYBACK_ENV_ARG_KEYS = {
     "env_wrappers": ("env_wrappers",),
     "no_progress_timeout_steps": ("no_progress_timeout_steps",),
     "no_progress_min_delta": ("no_progress_min_delta",),
+    "episodic_life": ("episodic_life",),
     "info_events_json": ("info_events",),
     "done_on_events": ("done_on_events",),
     "action_set": ("action_set",),

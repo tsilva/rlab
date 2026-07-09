@@ -33,6 +33,7 @@ TERMINATION_KEYS = (
     "max_episode_steps",
     "no_progress_timeout_steps",
     "no_progress_min_delta",
+    "episodic_life",
     "info_events_json",
     "info_events",
     "done_on_events",

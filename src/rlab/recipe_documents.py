@@ -43,6 +43,7 @@ QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp",
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
+    ("goal", "tags", "2"): frozenset({"env_id"}),
     ("run_name_template",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "run_name_template"): QUEUE_TEMPLATE_FIELDS,
     (
@@ -60,6 +61,7 @@ RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     **RECIPE_DEFERRED_TEMPLATE_FIELDS,
     ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
+    ("tags", "2"): frozenset({"env_id"}),
 }
 GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
     {
@@ -82,6 +84,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "observation_size",
         "hud_crop_top",
         "max_episode_steps",
+        "episodic_life",
         "info_events",
         "info_events_json",
         "done_on_events",
@@ -467,8 +470,13 @@ def _materialize_goal_queue_defaults(
         if isinstance(tags, Sequence) and not isinstance(tags, str | bytes):
             materialized["tags"] = list(tags)
             if path is not None:
+                tag_document = {
+                    "tags": materialized["tags"],
+                    "recipe_id": materialized.get("recipe_id"),
+                    "train": goal_document.get("train"),
+                }
                 materialized["tags"] = render_template_vars(
-                    {"tags": materialized["tags"]},
+                    tag_document,
                     path=path,
                     label=f"goal tags for recipe file {path}",
                 )["tags"]

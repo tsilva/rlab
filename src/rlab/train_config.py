@@ -518,6 +518,16 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Comma-separated info event names that should terminate the current episode.",
     ),
     TrainConfigField(
+        "episodic_life",
+        ("--episodic-life",),
+        false_flag="--no-episodic-life",
+        kind="bool_optional",
+        default=False,
+        env_default="episodic_life",
+        env_config_key="episodic_life",
+        help="For ALE-py, terminate episodes on life loss using the native episodic_life flag.",
+    ),
+    TrainConfigField(
         "task_conditioning",
         ("--task-conditioning",),
         kind="store_true",

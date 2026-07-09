@@ -983,6 +983,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 max_episode_steps=27000,
                 observation_size=84,
                 clip_rewards=True,
+                episodic_life=True,
             )
         )
 
@@ -1005,6 +1006,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["stack_num"], 4)
         self.assertEqual(native_kwargs["frameskip"], 4)
         self.assertEqual(native_kwargs["maxpool"], True)
+        self.assertEqual(native_kwargs["episodic_life"], True)
         self.assertEqual(native_kwargs["reward_clipping"], True)
 
     def test_ale_py_native_vec_kwargs_keep_native_preprocessing_for_masked_crop(self) -> None:
