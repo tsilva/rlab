@@ -379,9 +379,12 @@ def log_checkpoint_eval_metrics(
 
 
 def eval_config_from_training_config(config):
-    if not config.done_on_events:
+    eval_done_on_events = tuple(
+        name for name in config.done_on_events if name == "level_change"
+    )
+    if eval_done_on_events == config.done_on_events:
         return config
-    return replace(config, done_on_events=())
+    return replace(config, done_on_events=eval_done_on_events)
 
 
 def evaluate_checkpoints_after_training(

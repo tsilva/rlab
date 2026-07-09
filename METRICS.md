@@ -150,12 +150,12 @@ configured rule keys read from terminal `info` as the source value. For Mario
 for their current `(levelHi, levelLo)` source level. Training intentionally does not emit `to` or
 full-transition counters because those multiply metric cardinality quickly. Training does not emit
 initializer-state mirrors under `train/state/<initializer>/done/*`; those labels are not reliable
-for natural level transitions. Evaluation, including post-training checkpoint eval, forces
-`done_on_events=()` in env construction and does not pass native terminal `done_on` rules to
-Stable Retro; it keeps running after observed level completion, so `eval/done/level_change` and
-`eval/done/level_change/from/<start>` track whether a natural transition was observed during the eval
-horizon. Eval `from` values are the configured episode start state, not native `done_on_info`
-previous-value payloads.
+for natural level transitions. Evaluation, including post-training checkpoint eval, preserves
+`level_change` as a terminal event while dropping life-loss termination. This stops successful
+single-level Mario eval episodes as soon as the policy clears the level, so
+`eval/done/level_change` and `eval/done/level_change/from/<start>` track episodes that ended on
+an observed natural transition. Eval `from` values are the configured episode start state, not
+native `done_on_info` previous-value payloads.
 
 `train/done/*` windows remain terminal-episode metrics. Natural clean clears observed while the
 training env keeps running set `level_complete` / `completion_event`, increment
@@ -366,10 +366,9 @@ Reward share metrics compare absolute component magnitudes within a rollout.
 ## Evaluation Metrics
 
 These are logged by post-training checkpoint eval and by local `rlab eval` model checks.
-Evaluation env construction forces `done_on_events=()` and does not pass native terminal
-`done_on` rules to Stable Retro. The eval loop also
-keeps running after observed life-loss and level-change events; it stops on native env done or the
-configured max-step horizon. Because of that, level-change and max-step eval metrics can overlap.
+Post-training checkpoint eval preserves `level_change` as a terminal event while dropping life-loss
+termination. The eval loop keeps running after observed life-loss events, but stops when the level
+changes, on native env done, or at the configured max-step horizon.
 
 | Metric | Meaning |
 | --- | --- |
@@ -381,9 +380,9 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `eval/progress/level_x/mean` | Mean max level-local X position reached per eval episode. |
 | `eval/progress/level_x/max` | Maximum level-local X position reached by any eval episode. |
 | `eval/done/all` | Number of eval episodes summarized. This is exhaustive. |
-| `eval/done/level_change` | Eval episodes where a clean natural level transition was observed at least once during the eval horizon. |
+| `eval/done/level_change` | Eval episodes where a clean natural level transition was observed. For current single-level Mario checkpoint evals, this event normally ends the episode. |
 | `eval/done/level_change/rate` | `eval/done/level_change / eval/done/all`. |
-| `eval/done/max_steps` | Eval episodes that hit the max-step limit. Can overlap with `eval/done/level_change` when eval continues after completion until the horizon. |
+| `eval/done/max_steps` | Eval episodes that hit the max-step limit. Should not overlap with `eval/done/level_change` for current single-level Mario checkpoint evals because level change is terminal there. |
 | `eval/done/max_steps/rate` | `eval/done/max_steps / eval/done/all`. |
 | `eval/done/terminated` | Eval episodes that ended via native env termination without being marked as max-step truncations. This is generic and is emitted for all target types. |
 | `eval/done/terminated/rate` | `eval/done/terminated / eval/done/all`. |
@@ -413,8 +412,8 @@ configured max-step horizon. Because of that, level-change and max-step eval met
 | `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 
 Per-start-state eval done metrics mirror the training done namespace as
-`eval/done/<reason>/from/<start>`. Because eval disables native event termination,
-`<start>` is the eval episode start state, for example `Level1-1`, rather than a native
+`eval/done/<reason>/from/<start>`. Eval preserves level-change termination but labels
+`<start>` with the eval episode start state, for example `Level1-1`, rather than a native
 previous-value tuple such as `0-0`.
 
 | Metric template | Meaning |

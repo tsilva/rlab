@@ -259,7 +259,7 @@ class EvalMetricTests(unittest.TestCase):
             "entity/project/run-checkpoint:step-3500000",
         )
 
-    def test_post_train_eval_config_clears_training_done_on_events(self) -> None:
+    def test_post_train_eval_config_keeps_level_change_done_event(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
             info_events={
@@ -272,8 +272,19 @@ class EvalMetricTests(unittest.TestCase):
         eval_config = eval_config_from_training_config(config)
 
         self.assertEqual(eval_config.info_events, config.info_events)
-        self.assertEqual(eval_config.done_on_events, ())
+        self.assertEqual(eval_config.done_on_events, ("level_change",))
         self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
+
+    def test_post_train_eval_config_drops_life_loss_done_event(self) -> None:
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            info_events={"life_loss": ("lives", "decrease")},
+            done_on_events=("life_loss",),
+        )
+
+        eval_config = eval_config_from_training_config(config)
+
+        self.assertEqual(eval_config.done_on_events, ())
 
     def test_metric_path_segment_preserves_retro_state_names(self) -> None:
         self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")
