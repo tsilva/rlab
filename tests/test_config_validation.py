@@ -51,7 +51,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["game"], "ms_pacman")
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
-        self.assertEqual(train_config["obs_crop"], [0, 0, 26, 0])
+        self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
         for key in (

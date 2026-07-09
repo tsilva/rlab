@@ -26,11 +26,12 @@ train:
         max_pool_frames: true
         sticky_action_prob: 0.25
         observation_size: 84
-        # Raw ALE frame is 210x160; rows 184-209 contain lives/fruit/score HUD.
+        # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
+        # The raw-coordinate bottom mask below scales to 15 policy rows.
         obs_crop:
         - 0
         - 0
-        - 26
+        - 37
         - 0
         obs_crop_mode: mask
         obs_crop_fill: 0

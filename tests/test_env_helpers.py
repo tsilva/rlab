@@ -1113,7 +1113,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         config = EnvConfig(
             env_provider="ale-py",
             game="ms_pacman",
-            obs_crop=(0, 0, 26, 0),
+            obs_crop=(0, 0, 37, 0),
             obs_crop_mode="mask",
             obs_crop_fill=0,
         )
@@ -1121,8 +1121,8 @@ class EnvConfigFromArgsTests(unittest.TestCase):
 
         obs = env.reset()
 
-        np.testing.assert_array_equal(obs[:, :, :-11, :], 11)
-        np.testing.assert_array_equal(obs[:, :, -11:, :], 0)
+        np.testing.assert_array_equal(obs[:, :, :-15, :], 11)
+        np.testing.assert_array_equal(obs[:, :, -15:, :], 0)
 
     def test_ale_py_provider_rejects_state_config(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not support state"):
