@@ -14,6 +14,38 @@ NativeDoneOnRule = DoneOnInfoRule | None
 NativeDoneOnRules = dict[str, NativeDoneOnRule]
 
 
+def _provider_env_args(
+    config: Any,
+    *,
+    n_envs: int,
+    num_threads: int,
+) -> dict[str, Any]:
+    native_kwargs = dict(config.env_args or {})
+    game = native_kwargs.pop("game", None)
+    if game is not None and str(game) != str(config.game):
+        raise ValueError(
+            "env_args.game must match EnvConfig.game: "
+            f"{game!r} != {config.game!r}",
+        )
+    if "num_envs" in native_kwargs and int(native_kwargs["num_envs"]) != int(n_envs):
+        raise ValueError(
+            "env_args.num_envs must match requested n_envs: "
+            f"{native_kwargs['num_envs']!r} != {n_envs!r}",
+        )
+    if (
+        "num_threads" in native_kwargs
+        and int(native_kwargs["num_threads"]) > 0
+        and int(native_kwargs["num_threads"]) != int(num_threads)
+    ):
+        raise ValueError(
+            "env_args.num_threads must match resolved env_threads: "
+            f"{native_kwargs['num_threads']!r} != {num_threads!r}",
+        )
+    native_kwargs.setdefault("num_envs", n_envs)
+    native_kwargs.setdefault("num_threads", num_threads)
+    return native_kwargs
+
+
 def native_done_on_rules(
     config: Any,
     *,
@@ -48,6 +80,12 @@ def _native_vec_kwargs(
     native_obs_crop: Callable[[Any], tuple[int, int, int, int] | None],
     state_weight_mapping: Callable[[Any], dict[str, float]],
 ) -> dict[str, Any]:
+    if config.env_args:
+        native_kwargs = _provider_env_args(config, n_envs=n_envs, num_threads=num_threads)
+        if native_done_on_rules and "done_on" not in native_kwargs:
+            native_kwargs["done_on"] = native_done_on_rules
+        return native_kwargs
+
     native_kwargs: dict[str, Any] = {
         "num_envs": n_envs,
         "num_threads": num_threads,
@@ -98,6 +136,8 @@ def _ale_py_native_vec_kwargs(
         raise ValueError("ale-py provider does not support state, states, or state_probs")
     if native_done_on_rules:
         raise ValueError("ale-py provider does not support done_on_events")
+    if config.env_args:
+        return _provider_env_args(config, n_envs=n_envs, num_threads=num_threads)
     obs_crop = native_obs_crop(config)
     if obs_crop is not None and config.obs_crop_mode != "mask":
         raise ValueError("ale-py provider only supports obs_crop_mode='mask'")

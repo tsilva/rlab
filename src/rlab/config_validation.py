@@ -231,27 +231,33 @@ def _validate_env_config(
     extra_keys = sorted(set(env_config) - ENV_CONFIG_ALLOWED_KEYS - (allowed_extra_keys or set()))
     if extra_keys:
         raise ValueError(f"{label} has non-EnvConfig key(s): {extra_keys}")
+    if "env_args" in env_config and not isinstance(env_config["env_args"], Mapping):
+        raise ValueError(f"{label}.env_args must be an object")
+    validation_config = dict(env_config)
+    env_args = env_config.get("env_args")
+    if isinstance(env_args, Mapping) and "game" in env_args and "game" not in validation_config:
+        validation_config["game"] = env_args["game"]
     required_keys = []
     if require_provider:
         required_keys.append("env_provider")
     if require_game:
         required_keys.append("game")
     validate_train_config_fields(
-        env_config,
+        validation_config,
         label=label,
-        keys=tuple(set(env_config) & ENV_CONFIG_ALLOWED_KEYS),
+        keys=tuple(set(validation_config) & ENV_CONFIG_ALLOWED_KEYS),
         required_keys=tuple(required_keys),
     )
     if require_provider:
-        env_provider = str(env_config["env_provider"]).strip()
-    elif "env_provider" in env_config:
-        env_provider = str(env_config["env_provider"]).strip()
+        env_provider = str(validation_config["env_provider"]).strip()
+    elif "env_provider" in validation_config:
+        env_provider = str(validation_config["env_provider"]).strip()
     else:
         env_provider = None
     if require_game:
-        game = str(env_config["game"]).strip()
-    elif "game" in env_config:
-        game = str(env_config["game"]).strip()
+        game = str(validation_config["game"]).strip()
+    elif "game" in validation_config:
+        game = str(validation_config["game"]).strip()
     else:
         game = None
     if game and env_provider:
@@ -297,7 +303,15 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
     )
     eval_environment = eval_section.get("environment")
     if isinstance(eval_environment, Mapping):
-        eval_environment_keys = {"env_provider", "env_config"}
+        eval_environment_keys = {
+            "env_provider",
+            "env_config",
+            "action",
+            "preprocessing",
+            "task_conditioning",
+            "termination",
+            "reward",
+        }
         extra_keys = sorted(set(eval_environment) - eval_environment_keys)
         if extra_keys:
             raise ValueError(f"{label}.eval.environment has unexpected keys: {extra_keys}")

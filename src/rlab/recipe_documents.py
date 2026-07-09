@@ -68,6 +68,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "env_provider",
         "provider",
         "env_id",
+        "env_args",
         "game",
         "state",
         "states",

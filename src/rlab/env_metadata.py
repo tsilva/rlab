@@ -12,6 +12,7 @@ from rlab.env_identity import environment_hash, environment_identity_from_train_
 PLAYBACK_ENV_ARG_KEYS = {
     "env_provider": ("env_provider",),
     "game": ("game",),
+    "env_args": ("env_args",),
     "state": ("state",),
     "states": ("states",),
     "state_probs": ("state_probs",),

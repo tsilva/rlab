@@ -173,6 +173,9 @@ def _section_env(section: Mapping[str, Any]) -> tuple[str | None, dict[str, Any]
         return None, {}
     env_config = environment.get("env_config")
     config = dict(env_config) if isinstance(env_config, Mapping) else {}
+    env_args = config.get("env_args")
+    if isinstance(env_args, Mapping) and "game" in env_args and "game" not in config:
+        config["game"] = env_args["game"]
     provider = environment.get("env_provider")
     return str(provider) if provider else None, config
 

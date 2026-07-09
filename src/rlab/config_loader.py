@@ -100,6 +100,10 @@ def _environment_template_context_from_document(document: Mapping[str, Any]) -> 
         if isinstance(env_config, Mapping)
         else ""
     )
+    if not game and isinstance(env_config, Mapping):
+        env_args = env_config.get("env_args")
+        if isinstance(env_args, Mapping):
+            game = _concrete_template_source(env_args.get("game"))
     context = {}
     if env_provider:
         context["env_provider"] = env_provider

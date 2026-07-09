@@ -473,6 +473,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Provider game id. Defaults to RETRO_GAME when set.",
     ),
     TrainConfigField(
+        "env_args",
+        ("--env-args",),
+        type_name="json",
+        default={},
+        env_default="env_args",
+        serialize="json",
+        env_config_key="env_args",
+        mapping_value=True,
+        help="Provider-native environment constructor arguments, serialized as a JSON object.",
+    ),
+    TrainConfigField(
         "state",
         ("--state",),
         env_default="state",

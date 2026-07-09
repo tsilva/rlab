@@ -310,7 +310,7 @@ class JobQueueTests(unittest.TestCase):
     def test_load_recipe_document_allows_ale_episodic_life_override(self) -> None:
         overrides = [
             "recipe_id=episodic-life",
-            "train.environment.env_config.episodic_life=true",
+            "train.environment.env_config.env_args.episodic_life=true",
         ]
 
         document = job_queue.load_recipe_document(
@@ -320,6 +320,7 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(document["recipe_id"], "episodic-life")
         self.assertEqual(document["train_config"]["timesteps"], 100000000)
+        self.assertIs(document["train_config"]["env_args"]["episodic_life"], True)
         self.assertIs(document["train_config"]["episodic_life"], True)
         self.assertEqual(document["train_config"]["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(document["recipe_overrides"], overrides)

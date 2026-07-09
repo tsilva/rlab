@@ -451,18 +451,33 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
             path.write_text(
-                json.dumps({"obs_resize_algorithm": "nearest"}) + "\n",
+                json.dumps(
+                    {
+                        "obs_resize_algorithm": "nearest",
+                        "env_args": {"game": "breakout", "frameskip": 4},
+                    },
+                )
+                + "\n",
                 encoding="utf-8",
             )
 
             args = parse_train_args(["--train-config-json", str(path)])
             config = env_config_from_args(args)
-            command = build_train_command({"obs_resize_algorithm": "nearest"})
+            command = build_train_command(
+                {
+                    "obs_resize_algorithm": "nearest",
+                    "env_args": {"game": "breakout", "frameskip": 4},
+                }
+            )
 
         self.assertEqual(args.obs_resize_algorithm, "nearest")
+        self.assertEqual(args.env_args, {"game": "breakout", "frameskip": 4})
         self.assertEqual(config.obs_resize_algorithm, "nearest")
+        self.assertEqual(config.env_args, {"game": "breakout", "frameskip": 4})
         self.assertIn("--obs-resize-algorithm", command)
         self.assertIn("nearest", command)
+        self.assertIn("--env-args", command)
+        self.assertIn('{"game":"breakout","frameskip":4}', command)
 
     def test_train_config_json_accepts_env_wrappers(self) -> None:
         env_wrappers = [
@@ -1008,6 +1023,46 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(native_kwargs["maxpool"], True)
         self.assertEqual(native_kwargs["episodic_life"], True)
         self.assertEqual(native_kwargs["reward_clipping"], True)
+
+    def test_ale_py_native_vec_kwargs_prefer_provider_env_args(self) -> None:
+        env_args = {
+            "game": "breakout",
+            "num_envs": 16,
+            "num_threads": 4,
+            "max_num_frames_per_episode": 216000,
+            "repeat_action_probability": 0.25,
+            "img_height": 84,
+            "img_width": 84,
+            "grayscale": True,
+            "stack_num": 4,
+            "frameskip": 4,
+            "maxpool": True,
+            "reward_clipping": True,
+        }
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                game="breakout",
+                state="",
+                action_set="native",
+                reward_mode="native",
+                env_args=env_args,
+            )
+        )
+
+        native_kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=16,
+            num_threads=4,
+            native_done_on_rules={},
+            native_obs_crop=native_obs_crop,
+            state_weight_mapping=state_weight_mapping,
+        )
+
+        self.assertEqual(
+            native_kwargs,
+            {key: value for key, value in env_args.items() if key != "game"},
+        )
 
     def test_ale_py_native_vec_kwargs_keep_native_preprocessing_for_masked_crop(self) -> None:
         config = resolve_env_config(

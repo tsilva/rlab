@@ -19,30 +19,50 @@ train:
     env_provider: &atari_env_provider ale-py
     env_config:
       <<: &atari_mspacman_env_config
-        game: ms_pacman
-        n_envs: 16
-        env_threads: 4
-        frame_skip: 4
-        max_pool_frames: true
-        sticky_action_prob: 0.25
-        observation_size: 84
-        # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
-        # The raw-coordinate bottom mask below scales to 15 policy rows.
-        obs_crop:
-        - 0
-        - 0
-        - 37
-        - 0
-        obs_crop_mode: mask
-        obs_crop_fill: 0
-        obs_resize_algorithm: area
-        max_episode_steps: 54000
-        action_set: native
-        reward_mode: native
-        clip_rewards: true
+        env_args:
+          game: ms_pacman
+          num_envs: 16
+          num_threads: 4
+          max_num_frames_per_episode: 216000
+          repeat_action_probability: 0.25
+          img_height: 84
+          img_width: 84
+          grayscale: true
+          stack_num: 4
+          frameskip: 4
+          maxpool: true
+          reward_clipping: true
+    preprocessing:
+      # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
+      # The raw-coordinate bottom mask below scales to 15 policy rows.
+      obs_crop:
+      - 0
+      - 0
+      - 37
+      - 0
+      obs_crop_mode: mask
+      obs_crop_fill: 0
+    action:
+      action_set: native
+    reward:
+      reward_mode: native
 eval:
   environment:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_mspacman_env_config
       max_episodes: 100
+    preprocessing:
+      # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
+      # The raw-coordinate bottom mask below scales to 15 policy rows.
+      obs_crop:
+      - 0
+      - 0
+      - 37
+      - 0
+      obs_crop_mode: mask
+      obs_crop_fill: 0
+    action:
+      action_set: native
+    reward:
+      reward_mode: native

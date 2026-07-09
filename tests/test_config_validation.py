@@ -35,12 +35,31 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "ale-py")
         self.assertEqual(train_config["game"], "breakout")
+        self.assertEqual(
+            train_config["env_args"],
+            {
+                "game": "breakout",
+                "num_envs": 16,
+                "num_threads": 4,
+                "max_num_frames_per_episode": 216000,
+                "repeat_action_probability": 0.25,
+                "img_height": 84,
+                "img_width": 84,
+                "grayscale": True,
+                "stack_num": 4,
+                "frameskip": 4,
+                "maxpool": True,
+                "reward_clipping": True,
+            },
+        )
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["obs_crop"], [34, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
+        self.assertNotIn("obs_resize_algorithm", train_config)
         self.assertEqual(document["environment"]["env_id"], "ale-py:breakout")
+        self.assertEqual(document["environment"]["provider_args"]["frameskip"], 4)
 
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
         breakout = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
@@ -49,6 +68,7 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "ale-py")
         self.assertEqual(train_config["game"], "ms_pacman")
+        self.assertEqual(train_config["env_args"]["game"], "ms_pacman")
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
@@ -61,14 +81,15 @@ class ConfigValidationTests(unittest.TestCase):
             "max_pool_frames",
             "sticky_action_prob",
             "observation_size",
-            "obs_resize_algorithm",
             "max_episode_steps",
             "action_set",
             "reward_mode",
             "clip_rewards",
         ):
             self.assertEqual(train_config[key], breakout["train_config"][key])
+        self.assertNotIn("obs_resize_algorithm", train_config)
         self.assertEqual(document["environment"]["env_id"], "ale-py:ms_pacman")
+        self.assertEqual(document["environment"]["provider_args"]["frameskip"], 4)
 
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

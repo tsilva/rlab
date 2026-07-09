@@ -97,6 +97,7 @@ def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
 class EnvConfig:
     env_provider: str = STABLE_RETRO_TURBO_PROVIDER.provider_id
     game: str = GAME
+    env_args: dict[str, Any] = field(default_factory=dict)
     state: str = DEFAULT_STATE
     states: tuple[str, ...] = ()
     state_probs: tuple[float, ...] = ()

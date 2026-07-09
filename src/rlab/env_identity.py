@@ -52,6 +52,15 @@ REWARD_KEYS = (
     "score_progress_clipped",
     "env_wrappers",
 )
+NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
+    {
+        "batch_size",
+        "game",
+        "num_envs",
+        "num_threads",
+        "thread_affinity_offset",
+    }
+)
 
 
 def _normalize_preprocessing(identity: dict[str, Any]) -> None:
@@ -183,6 +192,15 @@ def environment_identity_from_train_config(
         _copy_present(train_config, TERMINATION_KEYS),
     )
     _setdefault_section(identity, "reward", _copy_present(train_config, REWARD_KEYS))
+    env_args = train_config.get("env_args")
+    if isinstance(env_args, Mapping):
+        provider_args = {
+            key: deepcopy(value)
+            for key, value in env_args.items()
+            if key not in NON_SEMANTIC_ENV_ARG_KEYS
+        }
+        if provider_args:
+            identity.setdefault("provider_args", provider_args)
     _normalize_preprocessing(identity)
     return identity
 
@@ -202,6 +220,47 @@ def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
     return result
 
 
+def _setdefault_from_env_args(
+    train_config: dict[str, Any],
+    *,
+    env_provider: str | None,
+) -> None:
+    env_args = train_config.get("env_args")
+    if not isinstance(env_args, Mapping):
+        return
+    if "game" in env_args:
+        train_config.setdefault("game", deepcopy(env_args["game"]))
+    if "num_envs" in env_args:
+        train_config.setdefault("n_envs", deepcopy(env_args["num_envs"]))
+    if "num_threads" in env_args:
+        train_config.setdefault("env_threads", deepcopy(env_args["num_threads"]))
+
+    if env_provider != "ale-py":
+        return
+
+    alias_pairs = {
+        "frameskip": "frame_skip",
+        "maxpool": "max_pool_frames",
+        "repeat_action_probability": "sticky_action_prob",
+        "reward_clipping": "clip_rewards",
+        "episodic_life": "episodic_life",
+    }
+    for source, dest in alias_pairs.items():
+        if source in env_args:
+            train_config.setdefault(dest, deepcopy(env_args[source]))
+    height = env_args.get("img_height")
+    width = env_args.get("img_width")
+    if height is not None and height == width:
+        train_config.setdefault("observation_size", deepcopy(height))
+    if "max_num_frames_per_episode" in env_args:
+        frameskip = int(train_config.get("frame_skip") or env_args.get("frameskip") or 1)
+        if frameskip > 0:
+            train_config.setdefault(
+                "max_episode_steps",
+                int(env_args["max_num_frames_per_episode"]) // frameskip,
+            )
+
+
 def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(environment, Mapping):
         return {}
@@ -214,6 +273,11 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
         resolved = resolve_env_id(str(env_id))
         train_config["env_provider"] = resolved.provider_id
         train_config["game"] = resolved.provider_env_id
+    env_provider = train_config.get("env_provider")
+    if env_provider is None and "env_provider" in environment:
+        env_provider = environment["env_provider"]
+        train_config["env_provider"] = deepcopy(env_provider)
+    _setdefault_from_env_args(train_config, env_provider=str(env_provider) if env_provider else None)
     state_value = environment.get("state")
     if isinstance(state_value, Mapping):
         train_config.update(
