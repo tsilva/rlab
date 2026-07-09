@@ -31,7 +31,6 @@ TRAINING_PRESETS: dict[str, dict[str, Any]] = {
     },
     "baseline": {},
 }
-RETIRED_TRAIN_CONFIG_FIELDS = frozenset({"env_threads"})
 
 
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
@@ -65,7 +64,6 @@ def apply_train_config_json(
         return args
 
     payload = load_train_config_json(Path(path))
-    payload = {key: value for key, value in payload.items() if key not in RETIRED_TRAIN_CONFIG_FIELDS}
     args._train_config_json_fields = set(payload)
     valid_dests = train_config_field_names()
     unknown = sorted(str(key) for key in payload if key not in valid_dests)

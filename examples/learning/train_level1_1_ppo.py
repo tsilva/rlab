@@ -86,7 +86,7 @@ VF_COEF = 1.0
 ADAM_EPS = 1e-8
 
 # These two can be overridden without editing the file:
-#   SEED=2 MODEL_PATH=run2.pt python train_level1_1_ppo.py
+#   SEED=2 MODEL_PATH=run2.pt python examples/learning/train_level1_1_ppo.py
 SEED = int(os.environ.get("SEED", "1"))
 MODEL_PATH = os.environ.get("MODEL_PATH", "mario_level1_1_ppo.pt")
 

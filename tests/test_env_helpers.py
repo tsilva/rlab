@@ -499,6 +499,14 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reserved for eval"):
                 parse_train_args(["--train-config-json", str(path)])
 
+    def test_train_config_json_rejects_retired_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(json.dumps({"env_threads": 4}) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unknown train config field"):
+                parse_train_args(["--train-config-json", str(path)])
+
     def test_explicit_n_envs_must_match_provider_num_envs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"

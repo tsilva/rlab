@@ -1167,6 +1167,34 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(calls, ["tsilva/SuperMarioBros-Nes-v0/7gjw67kl"])
 
+    def test_model_source_ref_uses_wandb_run_url_with_query_latest_checkpoint(self) -> None:
+        calls = []
+
+        class FakeRun:
+            id = "qxhbhcms"
+            name = "renamed-in-wandb-ui"
+            config = {"run_name": "alepy__mspacman_episodic-life_s126_20260709T102223Z"}
+
+        class FakeApi:
+            def run(self, path):
+                calls.append(path)
+                return FakeRun()
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(
+            ["https://wandb.ai/tsilva/ms_pacman/runs/qxhbhcms?nw=nwusertsilva"]
+        )
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/ms_pacman/"
+                "alepy__mspacman_episodic-life_s126_20260709T102223Z-checkpoint:latest",
+            )
+
+        self.assertEqual(calls, ["tsilva/ms_pacman/qxhbhcms"])
+
     def test_model_source_ref_uses_wandb_run_url_display_name_fallback(self) -> None:
         class FakeRun:
             id = "7gjw67kl"
@@ -1196,6 +1224,13 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIsNotNone(ref)
         self.assertEqual(ref.project_path, "tsilva/SuperMarioBros-Nes-v0")
         self.assertEqual(ref.run_id, "7gjw67kl")
+
+    def test_parse_wandb_run_ref_accepts_schemeless_url_with_query(self) -> None:
+        ref = parse_wandb_run_ref("wandb.ai/tsilva/ms_pacman/runs/qxhbhcms?nw=nwusertsilva")
+
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.project_path, "tsilva/ms_pacman")
+        self.assertEqual(ref.run_id, "qxhbhcms")
 
     def test_model_source_ref_uses_env_entity_for_project_run_path(self) -> None:
         with patch.dict("os.environ", {"WANDB_ENTITY": "env-entity"}):

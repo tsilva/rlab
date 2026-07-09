@@ -60,6 +60,28 @@ class WandbRunRef:
     run_id: str
 
 
+def _wandb_run_path_parts(value: str) -> list[str] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"}:
+        host = parsed.netloc.lower().removeprefix("www.")
+        if host != WANDB_RUN_URL_HOST:
+            return None
+        path = parsed.path
+    else:
+        path = text
+        if path.lower().startswith(f"{WANDB_RUN_URL_HOST}/"):
+            path = path[len(WANDB_RUN_URL_HOST) + 1 :]
+        elif path.lower().startswith(f"www.{WANDB_RUN_URL_HOST}/"):
+            path = path[len(f"www.{WANDB_RUN_URL_HOST}/") :]
+        path = path.split("?", 1)[0].split("#", 1)[0]
+
+    return [unquote(part) for part in path.split("/") if part]
+
+
 def artifact_ref_arg(value: str) -> str:
     parts = value.split("/")
     artifact_name = parts[-1] if parts else ""
@@ -79,17 +101,9 @@ def is_huggingface_model_ref(value: str) -> bool:
 
 
 def parse_wandb_run_ref(value: str, *, default_project: str | None = None) -> WandbRunRef | None:
-    text = str(value or "").strip()
-    if not text:
+    parts = _wandb_run_path_parts(value)
+    if not parts:
         return None
-
-    parsed = urlparse(text)
-    if parsed.scheme in {"http", "https"}:
-        if parsed.netloc != WANDB_RUN_URL_HOST:
-            return None
-        parts = [unquote(part) for part in parsed.path.split("/") if part]
-    else:
-        parts = [unquote(part) for part in text.split("/") if part]
 
     if len(parts) >= 4 and parts[2] == "runs":
         return WandbRunRef(project_path=f"{parts[0]}/{parts[1]}", run_id=parts[3])

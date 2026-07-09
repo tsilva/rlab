@@ -22,7 +22,7 @@ If you are reinstalling after local changes:
 ./install.sh
 ```
 
-`install.sh` uses `uv tool install . -e` from the repo root. On a fresh checkout it installs the `rlab` command as an editable uv tool; when the tool already exists, rerunning it upgrades dependency versions. `upgrade.sh` is kept as a compatibility wrapper.
+`install.sh` uses `uv tool install . -e` from the repo root. On a fresh checkout it installs the `rlab` command as an editable uv tool; when the tool already exists, rerunning it upgrades dependency versions.
 
 This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
 
@@ -146,6 +146,8 @@ To regenerate the W&B checkpoint leaderboard report with one section per goal, r
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06-25T00:00:00Z python scripts/create_wandb_checkpoint_leaderboard_report.py
 ```
+
+Learning-oriented standalone examples live under `examples/learning/`; production training should use checked-in recipes through `rlab train`.
 
 ## Fleet
 

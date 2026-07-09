@@ -9,16 +9,20 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from rlab.seeds import validate_training_seed
+from rlab.job_metadata import (
+    append_unique_wandb_tag,
+    normalize_level_states,
+    normalize_wandb_tags,
+)
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import require_explicit_queue_train_config
+from rlab.seeds import validate_training_seed
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
 METRIC_ROW_RE = re.compile(r"\|\s+(?P<key>[A-Za-z0-9_./-]+)\s+\|\s+(?P<value>[^|]+?)\s+\|")
 WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
-LEVEL_STATE_RE = re.compile(r"^Level\d+-\d+$")
 RESUME_ARTIFACT_ROOT = Path("artifacts/train_resumes")
 
 
@@ -29,62 +33,19 @@ def strip_env_file_quotes(value: str) -> str:
     return text
 
 
-def normalize_wandb_tags(value: Any) -> list[str]:
-    if isinstance(value, str):
-        raw_tags = value.split(",")
-    elif isinstance(value, list | tuple):
-        raw_tags = value
-    else:
-        raw_tags = []
-
-    tags: list[str] = []
-    seen: set[str] = set()
-    for raw_tag in raw_tags:
-        tag = str(raw_tag).strip()
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        tags.append(tag)
-    return tags
-
-
-def append_unique_wandb_tag(tags: list[str], tag: str) -> list[str]:
-    tag = tag.strip()
-    if tag and tag not in set(tags):
-        tags.append(tag)
-    return tags
-
-
-def normalize_level_states(config: Mapping[str, Any]) -> list[str]:
-    raw_states = config.get("states") or []
-    if isinstance(raw_states, str):
-        candidates = [raw_states]
-    elif isinstance(raw_states, list | tuple):
-        candidates = [str(state) for state in raw_states]
-    else:
-        candidates = []
-
-    state = str(config.get("state") or "").strip()
-    if state:
-        candidates.append(state)
-
-    levels: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        level = candidate.strip()
-        if not LEVEL_STATE_RE.match(level) or level in seen:
-            continue
-        seen.add(level)
-        levels.append(level)
-    return levels
-
-
 def normalize_train_config(
     job: dict[str, Any],
     *,
     resolve_resume_artifact: bool = True,
     require_explicit_train_fields: bool = True,
 ) -> dict[str, Any]:
+    """Merge queue-row execution metadata into an already materialized recipe train_config.
+
+    Recipe composition and train-config materialization are owned by
+    rlab.recipe_documents; this function only adds execution metadata needed by
+    the one-job container path.
+    """
+
     config = dict(job.get("train_config") or {})
     run_name = job.get("run_name") or config.get("run_name") or f"train_job_{job['id']}"
     config["run_name"] = run_name
