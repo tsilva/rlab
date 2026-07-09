@@ -495,10 +495,12 @@ class MetricStoreMirrorCallback(BaseCallback):
         self.metric_store.init()
 
     def _on_step(self) -> bool:
-        self.mirror_current_logger_values()
         return True
 
     def _on_rollout_end(self) -> None:
+        self.mirror_current_logger_values()
+
+    def _on_training_end(self) -> None:
         self.mirror_current_logger_values()
 
     def mirror_current_logger_values(self) -> None:
