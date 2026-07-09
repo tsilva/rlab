@@ -9,7 +9,6 @@ from typing import Any
 
 import yaml
 
-from rlab.cli import build_train_command
 from rlab.fleet import docker_image_ref
 from rlab.runtime_refs import runtime_image_ref_from_file
 from rlab.train_config import validate_train_config_fields
@@ -119,7 +118,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         require_int(payload, "steps", label=label, require_present=False)
         require_int(payload, "warmup", label=label, require_present=False)
 
-    if kind in {"local_smoke", "ppo_loop_throughput", "artifact_storage_smoke"}:
+    if kind in {"ppo_loop_throughput", "artifact_storage_smoke"}:
         config = require_mapping(payload.get("train_config"), label=f"{label}.train_config")
         validate_train_config_fields(config, label=f"{label}.train_config")
         require_non_empty_string(
@@ -128,8 +127,13 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             label=f"{label}.train_config",
             require_present=False,
         )
-        if kind != "local_smoke":
-            require_int(config, "timesteps", label=f"{label}.train_config", require_present=False)
+        require_int(config, "timesteps", label=f"{label}.train_config", require_present=False)
+
+    if kind == "local_smoke":
+        require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
+        require_non_empty_string(payload, "run_target", label=label, require_present=False)
+        require_non_empty_string(payload, "machine", label=label, require_present=False)
+        string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
 
     if kind == "fleet_capacity":
         if not payload.get("recipe_file"):
@@ -174,10 +178,6 @@ def _command(label: str, argv: Sequence[str], *, cwd: Path | None = None, env: M
     return BenchmarkCommand(label=label, argv=tuple(str(part) for part in argv), cwd=cwd, env=env)
 
 
-def _train_command(config: Mapping[str, Any]) -> list[str]:
-    return build_train_command(config)
-
-
 def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
     if profile.get("runtime_image_ref"):
         return docker_image_ref(str(profile["runtime_image_ref"]))
@@ -188,39 +188,51 @@ def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
 
 
 def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    config = dict(require_mapping(profile["train_config"], label="train_config"))
-    run_name = str(
-        config.get("run_name")
-        or profile.get("run_name")
-        or f"benchmark_{_slug(str(profile['name']))}"
-    )
-    config.setdefault("preset", "smoke")
-    config.setdefault("run_name", run_name)
-    config.setdefault(
-        "run_description",
-        f"Benchmark profile {profile['name']} local smoke run.",
-    )
-    commands = [_command("train-smoke", _train_command(config))]
-    eval_cfg = dict(require_mapping(profile.get("eval", {}), label="eval"))
-    if eval_cfg.get("enabled", True):
-        commands.append(
-            _command(
-                "eval-smoke",
-                [
-                    "rlab",
-                    "eval",
-                    "--game",
-                    str(config["game"]),
-                    "--model",
-                    str(Path(str(config.get("runs_dir") or "runs")) / run_name / "final_model.zip"),
-                    "--episodes",
-                    str(eval_cfg.get("episodes", 2)),
-                    "--max-steps",
-                    str(eval_cfg.get("max_steps", config.get("max_episode_steps", 600))),
-                ],
-            )
-        )
-    return commands
+    recipe_file = str(profile["recipe_file"])
+    machine = str(profile.get("machine") or "local-macbook")
+    run_target = str(profile.get("run_target") or machine)
+    enqueue = [
+        "rlab",
+        "train",
+        "--recipe-file",
+        recipe_file,
+        "--run-target",
+        run_target,
+    ]
+    if profile.get("runtime_image_ref_file"):
+        enqueue.extend(["--runtime-image-ref-file", str(profile["runtime_image_ref_file"])])
+    if profile.get("runtime_image_ref"):
+        enqueue.extend(["--runtime-image-ref", str(profile["runtime_image_ref"])])
+    for override in string_list(profile.get("recipe_overrides", ()), label="recipe_overrides"):
+        enqueue.extend(["--set", override])
+    return [
+        _command("enqueue-local-smoke", enqueue),
+        _command(
+            "local-fleet-shepherd-once",
+            [
+                "rlab",
+                "fleet",
+                "shepherd",
+                "--machine",
+                machine,
+                "--limit",
+                str(profile.get("workers", 1)),
+                "--once",
+            ],
+        ),
+        _command(
+            "local-fleet-watch",
+            [
+                "rlab",
+                "fleet",
+                "watch",
+                "--machine",
+                machine,
+                "--once",
+                "--no-tui",
+            ],
+        ),
+    ]
 
 
 def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
@@ -259,7 +271,9 @@ def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand
     config = dict(require_mapping(profile["train_config"], label="train_config"))
     config.setdefault("run_name", f"benchmark_{_slug(str(profile['name']))}")
     config.setdefault("run_description", f"Benchmark profile {profile['name']} PPO loop probe.")
-    return [_command("train", _train_command(config))]
+    from rlab.train_config import build_train_command_from_fields
+
+    return [_command("train", build_train_command_from_fields(config))]
 
 
 def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:

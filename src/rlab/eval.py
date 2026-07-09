@@ -218,7 +218,6 @@ def main(argv: list[str] | None = None) -> None:
             args,
             max_episode_steps_attr="max_steps",
             include_states=True,
-            include_env_threads=True,
         )
     )
     assert_provider_runtime_available(config)

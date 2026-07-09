@@ -11,7 +11,6 @@ lanes:
   host: beast-3
   manager: rlab_fleet_shepherd
   max_train_containers: 6
-  env_threads: 4
   use_for:
   - screen
   - confirm_when_total_throughput_matters
@@ -22,7 +21,6 @@ lanes:
   host: beast-3
   manager: rlab_fleet_shepherd
   max_train_containers: 4
-  env_threads: 4
   use_for:
   - confirm
   - debug
@@ -33,10 +31,18 @@ lanes:
   host: beast-2
   manager: rlab_fleet_shepherd
   max_train_containers: 4
-  env_threads: 2
   use_for:
   - cheap_screen
   - small_ablation
+  reserve_workers: 0
+- name: localhost-smoke
+  target: local-macbook
+  host: local-macbook
+  manager: rlab_fleet_shepherd
+  max_train_containers: 1
+  use_for:
+  - smoke
+  - debug
   reserve_workers: 0
 policy_checks:
 - Do not launch a train container unless a matching pending job exists.

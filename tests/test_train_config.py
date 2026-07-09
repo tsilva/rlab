@@ -26,6 +26,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(command[1:3], ["-m", "rlab.train"])
         self.assertIn("--info-events-json", command)
         self.assertIn('{"life_loss":["lives","decrease"]}', command)
         self.assertIn("--done-on-events", command)

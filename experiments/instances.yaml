@@ -11,17 +11,15 @@ instances:
     image_id: ''
     default_workers: 6
     hardware_max_workers: 6
-    env_threads: 4
-    torch_num_threads: 1
     expected_aggregate_wall_fps: null
     lower_contention_workers:
     - 3
     - 4
     notes:
     - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
-    - Use 6 train containers with env_threads=4 for screening queues.
+    - Use 6 train containers for screening queues.
     - Re-measure aggregate wall FPS for six containers; the older five-container expectation was about 6200.
-    - Use 3-4 train containers with env_threads=4 when individual latency or lower contention matters.
+    - Use 3-4 train containers when individual latency or lower contention matters.
   rtx2060:
     aliases:
     - beast-2
@@ -35,9 +33,7 @@ instances:
     prebuilt_image: true
     default_workers: 4
     hardware_max_workers: 4
-    env_threads: 2
     fast_turnaround_workers: 2
-    fast_turnaround_env_threads: 4
     notes:
     - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
     - Use ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26 until hostname resolution is restored.
@@ -47,12 +43,11 @@ instances:
     - macbook
     - local
     label: local MacBook
-    kind: local
-    accelerator: MPS
+    kind: fleet
+    infra: local_docker/local-macbook
+    accelerator: CPU/MPS host
     default_workers: 1
     hardware_max_workers: 1
-    env_threads: 0
-    torch_num_threads: 0
     notes:
-    - Use direct local training/eval commands.
-    - Best for smoke tests, debugging, and playback rather than long PPO batches.
+    - Mac-side rlab fleet shepherd can run one queue-backed local Docker train container.
+    - Best for smoke tests and queue/fleet debugging rather than long PPO batches.

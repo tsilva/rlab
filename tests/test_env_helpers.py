@@ -20,6 +20,7 @@ from rlab.artifacts import (
 )
 from rlab.cli import build_parser as build_train_parser
 from rlab.cli import build_train_command
+from rlab.cli import effective_n_envs
 from rlab.cli import parse_train_args
 from rlab.env import (
     EnvConfig,
@@ -479,6 +480,76 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIn("--env-args", command)
         self.assertIn('{"game":"breakout","frameskip":4}', command)
 
+    def test_train_config_json_uses_provider_num_envs_for_seed_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env_provider": "ale-py",
+                        "game": "breakout",
+                        "env_args": {"game": "breakout", "num_envs": 16},
+                        "seed": 9990,
+                    },
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "reserved for eval"):
+                parse_train_args(["--train-config-json", str(path)])
+
+    def test_explicit_n_envs_must_match_provider_num_envs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env_provider": "ale-py",
+                        "game": "breakout",
+                        "env_args": {"game": "breakout", "num_envs": 16},
+                    },
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "env_args.num_envs must match requested n_envs"):
+                parse_train_args(["--train-config-json", str(path), "--n-envs", "8"])
+
+    def test_effective_n_envs_prefers_provider_env_args_when_cli_default_is_implicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env_provider": "ale-py",
+                        "game": "breakout",
+                        "env_args": {"game": "breakout", "num_envs": 16},
+                    },
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = parse_train_args(["--train-config-json", str(path)])
+
+        self.assertEqual(args.n_envs, 8)
+        self.assertEqual(effective_n_envs(args), 16)
+
+    def test_resolve_env_config_accepts_provider_owned_game(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                env_args={"game": "breakout", "num_envs": 16},
+                state="",
+                action_set="native",
+                reward_mode="native",
+            )
+        )
+
+        self.assertEqual(config.game, "breakout")
+
     def test_train_config_json_accepts_env_wrappers(self) -> None:
         env_wrappers = [
             {
@@ -908,7 +979,6 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             frame_skip=4,
             max_pool_frames=False,
             sticky_action_prob=0.0,
-            env_threads=3,
         )
         with (
             patch(
@@ -926,7 +996,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertEqual(FakeSuperMarioNative.calls[0][0], "SuperMarioBros-Nes-v0")
         native_kwargs = FakeSuperMarioNative.calls[0][1]
         self.assertEqual(native_kwargs["num_envs"], 2)
-        self.assertEqual(native_kwargs["num_threads"], 3)
+        self.assertNotIn("num_threads", native_kwargs)
         self.assertEqual(native_kwargs["frame_skip"], 4)
         self.assertEqual(native_kwargs["obs_resize"], (84, 84))
         self.assertEqual(native_kwargs["maxpool_last_two"], False)
@@ -1005,14 +1075,13 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         native_kwargs = provider_native_vec_kwargs(
             config,
             n_envs=16,
-            num_threads=4,
             native_done_on_rules={},
             native_obs_crop=native_obs_crop,
             state_weight_mapping=state_weight_mapping,
         )
 
         self.assertEqual(native_kwargs["num_envs"], 16)
-        self.assertEqual(native_kwargs["num_threads"], 4)
+        self.assertNotIn("num_threads", native_kwargs)
         self.assertEqual(native_kwargs["max_num_frames_per_episode"], 108000)
         self.assertEqual(native_kwargs["repeat_action_probability"], 0.25)
         self.assertEqual(native_kwargs["img_height"], 84)
@@ -1029,6 +1098,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             "game": "breakout",
             "num_envs": 16,
             "num_threads": 4,
+            "thread_affinity_offset": -1,
             "max_num_frames_per_episode": 216000,
             "repeat_action_probability": 0.25,
             "img_height": 84,
@@ -1053,7 +1123,6 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         native_kwargs = provider_native_vec_kwargs(
             config,
             n_envs=16,
-            num_threads=4,
             native_done_on_rules={},
             native_obs_crop=native_obs_crop,
             state_weight_mapping=state_weight_mapping,
@@ -1063,6 +1132,50 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             native_kwargs,
             {key: value for key, value in env_args.items() if key != "game"},
         )
+
+    def test_ale_py_native_vec_kwargs_do_not_synthesize_num_threads(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                game="breakout",
+                state="",
+                action_set="native",
+                reward_mode="native",
+                env_args={"game": "breakout", "num_envs": 16},
+            )
+        )
+
+        native_kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=16,
+            native_done_on_rules={},
+            native_obs_crop=native_obs_crop,
+            state_weight_mapping=state_weight_mapping,
+        )
+
+        self.assertEqual(native_kwargs["num_envs"], 16)
+        self.assertNotIn("num_threads", native_kwargs)
+
+    def test_provider_env_args_reject_conflicting_num_envs(self) -> None:
+        config = resolve_env_config(
+            EnvConfig(
+                env_provider="ale-py",
+                game="breakout",
+                state="",
+                action_set="native",
+                reward_mode="native",
+                env_args={"game": "breakout", "num_envs": 16},
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "env_args.num_envs must match requested n_envs"):
+            provider_native_vec_kwargs(
+                config,
+                n_envs=8,
+                native_done_on_rules={},
+                native_obs_crop=native_obs_crop,
+                state_weight_mapping=state_weight_mapping,
+            )
 
     def test_ale_py_native_vec_kwargs_keep_native_preprocessing_for_masked_crop(self) -> None:
         config = resolve_env_config(
@@ -1087,7 +1200,6 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         native_kwargs = provider_native_vec_kwargs(
             config,
             n_envs=16,
-            num_threads=4,
             native_done_on_rules={},
             native_obs_crop=native_obs_crop,
             state_weight_mapping=state_weight_mapping,

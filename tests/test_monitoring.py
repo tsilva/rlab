@@ -91,8 +91,9 @@ class MonitoringStateTests(unittest.TestCase):
         self.assertEqual(by_id["rtx4090"]["details"]["manager"], "rlab fleet")
         self.assertEqual(by_id["rtx4090"]["details"]["machine"], "beast-3")
         self.assertEqual(by_id["rtx4090"]["details"]["runner_capacity"], 6)
-        self.assertEqual(by_id["local-macbook"]["target"], "local CLI")
-        self.assertEqual(by_id["local-macbook"]["details"]["manager"], "local")
+        self.assertEqual(by_id["local-macbook"]["target"], "local_docker/local-macbook")
+        self.assertEqual(by_id["local-macbook"]["details"]["manager"], "rlab fleet")
+        self.assertEqual(by_id["local-macbook"]["details"]["machine"], "local-macbook")
 
     def test_jobs_can_route_to_beast_target_rows(self) -> None:
         jobs = [

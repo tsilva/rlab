@@ -10,6 +10,7 @@ from typing import Any
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
 from rlab.env_config import parse_obs_crop
+from rlab.provider_config import provider_num_envs
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     add_train_config_args,
@@ -30,6 +31,7 @@ TRAINING_PRESETS: dict[str, dict[str, Any]] = {
     },
     "baseline": {},
 }
+RETIRED_TRAIN_CONFIG_FIELDS = frozenset({"env_threads"})
 
 
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
@@ -63,6 +65,8 @@ def apply_train_config_json(
         return args
 
     payload = load_train_config_json(Path(path))
+    payload = {key: value for key, value in payload.items() if key not in RETIRED_TRAIN_CONFIG_FIELDS}
+    args._train_config_json_fields = set(payload)
     valid_dests = train_config_field_names()
     unknown = sorted(str(key) for key in payload if key not in valid_dests)
     if unknown:
@@ -91,10 +95,12 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     explicit_dests = explicit_train_arg_dests(parser, argv_list or [])
     args = parser.parse_args(argv_list)
+    args._train_config_json_fields = set()
+    args._explicit_train_arg_dests = set(explicit_dests)
     apply_train_config_json(args, parser, explicit_dests)
     args = apply_preset(args)
     validate_early_stop_args(args)
-    validate_training_seed(args.seed, label="--seed", seed_span=args.n_envs)
+    validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
     return args
 
 
@@ -129,7 +135,23 @@ def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
     if not args.preset:
         return args
     defaults = parser_defaults()
+    preset_fields = set(getattr(args, "_preset_fields", set()))
     for key, value in TRAINING_PRESETS[args.preset].items():
         if getattr(args, key) == defaults.get(key):
             setattr(args, key, value)
+            preset_fields.add(key)
+    args._preset_fields = preset_fields
     return args
+
+
+def explicit_n_envs(args: argparse.Namespace) -> int | None:
+    explicit_fields = (
+        set(getattr(args, "_explicit_train_arg_dests", set()))
+        | set(getattr(args, "_train_config_json_fields", set()))
+        | set(getattr(args, "_preset_fields", set()))
+    )
+    return int(args.n_envs) if "n_envs" in explicit_fields else None
+
+
+def effective_n_envs(args: argparse.Namespace) -> int:
+    return provider_num_envs(args, explicit_n_envs=explicit_n_envs(args))

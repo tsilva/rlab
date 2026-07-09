@@ -21,8 +21,8 @@ database.
 
 ## Profile Types
 
-- `local_smoke`: direct local train/eval smoke using the active Python
-  environment.
+- `local_smoke`: queue-backed localhost smoke using `local-macbook` and the
+  same fleet payload/result contract as beast jobs.
 - `container_smoke`: train-image boot/import smoke through Docker.
 - `env_throughput`: Stable Retro saved-state environment throughput probe.
 - `ppo_loop_throughput`: bounded PPO loop probe for rollout/update throughput.

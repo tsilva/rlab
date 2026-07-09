@@ -38,7 +38,7 @@ from rlab.callbacks import (
     TimedCheckpointCallback,
     WandbCheckpointArtifactCallback,
 )
-from rlab.cli import parse_train_args
+from rlab.cli import effective_n_envs, parse_train_args
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -485,9 +485,10 @@ def main(argv: list[str] | None = None) -> None:
         print("warning: --run-description is empty", flush=True)
 
     config = resolve_env_config(
-        env_config_from_args(args, include_states=True, include_env_threads=True)
+        env_config_from_args(args, include_states=True)
     )
-    config = resolve_mixed_state_config(config, n_envs=args.n_envs)
+    n_envs = effective_n_envs(args)
+    config = resolve_mixed_state_config(config, n_envs=n_envs)
     assert_provider_runtime_available(config)
     wandb_run = init_wandb(args, run_dir, config)
     graceful_stop_flag = GracefulStopFlag()
@@ -495,13 +496,8 @@ def main(argv: list[str] | None = None) -> None:
     if graceful_stop_signal is not None:
         print(f"graceful stop signal: {signal_name(graceful_stop_signal)}", flush=True)
 
-    env = make_training_vec_env(config=config, n_envs=args.n_envs, seed=args.seed)
+    env = make_training_vec_env(config=config, n_envs=n_envs, seed=args.seed)
     device = resolve_sb3_device(args.device)
-    if args.torch_num_threads > 0:
-        import torch
-
-        torch.set_num_threads(args.torch_num_threads)
-        print(f"Using torch num threads: {torch.get_num_threads()}", flush=True)
     print(f"Using torch device: {device}", flush=True)
 
     lr_schedule = learning_rate_schedule(args)
@@ -571,7 +567,7 @@ def main(argv: list[str] | None = None) -> None:
     ]
     artifact_callback = None
     checkpoint_timing_state = None
-    checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, args.n_envs)
+    checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:
         checkpoint_timing_state = CheckpointArtifactTimingState()
         artifact_callback = WandbCheckpointArtifactCallback(

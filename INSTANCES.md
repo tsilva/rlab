@@ -10,11 +10,11 @@ being hardened.
 
 | Use case | Target | Shape |
 | --- | --- | --- |
-| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 6 train containers, `env_threads=4` |
-| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 train containers, `env_threads=4` |
-| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 train containers, `env_threads=2` |
-| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers, `env_threads=4` |
-| Smoke, debugging, playback | `local-macbook` | direct local CLI |
+| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 6 train containers |
+| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 train containers |
+| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 train containers |
+| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers |
+| Smoke and queue/fleet debugging | `local-macbook` | 1 local Docker train container |
 
 Machine-readable target defaults live in `experiments/instances.yaml`; these
 use `default_workers` and `hardware_max_workers` for descriptive capacity.
@@ -89,8 +89,8 @@ queue service and do not schedule experiments.
 - Enforced host capacity: `max_parallel_containers=6` in
   `experiments/machines.yaml`.
 - Default operating shape: 6 train containers.
-- Default runtime shape: `env_threads=4`, `torch_num_threads=1`.
-- Lower-contention shape: 3-4 workers with `env_threads=4`.
+- Default runtime shape: provider and PyTorch thread defaults.
+- Lower-contention shape: 3-4 workers.
 - Current five-container benchmark expectation: about 6200 aggregate wall FPS
   for the current Mario PPO shape. Re-measure aggregate wall FPS after the
   six-container shape has enough steady-state samples.
@@ -111,8 +111,8 @@ intentionally testing small-GPU behavior.
 - Enforced host capacity: `max_parallel_containers=4` in
   `experiments/machines.yaml`.
 - Default operating shape: 4 train containers.
-- Default runtime shape: `env_threads=2`, `torch_num_threads=1`.
-- Fast-turnaround shape: 2 workers with `env_threads=4`.
+- Default runtime shape: provider and PyTorch thread defaults.
+- Fast-turnaround shape: 2 workers.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
@@ -124,7 +124,11 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 ## Local MacBook
 
 - Target: `local-macbook`, aliases `macbook` and `local`.
-- Use for smoke tests, debugging, playback, and quick eval checks.
+- Backend: `local_docker`.
+- Use for queue-backed smoke tests and local fleet debugging.
+- Default operating shape: 1 train container.
+- Docker command: configured in `experiments/machines.yaml`; currently `docker`
+  without `--gpus all`.
 - Do not use local training throughput as evidence for beast concurrency.
 
 ## Operational Rules

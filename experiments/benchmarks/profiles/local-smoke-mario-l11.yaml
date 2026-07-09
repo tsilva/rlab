@@ -2,17 +2,25 @@ schema_version: 1
 name: local-smoke-mario-l11
 kind: local_smoke
 description: Tiny local train/save/load/eval smoke on the imported Mario Level1-1 state.
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
-  preset: smoke
-  run_name: benchmark_local_smoke_mario_l11
-  run_description: Benchmark local smoke run for Mario Level1-1.
-eval:
-  enabled: true
-  episodes: 2
-  max_steps: 600
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+machine: local-macbook
+run_target: local-macbook
+workers: 1
+recipe_overrides:
+- recipe_id=benchmark-local-smoke
+- group_id=benchmark-local-smoke
+- run_name_label=local-smoke
+- description=Benchmark queue-backed localhost smoke run for Mario Level1-1.
+- train.policy.timesteps=512
+- train.environment.env_config.n_envs=1
+- train.policy.batch_size=128
+- train.environment.env_config.max_episode_steps=600
+- train.checkpoint_freq=256
+- train.post_train_eval=false
+- logging.wandb=false
+- logging.wandb_mode=disabled
+- logging.wandb_artifact_storage_uri=
 gates:
-  train_exit_code: 0
-  eval_exit_code: 0
-  final_model_exists: true
+  enqueue_exit_code: 0
+  shepherd_exit_code: 0
+  result_json_exists: true

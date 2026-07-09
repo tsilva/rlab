@@ -173,6 +173,24 @@ class FleetHostTests(unittest.TestCase):
 
         self.assertIn("max_train_containers=None", rendered)
 
+    def test_capacity_policy_accepts_local_docker_fleet_machine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            registry = load_machine_registry(path)
+        policy = {
+            "lanes": [
+                {
+                    "name": "localhost-smoke",
+                    "manager": "rlab_fleet",
+                    "host": "beast-test",
+                    "max_train_containers": 1,
+                }
+            ]
+        }
+
+        fleet.validate_capacity_policy(policy, registry)
+
 
 class JobContainerTests(unittest.TestCase):
     def test_job_container_run_command_uses_run_job_payload_contract(self) -> None:
@@ -194,6 +212,23 @@ class JobContainerTests(unittest.TestCase):
         self.assertIn("rlab-container-entrypoint rlab run-job", text)
         self.assertIn("--payload /input/payloads/train-12-abc.json", text)
         self.assertIn("--label rlab.job-container=true", text)
+        self.assertNotIn("--gpus all", text)
+
+    def test_launch_claims_only_machine_run_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            machine = resolve_machine(load_machine_registry(path), "beast-test")
+
+        with mock.patch.object(fleet, "claim_job_launch", return_value=None) as claim:
+            launched = fleet.launch_claimed_job_container(
+                FakeConnection(),
+                machine=machine,
+                job_kind="train",
+            )
+
+        self.assertIsNone(launched)
+        self.assertEqual(claim.call_args.kwargs["run_target"], "rtx4090")
 
     def test_parse_job_containers_filters_to_job_container_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,8 +13,6 @@ train:
   policy:
     # Queue-backed training caps must be explicit in recipes; no runtime default is supplied.
     timesteps: 50000000
-    # Keeps PyTorch CPU work from competing with the native vector env threads on the GPU host.
-    torch_num_threads: 1
     # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
     n_steps: 512
     # Matches the rollout chunk size, giving full-batch PPO updates that reduce minibatch noise for this single-task recipe.

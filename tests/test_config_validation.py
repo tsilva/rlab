@@ -54,6 +54,14 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
+        self.assertNotIn("n_envs", train_config)
+        self.assertNotIn("env_threads", train_config)
+        self.assertNotIn("frame_skip", train_config)
+        self.assertNotIn("max_pool_frames", train_config)
+        self.assertNotIn("sticky_action_prob", train_config)
+        self.assertNotIn("observation_size", train_config)
+        self.assertNotIn("max_episode_steps", train_config)
+        self.assertNotIn("clip_rewards", train_config)
         self.assertEqual(train_config["obs_crop"], [34, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
@@ -69,11 +77,17 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["env_provider"], "ale-py")
         self.assertEqual(train_config["game"], "ms_pacman")
         self.assertEqual(train_config["env_args"]["game"], "ms_pacman")
+        self.assertEqual(train_config["env_args"]["num_threads"], 4)
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
+        for key in (
+            "action_set",
+            "reward_mode",
+        ):
+            self.assertEqual(train_config[key], breakout["train_config"][key])
         for key in (
             "n_envs",
             "env_threads",
@@ -82,11 +96,9 @@ class ConfigValidationTests(unittest.TestCase):
             "sticky_action_prob",
             "observation_size",
             "max_episode_steps",
-            "action_set",
-            "reward_mode",
             "clip_rewards",
         ):
-            self.assertEqual(train_config[key], breakout["train_config"][key])
+            self.assertNotIn(key, train_config)
         self.assertNotIn("obs_resize_algorithm", train_config)
         self.assertEqual(document["environment"]["env_id"], "ale-py:ms_pacman")
         self.assertEqual(document["environment"]["provider_args"]["frameskip"], 4)
@@ -322,7 +334,7 @@ environment_hash: sha256:deadbeef
         self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["train"]["environment"]["env_config"]["state"], "Level1-1")
         self.assertEqual(document["train"]["environment"]["env_config"]["n_envs"], 16)
-        self.assertEqual(document["train"]["environment"]["env_config"]["env_threads"], 4)
+        self.assertNotIn("env_threads", document["train"]["environment"]["env_config"])
         self.assertNotIn("reward_mode", document["train"]["environment"]["env_config"])
         self.assertEqual(document["train"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["train"]["environment"]["env_config"]["observation_size"], 84)
@@ -337,7 +349,7 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("env_provider", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
         self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 16)
-        self.assertEqual(document["eval"]["environment"]["env_config"]["env_threads"], 4)
+        self.assertNotIn("env_threads", document["eval"]["environment"]["env_config"])
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["eval"]["environment"]["env_config"]["observation_size"], 84)

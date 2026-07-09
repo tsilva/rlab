@@ -35,6 +35,7 @@ from rlab.recipe_documents import (
 )
 from rlab.seeds import validate_training_seed
 from rlab.recipe_schema import require_explicit_queue_train_config, validate_train_recipe_schema
+from rlab.provider_config import provider_num_envs
 
 
 SCHEMA_SQL = """
@@ -322,6 +323,7 @@ def enqueue_train_jobs_from_recipe_document(
     *,
     document: Mapping[str, Any],
     runtime_image_ref: str,
+    run_target: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
@@ -342,12 +344,15 @@ def enqueue_train_jobs_from_recipe_document(
             validate_training_seed(
                 seed,
                 label="recipe seed",
-                seed_span=train_config.get("n_envs", 1),
+                seed_span=provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs")),
             )
             train_config["seed"] = seed
         train_config.setdefault("recipe_slug", document_slug)
         if recipe_path:
             train_config.setdefault("recipe_path", recipe_path)
+        row_run_target = normalize_run_target(run_target or train_config.get("run_target"))
+        if row_run_target:
+            train_config["run_target"] = row_run_target
         group_id = str(document["group_id"])
         payload = dict(document)
         payload.setdefault("recipe_id", document_slug)
@@ -361,6 +366,7 @@ def enqueue_train_jobs_from_recipe_document(
             repo_dirty=repo_dirty,
             recipe_payload=payload,
             runtime_image_ref=runtime_image_ref,
+            run_target=row_run_target,
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
             run_name=(
@@ -398,6 +404,7 @@ def enqueue_train_jobs_from_recipe_file(
     *,
     path: Path,
     runtime_image_ref: str,
+    run_target: str | None = None,
     seeds: Sequence[int] = (),
     recipe_overrides: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
@@ -407,6 +414,7 @@ def enqueue_train_jobs_from_recipe_file(
         conn,
         document=document,
         runtime_image_ref=runtime_image_ref,
+        run_target=run_target,
         recipe_path=metadata["recipe_path"],
         recipe_sha256=metadata["recipe_sha256"],
         repo_git_commit=metadata["repo_git_commit"],
@@ -963,6 +971,13 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(
+        "--run-target",
+        help=(
+            "Queue target to claim from a matching fleet machine, for example "
+            "rtx4090, rtx2060, or local-macbook."
+        ),
+    )
+    parser.add_argument(
         "--runtime-image-ref-file",
         type=Path,
         help=(
@@ -1089,6 +1104,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             conn,
             path=args.recipe_file,
             runtime_image_ref=runtime_image_ref,
+            run_target=args.run_target,
             seeds=args.seed,
             recipe_overrides=args.recipe_overrides,
         )

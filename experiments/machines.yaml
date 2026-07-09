@@ -48,3 +48,24 @@ machines:
       container_payloads_dir: /input/payloads
       container_outputs_dir: /output
       container_roms_dir: /roms
+  local-macbook:
+    backend: local_docker
+    run_target: local-macbook
+    docker:
+      command:
+      - docker
+      pull_policy: always
+      gpu_args: []
+    limits:
+      max_parallel_containers: 1
+      max_train_containers: 1
+    paths:
+      host_root: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet
+      payloads_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/payloads
+      outputs_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/outputs
+      logs_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/logs
+      roms_dir: /Users/tsilva/Desktop/roms
+      env_file: /Users/tsilva/repos/tsilva/rlab/.env
+      container_payloads_dir: /input/payloads
+      container_outputs_dir: /output
+      container_roms_dir: /roms

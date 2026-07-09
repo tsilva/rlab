@@ -661,7 +661,6 @@ def validate_fleet_and_capacity(repo_root: Path) -> None:
         _require_non_empty_string(lane, "target", label=label)
         _require_non_empty_string(lane, "manager", label=label)
         _require_int(lane, "max_train_containers", label=label, minimum=1)
-        _require_int(lane, "env_threads", label=label, minimum=1)
         _require_string_list(lane, "use_for", label=label)
 
 
@@ -684,7 +683,6 @@ def validate_benchmark_baselines(path: Path) -> None:
         _require_non_empty_string(baseline, "target", label=baseline_label)
         _require_non_empty_string(baseline, "host", label=baseline_label)
         _require_int(baseline, "workers", label=baseline_label, minimum=1)
-        _require_int(baseline, "env_threads", label=baseline_label, minimum=1)
 
 
 def _capture_issue(issues: list[ValidationIssue], path: Path, repo_root: Path, action: Any) -> None:

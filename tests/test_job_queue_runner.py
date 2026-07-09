@@ -175,6 +175,29 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(insert_params["run_target"], "rtx4090")
         self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
 
+    def test_enqueue_train_jobs_from_recipe_document_materializes_run_target(self) -> None:
+        conn = FakeConnection(
+            row={
+                "id": 10,
+                "recipe_slug": "candidate",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "run_target": "local-macbook",
+            }
+        )
+
+        job_queue.enqueue_train_jobs_from_recipe_document(
+            conn,
+            document=valid_train_recipe(),
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            run_target="local-macbook",
+            seeds=[23],
+        )
+
+        insert_params = conn.cursor_obj.executed_params_list[0]
+        train_config = insert_params["train_config"].adapted
+        self.assertEqual(insert_params["run_target"], "local-macbook")
+        self.assertEqual(train_config["run_target"], "local-macbook")
+
     def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
             job_queue.enqueue_train_job(
@@ -321,7 +344,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(document["recipe_id"], "episodic-life")
         self.assertEqual(document["train_config"]["timesteps"], 100000000)
         self.assertIs(document["train_config"]["env_args"]["episodic_life"], True)
-        self.assertIs(document["train_config"]["episodic_life"], True)
+        self.assertNotIn("episodic_life", document["train_config"])
         self.assertEqual(document["train_config"]["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(document["recipe_overrides"], overrides)
 

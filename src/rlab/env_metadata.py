@@ -47,8 +47,9 @@ PLAYBACK_ENV_ARG_KEYS = {
     "info_events_json": ("info_events",),
     "done_on_events": ("done_on_events",),
     "action_set": ("action_set",),
-    "env_threads": ("env_threads",),
 }
+
+RETIRED_THREAD_CONFIG_KEYS = frozenset({"env_threads"})
 
 
 def env_config_metadata(config: EnvConfig) -> dict[str, Any]:
@@ -138,6 +139,8 @@ def env_config_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def sanitize_env_config_metadata(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(config)
+    for key in RETIRED_THREAD_CONFIG_KEYS:
+        cleaned.pop(key, None)
     had_legacy_done_on_info = "done_on_info" in cleaned
     cleaned.pop("done_on_info", None)
     if had_legacy_done_on_info and not cleaned.get("info_events"):

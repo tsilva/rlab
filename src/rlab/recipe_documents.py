@@ -17,6 +17,7 @@ from rlab.config_loader import (
     render_template_vars,
 )
 from rlab.env_identity import attach_environment_identity, train_config_from_environment
+from rlab.provider_config import provider_num_envs
 from rlab.seeds import validate_training_seed
 from rlab.recipe_schema import train_recipe_id, validate_train_recipe_schema
 
@@ -91,7 +92,6 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "done_on_events",
         "env_wrappers",
         "n_envs",
-        "env_threads",
     }
 )
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
@@ -694,7 +694,7 @@ def validate_launch_seed_config(
     label: str = "train_config",
 ) -> None:
     config_seed = train_config.get("seed")
-    seed_span = train_config.get("n_envs", 1)
+    seed_span = provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs"))
     if _non_empty_config_value(config_seed):
         validate_training_seed(config_seed, label=f"{label}.seed", seed_span=seed_span)
     if seed is not None:

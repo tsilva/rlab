@@ -39,6 +39,7 @@ class MachineConfig:
     ssh_target: str
     ssh_options: tuple[str, ...]
     docker_command: tuple[str, ...]
+    docker_gpu_args: tuple[str, ...]
     pull_policy: str
     limits: MachineLimits
     paths: MachinePaths
@@ -99,6 +100,7 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
     if backend == "docker_ssh" and not ssh_target:
         raise ValueError(f"machine {name!r} backend docker_ssh requires ssh_target")
     docker = raw.get("docker") if isinstance(raw.get("docker"), Mapping) else {}
+    default_gpu_args: tuple[str, ...] = ("--gpus", "all") if backend == "docker_ssh" else ()
     limits_raw = raw.get("limits") if isinstance(raw.get("limits"), Mapping) else {}
     paths_raw = raw.get("paths") if isinstance(raw.get("paths"), Mapping) else {}
     host_root = str(paths_raw.get("host_root") or "/home/tsilva/rlab")
@@ -109,6 +111,7 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
         ssh_target=ssh_target,
         ssh_options=_tuple(raw.get("ssh_options")),
         docker_command=_tuple(docker.get("command") or ("docker",)),
+        docker_gpu_args=_tuple(docker.get("gpu_args", default_gpu_args)),
         pull_policy=str(docker.get("pull_policy") or "always"),
         limits=MachineLimits(
             max_parallel_containers=_positive_int(

@@ -33,7 +33,6 @@ train:
       <<: &mario_env_config
         game: SuperMarioBros-Nes-v0
         n_envs: 16
-        env_threads: 4
         states:
         - Level1-1
         - Level1-2

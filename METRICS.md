@@ -190,6 +190,25 @@ consumed by code; `level_complete` is the semantic event/result name used in W&B
 defensive guard, the metrics callback treats any attempt with `died`, `life_loss`, or a `life_loss`
 info event as failed even if a contradictory completion flag appears in the same info payload.
 
+### ALE / Ms. Pac-Man Notes
+
+For ALE targets such as Ms. Pac-Man, `train/done/all` is the cumulative completed training episode
+count. It increments whenever a vector-env slot reports `done=True`, including natural game-over
+episodes and max-frame truncations. Use `eval/done/all` for the number of episodes summarized by a
+standalone or post-training eval run.
+
+Current Ms. Pac-Man recipes do not define a clean completion event, so Mario-style completion metrics
+such as `train/info/level_complete/*`, `eval/done/level_change/*`, and `completion_count` are not
+expected. Selection should use reward metrics such as `eval/reward/mean` and `eval/best/reward`.
+
+Current ALE/Ms. Pac-Man training also does not emit a cumulative life-loss metric. `train/done/life_loss`
+only counts terminal episodes whose done payload is attributed to a configured `life_loss` reason; the
+ALE provider does not support `done_on_events`, and the base Ms. Pac-Man goal does not enable a
+separate generic info-event counter for decreases in `ale.lives`. If a run is launched with ALE
+`episodic_life=true`, life loss may become a training episode boundary, but without an explicit
+life-loss counter those episode boundaries still should be read through `train/done/all` and
+`train/done/unclassified`, not as total lives lost.
+
 ## SB3 PPO Metrics
 
 These come from Stable-Baselines3 PPO and `VecMonitor`.

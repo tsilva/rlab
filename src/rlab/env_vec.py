@@ -18,7 +18,6 @@ def _provider_env_args(
     config: Any,
     *,
     n_envs: int,
-    num_threads: int,
 ) -> dict[str, Any]:
     native_kwargs = dict(config.env_args or {})
     game = native_kwargs.pop("game", None)
@@ -32,17 +31,7 @@ def _provider_env_args(
             "env_args.num_envs must match requested n_envs: "
             f"{native_kwargs['num_envs']!r} != {n_envs!r}",
         )
-    if (
-        "num_threads" in native_kwargs
-        and int(native_kwargs["num_threads"]) > 0
-        and int(native_kwargs["num_threads"]) != int(num_threads)
-    ):
-        raise ValueError(
-            "env_args.num_threads must match resolved env_threads: "
-            f"{native_kwargs['num_threads']!r} != {num_threads!r}",
-        )
     native_kwargs.setdefault("num_envs", n_envs)
-    native_kwargs.setdefault("num_threads", num_threads)
     return native_kwargs
 
 
@@ -75,20 +64,18 @@ def _native_vec_kwargs(
     config: Any,
     *,
     n_envs: int,
-    num_threads: int,
     native_done_on_rules: NativeDoneOnRules,
     native_obs_crop: Callable[[Any], tuple[int, int, int, int] | None],
     state_weight_mapping: Callable[[Any], dict[str, float]],
 ) -> dict[str, Any]:
     if config.env_args:
-        native_kwargs = _provider_env_args(config, n_envs=n_envs, num_threads=num_threads)
+        native_kwargs = _provider_env_args(config, n_envs=n_envs)
         if native_done_on_rules and "done_on" not in native_kwargs:
             native_kwargs["done_on"] = native_done_on_rules
         return native_kwargs
 
     native_kwargs: dict[str, Any] = {
         "num_envs": n_envs,
-        "num_threads": num_threads,
         "render_mode": "rgb_array",
         "obs_resize": (config.observation_size, config.observation_size),
         "obs_crop": native_obs_crop(config),
@@ -128,7 +115,6 @@ def _ale_py_native_vec_kwargs(
     config: Any,
     *,
     n_envs: int,
-    num_threads: int,
     native_done_on_rules: NativeDoneOnRules,
     native_obs_crop: Callable[[Any], tuple[int, int, int, int] | None],
 ) -> dict[str, Any]:
@@ -137,7 +123,7 @@ def _ale_py_native_vec_kwargs(
     if native_done_on_rules:
         raise ValueError("ale-py provider does not support done_on_events")
     if config.env_args:
-        return _provider_env_args(config, n_envs=n_envs, num_threads=num_threads)
+        return _provider_env_args(config, n_envs=n_envs)
     obs_crop = native_obs_crop(config)
     if obs_crop is not None and config.obs_crop_mode != "mask":
         raise ValueError("ale-py provider only supports obs_crop_mode='mask'")
@@ -146,7 +132,6 @@ def _ale_py_native_vec_kwargs(
         max_num_frames_per_episode = config.max_episode_steps * config.frame_skip
     return {
         "num_envs": n_envs,
-        "num_threads": num_threads,
         "max_num_frames_per_episode": max_num_frames_per_episode,
         "repeat_action_probability": config.sticky_action_prob,
         "img_height": config.observation_size,
@@ -164,7 +149,6 @@ def provider_native_vec_kwargs(
     config: Any,
     *,
     n_envs: int,
-    num_threads: int,
     native_done_on_rules: NativeDoneOnRules,
     native_obs_crop: Callable[[Any], tuple[int, int, int, int] | None],
     state_weight_mapping: Callable[[Any], dict[str, float]],
@@ -174,14 +158,12 @@ def provider_native_vec_kwargs(
         return _ale_py_native_vec_kwargs(
             config,
             n_envs=n_envs,
-            num_threads=num_threads,
             native_done_on_rules=native_done_on_rules,
             native_obs_crop=native_obs_crop,
         )
     return _native_vec_kwargs(
         config,
         n_envs=n_envs,
-        num_threads=num_threads,
         native_done_on_rules=native_done_on_rules,
         native_obs_crop=native_obs_crop,
         state_weight_mapping=state_weight_mapping,

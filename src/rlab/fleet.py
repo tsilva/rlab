@@ -129,9 +129,9 @@ def validate_capacity_policy(policy: Mapping[str, Any], registry: MachineRegistr
         if host_name not in registry.machines:
             raise ValueError(f"capacity_policy lane {name!r} references unknown machine {host_name!r}")
         machine = registry.machines[host_name]
-        if machine.backend != "docker_ssh":
+        if machine.backend not in {"docker_ssh", "local_docker"}:
             raise ValueError(
-                f"capacity_policy lane {name!r} references non-docker_ssh machine {host_name!r}"
+                f"capacity_policy lane {name!r} references unsupported fleet machine {host_name!r}"
             )
         max_train_containers = lane.get("max_train_containers")
         if max_train_containers is None:
@@ -269,7 +269,7 @@ def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None =
     state_dir = f"{host_root}/fleet"
     docker_info = shell_join(machine_docker_command(machine, ["info"]))
     gpu_test = shell_join(
-        machine_docker_command(machine, ["run", "--rm", "--gpus", "all", GPU_TEST_IMAGE, "nvidia-smi"])
+        machine_docker_command(machine, ["run", "--rm", *machine.docker_gpu_args, GPU_TEST_IMAGE, "nvidia-smi"])
     )
     lines = [
         "set -euo pipefail",
@@ -342,8 +342,7 @@ def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None =
                         [
                             "run",
                             "--rm",
-                            "--gpus",
-                            "all",
+                            *machine.docker_gpu_args,
                             "--env-file",
                             machine.paths.env_file,
                             "-e",
@@ -473,8 +472,7 @@ def format_capacity_policy(policy: Mapping[str, Any]) -> str:
                 "  "
                 f"{lane.get('name')} target={lane.get('target')} "
                 f"manager={lane.get('manager')} "
-                f"max_train_containers={lane.get('max_train_containers')} "
-                f"env_threads={lane.get('env_threads')}"
+                f"max_train_containers={lane.get('max_train_containers')}"
             )
     checks = policy.get("policy_checks")
     if isinstance(checks, Sequence) and not isinstance(checks, str):
@@ -636,8 +634,7 @@ def job_container_run_command(
             container_name,
             "--restart",
             "no",
-            "--gpus",
-            "all",
+            *machine.docker_gpu_args,
             "--env-file",
             machine.paths.env_file,
             "-v",
@@ -1151,6 +1148,7 @@ def launch_claimed_job_container(
         machine=machine.name,
         backend=machine.backend,
         job_id=job_id,
+        run_target=machine.run_target,
         launch_id=launch_id,
         output_uri=launch_output_path(machine, launch_id),
     )

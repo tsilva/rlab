@@ -41,6 +41,7 @@ from rlab.env_config import (
 )
 from rlab.model_sources import (
     ResolvedModelSource,
+    artifact_lookup_project_paths,
     download_huggingface_model_source,
     model_artifact_checkpoint_step,
     model_source_ref,
@@ -599,7 +600,6 @@ class CommandAndArtifactTests(unittest.TestCase):
                     env_provider="supermariobrosnes-turbo",
                     game="SuperMarioBros-Nes-v0",
                     state="Level2-1",
-                    env_threads=4,
                     max_pool_frames=False,
                     max_episode_steps=2345,
                     observation_size=96,
@@ -616,7 +616,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             config = load_playback_env_config(model_path)
 
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
-            self.assertEqual(config.env_threads, 4)
             self.assertEqual(config.state, "Level2-1")
             self.assertFalse(config.max_pool_frames)
             self.assertEqual(config.max_episode_steps, 2345)
@@ -639,7 +638,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "missing playback metadata"):
                 load_playback_env_config(model_path)
 
-    def test_eval_model_metadata_defaults_apply_env_provider_and_threads(self) -> None:
+    def test_eval_model_metadata_defaults_apply_env_provider(self) -> None:
         parser = build_eval_parser()
         parser_defaults = vars(parser.parse_args([]))
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -652,7 +651,6 @@ class CommandAndArtifactTests(unittest.TestCase):
                     env_provider="supermariobrosnes-turbo",
                     game="SuperMarioBros-Nes-v0",
                     state="Level1-1",
-                    env_threads=4,
                     obs_crop_mode="mask",
                     obs_crop_fill=7,
                 ),
@@ -670,10 +668,8 @@ class CommandAndArtifactTests(unittest.TestCase):
                 args,
                 max_episode_steps_attr="max_steps",
                 include_states=True,
-                include_env_threads=True,
             )
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
-            self.assertEqual(config.env_threads, 4)
             self.assertEqual(config.obs_crop_mode, "mask")
             self.assertEqual(config.obs_crop_fill, 7)
 
@@ -682,48 +678,41 @@ class CommandAndArtifactTests(unittest.TestCase):
             env_provider="supermariobrosnes-turbo",
             game="SuperMarioBros-Nes-v0",
             state="Level1-1",
-            env_threads=4,
         )
 
         with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=True):
             config = display_replay_config(policy_config)
 
         self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
-        self.assertEqual(config.env_threads, 4)
 
     def test_non_stable_playback_falls_back_to_stable_retro_without_rgb(self) -> None:
         policy_config = EnvConfig(
             env_provider="supermariobrosnes-turbo",
             game="SuperMarioBros-Nes-v0",
             state="Level1-1",
-            env_threads=4,
         )
 
         with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
             config = display_replay_config(policy_config)
 
         self.assertEqual(config.env_provider, "stable-retro-turbo")
-        self.assertEqual(config.env_threads, 0)
 
     def test_ale_playback_keeps_native_display_when_stable_retro_lacks_game(self) -> None:
         policy_config = EnvConfig(
             env_provider="ale-py",
             game="breakout",
-            env_threads=4,
         )
 
         with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
             config = display_replay_config(policy_config)
 
         self.assertEqual(config.env_provider, "ale-py")
-        self.assertEqual(config.env_threads, 4)
 
     def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
         args = argparse.Namespace(
             artifact_ref="run",
             model="model.zip",
             env_provider="supermariobrosnes-turbo",
-            env_threads=4,
             policy_env="fast",
             device="cpu",
             deterministic=False,
@@ -735,7 +724,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             env_provider="supermariobrosnes-turbo",
             game="SuperMarioBros-Nes-v0",
             state="Level1-1",
-            env_threads=4,
             frame_skip=4,
             max_pool_frames=False,
             hud_crop_top=32,
@@ -768,7 +756,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("viewer env: supermariobrosnes-turbo", text)
         self.assertIn("visual_only=True", text)
         self.assertIn("source of truth:", text)
-        self.assertIn("threads=4", text)
         self.assertIn("frame_skip=4", text)
         self.assertIn("max_pool=False", text)
         self.assertIn("action_set=simple", text)
@@ -970,7 +957,6 @@ class CommandAndArtifactTests(unittest.TestCase):
                     env_provider="supermariobrosnes-turbo",
                     game="SuperMarioBros-Nes-v0",
                     state="Level1-1",
-                    env_threads=4,
                 ),
                 kind="checkpoint",
             )
@@ -1081,6 +1067,77 @@ class CommandAndArtifactTests(unittest.TestCase):
             "tsilva/SuperMarioBros3-Nes-v0/"
             "1Player.World1.Level1_base_s123_20260703T171520Z-checkpoint:latest",
         )
+
+    def test_model_source_ref_resolves_unique_bare_run_across_projects(self) -> None:
+        found_ref = (
+            "tsilva/ms_pacman/"
+            "alepy__mspacman_episodic-life_s126_20260709T102223Z-checkpoint:latest"
+        )
+        calls = []
+
+        class FakeApi:
+            def artifact(self, ref, type=None):
+                calls.append((ref, type))
+                if ref == found_ref:
+                    return object()
+                raise RuntimeError("not found")
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(["alepy__mspacman_episodic-life_s126_20260709T102223Z"])
+
+        with (
+            patch.dict(sys.modules, {"wandb": fake_wandb}),
+            patch(
+                "rlab.model_sources.artifact_lookup_project_paths",
+                return_value=[
+                    "tsilva/ms_pacman",
+                    "tsilva/breakout",
+                    "tsilva/SuperMarioBros-Nes-v0",
+                ],
+            ),
+        ):
+            self.assertEqual(single_model_artifact_ref(args), found_ref)
+
+        self.assertIn((found_ref, "model"), calls)
+
+    def test_model_source_ref_rejects_ambiguous_bare_run_across_projects(self) -> None:
+        matches = {
+            "tsilva/ms_pacman/shared-run-checkpoint:latest",
+            "tsilva/breakout/shared-run-checkpoint:latest",
+        }
+
+        class FakeApi:
+            def artifact(self, ref, type=None):
+                if ref in matches:
+                    return object()
+                raise RuntimeError("not found")
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(["shared-run"])
+
+        with (
+            patch.dict(sys.modules, {"wandb": fake_wandb}),
+            patch(
+                "rlab.model_sources.artifact_lookup_project_paths",
+                return_value=[
+                    "tsilva/ms_pacman",
+                    "tsilva/breakout",
+                    "tsilva/SuperMarioBros-Nes-v0",
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(SystemExit, "ambiguous"):
+                single_model_artifact_ref(args)
+
+    def test_artifact_lookup_projects_infer_ale_project_from_run_prefix(self) -> None:
+        projects = artifact_lookup_project_paths(
+            "tsilva/SuperMarioBros-Nes-v0",
+            "alepy__mspacman_episodic-life_s126_20260709T102223Z",
+        )
+
+        self.assertEqual(projects[0], "tsilva/ms_pacman")
 
     def test_model_source_ref_uses_wandb_run_url_latest_checkpoint(self) -> None:
         calls = []

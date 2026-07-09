@@ -42,7 +42,6 @@ train:
         # Stable Retro-compatible game id passed to SuperMarioBrosNesTurboVecEnv.
         game: SuperMarioBros-Nes-v0
         n_envs: 16
-        env_threads: 4
         # Emulator frame skip; fixes action repeat and observation cadence.
         frame_skip: 4
         # Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.

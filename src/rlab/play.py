@@ -447,7 +447,7 @@ def display_replay_config(config):
         qualify_env_id(STABLE_RETRO_TURBO_PROVIDER.provider_id, config.game)
     except ValueError:
         return config
-    return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id, env_threads=0)
+    return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id)
 
 
 def resolved_play_launch_lines(
@@ -473,8 +473,7 @@ def resolved_play_launch_lines(
             "●",
             "policy/eval env",
             f"{policy_config.env_provider} game={policy_config.game} "
-            f"state={policy_config.state or '-'} states={_format_sequence(states)} "
-            f"threads={policy_config.env_threads}",
+            f"state={policy_config.state or '-'} states={_format_sequence(states)}",
             "green",
         ),
         _summary_line(

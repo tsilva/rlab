@@ -176,7 +176,6 @@ def env_config_from_args(
     *,
     max_episode_steps_attr: str = "max_episode_steps",
     include_states: bool = False,
-    include_env_threads: bool = False,
 ) -> EnvConfig:
     defaults = EnvConfig()
 
@@ -186,8 +185,6 @@ def env_config_from_args(
     config_kwargs: dict[str, Any] = {}
     for field in env_config_arg_fields():
         if field.dest in {"states", "state_probs"} and not include_states:
-            continue
-        if field.dest == "env_threads" and not include_env_threads:
             continue
         key = field.env_config_key or field.dest
         raw_value = (

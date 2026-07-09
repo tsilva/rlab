@@ -705,10 +705,6 @@ def instance_details(instance_name: str, instance: dict[str, Any]) -> dict[str, 
         "cpu_shape": instance.get("cpu") or instance.get("cpus") or "",
         "memory_shape": instance.get("memory_mib") or instance.get("memory") or "",
         "n_envs": instance.get("n_envs") or "",
-        "env_threads": instance.get("env_threads") if instance.get("env_threads") is not None else "",
-        "torch_num_threads": instance.get("torch_num_threads")
-        if instance.get("torch_num_threads") is not None
-        else "",
         "expected_cost": instance.get("expected_hourly_cost") or "",
         "expected_fps": instance.get("expected_aggregate_wall_fps") or "",
     }
@@ -763,7 +759,8 @@ def merge_machine_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
     for machine_name, raw_machine in machines.items():
         if not isinstance(raw_machine, dict):
             continue
-        if raw_machine.get("backend") != "docker_ssh":
+        backend = str(raw_machine.get("backend") or "").strip()
+        if backend not in {"docker_ssh", "local_docker"}:
             continue
         machine = dict(raw_machine)
         run_target = str(machine.get("run_target") or "").strip()
@@ -776,6 +773,7 @@ def merge_machine_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
         details = {
             "machine": str(machine_name),
             "run_target": run_target or "",
+            "backend": backend,
             "ssh": machine.get("ssh_target") or "",
             "runner_capacity": max_workers or "",
             "docker": " ".join(str(part) for part in docker.get("command") or []),
@@ -786,7 +784,7 @@ def merge_machine_hosts(repo_root: Path, devices: list[dict[str, Any]]) -> None:
                 "id": target_key,
                 "aliases": [str(machine_name)],
                 "device": str(machine_name),
-                "target": f"docker/{machine_name}",
+                "target": f"{backend}/{machine_name}",
                 "capacity": capacity,
                 "available": True,
                 "details": {

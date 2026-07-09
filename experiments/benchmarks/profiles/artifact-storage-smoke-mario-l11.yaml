@@ -6,8 +6,6 @@ train_config:
   game: SuperMarioBros-Nes-v0
   state: Level1-1
   n_envs: 1
-  env_threads: 1
-  torch_num_threads: 1
   n_steps: 128
   batch_size: 128
   n_epochs: 1

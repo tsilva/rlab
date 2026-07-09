@@ -276,7 +276,6 @@ def evaluate_model_episodes(
             else replace(
                 config,
                 env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id,
-                env_threads=0,
             )
         )
         video_env = make_rendered_replay_env(config=video_config, seed=best_episode_seed)

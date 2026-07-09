@@ -57,7 +57,6 @@ def mario_student_config(*, done_on_events: Sequence[str] = ()) -> EnvConfig:
             reward_scale=10.0,
             score_progress_clipped=False,
             done_on_events=tuple(done_on_events),
-            env_threads=4,
         )
     )
 

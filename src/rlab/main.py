@@ -19,11 +19,6 @@ def _run(command: CommandMain, argv: Sequence[str], *, prog: str) -> int:
 
 
 def _train(argv: Sequence[str]) -> int:
-    if argv and argv[0] == "local":
-        from rlab.train import main as train_main
-
-        return _run(train_main, argv[1:], prog="rlab train local")
-
     from rlab.job_queue import build_train_enqueue_parser, cmd_enqueue_train
 
     return int(cmd_enqueue_train(build_train_enqueue_parser().parse_args(list(argv))))
@@ -108,7 +103,7 @@ def _release(argv: Sequence[str]) -> int:
 
 
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
-    "train": ("enqueue train jobs from checked-in recipes; use 'local' for direct training", _train),
+    "train": ("enqueue queue-backed train jobs from checked-in recipes", _train),
     "eval": ("run local evals", _eval),
     "play": ("render a local model or W&B artifact in a GUI window", _play),
     "import-roms": ("import ROMs into the installed rlab runtime", _import_roms),

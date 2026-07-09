@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from rlab.env_registry import qualify_env_id, resolve_env_id
+from rlab.env_registry import resolve_env_id
+from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
 
 
 ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v1"
@@ -57,8 +58,6 @@ NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
         "batch_size",
         "game",
         "num_envs",
-        "num_threads",
-        "thread_affinity_offset",
     }
 )
 
@@ -164,12 +163,10 @@ def environment_identity_from_train_config(
     identity.pop("env_config", None)
     identity.setdefault("schema_version", 1)
     identity.pop("env_provider", None)
-    provider = train_config.get("env_provider")
-    if "env_id" not in identity and train_config.get("game") is not None:
-        identity["env_id"] = qualify_env_id(
-            str(provider or "stable-retro-turbo"),
-            str(train_config["game"]),
-        )
+    if "env_id" not in identity:
+        resolved_env_id = provider_env_id(train_config)
+        if resolved_env_id is not None:
+            identity["env_id"] = resolved_env_id
     elif isinstance(identity.get("env_id"), str):
         identity["env_id"] = resolve_env_id(str(identity["env_id"])).qualified_id
 
@@ -192,15 +189,9 @@ def environment_identity_from_train_config(
         _copy_present(train_config, TERMINATION_KEYS),
     )
     _setdefault_section(identity, "reward", _copy_present(train_config, REWARD_KEYS))
-    env_args = train_config.get("env_args")
-    if isinstance(env_args, Mapping):
-        provider_args = {
-            key: deepcopy(value)
-            for key, value in env_args.items()
-            if key not in NON_SEMANTIC_ENV_ARG_KEYS
-        }
-        if provider_args:
-            identity.setdefault("provider_args", provider_args)
+    provider_args = semantic_provider_args(train_config)
+    if provider_args:
+        identity.setdefault("provider_args", deepcopy(provider_args))
     _normalize_preprocessing(identity)
     return identity
 
@@ -220,47 +211,6 @@ def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
     return result
 
 
-def _setdefault_from_env_args(
-    train_config: dict[str, Any],
-    *,
-    env_provider: str | None,
-) -> None:
-    env_args = train_config.get("env_args")
-    if not isinstance(env_args, Mapping):
-        return
-    if "game" in env_args:
-        train_config.setdefault("game", deepcopy(env_args["game"]))
-    if "num_envs" in env_args:
-        train_config.setdefault("n_envs", deepcopy(env_args["num_envs"]))
-    if "num_threads" in env_args:
-        train_config.setdefault("env_threads", deepcopy(env_args["num_threads"]))
-
-    if env_provider != "ale-py":
-        return
-
-    alias_pairs = {
-        "frameskip": "frame_skip",
-        "maxpool": "max_pool_frames",
-        "repeat_action_probability": "sticky_action_prob",
-        "reward_clipping": "clip_rewards",
-        "episodic_life": "episodic_life",
-    }
-    for source, dest in alias_pairs.items():
-        if source in env_args:
-            train_config.setdefault(dest, deepcopy(env_args[source]))
-    height = env_args.get("img_height")
-    width = env_args.get("img_width")
-    if height is not None and height == width:
-        train_config.setdefault("observation_size", deepcopy(height))
-    if "max_num_frames_per_episode" in env_args:
-        frameskip = int(train_config.get("frame_skip") or env_args.get("frameskip") or 1)
-        if frameskip > 0:
-            train_config.setdefault(
-                "max_episode_steps",
-                int(env_args["max_num_frames_per_episode"]) // frameskip,
-            )
-
-
 def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(environment, Mapping):
         return {}
@@ -277,7 +227,9 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
     if env_provider is None and "env_provider" in environment:
         env_provider = environment["env_provider"]
         train_config["env_provider"] = deepcopy(env_provider)
-    _setdefault_from_env_args(train_config, env_provider=str(env_provider) if env_provider else None)
+    game = provider_game(train_config)
+    if game is not None:
+        train_config.setdefault("game", game)
     state_value = environment.get("state")
     if isinstance(state_value, Mapping):
         train_config.update(

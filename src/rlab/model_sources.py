@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,13 @@ HUGGINGFACE_MODEL_SCHEME = "hf://"
 HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
 WANDB_RUN_URL_HOST = "wandb.ai"
 MODEL_ARTIFACT_KIND_SUFFIXES = tuple(f"-{kind}" for kind in MODEL_KIND_CHOICES)
+DEFAULT_ARTIFACT_LOOKUP_PROJECTS = (
+    "SuperMarioBros-Nes-v0",
+    "SuperMarioBros3-Nes-v0",
+    "ms_pacman",
+    "breakout",
+)
+MAX_PARALLEL_ARTIFACT_LOOKUPS = 4
 
 
 @dataclass
@@ -208,6 +216,132 @@ def artifact_project_from_args(args: argparse.Namespace) -> str:
     return str(getattr(args, "artifact_project", "") or default_wandb_project_path())
 
 
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _project_path(entity: str, project: str) -> str:
+    return project if "/" in project else f"{entity}/{project}"
+
+
+def _goal_project_from_document(goal_path: Path) -> str | None:
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        data = yaml.safe_load(goal_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    if not isinstance(data, Mapping):
+        return None
+    explicit_project = _mapping_value(data, "wandb_project")
+    if explicit_project:
+        return str(explicit_project)
+    logging = _mapping_value(data, "logging")
+    if isinstance(logging, Mapping) and logging.get("wandb_project"):
+        return str(logging["wandb_project"])
+    train = _mapping_value(data, "train")
+    if not isinstance(train, Mapping):
+        return None
+    environment = _mapping_value(train, "environment")
+    if not isinstance(environment, Mapping):
+        return None
+    env_config = _mapping_value(environment, "env_config")
+    if not isinstance(env_config, Mapping):
+        return None
+    env_args = _mapping_value(env_config, "env_args")
+    if isinstance(env_args, Mapping) and env_args.get("game"):
+        return str(env_args["game"])
+    return None
+
+
+def _local_goal_project_map(goals_root: Path = Path("experiments/goals")) -> dict[str, str]:
+    if not goals_root.exists():
+        return {}
+    projects: dict[str, str] = {}
+    for goal_dir in sorted(path for path in goals_root.iterdir() if path.is_dir()):
+        goal_id = goal_dir.name
+        goal_file = goal_dir / "_goal.yaml"
+        projects[goal_id] = _goal_project_from_document(goal_file) or goal_id
+    return projects
+
+
+def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[str]:
+    entity = default_project.split("/", 1)[0]
+    local_projects = _local_goal_project_map()
+    inferred: list[str] = []
+    for goal_id, project in sorted(local_projects.items(), key=lambda item: len(item[0]), reverse=True):
+        if run_name == goal_id or run_name.startswith(f"{goal_id}_"):
+            inferred.append(_project_path(entity, project))
+            break
+    projects = [
+        *inferred,
+        default_project,
+        *(_project_path(entity, project) for project in local_projects.values()),
+        *(_project_path(entity, project) for project in DEFAULT_ARTIFACT_LOOKUP_PROJECTS),
+    ]
+    return _dedupe(projects)
+
+
+def _artifact_exists(ref: str) -> bool:
+    import wandb
+
+    try:
+        wandb.Api().artifact(ref, type="model")
+    except Exception:
+        return False
+    return True
+
+
+def resolve_unique_bare_run_artifact_ref(
+    run_name: str,
+    *,
+    default_project: str,
+    kind: str,
+    version: str,
+) -> str | None:
+    if "/" in run_name or ":" in run_name:
+        return None
+    candidates = [
+        model_artifact_ref(project=project, run_name=run_name, kind=kind, version=version)
+        for project in artifact_lookup_project_paths(default_project, run_name)
+    ]
+    if not candidates:
+        return None
+
+    load_wandb_env()
+
+    matches: list[str] = []
+    if _artifact_exists(candidates[0]):
+        matches.append(candidates[0])
+    remaining = candidates[1:]
+    if not remaining:
+        return matches[0] if matches else None
+
+    with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_ARTIFACT_LOOKUPS, len(remaining))) as pool:
+        futures = {pool.submit(_artifact_exists, ref): ref for ref in remaining}
+        for future in as_completed(futures):
+            if future.result():
+                matches.append(futures[future])
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        choices = ", ".join(sorted(matches))
+        raise SystemExit(
+            f"Run name {run_name!r} is ambiguous across W&B projects; pass project/run. "
+            f"Matches: {choices}"
+        )
+    return None
+
+
 def model_ref_from_run_path(
     value: str,
     *,
@@ -227,6 +361,14 @@ def model_ref_from_run_path(
         return None
     parts = value.split("/")
     if len(parts) == 1:
+        inferred_ref = resolve_unique_bare_run_artifact_ref(
+            parts[0],
+            default_project=default_project,
+            kind=kind,
+            version=version,
+        )
+        if inferred_ref is not None:
+            return inferred_ref
         project = default_project
         run_name = parts[0]
     elif len(parts) == 2:

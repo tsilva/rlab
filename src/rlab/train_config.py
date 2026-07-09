@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -180,7 +181,7 @@ def _canonical_train_command_options(options: Mapping[str, Any]) -> dict[str, An
 
 
 def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
-    cmd = ["rlab", "train", "local"]
+    cmd = [sys.executable, "-m", "rlab.train"]
     canonical_options = _canonical_train_command_options(options)
     for field in TRAIN_CONFIG_FIELDS:
         if field.dest not in canonical_options:
@@ -421,22 +422,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         validation_min=1,
     ),
     TrainConfigField("n_envs", ("--n-envs",), type_name="int", default=8, validation_min=1),
-    TrainConfigField(
-        "env_threads",
-        ("--env-threads",),
-        type_name="int",
-        default=0,
-        env_config_key="env_threads",
-        validation_min=0,
-        help="Native stable-retro env threads; <=0 keeps min(n_envs, 16).",
-    ),
-    TrainConfigField(
-        "torch_num_threads",
-        ("--torch-num-threads",),
-        type_name="int",
-        default=0,
-        help="PyTorch CPU intra-op threads; <=0 leaves the torch default.",
-    ),
     TrainConfigField(
         "seed",
         ("--seed",),

@@ -7,6 +7,7 @@ from typing import Any
 from rlab.env_registry import resolve_env_provider
 from rlab.seeds import validate_training_seed
 from rlab.train_config import queue_required_train_config_fields, validate_train_config_fields
+from rlab.provider_config import provider_num_envs
 from rlab.validation import (
     int_list,
     label_path,
@@ -210,7 +211,7 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         label=label_path(label, "train_config"),
         required_keys=("game", "timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
     )
-    seed_span = train_config.get("n_envs", 1)
+    seed_span = provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs"))
     for index, seed in enumerate(seed_values):
         validate_training_seed(
             seed,
@@ -235,5 +236,5 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         validate_training_seed(
             train_config["seed"],
             label=label_path(label, "train_config.seed"),
-            seed_span=train_config.get("n_envs", 1),
+            seed_span=seed_span,
         )

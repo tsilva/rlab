@@ -40,7 +40,6 @@ STATE = "Level1-1"
 # We train 16 Mario emulator lanes in parallel.  This gives PPO a batch of
 # experience faster than running one Mario at a time.
 N_ENVS = 16
-ENV_THREADS = 4
 
 # Stop no later than 5M environment steps.  Each step here means one action sent
 # to each active emulator lane after native frame-skip.
@@ -310,7 +309,6 @@ def make_env():
         GAME,
         state=STATE,
         num_envs=N_ENVS,
-        num_threads=ENV_THREADS,
         render_mode="rgb_array",
         obs_resize=(84, 84),
         obs_crop=(32, 0, 0, 0),
@@ -334,9 +332,6 @@ def main():
     # Torch seed makes network init and action sampling reproducible enough for
     # learning/debugging.  GPU kernels may still have nondeterminism.
     torch.manual_seed(SEED)
-
-    # Keep PyTorch CPU thread use low so it does not fight the emulator threads.
-    torch.set_num_threads(1)
 
     # Prefer GPU.  On Apple Silicon, MPS can run this, but RTX/CUDA is the target
     # for full-speed training.

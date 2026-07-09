@@ -10,7 +10,6 @@ description: >-
 train:
   policy:
     timesteps: 100000000
-    torch_num_threads: 1
     n_steps: 128
     batch_size: 256
     n_epochs: 4

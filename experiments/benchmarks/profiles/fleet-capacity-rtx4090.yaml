@@ -5,7 +5,6 @@ description: Queue-backed Beast3 capacity check for the standard five-container 
 target: rtx4090
 host: beast-3
 workers: 5
-env_threads: 4
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 runtime_image_ref_file: rlab-train-image.json
 gates:

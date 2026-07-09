@@ -6,21 +6,23 @@
 
 rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed one-job GPU containers, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
 
-The normal workflow is to install the CLI once with `uv tool install .`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
+The normal workflow is to install the CLI once with `./install.sh`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
 
 ## Install
 
 ```bash
 git clone git@github.com:tsilva/rlab.git
 cd rlab
-uv tool install . --editable
+./install.sh
 ```
 
 If you are reinstalling after local changes:
 
 ```bash
-uv tool install . --editable --force
+./install.sh
 ```
+
+`install.sh` uses `uv tool install . -e` from the repo root. On a fresh checkout it installs the `rlab` command as an editable uv tool; when the tool already exists, rerunning it upgrades dependency versions. `upgrade.sh` is kept as a compatibility wrapper.
 
 This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
 
@@ -39,28 +41,27 @@ rlab import-roms ~/Desktop/roms --game SuperMarioBros-Nes-v0
 
 ## Run
 
-Start with a local smoke run:
+Start with a queue-backed local smoke run:
 
 ```bash
-rlab train local \
-  --game <GameId> \
-  --preset smoke \
-  --run-name local_smoke \
-  --run-description "Local rlab smoke test"
+rlab train \
+  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
+  --run-target local-macbook \
+  --set recipe_id=local-smoke \
+  --set group_id=local-smoke \
+  --set train.policy.timesteps=512 \
+  --set train.environment.env_config.n_envs=1 \
+  --set logging.wandb=false \
+  --set logging.wandb_mode=disabled \
+  --set logging.wandb_artifact_storage_uri=
+
+rlab fleet shepherd --machine local-macbook --limit 1 --once
 ```
 
-Evaluate and watch the resulting model:
+Inspect the resulting launch and `result.json`:
 
 ```bash
-rlab eval \
-  --game <GameId> \
-  --model runs/local_smoke/final_model.zip \
-  --episodes 2 \
-  --max-steps 600
-
-rlab play \
-  --model runs/local_smoke/final_model.zip \
-  --fps 30
+rlab fleet watch --machine local-macbook --once --no-tui
 ```
 
 Queue comparable experiments from checked-in recipe files:
@@ -93,7 +94,6 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 
 ```bash
 rlab validate                                      # validate goals, recipes, benchmarks, machine config, and policies
-rlab train local --game <GameId> --preset smoke --run-description "Smoke test"
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
@@ -115,7 +115,6 @@ rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 The command surface is intentionally one binary:
 
 - `rlab train` enqueues queue-backed train jobs from checked-in recipes.
-- `rlab train local` runs direct local training.
 - `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate checkpoints after training, and that post-train checkpoint eval is the supported checkpoint-promotion path.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and one-job container fleet.

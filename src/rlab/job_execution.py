@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.seeds import validate_training_seed
+from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
@@ -113,7 +114,7 @@ def normalize_train_config(
         validate_training_seed(
             config["seed"],
             label="train_config.seed",
-            seed_span=config.get("n_envs", 1),
+            seed_span=provider_num_envs(config, explicit_n_envs=config.get("n_envs")),
         )
     if job.get("runtime_image_ref"):
         config["runtime_image_ref"] = job["runtime_image_ref"]

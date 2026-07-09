@@ -133,7 +133,6 @@ class EnvConfig:
     info_events: InfoEventRules = field(default_factory=dict)
     done_on_events: tuple[str, ...] = ()
     action_set: str = "auto"
-    env_threads: int = 0
 
 
 def normalize_event_config(config: EnvConfig) -> EnvConfig:
@@ -191,6 +190,8 @@ def rendered_preprocess_hud_crop_top(config: EnvConfig) -> int:
 
 
 def resolve_env_config(config: EnvConfig) -> EnvConfig:
+    if not config.game and isinstance(config.env_args, Mapping) and config.env_args.get("game"):
+        config = replace(config, game=str(config.env_args["game"]))
     if not config.game:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
     qualify_env_id(config.env_provider, config.game)
@@ -508,7 +509,6 @@ def _super_mario_bros_nes_turbo_make_env(
         raise ValueError("supermariobrosnes-turbo visual replay requires render_mode='rgb_array'")
     kwargs: dict[str, Any] = {
         "num_envs": 1,
-        "num_threads": 1,
         "render_mode": "rgb_array",
         "use_restricted_actions": "ALL",
         "frame_skip": 1,
@@ -554,7 +554,6 @@ def _ale_py_make_env(
         _ale_py_atari_vector_env_type()(
             config.game,
             num_envs=1,
-            num_threads=1,
             max_num_frames_per_episode=max_num_frames_per_episode,
             repeat_action_probability=config.sticky_action_prob,
             full_action_space=False,
@@ -1565,7 +1564,6 @@ def _apply_vec_wrapper_stack(vec_env, config: EnvConfig, seed: int):
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str = "fork"):
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
-    num_threads = config.env_threads if config.env_threads > 0 else min(max(n_envs, 1), 16)
     native_done_on_rules = build_native_done_on_rules(
         config,
         done_on_supported=native_vec_env_supports_done_on(config),
@@ -1574,7 +1572,6 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int, start_method: str =
     native_kwargs = provider_native_vec_kwargs(
         config,
         n_envs=n_envs,
-        num_threads=num_threads,
         native_done_on_rules=native_done_on_rules,
         native_obs_crop=native_obs_crop,
         state_weight_mapping=state_weight_mapping,

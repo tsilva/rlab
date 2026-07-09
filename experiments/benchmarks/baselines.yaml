@@ -5,6 +5,5 @@ baselines:
     target: rtx4090
     host: beast-3
     workers: 5
-    env_threads: 4
     expected_aggregate_wall_fps: 6200
     source: INSTANCES.md
