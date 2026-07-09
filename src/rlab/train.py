@@ -60,6 +60,7 @@ from rlab.metric_names import (
     EVAL_CONFIG_HUD_CROP_TOP,
     EVAL_DEATH_COUNT,
     EVAL_DEATH_RATE,
+    EVAL_DURATION_SECONDS,
     EVAL_PROGRESS_LEVEL_X_MAX,
     EVAL_PROGRESS_LEVEL_X_MEAN,
     EVAL_PROGRESS_X_MAX,
@@ -142,9 +143,8 @@ def save_model_bundle(
     store: MetricStore,
 ) -> Path:
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_base = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}"
-    temp_path = temp_base.with_suffix(".zip")
-    model.save(str(temp_base))
+    temp_path = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}.zip"
+    model.save(str(temp_path))
     temp_path.replace(model_path)
     metadata_path = write_model_metadata(
         model_path,
@@ -350,6 +350,7 @@ def log_checkpoint_eval_metrics(
         "eval/source": eval_source,
     }
     optional_metric_pairs = {
+        EVAL_DURATION_SECONDS: EVAL_DURATION_SECONDS,
         EVAL_PROGRESS_X_MEAN: "max_x_mean",
         EVAL_PROGRESS_X_MAX: "max_x_max",
         EVAL_PROGRESS_LEVEL_X_MEAN: "max_level_x_mean",

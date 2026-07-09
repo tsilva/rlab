@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import re
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import numpy as np
 import rlab.metric_names as metric_names
 from rlab.callbacks import (
     DoneCounterCallback,
+    LedgerCheckpointCallback,
     LevelCompleteInfoCallback,
     MetricStoreMirrorCallback,
     MetricThresholdStopCallback,
@@ -18,6 +20,7 @@ from rlab.callbacks import (
     ThroughputCallback,
     TimeElapsedCallback,
 )
+from rlab.env import EnvConfig
 from rlab.metric_store import MetricStore
 from rlab.metric_names import (
     TRAIN_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
@@ -835,6 +838,43 @@ class MetricThresholdStopCallbackTests(unittest.TestCase):
             with store.connection() as conn:
                 count = conn.execute("SELECT count(*) FROM metric_observations").fetchone()[0]
             self.assertEqual(count, 1)
+
+
+class LedgerCheckpointCallbackTests(unittest.TestCase):
+    def test_checkpoint_save_uses_exact_sb3_zip_path_for_hidden_uuid_base(self) -> None:
+        class FakeModel:
+            def __init__(self) -> None:
+                self.saved_bases: list[str] = []
+
+            def save(self, path: str) -> None:
+                self.saved_bases.append(path)
+                target = Path(path if path.endswith(".zip") else path + ".zip")
+                target.write_bytes(b"checkpoint")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            store_path = run_dir / "rlab.sqlite"
+            callback = LedgerCheckpointCallback(
+                args=argparse.Namespace(run_name="run", run_description=""),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0", state="Level1-1"),
+                save_freq=1,
+                save_path=run_dir / "checkpoints",
+                name_prefix="ppo_supermariobros-nes-v0",
+                metric_store_path=store_path,
+            )
+            callback.model = FakeModel()  # type: ignore[assignment]
+            callback._init_callback()
+
+            final_path = callback.save_checkpoint(500000, kind="checkpoint")
+
+            self.assertTrue(final_path.is_file())
+            self.assertEqual(final_path.name, "ppo_supermariobros-nes-v0_500000_steps.zip")
+            self.assertTrue(callback.model.saved_bases[0].endswith(".zip"))  # type: ignore[attr-defined]
+            self.assertFalse(any(final_path.parent.glob(".*.zip")))
+            store = MetricStore(store_path)
+            rows = store.pending_evals()
+            self.assertEqual(rows[0]["path"], str(final_path))
+            self.assertEqual(rows[0]["step"], 500000)
 
 class ThroughputCallbackTests(unittest.TestCase):
     def test_logs_rollout_fps_and_next_iteration_instant_fps(self) -> None:

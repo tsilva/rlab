@@ -147,9 +147,8 @@ class LedgerCheckpointCallback(BaseCallback):
         if self.timing_state is not None:
             self.timing_state.begin(step, started_at)
         final_path = self.save_path / f"{self.name_prefix}_{step}_steps.zip"
-        temp_base = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}"
-        temp_path = temp_base.with_suffix(".zip")
-        self.model.save(str(temp_base))
+        temp_path = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}.zip"
+        self.model.save(str(temp_path))
         temp_path.replace(final_path)
         local_save_seconds = self.clock() - started_at
         if self.timing_state is not None:

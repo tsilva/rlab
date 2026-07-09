@@ -72,6 +72,7 @@ EVAL_BEST_VIDEO = "eval/best/video"
 EVAL_CHECKPOINT_STEP = "eval/checkpoint/step"
 EVAL_CHECKPOINT_ARTIFACT = "eval/checkpoint/artifact"
 EVAL_CONFIG_HUD_CROP_TOP = "eval/config/hud_crop_top"
+EVAL_DURATION_SECONDS = "eval/duration/seconds"
 
 LEADER_CHECKPOINT_COMPLETION_RATE = "leader/checkpoint/completion_rate"
 LEADER_CHECKPOINT_COMPLETION_RATE_MEAN = "leader/checkpoint/completion_rate_mean"

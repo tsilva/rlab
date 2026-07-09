@@ -20,6 +20,7 @@ from rlab.metric_names import (
     EVAL_CHECKPOINT_ARTIFACT,
     EVAL_CHECKPOINT_STEP,
     EVAL_CONFIG_HUD_CROP_TOP,
+    EVAL_DURATION_SECONDS,
     EVAL_REWARD_MAX,
     EVAL_REWARD_MEAN,
     EVAL_REWARD_STD,
@@ -53,6 +54,8 @@ def metric_payload(
         EVAL_CONFIG_HUD_CROP_TOP: args.hud_crop_top,
         "eval/episodes": metrics["episodes"],
     }
+    if EVAL_DURATION_SECONDS in metrics:
+        payload[EVAL_DURATION_SECONDS] = metrics[EVAL_DURATION_SECONDS]
     for key, value in metrics.items():
         if key.startswith(("eval/done/", "eval/info/")):
             payload[key] = value

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -187,6 +188,7 @@ def evaluate_model_episodes(
     progress: bool = False,
     progress_description: str = "eval episodes",
 ) -> tuple[dict[str, Any], Path | None]:
+    started_at = time.perf_counter()
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
     best_episode_actions: list[int] = []
@@ -291,4 +293,5 @@ def evaluate_model_episodes(
         metrics["best_episode_video"] = str(video_path)
         written_video = video_path
 
+    metrics["eval/duration/seconds"] = time.perf_counter() - started_at
     return metrics, written_video

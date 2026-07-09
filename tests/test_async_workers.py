@@ -9,7 +9,7 @@ from unittest.mock import patch
 from rlab.artifact_worker import process_upload
 from rlab.checkpoint_eval_worker import process_eval
 from rlab.env import EnvConfig
-from rlab.metric_names import EVAL_INFO_LEVEL_COMPLETE_RATE_MIN
+from rlab.metric_names import EVAL_DURATION_SECONDS, EVAL_INFO_LEVEL_COMPLETE_RATE_MIN
 from rlab.metric_store import MetricStore, metric_store_path
 
 
@@ -110,6 +110,7 @@ class AsyncWorkerTests(unittest.TestCase):
                 "eval/done/level_change/from_rate/mean": 1.0,
                 EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0,
                 "eval/info/level_complete/rate/mean": 1.0,
+                EVAL_DURATION_SECONDS: 12.5,
             }
 
             with (
@@ -127,6 +128,7 @@ class AsyncWorkerTests(unittest.TestCase):
                 )
 
             self.assertEqual(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN), 1.0)
+            self.assertEqual(store.latest_metric(EVAL_DURATION_SECONDS), 12.5)
             self.assertEqual(store.phase_counts()["evals:succeeded"], 1)
             log_eval.assert_called_once()
             self.assertEqual(log_eval.call_args.kwargs["eval_source"], "async_worker")

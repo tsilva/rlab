@@ -15,7 +15,7 @@ from rlab.eval_metrics import (
     summarize_episode_results,
 )
 from rlab.eval_runner import evaluate_model_episodes
-from rlab.metric_names import metric_path_segment
+from rlab.metric_names import EVAL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
 from rlab.train import (
     eval_config_from_training_config,
@@ -79,6 +79,7 @@ def checkpoint_metrics(**overrides: object) -> dict[str, object]:
         "eval/done/level_change/from_rate/min": 0.8,
         "eval/done/level_change/from_rate/mean": 0.9,
         "eval/reward/mean": 10.0,
+        EVAL_DURATION_SECONDS: 12.5,
     }
     metrics.update(overrides)
     return metrics
@@ -187,6 +188,7 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(run.kwargs, {})
         self.assertEqual(run.payload["global_step"], 120000)
         self.assertEqual(run.payload["eval/checkpoint/step"], 120000)
+        self.assertEqual(run.payload[EVAL_DURATION_SECONDS], 12.5)
         self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
         self.assertEqual(run.summary["leader/checkpoint/completion_rate"], 0.8)
         self.assertEqual(run.summary["leader/checkpoint/completion_rate_mean"], 0.9)
@@ -440,7 +442,10 @@ class EvalMetricTests(unittest.TestCase):
                 pass
 
         config = EnvConfig(game="SuperMarioBros-Nes-v0")
-        with patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeVecEnv()):
+        with (
+            patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeVecEnv()),
+            patch("rlab.eval_runner.time.perf_counter", side_effect=[10.0, 12.5]),
+        ):
             metrics, video_path = evaluate_model_episodes(
                 model=FakeModel(),
                 config=config,
@@ -453,6 +458,7 @@ class EvalMetricTests(unittest.TestCase):
 
         self.assertIsNone(video_path)
         self.assertEqual(metrics["eval_n_envs"], 2)
+        self.assertEqual(metrics[EVAL_DURATION_SECONDS], 2.5)
         self.assertEqual(metrics["episodes"], 2)
         self.assertEqual(metrics["reward_mean"], 3.0)
         self.assertEqual(metrics["completion_count"], 1)
