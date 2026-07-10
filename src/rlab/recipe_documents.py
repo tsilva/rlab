@@ -40,7 +40,7 @@ SECRET_KEY_FRAGMENTS = (
 )
 TRAIN_CONFIG_SECTION_KEYS = ("train", "reward", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
-GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
+GOAL_GAME_DIR_NAME = "SuperMarioBros-Nes-v0"
 QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
@@ -290,7 +290,7 @@ def _infer_goal_slug_from_path(path: Path) -> str:
     for index, part in enumerate(parts):
         if part == "goals" and index + 1 < len(parts):
             next_part = parts[index + 1]
-            if index + 2 < len(parts) and next_part in GOAL_GAME_DIR_NAMES:
+            if index + 2 < len(parts) and next_part == GOAL_GAME_DIR_NAME:
                 return parts[index + 2]
             return next_part
     return ""
@@ -298,16 +298,12 @@ def _infer_goal_slug_from_path(path: Path) -> str:
 
 def _goal_slug_from_value(value: Any) -> str:
     if isinstance(value, Mapping):
-        return str(
-            value.get("goal_id") or value.get("goal") or value.get("goal_slug") or ""
-        ).strip()
-    return str(value or "").strip()
+        return str(value.get("goal_id") or "").strip()
+    return ""
 
 
 def _goal_slug_for_recipe(path: Path, document: Mapping[str, Any]) -> str:
-    explicit = _goal_slug_from_value(document.get("goal")) or _goal_slug_from_value(
-        document.get("goal_slug")
-    )
+    explicit = _goal_slug_from_value(document.get("goal"))
     return explicit or _infer_goal_slug_from_path(path)
 
 
@@ -320,16 +316,14 @@ def _goal_composition_for_recipe(
     inferred_path = path.resolve()
     if inferred_path.parent.name == "recipes":
         goal_dir = inferred_path.parent.parent
-        for filename in ("_goal.yaml", "goal.yaml"):
-            candidate = goal_dir / filename
-            if candidate.is_file():
-                return _load_rendered_goal_composition(candidate)
+        candidate = goal_dir / "_goal.yaml"
+        if candidate.is_file():
+            return _load_rendered_goal_composition(candidate)
     for parent in inferred_path.parents:
         if parent.name == goal_slug:
-            for filename in ("_goal.yaml", "goal.yaml"):
-                candidate = parent / filename
-                if candidate.is_file():
-                    return _load_rendered_goal_composition(candidate)
+            candidate = parent / "_goal.yaml"
+            if candidate.is_file():
+                return _load_rendered_goal_composition(candidate)
     return None
 
 
@@ -473,9 +467,15 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
         deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
     )
     sources = list(composed.sources)
-    goal_composition = _goal_composition_for_recipe(path, document)
+    embedded_goal = document.get("goal")
+    goal_composition = (
+        ComposedDocument(document=dict(embedded_goal), sources=())
+        if isinstance(embedded_goal, Mapping)
+        else _goal_composition_for_recipe(path, document)
+    )
     if goal_composition is not None:
         sources = [*goal_composition.sources, *sources]
+    sources = list(dict.fromkeys(sources))
     document = materialize_train_recipe_document(
         document,
         path=path,
@@ -597,9 +597,7 @@ def validate_launch_seed_config(
 
 
 def recipe_goal_slug(document: Mapping[str, Any]) -> str:
-    return _goal_slug_from_value(document.get("goal")) or _goal_slug_from_value(
-        document.get("goal_slug")
-    )
+    return _goal_slug_from_value(document.get("goal"))
 
 
 def recipe_tags(document: Mapping[str, Any]) -> list[str]:

@@ -27,6 +27,7 @@ from rlab.validation import (
     require_key as _require_key,
     require_mapping as _require_mapping,
     require_non_empty_string as _require_non_empty_string,
+    normalize_obs_crop,
     string_list,
 )
 
@@ -90,14 +91,7 @@ def _validate_obs_crop(preprocessing: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(f"{label}.hud_crop_top is redundant; use obs_crop")
     if "obs_crop" not in preprocessing:
         raise ValueError(f"{label}.obs_crop is required")
-    value = preprocessing["obs_crop"]
-    if value is None:
-        return
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or len(value) != 4:
-        raise ValueError(f"{label}.obs_crop must be [top, right, bottom, left]")
-    for index, item in enumerate(value):
-        if not _is_int(item) or item < 0:
-            raise ValueError(f"{label}.obs_crop[{index}] must be a non-negative integer")
+    normalize_obs_crop(preprocessing["obs_crop"], label=f"{label}.obs_crop")
 
 
 def _validate_obs_resize(preprocessing: Mapping[str, Any], *, label: str) -> None:
@@ -623,7 +617,7 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     goals_dir = experiments_dir / "goals"
     goals = sorted(
         path
-        for path in [*goals_dir.rglob("_goal.yaml"), *goals_dir.rglob("goal.yaml")]
+        for path in goals_dir.rglob("_goal.yaml")
         if _active_experiment_path(path)
     )
     counts["goals"] = len(goals)

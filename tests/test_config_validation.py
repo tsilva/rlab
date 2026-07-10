@@ -107,7 +107,7 @@ class ConfigValidationTests(unittest.TestCase):
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
             goal_dir.mkdir(parents=True)
-            goal_path = goal_dir / "goal.yaml"
+            goal_path = goal_dir / "_goal.yaml"
             goal_path.write_text(
                 """
 goal_id: bad
@@ -183,7 +183,7 @@ eval:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "real-goal"
             goal_dir.mkdir(parents=True)
-            goal_path = goal_dir / "goal.yaml"
+            goal_path = goal_dir / "_goal.yaml"
             goal_path.write_text(
                 """
 goal_id: stale-short-name
@@ -203,7 +203,7 @@ objective: {}
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
             goal_dir.mkdir(parents=True)
-            goal_path = goal_dir / "goal.yaml"
+            goal_path = goal_dir / "_goal.yaml"
             goal_path.write_text(
                 """
 goal_id: bad
@@ -267,7 +267,7 @@ eval:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
             goal_dir.mkdir(parents=True)
-            goal_path = goal_dir / "goal.yaml"
+            goal_path = goal_dir / "_goal.yaml"
             goal_path.write_text(
                 """
 goal_id: bad

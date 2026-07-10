@@ -26,6 +26,7 @@ from rlab.env_registry import (
 from rlab.env_identity import task_config_from_train_config, validate_task_config
 from rlab.targets import GenericRetroTarget, target_for_game
 from rlab.task_kernels import IdentityTaskDefinition, MarioTaskConfig, MarioTaskDefinition
+from rlab.validation import normalize_obs_crop as validate_obs_crop
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -57,21 +58,6 @@ class EnvConfig:
     obs_crop_mode: str = "remove"
     obs_crop_fill: int = 0
     obs_resize_algorithm: str = DEFAULT_OBS_RESIZE_ALGORITHM
-
-
-def validate_obs_crop(
-    value: tuple[int, int, int, int] | list[int] | None,
-) -> tuple[int, int, int, int] | None:
-    if value is None:
-        return None
-    if not isinstance(value, list | tuple) or len(value) != 4:
-        raise ValueError("obs_crop must be [top, right, bottom, left]")
-    result: list[int] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
-            raise ValueError(f"obs_crop[{index}] must be a non-negative integer")
-        result.append(int(item))
-    return tuple(result)  # type: ignore[return-value]
 
 
 def validate_obs_crop_mode(value: str) -> str:

@@ -149,10 +149,9 @@ gates: {}
 schema_version: 1
 name: bad
 kind: ppo_loop_throughput
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
-  timstepz: 512
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+recipe_overrides:
+- train.policy.timstepz=512
 gates: {}
 """,
                 encoding="utf-8",
@@ -160,6 +159,19 @@ gates: {}
 
             with self.assertRaisesRegex(ValueError, "timstepz.*known train config field"):
                 load_benchmark_profile(path)
+
+    def test_train_benchmarks_derive_environment_contract_from_recipe(self) -> None:
+        for name in (
+            "ppo-loop-throughput-mario-l11",
+            "artifact-storage-smoke-mario-l11",
+        ):
+            with self.subTest(name=name):
+                profile = find_benchmark_profile(name)
+                self.assertIn("recipe_file", profile.payload)
+                self.assertNotIn("train_config", profile.payload)
+                command = build_benchmark_commands(profile)[0]
+                self.assertIn("--task-json", command.argv)
+                self.assertIn("--timesteps", command.argv)
 
     def test_benchmark_is_registered_on_unified_cli(self) -> None:
         self.assertIn("benchmark", COMMANDS)

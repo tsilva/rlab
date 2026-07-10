@@ -2,8 +2,6 @@ defaults:
 - level2-heavy@_global_
 - _self_
 recipe_id: level2-heavy-conservative
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} 35/65 Level1-2-heavy
   sampling recipe with a more conservative PPO update envelope, testing whether

@@ -12,7 +12,6 @@ workers: 1
 recipe_overrides:
 - recipe_id=benchmark-local-smoke
 - group_id=benchmark-local-smoke
-- run_name_label=local-smoke
 - description=Benchmark queue-backed localhost smoke run for Mario Level1-1.
 - train.policy.timesteps=512
 - train.environment.env_config.n_envs=1
@@ -21,7 +20,7 @@ recipe_overrides:
 - train.checkpoint_freq=256
 - logging.wandb=false
 - logging.wandb_mode=disabled
-- logging.wandb_artifact_storage_uri=
+- logging.wandb_artifact_storage_uri=''
 gates:
   enqueue_exit_code: 0
   shepherd_exit_code: 0

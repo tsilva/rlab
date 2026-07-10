@@ -2,8 +2,6 @@ defaults:
 - base@_global_
 - _self_
 recipe_id: completion-bonus
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} baseline with an explicit
   clean-clear reward bonus in score reward mode, testing whether the Level1-2

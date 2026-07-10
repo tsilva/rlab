@@ -187,6 +187,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
                     "--no-color",
                 ]
             )
+            self.assertIs(args.func, fleet.cmd_container_watch_dashboard)
 
             stdout = io.StringIO()
             with (
@@ -198,7 +199,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
                 mock.patch.object(fleet, "mark_job_launch_running") as mark_running,
             ):
-                status = fleet.cmd_watch_latest(args)
+                status = fleet.cmd_container_watch_dashboard(args)
 
         self.assertEqual(status, 0)
         self.assertIn("mode=read-only", stdout.getvalue())
@@ -367,69 +368,39 @@ class FleetShepherdSplitTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertTrue(conn.closed)
 
-    def test_launch_next_runs_reconcile_fill_pass_under_machine_lock(self) -> None:
+    def test_shepherd_dry_run_plans_reconcile_fill_and_prune_without_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "machines.yaml"
             write_registry(path)
-            args = SimpleNamespace(
-                machines=path,
-                machine="beast-test",
-                limit=3,
-                execute=True,
-                direct=False,
-                repo_root=None,
-                no_color=True,
+            args = fleet.build_parser().parse_args(
+                [
+                    "shepherd",
+                    "--machines",
+                    str(path),
+                    "--machine",
+                    "beast-test",
+                    "--limit",
+                    "3",
+                    "--once",
+                    "--dry-run",
+                    "--no-color",
+                ]
             )
-            conn = FakeConnection()
 
             with (
-                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
-                mock.patch.object(
-                    fleet,
-                    "machine_mutation_lock",
-                    return_value=contextlib.nullcontext(),
-                ) as machine_lock,
-                mock.patch.object(
-                    fleet,
-                    "run_reconcile_fill_pass",
-                    return_value=(1, 2),
-                ) as run_pass,
+                mock.patch.object(fleet, "machine_available_train_slots", return_value=2),
+                mock.patch.object(fleet, "_connect_from_args") as connect,
+                mock.patch.object(fleet, "log_shepherd_event") as log_event,
             ):
-                status = fleet.cmd_container_launch_next(args)
+                status = fleet.cmd_container_shepherd(args)
 
         self.assertEqual(status, 0)
-        machine_lock.assert_called_once_with(conn, "beast-test")
-        run_pass.assert_called_once()
-        self.assertTrue(conn.closed)
-
-    def test_reconcile_runs_under_each_machine_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            args = SimpleNamespace(
-                machines=path,
-                machine="beast-test",
-                execute=True,
-                direct=False,
-                repo_root=None,
-                no_color=True,
-            )
-            conn = FakeConnection()
-
-            with (
-                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
-                mock.patch.object(
-                    fleet,
-                    "machine_mutation_lock",
-                    return_value=contextlib.nullcontext(),
-                ) as machine_lock,
-                mock.patch.object(fleet, "reconcile_machine_launches", return_value=1),
-            ):
-                status = fleet.cmd_container_reconcile(args)
-
-        self.assertEqual(status, 0)
-        machine_lock.assert_called_once_with(conn, "beast-test")
-        self.assertTrue(conn.closed)
+        connect.assert_not_called()
+        self.assertEqual(
+            [call.kwargs["action"] for call in log_event.call_args_list],
+            ["reconcile", "launch-next", "prune-image"],
+        )
+        self.assertEqual(log_event.call_args_list[1].kwargs["planned"], 2)
 
 
 class RuntimeImagePruneTests(unittest.TestCase):

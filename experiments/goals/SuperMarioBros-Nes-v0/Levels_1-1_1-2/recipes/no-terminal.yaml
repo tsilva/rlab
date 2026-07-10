@@ -2,8 +2,6 @@ defaults:
 - base@_global_
 - _self_
 recipe_id: no-terminal
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} trains a task-conditioned {goal_id} policy over Level1-1 and
   Level1-2 while observing life-loss and level-change events without using

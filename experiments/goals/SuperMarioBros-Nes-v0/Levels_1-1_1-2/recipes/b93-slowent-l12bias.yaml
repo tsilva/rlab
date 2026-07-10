@@ -2,8 +2,6 @@ defaults:
 - level2-medium@_global_
 - _self_
 recipe_id: b93-slowent-l12bias
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} reproduces the historical B93/B116 Level1-1/Level1-2 mixed PPO
   settings: 40/60 Level1-1/Level1-2 sampling, slow entropy decay with a higher

@@ -94,6 +94,38 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_task_validation_rejects_unknown_reward_keys_by_task(self) -> None:
+        identity_task = {
+            "id": "identity",
+            "action": {"set": "native"},
+            "signals": {},
+            "events": {},
+            "termination": {},
+            "reward": {"reward_mode": "native", "death_penalty": 1.0},
+        }
+        with self.assertRaisesRegex(ValueError, "reward has unexpected keys"):
+            validate_task_config(identity_task)
+
+        mario_task = {
+            "id": "mario",
+            "action": {"set": "simple"},
+            "signals": {},
+            "events": {},
+            "termination": {},
+            "reward": {"reward_mode": "score", "use_retro_reward": False},
+        }
+        with self.assertRaisesRegex(ValueError, "reward has unexpected keys"):
+            validate_task_config(mario_task)
+
+    def test_environment_identity_rejects_provider_alias(self) -> None:
+        with self.assertRaisesRegex(ValueError, "use 'env_provider'"):
+            environment_identity_from_train_config(
+                {
+                    "provider": "supermariobrosnes-turbo",
+                    "game": "SuperMarioBros-Nes-v0",
+                }
+            )
+
     def test_identity_task_accepts_a_generic_discrete_action_lookup_codec(self) -> None:
         task = {
             "id": "identity",

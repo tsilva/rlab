@@ -41,7 +41,6 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
         "schema_version",
         "seeds",
         "batch_id",
-        "run_name_label",
         "max_attempts",
         "metadata",
         "notes",
@@ -183,8 +182,6 @@ def validate_materialized_train_recipe(
     require_non_empty_string(document, "group_id", label=label)
     if "batch_id" in document:
         require_non_empty_string(document, "batch_id", label=label)
-    if "run_name_label" in document:
-        require_non_empty_string(document, "run_name_label", label=label)
     string_list(require_key(document, "tags", label=label), label=label_path(label, "tags"))
 
     train_config = require_mapping(

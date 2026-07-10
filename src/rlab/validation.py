@@ -96,3 +96,20 @@ def int_list(value: Any, *, label: str, allow_empty: bool = False) -> list[int]:
             raise ValueError(f"{label}[{index}] must be an integer")
         result.append(item)
     return result
+
+
+def normalize_obs_crop(
+    value: Any,
+    *,
+    label: str = "obs_crop",
+) -> tuple[int, int, int, int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or len(value) != 4:
+        raise ValueError(f"{label} must be [top, right, bottom, left]")
+    result: list[int] = []
+    for index, item in enumerate(value):
+        if not is_int(item) or item < 0:
+            raise ValueError(f"{label}[{index}] must be a non-negative integer")
+        result.append(item)
+    return tuple(result)  # type: ignore[return-value]

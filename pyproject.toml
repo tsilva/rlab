@@ -53,5 +53,6 @@ target-version = "py314"
 
 [dependency-groups]
 dev = [
+    "pytest>=8,<9",
     "ruff>=0.15,<0.16",
 ]

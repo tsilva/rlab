@@ -8,6 +8,7 @@ from typing import Any
 
 from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
+from rlab.validation import normalize_obs_crop
 
 
 ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v2"
@@ -30,6 +31,22 @@ NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
         "batch_size",
         "game",
         "num_envs",
+    }
+)
+IDENTITY_REWARD_KEYS = frozenset({"reward_mode"})
+MARIO_REWARD_KEYS = frozenset(
+    {
+        "reward_mode",
+        "use_native_reward",
+        "clip_rewards",
+        "progress_reward_cap",
+        "progress_reward_scale",
+        "terminal_reward",
+        "reward_scale",
+        "time_penalty",
+        "death_penalty",
+        "completion_reward",
+        "score_progress_clipped",
     }
 )
 
@@ -161,7 +178,9 @@ def task_config_from_train_config(
 ) -> dict[str, Any]:
     """Return an explicit canonical task or the registered default for an environment."""
 
-    provider_id = str(train_config.get("env_provider") or train_config.get("provider") or "")
+    if "provider" in train_config:
+        raise ValueError("train config has unexpected key 'provider'; use 'env_provider'")
+    provider_id = str(train_config.get("env_provider") or "")
     game = str(provider_game(train_config) or train_config.get("game") or "")
     inferred_id = _task_id(provider_id, game)
     canonical = (
@@ -292,7 +311,14 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         value = termination[key]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"{label}.termination.{key} must be a non-negative integer")
-    reward_mode = task["reward"].get("reward_mode")
+    reward = task["reward"]
+    allowed_reward_keys = (
+        IDENTITY_REWARD_KEYS if task_id == "identity" else MARIO_REWARD_KEYS
+    )
+    extra_reward_keys = sorted(set(reward) - allowed_reward_keys)
+    if extra_reward_keys:
+        raise ValueError(f"{label}.reward has unexpected keys: {extra_reward_keys}")
+    reward_mode = reward.get("reward_mode")
     if task_id == "identity" and reward_mode not in {None, "native"}:
         raise ValueError(f"{label}.reward.reward_mode must be 'native' for the identity task")
     if task_id == "mario" and reward_mode not in {
@@ -370,18 +396,11 @@ def environment_identity_from_train_config(
 
 
 def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
-    if obs_crop is None:
-        return None
-    if not isinstance(obs_crop, list | tuple) or len(obs_crop) != 4:
-        raise ValueError("environment.preprocessing.obs_crop must be [top, right, bottom, left]")
-    result: list[int] = []
-    for index, value in enumerate(obs_crop):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ValueError(
-                f"environment.preprocessing.obs_crop[{index}] must be a non-negative integer"
-            )
-        result.append(int(value))
-    return result
+    normalized = normalize_obs_crop(
+        obs_crop,
+        label="environment.preprocessing.obs_crop",
+    )
+    return list(normalized) if normalized is not None else None
 
 
 def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict[str, Any]:

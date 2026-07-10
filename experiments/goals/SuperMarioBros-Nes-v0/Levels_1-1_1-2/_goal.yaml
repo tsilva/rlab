@@ -82,7 +82,7 @@ train:
         max_episode_steps: 4500
       reward:
         reward_mode: score
-        use_retro_reward: false
+        use_native_reward: false
         clip_rewards: false
         progress_reward_cap: 30.0
         progress_reward_scale: 1.0

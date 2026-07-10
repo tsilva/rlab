@@ -5,37 +5,23 @@ description: Tiny checkpoint-producing W&B/R2 reference-artifact smoke on Mario 
 environment_contract:
   schema_version: 2
   task_termination_boundary: vector_step
-train_config:
-  game: SuperMarioBros-Nes-v0
-  state: Level1-1
-  n_envs: 1
-  n_steps: 128
-  batch_size: 128
-  n_epochs: 1
-  timesteps: 512
-  task:
-    id: mario
-    action: {set: simple}
-    signals:
-      x: [xscrollHi, xscrollLo]
-      score: score
-      lives: lives
-      level: [levelHi, levelLo]
-    events:
-      life_loss: {signal: lives, operation: decrease}
-      level_change: {signal: level, operation: change}
-    termination:
-      failure: [life_loss]
-      success: [level_change]
-      max_episode_steps: 600
-    reward:
-      reward_mode: baseline
-  checkpoint_freq: 256
-  wandb: true
-  wandb_mode: online
-  wandb_artifact_storage_uri: ${CHECKPOINT_BUCKET_URI}
-  run_name: benchmark_artifact_storage_smoke_mario_l11
-  run_description: Benchmark artifact-storage smoke run for Mario Level1-1.
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+recipe_overrides:
+- train.environment.env_provider=stable-retro-turbo
+- train.policy.timesteps=512
+- train.environment.env_config.n_envs=1
+- train.policy.n_steps=128
+- train.policy.batch_size=128
+- train.policy.n_epochs=1
+- train.environment.task.termination.max_episode_steps=600
+- train.environment.task.reward.reward_mode=baseline
+- train.checkpoint_freq=256
+- train.policy.post_train_eval_episodes=0
+- logging.wandb=true
+- logging.wandb_mode=online
+- logging.wandb_artifact_storage_uri=CHECKPOINT_BUCKET_URI
+run_name: benchmark_artifact_storage_smoke_mario_l11
+run_description: Benchmark artifact-storage smoke run for Mario Level1-1.
 gates:
   exit_code: 0
   checkpoint_artifact_logged: true

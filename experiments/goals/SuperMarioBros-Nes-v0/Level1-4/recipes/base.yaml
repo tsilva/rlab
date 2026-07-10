@@ -1,6 +1,5 @@
 defaults:
 - ../../Level1-1/recipes/base@_global_
-- ../_goal@goal
 - _self_
 recipe_id: base
 batch_id: b257

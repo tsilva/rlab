@@ -2,8 +2,6 @@ defaults:
 - base@_global_
 - _self_
 recipe_id: level2-medium
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} baseline with a moderate
   Level1-2 sampling bias, preserving one shared policy and the same termination,

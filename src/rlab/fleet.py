@@ -1346,83 +1346,6 @@ def machine_mutation_lock(conn, machine_name: str):
         release_shepherd_lock(conn, lock)
 
 
-def cmd_container_launch_next(args: argparse.Namespace) -> int:
-    machine = resolve_machine(load_registry_from_args(args), args.machine)
-    shared_env_file = shared_runner_env_file_from_args(args)
-    color = not getattr(args, "no_color", False)
-    if not args.execute:
-        planned = machine_available_train_slots(machine, limit=int(args.limit))
-        log_shepherd_event(
-            machine=machine.name,
-            action="launch-next",
-            result="planned",
-            mode="dry-run",
-            job_kind=TRAIN_JOB_KIND,
-            planned=planned,
-            color=color,
-        )
-        return 0
-    conn = _connect_from_args(args)
-    try:
-        try:
-            with machine_mutation_lock(conn, machine.name):
-                _reconciled, _launched = run_reconcile_fill_pass(
-                    conn,
-                    machine=machine,
-                    limit=int(args.limit),
-                    shared_env_file=shared_env_file,
-                    color=color,
-                )
-        except ShepherdLockBusy as exc:
-            log_shepherd_event(machine=exc.machine, action="lock", result="busy", color=color)
-            return 2
-    finally:
-        conn.close()
-    return 0
-
-
-def cmd_container_reconcile(args: argparse.Namespace) -> int:
-    color = not getattr(args, "no_color", False)
-    if not args.execute:
-        target = args.machine or "all"
-        log_shepherd_event(
-            machine=str(target),
-            action="reconcile",
-            result="planned",
-            mode="dry-run",
-            color=color,
-        )
-        return 0
-    registry = load_registry_from_args(args)
-    machines = [resolve_machine(registry, args.machine)] if args.machine else list(registry.machines.values())
-    conn = _connect_from_args(args)
-    try:
-        total = 0
-        lock_busy = False
-        for machine in machines:
-            try:
-                with machine_mutation_lock(conn, machine.name):
-                    total += reconcile_machine_launches(conn, machine, color=color)
-            except ShepherdLockBusy as exc:
-                lock_busy = True
-                log_shepherd_event(
-                    machine=exc.machine,
-                    action="lock",
-                    result="busy",
-                    color=color,
-                )
-    finally:
-        conn.close()
-    log_shepherd_event(
-        machine=args.machine or "all",
-        action="reconcile",
-        result="busy" if lock_busy else "ok",
-        reconciled=total,
-        color=color,
-    )
-    return 2 if lock_busy else 0
-
-
 def shepherd_lock_key(machine_name: str) -> str:
     return f"rlab-fleet-shepherd:{machine_name}"
 
@@ -1454,6 +1377,7 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
     color = not getattr(args, "no_color", False)
     if not args.execute:
         while True:
+            planned = machine_available_train_slots(machine, limit=int(args.limit))
             log_shepherd_event(
                 machine=machine.name,
                 action="reconcile",
@@ -1461,20 +1385,15 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
                 mode="dry-run",
                 color=color,
             )
-            status = cmd_container_reconcile(args)
-            if status != 0:
-                return status
             log_shepherd_event(
                 machine=machine.name,
                 action="launch-next",
                 result="planned",
                 mode="dry-run",
-                limit=args.limit,
+                job_kind=TRAIN_JOB_KIND,
+                planned=planned,
                 color=color,
             )
-            status = cmd_container_launch_next(args)
-            if status != 0:
-                return status
             log_shepherd_event(
                 machine=machine.name,
                 action="prune-image",
@@ -1593,10 +1512,6 @@ def cmd_ps(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_watch_latest(args: argparse.Namespace) -> int:
-    return cmd_container_watch_dashboard(args)
-
-
 def cmd_setup_host(args: argparse.Namespace) -> int:
     registry = load_registry_from_args(args)
     runtime_image_ref = image_ref_from_args(args)
@@ -1692,7 +1607,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_latest.add_argument("--no-tui", action="store_true", help="Do not clear/redraw the terminal.")
     watch_latest.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
     watch_latest.add_argument("--width", type=int, help="Override dashboard width.")
-    watch_latest.set_defaults(func=cmd_watch_latest)
+    watch_latest.set_defaults(func=cmd_container_watch_dashboard)
 
     setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for job containers.")
     add_common_args(setup)

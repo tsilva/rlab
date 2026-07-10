@@ -9,6 +9,7 @@ from typing import Any
 
 from rlab.config_loader import load_mapping_document
 from rlab.fleet import docker_image_ref
+from rlab.recipe_documents import load_recipe_document
 from rlab.runtime_refs import runtime_image_ref_from_file
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.validation import int_list
@@ -117,7 +118,13 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             require_int(payload, "repeats", label=label, minimum=1)
 
     if kind in {"ppo_loop_throughput", "artifact_storage_smoke"}:
-        config = require_mapping(payload.get("train_config"), label=f"{label}.train_config")
+        require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
+        string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
+        document = load_recipe_document(
+            Path(str(payload["recipe_file"])),
+            recipe_overrides=payload.get("recipe_overrides", ()),
+        )
+        config = require_mapping(document.get("train_config"), label=f"{label}.train_config")
         validate_and_normalize_train_config(config, label=f"{label}.train_config")
         require_non_empty_string(
             config,
@@ -273,9 +280,20 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
 
 
 def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    config = dict(require_mapping(profile["train_config"], label="train_config"))
-    config.setdefault("run_name", f"benchmark_{_slug(str(profile['name']))}")
-    config.setdefault("run_description", f"Benchmark profile {profile['name']} PPO loop probe.")
+    document = load_recipe_document(
+        Path(str(profile["recipe_file"])),
+        recipe_overrides=profile.get("recipe_overrides", ()),
+    )
+    config = dict(require_mapping(document["train_config"], label="train_config"))
+    config.pop("early_stop", None)
+    config.pop("checkpoint_eval_stages", None)
+    config["run_name"] = str(
+        profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}"
+    )
+    config["run_description"] = str(
+        profile.get("run_description")
+        or f"Benchmark profile {profile['name']} PPO loop probe."
+    )
     from rlab.train_config import build_train_command_from_fields
 
     return [_command("train", build_train_command_from_fields(config))]

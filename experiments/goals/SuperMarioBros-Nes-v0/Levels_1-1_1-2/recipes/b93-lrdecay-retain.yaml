@@ -2,8 +2,6 @@ defaults:
 - b93-slowent-l12bias@_global_
 - _self_
 recipe_id: b93-lrdecay-retain
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} keeps the historical B93/B116 mixed Level1-1/Level1-2 reward,
   40/60 sampling, entropy schedule, PPO clip/target-KL envelope, and network

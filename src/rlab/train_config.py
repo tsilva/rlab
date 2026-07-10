@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from rlab.env import EnvConfig
 from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START
+from rlab.validation import normalize_obs_crop
 
 
 ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
@@ -319,13 +320,7 @@ def _validate_row_sequence(
 
 
 def _validate_obs_crop_value(*, key: str, label: str, value: Any) -> None:
-    if value is None:
-        return
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or len(value) != 4:
-        raise ValueError(f"{_label_path(label, key)} must be [top, right, bottom, left]")
-    for index, item in enumerate(value):
-        if not _is_int(item) or item < 0:
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be a non-negative integer")
+    normalize_obs_crop(value, label=_label_path(label, key))
 
 
 def validate_train_config_value(

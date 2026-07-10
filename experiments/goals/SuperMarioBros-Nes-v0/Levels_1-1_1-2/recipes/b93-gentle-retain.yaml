@@ -2,8 +2,6 @@ defaults:
 - b93-slowent-l12bias@_global_
 - _self_
 recipe_id: b93-gentle-retain
-template_vars:
-  env_id: SuperMarioBros-Nes-v0
 description: >-
   Seed {seed} keeps the historical B93/B116 mixed Level1-1/Level1-2 reward,
   sampling, entropy schedule, and network shape, but narrows the PPO update

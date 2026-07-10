@@ -426,7 +426,7 @@ def enqueue_train_jobs_from_recipe_document(
             max_attempts=int(document.get("max_attempts") or 1),
             run_name=_format_default_run_name(
                 str(document.get("batch_id") or group_id),
-                label=str(document.get("run_name_label") or document_slug),
+                label=document_slug,
                 seed=seed,
                 utc=utc,
             ),

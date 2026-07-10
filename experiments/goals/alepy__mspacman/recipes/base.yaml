@@ -1,6 +1,3 @@
-defaults:
-- ../_goal@goal
-- _self_
 recipe_id: base
 description: >-
   Seed {seed} trains a PPO Ms. Pac-Man policy for 100M steps on ale-py's native

@@ -389,6 +389,12 @@ class JobQueueTests(unittest.TestCase):
         self.assertIs(document["train_config"]["normalize_advantage"], True)
         self.assertEqual(document["train_config"]["task"]["termination"]["failure"], [])
         self.assertEqual(document["recipe_overrides"], overrides)
+        source_paths = [row["path"] for row in document["_composition"]["source_files"]]
+        self.assertEqual(source_paths, list(dict.fromkeys(source_paths)))
+        self.assertEqual(
+            sum(path.endswith("/Level1-1/_goal.yaml") for path in source_paths),
+            1,
+        )
 
     def test_load_recipe_document_allows_ale_episodic_life_override(self) -> None:
         overrides = [
