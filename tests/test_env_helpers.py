@@ -6,7 +6,8 @@ import re
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager, redirect_stderr
 from io import StringIO
 from unittest.mock import patch
 from pathlib import Path
@@ -2615,26 +2616,74 @@ class StickyActionTests(unittest.TestCase):
         self.assertEqual(env.unwrapped.actions, [1, 1, 1])
 
 
+def _recording_native_vec_env(created: list[dict[str, object]]) -> type:
+    class RecordingNative:
+        observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(4, 84, 84),
+            dtype=np.uint8,
+        )
+        action_space = gym.spaces.MultiBinary(2)
+
+        def __init__(self, game, **kwargs):
+            self.game = game
+            self.kwargs = kwargs
+            created.append(kwargs)
+
+        def seed(self, seed):
+            return [seed]
+
+    return RecordingNative
+
+
+def _identity_vec_progress(env: object, config: EnvConfig) -> object:
+    del config
+    return env
+
+
+@contextmanager
+def _patched_native_vec_env(
+    fake_native: type,
+    *,
+    listed_states: list[str] | None = None,
+    progress_side_effect: Callable[[object, EnvConfig], object] | None = None,
+    supports_done_on: bool | None = None,
+    supports_named_done_on: bool | None = None,
+) -> Iterator[None]:
+    if progress_side_effect is None:
+        progress_side_effect = _identity_vec_progress
+    with ExitStack() as stack:
+        stack.enter_context(patch("rlab.env.RetroVecEnv", fake_native))
+        stack.enter_context(
+            patch("rlab.env.VecRetroProgressInfo", side_effect=progress_side_effect)
+        )
+        stack.enter_context(patch("rlab.env.VecMonitor", side_effect=lambda env: env))
+        stack.enter_context(
+            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env)
+        )
+        if listed_states is not None:
+            stack.enter_context(
+                patch("rlab.env.retro.data.list_states", return_value=listed_states)
+            )
+        if supports_done_on is not None:
+            stack.enter_context(
+                patch("rlab.env.native_vec_env_supports_done_on", return_value=supports_done_on)
+            )
+        if supports_named_done_on is not None:
+            stack.enter_context(
+                patch(
+                    "rlab.env.native_vec_env_supports_named_done_on",
+                    return_value=supports_named_done_on,
+                )
+            )
+        yield
+
+
 class NativeMixedStateVecEnvTests(unittest.TestCase):
     def test_training_vec_env_passes_weighted_states_as_native_state_dict(self) -> None:
         created: list[dict[str, object]] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                self.kwargs = kwargs
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -2643,19 +2692,10 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             states=("Level1-1", "Level1-2"),
             state_probs=(0.5, 0.5),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
-        ):
+        with _patched_native_vec_env(fake_native, listed_states=["Level1-1", "Level1-2"]):
             env = make_training_vec_env(config, n_envs=16, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0]["num_envs"], 16)
         self.assertEqual(created[0]["obs_layout"], "chw")
@@ -2669,22 +2709,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
 
     def test_training_vec_env_passes_raw_state_weights_to_native_vec_env(self) -> None:
         created: list[dict[str, object]] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -2693,38 +2718,14 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             states=("Level1-1", "Level1-2"),
             state_probs=(1.0, 3.0),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
-        ):
+        with _patched_native_vec_env(fake_native, listed_states=["Level1-1", "Level1-2"]):
             make_training_vec_env(config, n_envs=16, seed=7)
 
         self.assertEqual(created[0]["state"], {"Level1-1": 1.0, "Level1-2": 3.0})
 
     def test_training_vec_env_passes_fixed_lane_states_as_native_state_list(self) -> None:
         created: list[dict[str, object]] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -2732,41 +2733,17 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             reward_mode="native",
             states=("Level1-1", "Level1-2", "Level1-1", "Level1-2"),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
-        ):
+        with _patched_native_vec_env(fake_native, listed_states=["Level1-1", "Level1-2"]):
             env = make_training_vec_env(config, n_envs=4, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(created[0]["state"], ["Level1-1", "Level1-2", "Level1-1", "Level1-2"])
         self.assertNotIn("states", created[0])
         self.assertNotIn("state_probs", created[0])
 
     def test_training_vec_env_passes_sticky_action_prob_to_native_vec_env(self) -> None:
         created: list[dict[str, object]] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -2774,37 +2751,17 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             reward_mode="native",
             sticky_action_prob=0.25,
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-        ):
+        with _patched_native_vec_env(fake_native):
             env = make_training_vec_env(config, n_envs=4, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(created[0]["sticky_action_prob"], 0.25)
         self.assertNotIn("action_sticky_prob", created[0])
 
     def test_training_vec_env_passes_configured_native_done_on_rules(self) -> None:
         created: list[dict[str, object]] = []
         progress_configs: list[EnvConfig] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         def fake_progress(env, config):
             progress_configs.append(config)
@@ -2822,20 +2779,15 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             states=("Level1-1", "Level1-2"),
             state_probs=(0.5, 0.5),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.native_vec_env_supports_done_on", return_value=True),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=fake_progress),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
+        with _patched_native_vec_env(
+            fake_native,
+            listed_states=["Level1-1", "Level1-2"],
+            progress_side_effect=fake_progress,
+            supports_done_on=True,
         ):
             env = make_training_vec_env(config, n_envs=16, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(
             created[0]["done_on"],
             {
@@ -2852,22 +2804,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
     def test_training_vec_env_passes_only_done_events_to_native_done_on(self) -> None:
         created: list[dict[str, object]] = []
         progress_configs: list[EnvConfig] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         def fake_progress(env, config):
             progress_configs.append(config)
@@ -2885,40 +2822,20 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             states=("Level1-1", "Level1-2"),
             state_probs=(0.5, 0.5),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.native_vec_env_supports_done_on", return_value=True),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=fake_progress),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
+        with _patched_native_vec_env(
+            fake_native,
+            listed_states=["Level1-1", "Level1-2"],
+            progress_side_effect=fake_progress,
+            supports_done_on=True,
         ):
             env = make_training_vec_env(config, n_envs=16, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(created[0]["done_on"], {"life_loss": ("lives", "decrease")})
 
     def test_training_vec_env_passes_named_done_events_without_local_rules(self) -> None:
         created: list[dict[str, object]] = []
-
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                self.game = game
-                created.append(kwargs)
-
-            def seed(self, seed):
-                return [seed]
+        fake_native = _recording_native_vec_env(created)
 
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
@@ -2928,21 +2845,15 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             states=("Level1-1", "Level1-2"),
             state_probs=(0.5, 0.5),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.native_vec_env_supports_done_on", return_value=True),
-            patch("rlab.env.native_vec_env_supports_named_done_on", return_value=True),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
+        with _patched_native_vec_env(
+            fake_native,
+            listed_states=["Level1-1", "Level1-2"],
+            supports_done_on=True,
+            supports_named_done_on=True,
         ):
             env = make_training_vec_env(config, n_envs=16, seed=7)
 
-        self.assertIsInstance(env, FakeNative)
+        self.assertIsInstance(env, fake_native)
         self.assertEqual(
             created[0]["done_on"],
             {"life_loss": None, "level_change": None},
@@ -2951,18 +2862,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
     def test_training_vec_env_requires_native_done_on_support_when_rules_requested(
         self,
     ) -> None:
-        class FakeNative:
-            observation_space = gym.spaces.Box(
-                low=0,
-                high=255,
-                shape=(4, 84, 84),
-                dtype=np.uint8,
-            )
-            action_space = gym.spaces.MultiBinary(2)
-
-            def __init__(self, game, **kwargs):
-                pass
-
+        fake_native = _recording_native_vec_env([])
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
             action_set="native",
@@ -2970,10 +2870,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             info_events={"life_loss": ("lives", "decrease")},
             done_on_events=("life_loss",),
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.native_vec_env_supports_done_on", return_value=False),
-        ):
+        with _patched_native_vec_env(fake_native, supports_done_on=False):
             with self.assertRaisesRegex(RuntimeError, "done_on support"):
                 make_training_vec_env(config, n_envs=1, seed=7)
 
@@ -3048,16 +2945,7 @@ class NativeMixedStateVecEnvTests(unittest.TestCase):
             state_probs=(0.5, 0.5),
             task_conditioning=True,
         )
-        with (
-            patch("rlab.env.RetroVecEnv", FakeNative),
-            patch("rlab.env.VecRetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.VecMonitor", side_effect=lambda env: env),
-            patch("rlab.env.maybe_transpose_vec_image", side_effect=lambda env: env),
-            patch(
-                "rlab.env.retro.data.list_states",
-                return_value=["Level1-1", "Level1-2"],
-            ),
-        ):
+        with _patched_native_vec_env(FakeNative, listed_states=["Level1-1", "Level1-2"]):
             env = make_training_vec_env(config, n_envs=4, seed=7)
             reset_obs = env.reset()
             env.step_async(np.zeros((4, 2), dtype=np.uint8))

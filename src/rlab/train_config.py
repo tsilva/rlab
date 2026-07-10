@@ -86,6 +86,40 @@ def _type_callable(
     return None
 
 
+def _add_config_field_argument(
+    parser: argparse.ArgumentParser,
+    field: TrainConfigField,
+    *,
+    default: Any,
+    parse_json_value: Callable[[str], Any],
+    parse_obs_crop: Callable[[Any], Any],
+    dest: str | None = None,
+    option_flags: tuple[str, ...] | None = None,
+) -> None:
+    kwargs: dict[str, Any] = {"dest": dest or field.dest, "default": default}
+    if field.suppress_help:
+        kwargs["help"] = argparse.SUPPRESS
+    elif field.help is not None:
+        kwargs["help"] = field.help
+    if field.choices:
+        kwargs["choices"] = field.choices
+    if field.kind == "store_true":
+        kwargs["action"] = "store_true"
+    elif field.kind == "bool_optional":
+        kwargs["action"] = argparse.BooleanOptionalAction
+    else:
+        type_callable = _type_callable(
+            field,
+            parse_json_value=parse_json_value,
+            parse_obs_crop=parse_obs_crop,
+        )
+        if type_callable is not None:
+            kwargs["type"] = type_callable
+    if option_flags is None:
+        option_flags = field.flags[:1] if field.kind == "bool_optional" else field.flags
+    parser.add_argument(*option_flags, **kwargs)
+
+
 def add_train_config_args(
     parser: argparse.ArgumentParser,
     *,
@@ -95,28 +129,13 @@ def add_train_config_args(
 ) -> None:
     env_defaults = env_defaults or EnvConfig()
     for field in TRAIN_CONFIG_FIELDS:
-        kwargs: dict[str, Any] = {"dest": field.dest}
-        if field.suppress_help:
-            kwargs["help"] = argparse.SUPPRESS
-        elif field.help is not None:
-            kwargs["help"] = field.help
-        if field.choices:
-            kwargs["choices"] = field.choices
-        if field.kind == "store_true":
-            kwargs["action"] = "store_true"
-        elif field.kind == "bool_optional":
-            kwargs["action"] = argparse.BooleanOptionalAction
-        else:
-            type_callable = _type_callable(
-                field,
-                parse_json_value=parse_json_value,
-                parse_obs_crop=parse_obs_crop,
-            )
-            if type_callable is not None:
-                kwargs["type"] = type_callable
-        kwargs["default"] = _env_default(env_defaults, field)
-        option_flags = field.flags[:1] if field.kind == "bool_optional" else field.flags
-        parser.add_argument(*option_flags, **kwargs)
+        _add_config_field_argument(
+            parser,
+            field,
+            default=_env_default(env_defaults, field),
+            parse_json_value=parse_json_value,
+            parse_obs_crop=parse_obs_crop,
+        )
 
 
 def add_env_config_args(
@@ -129,31 +148,23 @@ def add_env_config_args(
 ) -> None:
     defaults = defaults or EnvConfig()
     for field in env_config_arg_fields():
-        kwargs: dict[str, Any] = {"dest": field.dest}
-        option_flags = field.flags[:1] if field.kind == "bool_optional" else field.flags
         if field.dest == "max_episode_steps":
-            kwargs["dest"] = "max_steps"
-            kwargs["default"] = max_steps_default
+            dest = "max_steps"
+            default = max_steps_default
             option_flags = ("--max-steps",)
         else:
-            kwargs["default"] = _env_default(defaults, field)
-        if field.help is not None:
-            kwargs["help"] = field.help
-        if field.choices:
-            kwargs["choices"] = field.choices
-        if field.kind == "store_true":
-            kwargs["action"] = "store_true"
-        elif field.kind == "bool_optional":
-            kwargs["action"] = argparse.BooleanOptionalAction
-        else:
-            type_callable = _type_callable(
-                field,
-                parse_json_value=parse_json_value,
-                parse_obs_crop=parse_obs_crop,
-            )
-            if type_callable is not None:
-                kwargs["type"] = type_callable
-        parser.add_argument(*option_flags, **kwargs)
+            dest = field.dest
+            default = _env_default(defaults, field)
+            option_flags = None
+        _add_config_field_argument(
+            parser,
+            field,
+            default=default,
+            parse_json_value=parse_json_value,
+            parse_obs_crop=parse_obs_crop,
+            dest=dest,
+            option_flags=option_flags,
+        )
 
 
 def _serialize_value(field: TrainConfigField, value: Any) -> str | None:

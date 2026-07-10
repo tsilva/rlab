@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rlab.env_identity import environment_identity_from_train_config, train_config_from_environment
-from rlab.env_registry import registered_env_ids, resolve_env_id
+from rlab.env_registry import registered_env_ids, resolve_env_id, resolve_env_provider
 
 
 def test_resolves_registered_stable_retro_turbo_env_id() -> None:
@@ -64,6 +64,14 @@ def test_resolves_registered_ale_py_ms_pacman_env_id() -> None:
     assert resolved.provider_id == "ale-py"
     assert resolved.provider_env_id == "ms_pacman"
     assert resolved.import_name == "ale_py"
+
+
+def test_provider_registry_owns_native_info_event_metadata() -> None:
+    mario_events = frozenset({"life_loss", "level_change"})
+
+    assert resolve_env_provider("stable-retro-turbo").owned_info_events == mario_events
+    assert resolve_env_provider("supermariobrosnes-turbo").owned_info_events == mario_events
+    assert resolve_env_provider("ale-py").owned_info_events == frozenset()
 
 
 def test_rejects_unregistered_env_id() -> None:

@@ -111,26 +111,6 @@ def sample_registry():
 
 
 class FleetQueueTests(unittest.TestCase):
-    def test_queue_demands_groups_by_runtime_digest_and_target(self) -> None:
-        conn = FakeConnection(
-            rows=[
-                {
-                    "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "run_target": "rtx4090",
-                    "pending_count": 2,
-                    "running_count": 1,
-                    "oldest_job_id": 7,
-                }
-            ]
-        )
-
-        rows = fleet.queue_demands(conn)
-
-        self.assertEqual(rows[0].runtime_image_ref, RUNTIME_IMAGE_REF)
-        self.assertEqual(rows[0].pending_count, 2)
-        self.assertEqual(rows[0].running_count, 1)
-        self.assertIn("GROUP BY runtime_image_ref, run_target", conn.cursor_obj.executed_sql)
-
     def test_format_demands_omits_profiles(self) -> None:
         output = fleet.format_demands(
             [
@@ -201,7 +181,6 @@ class JobContainerTests(unittest.TestCase):
 
         command = fleet.job_container_run_command(
             machine,
-            job_kind="train",
             job_id=12,
             launch_id="train-12-abc",
             runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -224,7 +203,6 @@ class JobContainerTests(unittest.TestCase):
             launched = fleet.launch_claimed_job_container(
                 FakeConnection(),
                 machine=machine,
-                job_kind="train",
             )
 
         self.assertIsNone(launched)
@@ -317,7 +295,6 @@ class RuntimeImagePruneTests(unittest.TestCase):
             images=images,
             demands=demands,
             containers=(),
-            job_kind="train",
         )
 
         self.assertEqual([image.runtime_image_ref for image in stale], [OTHER_IMAGE_REF])

@@ -100,6 +100,26 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_queue_demands_groups_by_runtime_digest_and_target(self) -> None:
+        conn = FakeConnection(
+            rows=[
+                {
+                    "runtime_image_ref": RUNTIME_IMAGE_REF,
+                    "run_target": "rtx4090",
+                    "pending_count": 2,
+                    "running_count": 1,
+                    "oldest_job_id": 7,
+                }
+            ]
+        )
+
+        rows = job_queue.queue_demands(conn)
+
+        self.assertEqual(rows[0].runtime_image_ref, RUNTIME_IMAGE_REF)
+        self.assertEqual(rows[0].pending_count, 2)
+        self.assertEqual(rows[0].running_count, 1)
+        self.assertIn("GROUP BY runtime_image_ref, run_target", conn.cursor_obj.executed_sql)
+
     def test_schema_uses_recipe_columns_without_profile_or_spec_aliases(self) -> None:
         self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_slug TEXT", job_queue.SCHEMA_SQL)

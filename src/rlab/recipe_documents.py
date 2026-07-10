@@ -17,9 +17,10 @@ from rlab.config_loader import (
     render_template_vars,
 )
 from rlab.env_identity import attach_environment_identity, train_config_from_environment
+from rlab.env_registry import resolve_env_provider
 from rlab.provider_config import provider_num_envs
-from rlab.seeds import validate_training_seed
 from rlab.recipe_schema import train_recipe_id, validate_train_recipe_schema
+from rlab.seeds import validate_training_seed
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -34,10 +35,6 @@ SECRET_KEY_FRAGMENTS = (
 LEGACY_EVENT_TRAIN_CONFIG_KEYS = ("done_on_info_json", "done_on_info")
 TRAIN_CONFIG_SECTION_KEYS = ("train", "reward", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
-PROVIDER_OWNED_INFO_EVENTS = {
-    "stable-retro-turbo": frozenset({"life_loss", "level_change"}),
-    "supermariobrosnes-turbo": frozenset({"life_loss", "level_change"}),
-}
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
 QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
@@ -600,7 +597,12 @@ def _configured_info_event_map(value: Any, *, label: str) -> Mapping[str, Any]:
 
 def _provider_owned_info_event_names(train_config: Mapping[str, Any]) -> frozenset[str]:
     provider_id = str(train_config.get("env_provider") or "").strip()
-    return PROVIDER_OWNED_INFO_EVENTS.get(provider_id, frozenset())
+    if not provider_id:
+        return frozenset()
+    try:
+        return resolve_env_provider(provider_id).owned_info_events
+    except ValueError:
+        return frozenset()
 
 
 def validate_launch_event_config(

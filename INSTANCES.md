@@ -16,9 +16,9 @@ being hardened.
 | Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers |
 | Smoke and queue/fleet debugging | `local-macbook` | 1 local Docker train container |
 
-Machine-readable target metadata lives in `experiments/instances.yaml`.
-Concrete beast host operation and hard capacity live in `experiments/machines.yaml`: backend,
-SSH/Docker access, payload/output paths, env file, mounts, enforced
+Concrete beast host operation, target mapping, and hard capacity live in
+`experiments/machines.yaml`: backend, SSH/Docker access, payload/output paths,
+env file, mounts, enforced
 `max_parallel_containers` slot caps, and host runtime paths. Scheduling lanes and
 policy checks live in `experiments/policies/capacity_policy.yaml`; only lanes that
 intentionally run below machine capacity define a smaller soft cap.
@@ -84,6 +84,7 @@ queue service and do not schedule experiments.
 ## beast-3 / RTX4090
 
 - Target: `rtx4090`, alias `beast-3`.
+- Host resources: RTX4090, at least 12 CPUs, and at least 48 GB memory.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
 - Enforced host capacity: `max_parallel_containers=6` in
@@ -105,6 +106,7 @@ intentionally testing small-GPU behavior.
 ## beast-2 / RTX2060
 
 - Target: `rtx2060`, alias `beast-2`.
+- Host resources: RTX2060, at least 4 CPUs, and at least 8 GB memory.
 - Access: `ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26` until hostname
   resolution is restored.
 - Fleet role: cheaper small ablations, smoke jobs, and RTX2060-specific checks.
@@ -125,6 +127,7 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 
 - Target: `local-macbook`, aliases `macbook` and `local`.
 - Backend: `local_docker`.
+- Host resources: local CPU/MPS host.
 - Use for queue-backed smoke tests and local fleet debugging.
 - Default operating shape: 1 train container.
 - Docker command: configured in `experiments/machines.yaml`; currently `docker`

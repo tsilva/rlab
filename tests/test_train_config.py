@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import argparse
+import json
 import unittest
 
+from rlab.env import EnvConfig
 from rlab.train_config import (
+    add_env_config_args,
+    add_train_config_args,
     build_train_command_from_fields,
     train_config_field_for_key,
     validate_train_config_fields,
@@ -11,6 +16,38 @@ from rlab.train_config import (
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):
+    def test_train_and_eval_parsers_share_env_field_behavior(self) -> None:
+        train_parser = argparse.ArgumentParser()
+        eval_parser = argparse.ArgumentParser()
+        parser_kwargs = {
+            "parse_json_value": json.loads,
+            "parse_obs_crop": lambda value: tuple(int(item) for item in value.split(",")),
+        }
+        add_train_config_args(train_parser, env_defaults=EnvConfig(), **parser_kwargs)
+        add_env_config_args(
+            eval_parser,
+            max_steps_default=987,
+            defaults=EnvConfig(),
+            **parser_kwargs,
+        )
+
+        args = [
+            "--env-provider",
+            "ale-py",
+            "--env-args",
+            '{"game":"breakout"}',
+            "--no-episodic-life",
+            "--obs-crop",
+            "1,2,3,4",
+        ]
+        train_args = train_parser.parse_args(args)
+        eval_args = eval_parser.parse_args([*args, "--max-steps", "123"])
+
+        for dest in ("env_provider", "env_args", "episodic_life", "obs_crop"):
+            self.assertEqual(getattr(train_args, dest), getattr(eval_args, dest))
+        self.assertEqual(eval_args.max_steps, 123)
+        self.assertFalse(hasattr(eval_args, "max_episode_steps"))
+
     def test_env_config_aliases_resolve_to_train_config_fields(self) -> None:
         field = train_config_field_for_key("info_events")
 

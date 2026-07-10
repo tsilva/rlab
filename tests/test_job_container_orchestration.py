@@ -119,7 +119,6 @@ class MachineRegistryTests(unittest.TestCase):
 
         command = fleet.job_container_run_command(
             machine,
-            job_kind="train",
             job_id=12,
             launch_id="train-12-abcdef",
             runtime_image_ref=RUNTIME_IMAGE_REF,
@@ -305,12 +304,12 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 calls.append(f"reconcile:{machine.name}")
                 return 1
 
-            def launch_next(_conn, *, machine, job_kind, limit, reconcile, color):
-                calls.append(f"launch:{machine.name}:{job_kind}:{limit}:{reconcile}")
+            def launch_next(_conn, *, machine, limit, color):
+                calls.append(f"launch:{machine.name}:{limit}")
                 return 2
 
-            def prune(_conn, machine, *, job_kind, color):
-                calls.append(f"prune:{machine.name}:{job_kind}")
+            def prune(_conn, machine, *, color):
+                calls.append(f"prune:{machine.name}")
                 return 4
 
             with (
@@ -331,7 +330,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(
             calls,
-            ["reconcile:beast-test", "launch:beast-test:train:3:False", "prune:beast-test:train"],
+            ["reconcile:beast-test", "launch:beast-test:3", "prune:beast-test"],
         )
         acquire.assert_called_once()
         release.assert_called_once()
@@ -362,6 +361,110 @@ class FleetShepherdSplitTests(unittest.TestCase):
         self.assertEqual(status, 2)
         reconcile.assert_not_called()
         launch.assert_not_called()
+        self.assertTrue(conn.closed)
+
+    def test_exact_launch_runs_under_machine_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            args = fleet.build_parser().parse_args(
+                [
+                    "launch",
+                    "--machines",
+                    str(path),
+                    "--machine",
+                    "beast-test",
+                    "--job-id",
+                    "7",
+                    "--execute",
+                ]
+            )
+            conn = FakeConnection()
+
+            with (
+                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
+                mock.patch.object(
+                    fleet,
+                    "machine_mutation_lock",
+                    return_value=contextlib.nullcontext(),
+                ) as machine_lock,
+                mock.patch.object(fleet, "launch_claimed_job_container", return_value=None),
+            ):
+                status = fleet.cmd_container_launch(args)
+
+        self.assertEqual(status, 0)
+        machine_lock.assert_called_once_with(conn, "beast-test")
+        self.assertTrue(conn.closed)
+
+    def test_launch_next_runs_reconcile_fill_pass_under_machine_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            args = fleet.build_parser().parse_args(
+                [
+                    "diagnostics",
+                    "launch-next",
+                    "--machines",
+                    str(path),
+                    "--machine",
+                    "beast-test",
+                    "--limit",
+                    "3",
+                    "--execute",
+                ]
+            )
+            conn = FakeConnection()
+
+            with (
+                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
+                mock.patch.object(
+                    fleet,
+                    "machine_mutation_lock",
+                    return_value=contextlib.nullcontext(),
+                ) as machine_lock,
+                mock.patch.object(
+                    fleet,
+                    "run_reconcile_fill_pass",
+                    return_value=(1, 2),
+                ) as run_pass,
+            ):
+                status = fleet.cmd_container_launch_next(args)
+
+        self.assertEqual(status, 0)
+        machine_lock.assert_called_once_with(conn, "beast-test")
+        run_pass.assert_called_once()
+        self.assertTrue(conn.closed)
+
+    def test_reconcile_runs_under_each_machine_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            args = fleet.build_parser().parse_args(
+                [
+                    "diagnostics",
+                    "reconcile",
+                    "--machines",
+                    str(path),
+                    "--machine",
+                    "beast-test",
+                    "--execute",
+                ]
+            )
+            conn = FakeConnection()
+
+            with (
+                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
+                mock.patch.object(
+                    fleet,
+                    "machine_mutation_lock",
+                    return_value=contextlib.nullcontext(),
+                ) as machine_lock,
+                mock.patch.object(fleet, "reconcile_machine_launches", return_value=1),
+            ):
+                status = fleet.cmd_container_reconcile(args)
+
+        self.assertEqual(status, 0)
+        machine_lock.assert_called_once_with(conn, "beast-test")
         self.assertTrue(conn.closed)
 
 
@@ -411,7 +514,6 @@ class RuntimeImagePruneTests(unittest.TestCase):
             images=images,
             demands=demands,
             containers=containers,
-            job_kind="train",
         )
 
         self.assertEqual([image.runtime_image_ref for image in stale], [STALE_IMAGE_REF])
@@ -461,7 +563,6 @@ class RuntimeImagePruneTests(unittest.TestCase):
             pruned = fleet.prune_stale_runtime_images(
                 FakeConnection(),
                 machine,
-                job_kind="train",
                 color=False,
             )
 
@@ -498,7 +599,6 @@ class LaunchLedgerTests(unittest.TestCase):
 
         claimed = job_queue.claim_job_launch(
             conn,
-            job_kind="train",
             machine="beast-test",
             backend="docker_ssh",
             job_id=7,

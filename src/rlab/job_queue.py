@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -136,6 +137,66 @@ RESET_TABLES = (
     "job_launches",
     "train_jobs",
 )
+TRAIN_JOB_KIND = "train"
+
+
+@dataclass(frozen=True)
+class QueueDemand:
+    runtime_image_ref: str
+    run_target: str | None
+    pending_count: int
+    running_count: int
+    oldest_job_id: int
+
+    @property
+    def total(self) -> int:
+        return self.pending_count + self.running_count
+
+
+QUEUE_DEMAND_SQL = """
+SELECT
+  runtime_image_ref,
+  run_target,
+  COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+  COUNT(*) FILTER (WHERE status = 'running') AS running_count,
+  MIN(id) AS oldest_job_id
+FROM train_jobs
+WHERE runtime_image_ref IS NOT NULL
+  AND cancel_requested = FALSE
+  AND status IN ('pending', 'running')
+GROUP BY runtime_image_ref, run_target
+ORDER BY oldest_job_id ASC
+"""
+
+
+def queue_demands(conn) -> list[QueueDemand]:
+    with conn.cursor() as cur:
+        cur.execute(QUEUE_DEMAND_SQL)
+        rows = cur.fetchall()
+    return [
+        QueueDemand(
+            runtime_image_ref=normalize_runtime_image_ref(row["runtime_image_ref"]),
+            run_target=row.get("run_target"),
+            pending_count=int(row["pending_count"]),
+            running_count=int(row["running_count"]),
+            oldest_job_id=int(row["oldest_job_id"]),
+        )
+        for row in rows
+    ]
+
+
+def machine_queue_counts(conn) -> dict[str, dict[str, int]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM train_jobs
+            GROUP BY status
+            ORDER BY status
+            """
+        )
+        train_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+    return {"train": train_counts}
 
 
 def json_arg(value: Any) -> psycopg2.extras.Json:
@@ -225,14 +286,11 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
 def record_job_event(
     conn,
     *,
-    job_kind: str,
     job_id: int,
     event_type: str,
     message: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
-    if job_kind != "train":
-        raise ValueError(f"invalid job_kind: {job_kind}")
     metadata = dict(metadata or {})
     assert_no_secrets(metadata, label="event metadata")
     with conn.cursor() as cur:
@@ -242,7 +300,7 @@ def record_job_event(
             VALUES (%(job_kind)s, %(job_id)s, %(event_type)s, %(message)s, %(metadata_json)s)
             """,
             {
-                "job_kind": job_kind,
+                "job_kind": TRAIN_JOB_KIND,
                 "job_id": job_id,
                 "event_type": event_type,
                 "message": message,
@@ -495,7 +553,6 @@ def enqueue_train_job(
             row = dict(cur.fetchone())
             record_job_event(
                 conn,
-                job_kind="train",
                 job_id=int(row["id"]),
                 event_type="enqueued",
                 message="train job enqueued",
@@ -504,29 +561,16 @@ def enqueue_train_job(
             return row
 
 
-def new_launch_id(job_kind: str, job_id: int | None = None) -> str:
+def new_train_launch_id(job_id: int | None = None) -> str:
     suffix = uuid.uuid4().hex[:12]
     if job_id is None:
-        return f"{job_kind}-{suffix}"
-    return f"{job_kind}-{int(job_id)}-{suffix}"
-
-
-def _job_table(job_kind: str) -> str:
-    if job_kind == "train":
-        return "train_jobs"
-    raise ValueError(f"invalid job_kind: {job_kind}")
-
-
-def _job_event_kind(job_kind: str) -> str:
-    if job_kind != "train":
-        raise ValueError(f"invalid job_kind: {job_kind}")
-    return job_kind
+        return f"{TRAIN_JOB_KIND}-{suffix}"
+    return f"{TRAIN_JOB_KIND}-{int(job_id)}-{suffix}"
 
 
 def claim_job_launch(
     conn,
     *,
-    job_kind: str,
     machine: str,
     backend: str,
     runtime_image_ref: str | None = None,
@@ -536,8 +580,6 @@ def claim_job_launch(
     container_name: str | None = None,
     output_uri: str,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    job_kind = _job_event_kind(job_kind)
-    table = _job_table(job_kind)
     runtime_image_ref = (
         normalize_runtime_image_ref(runtime_image_ref) if runtime_image_ref else None
     )
@@ -546,9 +588,9 @@ def claim_job_launch(
         "machine": str(machine),
         "backend": str(backend),
         "output_uri": str(output_uri),
-        "launch_id": launch_id or new_launch_id(job_kind, job_id),
+        "launch_id": launch_id or new_train_launch_id(job_id),
         "container_name": container_name,
-        "job_kind": job_kind,
+        "job_kind": TRAIN_JOB_KIND,
     }
     if job_id is not None:
         filters.append("id = %(job_id)s")
@@ -556,7 +598,7 @@ def claim_job_launch(
     if runtime_image_ref is not None:
         filters.append("runtime_image_ref = %(runtime_image_ref)s")
         params["runtime_image_ref"] = runtime_image_ref
-    if job_kind == "train" and run_target is not None:
+    if run_target is not None:
         filters.append("run_target = %(run_target)s")
         params["run_target"] = normalize_run_target(run_target)
     where = "\n    AND ".join(filters)
@@ -566,14 +608,14 @@ def claim_job_launch(
                 f"""
                 WITH next_job AS (
                   SELECT *
-                  FROM {table}
+                  FROM train_jobs
                   WHERE {where}
                   ORDER BY id ASC
                   LIMIT 1
                   FOR UPDATE SKIP LOCKED
                 ),
                 updated AS (
-                  UPDATE {table} AS job
+                  UPDATE train_jobs AS job
                   SET status = 'launching',
                       lease_owner = %(launch_id)s,
                       lease_expires_at = NULL,
@@ -609,7 +651,6 @@ def claim_job_launch(
             launch = dict(row["launch_json"])
             record_job_event(
                 conn,
-                job_kind=job_kind,
                 job_id=int(job["id"]),
                 event_type="launching",
                 message=f"job launch claimed on {machine}",
@@ -647,10 +688,11 @@ def mark_job_launch_running(
             launch = cur.fetchone()
             if not launch:
                 return None
-            table = _job_table(str(launch["job_kind"]))
+            if launch["job_kind"] != TRAIN_JOB_KIND:
+                raise RuntimeError(f"launch {launch_id} is not a train launch")
             cur.execute(
-                f"""
-                UPDATE {table}
+                """
+                UPDATE train_jobs
                 SET status = 'running',
                     started_at = COALESCE(started_at, now()),
                     heartbeat_at = now(),
@@ -663,7 +705,6 @@ def mark_job_launch_running(
             )
             record_job_event(
                 conn,
-                job_kind=str(launch["job_kind"]),
                 job_id=int(launch["job_id"]),
                 event_type="running",
                 message="job container started",
@@ -695,10 +736,11 @@ def release_job_launch(
             launch = cur.fetchone()
             if not launch:
                 return None
-            table = _job_table(str(launch["job_kind"]))
+            if launch["job_kind"] != TRAIN_JOB_KIND:
+                raise RuntimeError(f"launch {launch_id} is not a train launch")
             cur.execute(
-                f"""
-                UPDATE {table}
+                """
+                UPDATE train_jobs
                 SET status = 'pending',
                     lease_owner = NULL,
                     lease_expires_at = NULL,
@@ -716,7 +758,6 @@ def release_job_launch(
             )
             record_job_event(
                 conn,
-                job_kind=str(launch["job_kind"]),
                 job_id=int(launch["job_id"]),
                 event_type="released",
                 message=error,
@@ -887,7 +928,6 @@ def finish_train_launch_from_result(
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
             record_job_event(
                 conn,
-                job_kind="train",
                 job_id=int(job["id"]),
                 event_type=status,
                 message=error,

@@ -10,6 +10,7 @@ class EnvProvider:
     env_ids: tuple[str, ...]
     supports_states: bool = True
     uses_stable_retro_roms: bool = False
+    owned_info_events: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -25,12 +26,14 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     import_name="stable_retro",
     env_ids=("SuperMarioBros-Nes-v0", "SuperMarioBros3-Nes-v0"),
     uses_stable_retro_roms=True,
+    owned_info_events=frozenset({"life_loss", "level_change"}),
 )
 
 SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     provider_id="supermariobrosnes-turbo",
     import_name="supermariobrosnes_turbo",
     env_ids=("SuperMarioBros-Nes-v0",),
+    owned_info_events=frozenset({"life_loss", "level_change"}),
 )
 
 ALE_PY_PROVIDER = EnvProvider(

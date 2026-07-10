@@ -167,7 +167,10 @@ Use `shepherd --once` for a single reconcile-and-fill pass. Lower-level repair
 helpers live under `rlab fleet diagnostics reconcile` and
 `rlab fleet diagnostics launch-next`.
 
-Hard fleet capacity comes from `experiments/machines.yaml`; target metadata lives in `experiments/instances.yaml`, and scenario-specific soft caps live in `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
+Hard fleet capacity and target mapping come from `experiments/machines.yaml`,
+while scenario-specific soft caps live in
+`experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing
+hardware targets, concurrency, cleanup behavior, or beast host recommendations.
 
 ## Notes
 

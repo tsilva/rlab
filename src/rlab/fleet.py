@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import shlex
 import subprocess
@@ -15,14 +16,18 @@ from typing import Any
 import yaml
 
 from rlab.job_queue import (
+    QueueDemand,
+    TRAIN_JOB_KIND,
     active_job_launches,
     claim_job_launch,
     connect,
     database_url,
     finish_job_launch_from_result,
     job_payload_for_launch,
+    machine_queue_counts,
     mark_job_launch_running,
-    new_launch_id,
+    new_train_launch_id,
+    queue_demands,
     release_job_launch,
 )
 from rlab.json_utils import json_safe
@@ -70,19 +75,6 @@ DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
 DEFAULT_WATCH_STALE_LIMIT = 50
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
-
-
-@dataclass(frozen=True)
-class QueueDemand:
-    runtime_image_ref: str
-    run_target: str | None
-    pending_count: int
-    running_count: int
-    oldest_job_id: int
-
-    @property
-    def total(self) -> int:
-        return self.pending_count + self.running_count
 
 
 @dataclass(frozen=True)
@@ -194,38 +186,6 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
 
 def shell_join(parts: Sequence[str]) -> str:
     return shlex.join([str(part) for part in parts])
-
-
-QUEUE_DEMAND_SQL = """
-SELECT
-  runtime_image_ref,
-  run_target,
-  COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
-  COUNT(*) FILTER (WHERE status = 'running') AS running_count,
-  MIN(id) AS oldest_job_id
-FROM train_jobs
-WHERE runtime_image_ref IS NOT NULL
-  AND cancel_requested = FALSE
-  AND status IN ('pending', 'running')
-GROUP BY runtime_image_ref, run_target
-ORDER BY oldest_job_id ASC
-"""
-
-
-def queue_demands(conn) -> list[QueueDemand]:
-    with conn.cursor() as cur:
-        cur.execute(QUEUE_DEMAND_SQL)
-        rows = cur.fetchall()
-    return [
-        QueueDemand(
-            runtime_image_ref=normalize_runtime_image_ref(row["runtime_image_ref"]),
-            run_target=row.get("run_target"),
-            pending_count=int(row["pending_count"]),
-            running_count=int(row["running_count"]),
-            oldest_job_id=int(row["oldest_job_id"]),
-        )
-        for row in rows
-    ]
 
 
 def host_command(machine: MachineConfig, remote_args: Sequence[str]) -> list[str]:
@@ -587,10 +547,10 @@ def sanitize_container_part(value: str, *, limit: int = 32) -> str:
     return sanitize_slug(value, limit=limit)
 
 
-def job_container_name(machine: MachineConfig, *, job_kind: str, launch_id: str) -> str:
+def job_container_name(machine: MachineConfig, *, launch_id: str) -> str:
     return (
         f"rlab-job-{sanitize_container_part(machine.name, limit=16)}-"
-        f"{sanitize_container_part(job_kind, limit=8)}-"
+        f"{TRAIN_JOB_KIND}-"
         f"{sanitize_container_part(launch_id, limit=48)}"
     )[:120].strip("-")
 
@@ -618,7 +578,6 @@ def machine_docker_command(machine: MachineConfig, args: Sequence[str]) -> list[
 def job_container_run_command(
     machine: MachineConfig,
     *,
-    job_kind: str,
     job_id: int,
     launch_id: str,
     runtime_image_ref: str,
@@ -651,7 +610,7 @@ def job_container_run_command(
         MANAGED_LABEL: "true",
         JOB_CONTAINER_LABEL: "true",
         MACHINE_LABEL: machine.name,
-        JOB_KIND_LABEL: job_kind,
+        JOB_KIND_LABEL: TRAIN_JOB_KIND,
         JOB_ID_LABEL: str(job_id),
         LAUNCH_ID_LABEL: launch_id,
         OUTPUT_URI_LABEL: launch_output_path(machine, launch_id),
@@ -869,7 +828,6 @@ def protected_runtime_image_refs(
     machine: MachineConfig,
     demands: Sequence[QueueDemand],
     containers: Sequence[JobContainer],
-    job_kind: str,
 ) -> set[str]:
     protected: set[str] = set()
     for demand in demands:
@@ -921,13 +879,11 @@ def stale_runtime_host_images(
     images: Sequence[RuntimeHostImage],
     demands: Sequence[QueueDemand],
     containers: Sequence[JobContainer],
-    job_kind: str,
 ) -> tuple[RuntimeHostImage, ...]:
     protected = protected_runtime_image_refs(
         machine=machine,
         demands=demands,
         containers=containers,
-        job_kind=job_kind,
     )
     return tuple(image for image in images if image.runtime_image_ref not in protected)
 
@@ -936,7 +892,6 @@ def prune_stale_runtime_images(
     conn,
     machine: MachineConfig,
     *,
-    job_kind: str,
     color: bool | None = None,
 ) -> int:
     demands = queue_demands(conn)
@@ -945,7 +900,6 @@ def prune_stale_runtime_images(
         machine=machine,
         demands=demands,
         containers=containers,
-        job_kind=job_kind,
     )
     images = list_runtime_host_images(
         machine,
@@ -993,21 +947,6 @@ def remote_result_exists(machine: MachineConfig, output_uri: str) -> bool:
     result_path = f"{str(output_uri).rstrip('/')}/result.json"
     result = run_machine_shell(machine, f"test -s {shlex.quote(result_path)}", capture=True)
     return result.returncode == 0
-
-
-def machine_queue_counts(conn) -> dict[str, dict[str, int]]:
-    counts = {"train": {}}
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT status, COUNT(*) AS count
-            FROM train_jobs
-            GROUP BY status
-            ORDER BY status
-            """
-        )
-        counts["train"] = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
-    return counts
 
 
 def build_machine_watch_snapshot(args: argparse.Namespace) -> MachineWatchSnapshot:
@@ -1137,14 +1076,12 @@ def launch_claimed_job_container(
     conn,
     *,
     machine: MachineConfig,
-    job_kind: str,
     job_id: int | None = None,
     color: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    launch_id = new_launch_id(job_kind, job_id)
+    launch_id = new_train_launch_id(job_id)
     claimed = claim_job_launch(
         conn,
-        job_kind=job_kind,
         machine=machine.name,
         backend=machine.backend,
         job_id=job_id,
@@ -1156,7 +1093,7 @@ def launch_claimed_job_container(
         return None
     job, launch = claimed
     runtime_image_ref = str(job["runtime_image_ref"])
-    container_name = job_container_name(machine, job_kind=job_kind, launch_id=launch_id)
+    container_name = job_container_name(machine, launch_id=launch_id)
     payload = job_payload_for_launch(job, {**launch, "container_name": container_name})
     try:
         write_remote_payload(machine, launch_payload_path(machine, launch_id), payload)
@@ -1166,7 +1103,6 @@ def launch_claimed_job_container(
             raise RuntimeError(f"docker pull failed exit={pull_status}")
         run_command = job_container_run_command(
             machine,
-            job_kind=job_kind,
             job_id=int(job["id"]),
             launch_id=launch_id,
             runtime_image_ref=runtime_image_ref,
@@ -1191,7 +1127,7 @@ def launch_claimed_job_container(
             machine=machine.name,
             action="launch",
             result="started",
-            job_kind=job_kind,
+            job_kind=TRAIN_JOB_KIND,
             job_id=job["id"],
             launch_id=launch_id,
             container=container_name,
@@ -1363,19 +1299,20 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
     return reconciled
 
 
-def job_container_slot_usage(machine: MachineConfig, *, job_kind: str) -> tuple[int, int, int]:
+def train_container_slot_usage(machine: MachineConfig) -> tuple[int, int, int]:
     containers = list_job_containers(machine)
     active = [
         container
         for container in containers
-        if container.job_kind == job_kind and container.state in {"running", "created", "restarting"}
+        if container.job_kind == TRAIN_JOB_KIND
+        and container.state in {"running", "created", "restarting"}
     ]
-    capacity = machine.max_containers_for_kind(job_kind)
+    capacity = machine.max_containers_for_kind(TRAIN_JOB_KIND)
     return len(active), capacity, max(0, capacity - len(active))
 
 
-def machine_available_slots(machine: MachineConfig, *, job_kind: str) -> int:
-    _, _, available = job_container_slot_usage(machine, job_kind=job_kind)
+def machine_available_train_slots(machine: MachineConfig) -> int:
+    _, _, available = train_container_slot_usage(machine)
     return available
 
 
@@ -1383,22 +1320,18 @@ def launch_next_jobs(
     conn,
     *,
     machine: MachineConfig,
-    job_kind: str,
     limit: int,
-    reconcile: bool = True,
     color: bool | None = None,
 ) -> int:
-    if reconcile:
-        reconcile_machine_launches(conn, machine, color=color)
     launched = 0
-    active, capacity, slots = job_container_slot_usage(machine, job_kind=job_kind)
+    active, capacity, slots = train_container_slot_usage(machine)
     if slots <= 0:
         log_shepherd_event(
             machine=machine.name,
             action="launch-next",
             result="skip",
             reason="no_available_slots",
-            job_kind=job_kind,
+            job_kind=TRAIN_JOB_KIND,
             used=active,
             max=capacity,
             color=color,
@@ -1408,7 +1341,6 @@ def launch_next_jobs(
         claimed = launch_claimed_job_container(
             conn,
             machine=machine,
-            job_kind=job_kind,
             color=color,
         )
         if claimed is None:
@@ -1417,22 +1349,68 @@ def launch_next_jobs(
     return launched
 
 
+def run_reconcile_fill_pass(
+    conn,
+    *,
+    machine: MachineConfig,
+    limit: int,
+    color: bool | None = None,
+) -> tuple[int, int]:
+    log_shepherd_event(machine=machine.name, action="reconcile", result="start", color=color)
+    reconciled = reconcile_machine_launches(conn, machine, color=color)
+    log_shepherd_event(
+        machine=machine.name,
+        action="reconcile",
+        result="ok",
+        reconciled=reconciled,
+        color=color,
+    )
+    launched = launch_next_jobs(
+        conn,
+        machine=machine,
+        limit=limit,
+        color=color,
+    )
+    log_shepherd_event(
+        machine=machine.name,
+        action="launch-next",
+        result="ok",
+        job_kind=TRAIN_JOB_KIND,
+        launched=launched,
+        color=color,
+    )
+    return reconciled, launched
+
+
+@contextmanager
+def machine_mutation_lock(conn, machine_name: str):
+    lock = acquire_shepherd_lock(conn, machine_name)
+    try:
+        yield lock
+    finally:
+        release_shepherd_lock(conn, lock)
+
+
 def cmd_container_launch(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
     if not args.execute:
         print(
-            f"dry_run: would claim and launch {args.job_kind}_job_id={args.job_id} "
+            f"dry_run: would claim and launch {TRAIN_JOB_KIND}_job_id={args.job_id} "
             f"machine={machine.name}"
         )
         return 0
     conn = _connect_from_args(args)
     try:
-        launched = launch_claimed_job_container(
-            conn,
-            machine=machine,
-            job_kind=args.job_kind,
-            job_id=args.job_id,
-        )
+        try:
+            with machine_mutation_lock(conn, machine.name):
+                launched = launch_claimed_job_container(
+                    conn,
+                    machine=machine,
+                    job_id=args.job_id,
+                )
+        except ShepherdLockBusy as exc:
+            log_shepherd_event(machine=exc.machine, action="lock", result="busy")
+            return 2
     finally:
         conn.close()
     if launched is None:
@@ -1444,38 +1422,33 @@ def cmd_container_launch_next(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
     color = not getattr(args, "no_color", False)
     if not args.execute:
-        slots = machine_available_slots(machine, job_kind=args.job_kind)
+        slots = machine_available_train_slots(machine)
         planned = min(int(args.limit), slots)
         log_shepherd_event(
             machine=machine.name,
             action="launch-next",
             result="planned",
             mode="dry-run",
-            job_kind=args.job_kind,
+            job_kind=TRAIN_JOB_KIND,
             planned=planned,
             color=color,
         )
         return 0
     conn = _connect_from_args(args)
     try:
-        launched = launch_next_jobs(
-            conn,
-            machine=machine,
-            job_kind=args.job_kind,
-            limit=int(args.limit),
-            reconcile=True,
-            color=color,
-        )
+        try:
+            with machine_mutation_lock(conn, machine.name):
+                _reconciled, _launched = run_reconcile_fill_pass(
+                    conn,
+                    machine=machine,
+                    limit=int(args.limit),
+                    color=color,
+                )
+        except ShepherdLockBusy as exc:
+            log_shepherd_event(machine=exc.machine, action="lock", result="busy", color=color)
+            return 2
     finally:
         conn.close()
-    log_shepherd_event(
-        machine=machine.name,
-        action="launch-next",
-        result="ok",
-        job_kind=args.job_kind,
-        launched=launched,
-        color=color,
-    )
     return 0
 
 
@@ -1496,18 +1469,29 @@ def cmd_container_reconcile(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
         total = 0
+        lock_busy = False
         for machine in machines:
-            total += reconcile_machine_launches(conn, machine, color=color)
+            try:
+                with machine_mutation_lock(conn, machine.name):
+                    total += reconcile_machine_launches(conn, machine, color=color)
+            except ShepherdLockBusy as exc:
+                lock_busy = True
+                log_shepherd_event(
+                    machine=exc.machine,
+                    action="lock",
+                    result="busy",
+                    color=color,
+                )
     finally:
         conn.close()
     log_shepherd_event(
         machine=args.machine or "all",
         action="reconcile",
-        result="ok",
+        result="busy" if lock_busy else "ok",
         reconciled=total,
         color=color,
     )
-    return 0
+    return 2 if lock_busy else 0
 
 
 def shepherd_lock_key(machine_name: str) -> str:
@@ -1573,77 +1557,54 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
             time.sleep(args.interval)
 
     conn = _connect_from_args(args)
-    lock: ShepherdLock | None = None
     try:
         try:
-            lock = acquire_shepherd_lock(conn, machine.name)
+            with machine_mutation_lock(conn, machine.name):
+                while True:
+                    try:
+                        _reconciled, _launched = run_reconcile_fill_pass(
+                            conn,
+                            machine=machine,
+                            limit=int(args.limit),
+                            color=color,
+                        )
+                        pruned = prune_stale_runtime_images(
+                            conn,
+                            machine,
+                            color=color,
+                        )
+                        log_shepherd_event(
+                            machine=machine.name,
+                            action="prune-image",
+                            result="ok",
+                            pruned=pruned,
+                            color=color,
+                        )
+                        if args.once:
+                            return 0
+                    except KeyboardInterrupt:
+                        log_shepherd_event(
+                            machine=machine.name,
+                            action="stop",
+                            reason="keyboard_interrupt",
+                            color=color,
+                        )
+                        return 130
+                    except Exception as exc:
+                        log_shepherd_event(
+                            machine=machine.name,
+                            action="error",
+                            result="error",
+                            error=str(exc),
+                            color=color,
+                        )
+                        if args.once or getattr(args, "fail_fast", False):
+                            return 1
+                    time.sleep(args.interval)
         except ShepherdLockBusy as exc:
             log_shepherd_event(machine=exc.machine, action="lock", result="busy", color=color)
             return 2
-        while True:
-            try:
-                log_shepherd_event(machine=machine.name, action="reconcile", result="start", color=color)
-                reconciled = reconcile_machine_launches(conn, machine, color=color)
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="reconcile",
-                    result="ok",
-                    reconciled=reconciled,
-                    color=color,
-                )
-                launched = launch_next_jobs(
-                    conn,
-                    machine=machine,
-                    job_kind=args.job_kind,
-                    limit=int(args.limit),
-                    reconcile=False,
-                    color=color,
-                )
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="launch-next",
-                    result="ok",
-                    job_kind=args.job_kind,
-                    launched=launched,
-                    color=color,
-                )
-                pruned = prune_stale_runtime_images(
-                    conn,
-                    machine,
-                    job_kind=args.job_kind,
-                    color=color,
-                )
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="prune-image",
-                    result="ok",
-                    pruned=pruned,
-                    color=color,
-                )
-                if args.once:
-                    return 0
-            except KeyboardInterrupt:
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="stop",
-                    reason="keyboard_interrupt",
-                    color=color,
-                )
-                return 130
-            except Exception as exc:
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="error",
-                    result="error",
-                    error=str(exc),
-                    color=color,
-                )
-                if args.once or getattr(args, "fail_fast", False):
-                    return 1
-            time.sleep(args.interval)
     finally:
-        if lock is not None:
-            release_shepherd_lock(conn, lock)
         conn.close()
 
 

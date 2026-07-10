@@ -636,17 +636,6 @@ def validate_env_config_file(path: Path) -> None:
         raise ValueError(f"{label} must not define state or states")
 
 
-def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
-    config = load_mapping_document(path, label=f"instance config {path}")
-    instances = _require_mapping(config.get("instances"), label=f"instance config {path}.instances")
-    if not instances:
-        raise ValueError(f"instance config {path}.instances must not be empty")
-    for name, raw in instances.items():
-        label = f"instance config {path}.instances.{name}"
-        instance = _require_mapping(raw, label=label)
-        _require_non_empty_string(instance, "kind", label=label)
-
-
 def validate_fleet_and_capacity(repo_root: Path) -> None:
     registry = load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
     policy = load_capacity_policy(repo_root)
@@ -750,16 +739,6 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
     counts["env_configs"] = len(env_configs)
     for path in env_configs:
         _capture_issue(issues, path, repo_root, lambda path=path: validate_env_config_file(path))
-
-    instances_path = experiments_dir / "instances.yaml"
-    counts["instance_configs"] = int(instances_path.is_file())
-    if instances_path.is_file():
-        _capture_issue(
-            issues,
-            instances_path,
-            repo_root,
-            lambda: validate_instance_config(instances_path, repo_root),
-        )
 
     machines_path = experiments_dir / "machines.yaml"
     capacity_path = experiments_dir / "policies" / "capacity_policy.yaml"
