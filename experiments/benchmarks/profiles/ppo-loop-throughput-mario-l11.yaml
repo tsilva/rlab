@@ -1,14 +1,18 @@
 schema_version: 1
 name: ppo-loop-throughput-mario-l11
 kind: ppo_loop_throughput
-description: Bounded local PPO loop probe for rollout/update throughput on Mario Level1-1.
+description: Bounded PPO throughput probe for the consolidated Mario native-vector runtime.
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 train_config:
+  env_provider: supermariobrosnes-turbo
   game: SuperMarioBros-Nes-v0
   state: Level1-1
-  n_envs: 16
-  n_steps: 512
-  batch_size: 512
-  n_epochs: 10
+  n_envs: 8
+  n_steps: 128
+  batch_size: 256
+  n_epochs: 1
   learning_rate: 0.00015
   gamma: 0.9
   gae_lambda: 1.0
@@ -17,30 +21,34 @@ train_config:
   vf_coef: 1.0
   adam_eps: 1.0e-08
   normalize_advantage: false
-  reward_mode: score
-  terminal_reward: 50
-  death_penalty: 25
-  reward_scale: 10
-  action_set: simple
   frame_skip: 4
   max_pool_frames: false
-  hud_crop_top: 32
-  max_episode_steps: 4500
-  info_events:
-    life_loss:
-    - lives
-    - decrease
-    level_change:
-    - - levelHi
-      - levelLo
-    - change
-  done_on_events: [life_loss, level_change]
+  task:
+    id: mario
+    action: {set: simple}
+    signals:
+      x: [xscrollHi, xscrollLo]
+      score: score
+      lives: lives
+      level: [levelHi, levelLo]
+    events:
+      life_loss: {signal: lives, operation: decrease}
+      level_change: {signal: level, operation: change}
+    termination:
+      failure: [life_loss]
+      success: [level_change]
+      max_episode_steps: 4500
+    reward:
+      reward_mode: score
+      terminal_reward: 50.0
+      death_penalty: 25.0
+      reward_scale: 10.0
   checkpoint_freq: 0
-  timesteps: 100000
+  timesteps: 4096
   wandb: false
   wandb_mode: disabled
   run_name: benchmark_ppo_loop_mario_l11
-  run_description: Benchmark PPO loop throughput probe for Mario Level1-1.
+  run_description: Consolidated native-vector PPO throughput probe for Mario Level1-1.
 gates:
   exit_code: 0
   required_metrics:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -16,8 +15,11 @@ from rlab.config_loader import (
     load_composed_mapping,
     render_template_vars,
 )
-from rlab.env_identity import attach_environment_identity, train_config_from_environment
-from rlab.env_registry import resolve_env_provider
+from rlab.env_identity import (
+    attach_environment_identity,
+    train_config_from_environment,
+    validate_task_config,
+)
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import train_recipe_id, validate_train_recipe_schema
 from rlab.seeds import validate_training_seed
@@ -32,7 +34,6 @@ SECRET_KEY_FRAGMENTS = (
     "credential",
     "database_url",
 )
-LEGACY_EVENT_TRAIN_CONFIG_KEYS = ("done_on_info_json", "done_on_info")
 TRAIN_CONFIG_SECTION_KEYS = ("train", "reward", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
 GOAL_GAME_DIR_NAMES = frozenset({"SuperMarioBros-Nes-v0", "super-mario-bros-nes-v0"})
@@ -70,10 +71,6 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "state",
         "states",
         "state_probs",
-        "task_conditioning",
-        "task_conditioning_info_vars",
-        "task_conditioning_info_values",
-        "action_set",
         "frame_skip",
         "max_pool_frames",
         "sticky_action_prob",
@@ -81,12 +78,7 @@ GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
         "obs_resize_algorithm",
         "observation_size",
         "hud_crop_top",
-        "max_episode_steps",
-        "episodic_life",
-        "info_events",
-        "info_events_json",
-        "done_on_events",
-        "env_wrappers",
+        "task",
         "n_envs",
     }
 )
@@ -220,6 +212,7 @@ def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[st
             "task_conditioning",
             "termination",
             "reward",
+            "task",
         }
     }
     return deep_merge(config, direct_items)
@@ -229,7 +222,9 @@ def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, An
     if not isinstance(section, Mapping):
         return {}
     nested_environment = section.get("environment")
-    environment = copy.deepcopy(dict(nested_environment)) if isinstance(nested_environment, Mapping) else {}
+    environment = (
+        copy.deepcopy(dict(nested_environment)) if isinstance(nested_environment, Mapping) else {}
+    )
     policy = {
         key: copy.deepcopy(value)
         for key, value in section.items()
@@ -327,7 +322,9 @@ def _goal_slug_for_recipe(path: Path, document: Mapping[str, Any]) -> str:
     return explicit or _infer_goal_slug_from_path(path)
 
 
-def _goal_composition_for_recipe(path: Path, document: Mapping[str, Any]) -> ComposedDocument | None:
+def _goal_composition_for_recipe(
+    path: Path, document: Mapping[str, Any]
+) -> ComposedDocument | None:
     goal_slug = _goal_slug_for_recipe(path, document)
     if not goal_slug:
         return None
@@ -534,7 +531,7 @@ def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:
             capture_output=True,
             text=True,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return None
     return result.stdout.strip() or None
 
@@ -573,72 +570,12 @@ def _non_empty_config_value(value: Any) -> bool:
     return value not in (None, "", (), [], {})
 
 
-def _configured_event_names(value: Any, *, label: str) -> tuple[str, ...]:
-    if value in (None, ""):
-        return ()
-    if isinstance(value, str):
-        names = tuple(name.strip() for name in value.split(",") if name.strip())
-    elif isinstance(value, Sequence):
-        names = tuple(str(name).strip() for name in value if str(name).strip())
-    else:
-        raise ValueError(f"{label} must be a comma-separated string or list")
-    return tuple(dict.fromkeys(names))
-
-
-def _configured_info_event_map(value: Any, *, label: str) -> Mapping[str, Any]:
-    if isinstance(value, Mapping):
-        return value
-    if isinstance(value, str) and value.strip():
-        parsed = json.loads(value)
-        if isinstance(parsed, Mapping):
-            return parsed
-    raise ValueError(f"{label} must define info_events as an object")
-
-
-def _provider_owned_info_event_names(train_config: Mapping[str, Any]) -> frozenset[str]:
-    provider_id = str(train_config.get("env_provider") or "").strip()
-    if not provider_id:
-        return frozenset()
-    try:
-        return resolve_env_provider(provider_id).owned_info_events
-    except ValueError:
-        return frozenset()
-
-
 def validate_launch_event_config(
     train_config: Mapping[str, Any], *, label: str = "train_config"
 ) -> None:
-    legacy_keys = [
-        key
-        for key in LEGACY_EVENT_TRAIN_CONFIG_KEYS
-        if _non_empty_config_value(train_config.get(key))
-    ]
-    if legacy_keys:
-        raise ValueError(
-            f"{label} uses legacy event key(s) {', '.join(legacy_keys)}; "
-            "use info_events plus done_on_events for new launches"
-        )
-    done_event_names = _configured_event_names(
-        train_config.get("done_on_events"),
-        label=f"{label}.done_on_events",
-    )
-    if not done_event_names:
-        return
-    provider_owned_events = _provider_owned_info_event_names(train_config)
-    info_events_value = train_config.get("info_events", train_config.get("info_events_json"))
-    if _non_empty_config_value(info_events_value):
-        info_events = _configured_info_event_map(info_events_value, label=label)
-    else:
-        info_events = {}
-    missing = [
-        name
-        for name in done_event_names
-        if name not in info_events and name not in provider_owned_events
-    ]
-    if missing:
-        raise ValueError(
-            f"{label}.done_on_events references unconfigured info event(s): {', '.join(missing)}"
-        )
+    task = train_config.get("task")
+    if isinstance(task, Mapping):
+        validate_task_config(task, label=f"{label}.task")
 
 
 def validate_launch_seed_config(

@@ -15,8 +15,13 @@ import torch.nn.functional as F
 from stable_baselines3 import PPO
 
 from rlab.artifacts import env_config_from_model_metadata, write_model_metadata
-from rlab.env import EnvConfig, make_eval_vec_env, resolve_env_config
-from rlab.eval_metrics import is_level_complete, single_env_action
+from rlab.env import EnvConfig, make_eval_vec_env, resolve_env_config, with_task_termination
+from rlab.eval_metrics import (
+    batch_metrics_for_lane,
+    drain_runtime_records,
+    episode_records,
+    single_env_action,
+)
 from rlab.model_sources import add_model_source_args, resolve_single_model_source
 from rlab.play import model_observation, task_info_value_from_info
 from rlab.train import resolve_sb3_device
@@ -31,7 +36,9 @@ DEFAULT_STATES = ("Level1-1", "Level1-2")
 DEFAULT_INFO_VALUES = ((0, 0), (0, 1))
 
 
-def mario_student_config(*, done_on_events: Sequence[str] = ()) -> EnvConfig:
+def mario_student_config(*, termination_events: Sequence[str] = ()) -> EnvConfig:
+    failure = [name for name in termination_events if name != "level_change"]
+    success = [name for name in termination_events if name == "level_change"]
     return resolve_env_config(
         EnvConfig(
             env_provider="supermariobrosnes-turbo",
@@ -39,24 +46,45 @@ def mario_student_config(*, done_on_events: Sequence[str] = ()) -> EnvConfig:
             state="Level1-1",
             states=DEFAULT_STATES,
             state_probs=(0.5, 0.5),
-            task_conditioning=True,
-            task_conditioning_info_vars=("levelHi", "levelLo"),
-            task_conditioning_info_values=DEFAULT_INFO_VALUES,
+            task={
+                "id": "mario",
+                "action": {"set": "simple"},
+                "signals": {
+                    "x": ["xscrollHi", "xscrollLo"],
+                    "score": "score",
+                    "lives": "lives",
+                    "level": ["levelHi", "levelLo"],
+                },
+                "events": {
+                    "life_loss": {"signal": "lives", "operation": "decrease"},
+                    "level_change": {"signal": "level", "operation": "change"},
+                },
+                "termination": {
+                    "failure": failure,
+                    "success": success,
+                    "max_episode_steps": 0,
+                },
+                "reward": {
+                    "reward_mode": "score",
+                    "progress_reward_scale": 1.0,
+                    "terminal_reward": 50.0,
+                    "death_penalty": 25.0,
+                    "completion_reward": 0.0,
+                    "reward_scale": 10.0,
+                    "score_progress_clipped": False,
+                },
+                "conditioning": {
+                    "enabled": True,
+                    "signal": "level",
+                    "values": [list(value) for value in DEFAULT_INFO_VALUES],
+                },
+            },
             frame_skip=4,
             max_pool_frames=False,
             sticky_action_prob=0.0,
-            max_episode_steps=0,
             observation_size=84,
             obs_crop=(32, 0, 0, 0),
             obs_resize_algorithm="area",
-            reward_mode="score",
-            progress_reward_scale=1.0,
-            terminal_reward=50.0,
-            death_penalty=25.0,
-            completion_reward=0.0,
-            reward_scale=10.0,
-            score_progress_clipped=False,
-            done_on_events=tuple(done_on_events),
         )
     )
 
@@ -79,28 +107,31 @@ def resolve_model_ref(ref: str, *, hf_model_root: Path, device: str) -> tuple[PP
     args.hf_model_root = str(hf_model_root)
     source = resolve_single_model_source(args)
     model = PPO.load(source.model_path, device=resolve_sb3_device(device))
-    fallback = EnvConfig(game="SuperMarioBros-Nes-v0")
-    config = env_config_from_model_metadata(source.model_path, fallback=fallback) or fallback
+    config = env_config_from_model_metadata(source.model_path)
+    if config is None:
+        raise ValueError(
+            f"{source.model_path} is missing canonical environment metadata"
+        )
     return model, source.model_path, resolve_env_config(config)
 
 
 def single_state_student_config(config: EnvConfig, state: str) -> EnvConfig:
-    return replace(
-        config,
-        state=state,
-        states=(),
-        state_probs=(),
-        done_on_events=(),
+    return with_task_termination(
+        replace(
+            config,
+            state=state,
+            states=(),
+            state_probs=(),
+        ),
+        failure=[],
+        success=[],
         max_episode_steps=0,
     )
 
 
 def teacher_env_config(config: EnvConfig, state: str) -> EnvConfig:
-    return replace(
-        config,
-        state=state,
-        states=(),
-        state_probs=(),
+    return with_task_termination(
+        replace(config, state=state, states=(), state_probs=()),
         max_episode_steps=0,
     )
 
@@ -115,6 +146,11 @@ def append_sample(
     images.append(np.asarray(obs["image"][0], dtype=np.uint8).copy())
     tasks.append(np.asarray(obs["task"][0], dtype=np.float32).copy())
     actions.append(int(action))
+
+
+def runtime_lane_info(env: Any, provider_info: Any, lane: int = 0) -> tuple[dict[str, Any], list[Any]]:
+    records = drain_runtime_records(env)
+    return {**dict(provider_info), **batch_metrics_for_lane(records, lane)}, episode_records(records)
 
 
 def collect_teacher_samples(
@@ -149,12 +185,23 @@ def collect_teacher_samples(
             teacher_obs, _, teacher_dones, teacher_infos = teacher_env.step(np.asarray([action_value]))
             student_obs, _, student_dones, student_infos = student_env.step(np.asarray([action_value]))
             steps_this_episode += 1
-            teacher_info = dict(teacher_infos[0])
-            student_info = dict(student_infos[0])
-            completed = is_level_complete(student_info) or is_level_complete(teacher_info)
+            teacher_info, teacher_episode_records = runtime_lane_info(
+                teacher_env, teacher_infos[0]
+            )
+            student_info, student_episode_records = runtime_lane_info(
+                student_env, student_infos[0]
+            )
+            completed = bool(
+                student_info.get("completion_event") or teacher_info.get("completion_event")
+            )
             died = bool(student_info.get("died") or teacher_info.get("died"))
             timed_out = steps_this_episode >= max_steps_per_episode
-            terminated = bool(student_dones[0]) or bool(teacher_dones[0])
+            terminated = bool(
+                student_dones[0]
+                or teacher_dones[0]
+                or student_episode_records
+                or teacher_episode_records
+            )
             if completed or died or timed_out or terminated:
                 episodes += 1
                 completions += int(completed)
@@ -469,16 +516,20 @@ def run_sequence_episode(
                 )
             action, _ = model.predict(model_obs, deterministic=deterministic)
             obs, rewards, dones, infos = env.step(action)
-            info = dict(infos[0])
+            info, runtime_episodes = runtime_lane_info(env, infos[0])
             final_info = info
             reward_total += float(rewards[0])
             max_x = max(max_x, int(info.get("max_x_pos", 0)))
-            next_info_value = task_info_value_from_info(info, config)
+            next_info_value = (
+                (int(info["level_hi"]), int(info["level_lo"]))
+                if "level_hi" in info and "level_lo" in info
+                else task_info_value_from_info(info, config)
+            )
             if next_info_value is not None:
                 active_info_value = next_info_value
             if bool(info.get("died")):
                 died = True
-            terminated = bool(dones[0])
+            terminated = bool(dones[0]) or bool(runtime_episodes)
             completed_count = int(info.get("completed_level_count") or max_completed_level_count)
             max_completed_level_count = max(max_completed_level_count, completed_count)
             while len(clears) < max_completed_level_count:
@@ -560,16 +611,20 @@ def collect_success_sequence_samples(
                 action_value = single_env_action(action)
                 append_model_sample(episode_samples, model_obs, action_value)
                 obs, rewards, dones, infos = env.step(np.asarray([action_value]))
-                info = dict(infos[0])
+                info, runtime_episodes = runtime_lane_info(env, infos[0])
                 final_info = info
                 reward_total += float(rewards[0])
                 max_x = max(max_x, int(info.get("max_x_pos", 0)))
-                next_info_value = task_info_value_from_info(info, config)
+                next_info_value = (
+                    (int(info["level_hi"]), int(info["level_lo"]))
+                    if "level_hi" in info and "level_lo" in info
+                    else task_info_value_from_info(info, config)
+                )
                 if next_info_value is not None:
                     active_info_value = next_info_value
                 if bool(info.get("died")):
                     died = True
-                terminated = bool(dones[0])
+                terminated = bool(dones[0]) or bool(runtime_episodes)
                 completed_count = int(info.get("completed_level_count") or max_completed_level_count)
                 max_completed_level_count = max(max_completed_level_count, completed_count)
                 if max_completed_level_count >= 2 or died or terminated:

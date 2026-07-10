@@ -556,11 +556,7 @@ def _logged_run_global_step(artifact: Any) -> int | None:
     if run is None:
         return None
     summary = getattr(run, "summary", {}) or {}
-    for key in ("global_step", "time/total_timesteps", "total_timesteps"):
-        step = _optional_int(_mapping_value(summary, key))
-        if step is not None:
-            return step
-    return None
+    return _optional_int(_mapping_value(summary, "global_step"))
 
 
 def model_artifact_checkpoint_step(artifact: Any, model_path: Path | None = None) -> int | None:

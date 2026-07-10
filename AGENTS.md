@@ -1,5 +1,12 @@
 # Project Rules
 
+## Specifications
+
+- Before starting any task, read the repository-root `SPECS.md` in full and treat it as the durable acceptance contract for the work.
+- Do not knowingly make or recommend a change that violates an applicable requirement in `SPECS.md`.
+- If an existing spec violation is found, the requested work would infringe a requirement, `SPECS.md` is missing when one should exist, or a requirement is missing or unclear, report the issue and propose a scoped rectification or clarification task.
+- Ask for explicit user permission before editing `SPECS.md` or starting any rectification or clarification task that is not already explicitly requested. Continue the original task only when it can be completed without violating the current spec; otherwise stop and request direction.
+
 ## GPU Instances
 
 Before choosing hardware, launching training, changing concurrency, or recommending beast targets, read `INSTANCES.md`. It is the source of truth for known GPU instances, access commands, child counts, cleanup, and gotchas. Update it when benchmark or access facts change.
@@ -9,8 +16,8 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
-- Current minimum forward runtime is `stable-retro-turbo>=1.0.1.post10`.
-- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.2.19`.
+- Current minimum forward runtime is `stable-retro-turbo>=1.0.1.post13`.
+- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.2.20`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime version source of truth: `pyproject.toml` minimums and the resolved versions in `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.

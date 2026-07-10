@@ -8,7 +8,7 @@ from pathlib import Path
 
 import rlab.metric_names as metric_names
 from rlab.train import (
-    Sb3HumanOutputFormatCallback,
+    Sb3HumanOutputFormatHelper,
     disable_sb3_human_output_truncation,
 )
 
@@ -64,7 +64,7 @@ class Sb3LoggerTests(unittest.TestCase):
         class FakeModel:
             _logger = FakeLogger()
 
-        callback = Sb3HumanOutputFormatCallback(max_length=256)
+        callback = Sb3HumanOutputFormatHelper(max_length=256)
         callback.model = FakeModel()
         callback._on_training_start()
 
@@ -99,10 +99,6 @@ class MetricsDocumentationTests(unittest.TestCase):
             "train/reward/<component>/<stat>",
             "train/reward_share/<component>",
             "eval/done/<reason>/from/<start>",
-            "eval/info/level_complete/rate/min",
-            "eval/info/level_complete/rate/mean",
-            "eval/info/level_complete/rate/min/last",
-            "eval/info/level_complete/rate/mean/last",
         ]
         missing_templates = [template for template in required_templates if template not in content]
         self.assertEqual(missing_templates, [])

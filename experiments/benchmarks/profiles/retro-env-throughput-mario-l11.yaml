@@ -1,11 +1,15 @@
 schema_version: 1
 name: retro-env-throughput-mario-l11
 kind: env_throughput
-description: Saved-state Stable Retro throughput probe for Mario Level1-1.
+description: Paired native-provider and BatchRuntime throughput probe for Mario Level1-1.
+env_provider: stable-retro-turbo
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 game: SuperMarioBros-Nes-v0
 state: Level1-1
 modes:
-- fast
+- compare
 envs:
 - 1
 - 16
@@ -13,8 +17,9 @@ envs:
 steps: 20000
 warmup: 1000
 seed: 123
+repeats: 3
 gates:
   no_state_none: true
-  min_relative_to_baseline: 0.85
+  max_runtime_overhead: 0.05
 artifacts:
 - json_result

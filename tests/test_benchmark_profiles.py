@@ -21,7 +21,7 @@ class BenchmarkProfileTests(unittest.TestCase):
     def test_checked_in_benchmark_profiles_validate(self) -> None:
         profiles = load_benchmark_profiles()
 
-        self.assertGreaterEqual(len(profiles), 7)
+        self.assertGreaterEqual(len(profiles), 6)
         self.assertEqual(
             sorted(profile.name for profile in profiles),
             [
@@ -31,8 +31,6 @@ class BenchmarkProfileTests(unittest.TestCase):
                 "fleet-capacity-rtx4090",
                 "local-smoke-mario-l11",
                 "ppo-loop-throughput-mario-l11",
-                "ppo-loop-throughput-mario-l11-fused-vec",
-                "ppo-loop-throughput-mario-l11-legacy-vec",
                 "retro-env-throughput-mario-l11",
             ],
         )
@@ -98,9 +96,13 @@ gates: {}
         profile = find_benchmark_profile("retro-env-throughput-mario-l11")
         commands = build_benchmark_commands(profile)
 
-        self.assertEqual([command.label for command in commands], ["fast-1env", "fast-16env", "fast-32env"])
+        self.assertEqual(
+            [command.label for command in commands],
+            ["compare-1env", "compare-16env", "compare-32env"],
+        )
         for command in commands:
             self.assertIn("experiments/scripts/benchmarks/benchmark_env_sps.py", command.argv)
+            self.assertIn("stable-retro-turbo", command.argv)
             self.assertIn("Level1-1", command.argv)
             self.assertEqual(command.env, {"STABLE_RETRO_DISABLE_AUDIO": "1"})
 
@@ -121,7 +123,7 @@ gates: {}
         self.assertIn("--once", commands[2].argv)
         self.assertIn("--no-tui", commands[2].argv)
 
-    def test_fleet_capacity_rejects_legacy_spec_file(self) -> None:
+    def test_fleet_capacity_rejects_unknown_spec_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.yaml"
             path.write_text(

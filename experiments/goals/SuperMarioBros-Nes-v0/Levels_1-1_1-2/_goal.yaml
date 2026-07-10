@@ -32,14 +32,14 @@ train:
     episodes: 10
     n_envs: 2
     pass:
-    - metric: eval/info/level_complete/rate/min
+    - metric: eval/done/level_change/from_rate/min
       operator: '>='
       threshold: 1.0
   - name: confirm
     episodes: 30
     n_envs: 4
     pass:
-    - metric: eval/info/level_complete/rate/min
+    - metric: eval/done/level_change/from_rate/min
       operator: '>='
       threshold: 1.0
     candidate_stop: true
@@ -55,13 +55,6 @@ train:
         state_probs:
         - 0.5
         - 0.5
-        task_conditioning: true
-        task_conditioning_info_vars:
-        - levelHi
-        - levelLo
-        task_conditioning_info_values:
-        - [0, 0]
-        - [0, 1]
         frame_skip: 4
         max_pool_frames: false
         sticky_action_prob: 0.0
@@ -72,28 +65,52 @@ train:
         - 0
         - 0
         obs_resize_algorithm: area
-        env_wrappers:
-        - id: SuperMarioBrosNesProgressInfoWrapper
-        - id: SuperMarioBrosNesRewardEnvWrapper
-          kwargs:
-            reward_mode: score
-            progress_reward_scale: 1.0
-            terminal_reward: 50
-            death_penalty: 25
-            completion_reward: 0.0
-            reward_scale: 10
-            score_progress_clipped: false
-      done_on_events:
-      - life_loss
-      - level_change
+    task: &mario_task
+      id: mario
+      action:
+        set: simple
+      signals:
+        x: [xscrollHi, xscrollLo]
+        score: score
+        lives: lives
+        level: [levelHi, levelLo]
+      events:
+        life_loss: {signal: lives, operation: decrease}
+        level_change: {signal: level, operation: change}
+      termination:
+        failure: [life_loss]
+        success: [level_change]
+        max_episode_steps: 4500
+      reward:
+        reward_mode: score
+        use_retro_reward: false
+        clip_rewards: false
+        progress_reward_cap: 30.0
+        progress_reward_scale: 1.0
+        terminal_reward: 50.0
+        reward_scale: 10.0
+        time_penalty: 0.0
+        death_penalty: 25.0
+        completion_reward: 0.0
+        score_progress_clipped: false
+      conditioning:
+        enabled: true
+        signal: level
+        values:
+        - [0, 0]
+        - [0, 1]
 eval:
   episodes: 100
   environment:
     env_provider: *mario_env_provider
     env_config:
       <<: *mario_env_config
-      done_on_events:
-      - level_change
+    task:
+      <<: *mario_task
+      termination:
+        failure: []
+        success: [level_change]
+        max_episode_steps: 4500
 release:
   huggingface:
     repo: "{env_id}_{goal_id}"

@@ -117,6 +117,8 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         int_list(payload.get("envs", [1]), label=f"{label}.envs")
         require_int(payload, "steps", label=label, require_present=False)
         require_int(payload, "warmup", label=label, require_present=False)
+        if "repeats" in payload:
+            require_int(payload, "repeats", label=label, minimum=1)
 
     if kind in {"ppo_loop_throughput", "artifact_storage_smoke"}:
         config = require_mapping(payload.get("train_config"), label=f"{label}.train_config")
@@ -237,6 +239,7 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
 
 def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     script = str(profile.get("script") or "experiments/scripts/benchmarks/benchmark_env_sps.py")
+    gates = require_mapping(profile.get("gates", {}), label="gates")
     commands: list[BenchmarkCommand] = []
     for mode in string_list(profile.get("modes", ["fast"]), label="modes"):
         for envs in int_list(profile.get("envs", [1]), label="envs"):
@@ -246,6 +249,8 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                     [
                         sys.executable,
                         script,
+                        "--env-provider",
+                        str(profile.get("env_provider", "stable-retro-turbo")),
                         "--game",
                         str(profile["game"]),
                         "--state",
@@ -260,6 +265,10 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                         str(profile["warmup"]),
                         "--seed",
                         str(profile.get("seed", 123)),
+                        "--repeats",
+                        str(profile.get("repeats", 3)),
+                        "--max-overhead",
+                        str(gates.get("max_runtime_overhead", 0.05)),
                     ],
                     env={"STABLE_RETRO_DISABLE_AUDIO": "1"},
                 )

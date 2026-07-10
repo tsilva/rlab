@@ -2,6 +2,9 @@ schema_version: 1
 name: artifact-storage-smoke-mario-l11
 kind: artifact_storage_smoke
 description: Tiny checkpoint-producing W&B/R2 reference-artifact smoke on Mario Level1-1.
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 train_config:
   game: SuperMarioBros-Nes-v0
   state: Level1-1
@@ -10,7 +13,23 @@ train_config:
   batch_size: 128
   n_epochs: 1
   timesteps: 512
-  max_episode_steps: 600
+  task:
+    id: mario
+    action: {set: simple}
+    signals:
+      x: [xscrollHi, xscrollLo]
+      score: score
+      lives: lives
+      level: [levelHi, levelLo]
+    events:
+      life_loss: {signal: lives, operation: decrease}
+      level_change: {signal: level, operation: change}
+    termination:
+      failure: [life_loss]
+      success: [level_change]
+      max_episode_steps: 600
+    reward:
+      reward_mode: baseline
   checkpoint_freq: 256
   wandb: true
   wandb_mode: online

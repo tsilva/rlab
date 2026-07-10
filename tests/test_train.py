@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from rlab.train import GracefulStopCallback, GracefulStopFlag, checkpoint_save_frequency
+from stable_baselines3.common.callbacks import BaseCallback
+
+from rlab.callbacks import CallbackHelper, RlabCallback
+from rlab.schedules import EntropyCoefficientScheduleHelper
+from rlab.train import GracefulStopHelper, GracefulStopFlag, checkpoint_save_frequency
 from rlab.seeds import (
     DEFAULT_EVAL_SEED,
     eval_seed_for_training_seed,
@@ -13,6 +17,37 @@ from rlab.seeds import (
 
 
 class TrainTests(unittest.TestCase):
+    def test_only_rlab_callback_implements_the_sb3_callback_protocol(self) -> None:
+        self.assertTrue(issubclass(RlabCallback, BaseCallback))
+        self.assertTrue(issubclass(GracefulStopHelper, CallbackHelper))
+        self.assertFalse(issubclass(GracefulStopHelper, BaseCallback))
+
+    def test_rlab_callback_drives_entropy_schedule_component(self) -> None:
+        class Logger:
+            def __init__(self) -> None:
+                self.records: dict[str, float] = {}
+
+            def record(self, key: str, value: float) -> None:
+                self.records[key] = value
+
+        class Model:
+            def __init__(self) -> None:
+                self.ent_coef = 0.0
+                self.logger = Logger()
+
+        model = Model()
+        callback = RlabCallback(
+            [EntropyCoefficientScheduleHelper(0.1, 0.0, schedule_timesteps=100)]
+        )
+        callback.model = model  # type: ignore[assignment]
+        callback._on_training_start()
+        self.assertEqual(model.ent_coef, 0.1)
+
+        callback.num_timesteps = 50
+        self.assertTrue(callback._on_step())
+        self.assertAlmostEqual(model.ent_coef, 0.05)
+        self.assertAlmostEqual(model.logger.records["train/ent_coef"], 0.05)
+
     def test_checkpoint_save_frequency_disables_zero_or_negative(self) -> None:
         self.assertIsNone(checkpoint_save_frequency(0, 2))
         self.assertIsNone(checkpoint_save_frequency(-1, 2))
@@ -42,7 +77,7 @@ class TrainTests(unittest.TestCase):
 
     def test_graceful_stop_callback_stops_after_flag_request(self) -> None:
         stop_flag = GracefulStopFlag()
-        callback = GracefulStopCallback(stop_flag)
+        callback = GracefulStopHelper(stop_flag)
         callback.num_timesteps = 123
 
         self.assertTrue(callback._on_step())

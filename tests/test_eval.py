@@ -7,9 +7,11 @@ from unittest.mock import patch
 
 import numpy as np
 
+from rlab.batch_runtime import EpisodeRecord
 from rlab.env import EnvConfig
 from rlab.eval_metrics import (
     episode_rank,
+    episode_result_from_record,
     is_level_complete,
     run_eval_episode,
     summarize_episode_results,
@@ -17,11 +19,11 @@ from rlab.eval_metrics import (
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import EVAL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
+from rlab.task_kernels import Outcome
 from rlab.checkpoint_eval_worker import (
     eval_config_from_training_config,
     eval_score as eval_checkpoint_score,
     log_checkpoint_eval_metrics,
-    update_best_checkpoint_summary,
 )
 
 
@@ -103,6 +105,42 @@ def log_checkpoint_eval(
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_episode_record_clean_completion_precedence(self) -> None:
+        success = EpisodeRecord(
+            lane=0,
+            episode_index=2,
+            start_id="Level1-1",
+            episode_return=12.5,
+            episode_length=40,
+            terminated=True,
+            truncated=False,
+            outcome=Outcome.SUCCESS,
+            events=("level_change",),
+            metrics={"max_x_pos": 3200, "completion_event": True, "died": False},
+        )
+        simultaneous_failure = EpisodeRecord(
+            lane=1,
+            episode_index=3,
+            start_id="Level1-2",
+            episode_return=-2.0,
+            episode_length=12,
+            terminated=True,
+            truncated=False,
+            outcome=Outcome.FAILURE,
+            events=("life_loss", "level_change"),
+            metrics={"max_x_pos": 900, "completion_event": False, "died": True},
+        )
+
+        success_result = episode_result_from_record(success)
+        failure_result = episode_result_from_record(simultaneous_failure)
+
+        self.assertTrue(success_result["level_complete"])
+        self.assertEqual(success_result["outcome"], "success")
+        self.assertEqual(success_result["start_state"], "Level1-1")
+        self.assertFalse(failure_result["level_complete"])
+        self.assertTrue(failure_result["died"])
+        self.assertGreater(episode_rank(success_result), episode_rank(failure_result))
+
     def test_checkpoint_score_prefers_min_completion_rate_when_available(self) -> None:
         metrics = {
             "completion_rate": 0.95,
@@ -225,66 +263,33 @@ class EvalMetricTests(unittest.TestCase):
 
         self.assertEqual(run.summary["leader/checkpoint/steps_to_completion_goal"], 3500000)
 
-    def test_checkpoint_summary_uses_legacy_step_as_previous_steps_to_goal(self) -> None:
-        class FakeRun:
-            def __init__(self) -> None:
-                self.summary: dict[str, object] = {
-                    "leader/checkpoint/completion_rate": 1.0,
-                    "leader/checkpoint/completion_rate_mean": 1.0,
-                    "leader/checkpoint/reward_mean": 10.0,
-                    "leader/checkpoint/step": 3500000,
-                    "leader/checkpoint/artifact_ref": "entity/project/run-checkpoint:step-3500000",
-                }
-
-        run = FakeRun()
-        metrics = {
-            "checkpoint_step": 5000000,
-            "reward_mean": 999.0,
-            "max_x_max": 400.0,
-            "eval/done/level_change/from_rate/min": 1.0,
-            "eval/done/level_change/from_rate/mean": 1.0,
-        }
-
-        update_best_checkpoint_summary(
-            run,
-            metrics=metrics,
-            checkpoint_path=Path("/tmp/model_5000000_steps.zip"),
-            checkpoint_step_value=5000000,
-            artifact_ref="entity/project/run-checkpoint:step-5000000",
-        )
-
-        self.assertEqual(run.summary["leader/checkpoint/step"], 3500000)
-        self.assertEqual(
-            run.summary["leader/checkpoint/artifact_ref"],
-            "entity/project/run-checkpoint:step-3500000",
-        )
-
     def test_checkpoint_eval_config_keeps_level_change_done_event(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
-            info_events={
-                "life_loss": ("lives", "decrease"),
-                "level_change": (("levelHi", "levelLo"), "change"),
+            task={
+                "termination": {
+                    "failure": ["life_loss"],
+                    "success": ["level_change"],
+                },
             },
-            done_on_events=("life_loss", "level_change"),
         )
 
         eval_config = eval_config_from_training_config(config)
 
-        self.assertEqual(eval_config.info_events, config.info_events)
-        self.assertEqual(eval_config.done_on_events, ("level_change",))
-        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
+        self.assertEqual(eval_config.task["termination"]["failure"], [])
+        self.assertEqual(eval_config.task["termination"]["success"], ["level_change"])
+        self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
 
     def test_checkpoint_eval_config_drops_life_loss_done_event(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
-            info_events={"life_loss": ("lives", "decrease")},
-            done_on_events=("life_loss",),
+            task={"termination": {"failure": ["life_loss"], "success": []}},
         )
 
         eval_config = eval_config_from_training_config(config)
 
-        self.assertEqual(eval_config.done_on_events, ())
+        self.assertEqual(eval_config.task["termination"]["failure"], [])
+        self.assertEqual(eval_config.task["termination"]["success"], [])
 
     def test_metric_path_segment_preserves_retro_state_names(self) -> None:
         self.assertEqual(metric_path_segment("Level1-2"), "Level1-2")
@@ -314,18 +319,6 @@ class EvalMetricTests(unittest.TestCase):
             )
         )
 
-    def test_level_complete_fallback_rejects_death_level_change(self) -> None:
-        self.assertFalse(
-            is_level_complete(
-                {"level_changed": True, "died": True},
-            )
-        )
-        self.assertTrue(
-            is_level_complete(
-                {"level_changed": True, "died": False},
-            )
-        )
-
     def test_run_eval_episode_does_not_stop_on_completion(self) -> None:
         class FakeModel:
             def predict(self, obs, deterministic):
@@ -334,12 +327,14 @@ class EvalMetricTests(unittest.TestCase):
         class FakeEnv:
             def __init__(self) -> None:
                 self.step_count = 0
+                self.records = []
 
             def seed(self, seed: int) -> None:
                 self.seed_value = seed
 
             def reset(self):
                 self.step_count = 0
+                self.records = []
                 return np.zeros((1, 4, 84, 84), dtype=np.uint8)
 
             def step(self, action):
@@ -363,10 +358,28 @@ class EvalMetricTests(unittest.TestCase):
                             }
                         ],
                     )
+                self.records = [
+                    EpisodeRecord(
+                        lane=0,
+                        episode_index=0,
+                        start_id="Level1-1",
+                        episode_return=3.0,
+                        episode_length=2,
+                        terminated=False,
+                        truncated=True,
+                        outcome=Outcome.TIMEOUT,
+                        events=("level_change",),
+                        metrics={
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                            "completion_event": True,
+                        },
+                    )
+                ]
                 return (
                     obs,
                     np.array([2.0], dtype=np.float32),
-                    np.array([False]),
+                    np.array([True]),
                     [
                         {
                             "state": "Level1-2",
@@ -378,6 +391,10 @@ class EvalMetricTests(unittest.TestCase):
                         }
                     ],
                 )
+
+            def drain_records(self):
+                records, self.records = self.records, []
+                return records
 
         result = run_eval_episode(
             FakeEnv(),
@@ -406,14 +423,34 @@ class EvalMetricTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.step_count = 0
+                self.records = []
 
             def reset(self):
+                self.records = []
                 return np.zeros((2, 4, 84, 84), dtype=np.uint8)
 
             def step(self, action):
                 self.step_count += 1
                 obs = np.zeros((2, 4, 84, 84), dtype=np.uint8)
                 if self.step_count == 1:
+                    self.records = [
+                        EpisodeRecord(
+                            lane=1,
+                            episode_index=0,
+                            start_id="Level1-2",
+                            episode_return=2.0,
+                            episode_length=1,
+                            terminated=False,
+                            truncated=True,
+                            outcome=Outcome.TIMEOUT,
+                            events=(),
+                            metrics={
+                                "max_x_pos": 20,
+                                "level_max_x_pos": 20,
+                                "died": True,
+                            },
+                        )
+                    ]
                     return (
                         obs,
                         np.array([1.0, 2.0], dtype=np.float32),
@@ -432,6 +469,24 @@ class EvalMetricTests(unittest.TestCase):
                             },
                         ],
                     )
+                self.records = [
+                    EpisodeRecord(
+                        lane=0,
+                        episode_index=0,
+                        start_id="Level1-1",
+                        episode_return=4.0,
+                        episode_length=2,
+                        terminated=True,
+                        truncated=False,
+                        outcome=Outcome.SUCCESS,
+                        events=("level_change",),
+                        metrics={
+                            "max_x_pos": 30,
+                            "level_max_x_pos": 30,
+                            "completion_event": True,
+                        },
+                    )
+                ]
                 return (
                     obs,
                     np.array([3.0, 4.0], dtype=np.float32),
@@ -448,6 +503,10 @@ class EvalMetricTests(unittest.TestCase):
                         {"max_x_pos": 40, "level_max_x_pos": 40},
                     ],
                 )
+
+            def drain_records(self):
+                records, self.records = self.records, []
+                return records
 
             def close(self) -> None:
                 pass
@@ -497,16 +556,87 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["eval/done/max_steps/from/Level1-2/rate"], 1.0)
         self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
         self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
-        self.assertEqual(metrics["eval/info/level_complete/rate/min"], 0.0)
-        self.assertEqual(metrics["eval/info/level_complete/rate/mean"], 0.5)
-        self.assertEqual(metrics["eval/info/level_complete/rate/min/last"], 0.0)
-        self.assertEqual(metrics["eval/info/level_complete/rate/mean/last"], 0.5)
+        self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
+        self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
         self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-2")
         self.assertEqual(metrics["episode_results"][0]["reward"], 2.0)
         self.assertEqual(metrics["episode_results"][1]["env_index"], 0)
         self.assertEqual(metrics["episode_results"][1]["start_state"], "Level1-1")
         self.assertEqual(metrics["episode_results"][1]["reward"], 4.0)
+
+    def test_vector_eval_uses_canonical_episode_records(self) -> None:
+        class FakeModel:
+            def predict(self, obs, deterministic):
+                return np.zeros(obs.shape[0], dtype=np.int64), None
+
+        class FakeRecordVecEnv:
+            num_envs = 2
+
+            def __init__(self) -> None:
+                self.records = []
+
+            def reset(self):
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.records = [
+                    EpisodeRecord(
+                        lane=0,
+                        episode_index=0,
+                        start_id="Level1-1",
+                        episode_return=4.0,
+                        episode_length=2,
+                        terminated=True,
+                        truncated=False,
+                        outcome=Outcome.SUCCESS,
+                        events=("level_change",),
+                        metrics={"max_x_pos": 300, "completion_event": True},
+                    ),
+                    EpisodeRecord(
+                        lane=1,
+                        episode_index=0,
+                        start_id="Level1-2",
+                        episode_return=-1.0,
+                        episode_length=2,
+                        terminated=True,
+                        truncated=False,
+                        outcome=Outcome.FAILURE,
+                        events=("life_loss", "level_change"),
+                        metrics={"max_x_pos": 100, "completion_event": False, "died": True},
+                    ),
+                ]
+                return (
+                    np.zeros((2, 4, 84, 84), dtype=np.uint8),
+                    np.zeros(2, dtype=np.float32),
+                    np.ones(2, dtype=bool),
+                    [{"score": 10, "lives": 3}, {"score": 5, "lives": 2}],
+                )
+
+            def drain_records(self):
+                records, self.records = self.records, []
+                return records
+
+            def close(self) -> None:
+                pass
+
+        with patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeRecordVecEnv()):
+            metrics, video_path = evaluate_model_episodes(
+                model=FakeModel(),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0"),
+                episodes=2,
+                seed=7,
+                max_steps=10,
+                deterministic=True,
+                n_envs=2,
+            )
+
+        self.assertIsNone(video_path)
+        self.assertEqual(metrics["completion_count"], 1)
+        self.assertEqual(metrics["death_count"], 1)
+        self.assertEqual(metrics["best_episode"]["outcome"], "success")
+        self.assertTrue(metrics["episode_results"][0]["level_complete"])
+        self.assertFalse(metrics["episode_results"][1]["level_complete"])
 
     def test_vector_eval_does_not_stop_on_completion(self) -> None:
         class FakeModel:
@@ -518,9 +648,11 @@ class EvalMetricTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.step_count = 0
+                self.records = []
 
             def reset(self):
                 self.step_count = 0
+                self.records = []
                 return np.zeros((2, 4, 84, 84), dtype=np.uint8)
 
             def step(self, action):
@@ -548,10 +680,28 @@ class EvalMetricTests(unittest.TestCase):
                             },
                         ],
                     )
+                self.records = [
+                    EpisodeRecord(
+                        lane=0,
+                        episode_index=0,
+                        start_id="Level1-1",
+                        episode_return=3.0,
+                        episode_length=2,
+                        terminated=False,
+                        truncated=True,
+                        outcome=Outcome.TIMEOUT,
+                        events=("level_change",),
+                        metrics={
+                            "max_x_pos": 250,
+                            "level_max_x_pos": 150,
+                            "completion_event": True,
+                        },
+                    )
+                ]
                 return (
                     obs,
                     np.array([2.0, 20.0], dtype=np.float32),
-                    np.array([False, False]),
+                    np.array([True, False]),
                     [
                         {
                             "state": "Level1-2",
@@ -565,6 +715,10 @@ class EvalMetricTests(unittest.TestCase):
                         },
                     ],
                 )
+
+            def drain_records(self):
+                records, self.records = self.records, []
+                return records
 
             def close(self) -> None:
                 pass
@@ -666,3 +820,85 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(progress_bars[0].kwargs["desc"], "eval checkpoint 4100000")
         self.assertEqual(progress_bars[0].kwargs["disable"], False)
         self.assertEqual(progress_bars[0].updates, [1, 1, 1])
+
+    def test_best_episode_video_replays_through_eval_vec_env(self) -> None:
+        class FakePolicyEnv:
+            def close(self) -> None:
+                pass
+
+        class FakeVideoEnv:
+            def __init__(self) -> None:
+                self.actions = []
+                self.frame = 0
+
+            def seed(self, seed: int) -> None:
+                self.seed_value = seed
+
+            def reset(self):
+                self.frame = 0
+                return np.zeros((1, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, action):
+                self.actions.append(np.asarray(action).copy())
+                self.frame += 1
+                return (
+                    np.zeros((1, 4, 84, 84), dtype=np.uint8),
+                    np.zeros(1, dtype=np.float32),
+                    np.zeros(1, dtype=bool),
+                    [{}],
+                )
+
+            def get_images(self):
+                return [np.full((4, 4, 3), self.frame, dtype=np.uint8)]
+
+            def close(self) -> None:
+                pass
+
+        result = {
+            "actions": [1, 2],
+            "start_state": "Level1-1",
+            "reward": 3.0,
+            "max_x_pos": 20,
+            "max_level_x_pos": 20,
+            "score": 0,
+            "lives": 3,
+            "time": 399,
+            "steps": 2,
+            "terminated": True,
+            "truncated": False,
+            "level_complete": True,
+            "died": False,
+            "death_x_pos": None,
+            "final_info": {},
+        }
+        video_env = FakeVideoEnv()
+        output = Path("/tmp/rlab-eval-video.mp4")
+        with (
+            patch(
+                "rlab.eval_runner.make_eval_vec_env",
+                side_effect=[FakePolicyEnv(), video_env],
+            ) as make_env,
+            patch("rlab.eval_runner.run_eval_episode", return_value=result),
+            patch("rlab.eval_runner.write_video") as write_video,
+        ):
+            metrics, video_path = evaluate_model_episodes(
+                model=object(),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0"),
+                episodes=1,
+                seed=10_007,
+                max_steps=10,
+                deterministic=True,
+                capture_best_video=True,
+                video_path=output,
+            )
+
+        self.assertEqual(video_path, output)
+        self.assertEqual(metrics["best_episode_video"], str(output))
+        self.assertEqual(make_env.call_count, 2)
+        self.assertEqual(
+            make_env.call_args_list[1].kwargs["config"].task["termination"]["success"],
+            [],
+        )
+        self.assertEqual(len(video_env.actions), 2)
+        written_frames = write_video.call_args.args[0]
+        self.assertEqual(len(written_frames), 3)

@@ -10,7 +10,7 @@ class EnvProvider:
     env_ids: tuple[str, ...]
     supports_states: bool = True
     uses_stable_retro_roms: bool = False
-    owned_info_events: frozenset[str] = frozenset()
+    allows_unregistered_env_ids: bool = False
 
 
 @dataclass(frozen=True)
@@ -26,14 +26,12 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     import_name="stable_retro",
     env_ids=("SuperMarioBros-Nes-v0", "SuperMarioBros3-Nes-v0"),
     uses_stable_retro_roms=True,
-    owned_info_events=frozenset({"life_loss", "level_change"}),
 )
 
 SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     provider_id="supermariobrosnes-turbo",
     import_name="supermariobrosnes_turbo",
     env_ids=("SuperMarioBros-Nes-v0",),
-    owned_info_events=frozenset({"life_loss", "level_change"}),
 )
 
 ALE_PY_PROVIDER = EnvProvider(
@@ -43,10 +41,19 @@ ALE_PY_PROVIDER = EnvProvider(
     supports_states=False,
 )
 
+GYMNASIUM_PROVIDER = EnvProvider(
+    provider_id="gymnasium",
+    import_name="gymnasium",
+    env_ids=(),
+    supports_states=False,
+    allows_unregistered_env_ids=True,
+)
+
 ENV_PROVIDERS: dict[str, EnvProvider] = {
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id: SUPERMARIOBROS_NES_TURBO_PROVIDER,
     ALE_PY_PROVIDER.provider_id: ALE_PY_PROVIDER,
+    GYMNASIUM_PROVIDER.provider_id: GYMNASIUM_PROVIDER,
 }
 
 
@@ -74,7 +81,7 @@ def qualify_env_id(provider_id: str, provider_env_id: str) -> str:
     if not provider_env_id:
         raise ValueError("provider environment id is required")
     provider = resolve_env_provider(provider_id)
-    if provider_env_id not in provider.env_ids:
+    if not provider.allows_unregistered_env_ids and provider_env_id not in provider.env_ids:
         known = ", ".join(provider.env_ids)
         raise ValueError(
             f"provider {provider.provider_id!r} does not register environment {provider_env_id!r}; "
@@ -87,19 +94,17 @@ def resolve_env_id(env_id: str) -> ResolvedEnvId:
     value = str(env_id).strip()
     if ":" not in value:
         raise ValueError(
-            "environment env_id must be fully qualified as <provider>:<env>, "
-            f"got {value!r}"
+            f"environment env_id must be fully qualified as <provider>:<env>, got {value!r}"
         )
     provider_id, provider_env_id = value.split(":", 1)
     provider_id = provider_id.strip()
     provider_env_id = provider_env_id.strip()
     if not provider_id or not provider_env_id:
         raise ValueError(
-            "environment env_id must be fully qualified as <provider>:<env>, "
-            f"got {value!r}"
+            f"environment env_id must be fully qualified as <provider>:<env>, got {value!r}"
         )
     provider = resolve_env_provider(provider_id)
-    if provider_env_id not in provider.env_ids:
+    if not provider.allows_unregistered_env_ids and provider_env_id not in provider.env_ids:
         known = ", ".join(provider.env_ids)
         raise ValueError(
             f"provider {provider_id!r} does not register environment {provider_env_id!r}; "

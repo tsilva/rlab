@@ -17,8 +17,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-10T06:27:24Z"
-stable-retro-turbo = "2026-07-09T17:19:31Z"
+supermariobrosnes-turbo = "2026-07-10T13:13:03Z"
+stable-retro-turbo = "2026-07-10T13:31:07Z"
 
 [manifest]
 constraints = [
@@ -497,6 +497,18 @@ wheels = [
 ]
 
 [[package]]
+name = "llvmlite"
+version = "0.47.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/88/a8952b6d5c21e74cbf158515b779666f692846502623e9e3c39d8e8ba25f/llvmlite-0.47.0.tar.gz", hash = "sha256:62031ce968ec74e95092184d4b0e857e444f8fdff0b8f9213707699570c33ccc", size = 193614, upload-time = "2026-03-31T18:29:53.497Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/d4/33c8af00f0bf6f552d74f3a054f648af2c5bc6bece97972f3bfadce4f5ec/llvmlite-0.47.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:de966c626c35c9dff5ae7bf12db25637738d0df83fc370cf793bc94d43d92d14", size = 37232773, upload-time = "2026-03-31T18:29:19.453Z" },
+    { url = "https://files.pythonhosted.org/packages/64/1d/a760e993e0c0ba6db38d46b9f48f6c7dceb8ac838824997fb9e25f97bc04/llvmlite-0.47.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ddbccff2aeaff8670368340a158abefc032fe9b3ccf7d9c496639263d00151aa", size = 56275176, upload-time = "2026-03-31T18:29:24.149Z" },
+    { url = "https://files.pythonhosted.org/packages/40/a1/581a8c707b5e80efdbbe1dd94527404d33fe50bceb71f39d5a7e11bd57b7/llvmlite-0.47.0-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:92ec8a169a20b473c1c54d4695e371bde36489fc1efa3688e11e99beba0abf9c", size = 37232772, upload-time = "2026-03-31T18:29:37.952Z" },
+    { url = "https://files.pythonhosted.org/packages/11/03/16090dd6f74ba2b8b922276047f15962fbeea0a75d5601607edb301ba945/llvmlite-0.47.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fa1cbd800edd3b20bc141521f7fd45a6185a5b84109aa6855134e81397ffe72b", size = 56275178, upload-time = "2026-03-31T18:29:42.58Z" },
+]
+
+[[package]]
 name = "markdown"
 version = "3.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -581,6 +593,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762", size = 2068504, upload-time = "2025-12-08T17:02:38.159Z" },
+]
+
+[[package]]
+name = "numba"
+version = "0.65.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "llvmlite" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/c5/db2ac3685833d626c0dcae6bd2330cd68433e1fd248d15f70998160d3ad7/numba-0.65.1.tar.gz", hash = "sha256:19357146c32fe9ed25059ab915e8465fb13951cf6b0aace3826b76886373ab23", size = 2765600, upload-time = "2026-04-24T02:02:56.551Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4f/2e/8aed9b726d9ba5f11ad287645fd479e88278db3060a25cb1225d730eb2b7/numba-0.65.1-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:33f5eb68eb1c843511615d14663ce60258525d6a4c65ab040e2c2b0c4cf17450", size = 2681554, upload-time = "2026-04-24T02:02:41.812Z" },
+    { url = "https://files.pythonhosted.org/packages/87/96/f3eb235fafa82a34e2ab5dd7dc9ffff998ebf5f0bbc23fa56a96aeb44da6/numba-0.65.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:71e73029bf53a62cc6afcf96be4bd942290d8b4c55f0a454fb536158115790f7", size = 3779602, upload-time = "2026-04-24T02:02:43.726Z" },
+    { url = "https://files.pythonhosted.org/packages/81/7b/c1a341a9067367778f4152a5f01061cf281fb09582c92c510ec4918cabf6/numba-0.65.1-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:548dd4b3a4508d5062768d1514b2cd7b015f9a25ec7af651c50dee243965e652", size = 2684600, upload-time = "2026-04-24T02:02:49.653Z" },
+    { url = "https://files.pythonhosted.org/packages/03/36/98ddbcf3e4f04a6dd07e1c67249955920579ba4af6bb6868e3088f4ed282/numba-0.65.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:78abc28feff2c2ff8307fff3975b6438352759c9acb797ecd6b1fb6e7e39e31d", size = 3817198, upload-time = "2026-04-24T02:02:51.266Z" },
 ]
 
 [[package]]
@@ -985,6 +1013,7 @@ dependencies = [
     { name = "captum" },
     { name = "huggingface-hub" },
     { name = "hydra-core" },
+    { name = "numba" },
     { name = "psycopg2-binary" },
     { name = "pyyaml" },
     { name = "stable-baselines3", extra = ["extra"] },
@@ -1006,13 +1035,14 @@ requires-dist = [
     { name = "captum", specifier = ">=0.9,<1" },
     { name = "huggingface-hub", specifier = ">=1.0,<2" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
+    { name = "numba", specifier = ">=0.65.1,<0.66" },
     { name = "psycopg2-binary", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=1.0.1.post10" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=1.0.1.post10" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.2.19" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.2.19" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=1.0.1.post13" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=1.0.1.post13" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.2.20" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.2.20" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==2.11.0" },
     { name = "wandb", specifier = ">=0.18,<0.23" },
@@ -1125,7 +1155,7 @@ extra = [
 
 [[package]]
 name = "stable-retro-turbo"
-version = "1.0.1.post12"
+version = "1.0.1.post13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
@@ -1133,21 +1163,21 @@ dependencies = [
     { name = "pyglet", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/59/74/e1f1b233646dc09790fe2f7c6bc3416975f4fb39ebb1564b318e1a867555/stable_retro_turbo-1.0.1.post12-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:c769683e9a2071a1ad792c45876110647cee3833233937470d235ecb0a2b42ea", size = 85861675, upload-time = "2026-07-09T14:03:17.58Z" },
-    { url = "https://files.pythonhosted.org/packages/14/77/63695452023a5bf35ed62dd61e1b11704b35d18abc44e6f1af4cb406db4f/stable_retro_turbo-1.0.1.post12-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bc44e4e9639de327f74db3572d8a526ea79885a6765f5044cce851715e1e833a", size = 91563740, upload-time = "2026-07-09T14:03:22.907Z" },
+    { url = "https://files.pythonhosted.org/packages/89/1e/80e45a7637185f4ae42564373c7607cf6434e2968214a891de41e9a9e3a0/stable_retro_turbo-1.0.1.post13-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:6fb81ee0ec4c38b2d31510fd3f434af9eff461dc9160c625dc2b2a636c949902", size = 85867426, upload-time = "2026-07-10T13:31:01.611Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/e0/e54139000057d513478ca7fe5159cbdc41ba303fb81abad1fc774e707fc9/stable_retro_turbo-1.0.1.post13-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:740a0293afdf1eb1bf9768443912bba060fc7a440380f837d56770d506799b90", size = 91568858, upload-time = "2026-07-10T13:31:06.763Z" },
 ]
 
 [[package]]
 name = "supermariobrosnes-turbo"
-version = "0.2.19"
+version = "0.2.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gymnasium", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "numpy", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/21/f6004d188d3ef4540db894ec11512cb59c2cea67d4e206e330a5c59d25ce/supermariobrosnes_turbo-0.2.19-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:14bdf811f473712828da6ad17dfe9be584af9a9a728919d9608a22f80d636b4a", size = 415526, upload-time = "2026-07-10T06:27:21.448Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/c3/0f7c823ece29ed952f93d4941921f4f4097291e2791debeac4ede3ffb0c8/supermariobrosnes_turbo-0.2.19-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:09f494445f67057af51b5208243f0e1c464e3ff9177231936f7ec11c1a14178d", size = 455637, upload-time = "2026-07-10T06:27:23.124Z" },
+    { url = "https://files.pythonhosted.org/packages/75/c1/a95cad0c7caa152ebc0a576dc96d7a95a752aebd16230183bdbfcbb90ff2/supermariobrosnes_turbo-0.2.20-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:cec7866af13fc7e2205cd5fb6859bb35f3971f60e589aa54f3368bfc48da286c", size = 420381, upload-time = "2026-07-10T13:13:01.584Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/8d/b12083c260bce2d66976938427d29a00c0bcf73d4c1334d6781eb1155a9e/supermariobrosnes_turbo-0.2.20-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:901bf9abd10f67068060badb855e3fd18a5ab9e94497d20a5fc04e9b0b229a31", size = 461514, upload-time = "2026-07-10T13:13:02.878Z" },
 ]
 
 [[package]]

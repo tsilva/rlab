@@ -150,3 +150,15 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
   claims, launches, releases, or finalizes jobs. The container reads a payload,
   writes `result.json`, uploads W&B/artifacts, and exits. Restarted shepherds
   reconcile DB launch rows, Docker labels, and durable output directories.
+## Native Vector Runtime V2 Acceptance (2026-07-10)
+
+The consolidated Mario runtime was compared against the deleted fused implementation from source
+revision `5f732c1d` in a detached worktree, using the same installed Turbo providers, eight envs,
+4096 timesteps, `n_steps=128`, `batch_size=256`, one PPO epoch, and seeds 101-103.
+
+- Consolidated PPO SPS: `828.27`, `844.20`, `834.95`; median `834.95`.
+- Fused PPO SPS: `802.16`, `822.29`, `815.33`; median `815.33`.
+- Consolidated runtime was `2.41%` faster, passing the requirement that it be no more than `3%`
+  slower than the fused path.
+- Provider/runtime stepping overhead separately passed the `5%` gate for both
+  `supermariobrosnes-turbo==0.2.20` and `stable-retro-turbo==1.0.1.post13`.

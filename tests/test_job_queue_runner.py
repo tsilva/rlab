@@ -230,16 +230,6 @@ class JobQueueTests(unittest.TestCase):
                 train_config=explicit_train_config(),
             )
 
-    def test_enqueue_train_job_rejects_legacy_event_launch_config(self) -> None:
-        with self.assertRaisesRegex(ValueError, "legacy event key.*done_on_info_json"):
-            job_queue.enqueue_train_job(
-                FakeConnection(),
-                goal_slug="goal",
-                recipe_slug="candidate",
-                runtime_image_ref=RUNTIME_IMAGE_REF,
-                train_config=explicit_train_config(done_on_info_json={"level_change": ["bad"]}),
-            )
-
     def test_train_recipe_rejects_unknown_top_level_fields(self) -> None:
         document = valid_train_recipe()
         document["hypotesis"] = "typo"
@@ -279,14 +269,25 @@ class JobQueueTests(unittest.TestCase):
     def test_materialization_keeps_supported_train_config_sections(self) -> None:
         document = valid_train_recipe()
         document["train_config"].pop("wandb_mode")
-        document["train"] = {"policy": {"learning_rate": 2e-4}}
-        document["reward"] = {"reward_mode": "raw"}
+        document["train"] = {
+            "policy": {"learning_rate": 2e-4},
+            "environment": {
+                "task": {
+                    "id": "identity",
+                    "action": {"set": "native"},
+                    "signals": {},
+                    "events": {},
+                    "termination": {},
+                    "reward": {"reward_mode": "native"},
+                }
+            },
+        }
         document["logging"] = {"wandb_mode": "offline"}
 
         materialized = materialize_train_recipe_document(document)
 
         self.assertEqual(materialized["train_config"]["learning_rate"], 2e-4)
-        self.assertEqual(materialized["train_config"]["reward_mode"], "raw")
+        self.assertEqual(materialized["train_config"]["task"]["reward"]["reward_mode"], "native")
         self.assertEqual(materialized["train_config"]["wandb_mode"], "offline")
 
     def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
@@ -374,7 +375,7 @@ class JobQueueTests(unittest.TestCase):
             "group_id=Level1-1-lr2e4",
             "train.policy.learning_rate=2e-4",
             "train.policy.normalize_advantage=true",
-            "train.environment.env_config.done_on_events=[]",
+            "train.environment.task.termination.failure=[]",
         ]
 
         document = job_queue.load_recipe_document(
@@ -387,7 +388,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(document["tags"][1], "recipe_id:lr2e4")
         self.assertEqual(document["train_config"]["learning_rate"], 2e-4)
         self.assertIs(document["train_config"]["normalize_advantage"], True)
-        self.assertEqual(document["train_config"]["done_on_events"], [])
+        self.assertEqual(document["train_config"]["task"]["termination"]["failure"], [])
         self.assertEqual(document["recipe_overrides"], overrides)
 
     def test_load_recipe_document_allows_ale_episodic_life_override(self) -> None:

@@ -9,7 +9,6 @@ import sys
 import time
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import replace
 from itertools import count
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -30,14 +29,23 @@ from rlab.env import (
     assert_provider_runtime_available,
     info_value_from_state_name,
     make_eval_vec_env,
-    make_visual_replay_env,
-    native_vec_env_supports_rgb_render,
     state_name_candidates_from_level_id,
+    task_action_set,
+    task_conditioning,
     task_conditioning_info_values,
+    task_max_episode_steps,
+    task_reward,
+    task_termination,
+    with_task_termination,
 )
-from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER, qualify_env_id
-from rlab.eval_metrics import single_env_action
-from rlab.eval_metrics import is_level_complete
+from rlab.eval_metrics import (
+    batch_metrics_for_lane,
+    drain_runtime_records,
+    episode_records,
+    episode_result_from_record,
+    is_level_complete,
+    single_env_action,
+)
 from rlab.model_sources import (
     model_source_ref,
     positional_model_source_arg,
@@ -45,6 +53,7 @@ from rlab.model_sources import (
 )
 from rlab.play_attribution import PolicyActionAttributor
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
+from rlab.targets import target_for_game
 from rlab.wandb_utils import default_wandb_project_path
 
 
@@ -144,7 +153,7 @@ def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
 
 
 def task_state_names(config) -> tuple[str, ...]:
-    if config.task_conditioning_info_vars:
+    if task_info_vars(config):
         return tuple(
             ",".join(str(part) for part in value) for value in task_conditioning_info_values(config)
         )
@@ -160,7 +169,8 @@ def task_vector_for_state(
     active_state: str | None = None,
     active_info_value: tuple[int | str, ...] | None = None,
 ) -> np.ndarray:
-    if config.task_conditioning_info_vars:
+    info_vars = task_info_vars(config)
+    if info_vars:
         values = task_conditioning_info_values(config)
         if not values:
             raise ValueError("info-var task-conditioned playback has no configured task values")
@@ -172,7 +182,7 @@ def task_vector_for_state(
             )
         active_info_value = active_info_value or info_value_from_state_name(
             active_state or config.state,
-            config.task_conditioning_info_vars,
+            info_vars,
         )
         if active_info_value not in values:
             raise ValueError(
@@ -231,13 +241,22 @@ def model_observation(
 
 
 def task_info_value_from_info(info: dict, config) -> tuple[int | str, ...] | None:
-    if not config.task_conditioning_info_vars:
+    info_vars = task_info_vars(config)
+    if not info_vars:
         return None
     try:
-        value = tuple(info[var] for var in config.task_conditioning_info_vars)
+        value = tuple(info[var] for var in info_vars)
     except KeyError:
         return None
     return value if value in task_conditioning_info_values(config) else None
+
+
+def task_info_vars(config) -> tuple[str, ...]:
+    conditioning = task_conditioning(config)
+    signal_name = conditioning.get("signal")
+    signals = config.task.get("signals", {})
+    source = signals.get(signal_name) if isinstance(signals, Mapping) else None
+    return (source,) if isinstance(source, str) else tuple(source or ())
 
 
 def task_conditioning_change_message(
@@ -288,6 +307,23 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     # the environment actually terminates or truncates the episode.
     del completed
     return bool(terminated or truncated)
+
+
+def vector_env_frame(env) -> np.ndarray:
+    images = env.get_images()
+    if not images or images[0] is None:
+        raise RuntimeError("native vector provider did not return an RGB frame for lane 0")
+    return np.asarray(images[0]).copy()
+
+
+def playback_runtime_config(config):
+    """Make record-producing task completion explicit for interactive playback."""
+    semantics = target_for_game(config.game).eval_semantics
+    if semantics.completion_reason != "level_change":
+        return config
+    termination = task_termination(config)
+    success = list(dict.fromkeys((*termination.get("success", ()), "level_change")))
+    return with_task_termination(config, success=success)
 
 
 def _heatmap_color(heatmap: np.ndarray) -> np.ndarray:
@@ -550,15 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def display_replay_config(config):
-    if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-        return config
-    if native_vec_env_supports_rgb_render(config):
-        return config
-    try:
-        qualify_env_id(STABLE_RETRO_TURBO_PROVIDER.provider_id, config.game)
-    except ValueError:
-        return config
-    return replace(config, env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id)
+    return config
 
 
 def resolved_play_launch_lines(
@@ -569,11 +597,6 @@ def resolved_play_launch_lines(
     policy_config,
     display_config,
 ) -> list[str]:
-    wrapper_ids = [
-        str(spec.get("id", ""))
-        for spec in policy_config.env_wrappers
-        if isinstance(spec, dict) and spec.get("id")
-    ]
     states = policy_config.states or ((policy_config.state,) if policy_config.state else ())
     return [
         _color("▶ resolved play launch", "bold"),
@@ -599,7 +622,7 @@ def resolved_play_launch_lines(
             "policy",
             f"device={args.device} stochastic={not args.deterministic} "
             f"seed={args.seed} episodes={args.episodes} "
-            f"max_steps={policy_config.max_episode_steps} "
+            f"max_steps={task_max_episode_steps(policy_config)} "
             f"step_over={getattr(args, 'step_over', False)}",
             "green",
         ),
@@ -625,19 +648,20 @@ def resolved_play_launch_lines(
         _summary_line(
             "⚙",
             "action/reward",
-            f"action_set={policy_config.action_set} reward_mode={policy_config.reward_mode} "
-            f"reward_scale={policy_config.reward_scale} clip_rewards={policy_config.clip_rewards}",
+            f"action_set={task_action_set(policy_config)} "
+            f"reward_mode={task_reward(policy_config).get('reward_mode')} "
+            f"reward_scale={task_reward(policy_config).get('reward_scale')} "
+            f"clip_rewards={task_reward(policy_config).get('clip_rewards')}",
             "yellow",
         ),
         _summary_line(
             "◆",
             "task/events",
-            f"task_conditioning={policy_config.task_conditioning} "
-            f"task_info_vars={_format_sequence(policy_config.task_conditioning_info_vars)} "
-            f"done_on={_format_sequence(policy_config.done_on_events)}",
+            f"task_conditioning={bool(task_conditioning(policy_config).get('enabled'))} "
+            f"task_info_vars={_format_sequence(task_info_vars(policy_config))} "
+            f"termination_events={_format_sequence((*task_termination(policy_config).get('failure', ()), *task_termination(policy_config).get('success', ())))}",
             "cyan",
         ),
-        _summary_line("✚", "wrappers", _format_sequence(wrapper_ids), "blue"),
         _summary_line(
             "✓",
             "source of truth",
@@ -679,8 +703,9 @@ def main(argv: list[str] | None = None) -> None:
     args.model = str(source.model_path)
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
-    config = load_playback_env_config(source.model_path)
-    display_config = display_replay_config(config)
+    artifact_config = load_playback_env_config(source.model_path)
+    config = playback_runtime_config(artifact_config)
+    display_config = artifact_config
     print_resolved_play_launch(
         args,
         argv=argv_list,
@@ -693,13 +718,14 @@ def main(argv: list[str] | None = None) -> None:
 
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
     attributor = PolicyActionAttributor(model) if args.attribution != "none" else None
-    display_env = make_visual_replay_env(config=display_config, seed=args.seed)
     policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+    display_env = make_eval_vec_env(config=display_config, n_envs=1, seed=args.seed)
 
     policy_env.seed(args.seed)
     policy_env.reset()
-    display_env.reset(seed=args.seed)
-    first_frame = display_env.render()
+    display_env.seed(args.seed)
+    display_env.reset()
+    first_frame = vector_env_frame(display_env)
     obs_stack_position = (40, 240)
     viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
     obs_viewer = (
@@ -787,9 +813,10 @@ def main(argv: list[str] | None = None) -> None:
             torch.manual_seed(episode_seed)
             policy_env.seed(episode_seed)
             policy_obs = policy_env.reset()
-            policy_reset_info = {}
-            display_env.reset(seed=episode_seed)
-            frame = display_env.render()
+            policy_reset_info = dict(policy_env.reset_infos[0])
+            display_env.seed(episode_seed)
+            display_env.reset()
+            frame = vector_env_frame(display_env)
             overlay = [
                 "r_step: 0.00",
                 "r_total: 0.00",
@@ -801,7 +828,9 @@ def main(argv: list[str] | None = None) -> None:
                 break
             throttle()
             frames: deque[np.ndarray] = fast_env_frames(policy_obs)
-            configured_task_states = task_state_names(config) if config.task_conditioning else ()
+            conditioning_enabled = bool(task_conditioning(config).get("enabled"))
+            info_vars = task_info_vars(config)
+            configured_task_states = task_state_names(config) if conditioning_enabled else ()
             active_task_state = (
                 config.state or configured_task_states[0] if configured_task_states else None
             )
@@ -809,12 +838,12 @@ def main(argv: list[str] | None = None) -> None:
                 task_info_value_from_info(policy_reset_info, config)
                 or info_value_from_state_name(
                     active_task_state or "",
-                    config.task_conditioning_info_vars,
+                    info_vars,
                 )
-                if config.task_conditioning_info_vars
+                if info_vars
                 else None
             )
-            if config.task_conditioning_info_vars and active_info_value is not None:
+            if info_vars and active_info_value is not None:
                 values = task_conditioning_info_values(config)
                 print(
                     task_conditioning_start_message(
@@ -827,7 +856,7 @@ def main(argv: list[str] | None = None) -> None:
                     flush=True,
                 )
             elif (
-                not config.task_conditioning_info_vars
+                not info_vars
                 and configured_task_states
                 and active_task_state is not None
             ):
@@ -849,7 +878,8 @@ def main(argv: list[str] | None = None) -> None:
             total_reward = 0.0
             max_x_pos = 0
             final_info = {}
-            for step_idx in range(config.max_episode_steps):
+            max_episode_steps = task_max_episode_steps(config)
+            for step_idx in range(max_episode_steps):
                 if not wait_for_step(frame, overlay):
                     return
                 image_obs = fast_env_obs(policy_obs)
@@ -870,11 +900,27 @@ def main(argv: list[str] | None = None) -> None:
                 policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
                 reward = float(np.asarray(rewards)[0])
                 done = bool(np.asarray(dones)[0])
-                terminated = done
                 truncated = bool(infos[0].get("TimeLimit.truncated", False))
-                info = dict(infos[0])
-                if config.task_conditioning_info_vars:
-                    next_info_value = task_info_value_from_info(info, config)
+                terminated = done and not truncated
+                records = drain_runtime_records(policy_env)
+                step_metrics = batch_metrics_for_lane(records, 0)
+                info = {**dict(infos[0]), **step_metrics}
+                completed_records = episode_records(records)
+                episode_result = None
+                if completed_records:
+                    episode_result = episode_result_from_record(
+                        completed_records[0],
+                        semantics=target_for_game(config.game).eval_semantics,
+                        terminal_info=info,
+                    )
+                    terminated = bool(episode_result["terminated"])
+                    truncated = bool(episode_result["truncated"])
+                if info_vars:
+                    next_info_value = (
+                        (int(info["level_hi"]), int(info["level_lo"]))
+                        if "level_hi" in info and "level_lo" in info
+                        else task_info_value_from_info(info, config)
+                    )
                     if next_info_value is not None and next_info_value != active_info_value:
                         values = task_conditioning_info_values(config)
                         print(
@@ -890,6 +936,8 @@ def main(argv: list[str] | None = None) -> None:
                         )
                         active_info_value = next_info_value
                 else:
+                    if "level_hi" in info and "level_lo" in info:
+                        info["level_id"] = f"{int(info['level_hi'])}-{int(info['level_lo'])}"
                     next_task_state = task_state_from_info(info, configured_task_states)
                     if next_task_state is not None and next_task_state != active_task_state:
                         print(
@@ -904,15 +952,22 @@ def main(argv: list[str] | None = None) -> None:
                             flush=True,
                         )
                         active_task_state = next_task_state
-                display_env.step(env_action)
+                display_env.step(np.asarray([env_action]))
+                drain_runtime_records(display_env)
                 frames = fast_env_frames(policy_obs)
                 if attributor is None and not update_controls(frames):
                     return
                 total_reward += float(reward)
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
                 final_info = dict(info)
-                completed = is_level_complete(final_info)
-                frame = display_env.render()
+                if episode_result is not None:
+                    total_reward = float(episode_result["reward"])
+                    max_x_pos = max(max_x_pos, int(episode_result.get("max_x_pos", 0)))
+                    final_info = dict(episode_result.get("final_info", {}))
+                    completed = bool(episode_result.get("level_complete", False))
+                else:
+                    completed = is_level_complete(final_info)
+                frame = vector_env_frame(display_env)
                 overlay = [
                     f"r_step: {float(reward):.2f}",
                     f"r_total: {total_reward:.2f}",
@@ -948,7 +1003,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(
                     "episode="
                     f"{episode + 1} seed={episode_seed} reward={total_reward:.2f} "
-                    f"max_x={max_x_pos} steps={config.max_episode_steps} status=max_steps "
+                    f"max_x={max_x_pos} steps={max_episode_steps} status=max_steps "
                     f"died={bool(final_info.get('died', False))} "
                     f"complete={bool(final_info.get('level_complete', False))}",
                     flush=True,

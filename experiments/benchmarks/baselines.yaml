@@ -1,5 +1,8 @@
 schema_version: 1
 updated_at: '2026-06-29'
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 baselines:
   fleet-capacity-rtx4090:
     target: rtx4090

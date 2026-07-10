@@ -10,10 +10,10 @@ from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
 
 
-ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v1"
+ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v2"
+ENVIRONMENT_SCHEMA_VERSION = 2
 
 STATE_KEYS = ("state", "states", "state_probs")
-ACTION_KEYS = ("action_set",)
 PREPROCESSING_KEYS = (
     "frame_skip",
     "max_pool_frames",
@@ -24,34 +24,6 @@ PREPROCESSING_KEYS = (
     "obs_crop_mode",
     "obs_crop_fill",
     "obs_resize_algorithm",
-)
-TASK_CONDITIONING_KEYS = (
-    "task_conditioning",
-    "task_conditioning_info_vars",
-    "task_conditioning_info_values",
-)
-TERMINATION_KEYS = (
-    "max_episode_steps",
-    "no_progress_timeout_steps",
-    "no_progress_min_delta",
-    "episodic_life",
-    "info_events_json",
-    "info_events",
-    "done_on_events",
-)
-REWARD_KEYS = (
-    "use_retro_reward",
-    "clip_rewards",
-    "reward_mode",
-    "progress_reward_cap",
-    "progress_reward_scale",
-    "terminal_reward",
-    "reward_scale",
-    "time_penalty",
-    "death_penalty",
-    "completion_reward",
-    "score_progress_clipped",
-    "env_wrappers",
 )
 NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
     {
@@ -89,8 +61,9 @@ def _normalize_preprocessing(identity: dict[str, Any]) -> None:
         hud_crop_top = preprocessing.get("hud_crop_top")
         preprocessing["obs_crop"] = [hud_crop_top, 0, 0, 0] if hud_crop_top else None
     preprocessing.pop("hud_crop_top", None)
-    task_conditioning = identity.get("task_conditioning")
-    if isinstance(task_conditioning, Mapping) and task_conditioning.get("task_conditioning"):
+    task = identity.get("task")
+    conditioning = task.get("conditioning") if isinstance(task, Mapping) else None
+    if isinstance(conditioning, Mapping) and conditioning.get("enabled"):
         layout = "dict_image_task"
     else:
         layout = "channel_first"
@@ -136,6 +109,213 @@ def _setdefault_top_level(environment: dict[str, Any], values: Mapping[str, Any]
         environment.setdefault(key, value)
 
 
+def _task_id(provider_id: str, game: str) -> str:
+    if game == "SuperMarioBros-Nes-v0" and provider_id in {
+        "",
+        "stable-retro-turbo",
+        "supermariobrosnes-turbo",
+    }:
+        return "mario"
+    return "identity"
+
+
+def _mario_task_defaults() -> dict[str, Any]:
+    return {
+        "id": "mario",
+        "action": {"set": "simple"},
+        "signals": {
+            "x": ["xscrollHi", "xscrollLo"],
+            "score": "score",
+            "lives": "lives",
+            "level": ["levelHi", "levelLo"],
+        },
+        "events": {
+            "life_loss": {"signal": "lives", "operation": "decrease"},
+            "level_change": {"signal": "level", "operation": "change"},
+        },
+        "termination": {
+            "failure": ["life_loss"],
+            "success": ["level_change"],
+            "max_episode_steps": 4500,
+        },
+        "reward": {
+            "reward_mode": "baseline",
+            "use_native_reward": False,
+            "clip_rewards": False,
+            "progress_reward_cap": 30.0,
+            "progress_reward_scale": 1.0,
+            "terminal_reward": 50.0,
+            "reward_scale": 10.0,
+            "time_penalty": 0.0,
+            "death_penalty": 25.0,
+            "completion_reward": 0.0,
+            "score_progress_clipped": False,
+        },
+    }
+
+
+def task_config_from_train_config(
+    train_config: Mapping[str, Any],
+    *,
+    task: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return an explicit canonical task or the registered default for an environment."""
+
+    provider_id = str(train_config.get("env_provider") or train_config.get("provider") or "")
+    game = str(provider_game(train_config) or train_config.get("game") or "")
+    inferred_id = _task_id(provider_id, game)
+    canonical = (
+        _mario_task_defaults()
+        if inferred_id == "mario"
+        else {
+            "id": "identity",
+            "action": {"set": "native"},
+            "signals": {},
+            "events": {},
+            "termination": {"max_episode_steps": 4500},
+            "reward": {"reward_mode": "native"},
+        }
+    )
+
+    embedded_task = train_config.get("task")
+    if isinstance(embedded_task, Mapping) and embedded_task:
+        canonical = deepcopy(dict(embedded_task))
+    if isinstance(task, Mapping) and task:
+        canonical = deepcopy(dict(task))
+    validate_task_config(canonical)
+    return canonical
+
+
+def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> None:
+    allowed = {"id", "action", "signals", "events", "termination", "reward", "conditioning"}
+    extra = sorted(set(task) - allowed)
+    if extra:
+        raise ValueError(f"{label} has unexpected keys: {extra}")
+    task_id = task.get("id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError(f"{label}.id must be a non-empty string")
+    if task_id not in {"identity", "mario"}:
+        raise ValueError(f"{label}.id has no registered task kernel: {task_id!r}")
+    for section in ("action", "signals", "events", "termination", "reward"):
+        if not isinstance(task.get(section), Mapping):
+            raise ValueError(f"{label}.{section} must be an object")
+    action = task["action"]
+    action_set = action.get("set")
+    if not isinstance(action_set, str) or not action_set.strip():
+        raise ValueError(f"{label}.action.set must be a non-empty string")
+    extra_action_keys = sorted(set(action) - {"set", "codec"})
+    if extra_action_keys:
+        raise ValueError(f"{label}.action has unexpected keys: {extra_action_keys}")
+    codec = action.get("codec")
+    if codec is not None:
+        if task_id != "identity":
+            raise ValueError(f"{label}.action.codec is only supported by the identity task")
+        if not isinstance(codec, Mapping):
+            raise ValueError(f"{label}.action.codec must be an object")
+        extra_codec_keys = sorted(set(codec) - {"type", "values"})
+        if extra_codec_keys:
+            raise ValueError(
+                f"{label}.action.codec has unexpected keys: {extra_codec_keys}"
+            )
+        if codec.get("type") != "discrete_lookup":
+            raise ValueError(
+                f"{label}.action.codec.type must be 'discrete_lookup'"
+            )
+        values = codec.get("values")
+        if not isinstance(values, list | tuple) or not values:
+            raise ValueError(f"{label}.action.codec.values must be a non-empty list")
+    signals = task["signals"]
+    for name, source in signals.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{label}.signals keys must be non-empty strings")
+        if isinstance(source, str) and source.strip():
+            continue
+        if (
+            isinstance(source, list | tuple)
+            and source
+            and all(isinstance(item, str) and item.strip() for item in source)
+        ):
+            continue
+        raise ValueError(f"{label}.signals.{name} must be a signal name or non-empty list")
+    events = task["events"]
+    for name, raw_rule in events.items():
+        if not isinstance(raw_rule, Mapping):
+            raise ValueError(f"{label}.events.{name} must be an object")
+        signal = raw_rule.get("signal")
+        if signal not in signals:
+            raise ValueError(f"{label}.events.{name}.signal references unknown signal {signal!r}")
+        operation = raw_rule.get("operation")
+        if operation not in {"change", "decrease", "increase", "unchanged_for"}:
+            raise ValueError(f"{label}.events.{name}.operation is unsupported: {operation!r}")
+        if operation == "unchanged_for":
+            steps = raw_rule.get("steps")
+            if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
+                raise ValueError(f"{label}.events.{name}.steps must be a positive integer")
+    if task_id == "identity" and events:
+        raise ValueError(f"{label}.events must be empty for the identity task")
+    if task_id == "mario":
+        expected_events = {
+            "life_loss": ("lives", "decrease"),
+            "level_change": ("level", "change"),
+            "stalled": ("x", "unchanged_for"),
+        }
+        unknown_events = sorted(set(events) - set(expected_events))
+        if unknown_events:
+            raise ValueError(
+                f"{label} has unsupported Mario events: {', '.join(unknown_events)}"
+            )
+        for name, rule in events.items():
+            expected_signal, expected_operation = expected_events[name]
+            if (rule.get("signal"), rule.get("operation")) != (
+                expected_signal,
+                expected_operation,
+            ):
+                raise ValueError(
+                    f"{label}.events.{name} requires signal={expected_signal!r} "
+                    f"and operation={expected_operation!r}"
+                )
+    termination = task["termination"]
+    for outcome in ("success", "failure", "timeout", "neutral"):
+        if outcome not in termination:
+            continue
+        names = termination[outcome]
+        if not isinstance(names, list | tuple):
+            raise ValueError(f"{label}.termination.{outcome} must be a list")
+        missing = sorted({str(name) for name in names} - set(events))
+        if missing:
+            raise ValueError(
+                f"{label}.termination.{outcome} references unknown events: {', '.join(missing)}"
+            )
+    for key in ("max_episode_steps", "no_progress_min_delta"):
+        if key not in termination:
+            continue
+        value = termination[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{label}.termination.{key} must be a non-negative integer")
+    reward_mode = task["reward"].get("reward_mode")
+    if task_id == "identity" and reward_mode not in {None, "native"}:
+        raise ValueError(f"{label}.reward.reward_mode must be 'native' for the identity task")
+    if task_id == "mario" and reward_mode not in {
+        None,
+        "native",
+        "bounded",
+        "baseline",
+        "score",
+        "additive",
+    }:
+        raise ValueError(f"{label}.reward.reward_mode is unsupported: {reward_mode!r}")
+    conditioning = task.get("conditioning")
+    if conditioning is not None:
+        if not isinstance(conditioning, Mapping):
+            raise ValueError(f"{label}.conditioning must be an object")
+        if conditioning.get("enabled"):
+            signal = conditioning.get("signal")
+            if signal not in signals:
+                raise ValueError(
+                    f"{label}.conditioning.signal references unknown signal {signal!r}"
+                )
+
+
 def _normalize_state_identity(identity: dict[str, Any]) -> None:
     state_value = identity.get("state")
     if not isinstance(state_value, Mapping):
@@ -161,7 +341,7 @@ def environment_identity_from_train_config(
 
     identity = deepcopy(dict(environment or {}))
     identity.pop("env_config", None)
-    identity.setdefault("schema_version", 1)
+    identity["schema_version"] = ENVIRONMENT_SCHEMA_VERSION
     identity.pop("env_provider", None)
     if "env_id" not in identity:
         resolved_env_id = provider_env_id(train_config)
@@ -172,23 +352,16 @@ def environment_identity_from_train_config(
 
     _normalize_state_identity(identity)
     _setdefault_top_level(identity, _copy_present(train_config, STATE_KEYS))
-    _setdefault_section(identity, "action", _copy_present(train_config, ACTION_KEYS))
     _setdefault_section(
         identity,
         "preprocessing",
         _copy_present(train_config, PREPROCESSING_KEYS),
     )
-    _setdefault_section(
-        identity,
-        "task_conditioning",
-        _copy_present(train_config, TASK_CONDITIONING_KEYS),
+    existing_task = identity.pop("task", None)
+    identity["task"] = task_config_from_train_config(
+        train_config,
+        task=existing_task if isinstance(existing_task, Mapping) else None,
     )
-    _setdefault_section(
-        identity,
-        "termination",
-        _copy_present(train_config, TERMINATION_KEYS),
-    )
-    _setdefault_section(identity, "reward", _copy_present(train_config, REWARD_KEYS))
     provider_args = semantic_provider_args(train_config)
     if provider_args:
         identity.setdefault("provider_args", deepcopy(provider_args))
@@ -241,20 +414,18 @@ def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict
         train_config["states"] = deepcopy(environment["states"])
     if "state_probs" in environment:
         train_config["state_probs"] = deepcopy(environment["state_probs"])
-    for section in (
-        "action",
-        "preprocessing",
-        "task_conditioning",
-        "termination",
-        "reward",
-    ):
+    for section in ("preprocessing",):
         value = environment.get(section)
         if isinstance(value, Mapping):
             train_config.update(deepcopy(dict(value)))
+    task = environment.get("task")
+    canonical_task = task_config_from_train_config(
+        train_config,
+        task=task if isinstance(task, Mapping) else None,
+    )
+    train_config["task"] = deepcopy(canonical_task)
     if "obs_crop" in train_config:
         train_config["obs_crop"] = _obs_crop_from_value(train_config["obs_crop"])
-    if "info_events" in train_config and "info_events_json" not in train_config:
-        train_config["info_events_json"] = deepcopy(train_config["info_events"])
     return train_config
 
 

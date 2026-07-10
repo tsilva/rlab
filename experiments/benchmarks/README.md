@@ -9,6 +9,10 @@ Profiles live as YAML files in `experiments/benchmarks/profiles/`. Shared
 baseline expectations live in `experiments/benchmarks/baselines.yaml`. Results
 belong under `logs/benchmarks/` and should stay out of source control.
 
+Environment-sensitive profiles declare `environment_contract.schema_version: 2`
+and `task_termination_boundary: vector_step`. Results from the retired native
+subframe-event or wrapper-stack contracts are not directly comparable.
+
 ```bash
 rlab benchmark list
 rlab benchmark show retro-env-throughput-mario-l11
@@ -34,3 +38,6 @@ database.
 
 Benchmark requests should default to real imported saved states, not `State.NONE`.
 Use `allow_state_none=true` only for explicit emulator hot-path diagnostics.
+
+The canonical PPO loop profile exercises the consolidated runtime only. Provider/runtime stepping
+overhead is measured separately by the native provider/runtime conformance benchmark.

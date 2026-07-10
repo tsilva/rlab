@@ -8,12 +8,12 @@ import re
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.env import EnvConfig, resolve_env_config
+from rlab.env import EnvConfig, resolve_env_config, with_task_termination
 from rlab.env_metadata import (
     PLAYBACK_ENV_ARG_KEYS,
     env_config_from_config_dict,
@@ -157,16 +157,15 @@ def require_training_metadata(model_path: Path) -> dict[str, Any]:
 
 def env_config_from_model_metadata(
     model_path: Path,
-    fallback: EnvConfig | None = None,
 ) -> EnvConfig | None:
     saved_config = env_config_from_metadata(load_model_metadata(model_path))
     if not saved_config:
-        return fallback
-    return env_config_from_config_dict(saved_config, fallback=fallback)
+        return None
+    return env_config_from_config_dict(saved_config)
 
 
 def playback_env_config(config: EnvConfig) -> EnvConfig:
-    return replace(config, done_on_events=())
+    return with_task_termination(config, failure=[], success=[], timeout=[])
 
 
 def load_playback_env_config(model_path: Path) -> EnvConfig:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -9,17 +8,34 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from rlab.env import EnvConfig, make_eval_vec_env, make_rendered_replay_env
-from rlab.env_registry import STABLE_RETRO_TURBO_PROVIDER
+from rlab.env import EnvConfig, make_eval_vec_env, task_termination, with_task_termination
 from rlab.eval_metrics import (
+    drain_episode_records,
     episode_rank,
-    is_completion_event,
+    episode_result_from_record,
     run_eval_episode,
-    serializable_info,
     summarize_episode_results,
 )
 from rlab.targets import EvalSemantics, target_for_game
-from rlab.video import replay_actions_for_video, write_video
+from rlab.video import write_video
+
+
+def _eval_runtime_config(
+    config: EnvConfig,
+    *,
+    max_steps: int,
+    semantics: EvalSemantics,
+) -> EnvConfig:
+    termination = task_termination(config)
+    success = list(termination.get("success", ()))
+    if semantics.completion_reason == "level_change":
+        success = list(dict.fromkeys((*success, "level_change")))
+    return with_task_termination(
+        config,
+        max_episode_steps=max_steps,
+        success=success,
+        failure=[],
+    )
 
 
 def _evaluate_model_episodes_vector(
@@ -34,137 +50,44 @@ def _evaluate_model_episodes_vector(
     semantics: EvalSemantics,
     progress_bar: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    vec_config = replace(
+    vec_config = _eval_runtime_config(
         config,
-        max_episode_steps=0,
-        no_progress_timeout_steps=0,
+        max_steps=max_steps,
+        semantics=semantics,
     )
     eval_env = make_eval_vec_env(config=vec_config, n_envs=n_envs, seed=seed)
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
-    rewards = np.zeros(n_envs, dtype=np.float64)
-    steps = np.zeros(n_envs, dtype=np.int64)
-    progress_values = {
-        field.result_key: np.zeros(n_envs, dtype=np.int64)
-        for field in semantics.progress_fields
-    }
-    completed = np.zeros(n_envs, dtype=bool)
-    died_flags = np.zeros(n_envs, dtype=bool)
-    death_x_positions: list[Any | None] = [None] * n_envs
-    start_states: list[str | None] = [None] * n_envs
-    active = np.ones(n_envs, dtype=bool)
-
     try:
         torch.manual_seed(seed)
         obs = eval_env.reset()
         while len(episode_results) < episodes:
-            if not active.any():
-                obs = eval_env.reset()
-                active[:] = True
-                rewards[:] = 0.0
-                steps[:] = 0
-                for values in progress_values.values():
-                    values[:] = 0
-                completed[:] = False
-                died_flags[:] = False
-                death_x_positions = [None] * n_envs
-                start_states = [None] * n_envs
-
             action, _ = model.predict(obs, deterministic=deterministic)
-            obs, step_rewards, dones, infos = eval_env.step(action)
-
-            for env_index, info_obj in enumerate(infos):
-                if not active[env_index]:
-                    continue
-
-                info = dict(info_obj)
-                rewards[env_index] += float(step_rewards[env_index])
-                steps[env_index] += 1
-                if start_states[env_index] is None:
-                    start_states[env_index] = (
-                        info.get("start_state") or info.get("state") or config.state
-                    )
-                for field in semantics.progress_fields:
-                    values = progress_values[field.result_key]
-                    values[env_index] = max(values[env_index], int(info.get(field.info_key, 0)))
-
-                completed[env_index] = bool(completed[env_index]) or is_completion_event(
-                    info,
-                    semantics,
+            obs, _step_rewards, dones, infos = eval_env.step(action)
+            terminal_infos = {
+                index: dict(infos[index])
+                for index in np.flatnonzero(np.asarray(dones, dtype=bool))
+            }
+            for record in drain_episode_records(eval_env):
+                result = episode_result_from_record(
+                    record,
+                    semantics=semantics,
+                    terminal_info=terminal_infos.get(int(record.lane), {}),
                 )
-                if semantics.death_flag_key and bool(info.get(semantics.death_flag_key, False)):
-                    died_flags[env_index] = True
-                    if death_x_positions[env_index] is None:
-                        death_x_positions[env_index] = (
-                            info.get(semantics.death_position_key)
-                            if semantics.death_position_key
-                            else None
-                        )
-                        if death_x_positions[env_index] is None:
-                            death_x_positions[env_index] = int(
-                                progress_values.get(
-                                    "max_x_pos",
-                                    np.zeros(n_envs, dtype=np.int64),
-                                )[env_index]
-                            )
-                timed_out = steps[env_index] >= max_steps
-                if bool(dones[env_index]) or timed_out:
-                    result_completed = bool(completed[env_index])
-                    result_died = bool(died_flags[env_index])
-                    death_x_pos = death_x_positions[env_index]
-
-                    result = {
-                        "episode": len(episode_results) + 1,
-                        "seed": None,
-                        "env_index": int(env_index),
-                        "start_state": start_states[env_index]
-                        or info.get("start_state")
-                        or info.get("state")
-                        or config.state,
-                        "reward": float(rewards[env_index]),
-                        "score": int(info.get("score", 0)),
-                        "lives": int(info.get("lives", 0)),
-                        "time": int(info.get("time", 0)),
-                        "steps": int(steps[env_index]),
-                        "terminated": bool(dones[env_index]),
-                        "truncated": timed_out or bool(info.get("TimeLimit.truncated", False)),
-                        "final_info": serializable_info(info),
-                    }
-                    if semantics.completion_reason:
-                        result["level_complete"] = result_completed
-                    for field in semantics.progress_fields:
-                        result[field.result_key] = int(
-                            progress_values[field.result_key][env_index]
-                        )
-                    if semantics.death_flag_key:
-                        result["died"] = result_died
-                        result["death_x_pos"] = (
-                            int(death_x_pos) if death_x_pos is not None else None
-                        )
-                    episode_results.append(result)
-                    if progress_bar is not None:
-                        progress_bar.update(1)
-                    if best_episode_result is None or episode_rank(
-                        result,
-                        semantics,
-                    ) > episode_rank(
-                        best_episode_result,
-                        semantics,
-                    ):
-                        best_episode_result = result
-
-                    rewards[env_index] = 0.0
-                    steps[env_index] = 0
-                    for values in progress_values.values():
-                        values[env_index] = 0
-                    completed[env_index] = False
-                    died_flags[env_index] = False
-                    death_x_positions[env_index] = None
-                    start_states[env_index] = None
-                    active[env_index] = False
-
-                    if len(episode_results) >= episodes:
-                        break
+                result = {
+                    "episode": len(episode_results) + 1,
+                    "seed": None,
+                    **result,
+                }
+                episode_results.append(result)
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                if best_episode_result is None or episode_rank(
+                    result, semantics
+                ) > episode_rank(best_episode_result, semantics):
+                    best_episode_result = result
+                if len(episode_results) >= episodes:
+                    break
     finally:
         eval_env.close()
 
@@ -208,10 +131,10 @@ def evaluate_model_episodes(
         leave=True,
     ) as progress_bar:
         if n_envs == 1:
-            eval_config = replace(
+            eval_config = _eval_runtime_config(
                 config,
-                max_episode_steps=0,
-                no_progress_timeout_steps=0,
+                max_steps=max_steps,
+                semantics=semantics,
             )
             eval_env = make_eval_vec_env(config=eval_config, n_envs=1, seed=seed)
             try:
@@ -272,21 +195,23 @@ def evaluate_model_episodes(
         and best_episode_actions
         and best_episode_seed is not None
     ):
-        video_config = (
-            config
-            if config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id
-            else replace(
-                config,
-                env_provider=STABLE_RETRO_TURBO_PROVIDER.provider_id,
-            )
+        video_config = with_task_termination(
+            config,
+            max_episode_steps=max_steps,
+            failure=[],
+            success=[],
         )
-        video_env = make_rendered_replay_env(config=video_config, seed=best_episode_seed)
+        video_env = make_eval_vec_env(config=video_config, n_envs=1, seed=best_episode_seed)
         try:
-            frames = replay_actions_for_video(
-                video_env,
-                actions=best_episode_actions,
-                seed=best_episode_seed,
-            )
+            video_env.seed(best_episode_seed)
+            video_env.reset()
+            frames = [np.asarray(video_env.get_images()[0]).copy()]
+            for action in best_episode_actions:
+                batched_action = np.expand_dims(np.asarray(action), axis=0)
+                _obs, _rewards, dones, _infos = video_env.step(batched_action)
+                frames.append(np.asarray(video_env.get_images()[0]).copy())
+                if bool(np.asarray(dones)[0]):
+                    break
         finally:
             video_env.close()
         write_video(frames, video_path, fps=video_fps, scale=video_scale)

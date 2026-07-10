@@ -4,7 +4,6 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +22,10 @@ from rlab.checkpoint_eval_config import (
 from rlab.cli import parse_train_args
 from rlab.device import resolve_sb3_device
 from rlab.early_stop import evaluate_early_stop_config
-from rlab.env import resolve_env_config
+from rlab.env import resolve_env_config, task_max_episode_steps, task_termination, with_task_termination
 from rlab.env_config import env_config_from_args
 from rlab.eval_runner import evaluate_model_episodes
-from rlab.eval_metrics import COMPLETION_GOAL_RATE, flat_numeric_metrics
+from rlab.eval_metrics import flat_numeric_metrics
 from rlab.eval_metrics import completion_score as eval_completion_score
 from rlab.eval_metrics import eval_selection_objective_name, eval_selection_score
 from rlab.metric_names import (
@@ -124,8 +123,6 @@ def update_best_checkpoint_summary(
     previous_completion = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE)
     previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
     previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
-    if previous_steps_to_goal == float("-inf") and previous_completion >= COMPLETION_GOAL_RATE:
-        previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEP)
     previous_step_score = (
         -previous_steps_to_goal
         if previous_steps_to_goal > float("-inf")
@@ -226,12 +223,12 @@ def log_checkpoint_eval_metrics(
 
 
 def eval_config_from_training_config(config):
-    eval_done_on_events = tuple(
-        name for name in config.done_on_events if name == "level_change"
+    termination = task_termination(config)
+    return with_task_termination(
+        config,
+        failure=[],
+        success=[name for name in termination.get("success", ()) if name == "level_change"],
     )
-    if eval_done_on_events == config.done_on_events:
-        return config
-    return replace(config, done_on_events=eval_done_on_events)
 
 
 def metric_payload(
@@ -365,7 +362,7 @@ def process_staged_eval(
     try:
         eval_model = PPO.load(checkpoint_path, device=resolve_sb3_device(args.device))
         episodes = int(stage["episodes"])
-        max_steps = int(args.post_train_eval_max_steps or args.max_episode_steps)
+        max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
         n_envs = int(stage.get("n_envs") or getattr(args, "checkpoint_eval_n_envs", 20))
         metrics, _video_path = evaluate_model_episodes(
             model=eval_model,
@@ -521,14 +518,8 @@ def process_eval(
     try:
         eval_model = PPO.load(checkpoint_path, device=resolve_sb3_device(args.device))
         episodes = int(args.post_train_eval_episodes)
-        max_steps = int(args.post_train_eval_max_steps or args.max_episode_steps)
-        n_envs = int(
-            getattr(
-                args,
-                "checkpoint_eval_n_envs",
-                getattr(args, "post_train_eval_n_envs", 20),
-            )
-        )
+        max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
+        n_envs = int(args.checkpoint_eval_n_envs)
         metrics, _video_path = evaluate_model_episodes(
             model=eval_model,
             config=eval_config_from_training_config(config),

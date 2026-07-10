@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rlab.metric_names import EVAL_INFO_LEVEL_COMPLETE_RATE_MIN
+from rlab.metric_names import EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 
 STAGES = [
@@ -13,14 +13,14 @@ STAGES = [
         "name": "screen",
         "episodes": 10,
         "n_envs": 2,
-        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [{"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": False,
     },
     {
         "name": "confirm",
         "episodes": 30,
         "n_envs": 4,
-        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [{"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": True,
     },
 ]
@@ -103,19 +103,19 @@ class MetricStoreTests(unittest.TestCase):
             store = MetricStore(Path(tmp) / "rlab.sqlite")
             store.init()
             store.append_metrics(
-                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 0.5},
+                {EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: 0.5},
                 step=100,
                 source="eval",
                 checkpoint_step=100,
             )
             store.append_metrics(
-                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0},
+                {EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: 1.0},
                 step=200,
                 source="eval",
                 checkpoint_step=200,
             )
 
-            self.assertEqual(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN), 1.0)
+            self.assertEqual(store.latest_metric(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN), 1.0)
 
     def test_staged_eval_skips_old_screens_but_preserves_confirm_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

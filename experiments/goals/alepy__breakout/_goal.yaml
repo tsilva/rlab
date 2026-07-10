@@ -40,10 +40,15 @@ train:
       - 0
       obs_crop_mode: mask
       obs_crop_fill: 0
-    action:
-      action_set: native
-    reward:
-      reward_mode: native
+    task: &identity_task
+      id: identity
+      action:
+        set: native
+      signals: {}
+      events: {}
+      termination: {}
+      reward:
+        reward_mode: native
 eval:
   environment:
     env_provider: *atari_env_provider
@@ -58,7 +63,4 @@ eval:
       - 0
       obs_crop_mode: mask
       obs_crop_fill: 0
-    action:
-      action_set: native
-    reward:
-      reward_mode: native
+    task: *identity_task

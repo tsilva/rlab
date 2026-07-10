@@ -21,11 +21,13 @@ from rlab.env import (
     assert_provider_runtime_available,
     make_eval_vec_env,
     resolve_env_config,
+    task_action_set,
 )
 from rlab.env_config import env_config_from_args, parse_obs_crop
 from rlab.eval_metrics import (
     default_eval_semantics,
-    is_completion_event,
+    drain_episode_records,
+    episode_result_from_record,
     summarize_episode_results,
 )
 from rlab.eval_runner import evaluate_model_episodes
@@ -83,55 +85,26 @@ def run_scripted_episode(
 ):
     semantics = semantics or default_eval_semantics()
     obs = env.reset()
-    total_reward = 0.0
-    progress_values = {field.result_key: 0 for field in semantics.progress_fields}
-    final_info = {}
     for step_idx in range(max_steps):
         if policy == "random":
             action = env.action_space.sample()
         else:
             action = scripted_action(policy, step_idx, action_names)
-        obs, rewards, dones, infos = env.step([action])
+        obs, _rewards, dones, infos = env.step([action])
         info = dict(infos[0])
-        total_reward += float(rewards[0])
-        for field in semantics.progress_fields:
-            progress_values[field.result_key] = max(
-                progress_values[field.result_key],
-                int(info.get(field.info_key, 0)),
+        records = drain_episode_records(env)
+        if records:
+            result = episode_result_from_record(
+                records[0],
+                semantics=semantics,
+                terminal_info=info,
             )
-        final_info = info
+            if result.get("start_state") is None:
+                result["start_state"] = default_start_state
+            return result
         if bool(dones[0]):
-            break
-    completed = is_completion_event(final_info, semantics)
-    died = (
-        bool(final_info.get(semantics.death_flag_key, False))
-        if semantics.death_flag_key
-        else False
-    )
-    death_x_pos = (
-        final_info.get(semantics.death_position_key)
-        if semantics.death_position_key
-        else None
-    )
-    if died and death_x_pos is None:
-        death_x_pos = progress_values.get("max_x_pos", 0)
-    result = {
-        "start_state": final_info.get("start_state")
-        or final_info.get("state")
-        or default_start_state,
-        "reward": total_reward,
-        "score": int(final_info.get("score", 0)),
-        "lives": int(final_info.get("lives", 0)),
-        "steps": step_idx + 1,
-    }
-    if semantics.completion_reason:
-        result["level_complete"] = completed
-    for field in semantics.progress_fields:
-        result[field.result_key] = progress_values[field.result_key]
-    if semantics.death_flag_key:
-        result["died"] = died
-        result["death_x_pos"] = int(death_x_pos) if death_x_pos is not None else None
-    return result
+            raise RuntimeError("RlabVecEnv returned done without an episode record")
+    raise RuntimeError("task runtime reached max_steps without a timeout episode record")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -242,7 +215,7 @@ def main(argv: list[str] | None = None) -> None:
             },
         )
     else:
-        action_names = action_names_for_set(config.action_set, game=config.game)
+        action_names = action_names_for_set(task_action_set(config), game=config.game)
         env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
         episodes = [
             run_scripted_episode(

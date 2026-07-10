@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from rlab.play import StepOverControls
+import numpy as np
+
+from rlab.env import EnvConfig
+from rlab.play import StepOverControls, playback_runtime_config, vector_env_frame
 
 
 def test_step_over_controls_advance_once_on_space_press() -> None:
@@ -44,3 +47,26 @@ def test_step_over_controls_ignore_other_keys() -> None:
     )
 
     assert not controls.consume_step()
+
+
+def test_playback_runtime_config_requests_clean_mario_completion_records() -> None:
+    original = EnvConfig(
+        game="SuperMarioBros-Nes-v0",
+        task={"termination": {"failure": [], "success": []}},
+    )
+
+    configured = playback_runtime_config(original)
+
+    assert configured.task["termination"]["success"] == ["level_change"]
+    assert original.task["termination"]["success"] == []
+
+
+def test_vector_env_frame_returns_owned_lane_frame() -> None:
+    source = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+    env = SimpleNamespace(get_images=lambda: [source])
+
+    frame = vector_env_frame(env)
+    source.fill(0)
+
+    assert frame.shape == (2, 2, 3)
+    assert frame.any()

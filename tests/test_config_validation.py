@@ -27,7 +27,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["train_recipes"], 1)
         self.assertGreaterEqual(report.counts["goals"], 1)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
-        self.assertGreaterEqual(report.counts["benchmark_profiles"], 7)
+        self.assertGreaterEqual(report.counts["benchmark_profiles"], 6)
 
     def test_breakout_recipe_loads_without_state(self) -> None:
         document = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
@@ -83,11 +83,12 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
-        for key in (
-            "action_set",
-            "reward_mode",
-        ):
-            self.assertEqual(train_config[key], breakout["train_config"][key])
+        self.assertEqual(
+            train_config["task"]["action"], breakout["train_config"]["task"]["action"]
+        )
+        self.assertEqual(
+            train_config["task"]["reward"], breakout["train_config"]["task"]["reward"]
+        )
         for key in (
             "n_envs",
             "env_threads",
@@ -95,8 +96,6 @@ class ConfigValidationTests(unittest.TestCase):
             "max_pool_frames",
             "sticky_action_prob",
             "observation_size",
-            "max_episode_steps",
-            "clip_rewards",
         ):
             self.assertNotIn(key, train_config)
         self.assertNotIn("obs_resize_algorithm", train_config)
@@ -127,36 +126,52 @@ train:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
       state: Level1-1
-      action_set: simple
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
       hud_crop_top: 32
       obs_resize_algorithm: area
-      max_episode_steps: 4500
-      info_events:
-        life_loss: [lives, decrease]
-        level_change: [[levelHi, levelLo], change]
-      done_on_events: [life_loss, level_change]
+    task:
+      id: mario
+      action: {set: simple}
+      signals:
+        lives: lives
+        level: [levelHi, levelLo]
+      events:
+        life_loss: {signal: lives, operation: decrease}
+        level_change: {signal: level, operation: change}
+      termination:
+        failure: [life_loss]
+        success: [level_change]
+        max_episode_steps: 4500
+      reward: {}
 eval:
   environment:
     env_config:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
-      action_set: simple
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
       hud_crop_top: 32
       obs_resize_algorithm: area
-      max_episode_steps: 4500
-      info_events:
-        life_loss: [lives, decrease]
-        level_change: [[levelHi, levelLo], change]
       max_episodes: 100
-      done_on_events: [level_change]
+    task:
+      id: mario
+      action: {set: simple}
+      signals:
+        lives: lives
+        level: [levelHi, levelLo]
+      events:
+        life_loss: {signal: lives, operation: decrease}
+        level_change: {signal: level, operation: change}
+      termination:
+        failure: []
+        success: [level_change]
+        max_episode_steps: 4500
+      reward: {}
 """,
                 encoding="utf-8",
             )
@@ -178,7 +193,9 @@ objective: {}
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "goal_id.*must match goal directory name: real-goal"):
+            with self.assertRaisesRegex(
+                ValueError, "goal_id.*must match goal directory name: real-goal"
+            ):
                 validate_goal_contract(goal_path, root)
 
     def test_goal_validator_rejects_objective_success(self) -> None:
@@ -204,41 +221,45 @@ train:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
       state: Level1-1
-      action_set: simple
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
       hud_crop_top: 32
       obs_resize_algorithm: area
-      max_episode_steps: 4500
-      info_events:
-        life_loss: [lives, decrease]
-        level_change: [[levelHi, levelLo], change]
-      done_on_events: [life_loss, level_change]
+      task:
+        id: identity
+        action: {set: native}
+        signals: {}
+        events: {}
+        termination: {max_episode_steps: 4500}
+        reward: {reward_mode: native}
 eval:
   environment:
     env_config:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
-      action_set: simple
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
       hud_crop_top: 32
       obs_resize_algorithm: area
-      max_episode_steps: 4500
-      info_events:
-        life_loss: [lives, decrease]
-        level_change: [[levelHi, levelLo], change]
+      task:
+        id: identity
+        action: {set: native}
+        signals: {}
+        events: {}
+        termination: {max_episode_steps: 4500}
+        reward: {reward_mode: native}
       max_episodes: 100
-      done_on_events: [level_change]
 """,
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "objective\\.success moved to train\\.early_stop"):
+            with self.assertRaisesRegex(
+                ValueError, "objective\\.success moved to train\\.early_stop"
+            ):
                 validate_goal_contract(goal_path, root)
 
     def test_goal_validator_rejects_environment_hash(self) -> None:
@@ -279,7 +300,9 @@ environment_hash: sha256:deadbeef
                 validate_goal_contract(goal_path, root)
 
     def test_load_goal_contract_returns_composed_document(self) -> None:
-        document = load_goal_contract(Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml"))
+        document = load_goal_contract(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
+        )
 
         self.assertNotIn("extends", document)
         self.assertNotIn("schema_version", document)
@@ -334,7 +357,9 @@ environment_hash: sha256:deadbeef
             "supermariobrosnes-turbo",
         )
         self.assertNotIn("env_provider", document["train"]["environment"]["env_config"])
-        self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0"
+        )
         self.assertEqual(document["train"]["environment"]["env_config"]["state"], "Level1-1")
         self.assertEqual(document["train"]["environment"]["env_config"]["n_envs"], 16)
         self.assertNotIn("env_threads", document["train"]["environment"]["env_config"])
@@ -350,7 +375,9 @@ environment_hash: sha256:deadbeef
             "supermariobrosnes-turbo",
         )
         self.assertNotIn("env_provider", document["eval"]["environment"]["env_config"])
-        self.assertEqual(document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0"
+        )
         self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 16)
         self.assertNotIn("env_threads", document["eval"]["environment"]["env_config"])
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
@@ -361,9 +388,10 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("seed", document["eval"]["environment"]["env_config"])
         self.assertNotIn("max_steps", document["eval"]["environment"]["env_config"])
         self.assertEqual(
-            document["eval"]["environment"]["env_config"]["done_on_events"],
+            document["eval"]["environment"]["task"]["termination"]["success"],
             ["level_change"],
         )
+        self.assertEqual(document["train"]["environment"]["task"]["id"], "mario")
 
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)
@@ -415,7 +443,9 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("seed_protocol", document)
         self.assertNotIn("historical_context", document)
         self.assertNotIn("updated_at", document)
-        self.assertEqual(document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0")
+        self.assertEqual(
+            document["train"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0"
+        )
         self.assertNotIn("execution", document)
 
 

@@ -14,7 +14,7 @@ from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
-from rlab.env_wrappers import normalize_env_wrapper_specs
+from rlab.env_identity import validate_task_config
 from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
 from rlab.fleet import load_capacity_policy, validate_capacity_policy
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
@@ -31,11 +31,12 @@ from rlab.validation import (
     require_schema_version as _require_schema_version,
     string_list,
 )
-from rlab.vec_wrappers import normalize_vec_wrapper_specs
 
 
 BENCHMARK_BASELINES_SCHEMA_VERSION = 1
-ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs"}
+ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs", "task"}
+
+
 @dataclass(frozen=True)
 class ValidationIssue:
     path: str
@@ -171,23 +172,23 @@ def _validate_environment_identity(
             label=f"{label}.environment",
             require_game=True,
         )
+        task = _require_mapping(
+            _require_key(environment, "task", label=f"{label}.environment"),
+            label=f"{label}.environment.task",
+        )
+        validate_task_config(task, label=f"{label}.environment.task")
         return environment
 
-    for old_key in ("provider", "env_provider", "provider_env_id"):
-        if old_key in environment:
-            raise ValueError(
-                f"{label}.environment.{old_key} was replaced by fully-qualified env_id"
-            )
     env_id = _require_non_empty_string(environment, "env_id", label=f"{label}.environment")
     try:
         resolve_env_id(env_id)
     except ValueError as exc:
         raise ValueError(f"{label}.environment.env_id is invalid: {exc}") from exc
-    action = _require_mapping(
-        _require_key(environment, "action", label=f"{label}.environment"),
-        label=f"{label}.environment.action",
+    task = _require_mapping(
+        _require_key(environment, "task", label=f"{label}.environment"),
+        label=f"{label}.environment.task",
     )
-    _require_non_empty_string(action, "action_set", label=f"{label}.environment.action")
+    validate_task_config(task, label=f"{label}.environment.task")
     preprocessing = _require_mapping(
         _require_key(environment, "preprocessing", label=f"{label}.environment"),
         label=f"{label}.environment.preprocessing",
@@ -212,6 +213,8 @@ def _validate_environment_env_config(
     combined = dict(env_config)
     if "env_provider" in environment and "env_provider" not in combined:
         combined["env_provider"] = environment["env_provider"]
+    if "task" in environment and "task" not in combined:
+        combined["task"] = environment["task"]
     _validate_env_config(
         combined,
         label=f"{label}.env_config",
@@ -245,7 +248,7 @@ def _validate_env_config(
     validate_train_config_fields(
         validation_config,
         label=label,
-        keys=tuple(set(validation_config) & ENV_CONFIG_ALLOWED_KEYS),
+        keys=tuple((set(validation_config) & ENV_CONFIG_ALLOWED_KEYS) - {"task"}),
         required_keys=tuple(required_keys),
     )
     if require_provider:
@@ -267,10 +270,9 @@ def _validate_env_config(
             raise ValueError(f"{label}.env_provider is invalid: {exc}") from exc
     if "state" in env_config and "states" in env_config:
         raise ValueError(f"{label} must define only one of state or states")
-    if "env_wrappers" in env_config:
-        normalize_env_wrapper_specs(env_config["env_wrappers"], label=f"{label}.env_wrappers")
-    if "vec_wrappers" in env_config:
-        normalize_vec_wrapper_specs(env_config["vec_wrappers"], label=f"{label}.vec_wrappers")
+    if "task" in env_config:
+        task = _require_mapping(env_config["task"], label=f"{label}.task")
+        validate_task_config(task, label=f"{label}.task")
 
 
 def _goal_train_section(document: Mapping[str, Any], *, label: str) -> Mapping[str, Any]:
@@ -308,11 +310,8 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         eval_environment_keys = {
             "env_provider",
             "env_config",
-            "action",
             "preprocessing",
-            "task_conditioning",
-            "termination",
-            "reward",
+            "task",
         }
         extra_keys = sorted(set(eval_environment) - eval_environment_keys)
         if extra_keys:
@@ -377,8 +376,6 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
                 )
         if "stochastic" in policy:
             _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
-        if "done_on_events" in policy:
-            _require_string_list(policy, "done_on_events", label=f"{label}.eval.policy")
     elif policy is not None:
         raise ValueError(f"{label}.eval.policy must be an object")
 

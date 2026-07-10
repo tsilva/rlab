@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -17,8 +18,7 @@ from rlab.early_stop import (
     flat_metric_rule_from_early_stop,
     normalize_early_stop_config,
 )
-from rlab.event_payloads import event_payloads, info_event_payloads
-from rlab.env import DoneOnInfoRules, EnvConfig
+from rlab.env import EnvConfig
 from rlab.metric_names import (
     GLOBAL_STEP,
     ROLLOUT_ADVANTAGE,
@@ -54,7 +54,37 @@ from rlab.metric_names import (
 from rlab.metric_store import MetricStore, file_sha256
 
 
-class LedgerCheckpointCallback(BaseCallback):
+def task_metric_source(start_id: Any) -> Any:
+    """Map readable Mario starts to the native coordinate used by existing metrics."""
+    match = re.fullmatch(r"Level(\d+)-(\d+)", str(start_id))
+    if match is None:
+        return start_id
+    return int(match.group(1)) - 1, int(match.group(2)) - 1
+
+
+class CallbackHelper:
+    """Plain lifecycle component driven by the single SB3 callback."""
+
+    def __init__(self) -> None:
+        self.model: Any = None
+        self.locals: dict[str, Any] = {}
+        self.globals: dict[str, Any] = {}
+        self.num_timesteps = 0
+        self.n_calls = 0
+
+    @property
+    def logger(self) -> Any:
+        return self.model.logger
+
+    def bind(self, callback: BaseCallback) -> None:
+        self.model = callback.model
+        self.locals = callback.locals
+        self.globals = callback.globals
+        self.num_timesteps = callback.num_timesteps
+        self.n_calls = callback.n_calls
+
+
+class LedgerCheckpointHelper(CallbackHelper):
     def __init__(
         self,
         *,
@@ -110,7 +140,7 @@ class LedgerCheckpointCallback(BaseCallback):
         return final_path
 
 
-class ThroughputCallback(BaseCallback):
+class ThroughputHelper(CallbackHelper):
     """Log rollout-only and full-loop instantaneous throughput."""
 
     def __init__(self, clock: Callable[[], float] | None = None):
@@ -201,7 +231,7 @@ class ThroughputCallback(BaseCallback):
             )
 
 
-class TimeElapsedCallback(BaseCallback):
+class TimeElapsedHelper(CallbackHelper):
     """Mirror elapsed SB3 learn-loop time into W&B history."""
 
     def __init__(self, wandb_run=None, clock: Callable[[], float] | None = None):
@@ -238,7 +268,7 @@ class TimeElapsedCallback(BaseCallback):
         return elapsed if elapsed >= 0 else None
 
 
-class MetricThresholdStopCallback(BaseCallback):
+class MetricThresholdStopHelper(CallbackHelper):
     def __init__(
         self,
         *,
@@ -257,7 +287,9 @@ class MetricThresholdStopCallback(BaseCallback):
         self.marker_path = marker_path
         self.triggered = False
         self.stop_requested = False
-        self.metric_store = MetricStore(metric_store_path, timeout=0.05) if metric_store_path else None
+        self.metric_store = (
+            MetricStore(metric_store_path, timeout=0.05) if metric_store_path else None
+        )
         self.poll_seconds = poll_seconds
         self.clock = clock or time.perf_counter
         self.last_poll: float | None = None
@@ -301,7 +333,7 @@ class MetricThresholdStopCallback(BaseCallback):
                 continue
             try:
                 value = float(values[metric_name])
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return None
             return value if math.isfinite(value) else None
         if self.metric_store is not None:
@@ -322,7 +354,9 @@ class MetricThresholdStopCallback(BaseCallback):
         if self.flat_rule:
             value = values.get(self.metric_name)
             if value is not None:
-                return f"{self.metric_name} {value:.12g} {self.operator} {float(self.threshold):.12g}"
+                return (
+                    f"{self.metric_name} {value:.12g} {self.operator} {float(self.threshold):.12g}"
+                )
         return "early_stop metrics matched"
 
     def write_marker(self, values: Mapping[str, float]) -> None:
@@ -347,7 +381,8 @@ class MetricThresholdStopCallback(BaseCallback):
                 )
         else:
             lines.extend(
-                f"early_stop_value/{metric}={value:.12g}" for metric, value in sorted(values.items())
+                f"early_stop_value/{metric}={value:.12g}"
+                for metric, value in sorted(values.items())
             )
         self.marker_path.write_text(
             "\n".join(lines) + "\n",
@@ -355,7 +390,7 @@ class MetricThresholdStopCallback(BaseCallback):
         )
 
 
-class MetricStoreMirrorCallback(BaseCallback):
+class MetricStoreMirrorHelper(CallbackHelper):
     def __init__(
         self,
         metric_store_path: Path | str,
@@ -410,7 +445,7 @@ class MetricStoreMirrorCallback(BaseCallback):
                 self.last_warning = now
 
 
-class RolloutDiagnosticsCallback(BaseCallback):
+class RolloutDiagnosticsHelper(CallbackHelper):
     """Log rollout-buffer value and advantage distributions."""
 
     def __init__(self, wandb_run=None, log_histograms: bool = True):
@@ -463,8 +498,8 @@ class RolloutDiagnosticsCallback(BaseCallback):
             self.wandb_run.log(payload, step=self.num_timesteps)
 
 
-class RewardComponentDiagnosticsCallback(BaseCallback):
-    """Log per-rollout reward component distributions from env info dicts."""
+class RewardDiagnosticsHelper(CallbackHelper):
+    """Log per-rollout reward component distributions from runtime records."""
 
     component_info_keys = {
         "shaped": "shaped_reward",
@@ -486,19 +521,18 @@ class RewardComponentDiagnosticsCallback(BaseCallback):
             component: [] for component in self.component_info_keys
         }
 
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos", [])
-        for info in infos:
+    def _on_records(self, records: Iterable[Any]) -> bool:
+        for record in records:
+            if not hasattr(record, "num_envs") or hasattr(record, "lane"):
+                continue
+            metrics = getattr(record, "metrics", {}) or {}
             for component, info_key in self.component_info_keys.items():
-                value = info.get(info_key)
+                value = metrics.get(info_key)
                 if value is None:
                     continue
-                try:
-                    numeric_value = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if np.isfinite(numeric_value):
-                    self.component_values[component].append(numeric_value)
+                values = np.asarray(value, dtype=np.float64).reshape(-1)
+                finite = values[np.isfinite(values)]
+                self.component_values[component].extend(finite.tolist())
         return True
 
     def _on_rollout_end(self) -> None:
@@ -528,68 +562,63 @@ class RewardComponentDiagnosticsCallback(BaseCallback):
             self.logger.record(f"{TRAIN_REWARD_SHARE_ROOT}/{component}", share)
 
 
-class DoneCounterCallback(BaseCallback):
+class DoneMetricsHelper(CallbackHelper):
     ep_window_size = 100
 
     def __init__(
         self,
         wandb_run=None,
-        default_state: str | None = None,
-        done_on_info: DoneOnInfoRules | None = None,
+        event_names: Sequence[str] = (),
     ):
         super().__init__()
         self.wandb_run = wandb_run
-        self.default_state = default_state
-        self.done_on_info = dict(done_on_info or {})
+        self.event_names = tuple(str(name) for name in event_names)
         self.done_count = 0
         self.reason_counts: dict[str, int] = {}
         self.detail_counts: dict[str, int] = {}
         self.detail_episode_windows: dict[str, deque[bool]] = {}
 
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos", [])
-        dones = self.locals.get("dones", [])
-        for done, info in zip(dones, infos, strict=False):
-            if not bool(done):
+    def _on_records(self, records: Iterable[Any]) -> bool:
+        for record in records:
+            if not hasattr(record, "episode_return"):
                 continue
-
-            reason_payloads = self.done_reason_payloads(info)
-            if bool(info.get("TimeLimit.truncated", False)) and "max_steps" not in reason_payloads:
+            events = set(getattr(record, "events", ()))
+            start_id = getattr(record, "start_id", None)
+            metric_source = task_metric_source(start_id) if start_id is not None else None
+            reason_payloads = {
+                event: ({"prev": metric_source} if metric_source is not None else {})
+                for event in sorted(events - {"timeout"})
+            }
+            if bool(getattr(record, "truncated", False)):
                 reason_payloads["max_steps"] = {}
             if not reason_payloads:
                 reason_payloads["unclassified"] = {}
-
-            payload = self.record_done(reason_payloads, info)
-
+            payload = self.record_done(reason_payloads, source_value=metric_source)
             if self.wandb_run is not None:
                 self.wandb_run.log(
-                    {
-                        GLOBAL_STEP: self.num_timesteps,
-                        **payload,
-                    },
+                    {GLOBAL_STEP: self.num_timesteps, **payload},
                     step=self.num_timesteps,
                 )
-
         return True
-
-    @staticmethod
-    def done_reason_payloads(info: dict[str, Any]) -> dict[str, Any]:
-        return event_payloads(info.get("done_on_info"))
 
     def record_done(
         self,
         reason_payloads: dict[str, Any],
-        info: Mapping[str, Any] | None = None,
+        *,
+        source_value: Any | None = None,
     ) -> dict[str, int | float]:
         self.done_count += 1
-        info = info or {}
         episode_detail_metrics: set[str] = set()
         for reason, payload in reason_payloads.items():
             self.reason_counts[reason] = self.reason_counts.get(reason, 0) + 1
             for metric in self.done_detail_metrics(reason, payload):
                 self.detail_counts[metric] = self.detail_counts.get(metric, 0) + 1
                 episode_detail_metrics.add(metric)
-        self.record_detail_episode_windows(reason_payloads, episode_detail_metrics, info)
+        self.record_detail_episode_windows(
+            reason_payloads,
+            episode_detail_metrics,
+            source_value=source_value,
+        )
         return self.record_metrics()
 
     @staticmethod
@@ -609,61 +638,26 @@ class DoneCounterCallback(BaseCallback):
         self,
         reason_payloads: dict[str, Any],
         fired_detail_metrics: set[str],
-        info: Mapping[str, Any],
+        *,
+        source_value: Any | None,
     ) -> None:
-        source_reasons = set(self.done_on_info)
+        source_reasons = set(self.event_names)
         source_reasons.update(reason_payloads)
         for reason in sorted(source_reasons):
-            source_value = self.source_value_for_reason(reason, reason_payloads.get(reason), info)
-            if source_value is None:
+            payload = reason_payloads.get(reason)
+            event_source = (
+                payload.get("prev")
+                if isinstance(payload, Mapping) and payload.get("prev") is not None
+                else source_value
+            )
+            if event_source is None:
                 continue
-            metric = train_done_value_metric(reason, "from", source_value)
+            metric = train_done_value_metric(reason, "from", event_source)
             window = self.detail_episode_windows.setdefault(
                 metric,
                 deque(maxlen=self.ep_window_size),
             )
             window.append(metric in fired_detail_metrics)
-
-    def source_value_for_reason(
-        self,
-        reason: str,
-        payload: Any,
-        info: Mapping[str, Any],
-    ) -> Any | None:
-        if isinstance(payload, dict) and "prev" in payload and payload["prev"] is not None:
-            return payload["prev"]
-        keys = self.source_keys_for_reason(reason, payload)
-        if keys is None:
-            return None
-        return self.info_value_for_keys(info, keys)
-
-    def source_keys_for_reason(self, reason: str, payload: Any) -> str | tuple[str, ...] | None:
-        rule = self.done_on_info.get(reason)
-        if rule is not None:
-            key_or_keys, _op = rule
-            return key_or_keys
-        if isinstance(payload, dict) and "keys" in payload:
-            key_or_keys = payload["keys"]
-            if isinstance(key_or_keys, str):
-                return key_or_keys
-            if isinstance(key_or_keys, (list, tuple)):
-                keys = tuple(str(item) for item in key_or_keys)
-                return keys if keys else None
-        return None
-
-    @staticmethod
-    def info_value_for_keys(
-        info: Mapping[str, Any],
-        keys: str | tuple[str, ...],
-    ) -> Any | None:
-        if isinstance(keys, str):
-            return info.get(keys)
-        values = []
-        for key in keys:
-            if key not in info:
-                return None
-            values.append(info[key])
-        return tuple(values)
 
     def record_ep_window_rates(self) -> dict[str, float]:
         detail_rates = {
@@ -714,40 +708,67 @@ class DoneCounterCallback(BaseCallback):
         return payload
 
 
-class LevelCompleteInfoCallback(BaseCallback):
+class LevelCompletionMetricsHelper(CallbackHelper):
     ep_window_size = 100
     completion_source_event = "level_change"
 
     def __init__(
         self,
         wandb_run=None,
-        info_events: DoneOnInfoRules | None = None,
     ):
         super().__init__()
         self.wandb_run = wandb_run
-        self.info_events = dict(info_events or {})
         self.complete_counts: dict[str, int] = {}
         self.attempt_windows: dict[str, deque[bool]] = {}
         self.latest_current_rates: dict[str, float] = {}
         self.latest_rates: dict[str, float] = {}
         self.current_sources: list[Any | None] = []
 
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos", [])
-        dones = self.locals.get("dones", [])
-        self.ensure_slots(len(infos))
+    def _on_records(self, records: Iterable[Any]) -> bool:
         payload: dict[str, int | float] = {}
+        for record in records:
+            events = set(getattr(record, "events", ()))
+            lane = int(getattr(record, "lane", 0))
+            self.ensure_slots(lane + 1)
+            start_id = getattr(record, "start_id", None)
+            if self.current_sources[lane] is None and start_id is not None:
+                self.current_sources[lane] = task_metric_source(start_id)
 
-        for index, info in enumerate(infos):
-            done = bool(dones[index]) if index < len(dones) else False
-            payload.update(self.record_step(index, info, done))
+            if not hasattr(record, "episode_return"):
+                transition = (getattr(record, "transitions", {}) or {}).get(
+                    self.completion_source_event
+                )
+                if self.completion_source_event not in events or transition is None:
+                    continue
+                source, target = transition
+                source = tuple(np.asarray(source).tolist())
+                target = tuple(np.asarray(target).tolist())
+                if "life_loss" not in events:
+                    result = self.record_attempt(source, completed=True)
+                    self.record_metrics(result)
+                    payload.update(result)
+                    self.current_sources[lane] = target
+                continue
 
+            outcome = getattr(record, "outcome", None)
+            outcome_name = str(getattr(outcome, "name", outcome)).lower()
+            if outcome_name == "success" and "life_loss" not in events:
+                self.current_sources[lane] = None
+                continue
+            source = self.current_sources[lane]
+            if source is None:
+                metrics = getattr(record, "metrics", {}) or {}
+                if "level_hi" in metrics and "level_lo" in metrics:
+                    source = (int(metrics["level_hi"]), int(metrics["level_lo"]))
+            if source is None:
+                continue
+            result = self.record_attempt(source, completed=False)
+            self.record_metrics(result)
+            payload.update(result)
+            self.current_sources[lane] = None
         if payload and self.wandb_run is not None:
             self.wandb_run.log(
-                {
-                    GLOBAL_STEP: self.num_timesteps,
-                    **payload,
-                },
+                {GLOBAL_STEP: self.num_timesteps, **payload},
                 step=self.num_timesteps,
             )
         return True
@@ -755,108 +776,6 @@ class LevelCompleteInfoCallback(BaseCallback):
     def ensure_slots(self, count: int) -> None:
         while len(self.current_sources) < count:
             self.current_sources.append(None)
-
-    def record_step(
-        self,
-        index: int,
-        info: Mapping[str, Any],
-        done: bool,
-    ) -> dict[str, int | float]:
-        event_payloads = info_event_payloads(info)
-        level_payload = event_payloads.get(self.completion_source_event)
-        completed = bool(info.get("completion_event", info.get("level_complete", False)))
-        if self.failed_by_death_or_life_loss(event_payloads, info):
-            completed = False
-        source = self.source_value_for_level(
-            level_payload,
-            info,
-            index,
-            allow_info_current=not completed,
-        )
-        if source is not None:
-            self.current_sources[index] = source
-
-        attempt_ended = self.attempt_ended(event_payloads, info, done)
-        if not completed and not attempt_ended:
-            self.update_source_after_attempt(index, level_payload, info, done)
-            return {}
-
-        attempt_source = source if source is not None else self.current_sources[index]
-        if attempt_source is None:
-            self.update_source_after_attempt(index, level_payload, info, done)
-            return {}
-
-        result = self.record_attempt(attempt_source, completed=completed)
-        self.update_source_after_attempt(index, level_payload, info, done)
-        self.record_metrics(result)
-        return result
-
-    @staticmethod
-    def payload_previous_value(payload: Any) -> Any | None:
-        if isinstance(payload, dict) and "prev" in payload and payload["prev"] is not None:
-            return payload["prev"]
-        return None
-
-    @staticmethod
-    def payload_next_value(payload: Any) -> Any | None:
-        if isinstance(payload, dict) and "next" in payload and payload["next"] is not None:
-            return payload["next"]
-        return None
-
-    def source_value_for_level(
-        self,
-        payload: Any,
-        info: Mapping[str, Any],
-        index: int,
-        *,
-        allow_info_current: bool,
-    ) -> Any | None:
-        previous = self.payload_previous_value(payload)
-        if previous is not None:
-            return previous
-        if self.current_sources[index] is not None:
-            return self.current_sources[index]
-        if not allow_info_current:
-            return None
-        keys = self.source_keys_for_level(payload)
-        if keys is None:
-            return None
-        return DoneCounterCallback.info_value_for_keys(info, keys)
-
-    def source_keys_for_level(self, payload: Any) -> str | tuple[str, ...] | None:
-        rule = self.info_events.get(self.completion_source_event)
-        if rule is not None:
-            key_or_keys, _op = rule
-            return key_or_keys
-        if isinstance(payload, dict) and "keys" in payload:
-            key_or_keys = payload["keys"]
-            if isinstance(key_or_keys, str):
-                return key_or_keys
-            if isinstance(key_or_keys, (list, tuple)):
-                keys = tuple(str(item) for item in key_or_keys)
-                return keys if keys else None
-        return ("levelHi", "levelLo")
-
-    @staticmethod
-    def attempt_ended(
-        event_payloads: Mapping[str, Any],
-        info: Mapping[str, Any],
-        done: bool,
-    ) -> bool:
-        return bool(
-            done
-            or LevelCompleteInfoCallback.failed_by_death_or_life_loss(event_payloads, info)
-            or info.get("TimeLimit.truncated", False)
-        )
-
-    @staticmethod
-    def failed_by_death_or_life_loss(
-        event_payloads: Mapping[str, Any],
-        info: Mapping[str, Any],
-    ) -> bool:
-        return bool(
-            info.get("died", False) or info.get("life_loss", False) or "life_loss" in event_payloads
-        )
 
     def record_attempt(self, source: Any, *, completed: bool) -> dict[str, int | float]:
         metric = train_info_level_complete_from_metric(source)
@@ -884,43 +803,75 @@ class LevelCompleteInfoCallback(BaseCallback):
             payload[rate_metric] = rate
             self.latest_rates[rate_metric] = rate
             payload[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = min(self.latest_rates.values())
-            payload[TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST] = sum(self.latest_rates.values()) / len(
-                self.latest_rates
-            )
+            payload[TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST] = sum(
+                self.latest_rates.values()
+            ) / len(self.latest_rates)
         return payload
-
-    def update_source_after_attempt(
-        self,
-        index: int,
-        payload: Any,
-        info: Mapping[str, Any],
-        done: bool,
-    ) -> None:
-        if done:
-            reset_info = info.get("reset_info")
-            keys = self.source_keys_for_level(payload)
-            if isinstance(reset_info, Mapping) and keys is not None:
-                reset_source = DoneCounterCallback.info_value_for_keys(reset_info, keys)
-                if reset_source is not None:
-                    self.current_sources[index] = reset_source
-                    return
-            self.current_sources[index] = None
-            return
-
-        next_value = self.payload_next_value(payload)
-        if next_value is not None:
-            self.current_sources[index] = next_value
-            return
-        keys = self.source_keys_for_level(payload)
-        if keys is None:
-            self.current_sources[index] = None
-            return
-        current_source = DoneCounterCallback.info_value_for_keys(info, keys)
-        if current_source is None:
-            self.current_sources[index] = None
-        else:
-            self.current_sources[index] = current_source
 
     def record_metrics(self, payload: Mapping[str, int | float]) -> None:
         for key, value in payload.items():
             self.logger.record(key, value)
+
+
+class RlabCallback(BaseCallback):
+    """The sole SB3 callback; delegates lifecycle work to plain components."""
+
+    def __init__(self, components: Sequence[CallbackHelper]) -> None:
+        super().__init__()
+        self.components = tuple(components)
+        self._record_source: Any | None = None
+        self._record_source_searched = False
+
+    def _bind(self, component: CallbackHelper) -> None:
+        component.bind(self)
+
+    def _call(self, hook: str) -> bool:
+        records: list[Any] | None = None
+        for component in self.components:
+            self._bind(component)
+            record_hook = getattr(component, "_on_records", None)
+            if hook == "_on_step" and callable(record_hook):
+                if records is None:
+                    source = self._find_record_source()
+                    if source is None:
+                        raise RuntimeError("RlabCallback requires RlabVecEnv.drain_records()")
+                    records = list(source.drain_records())
+                if record_hook(records) is False:
+                    return False
+                continue
+            method = getattr(component, hook, None)
+            if callable(method) and method() is False:
+                return False
+        return True
+
+    def _find_record_source(self) -> Any | None:
+        if self._record_source_searched:
+            return self._record_source
+        self._record_source_searched = True
+        seen: set[int] = set()
+        current = getattr(self.model, "env", None)
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if callable(getattr(current, "drain_records", None)):
+                self._record_source = current
+                break
+            current = getattr(current, "venv", None) or getattr(current, "env", None)
+        return self._record_source
+
+    def _init_callback(self) -> None:
+        self._call("_init_callback")
+
+    def _on_training_start(self) -> None:
+        self._call("_on_training_start")
+
+    def _on_rollout_start(self) -> None:
+        self._call("_on_rollout_start")
+
+    def _on_step(self) -> bool:
+        return self._call("_on_step")
+
+    def _on_rollout_end(self) -> None:
+        self._call("_on_rollout_end")
+
+    def _on_training_end(self) -> None:
+        self._call("_on_training_end")

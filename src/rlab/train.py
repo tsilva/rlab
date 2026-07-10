@@ -12,9 +12,9 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import HumanOutputFormat
 from stable_baselines3.common.utils import set_random_seed
+from gymnasium import spaces
 
 from rlab.artifacts import (
     init_wandb,
@@ -23,15 +23,17 @@ from rlab.artifacts import (
     write_wandb_url,
 )
 from rlab.callbacks import (
-    DoneCounterCallback,
-    LedgerCheckpointCallback,
-    LevelCompleteInfoCallback,
-    MetricStoreMirrorCallback,
-    MetricThresholdStopCallback,
-    RewardComponentDiagnosticsCallback,
-    RolloutDiagnosticsCallback,
-    ThroughputCallback,
-    TimeElapsedCallback,
+    CallbackHelper,
+    DoneMetricsHelper,
+    LedgerCheckpointHelper,
+    LevelCompletionMetricsHelper,
+    MetricStoreMirrorHelper,
+    MetricThresholdStopHelper,
+    RewardDiagnosticsHelper,
+    RlabCallback,
+    RolloutDiagnosticsHelper,
+    ThroughputHelper,
+    TimeElapsedHelper,
 )
 from rlab.cli import effective_n_envs, parse_train_args
 from rlab.device import resolve_sb3_device
@@ -41,11 +43,12 @@ from rlab.env import (
     make_training_vec_env,
     resolve_env_config,
     resolve_mixed_state_config,
+    task_conditioning,
 )
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 from rlab.schedules import (
-    EntropyCoefficientScheduleCallback,
+    EntropyCoefficientScheduleHelper,
     apply_resume_hyperparameters,
     learning_rate_schedule,
 )
@@ -53,6 +56,16 @@ from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normaliza
 
 
 SB3_HUMAN_OUTPUT_MAX_LENGTH = 512
+
+
+def policy_name_for_observation_space(observation_space) -> str:
+    if isinstance(observation_space, spaces.Dict):
+        return "MultiInputPolicy"
+    if isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 3:
+        return "CnnPolicy"
+    return "MlpPolicy"
+
+
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
 
 
@@ -166,7 +179,7 @@ def disable_sb3_human_output_truncation(
             output_format.max_length = max_length
 
 
-class Sb3HumanOutputFormatCallback(BaseCallback):
+class Sb3HumanOutputFormatHelper(CallbackHelper):
     def __init__(self, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
         super().__init__()
         self.max_length = max_length
@@ -178,7 +191,7 @@ class Sb3HumanOutputFormatCallback(BaseCallback):
         return True
 
 
-class GracefulStopCallback(BaseCallback):
+class GracefulStopHelper(CallbackHelper):
     def __init__(self, stop_flag: GracefulStopFlag) -> None:
         super().__init__()
         self.stop_flag = stop_flag
@@ -214,9 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         print("warning: --run-description is empty", flush=True)
 
-    config = resolve_env_config(
-        env_config_from_args(args, include_states=True)
-    )
+    config = resolve_env_config(env_config_from_args(args, include_states=True))
     n_envs = effective_n_envs(args)
     config = resolve_mixed_state_config(config, n_envs=n_envs)
     assert_provider_runtime_available(config)
@@ -233,7 +244,7 @@ def main(argv: list[str] | None = None) -> None:
 
     lr_schedule = learning_rate_schedule(args)
     advantage_normalization = resolve_advantage_normalization_mode(args)
-    if advantage_normalization == "per-task" and not config.task_conditioning:
+    if advantage_normalization == "per-task" and not task_conditioning(config).get("enabled"):
         raise ValueError("--advantage-normalization per-task requires --task-conditioning")
     sb3_normalize_advantage = advantage_normalization == "global"
     if args.resume:
@@ -243,7 +254,7 @@ def main(argv: list[str] | None = None) -> None:
         apply_resume_hyperparameters(model, args)
         model.normalize_advantage = sb3_normalize_advantage
     else:
-        policy_name = "MultiInputPolicy" if config.task_conditioning else "CnnPolicy"
+        policy_name = policy_name_for_observation_space(env.observation_space)
         model_cls = PerTaskAdvantagePPO if advantage_normalization == "per-task" else PPO
         model = model_cls(
             policy_name,
@@ -265,28 +276,20 @@ def main(argv: list[str] | None = None) -> None:
             device=device,
             verbose=1,
         )
-    callbacks = [
-        GracefulStopCallback(graceful_stop_flag),
-        Sb3HumanOutputFormatCallback(),
-        TimeElapsedCallback(wandb_run=wandb_run),
-        ThroughputCallback(),
-        DoneCounterCallback(
+    components = [
+        GracefulStopHelper(graceful_stop_flag),
+        Sb3HumanOutputFormatHelper(),
+        TimeElapsedHelper(wandb_run=wandb_run),
+        ThroughputHelper(),
+        DoneMetricsHelper(
             wandb_run=wandb_run,
-            default_state=config.state,
-            done_on_info={
-                name: config.info_events[name]
-                for name in config.done_on_events
-                if name in config.info_events
-            },
+            event_names=tuple(config.task.get("events", {})),
         ),
-        LevelCompleteInfoCallback(
-            wandb_run=wandb_run,
-            info_events=config.info_events,
-        ),
-        MetricStoreMirrorCallback(store_path),
+        LevelCompletionMetricsHelper(wandb_run=wandb_run),
+        MetricStoreMirrorHelper(store_path),
         *(
             [
-                MetricThresholdStopCallback(
+                MetricThresholdStopHelper(
                     marker_path=Path(run_dir) / "early_stop.txt",
                     detector=args.early_stop,
                     metric_store_path=store_path,
@@ -295,13 +298,13 @@ def main(argv: list[str] | None = None) -> None:
             if args.early_stop
             else []
         ),
-        RolloutDiagnosticsCallback(wandb_run=wandb_run),
-        RewardComponentDiagnosticsCallback(),
+        RolloutDiagnosticsHelper(wandb_run=wandb_run),
+        RewardDiagnosticsHelper(),
     ]
     checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:
-        callbacks.append(
-            LedgerCheckpointCallback(
+        components.append(
+            LedgerCheckpointHelper(
                 args=args,
                 config=config,
                 save_freq=checkpoint_save_freq,
@@ -311,8 +314,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     if args.ent_coef_final is not None:
-        callbacks.append(
-            EntropyCoefficientScheduleCallback(
+        components.append(
+            EntropyCoefficientScheduleHelper(
                 initial_value=args.ent_coef,
                 final_value=args.ent_coef_final,
                 schedule_timesteps=args.ent_coef_schedule_timesteps
@@ -322,10 +325,12 @@ def main(argv: list[str] | None = None) -> None:
         )
     print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
 
+    callback = RlabCallback(components)
+
     final_model_path = Path(run_dir, "final_model.zip")
     env_closed = False
     try:
-        model.learn(total_timesteps=args.timesteps, callback=callbacks, progress_bar=True)
+        model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
         if graceful_stop_flag.requested and checkpoint_save_freq is not None:
             interrupted_checkpoint_path = (
                 Path(checkpoint_dir)

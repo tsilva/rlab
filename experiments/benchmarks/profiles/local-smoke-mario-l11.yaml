@@ -2,6 +2,9 @@ schema_version: 1
 name: local-smoke-mario-l11
 kind: local_smoke
 description: Tiny local train/save/load/eval smoke on the imported Mario Level1-1 state.
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 machine: local-macbook
 run_target: local-macbook
@@ -14,7 +17,7 @@ recipe_overrides:
 - train.policy.timesteps=512
 - train.environment.env_config.n_envs=1
 - train.policy.batch_size=128
-- train.environment.env_config.max_episode_steps=600
+- train.environment.task.termination.max_episode_steps=600
 - train.checkpoint_freq=256
 - logging.wandb=false
 - logging.wandb_mode=disabled

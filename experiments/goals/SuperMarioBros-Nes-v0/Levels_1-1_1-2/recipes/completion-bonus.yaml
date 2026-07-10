@@ -14,17 +14,6 @@ description: >-
   task conditioning, done events, and PPO envelope as the base recipe.
 train:
   environment:
-    env_config:
-      env_wrappers:
-      - id: SuperMarioBrosNesProgressInfoWrapper
-      - id: SuperMarioBrosNesRewardEnvWrapper
-        kwargs:
-          reward_mode: score
-          progress_reward_scale: 1.0
-          terminal_reward: 50
-          death_penalty: 25
-          completion_reward: 50.0
-          reward_scale: 10
-          score_progress_clipped: false
-reward:
-  completion_reward: 50.0
+    task:
+      reward:
+        completion_reward: 50.0

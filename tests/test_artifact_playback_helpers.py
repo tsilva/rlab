@@ -79,6 +79,40 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+def mario_task(*, conditioning: bool = False) -> dict:
+    task = {
+        "id": "mario",
+        "action": {"set": "simple"},
+        "signals": {
+            "x": ["xscrollHi", "xscrollLo"],
+            "score": "score",
+            "lives": "lives",
+            "level": ["levelHi", "levelLo"],
+        },
+        "events": {
+            "life_loss": {"signal": "lives", "operation": "decrease"},
+            "level_change": {"signal": "level", "operation": "change"},
+        },
+        "termination": {
+            "failure": ["life_loss"],
+            "success": ["level_change"],
+            "max_episode_steps": 2345,
+        },
+        "reward": {
+            "reward_mode": "score",
+            "reward_scale": 10.0,
+            "score_progress_clipped": True,
+        },
+    }
+    if conditioning:
+        task["conditioning"] = {
+            "enabled": True,
+            "signal": "level",
+            "values": [[0, 0], [0, 1]],
+        }
+    return task
+
+
 class CommandAndArtifactTests(unittest.TestCase):
     def test_build_train_command_skips_empty_target_kl(self) -> None:
         cmd = build_train_command(
@@ -88,26 +122,18 @@ class CommandAndArtifactTests(unittest.TestCase):
                 "state_probs": "1,3",
                 "target_kl": 0.0,
                 "clip_range_vf": 0.2,
-                "task_conditioning_info_vars": ("levelHi", "levelLo"),
+                "task": mario_task(conditioning=True),
                 "policy_net_arch": "128",
                 "value_net_arch": "512,512",
                 "advantage_normalization": "per-task",
-                "task_conditioning": True,
                 "wandb": True,
                 "normalize_advantage": False,
-                "info_events_json": {
-                    "life_loss": ["lives", "decrease"],
-                    "level_change": [["levelHi", "levelLo"], "change"],
-                },
-                "done_on_events": "life_loss,level_change",
             }
         )
         self.assertIn("--run-name", cmd)
         self.assertIn("--states", cmd)
         self.assertIn("--state-probs", cmd)
-        self.assertIn("--task-conditioning", cmd)
-        self.assertIn("--task-conditioning-info-vars", cmd)
-        self.assertIn("levelHi,levelLo", cmd)
+        self.assertIn("--task-json", cmd)
         self.assertNotIn("True", cmd)
         self.assertNotIn("--target-kl", cmd)
         self.assertIn("--clip-range-vf", cmd)
@@ -118,13 +144,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("512,512", cmd)
         self.assertIn("--advantage-normalization", cmd)
         self.assertIn("per-task", cmd)
-        self.assertIn("--info-events-json", cmd)
-        self.assertIn(
-            '{"life_loss":["lives","decrease"],"level_change":[["levelHi","levelLo"],"change"]}',
-            cmd,
-        )
-        self.assertIn("--done-on-events", cmd)
-        self.assertIn("life_loss,level_change", cmd)
         self.assertIn("--wandb", cmd)
         self.assertIn("--no-normalize-advantage", cmd)
 
@@ -147,42 +166,21 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertNotIn("--eval-video-fps", cmd)
         self.assertNotIn("--eval-video-scale", cmd)
 
-    def test_train_parser_accepts_task_conditioning_and_info_event_flags(self) -> None:
+    def test_train_parser_accepts_canonical_task(self) -> None:
+        task = mario_task(conditioning=True)
         args = build_train_parser().parse_args(
             [
                 "--game",
                 "SuperMarioBros-Nes-v0",
                 "--states",
                 "Level1-1,Level1-2",
-                "--task-conditioning",
-                "--task-conditioning-info-vars",
-                "levelHi,levelLo",
-                "--task-conditioning-info-values",
-                "0,0;0,1",
-                "--info-events-json",
-                '{"life_loss":["lives","decrease"],"level_change":[["levelHi","levelLo"],"change"]}',
-                "--done-on-events",
-                "life_loss,level_change",
+                "--task-json",
+                json.dumps(task),
             ]
         )
 
-        self.assertEqual(args.task_conditioning_info_vars, "levelHi,levelLo")
-        self.assertEqual(args.task_conditioning_info_values, "0,0;0,1")
         config = env_config_from_args(args, include_states=True)
-        self.assertEqual(
-            config.info_events,
-            {
-                "life_loss": ("lives", "decrease"),
-                "level_change": (("levelHi", "levelLo"), "change"),
-            },
-        )
-        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
-
-    def test_train_parser_rejects_done_on_info_flag(self) -> None:
-        with patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
-            build_train_parser().parse_args(["--done-on-info-json", "{}"])
-
-        self.assertNotIn("--done-on-info-json", build_train_parser().format_help())
+        self.assertEqual(config.task, task)
 
     def test_train_parser_deletes_completion_stop_flags(self) -> None:
         args = build_train_parser().parse_args([])
@@ -522,7 +520,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 obs_crop=(0, 0, 32, 0),
                 obs_crop_mode="mask",
                 obs_crop_fill=7,
-                action_set="simple",
+                task=mario_task(),
             )
 
             path = write_model_metadata(model_path, args, config, kind="checkpoint")
@@ -535,6 +533,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(metadata["env_config"]["obs_crop"], [0, 0, 32, 0])
             self.assertEqual(metadata["env_config"]["obs_crop_mode"], "mask")
             self.assertEqual(metadata["env_config"]["obs_crop_fill"], 7)
+            self.assertEqual(metadata["env_config"]["task"]["id"], "mario")
+            self.assertEqual(metadata["env_config"]["task"]["action"]["set"], "simple")
             self.assertEqual(
                 metadata["environment"]["preprocessing"]["obs_crop"],
                 [0, 0, 32, 0],
@@ -602,14 +602,11 @@ class CommandAndArtifactTests(unittest.TestCase):
                     game="SuperMarioBros-Nes-v0",
                     state="Level2-1",
                     max_pool_frames=False,
-                    max_episode_steps=2345,
+                    task=mario_task(),
                     observation_size=96,
                     obs_crop=(32, 0, 0, 0),
                     obs_crop_mode="mask",
                     obs_crop_fill=7,
-                    score_progress_clipped=True,
-                    info_events={"level_change": (("levelHi", "levelLo"), "change")},
-                    done_on_events=("level_change",),
                 ),
                 kind="checkpoint",
             )
@@ -619,17 +616,14 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.state, "Level2-1")
             self.assertFalse(config.max_pool_frames)
-            self.assertEqual(config.max_episode_steps, 2345)
+            self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
             self.assertEqual(config.observation_size, 96)
             self.assertEqual(config.obs_crop, (32, 0, 0, 0))
             self.assertEqual(config.obs_crop_mode, "mask")
             self.assertEqual(config.obs_crop_fill, 7)
-            self.assertTrue(config.score_progress_clipped)
-            self.assertEqual(
-                config.info_events,
-                {"level_change": (("levelHi", "levelLo"), "change")},
-            )
-            self.assertEqual(config.done_on_events, ())
+            self.assertTrue(config.task["reward"]["score_progress_clipped"])
+            self.assertEqual(config.task["termination"]["failure"], [])
+            self.assertEqual(config.task["termination"]["success"], [])
 
     def test_playback_requires_model_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -674,40 +668,16 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(config.obs_crop_mode, "mask")
             self.assertEqual(config.obs_crop_fill, 7)
 
-    def test_non_stable_playback_uses_native_display_when_rgb_supported(self) -> None:
+    def test_playback_uses_the_policy_provider_for_display(self) -> None:
         policy_config = EnvConfig(
             env_provider="supermariobrosnes-turbo",
             game="SuperMarioBros-Nes-v0",
             state="Level1-1",
         )
 
-        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=True):
-            config = display_replay_config(policy_config)
+        config = display_replay_config(policy_config)
 
         self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
-
-    def test_non_stable_playback_falls_back_to_stable_retro_without_rgb(self) -> None:
-        policy_config = EnvConfig(
-            env_provider="supermariobrosnes-turbo",
-            game="SuperMarioBros-Nes-v0",
-            state="Level1-1",
-        )
-
-        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
-            config = display_replay_config(policy_config)
-
-        self.assertEqual(config.env_provider, "stable-retro-turbo")
-
-    def test_ale_playback_keeps_native_display_when_stable_retro_lacks_game(self) -> None:
-        policy_config = EnvConfig(
-            env_provider="ale-py",
-            game="breakout",
-        )
-
-        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=False):
-            config = display_replay_config(policy_config)
-
-        self.assertEqual(config.env_provider, "ale-py")
 
     def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
         args = argparse.Namespace(
@@ -728,12 +698,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             frame_skip=4,
             max_pool_frames=False,
             hud_crop_top=32,
-            reward_mode="score",
-            action_set="simple",
-            env_wrappers=({"id": "SuperMarioBrosNesProgressInfoWrapper"},),
+            task=mario_task(),
         )
-        with patch("rlab.play.native_vec_env_supports_rgb_render", return_value=True):
-            display_config = display_replay_config(policy_config)
+        display_config = display_replay_config(policy_config)
 
         lines = resolved_play_launch_lines(
             args,
@@ -760,24 +727,19 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("frame_skip=4", text)
         self.assertIn("max_pool=False", text)
         self.assertIn("action_set=simple", text)
-        self.assertIn("wrappers: SuperMarioBrosNesProgressInfoWrapper", text)
-        self.assertIn("done_on=-", text)
+        self.assertIn("termination_events=life_loss,level_change", text)
 
-    def test_playback_env_config_disables_done_on_events(self) -> None:
+    def test_playback_env_config_disables_task_termination(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
-            info_events={
-                "life_loss": ("lives", "decrease"),
-                "level_change": (("levelHi", "levelLo"), "change"),
-            },
-            done_on_events=("life_loss", "level_change"),
+            task=mario_task(),
         )
 
         playback_config = playback_env_config(config)
 
-        self.assertEqual(playback_config.info_events, config.info_events)
-        self.assertEqual(playback_config.done_on_events, ())
-        self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
+        self.assertEqual(playback_config.task["termination"]["failure"], [])
+        self.assertEqual(playback_config.task["termination"]["success"], [])
+        self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
 
     def test_model_observation_wraps_task_conditioned_policy_input(self) -> None:
         class FakeModel:
@@ -801,7 +763,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 game="SuperMarioBros-Nes-v0",
                 state="Level1-2",
                 states=("Level1-1", "Level1-2"),
-                task_conditioning=True,
+                task=mario_task(conditioning=True),
             ),
         )
 
@@ -830,7 +792,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 game="SuperMarioBros-Nes-v0",
                 state="Level1-1",
                 states=("Level1-1", "Level1-2"),
-                task_conditioning=True,
+                task=mario_task(conditioning=True),
             ),
             active_task_state="Level1-2",
         )
@@ -860,8 +822,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 game="SuperMarioBros-Nes-v0",
                 state="Level1-1",
                 states=("Level1-1", "Level1-2"),
-                task_conditioning=True,
-                task_conditioning_info_vars=("levelHi", "levelLo"),
+                task=mario_task(conditioning=True),
             ),
             active_info_value=(0, 1),
         )
@@ -900,34 +861,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             ),
             "task_conditioning_start episode=1 step=0 task=(0, 0) index=0 one_hot=[1, 0, 0]",
         )
-
-    def test_playback_metadata_ignores_legacy_done_on_info(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
-            model_path.write_bytes(b"zip")
-            model_metadata_path(model_path).write_text(
-                json.dumps(
-                    {
-                        "env_config": {
-                            "game": "SuperMarioBros-Nes-v0",
-                            "state": "Level1-1",
-                            "done_on_info": {
-                                "life_loss": ["lives", "decrease"],
-                                "level_change": [["levelHi", "levelLo"], "change"],
-                            },
-                            "done_on_events": ["life_loss", "level_change"],
-                        },
-                    },
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            config = load_playback_env_config(model_path)
-
-            self.assertEqual(config.state, "Level1-1")
-            self.assertEqual(config.info_events, {})
-            self.assertEqual(config.done_on_events, ())
 
     def test_gui_playback_defaults_to_stochastic(self) -> None:
         parser = build_play_parser()

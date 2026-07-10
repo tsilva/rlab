@@ -2,6 +2,9 @@ schema_version: 1
 name: eval-contract-mario-l11
 kind: eval_contract
 description: Out-of-process eval metadata reconstruction check for a Mario Level1-1 checkpoint artifact.
+environment_contract:
+  schema_version: 2
+  task_termination_boundary: vector_step
 game: SuperMarioBros-Nes-v0
 artifact_ref: <entity/project/run-checkpoint:latest>
 episodes: 5

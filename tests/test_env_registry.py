@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import pytest
+import unittest
 
 from rlab.env_identity import environment_identity_from_train_config, train_config_from_environment
-from rlab.env_registry import registered_env_ids, resolve_env_id, resolve_env_provider
+from rlab.env_registry import registered_env_ids, resolve_env_id
 
 
 def test_resolves_registered_stable_retro_turbo_env_id() -> None:
@@ -66,17 +66,16 @@ def test_resolves_registered_ale_py_ms_pacman_env_id() -> None:
     assert resolved.import_name == "ale_py"
 
 
-def test_provider_registry_owns_native_info_event_metadata() -> None:
-    mario_events = frozenset({"life_loss", "level_change"})
-
-    assert resolve_env_provider("stable-retro-turbo").owned_info_events == mario_events
-    assert resolve_env_provider("supermariobrosnes-turbo").owned_info_events == mario_events
-    assert resolve_env_provider("ale-py").owned_info_events == frozenset()
-
-
 def test_rejects_unregistered_env_id() -> None:
-    with pytest.raises(ValueError, match="does not register environment"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "does not register environment"):
         resolve_env_id("stable-retro-turbo:UnknownGame-v0")
+
+
+def test_dynamic_native_provider_ids_are_explicit_but_not_hardcoded() -> None:
+    gym_id = resolve_env_id("gymnasium:CustomNativeVector-v0")
+
+    assert gym_id.provider_id == "gymnasium"
+    assert gym_id.provider_env_id == "CustomNativeVector-v0"
 
 
 def test_environment_identity_normalizes_bare_stable_retro_game() -> None:
@@ -86,7 +85,7 @@ def test_environment_identity_normalizes_bare_stable_retro_game() -> None:
 
 
 def test_rejects_unknown_provider_alias() -> None:
-    with pytest.raises(ValueError, match="unknown environment provider"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "unknown environment provider"):
         environment_identity_from_train_config(
             {
                 "env_provider": "stable-retro",

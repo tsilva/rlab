@@ -41,7 +41,6 @@ CHECKPOINT_STEP_KEYS = (
     "leader/checkpoint/step",
 )
 CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/objective"
-COMPLETION_GOAL_RATE = 0.99
 WANDB_RUNS_PER_PAGE = 200
 
 
@@ -251,8 +250,6 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
     checkpoint_step = _optional_int(_first_float(summary, CHECKPOINT_STEP_KEYS))
     steps_to_completion_goal = _first_float(summary, CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS)
-    if steps_to_completion_goal is None and completion is not None and completion >= COMPLETION_GOAL_RATE:
-        steps_to_completion_goal = float(checkpoint_step) if checkpoint_step is not None else None
     artifact_ref = _first_text(
         _mapping_value(summary, "leader/checkpoint/artifact_ref"),
     )

@@ -11,11 +11,15 @@ description: >-
   baseline PPO and reward-shaping settings.
 train:
   environment:
-    env_config:
-      # Empty list overrides the goal default of [life_loss, level_change].
-      done_on_events: []
+    task:
+      termination:
+        # Empty lists override the goal's terminal outcome events.
+        failure: []
+        success: []
 eval:
   environment:
-    env_config:
-      # Keep eval aligned with the no-terminal training environment.
-      done_on_events: []
+    task:
+      termination:
+        # Keep eval aligned with the no-terminal training environment.
+        failure: []
+        success: []

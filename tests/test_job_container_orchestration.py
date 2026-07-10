@@ -304,8 +304,12 @@ class FleetShepherdSplitTests(unittest.TestCase):
                 calls.append(f"reconcile:{machine.name}")
                 return 1
 
-            def launch_next(_conn, *, machine, limit, color):
+            def launch_next(_conn, *, machine, limit, shared_env_file, color):
                 calls.append(f"launch:{machine.name}:{limit}")
+                self.assertEqual(
+                    shared_env_file,
+                    fleet.default_repo_root() / fleet.DEFAULT_SHARED_RUNNER_ENV_FILE,
+                )
                 return 2
 
             def prune(_conn, machine, *, color):

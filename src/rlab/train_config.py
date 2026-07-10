@@ -12,7 +12,6 @@ from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START
 
 
 ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
-REWARD_MODE_CHOICES = ("auto", "baseline", "bounded", "additive", "score", "native")
 DEVICE_CHOICES = ("auto", "cpu", "cuda", "mps")
 WANDB_MODE_CHOICES = ("online", "offline", "disabled")
 
@@ -20,11 +19,6 @@ FieldKind = Literal["value", "store_true", "bool_optional"]
 TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
-
-LEGACY_TRAIN_CONFIG_FIELD_ALIASES = {
-    "post_train_eval_n_envs": "checkpoint_eval_n_envs",
-}
-
 
 @dataclass(frozen=True)
 class TrainConfigField:
@@ -148,14 +142,9 @@ def add_env_config_args(
 ) -> None:
     defaults = defaults or EnvConfig()
     for field in env_config_arg_fields():
-        if field.dest == "max_episode_steps":
-            dest = "max_steps"
-            default = max_steps_default
-            option_flags = ("--max-steps",)
-        else:
-            dest = field.dest
-            default = _env_default(defaults, field)
-            option_flags = None
+        dest = field.dest
+        default = _env_default(defaults, field)
+        option_flags = None
         _add_config_field_argument(
             parser,
             field,
@@ -165,6 +154,7 @@ def add_env_config_args(
             dest=dest,
             option_flags=option_flags,
         )
+    parser.add_argument("--max-steps", type=int, default=max_steps_default)
 
 
 def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
@@ -185,24 +175,14 @@ def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
 
 
 def _canonical_train_command_options(options: Mapping[str, Any]) -> dict[str, Any]:
-    canonical = normalize_train_config_aliases(options)
-    for field in TRAIN_CONFIG_FIELDS:
-        if field.env_config_key and field.env_config_key in canonical and field.dest not in canonical:
-            canonical[field.dest] = canonical[field.env_config_key]
-    return canonical
-
-
-def normalize_train_config_aliases(options: Mapping[str, Any]) -> dict[str, Any]:
     canonical = dict(options)
-    for legacy_key, canonical_key in LEGACY_TRAIN_CONFIG_FIELD_ALIASES.items():
-        if legacy_key not in canonical:
-            continue
-        legacy_value = canonical.pop(legacy_key)
-        if canonical_key in canonical and canonical[canonical_key] != legacy_value:
-            raise ValueError(
-                f"train config fields {legacy_key!r} and {canonical_key!r} disagree",
-            )
-        canonical.setdefault(canonical_key, legacy_value)
+    for field in TRAIN_CONFIG_FIELDS:
+        if (
+            field.env_config_key
+            and field.env_config_key in canonical
+            and field.dest not in canonical
+        ):
+            canonical[field.dest] = canonical[field.env_config_key]
     return canonical
 
 
@@ -234,10 +214,13 @@ def train_config_field_names() -> frozenset[str]:
     return frozenset(field.dest for field in TRAIN_CONFIG_FIELDS)
 
 
-def train_config_field_for_key(key: str, *, include_env_aliases: bool = True) -> TrainConfigField | None:
-    key = LEGACY_TRAIN_CONFIG_FIELD_ALIASES.get(key, key)
+def train_config_field_for_key(
+    key: str, *, include_env_config_keys: bool = True
+) -> TrainConfigField | None:
     for field in TRAIN_CONFIG_FIELDS:
-        if field.dest == key or (include_env_aliases and field.env_config_key == key):
+        if field.dest == key or (
+            include_env_config_keys and field.env_config_key == key
+        ):
             return field
     return None
 
@@ -495,6 +478,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Provider-native environment constructor arguments, serialized as a JSON object.",
     ),
     TrainConfigField(
+        "task",
+        ("--task-json",),
+        type_name="json",
+        default={},
+        env_default="task",
+        serialize="json",
+        env_config_key="task",
+        mapping_value=True,
+        help="Canonical bound-task definition as a JSON object.",
+    ),
+    TrainConfigField(
         "state",
         ("--state",),
         env_default="state",
@@ -521,63 +515,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Comma-separated non-negative sampling weights for --states. The native vector env normalizes weights and samples independently on each episode reset.",
     ),
     TrainConfigField(
-        "info_events_json",
-        ("--info-events-json",),
-        default="",
-        serialize="json",
-        env_config_key="info_events",
-        mapping_value=True,
-        help="JSON object mapping event names to [key_or_keys, op]. Events are observed without ending episodes unless also listed in --done-on-events.",
-    ),
-    TrainConfigField(
-        "done_on_events",
-        ("--done-on-events",),
-        default="",
-        serialize="csv",
-        env_config_key="done_on_events",
-        sequence_items="str",
-        allow_empty_sequence=True,
-        help="Comma-separated info event names that should terminate the current episode.",
-    ),
-    TrainConfigField(
-        "episodic_life",
-        ("--episodic-life",),
-        false_flag="--no-episodic-life",
-        kind="bool_optional",
-        default=False,
-        env_default="episodic_life",
-        env_config_key="episodic_life",
-        help="For ALE-py, terminate episodes on life loss using the native episodic_life flag.",
-    ),
-    TrainConfigField(
-        "task_conditioning",
-        ("--task-conditioning",),
-        kind="store_true",
-        default=False,
-        env_config_key="task_conditioning",
-        help="Use SB3 MultiInputPolicy with a one-hot task vector derived from the native active state for each env lane.",
-    ),
-    TrainConfigField(
-        "task_conditioning_info_vars",
-        ("--task-conditioning-info-vars",),
-        default="",
-        serialize="csv",
-        env_config_key="task_conditioning_info_vars",
-        sequence_items="str",
-        allow_empty_sequence=True,
-        help="Comma-separated info keys used to map task-conditioned one-hot vectors.",
-    ),
-    TrainConfigField(
-        "task_conditioning_info_values",
-        ("--task-conditioning-info-values",),
-        default="",
-        serialize="rows",
-        env_config_key="task_conditioning_info_values",
-        sequence_items="rows",
-        allow_empty_sequence=True,
-        help="Semicolon-separated info-value rows for task conditioning, for example '0,0;0,1'. Omit when values can be derived from states.",
-    ),
-    TrainConfigField(
         "frame_skip",
         ("--frame-skip",),
         type_name="int",
@@ -601,14 +538,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=True,
         env_config_key="max_pool_frames",
         help="Max-pool over the last two raw frames inside each frame-skip step.",
-    ),
-    TrainConfigField(
-        "max_episode_steps",
-        ("--max-episode-steps",),
-        type_name="int",
-        default=4500,
-        env_config_key="max_episode_steps",
-        validation_min=0,
     ),
     TrainConfigField(
         "observation_size",
@@ -664,7 +593,11 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Resize algorithm for native frame preprocessing.",
     ),
     TrainConfigField(
-        "checkpoint_freq", ("--checkpoint-freq",), type_name="int", default=500_000, validation_min=0
+        "checkpoint_freq",
+        ("--checkpoint-freq",),
+        type_name="int",
+        default=500_000,
+        validation_min=0,
     ),
     TrainConfigField(
         "post_train_eval_episodes",
@@ -675,11 +608,11 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "checkpoint_eval_n_envs",
-        ("--checkpoint-eval-n-envs", "--post-train-eval-n-envs"),
+        ("--checkpoint-eval-n-envs",),
         type_name="int",
         default=20,
         validation_min=1,
-        help="Vector env count for checkpoint eval. The old --post-train-eval-n-envs flag is accepted as an alias.",
+        help="Vector env count for checkpoint eval.",
     ),
     TrainConfigField(
         "checkpoint_eval_stages",
@@ -730,7 +663,9 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField("n_steps", ("--n-steps",), type_name="int", default=512),
     TrainConfigField("batch_size", ("--batch-size",), type_name="int", default=256),
     TrainConfigField("n_epochs", ("--n-epochs",), type_name="int", default=10),
-    TrainConfigField("device", ("--device",), default="auto", choices=DEVICE_CHOICES, non_empty=True),
+    TrainConfigField(
+        "device", ("--device",), default="auto", choices=DEVICE_CHOICES, non_empty=True
+    ),
     TrainConfigField("gamma", ("--gamma",), type_name="float", default=0.9),
     TrainConfigField("gae_lambda", ("--gae-lambda",), type_name="float", default=1.0),
     TrainConfigField("ent_coef", ("--ent-coef",), type_name="float", default=0.01),
@@ -792,130 +727,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="float",
         default=None,
         serialize="skip_nonpositive_float",
-    ),
-    TrainConfigField(
-        "use_retro_reward",
-        ("--use-retro-reward",),
-        kind="store_true",
-        default=False,
-        env_config_key="use_retro_reward",
-    ),
-    TrainConfigField(
-        "clip_rewards",
-        ("--clip-rewards",),
-        kind="store_true",
-        default=False,
-        env_config_key="clip_rewards",
-    ),
-    TrainConfigField(
-        "reward_mode",
-        ("--reward-mode",),
-        env_default="reward_mode",
-        choices=REWARD_MODE_CHOICES,
-        env_config_key="reward_mode",
-        non_empty=True,
-        help="Target reward mode. Use native for unknown games without a custom target tracker.",
-    ),
-    TrainConfigField(
-        "progress_reward_cap",
-        ("--progress-reward-cap",),
-        type_name="float",
-        default=30.0,
-        env_config_key="progress_reward_cap",
-    ),
-    TrainConfigField(
-        "progress_reward_scale",
-        ("--progress-reward-scale",),
-        type_name="float",
-        default=1.0,
-        env_config_key="progress_reward_scale",
-    ),
-    TrainConfigField(
-        "terminal_reward",
-        ("--terminal-reward",),
-        type_name="float",
-        default=50.0,
-        env_config_key="terminal_reward",
-    ),
-    TrainConfigField(
-        "reward_scale",
-        ("--reward-scale",),
-        type_name="float",
-        default=10.0,
-        env_config_key="reward_scale",
-    ),
-    TrainConfigField(
-        "time_penalty",
-        ("--time-penalty",),
-        type_name="float",
-        default=0.0,
-        env_config_key="time_penalty",
-    ),
-    TrainConfigField(
-        "death_penalty",
-        ("--death-penalty",),
-        type_name="float",
-        default=25.0,
-        env_config_key="death_penalty",
-    ),
-    TrainConfigField(
-        "completion_reward",
-        ("--completion-reward",),
-        type_name="float",
-        default=0.0,
-        env_config_key="completion_reward",
-    ),
-    TrainConfigField(
-        "score_progress_clipped",
-        ("--score-progress-clipped",),
-        kind="store_true",
-        default=False,
-        env_config_key="score_progress_clipped",
-        help="In score reward mode, use clipped progress_reward instead of raw progress_delta.",
-    ),
-    TrainConfigField(
-        "env_wrappers",
-        ("--env-wrappers",),
-        type_name="json",
-        env_default="env_wrappers",
-        serialize="json",
-        env_config_key="env_wrappers",
-        suppress_help=True,
-    ),
-    TrainConfigField(
-        "vec_wrappers",
-        ("--vec-wrappers",),
-        type_name="json",
-        env_default="vec_wrappers",
-        serialize="json",
-        env_config_key="vec_wrappers",
-        suppress_help=True,
-    ),
-    TrainConfigField(
-        "no_progress_timeout_steps",
-        ("--no-progress-timeout-steps",),
-        type_name="int",
-        default=0,
-        env_config_key="no_progress_timeout_steps",
-        validation_min=0,
-        help="Truncate an episode after this many env steps without new x progress; <=0 disables.",
-    ),
-    TrainConfigField(
-        "no_progress_min_delta",
-        ("--no-progress-min-delta",),
-        type_name="int",
-        default=0,
-        env_config_key="no_progress_min_delta",
-        validation_min=0,
-        help="Minimum progress_delta that resets the no-progress timeout.",
-    ),
-    TrainConfigField(
-        "action_set",
-        ("--action-set",),
-        env_default="action_set",
-        env_config_key="action_set",
-        non_empty=True,
-        help="Target-specific action set name, native, or auto for the target default.",
     ),
     TrainConfigField(
         "resume", ("--resume",), default=None, help="Path to an existing PPO .zip checkpoint"

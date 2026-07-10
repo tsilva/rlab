@@ -13,9 +13,13 @@ description: >-
   either event as an episode boundary.
 train:
   environment:
-    env_config:
-      done_on_events: []
+    task:
+      termination:
+        failure: []
+        success: []
 eval:
   environment:
-    env_config:
-      done_on_events: []
+    task:
+      termination:
+        failure: []
+        success: []

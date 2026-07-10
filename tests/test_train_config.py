@@ -36,51 +36,50 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             "ale-py",
             "--env-args",
             '{"game":"breakout"}',
-            "--no-episodic-life",
             "--obs-crop",
             "1,2,3,4",
         ]
         train_args = train_parser.parse_args(args)
         eval_args = eval_parser.parse_args([*args, "--max-steps", "123"])
 
-        for dest in ("env_provider", "env_args", "episodic_life", "obs_crop"):
+        for dest in ("env_provider", "env_args", "obs_crop"):
             self.assertEqual(getattr(train_args, dest), getattr(eval_args, dest))
         self.assertEqual(eval_args.max_steps, 123)
         self.assertFalse(hasattr(eval_args, "max_episode_steps"))
 
-    def test_env_config_aliases_resolve_to_train_config_fields(self) -> None:
-        field = train_config_field_for_key("info_events")
+    def test_task_resolves_to_train_config_field(self) -> None:
+        field = train_config_field_for_key("task")
 
         self.assertIsNotNone(field)
-        self.assertEqual(field.dest, "info_events_json")
-        self.assertEqual(field.env_config_key, "info_events")
+        self.assertEqual(field.dest, "task")
+        self.assertEqual(field.env_config_key, "task")
 
-    def test_legacy_checkpoint_eval_n_envs_alias_resolves_to_canonical_field(self) -> None:
-        field = train_config_field_for_key("post_train_eval_n_envs")
+    def test_checkpoint_eval_has_one_cli_flag(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_train_config_args(
+            parser,
+            env_defaults=EnvConfig(),
+            parse_json_value=json.loads,
+            parse_obs_crop=lambda value: tuple(int(item) for item in value.split(",")),
+        )
+        options = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
 
-        self.assertIsNotNone(field)
-        self.assertEqual(field.dest, "checkpoint_eval_n_envs")
+        self.assertIn("--checkpoint-eval-n-envs", options)
+        self.assertNotIn("--post-train-eval-n-envs", options)
 
-    def test_build_train_command_accepts_env_config_aliases(self) -> None:
+    def test_build_train_command_accepts_canonical_task(self) -> None:
+        task = {"id": "identity"}
         command = build_train_command_from_fields(
-            {
-                "info_events": {"life_loss": ["lives", "decrease"]},
-                "done_on_events": ["life_loss"],
-            }
+            {"task": task}
         )
 
         self.assertEqual(command[1:3], ["-m", "rlab.train"])
-        self.assertIn("--info-events-json", command)
-        self.assertIn('{"life_loss":["lives","decrease"]}', command)
-        self.assertIn("--done-on-events", command)
-        self.assertIn("life_loss", command)
-
-    def test_build_train_command_emits_checkpoint_eval_n_envs_for_legacy_alias(self) -> None:
-        command = build_train_command_from_fields({"post_train_eval_n_envs": 4})
-
-        self.assertIn("--checkpoint-eval-n-envs", command)
-        self.assertIn("4", command)
-        self.assertNotIn("--post-train-eval-n-envs", command)
+        self.assertIn("--task-json", command)
+        self.assertIn('{"id":"identity"}', command)
 
     def test_build_train_command_emits_checkpoint_eval_stages_json(self) -> None:
         stages = [
@@ -90,7 +89,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
                 "n_envs": 2,
                 "pass": [
                     {
-                        "metric": "eval/info/level_complete/rate/min",
+                        "metric": "eval/done/level_change/from_rate/min",
                         "operator": ">=",
                         "threshold": 1.0,
                     }
@@ -103,7 +102,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         rendered = command[command.index("--checkpoint-eval-stages") + 1]
         self.assertIn('"name":"screen"', rendered)
         self.assertIn('"episodes":10', rendered)
-        self.assertIn('"metric":"eval/info/level_complete/rate/min"', rendered)
+        self.assertIn('"metric":"eval/done/level_change/from_rate/min"', rendered)
 
     def test_field_validation_uses_choices_and_numeric_bounds(self) -> None:
         validate_train_config_fields(
@@ -120,19 +119,18 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         validate_train_config_fields(
             {
                 "states": ["Level1-1", "Level1-2"],
-                "done_on_events": [],
                 "obs_crop": [32, 0, 0, 0],
-                "task_conditioning_info_values": [[0, 0], [0, 1]],
+                "task": {"id": "identity"},
             },
-            keys=("states", "done_on_events", "obs_crop", "task_conditioning_info_values"),
+            keys=("states", "obs_crop", "task"),
         )
 
         with self.assertRaisesRegex(ValueError, "states must be a list"):
             validate_train_config_value("states", "Level1-1")
         with self.assertRaisesRegex(ValueError, r"obs_crop\[0\].*non-negative integer"):
             validate_train_config_value("obs_crop", [-1, 0, 0, 0])
-        with self.assertRaisesRegex(ValueError, r"task_conditioning_info_values\[0\]"):
-            validate_train_config_value("task_conditioning_info_values", ["0,0"])
+        with self.assertRaisesRegex(ValueError, "task must be an object"):
+            validate_train_config_value("task", ["identity"])
 
 
 if __name__ == "__main__":

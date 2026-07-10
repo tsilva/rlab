@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -16,13 +17,10 @@ from rlab.metric_names import (
     EVAL_DONE_TERMINATED_RATE,
     EVAL_DONE_UNCLASSIFIED,
     EVAL_DONE_UNCLASSIFIED_RATE,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
     eval_done_value_metric,
 )
 from rlab.targets import EvalSemantics, target_for_game
+from rlab.task_kernels import Outcome
 
 COMPLETION_GOAL_RATE = 0.99
 DEFAULT_EVAL_SEMANTICS = target_for_game("SuperMarioBros-Nes-v0").eval_semantics
@@ -40,16 +38,121 @@ def is_completion_event(
     for key in semantics.completion_info_keys:
         if key in info:
             return bool(info.get(key))
-    fallback_key = semantics.completion_fallback_info_key
-    if fallback_key is None:
-        return False
-    if not bool(info.get(fallback_key, False)):
-        return False
-    return not any(bool(info.get(key, False)) for key in semantics.completion_blocking_info_keys)
+    return False
 
 
 def is_level_complete(info: dict[str, Any]) -> bool:
     return is_completion_event(info, default_eval_semantics())
+
+
+def drain_runtime_records(env: Any) -> list[Any]:
+    """Drain all records from the native vector runtime."""
+    drain = getattr(env, "drain_records", None)
+    if not callable(drain):
+        raise TypeError("this workflow requires RlabVecEnv.drain_records()")
+    return list(drain())
+
+
+def episode_records(records: list[Any]) -> list[Any]:
+    return [record for record in records if hasattr(record, "episode_return")]
+
+
+def batch_metrics_for_lane(records: list[Any], lane: int) -> dict[str, Any]:
+    """Materialize the latest task metric batch for an interactive consumer."""
+    for record in reversed(records):
+        if hasattr(record, "lane") or not hasattr(record, "num_envs"):
+            continue
+        metrics = getattr(record, "metrics", {}) or {}
+        result: dict[str, Any] = {}
+        for name, values in metrics.items():
+            value = np.asarray(values)[lane]
+            result[str(name)] = value.item() if isinstance(value, np.generic) else value
+        return result
+    return {}
+
+
+def drain_episode_records(env: Any) -> list[Any]:
+    """Drain canonical episode records from the native vector runtime."""
+    return episode_records(drain_runtime_records(env))
+
+
+def outcome_name(value: Any) -> str:
+    if isinstance(value, Outcome):
+        return value.name.lower()
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name.lower()
+    if isinstance(value, str):
+        return value.lower()
+    try:
+        return Outcome(int(value)).name.lower()
+    except TypeError, ValueError:
+        return "neutral"
+
+
+def episode_is_complete(episode: Mapping[str, Any]) -> bool:
+    if "level_complete" in episode:
+        return bool(episode.get("level_complete"))
+    return str(episode.get("outcome", "")).lower() == "success"
+
+
+def episode_result_from_record(
+    record: Any,
+    *,
+    semantics: EvalSemantics | None = None,
+    terminal_info: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Translate the runtime's provider-neutral episode record to eval output."""
+    semantics = semantics or default_eval_semantics()
+    metrics = dict(getattr(record, "metrics", {}) or {})
+    events = tuple(str(event) for event in (getattr(record, "events", ()) or ()))
+    outcome = outcome_name(getattr(record, "outcome", Outcome.NEUTRAL))
+    info = serializable_info(dict(terminal_info or {}))
+    # Canonical task metrics are authoritative for overlapping provider fields.
+    info.update(metrics)
+
+    start_id = getattr(record, "start_id", None)
+    result: dict[str, Any] = {
+        "env_index": int(getattr(record, "lane", 0)),
+        "episode_index": int(getattr(record, "episode_index", 0)),
+        "start_state": start_id or info.get("start_state") or info.get("state"),
+        "reward": float(getattr(record, "episode_return", 0.0)),
+        "score": int(info.get("score", 0) or 0),
+        "lives": int(info.get("lives", 0) or 0),
+        "time": int(info.get("time", 0) or 0),
+        "steps": int(getattr(record, "episode_length", 0)),
+        "terminated": bool(getattr(record, "terminated", False)),
+        "truncated": bool(getattr(record, "truncated", False)),
+        "outcome": outcome,
+        "events": list(events),
+        "final_info": info,
+    }
+
+    died = bool(metrics.get("died", False)) or "life_loss" in events
+    if semantics.completion_reason:
+        explicit_success = outcome == "success"
+        explicit_failure = outcome == "failure"
+        completion_signal = semantics.completion_reason in events or is_completion_event(
+            info, semantics
+        )
+        result["level_complete"] = bool(
+            (explicit_success and not died)
+            or (completion_signal and not died and not explicit_failure)
+        )
+
+    for field in semantics.progress_fields:
+        value = metrics.get(field.result_key, info.get(field.info_key))
+        if value is None and field.result_key == "max_level_x_pos":
+            value = metrics.get("max_x_pos", 0)
+        result[field.result_key] = int(value or 0)
+
+    if semantics.death_flag_key:
+        death_x_pos = metrics.get("death_x_pos", info.get(semantics.death_position_key or ""))
+        if died and death_x_pos is None:
+            death_x_pos = result.get("max_x_pos", 0)
+        result["died"] = died
+        result["death_x_pos"] = int(death_x_pos) if death_x_pos is not None else None
+    return result
 
 
 def death_location_histogram(death_x_positions: list[int], bin_size: int = 100) -> dict[str, int]:
@@ -62,7 +165,7 @@ def death_location_histogram(death_x_positions: list[int], bin_size: int = 100) 
 
 
 def episode_start_state(episode: dict[str, Any]) -> str | None:
-    state = episode.get("start_state") or episode.get("state")
+    state = episode.get("start_state") or episode.get("start_id") or episode.get("state")
     final_info = episode.get("final_info")
     if not state and isinstance(final_info, dict):
         state = final_info.get("start_state") or final_info.get("state")
@@ -91,7 +194,7 @@ def eval_done_from_metrics(
             episode for episode in episode_results if episode_start_state(episode) == state
         ]
         denominator = len(state_episodes)
-        completion_count = sum(1 for episode in state_episodes if episode.get("level_complete"))
+        completion_count = sum(1 for episode in state_episodes if episode_is_complete(episode))
         terminated_count = sum(
             1
             for episode in state_episodes
@@ -101,7 +204,7 @@ def eval_done_from_metrics(
         unclassified_count = sum(
             1
             for episode in state_episodes
-            if not episode.get("level_complete") and not episode.get("truncated")
+            if not episode_is_complete(episode) and not episode.get("truncated")
         )
 
         all_metric = eval_done_value_metric("all", "from", state)
@@ -138,10 +241,6 @@ def eval_done_from_metrics(
         completion_rate_mean = float(np.mean(completion_rates))
         metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN] = completion_rate_min
         metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN] = completion_rate_mean
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN] = completion_rate_min
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN] = completion_rate_mean
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = completion_rate_min
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST] = completion_rate_mean
     return metrics
 
 
@@ -172,7 +271,7 @@ def episode_rank(
     values: list[float] = []
     for item in semantics.best_episode_rank:
         if item == "completion":
-            values.append(float(bool(result.get("level_complete"))))
+            values.append(float(episode_is_complete(result)))
         elif item == "progress":
             values.append(primary_progress_value(result, semantics))
         elif item == "reward":
@@ -226,7 +325,7 @@ def summarize_episode_results(
         for episode in episode_results
         if episode.get("death_x_pos") is not None
     ]
-    completion_count = sum(1 for episode in episode_results if episode.get("level_complete"))
+    completion_count = sum(1 for episode in episode_results if episode_is_complete(episode))
     death_count = sum(1 for episode in episode_results if episode.get("died"))
     terminated_count = sum(
         1
@@ -237,7 +336,7 @@ def summarize_episode_results(
     unclassified_count = sum(
         1
         for episode in episode_results
-        if not episode.get("level_complete") and not episode.get("truncated")
+        if not episode_is_complete(episode) and not episode.get("truncated")
     )
     episode_count = len(episode_results)
     metrics: dict[str, Any] = {
@@ -291,7 +390,7 @@ def metric_float(metrics: dict[str, Any] | Any, key: str, default: float = float
         return default
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -351,72 +450,25 @@ def run_eval_episode(
     env.seed(seed)
     obs = env.reset()
     actions: list[Any] = []
-    total_reward = 0.0
-    progress_values = {field.result_key: 0 for field in semantics.progress_fields}
-    final_info: dict[str, Any] = {}
-    terminated = False
-    truncated = False
-    completed = False
-    died = False
-    death_x_pos: Any | None = None
-    start_state = default_start_state
-    steps_taken = 0
 
-    for step_idx in range(max_steps):
+    for _step_idx in range(max_steps):
         action, _ = model.predict(obs, deterministic=deterministic)
         action_value = single_env_action(action)
         if capture_actions:
             actions.append(action_value)
-        obs, rewards, dones, infos = env.step(action)
+        obs, _rewards, dones, infos = env.step(action)
         info = dict(infos[0])
-        steps_taken = step_idx + 1
-        terminated = bool(dones[0])
-        truncated = bool(info.get("TimeLimit.truncated", False))
-        total_reward += float(rewards[0])
-        if start_state is None:
-            start_state = info.get("start_state") or info.get("state")
-        for field in semantics.progress_fields:
-            progress_values[field.result_key] = max(
-                progress_values[field.result_key],
-                int(info.get(field.info_key, 0)),
+        records = drain_episode_records(env)
+        if records:
+            result = episode_result_from_record(
+                records[0],
+                semantics=semantics,
+                terminal_info=info,
             )
-        final_info = info
-        completed = completed or is_completion_event(final_info, semantics)
-        if semantics.death_flag_key and bool(info.get(semantics.death_flag_key, False)):
-            died = True
-            if death_x_pos is None:
-                death_x_pos = (
-                    info.get(semantics.death_position_key)
-                    if semantics.death_position_key
-                    else None
-                )
-                if death_x_pos is None:
-                    death_x_pos = progress_values.get("max_x_pos", 0)
-        if terminated:
-            break
-    else:
-        truncated = True
-
-    result = {
-        "start_state": start_state
-        or final_info.get("start_state")
-        or final_info.get("state")
-        or default_start_state,
-        "reward": total_reward,
-        "score": int(final_info.get("score", 0)),
-        "lives": int(final_info.get("lives", 0)),
-        "time": int(final_info.get("time", 0)),
-        "steps": steps_taken,
-        "terminated": terminated,
-        "truncated": truncated,
-        "final_info": serializable_info(final_info),
-        "actions": actions,
-    }
-    if semantics.completion_reason:
-        result["level_complete"] = completed
-    for field in semantics.progress_fields:
-        result[field.result_key] = progress_values[field.result_key]
-    if semantics.death_flag_key:
-        result["died"] = died
-        result["death_x_pos"] = int(death_x_pos) if death_x_pos is not None else None
-    return result
+            if result.get("start_state") is None:
+                result["start_state"] = default_start_state
+            result["actions"] = actions
+            return result
+        if bool(dones[0]):
+            raise RuntimeError("RlabVecEnv returned done without an episode record")
+    raise RuntimeError("task runtime reached max_steps without a timeout episode record")

@@ -4,8 +4,9 @@ import argparse
 from collections.abc import Callable
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import get_schedule_fn
+
+from rlab.callbacks import CallbackHelper
 
 
 def linear_decay_schedule(
@@ -39,7 +40,7 @@ def learning_rate_schedule(args: argparse.Namespace) -> float | Callable[[float]
     )
 
 
-class EntropyCoefficientScheduleCallback(BaseCallback):
+class EntropyCoefficientScheduleHelper(CallbackHelper):
     def __init__(
         self,
         initial_value: float,

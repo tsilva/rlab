@@ -30,21 +30,15 @@ train:
     policy_net_arch: 64,64
     value_net_arch: 512,512
   environment:
-    env_config:
-      action_set: simple
-      max_episode_steps: 4500
-      task_conditioning_info_values:
-      - [0, 0]
-      - [0, 1]
-      - [0, 2]
-      env_wrappers:
-      - id: SuperMarioBrosNesProgressInfoWrapper
-      - id: SuperMarioBrosNesRewardEnvWrapper
-        kwargs:
-          reward_mode: score
-          progress_reward_scale: 1.0
-          terminal_reward: 50
-          death_penalty: 25
-          completion_reward: 0.0
-          reward_scale: 10
-          score_progress_clipped: true
+    task:
+      action:
+        set: simple
+      termination:
+        max_episode_steps: 4500
+      conditioning:
+        values:
+        - [0, 0]
+        - [0, 1]
+        - [0, 2]
+      reward:
+        score_progress_clipped: true
