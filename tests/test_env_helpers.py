@@ -55,7 +55,12 @@ from rlab.env_config import (
 from rlab.env_vec import provider_native_vec_kwargs
 from rlab.env_providers import make_provider_vec_env as make_raw_provider_vec_env
 from rlab.envs.super_mario_bros_nes import SuperMarioBrosNesFusedHooks
-from rlab.fused_vec import FusedGymVectorPipeline, IdentityFusedHooks, Sb3FusedVecEnv, VectorInfoView
+from rlab.fused_vec import (
+    FusedGymVectorPipeline,
+    IdentityFusedHooks,
+    Sb3FusedVecEnv,
+    VectorInfoView,
+)
 from rlab.metric_names import (
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
 )
@@ -73,6 +78,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
 
 class EnvConfigTests(unittest.TestCase):
     def test_reward_env_wrapper_resolves_to_mario_reward_config(self) -> None:
@@ -171,6 +177,7 @@ class EnvConfigTests(unittest.TestCase):
         resolved = resolve_env_config(config)
         self.assertEqual(resolved.reward_mode, "score")
         self.assertEqual(resolved.terminal_reward, 30.0)
+
 
 class EnvConfigFromArgsTests(unittest.TestCase):
     def test_parse_states_trims_empty_values(self) -> None:
@@ -549,8 +556,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train_config.json"
             path.write_text(
-                json.dumps({"checkpoint_eval_stages": [{"name": "screen", "episodes": 0}]})
-                + "\n",
+                json.dumps({"checkpoint_eval_stages": [{"name": "screen", "episodes": 0}]}) + "\n",
                 encoding="utf-8",
             )
 
@@ -580,7 +586,9 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "env_args.num_envs must match requested n_envs"):
+            with self.assertRaisesRegex(
+                ValueError, "env_args.num_envs must match requested n_envs"
+            ):
                 parse_train_args(["--train-config-json", str(path), "--n-envs", "8"])
 
     def test_effective_n_envs_prefers_provider_env_args_when_cli_default_is_implicit(self) -> None:
@@ -841,11 +849,30 @@ class EnvConfigFromArgsTests(unittest.TestCase):
         self.assertIn("--fps", help_text)
         self.assertIn("--device", help_text)
         self.assertIn("--deterministic", help_text)
+        self.assertIn("--step-over", help_text)
         self.assertIn("--show-obs", help_text)
+        self.assertIn("--attribution", help_text)
+        self.assertIn("--attribution-interval", help_text)
+        self.assertIn("--attribution-opacity", help_text)
         self.assertNotIn("--show-obs-stack", help_text)
         self.assertNotIn("--sticky-action-prob", help_text)
         self.assertNotIn("--task-conditioning", help_text)
         self.assertNotIn("--policy-env", help_text)
+
+    def test_play_parser_rejects_invalid_attribution_controls(self) -> None:
+        parser = build_play_parser()
+        invalid_args = (
+            ["--attribution", "saliency"],
+            ["--attribution-interval", "0"],
+            ["--attribution-opacity", "-0.1"],
+            ["--attribution-opacity", "1.1"],
+        )
+
+        for args in invalid_args:
+            with self.subTest(args=args):
+                with redirect_stderr(StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(args)
 
     def test_task_conditioning_info_values_validate_arity(self) -> None:
         with self.assertRaisesRegex(ValueError, "row length"):
@@ -973,8 +1000,12 @@ class EnvConfigFromArgsTests(unittest.TestCase):
             patch("rlab.env.make_provider_env", return_value=sentinel),
             patch("rlab.env.FrameSkip", side_effect=lambda env, skip, max_pool: env),
             patch("rlab.env.RetroProgressInfo", side_effect=lambda env, config: env),
-            patch("rlab.env.RetroPreprocess", side_effect=lambda env, size, hud_crop_top: env) as preprocess,
-            patch("rlab.env.gym.wrappers.TimeLimit", side_effect=lambda env, max_episode_steps: env),
+            patch(
+                "rlab.env.RetroPreprocess", side_effect=lambda env, size, hud_crop_top: env
+            ) as preprocess,
+            patch(
+                "rlab.env.gym.wrappers.TimeLimit", side_effect=lambda env, max_episode_steps: env
+            ),
         ):
             env = make_rendered_replay_env(config=config, seed=7)
 
@@ -1585,6 +1616,7 @@ class EnvConfigFromArgsTests(unittest.TestCase):
                     n_envs=1,
                 )
 
+
 class TargetTests(unittest.TestCase):
     def test_known_mario_target_is_reused(self) -> None:
         self.assertIs(target_for_game("SuperMarioBros-Nes-v0"), SuperMarioBrosNesV0Target)
@@ -1807,10 +1839,12 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(death_level_change_info["completed_level_count"], 0)
         self.assertFalse(progress.done)
 
+
 class VecImageShapeTests(unittest.TestCase):
     def test_channel_last_native_observations_need_transpose(self) -> None:
         space = gym.spaces.Box(low=0, high=255, shape=(84, 84, 4), dtype=np.uint8)
         self.assertTrue(needs_vec_transpose_image(space))
+
 
 class VecRetroProgressInfoEventTests(unittest.TestCase):
     def test_vector_infos_to_list_preserves_masked_lane_values(self) -> None:
@@ -2555,6 +2589,7 @@ class VecRetroProgressInfoEventTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "could not infer"):
             needs_vec_transpose_image(space)
 
+
 class StickyActionTests(unittest.TestCase):
     def test_probability_one_reuses_previous_high_level_action(self) -> None:
         class FakeEnv(gym.Env):
@@ -2578,6 +2613,7 @@ class StickyActionTests(unittest.TestCase):
         env.step(3)
 
         self.assertEqual(env.unwrapped.actions, [1, 1, 1])
+
 
 class NativeMixedStateVecEnvTests(unittest.TestCase):
     def test_training_vec_env_passes_weighted_states_as_native_state_dict(self) -> None:

@@ -99,6 +99,9 @@ rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
 rlab play <entity>/<project>/<run-name>-checkpoint:latest
 rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
+rlab play <checkpoint> --step-over
+rlab play <checkpoint> --attribution gradcam
+rlab play <checkpoint> --attribution occlusion --attribution-interval 12
 rlab jobs status --goal <goal-slug>
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>

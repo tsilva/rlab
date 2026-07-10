@@ -43,6 +43,7 @@ from rlab.model_sources import (
     positional_model_source_arg,
     resolve_single_model_source,
 )
+from rlab.play_attribution import PolicyActionAttributor
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 from rlab.wandb_utils import default_wandb_project_path
 
@@ -59,6 +60,7 @@ ANSI_STYLES = {
 }
 DEFAULT_VIEWER_SCALE = 4
 DEFAULT_OBS_VIEWER_SCALE = 4
+ATTRIBUTION_MODES = ("none", "gradcam", "occlusion")
 
 
 def _color(text: str, style: str) -> str:
@@ -85,7 +87,7 @@ def _suppress_native_stderr():
 
     try:
         stderr_fd = sys.stderr.fileno()
-    except (AttributeError, OSError, ValueError):
+    except AttributeError, OSError, ValueError:
         yield
         return
     saved_stderr_fd = os.dup(stderr_fd)
@@ -144,8 +146,7 @@ def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
 def task_state_names(config) -> tuple[str, ...]:
     if config.task_conditioning_info_vars:
         return tuple(
-            ",".join(str(part) for part in value)
-            for value in task_conditioning_info_values(config)
+            ",".join(str(part) for part in value) for value in task_conditioning_info_values(config)
         )
     states = tuple(dict.fromkeys(config.states or ((config.state,) if config.state else ())))
     if not states:
@@ -289,15 +290,45 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     return bool(terminated or truncated)
 
 
-def render_obs_stack(frames: deque[np.ndarray], scale: int) -> np.ndarray:
+def _heatmap_color(heatmap: np.ndarray) -> np.ndarray:
+    heatmap = np.clip(np.asarray(heatmap, dtype=np.float32), 0.0, 1.0)
+    red = np.clip(1.6 * heatmap, 0.0, 1.0)
+    green = np.clip(1.8 * heatmap - 0.25, 0.0, 1.0)
+    blue = np.clip(1.0 - heatmap, 0.0, 1.0) * 0.35
+    return np.stack([red, green, blue], axis=2) * 255.0
+
+
+def render_obs_stack(
+    frames: deque[np.ndarray],
+    scale: int,
+    heatmap: np.ndarray | None = None,
+    heatmap_opacity: float = 0.45,
+) -> np.ndarray:
     if scale < 1:
         raise ValueError("obs viewer scale must be >= 1")
+    scaled_heatmap = None
+    if heatmap is not None:
+        scaled_heatmap = np.asarray(heatmap, dtype=np.float32)
+        if scaled_heatmap.ndim != 2:
+            raise ValueError(f"attribution heatmap must be 2D, got shape {scaled_heatmap.shape}")
+        if scale != 1:
+            scaled_heatmap = np.repeat(np.repeat(scaled_heatmap, scale, axis=0), scale, axis=1)
+        scaled_heatmap = np.clip(scaled_heatmap, 0.0, 1.0)
+        heat_color = _heatmap_color(scaled_heatmap)
+        alpha = (float(heatmap_opacity) * scaled_heatmap)[..., None]
     panels = []
     for frame in frames:
         gray = frame[..., 0]
         panel = np.repeat(gray[..., None], 3, axis=2)
         if scale != 1:
             panel = np.repeat(np.repeat(panel, scale, axis=0), scale, axis=1)
+        if scaled_heatmap is not None:
+            if scaled_heatmap.shape != panel.shape[:2]:
+                raise ValueError(
+                    "attribution heatmap shape does not match observation frame: "
+                    f"{scaled_heatmap.shape} vs {panel.shape[:2]}"
+                )
+            panel = ((1.0 - alpha) * panel.astype(np.float32) + alpha * heat_color).astype(np.uint8)
         panels.append(panel)
     return np.concatenate(panels, axis=1)
 
@@ -318,11 +349,18 @@ class PygameViewer:
             self.pygame.display.set_caption("rlab")
             self.screen = self.pygame.display.set_mode(self.size)
             self.font = self.pygame.font.Font(None, max(16, 5 * scale))
+        self.step_controls = StepOverControls()
 
     def show(self, frame: np.ndarray, overlay: list[str] | None = None) -> bool:
         for event in self.pygame.event.get():
             if event.type == self.pygame.QUIT:
                 return False
+            self.step_controls.handle_event(
+                event,
+                keydown_type=self.pygame.KEYDOWN,
+                keyup_type=self.pygame.KEYUP,
+                step_key=self.pygame.K_SPACE,
+            )
         surface = self.pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
         surface = self.pygame.transform.scale(surface, self.size)
         self.screen.blit(surface, (0, 0))
@@ -347,6 +385,28 @@ class PygameViewer:
         self.pygame.quit()
 
 
+class StepOverControls:
+    def __init__(self) -> None:
+        self.step_key_pressed = False
+        self.step_requested = False
+
+    def handle_event(self, event, *, keydown_type: int, keyup_type: int, step_key: int) -> None:
+        if event.type == keydown_type and getattr(event, "key", None) == step_key:
+            self.step_key_pressed = True
+            self.step_requested = True
+        elif event.type == keyup_type and getattr(event, "key", None) == step_key:
+            self.step_key_pressed = False
+
+    def consume_step(self) -> bool:
+        if self.step_key_pressed:
+            self.step_requested = False
+            return True
+        if self.step_requested:
+            self.step_requested = False
+            return True
+        return False
+
+
 class ObsStackViewer:
     def __init__(self, scale: int, position: tuple[int, int] | None = None):
         self.scale = scale
@@ -364,10 +424,15 @@ class ObsStackViewer:
         if position is not None:
             cv2.moveWindow(self.window_name, position[0], position[1])
 
-    def show(self, frames: deque[np.ndarray]) -> bool:
+    def show(
+        self,
+        frames: deque[np.ndarray],
+        heatmap: np.ndarray | None = None,
+        heatmap_opacity: float = 0.45,
+    ) -> bool:
         if self.cv2 is None:
             return True
-        image = render_obs_stack(frames, self.scale)
+        image = render_obs_stack(frames, self.scale, heatmap, heatmap_opacity)
         self.cv2.imshow(self.window_name, self.cv2.cvtColor(image, self.cv2.COLOR_RGB2BGR))
         key = self.cv2.waitKey(1) & 0xFF
         return key not in {27, ord("q")}
@@ -406,6 +471,20 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def positive_int_arg(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
+def attribution_opacity_arg(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("must be in [0, 1]")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Show a PPO checkpoint playing a provider environment in a GUI window"
@@ -426,9 +505,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument(
+        "--step-over",
+        action="store_true",
+        help=(
+            "Pause before each policy step. Press Space to advance one step; "
+            "hold Space to keep playing and release it to pause again."
+        ),
+    )
+    parser.add_argument(
         "--show-obs",
         action="store_true",
         help="Open a second window showing the four preprocessed frames fed to the policy.",
+    )
+    parser.add_argument(
+        "--attribution",
+        choices=ATTRIBUTION_MODES,
+        default="none",
+        help=(
+            "Overlay policy-input attribution in the observation window. "
+            "Grad-CAM is fast; occlusion is slower but perturbation-based."
+        ),
+    )
+    parser.add_argument(
+        "--attribution-interval",
+        type=positive_int_arg,
+        default=None,
+        help=(
+            "Compute attribution every N policy steps. Defaults to 1 for Grad-CAM "
+            "and 8 for occlusion."
+        ),
+    )
+    parser.add_argument(
+        "--attribution-opacity",
+        type=attribution_opacity_arg,
+        default=0.45,
+        help="Heatmap opacity for --attribution overlays, in [0, 1].",
     )
     parser.add_argument(
         "--deterministic",
@@ -488,8 +599,17 @@ def resolved_play_launch_lines(
             "policy",
             f"device={args.device} stochastic={not args.deterministic} "
             f"seed={args.seed} episodes={args.episodes} "
-            f"max_steps={policy_config.max_episode_steps}",
+            f"max_steps={policy_config.max_episode_steps} "
+            f"step_over={getattr(args, 'step_over', False)}",
             "green",
+        ),
+        _summary_line(
+            "◎",
+            "attribution",
+            f"mode={getattr(args, 'attribution', 'none')} "
+            f"interval={getattr(args, 'attribution_interval', None) or '-'} "
+            f"opacity={getattr(args, 'attribution_opacity', 0.45):.2f}",
+            "magenta",
         ),
         _summary_line(
             "▤",
@@ -550,6 +670,8 @@ def main(argv: list[str] | None = None) -> None:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
     args.seed = validate_eval_seed(args.seed)
+    if args.attribution_interval is None:
+        args.attribution_interval = 8 if args.attribution == "occlusion" else 1
     ref = model_source_ref(args)
     if ref is not None:
         print(f"Downloading {ref}", flush=True)
@@ -570,6 +692,7 @@ def main(argv: list[str] | None = None) -> None:
     from stable_baselines3 import PPO
 
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
+    attributor = PolicyActionAttributor(model) if args.attribution != "none" else None
     display_env = make_visual_replay_env(config=display_config, seed=args.seed)
     policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
 
@@ -581,7 +704,7 @@ def main(argv: list[str] | None = None) -> None:
     viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
     obs_viewer = (
         ObsStackViewer(scale=DEFAULT_OBS_VIEWER_SCALE, position=obs_stack_position)
-        if args.show_obs
+        if args.show_obs or attributor is not None
         else None
     )
     current_fps = args.fps
@@ -621,15 +744,41 @@ def main(argv: list[str] | None = None) -> None:
             )
         last_frame_at = now
 
-    def update_controls(frames: deque[np.ndarray] | None = None) -> bool:
+    def update_controls(
+        frames: deque[np.ndarray] | None = None,
+        heatmap: np.ndarray | None = None,
+    ) -> bool:
         if obs_viewer is not None and frames is not None:
-            return obs_viewer.show(frames)
+            return obs_viewer.show(
+                frames,
+                heatmap=heatmap,
+                heatmap_opacity=args.attribution_opacity,
+            )
         return True
+
+    def step_over_overlay(overlay: list[str]) -> list[str]:
+        if not args.step_over:
+            return overlay
+        return [*overlay, "step_over: SPACE"]
+
+    def wait_for_step(frame: np.ndarray, overlay: list[str]) -> bool:
+        if not args.step_over:
+            return True
+        overlay = step_over_overlay(overlay)
+        while True:
+            if not viewer.show(frame, overlay):
+                return False
+            if viewer.step_controls.consume_step():
+                return True
+            time.sleep(0.02)
 
     try:
         if not update_controls():
             return
-        if not viewer.show(first_frame, ["r_step: 0.00", "r_total: 0.00", "max_x: 0", "step: 0"]):
+        initial_overlay = step_over_overlay(
+            ["r_step: 0.00", "r_total: 0.00", "max_x: 0", "step: 0"]
+        )
+        if not viewer.show(first_frame, initial_overlay):
             return
         throttle()
         episode_iter = count() if args.episodes <= 0 else range(args.episodes)
@@ -641,24 +790,20 @@ def main(argv: list[str] | None = None) -> None:
             policy_reset_info = {}
             display_env.reset(seed=episode_seed)
             frame = display_env.render()
-            if not viewer.show(
-                frame,
-                [
-                    "r_step: 0.00",
-                    "r_total: 0.00",
-                    "dx: 0 penalty: 0.00",
-                    "max_x: 0",
-                    f"step: 0 seed: {episode_seed}",
-                ],
-            ):
+            overlay = [
+                "r_step: 0.00",
+                "r_total: 0.00",
+                "dx: 0 penalty: 0.00",
+                "max_x: 0",
+                f"step: 0 seed: {episode_seed}",
+            ]
+            if not viewer.show(frame, step_over_overlay(overlay)):
                 break
             throttle()
             frames: deque[np.ndarray] = fast_env_frames(policy_obs)
             configured_task_states = task_state_names(config) if config.task_conditioning else ()
             active_task_state = (
-                config.state or configured_task_states[0]
-                if configured_task_states
-                else None
+                config.state or configured_task_states[0] if configured_task_states else None
             )
             active_info_value = (
                 task_info_value_from_info(policy_reset_info, config)
@@ -705,6 +850,8 @@ def main(argv: list[str] | None = None) -> None:
             max_x_pos = 0
             final_info = {}
             for step_idx in range(config.max_episode_steps):
+                if not wait_for_step(frame, overlay):
+                    return
                 image_obs = fast_env_obs(policy_obs)
                 model_obs = model_observation(
                     model,
@@ -714,6 +861,11 @@ def main(argv: list[str] | None = None) -> None:
                     active_info_value=active_info_value,
                 )
                 action, _ = model.predict(model_obs, deterministic=args.deterministic)
+                heatmap = None
+                if attributor is not None and step_idx % args.attribution_interval == 0:
+                    heatmap = attributor.attribute(args.attribution, model_obs, action)
+                if attributor is not None and not update_controls(frames, heatmap):
+                    return
                 env_action = single_env_action(action)
                 policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
                 reward = float(np.asarray(rewards)[0])
@@ -754,7 +906,7 @@ def main(argv: list[str] | None = None) -> None:
                         active_task_state = next_task_state
                 display_env.step(env_action)
                 frames = fast_env_frames(policy_obs)
-                if not update_controls(frames):
+                if attributor is None and not update_controls(frames):
                     return
                 total_reward += float(reward)
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
@@ -775,11 +927,13 @@ def main(argv: list[str] | None = None) -> None:
                     f"max_x: {max_x_pos}",
                     f"step: {step_idx + 1} seed: {episode_seed}",
                 ]
-                if not viewer.show(frame, overlay):
+                if not viewer.show(frame, step_over_overlay(overlay)):
                     return
                 throttle()
                 if playback_should_end_episode(terminated, truncated, completed):
-                    status = "complete" if completed else "terminated" if terminated else "truncated"
+                    status = (
+                        "complete" if completed else "terminated" if terminated else "truncated"
+                    )
                     print(
                         "episode="
                         f"{episode + 1} seed={episode_seed} reward={total_reward:.2f} "

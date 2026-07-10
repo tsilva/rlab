@@ -78,6 +78,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
+
 class CommandAndArtifactTests(unittest.TestCase):
     def test_build_train_command_skips_empty_target_kl(self) -> None:
         cmd = build_train_command(
@@ -933,13 +934,24 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertFalse(parser.parse_args([]).deterministic)
         self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        self.assertFalse(parser.parse_args([]).step_over)
+        self.assertTrue(parser.parse_args(["--step-over"]).step_over)
         self.assertEqual(parser.parse_args([]).episodes, 0)
         self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
         self.assertEqual(parser.parse_args(["--seed", "7"]).seed, 7)
+        self.assertEqual(parser.parse_args([]).attribution, "none")
+        self.assertEqual(parser.parse_args(["--attribution", "gradcam"]).attribution, "gradcam")
+        self.assertIsNone(parser.parse_args([]).attribution_interval)
+        self.assertEqual(
+            parser.parse_args(["--attribution-interval", "12"]).attribution_interval, 12
+        )
+        self.assertEqual(parser.parse_args([]).attribution_opacity, 0.45)
         help_text = parser.format_help()
         self.assertIn("--deterministic", help_text)
         self.assertIn("--episodes", help_text)
+        self.assertIn("--step-over", help_text)
+        self.assertIn("--attribution", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
 
@@ -978,10 +990,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
     def test_obs_stack_render_has_no_label_band(self) -> None:
         frames = deque(
-            [
-                np.full((3, 2, 1), value, dtype=np.uint8)
-                for value in (10, 20, 30, 40)
-            ],
+            [np.full((3, 2, 1), value, dtype=np.uint8) for value in (10, 20, 30, 40)],
             maxlen=4,
         )
 
@@ -1070,8 +1079,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
     def test_model_source_ref_resolves_unique_bare_run_across_projects(self) -> None:
         found_ref = (
-            "tsilva/ms_pacman/"
-            "alepy__mspacman_episodic-life_s126_20260709T102223Z-checkpoint:latest"
+            "tsilva/ms_pacman/alepy__mspacman_episodic-life_s126_20260709T102223Z-checkpoint:latest"
         )
         calls = []
 
@@ -1154,15 +1162,12 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
         parser = build_play_parser()
-        args = parser.parse_args(
-            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"]
-        )
+        args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
             self.assertEqual(
                 single_model_artifact_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/"
-                "b82-b55reval-s6-20260702T150934Z-checkpoint:latest",
+                "tsilva/SuperMarioBros-Nes-v0/b82-b55reval-s6-20260702T150934Z-checkpoint:latest",
             )
 
         self.assertEqual(calls, ["tsilva/SuperMarioBros-Nes-v0/7gjw67kl"])
@@ -1205,9 +1210,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             Api=lambda: types.SimpleNamespace(run=lambda _path: FakeRun())
         )
         parser = build_play_parser()
-        args = parser.parse_args(
-            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"]
-        )
+        args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
             self.assertEqual(
