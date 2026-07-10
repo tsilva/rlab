@@ -41,19 +41,23 @@ uv lock \
 
 if uv tool list | grep -q "^rlab "; then
     echo "Existing rlab tool detected; upgrading editable tool install."
-    uv tool install . \
+    uv tool install --project . . \
         -e \
         --upgrade \
         --force \
         --upgrade-package stable-retro-turbo \
         --upgrade-package supermariobrosnes-turbo \
+        --exclude-newer-package "stable-retro-turbo=$CUTOFF" \
+        --exclude-newer-package "supermariobrosnes-turbo=$CUTOFF" \
         "$@"
 else
     echo "Installing rlab as an editable uv tool."
-    uv tool install . \
+    uv tool install --project . . \
         -e \
         --upgrade-package stable-retro-turbo \
         --upgrade-package supermariobrosnes-turbo \
+        --exclude-newer-package "stable-retro-turbo=$CUTOFF" \
+        --exclude-newer-package "supermariobrosnes-turbo=$CUTOFF" \
         "$@"
 fi
 

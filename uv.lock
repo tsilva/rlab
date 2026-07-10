@@ -17,8 +17,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-10T16:42:58Z"
-stable-retro-turbo = "2026-07-10T13:31:07Z"
+supermariobrosnes-turbo = "2026-07-10T21:30:05Z"
+stable-retro-turbo = "2026-07-10T21:30:05Z"
 
 [manifest]
 constraints = [
@@ -1193,7 +1193,7 @@ extra = [
 
 [[package]]
 name = "stable-retro-turbo"
-version = "1.0.1.post13"
+version = "1.0.1.post15"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
@@ -1201,8 +1201,8 @@ dependencies = [
     { name = "pyglet", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/89/1e/80e45a7637185f4ae42564373c7607cf6434e2968214a891de41e9a9e3a0/stable_retro_turbo-1.0.1.post13-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:6fb81ee0ec4c38b2d31510fd3f434af9eff461dc9160c625dc2b2a636c949902", size = 85867426, upload-time = "2026-07-10T13:31:01.611Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/e0/e54139000057d513478ca7fe5159cbdc41ba303fb81abad1fc774e707fc9/stable_retro_turbo-1.0.1.post13-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:740a0293afdf1eb1bf9768443912bba060fc7a440380f837d56770d506799b90", size = 91568858, upload-time = "2026-07-10T13:31:06.763Z" },
+    { url = "https://files.pythonhosted.org/packages/23/69/1b712a8bb55635ff03bfe31dc3ae3b51e4dc4437f6c57a65e4e9e8cc4d6d/stable_retro_turbo-1.0.1.post15-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:e0864584512ae6cd7e8c40815788509ef6c89c2e073251087f6ef23174382bd8", size = 85871013, upload-time = "2026-07-10T21:19:08.477Z" },
+    { url = "https://files.pythonhosted.org/packages/27/30/444f179e75ee70d8b6efa9932577fe74329f62d58b060a539490a0a721c7/stable_retro_turbo-1.0.1.post15-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c862ed796da192e8e1d3c0de63fa0af6fc980b660441f4dbb2e973e802730c8", size = 91574236, upload-time = "2026-07-10T21:19:15.1Z" },
 ]
 
 [[package]]

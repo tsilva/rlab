@@ -44,8 +44,8 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-stable-retro-turbo = "2026-07-10T13:31:07Z"
-supermariobrosnes-turbo = "2026-07-10T16:42:58Z"
+stable-retro-turbo = "2026-07-10T21:30:05Z"
+supermariobrosnes-turbo = "2026-07-10T21:30:05Z"
 
 [tool.ruff]
 line-length = 100
