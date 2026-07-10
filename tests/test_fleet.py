@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from rlab import fleet
@@ -136,6 +139,130 @@ class FleetHostTests(unittest.TestCase):
 
         self.assertIn("sudo -n docker info", script)
         self.assertIn("/roms-host", script)
+
+    def test_load_shared_runner_env_normalizes_quotes_and_ignores_machine_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "\n".join(
+                    [
+                        'WANDB_API_KEY="wandb-value"',
+                        'AWS_ACCESS_KEY_ID="access-value"',
+                        'AWS_SECRET_ACCESS_KEY="secret-value"',
+                        'AWS_S3_ENDPOINT_URL="https://r2.example.invalid"',
+                        'AWS_REGION="auto"',
+                        'CHECKPOINT_BUCKET_URI="s3://checkpoints/prefix"',
+                        'ROM_PATH="/local/mario.nes"',
+                        'DATABASE_URL="postgresql://local-only"',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            values = fleet.load_shared_runner_env(path)
+
+        self.assertEqual(tuple(values), fleet.SHARED_RUNNER_ENV_KEYS)
+        self.assertEqual(values["AWS_REGION"], "auto")
+        self.assertNotIn("ROM_PATH", values)
+        self.assertNotIn("DATABASE_URL", values)
+
+    def test_load_shared_runner_env_fails_closed_when_required_value_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("WANDB_API_KEY=wandb-value\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "missing required key"):
+                fleet.load_shared_runner_env(path)
+
+    def test_sync_shared_runner_env_sends_only_normalized_allowlist_over_stdin(self) -> None:
+        registry = sample_registry()
+        machine = resolve_machine(registry, "beast-3")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "\n".join(
+                    [
+                        'WANDB_API_KEY="wandb-value"',
+                        'AWS_ACCESS_KEY_ID="access-value"',
+                        'AWS_SECRET_ACCESS_KEY="secret-value"',
+                        'AWS_S3_ENDPOINT_URL="https://r2.example.invalid"',
+                        'AWS_REGION="auto"',
+                        'CHECKPOINT_BUCKET_URI="s3://checkpoints/prefix"',
+                        'ROM_PATH="/local/mario.nes"',
+                        'DATABASE_URL="postgresql://local-only"',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                mock.patch.object(
+                    fleet,
+                    "run_machine_shell",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ) as run,
+            ):
+                fleet.sync_shared_runner_env(machine, path, color=False)
+
+        script = run.call_args.args[1]
+        payload = run.call_args.kwargs["input_text"]
+        self.assertIn("AWS_REGION=auto\n", payload)
+        self.assertNotIn('AWS_REGION="auto"', payload)
+        self.assertNotIn("ROM_PATH", payload)
+        self.assertNotIn("DATABASE_URL", payload)
+        self.assertNotIn("wandb-value", script)
+        self.assertNotIn("secret-value", script)
+        self.assertIn("sudo -n install", script)
+        self.assertIn("for (i in keys)", script)
+        self.assertIn("!($1 in shared)", script)
+
+    def test_remote_launch_syncs_shared_env_before_claiming_queue_row(self) -> None:
+        registry = sample_registry()
+        machine = resolve_machine(registry, "beast-3")
+        calls: list[str] = []
+
+        def sync(*_args, **_kwargs) -> None:
+            calls.append("sync")
+
+        def claim(*_args, **_kwargs):
+            calls.append("claim")
+            return None
+
+        with (
+            mock.patch.object(fleet, "sync_shared_runner_env", side_effect=sync),
+            mock.patch.object(fleet, "claim_job_launch", side_effect=claim),
+        ):
+            launched = fleet.launch_claimed_job_container(
+                FakeConnection(),
+                machine=machine,
+                shared_env_file=Path("/repo/.env"),
+            )
+
+        self.assertIsNone(launched)
+        self.assertEqual(calls, ["sync", "claim"])
+
+    def test_remote_launch_does_not_claim_when_shared_env_sync_fails(self) -> None:
+        registry = sample_registry()
+        machine = resolve_machine(registry, "beast-3")
+
+        with (
+            mock.patch.object(
+                fleet,
+                "sync_shared_runner_env",
+                side_effect=RuntimeError("sync failed"),
+            ),
+            mock.patch.object(fleet, "claim_job_launch") as claim,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sync failed"):
+                fleet.launch_claimed_job_container(
+                    FakeConnection(),
+                    machine=machine,
+                    shared_env_file=Path("/repo/.env"),
+                )
+
+        claim.assert_not_called()
 
     def test_runtime_image_ref_file_accepts_ci_json_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

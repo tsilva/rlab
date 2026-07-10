@@ -157,7 +157,7 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
-        self.assertGreaterEqual(installed, Version("0.2.20"))
+        self.assertGreaterEqual(installed, Version("0.2.21"))
         installed_retro = Version(importlib.metadata.version("stable-retro-turbo"))
         self.assertGreaterEqual(installed_retro, Version("1.0.1.post13"))
 

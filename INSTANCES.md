@@ -139,6 +139,12 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - Keep train jobs profileless by default.
 - Use immutable `docker:...@sha256:...` runtime image refs.
 - Keep secrets in `.env` locally and `/home/tsilva/rlab/.env.runner` on hosts.
+- Before every `docker_ssh` job claim, the launcher must refresh the shared
+  `WANDB_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_S3_ENDPOINT_URL`, `AWS_REGION`, and `CHECKPOINT_BUCKET_URI` values in the
+  host `.env.runner` from the repo-root `.env`. The sync is fail-closed, sends
+  values only through SSH stdin, normalizes dotenv quotes for Docker, and
+  preserves host-specific entries such as `ROM_PATH`.
 - Do not print DB, W&B, or AWS/R2 secrets.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch
   outputs under ignored paths such as `runs/`, `logs/`, `models/`, and `wandb/`.

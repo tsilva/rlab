@@ -71,10 +71,19 @@ from rlab.fleet_rendering import (
 
 
 DEFAULT_CAPACITY_POLICY = Path("experiments/policies/capacity_policy.yaml")
+DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
 DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
 DEFAULT_WATCH_STALE_LIMIT = 50
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
+SHARED_RUNNER_ENV_KEYS = (
+    "WANDB_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_S3_ENDPOINT_URL",
+    "AWS_REGION",
+    "CHECKPOINT_BUCKET_URI",
+)
 
 
 @dataclass(frozen=True)
@@ -396,6 +405,107 @@ def repo_root_from_args(args: argparse.Namespace) -> Path:
     if repo_root:
         return Path(repo_root).expanduser().resolve()
     return default_repo_root()
+
+
+def shared_runner_env_file_from_args(args: argparse.Namespace) -> Path:
+    return repo_root_from_args(args) / DEFAULT_SHARED_RUNNER_ENV_FILE
+
+
+def load_shared_runner_env(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        raise RuntimeError(f"shared runner env file is missing: {path}")
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if key not in SHARED_RUNNER_ENV_KEYS:
+            continue
+        if key in values:
+            raise RuntimeError(f"shared runner env file defines {key} more than once: {path}")
+        value = raw_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if not value:
+            raise RuntimeError(f"shared runner env value is empty: {key} in {path}")
+        if "\x00" in value or "\n" in value or "\r" in value:
+            raise RuntimeError(f"shared runner env value contains an invalid control character: {key}")
+        values[key] = value
+    missing = [key for key in SHARED_RUNNER_ENV_KEYS if key not in values]
+    if missing:
+        raise RuntimeError(
+            f"shared runner env file is missing required key(s): {', '.join(missing)} in {path}"
+        )
+    return values
+
+
+def format_shared_runner_env(values: Mapping[str, str]) -> str:
+    return "".join(f"{key}={values[key]}\n" for key in SHARED_RUNNER_ENV_KEYS)
+
+
+def shared_runner_env_sync_script(machine: MachineConfig) -> str:
+    if machine.backend != "docker_ssh":
+        raise ValueError(f"shared runner env sync requires docker_ssh, got {machine.name!r}")
+    env_file = shlex.quote(machine.paths.env_file)
+    shared_keys = " ".join(SHARED_RUNNER_ENV_KEYS)
+    awk_program = (
+        f'BEGIN {{ split("{shared_keys}", keys, " "); '
+        "for (i in keys) shared[keys[i]] = 1 } !($1 in shared)"
+    )
+    verify_keys = " ".join(shlex.quote(key) for key in SHARED_RUNNER_ENV_KEYS)
+    return "\n".join(
+        [
+            "set -eu",
+            "shared_tmp=$(mktemp)",
+            "merged_tmp=$(mktemp)",
+            "trap 'rm -f \"$shared_tmp\" \"$merged_tmp\"' EXIT",
+            "umask 077",
+            'cat > "$shared_tmp"',
+            f"if [ -f {env_file} ]; then",
+            f"  awk -F= {shlex.quote(awk_program)} {env_file} > \"$merged_tmp\"",
+            "else",
+            '  : > "$merged_tmp"',
+            "fi",
+            'cat "$shared_tmp" >> "$merged_tmp"',
+            "owner=$(id -un)",
+            "group=$(id -gn)",
+            f'sudo -n install -o "$owner" -g "$group" -m 0600 "$merged_tmp" {env_file}',
+            f"for key in {verify_keys}; do",
+            f'  count=$(grep -c "^${{key}}=" {env_file} || true)',
+            '  test "$count" -eq 1',
+            "done",
+        ]
+    )
+
+
+def sync_shared_runner_env(
+    machine: MachineConfig,
+    source_path: Path,
+    *,
+    color: bool | None = None,
+) -> None:
+    if machine.backend != "docker_ssh":
+        return
+    values = load_shared_runner_env(source_path)
+    result = run_machine_shell(
+        machine,
+        shared_runner_env_sync_script(machine),
+        input_text=format_shared_runner_env(values),
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to sync shared runner env to machine={machine.name} exit={result.returncode}"
+        )
+    log_shepherd_event(
+        machine=machine.name,
+        action="sync-env",
+        result="ok",
+        keys=len(SHARED_RUNNER_ENV_KEYS),
+        color=color,
+    )
 
 
 def format_demands(demands: Sequence[QueueDemand]) -> str:
@@ -1077,8 +1187,15 @@ def launch_claimed_job_container(
     *,
     machine: MachineConfig,
     job_id: int | None = None,
+    shared_env_file: Path | None = None,
     color: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if machine.backend == "docker_ssh":
+        sync_shared_runner_env(
+            machine,
+            shared_env_file or (default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE),
+            color=color,
+        )
     launch_id = new_train_launch_id(job_id)
     claimed = claim_job_launch(
         conn,
@@ -1321,6 +1438,7 @@ def launch_next_jobs(
     *,
     machine: MachineConfig,
     limit: int,
+    shared_env_file: Path | None = None,
     color: bool | None = None,
 ) -> int:
     launched = 0
@@ -1341,6 +1459,7 @@ def launch_next_jobs(
         claimed = launch_claimed_job_container(
             conn,
             machine=machine,
+            shared_env_file=shared_env_file,
             color=color,
         )
         if claimed is None:
@@ -1354,6 +1473,7 @@ def run_reconcile_fill_pass(
     *,
     machine: MachineConfig,
     limit: int,
+    shared_env_file: Path | None = None,
     color: bool | None = None,
 ) -> tuple[int, int]:
     log_shepherd_event(machine=machine.name, action="reconcile", result="start", color=color)
@@ -1369,6 +1489,7 @@ def run_reconcile_fill_pass(
         conn,
         machine=machine,
         limit=limit,
+        shared_env_file=shared_env_file,
         color=color,
     )
     log_shepherd_event(
@@ -1393,6 +1514,7 @@ def machine_mutation_lock(conn, machine_name: str):
 
 def cmd_container_launch(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
+    shared_env_file = shared_runner_env_file_from_args(args)
     if not args.execute:
         print(
             f"dry_run: would claim and launch {TRAIN_JOB_KIND}_job_id={args.job_id} "
@@ -1407,6 +1529,7 @@ def cmd_container_launch(args: argparse.Namespace) -> int:
                     conn,
                     machine=machine,
                     job_id=args.job_id,
+                    shared_env_file=shared_env_file,
                 )
         except ShepherdLockBusy as exc:
             log_shepherd_event(machine=exc.machine, action="lock", result="busy")
@@ -1420,6 +1543,7 @@ def cmd_container_launch(args: argparse.Namespace) -> int:
 
 def cmd_container_launch_next(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
+    shared_env_file = shared_runner_env_file_from_args(args)
     color = not getattr(args, "no_color", False)
     if not args.execute:
         slots = machine_available_train_slots(machine)
@@ -1442,6 +1566,7 @@ def cmd_container_launch_next(args: argparse.Namespace) -> int:
                     conn,
                     machine=machine,
                     limit=int(args.limit),
+                    shared_env_file=shared_env_file,
                     color=color,
                 )
         except ShepherdLockBusy as exc:
@@ -1521,6 +1646,7 @@ def release_shepherd_lock(conn, lock: ShepherdLock) -> None:
 
 def cmd_container_shepherd(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
+    shared_env_file = shared_runner_env_file_from_args(args)
     color = not getattr(args, "no_color", False)
     if not args.execute:
         while True:
@@ -1566,6 +1692,7 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
                             conn,
                             machine=machine,
                             limit=int(args.limit),
+                            shared_env_file=shared_env_file,
                             color=color,
                         )
                         pruned = prune_stale_runtime_images(
