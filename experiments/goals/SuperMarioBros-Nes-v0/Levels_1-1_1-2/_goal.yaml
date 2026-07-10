@@ -2,7 +2,6 @@ defaults:
 - _self_
 goal_id: "{goal_id}"
 group_id: Levels_1-1_1-2
-run_name_template: "{group_id}_{recipe_id}_s{seed}_{timestamp}"
 tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"

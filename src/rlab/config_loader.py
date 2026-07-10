@@ -185,6 +185,48 @@ def _template_field_root(field_name: str) -> str:
     return field_name.split(".", 1)[0].split("[", 1)[0]
 
 
+def _referenced_template_fields(value: Any) -> set[str]:
+    if isinstance(value, str):
+        fields: set[str] = set()
+        for _, field_name, format_spec, _ in Formatter().parse(value):
+            if field_name is not None:
+                fields.add(_template_field_root(field_name))
+                fields.update(_referenced_template_fields(format_spec))
+        return fields
+    if isinstance(value, Mapping):
+        return set().union(
+            *(
+                _referenced_template_fields(nested)
+                for key, nested in value.items()
+                if key != TEMPLATE_VARS_KEY
+            ),
+            set(),
+        )
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return set().union(*map(_referenced_template_fields, value), set())
+    return set()
+
+
+def _validate_template_var_usage(document: Mapping[str, Any], *, label: str) -> None:
+    raw_vars = document.get(TEMPLATE_VARS_KEY)
+    if not isinstance(raw_vars, Mapping):
+        return
+    declared = {key for key in raw_vars if isinstance(key, str)}
+    used = declared & _referenced_template_fields(document)
+    pending = list(used)
+    while pending:
+        key = pending.pop()
+        dependencies = declared & _referenced_template_fields(raw_vars[key])
+        new_dependencies = dependencies - used
+        used.update(new_dependencies)
+        pending.extend(new_dependencies)
+    unused = sorted(declared - used)
+    if unused:
+        raise ValueError(
+            f"{label}.{TEMPLATE_VARS_KEY} declares unused fields: {', '.join(unused)}"
+        )
+
+
 def _template_vars_from_document(
     document: Mapping[str, Any],
     *,
@@ -336,6 +378,7 @@ def render_template_vars(
         **template_context_from_path(path, document),
         **{key: str(value) for key, value in (extra_context or {}).items()},
     }
+    _validate_template_var_usage(document, label=label)
     template_vars = _template_vars_from_document(document, base_context=base_context, label=label)
     context = {**base_context, **template_vars}
     return _render_template_value(

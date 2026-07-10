@@ -30,7 +30,7 @@ from rlab.metric_names import (
     TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS,
     TRAIN_ARTIFACT_WANDB_LOG_SECONDS,
 )
-from rlab.wandb_utils import load_wandb_env, resolve_wandb_project
+from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_project
 
 
 MODEL_METADATA_VERSION = 2
@@ -257,9 +257,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         save_code=True,
         mode=args.wandb_mode,
     )
-    wandb_run.define_metric("global_step")
-    wandb_run.define_metric("*", step_metric="global_step")
-    return wandb_run
+    return configure_wandb_metrics(wandb_run)
 
 
 def wandb_artifacts_enabled(wandb_run, args: argparse.Namespace) -> bool:

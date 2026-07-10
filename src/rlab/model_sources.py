@@ -19,11 +19,11 @@ from rlab.artifacts import (
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
+from rlab.recipe_documents import load_goal_contract_document
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     artifact_qualified_name,
     checkpoint_step_from_artifact,
-    download_artifact_model,
     download_model_artifact,
     model_artifact_ref,
     safe_artifact_stem,
@@ -210,13 +210,6 @@ def add_model_source_args(
     parser.add_argument("--hf-revision", help="Hugging Face model revision. Defaults to main.")
     parser.add_argument("--hf-model-root", default="runs/hf_models")
 
-def split_project(value: str) -> tuple[str | None, str]:
-    parts = value.split("/", 1)
-    if len(parts) == 1:
-        return None, parts[0]
-    return parts[0], parts[1]
-
-
 def artifact_values(args: argparse.Namespace) -> tuple[str, ...]:
     value = getattr(args, "artifact", None)
     if not value:
@@ -246,11 +239,7 @@ def _project_path(entity: str, project: str) -> str:
 
 def _goal_project_from_document(goal_path: Path) -> str | None:
     try:
-        import yaml
-    except ImportError:
-        return None
-    try:
-        data = yaml.safe_load(goal_path.read_text(encoding="utf-8")) or {}
+        data = load_goal_contract_document(goal_path)
     except Exception:
         return None
     if not isinstance(data, Mapping):
@@ -273,6 +262,8 @@ def _goal_project_from_document(goal_path: Path) -> str | None:
     env_args = _mapping_value(env_config, "env_args")
     if isinstance(env_args, Mapping) and env_args.get("game"):
         return str(env_args["game"])
+    if env_config.get("game"):
+        return str(env_config["game"])
     return None
 
 
@@ -280,9 +271,8 @@ def _local_goal_project_map(goals_root: Path = Path("experiments/goals")) -> dic
     if not goals_root.exists():
         return {}
     projects: dict[str, str] = {}
-    for goal_dir in sorted(path for path in goals_root.iterdir() if path.is_dir()):
-        goal_id = goal_dir.name
-        goal_file = goal_dir / "_goal.yaml"
+    for goal_file in sorted(goals_root.rglob("_goal.yaml")):
+        goal_id = goal_file.parent.name
         projects[goal_id] = _goal_project_from_document(goal_file) or goal_id
     return projects
 
@@ -566,16 +556,6 @@ def model_artifact_checkpoint_step(artifact: Any, model_path: Path | None = None
     if _artifact_kind(artifact) == "final":
         return _logged_run_global_step(artifact)
     return None
-
-
-def download_artifact_source(artifact: Any, root: Path) -> ResolvedModelSource:
-    artifact_name = artifact_qualified_name(artifact)
-    model_path = download_artifact_model(artifact, artifact_download_dir(root, artifact_name))
-    return ResolvedModelSource(
-        model_path=model_path,
-        artifact_name=artifact_name,
-        checkpoint_step=checkpoint_step_from_artifact(artifact, model_path),
-    )
 
 
 def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:

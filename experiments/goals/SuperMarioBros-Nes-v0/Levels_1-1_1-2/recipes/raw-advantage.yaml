@@ -2,10 +2,6 @@ defaults:
 - base@_global_
 - _self_
 recipe_id: raw-advantage
-template_vars:
-  recipe: task-conditioned-lowkl
-  schedule: lrdecay
-  variant: raw-advantage
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} baseline with raw PPO
   advantages instead of per-task advantage normalization, testing whether the

@@ -2,9 +2,6 @@ defaults:
 - ../_goal@goal
 - _self_
 recipe_id: base
-template_vars:
-  recipe: task-conditioned-lowkl
-  schedule: lrdecay
 description: >-
   Seed {seed} trains a task-conditioned {goal_id} policy over Level1-1 and Level1-2
   with 50/50 weighted starts, per-task advantage normalization, and the goal

@@ -21,7 +21,11 @@ from rlab.env_identity import (
     validate_task_config,
 )
 from rlab.provider_config import provider_num_envs
-from rlab.recipe_schema import train_recipe_id, validate_train_recipe_schema
+from rlab.recipe_schema import (
+    TRAIN_RECIPE_SCHEMA_VERSION,
+    train_recipe_id,
+    validate_materialized_train_recipe,
+)
 from rlab.seeds import validate_training_seed
 
 
@@ -42,8 +46,6 @@ RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
     ("goal", "tags", "2"): frozenset({"env_id"}),
-    ("run_name_template",): QUEUE_TEMPLATE_FIELDS,
-    ("goal", "run_name_template"): QUEUE_TEMPLATE_FIELDS,
     (
         "goal",
         "release",
@@ -158,19 +160,6 @@ def _eval_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     if episodes is None:
         return {}
     return {"post_train_eval_episodes": copy.deepcopy(episodes)}
-
-
-def _selection_policy_from_goal(document: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    selection_policy = document.get("selection_policy")
-    if isinstance(selection_policy, Mapping):
-        return selection_policy
-    objective = document.get("objective")
-    if not isinstance(objective, Mapping):
-        return None
-    rank = objective.get("rank")
-    if isinstance(rank, Sequence) and not isinstance(rank, str | bytes):
-        return {"rank_order": copy.deepcopy(rank)}
-    return None
 
 
 def _train_config_section_value(
@@ -374,10 +363,6 @@ def _materialize_goal_owned_fields(
         return None
     goal_document = goal_composition.document
     materialized["goal"] = copy.deepcopy(dict(goal_document))
-    if "selection_policy" not in materialized:
-        selection_policy = _selection_policy_from_goal(goal_document)
-        if selection_policy is not None:
-            materialized["selection_policy"] = copy.deepcopy(selection_policy)
     return goal_document
 
 
@@ -406,7 +391,7 @@ def _materialize_goal_queue_defaults(
 ) -> None:
     if goal_document is None:
         return
-    for key in ("group_id", "run_name_template"):
+    for key in ("group_id", "batch_id"):
         if key in materialized:
             continue
         value = goal_document.get(key)
@@ -504,7 +489,7 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
             "root_path": str(path.resolve()),
             "source_files": _recipe_source_metadata(sources),
         }
-    validate_train_recipe_schema(document, label=f"recipe file {path}")
+    validate_materialized_train_recipe(document, label=f"recipe file {path}")
     assert_no_template_vars(document, label=f"recipe file {path}")
     assert_no_secrets(document, label=f"recipe file {path}")
     validate_launch_event_config(
@@ -549,18 +534,37 @@ def recipe_slug(document: Mapping[str, Any]) -> str:
     return train_recipe_id(document)
 
 
+def compiled_recipe_payload(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the compact, traceable recipe identity persisted with a queue row.
+
+    The queue row separately owns the resolved train config and execution metadata;
+    source file hashes in ``_composition`` preserve the exact goal/recipe inputs.
+    """
+
+    payload: dict[str, Any] = {
+        "schema_version": TRAIN_RECIPE_SCHEMA_VERSION,
+        "goal_id": recipe_goal_slug(document),
+        "recipe_id": recipe_slug(document),
+        "description": document.get("description"),
+        "group_id": document.get("group_id"),
+        "tags": recipe_tags(document),
+    }
+    for key in ("batch_id", "recipe_overrides", "_composition"):
+        value = document.get(key)
+        if value not in (None, "", (), [], {}):
+            payload[key] = copy.deepcopy(value)
+    return payload
+
+
 def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
     slug = recipe_slug(document)
-    payload = dict(document)
-    if slug and "recipe_id" not in payload:
-        payload["recipe_id"] = slug
     digest = file_sha256(path)
     return {
         "goal_slug": recipe_goal_slug(document),
         "recipe_slug": slug,
         "recipe_path": str(path),
         "recipe_sha256": digest,
-        "recipe_payload": payload,
+        "recipe_payload": compiled_recipe_payload(document),
         "repo_git_commit": repo_git_commit(),
         "repo_dirty": repo_is_dirty(),
     }

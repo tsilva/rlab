@@ -23,38 +23,6 @@ def parse_states(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return states
 
 
-def parse_task_conditioning_info_vars(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
-    return parse_states(value)
-
-
-def parse_task_conditioning_info_values(
-    value: str
-    | list[list[int | str]]
-    | list[tuple[int | str, ...]]
-    | tuple[tuple[int | str, ...], ...],
-) -> tuple[tuple[int | str, ...], ...]:
-    if not value:
-        return ()
-    if isinstance(value, (list, tuple)):
-        return tuple(tuple(item) for item in value)
-    rows: list[tuple[int | str, ...]] = []
-    for row in value.split(";"):
-        row = row.strip()
-        if not row:
-            raise ValueError("--task-conditioning-info-values must not contain empty rows")
-        values: list[int | str] = []
-        for item in row.split(","):
-            item = item.strip()
-            if not item:
-                raise ValueError("--task-conditioning-info-values must not contain empty values")
-            try:
-                values.append(int(item))
-            except ValueError:
-                values.append(item)
-        rows.append(tuple(values))
-    return tuple(rows)
-
-
 def parse_state_probs(value: str | list[float] | tuple[float, ...]) -> tuple[float, ...]:
     if not value:
         return ()
@@ -136,10 +104,6 @@ def env_config_from_args(
             config_kwargs[key] = parse_states(raw_value)
         elif field.dest == "state_probs":
             config_kwargs[key] = parse_state_probs(raw_value)
-        elif field.dest == "task_conditioning_info_vars":
-            config_kwargs[key] = parse_task_conditioning_info_vars(raw_value)
-        elif field.dest == "task_conditioning_info_values":
-            config_kwargs[key] = parse_task_conditioning_info_values(raw_value)
         elif field.dest == "obs_crop":
             config_kwargs[key] = parse_obs_crop(raw_value)
         else:

@@ -49,7 +49,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY METRICS.md INSTANCES.md ./
 COPY scripts ./scripts
 COPY experiments/machines.yaml ./experiments/
-COPY experiments/policies ./experiments/policies
 COPY containers/train/entrypoint.sh /usr/local/bin/rlab-container-entrypoint
 COPY containers/train/smoke.py /usr/local/bin/rlab-container-smoke
 

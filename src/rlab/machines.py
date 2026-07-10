@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+from rlab.config_loader import load_mapping_document
 
 
 DEFAULT_MACHINE_REGISTRY = Path("experiments/machines.yaml")
@@ -82,11 +81,7 @@ def _optional_positive_int(value: Any, *, label: str) -> int | None:
 
 
 def load_config_file(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(text) if path.suffix.lower() in {".yaml", ".yml"} else json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a config object")
-    return data
+    return load_mapping_document(path, label=str(path))
 
 
 def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:

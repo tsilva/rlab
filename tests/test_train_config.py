@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from rlab.cli import parse_train_args
 from rlab.env import EnvConfig
 from rlab.train_config import (
     add_env_config_args,
@@ -16,6 +19,14 @@ from rlab.train_config import (
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):
+    def test_train_config_json_rejects_invalid_field_types_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train.json"
+            path.write_text(json.dumps({"timesteps": "many"}), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "timesteps must be an integer"):
+                parse_train_args(["--train-config-json", str(path)])
+
     def test_train_and_eval_parsers_share_env_field_behavior(self) -> None:
         train_parser = argparse.ArgumentParser()
         eval_parser = argparse.ArgumentParser()

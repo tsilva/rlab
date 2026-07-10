@@ -6,7 +6,10 @@ from typing import Any
 
 from rlab.env_registry import resolve_env_provider
 from rlab.seeds import validate_training_seed
-from rlab.train_config import queue_required_train_config_fields, validate_train_config_fields
+from rlab.train_config import (
+    queue_required_train_config_fields,
+    validate_and_normalize_train_config,
+)
 from rlab.provider_config import provider_num_envs
 from rlab.validation import (
     int_list,
@@ -37,10 +40,8 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     {
         "schema_version",
         "seeds",
+        "batch_id",
         "run_name_label",
-        "run_name_template",
-        "selection_metrics",
-        "selection_policy",
         "max_attempts",
         "metadata",
         "notes",
@@ -63,6 +64,9 @@ TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
     {
         "hypothesis",
         "run_description_template",
+        "run_name_template",
+        "selection_metrics",
+        "selection_policy",
         "slug",
         "wandb_tags",
         "wandb_group",
@@ -137,8 +141,10 @@ def _reject_unknown_fields(document: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(f"{label} uses unknown train recipe field(s): {', '.join(unknown)}")
 
 
-def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "recipe") -> None:
-    """Validate the non-negotiable queue-backed train recipe contract."""
+def validate_materialized_train_recipe(
+    document: Mapping[str, Any], *, label: str = "recipe"
+) -> None:
+    """Validate a goal-composed recipe immediately before queue persistence."""
 
     require_mapping(document, label=label)
     removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
@@ -175,38 +181,17 @@ def validate_train_recipe_schema(document: Mapping[str, Any], *, label: str = "r
         else []
     )
     require_non_empty_string(document, "group_id", label=label)
+    if "batch_id" in document:
+        require_non_empty_string(document, "batch_id", label=label)
     if "run_name_label" in document:
         require_non_empty_string(document, "run_name_label", label=label)
-    if "run_name_template" in document:
-        _require_template(
-            document,
-            "run_name_template",
-            label=label,
-            required_fields=set(),
-        )
     string_list(require_key(document, "tags", label=label), label=label_path(label, "tags"))
-    if "selection_metrics" in document:
-        metrics = string_list(
-            require_key(document, "selection_metrics", label=label),
-            label=label_path(label, "selection_metrics"),
-        )
-        if not metrics:
-            raise ValueError(f"{label_path(label, 'selection_metrics')} must not be empty")
-    elif "selection_policy" in document:
-        require_mapping(
-            require_key(document, "selection_policy", label=label),
-            label=label_path(label, "selection_policy"),
-        )
-    else:
-        raise ValueError(
-            f"{label} must define selection_metrics or inherit goal-owned selection_policy"
-        )
 
     train_config = require_mapping(
         require_key(document, "train_config", label=label),
         label=label_path(label, "train_config"),
     )
-    validate_train_config_fields(
+    validate_and_normalize_train_config(
         train_config,
         label=label_path(label, "train_config"),
         required_keys=("game", "timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),

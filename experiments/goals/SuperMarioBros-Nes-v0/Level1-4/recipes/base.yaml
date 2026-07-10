@@ -3,12 +3,9 @@ defaults:
 - ../_goal@goal
 - _self_
 recipe_id: base
+batch_id: b257
 template_vars:
-  batch_id: b257
-  recipe: softupdate
-  source_goal_id: Level1-4
   recipe_label: B257 soft-update no-bonus
-  phase: baseline
 description: >-
   Seed {seed} trains the {goal_id} {recipe_label} recipe, created from the
   historical Level1-4 screen winner to keep the score/progress reward contract while

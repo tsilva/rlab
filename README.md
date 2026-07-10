@@ -93,7 +93,7 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 ## Commands
 
 ```bash
-rlab validate                                      # validate goals, recipes, benchmarks, machine config, and policies
+rlab validate                                      # validate goals, recipes, benchmarks, and machine config
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
@@ -107,7 +107,6 @@ rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
 rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
 rlab jobs cancel-train <train_job_id>
-rlab fleet policy
 rlab fleet shepherd --machine beast-3 --once
 rlab fleet watch --machine beast-3
 rlab benchmark list
@@ -153,7 +152,9 @@ Learning-oriented standalone examples live under `examples/learning/`; productio
 
 ## Fleet
 
-Queue-backed training is the supported GPU workflow. `rlab train` creates train jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned one-job Docker containers on the configured beast hosts.
+Queue-backed training is the supported GPU workflow. `rlab train` creates train
+jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned,
+one-job Docker containers on registered local or SSH Docker machines.
 
 ```bash
 rlab fleet status
@@ -163,14 +164,10 @@ rlab fleet shepherd --machine beast-3 --limit 5
 rlab fleet watch --machine beast-3
 ```
 
-Use `shepherd --once` for a single reconcile-and-fill pass. Lower-level repair
-helpers live under `rlab fleet diagnostics reconcile` and
-`rlab fleet diagnostics launch-next`.
-
-Hard fleet capacity and target mapping come from `experiments/machines.yaml`,
-while scenario-specific soft caps live in
-`experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing
-hardware targets, concurrency, cleanup behavior, or beast host recommendations.
+Hard fleet capacity and target mapping come from `experiments/machines.yaml`.
+`INSTANCES.md` is the authoritative operator guide for shepherd operation,
+host setup, cleanup, hardware targets, concurrency, and beast host
+recommendations.
 
 ## Notes
 

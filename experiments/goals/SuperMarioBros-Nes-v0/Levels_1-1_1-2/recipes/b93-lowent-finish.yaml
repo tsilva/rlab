@@ -4,9 +4,6 @@ defaults:
 recipe_id: b93-lowent-finish
 template_vars:
   env_id: SuperMarioBros-Nes-v0
-  recipe: historical-b93
-  schedule: lower-late-entropy
-  variant: l12bias-lowent-finish
 description: >-
   Seed {seed} keeps the reproduced historical B93/B116 mixed Level1-1/Level1-2
   recipe but lowers the late entropy floor after the discovery phase. The

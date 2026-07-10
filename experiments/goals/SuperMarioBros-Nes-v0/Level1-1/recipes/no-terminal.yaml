@@ -2,9 +2,6 @@ defaults:
 - base@_global_
 - _self_
 recipe_id: no-terminal
-template_vars:
-  variant: no-terminal
-  rollout: continuous-rollout
 description: >-
   Seed {seed} trains the {goal_id} low-KL recipe without life-loss or level-change terminal
   boundaries, created to test whether longer continuous rollouts help while preserving the

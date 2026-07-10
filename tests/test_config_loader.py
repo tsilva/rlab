@@ -4,10 +4,40 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rlab.config_loader import load_composed_mapping, template_context_from_path
+from rlab.config_loader import (
+    load_composed_mapping,
+    render_template_vars,
+    template_context_from_path,
+)
 
 
 class ConfigLoaderTests(unittest.TestCase):
+    def test_render_template_vars_rejects_unused_declarations(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            r"test document\.template_vars declares unused fields: unused",
+        ):
+            render_template_vars(
+                {
+                    "template_vars": {"used": "value", "unused": "dead"},
+                    "name": "{used}",
+                },
+                path=Path("config.yaml"),
+                label="test document",
+            )
+
+    def test_render_template_vars_keeps_transitive_declarations(self) -> None:
+        rendered = render_template_vars(
+            {
+                "template_vars": {"suffix": "value", "name": "prefix-{suffix}"},
+                "label": "{name}",
+            },
+            path=Path("config.yaml"),
+            label="test document",
+        )
+
+        self.assertEqual(rendered, {"label": "prefix-value"})
+
     def test_template_context_does_not_infer_state_from_goal_path(self) -> None:
         path = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/recipes/base.yaml")
 

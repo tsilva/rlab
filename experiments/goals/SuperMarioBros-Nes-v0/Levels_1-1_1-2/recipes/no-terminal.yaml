@@ -4,9 +4,6 @@ defaults:
 recipe_id: no-terminal
 template_vars:
   env_id: SuperMarioBros-Nes-v0
-  recipe: task-conditioned-lowkl
-  schedule: lrdecay
-  variant: no-terminal
 description: >-
   Seed {seed} trains a task-conditioned {goal_id} policy over Level1-1 and
   Level1-2 while observing life-loss and level-change events without using

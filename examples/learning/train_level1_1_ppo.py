@@ -19,8 +19,11 @@ import math
 import os
 import time
 from collections import deque
+from collections.abc import Mapping
 
+import numpy as np
 import torch
+from gymnasium.vector import AutoresetMode
 from torch import nn
 from torch.distributions import Categorical
 from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
@@ -108,6 +111,7 @@ ACTIONS = torch.tensor(
 )
 ACTIONS_NP = ACTIONS.numpy()
 N_ACTIONS = len(ACTIONS)
+OBSERVATION_SHAPE = (4, 84, 84)
 
 
 class MarioTracker:
@@ -155,9 +159,8 @@ class MarioTracker:
 
     @staticmethod
     def _events(info):
-        # supermariobrosnes-turbo reports why an episode ended in done_on_info.
-        # This helper accepts a few possible shapes so the rest of the code can
-        # simply ask "is 'life_loss' present?".
+        # Accept explicit event payloads when a provider supplies them.  The
+        # current raw-info path normally falls back to RAM deltas below.
         ev = info.get("info_events") or info.get("done_on_info") or {}
         if isinstance(ev, dict):
             return ev
@@ -166,8 +169,8 @@ class MarioTracker:
         return {str(ev): {}} if ev else {}
 
     def shape(self, info):
-        # "Events" are important because this env is configured to end episodes
-        # on either life loss or level change.
+        # Task events are detected at this vector-step boundary; the native env
+        # itself terminates only for genuine engine termination.
         events = self._events(info)
         level = self._level(info)
         lives = info.get("lives")
@@ -221,6 +224,103 @@ class MarioTracker:
         info["progress_delta"] = int(progress_delta)
         info["shaped_reward"] = reward
         return reward
+
+
+def lane_info(columnar_infos, lane):
+    """Turn Gymnasium's columnar vector info into one lane's ordinary dict.
+
+    A VectorEnv does not return ``list[dict]``.  It returns one dictionary of
+    arrays, plus ``_key`` boolean arrays saying which lanes contain each key.
+    Nested dictionaries (for example ``done_on_info``) use the same convention.
+    Keeping this conversion explicit makes the vector contract visible without
+    hiding it behind rlab or another vector-environment wrapper.
+    """
+
+    if not isinstance(columnar_infos, Mapping):
+        raise TypeError("vector infos must be a columnar mapping")
+
+    info = {}
+    for key, values in columnar_infos.items():
+        if key.startswith("_"):
+            continue
+        present = columnar_infos.get(f"_{key}")
+        if present is not None and not bool(np.asarray(present)[lane]):
+            continue
+        if isinstance(values, Mapping):
+            info[key] = lane_info(values, lane)
+            continue
+        value = values[lane]
+        info[key] = value.item() if isinstance(value, np.generic) else value
+    return info
+
+
+def checked_observations(observations, num_envs):
+    """Check the native CHW pixel contract before giving observations to PPO."""
+
+    if not isinstance(observations, np.ndarray):
+        raise TypeError("Mario observations must be a NumPy array")
+    expected_shape = (num_envs, *OBSERVATION_SHAPE)
+    if observations.shape != expected_shape:
+        raise ValueError(f"Mario observations must have shape {expected_shape}, got {observations.shape}")
+    if observations.dtype != np.uint8:
+        raise TypeError(f"Mario observations must have dtype uint8, got {observations.dtype}")
+    return observations
+
+
+def reset_lanes(env, trackers, reset_mask, *, seed=None):
+    """Reset selected lanes while preserving every unselected emulator lane."""
+
+    reset_mask = np.asarray(reset_mask, dtype=np.bool_)
+    if reset_mask.shape != (len(trackers),):
+        raise ValueError(f"reset mask must have shape {(len(trackers),)}, got {reset_mask.shape}")
+    if not np.any(reset_mask):
+        raise ValueError("reset mask must select at least one lane")
+
+    observations, reset_infos = env.reset(
+        seed=seed,
+        options={"reset_mask": reset_mask},
+    )
+    observations = checked_observations(observations, len(trackers))
+    for env_index in np.flatnonzero(reset_mask):
+        trackers[int(env_index)].reset(lane_info(reset_infos, int(env_index)))
+    return observations
+
+
+def step_and_reset(env, action_indices, trackers):
+    """Take one vector step, shape task rewards, then manually reset done lanes.
+
+    The provider reports genuine engine termination.  This learning example
+    adds its small task boundary at the vector-step boundary: a life loss ends a
+    failed attempt and a clean level change ends a successful attempt.
+    """
+
+    result = env.step(ACTIONS_NP[np.asarray(action_indices)])
+    if not isinstance(result, tuple) or len(result) != 5:
+        raise TypeError("Mario VectorEnv.step() must return five Gymnasium values")
+    observations, _native_rewards, terminated, truncated, columnar_infos = result
+    observations = checked_observations(observations, len(trackers))
+
+    terminated = np.asarray(terminated, dtype=np.bool_)
+    truncated = np.asarray(truncated, dtype=np.bool_)
+    expected_shape = (len(trackers),)
+    if terminated.shape != expected_shape or truncated.shape != expected_shape:
+        raise ValueError("terminated and truncated must contain one value per environment lane")
+
+    dones = np.logical_or(terminated, truncated)
+    completed = np.zeros(len(trackers), dtype=np.bool_)
+    shaped_rewards = np.empty(len(trackers), dtype=np.float32)
+    for env_index, tracker in enumerate(trackers):
+        info = lane_info(columnar_infos, env_index)
+        shaped_rewards[env_index] = tracker.shape(info)
+        completed[env_index] = bool(info["level_complete"])
+        dones[env_index] |= bool(info["died"] or info["level_complete"])
+
+    # Disabled autoreset leaves terminal observations in done lanes.  Reset only
+    # those lanes before the next policy action; the provider guarantees that
+    # unselected emulator state, observations, frame stacks, and RNG are intact.
+    if np.any(dones):
+        observations = reset_lanes(env, trackers, dones)
+    return observations, shaped_rewards, dones, completed
 
 
 class NaturePPO(nn.Module):
@@ -302,7 +402,10 @@ def make_env():
     - obs_crop=(32, 0, 0, 0) with mask mode: hide the HUD but keep geometry.
     - frame_skip=4: one chosen action is repeated for 4 emulator frames.
     - frame_stack=4: policy sees short-term motion, not just one still image.
-    - done_on life_loss and level_change: episode ends on death or clear.
+    - disabled autoreset: this script explicitly resets only finished lanes.
+
+    Life loss and level change are task events, not emulator termination.  The
+    Python tracker detects them from vectorized RAM facts after each native step.
     """
 
     env = SuperMarioBrosNesTurboVecEnv(
@@ -322,9 +425,9 @@ def make_env():
         sticky_action_prob=0.0,
         obs_copy="safe_view",
         obs_layout="chw",
-        done_on={"life_loss": None, "level_change": None},
+        info_filter="all",
+        autoreset_mode=AutoresetMode.DISABLED,
     )
-    env.seed(SEED)
     return env
 
 
@@ -341,9 +444,12 @@ def main():
 
     # Each env lane needs its own progress/reward tracker.
     trackers = [MarioTracker() for _ in range(N_ENVS)]
-    observations = env.reset()
-    for env_index, info in enumerate(getattr(env, "reset_infos", [{} for _ in range(N_ENVS)])):
-        trackers[env_index].reset(info)
+    observations = reset_lanes(
+        env,
+        trackers,
+        np.ones(N_ENVS, dtype=np.bool_),
+        seed=SEED,
+    )
 
     # Create actor-critic network and Adam optimizer.
     model = NaturePPO(N_ACTIONS).to(device)
@@ -385,22 +491,19 @@ def main():
 
             # Convert discrete action indices to NES button masks and step all
             # 16 env lanes together.
-            next_observations, _native_rewards, dones, info_dicts = env.step(
-                ACTIONS_NP[actions.cpu().numpy()]
+            next_observations, shaped_rewards, dones, completed = step_and_reset(
+                env,
+                actions.cpu().numpy(),
+                trackers,
             )
 
-            for env_index, info in enumerate(info_dicts):
-                # Replace native reward with our shaped Mario learning signal.
-                rollout_rewards[rollout_step, env_index] = trackers[env_index].shape(info)
+            for env_index in range(N_ENVS):
+                # step_and_reset replaced native rewards with our shaped Mario
+                # signal and reset terminal lanes before the next policy action.
+                rollout_rewards[rollout_step, env_index] = shaped_rewards[env_index]
                 if bool(dones[env_index]):
                     # done means either death or level clear.  Track clears only.
-                    completes.append(1 if info.get("level_complete") else 0)
-
-                    # Native vector env auto-resets done lanes.  reset_info is
-                    # the first info dict of the new episode, so reset our
-                    # Python-side tracker to match the lane's new episode.
-                    reset_info = info.get("reset_info", {}) if isinstance(info, dict) else {}
-                    trackers[env_index].reset(reset_info if isinstance(reset_info, dict) else {})
+                    completes.append(1 if completed[env_index] else 0)
 
             # Save exactly what PPO needs:
             # - observation before the action,

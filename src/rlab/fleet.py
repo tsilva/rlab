@@ -13,8 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
@@ -42,10 +40,8 @@ from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
-    RuntimeImageInfo,
     latest_runtime_image_ref,
     normalize_runtime_image_ref,
-    recent_runtime_images,
     runtime_image_digest_slug,
     runtime_image_ref_from_file,
 )
@@ -70,7 +66,6 @@ from rlab.fleet_rendering import (
 )
 
 
-DEFAULT_CAPACITY_POLICY = Path("experiments/policies/capacity_policy.yaml")
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
 DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
@@ -96,68 +91,6 @@ class ShepherdLockBusy(RuntimeError):
     def __init__(self, machine: str) -> None:
         super().__init__(f"another shepherd is already running for machine={machine}")
         self.machine = machine
-
-
-def load_json_file(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
-    if path.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text)
-    else:
-        data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a config object")
-    return data
-
-
-def load_capacity_policy(repo_root: Path, path: Path | None = None) -> dict[str, Any]:
-    return load_json_file(resolve_repo_path(repo_root, path, DEFAULT_CAPACITY_POLICY))
-
-
-def validate_capacity_policy(policy: Mapping[str, Any], registry: MachineRegistry) -> None:
-    lanes = policy.get("lanes", [])
-    if not isinstance(lanes, list):
-        raise ValueError("capacity_policy lanes must be a list")
-    for lane in lanes:
-        if not isinstance(lane, Mapping):
-            raise ValueError("capacity_policy lane entries must be objects")
-        name = str(lane.get("name") or "<unnamed>")
-        manager = str(lane.get("manager") or "").strip()
-        host_name = str(lane.get("host") or "").strip()
-        if not host_name:
-            if manager in {"rlab_fleet", "rlab fleet", "rlab_fleet_shepherd"}:
-                raise ValueError(f"capacity_policy lane {name!r} uses rlab_fleet but has no host")
-            continue
-        if host_name not in registry.machines:
-            raise ValueError(f"capacity_policy lane {name!r} references unknown machine {host_name!r}")
-        machine = registry.machines[host_name]
-        if machine.backend not in {"docker_ssh", "local_docker"}:
-            raise ValueError(
-                f"capacity_policy lane {name!r} references unsupported fleet machine {host_name!r}"
-            )
-        max_train_containers = lane.get("max_train_containers")
-        if max_train_containers is None:
-            continue
-        try:
-            runner_limit = int(max_train_containers)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"capacity_policy lane {name!r} max_train_containers must be an integer"
-            ) from exc
-        if runner_limit < 1:
-            raise ValueError(f"capacity_policy lane {name!r} max_train_containers must be at least 1")
-        machine_limit = machine.max_containers_for_kind("train")
-        if runner_limit > machine_limit:
-            raise ValueError(
-                f"capacity_policy lane {name!r} max_train_containers={runner_limit} "
-                f"exceeds {host_name} max_train_containers={machine_limit}"
-            )
-
-
-def resolve_repo_path(repo_root: Path, path: Path | None, default: Path) -> Path:
-    candidate = path or default
-    if candidate.is_absolute():
-        return candidate
-    return repo_root / candidate
 
 
 def _candidate_repo_roots(start: Path) -> tuple[Path, ...]:
@@ -330,24 +263,9 @@ def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None =
 
 
 def image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = False) -> str | None:
-    image = str(getattr(args, "image", "") or "").strip()
-    image_file = getattr(args, "image_file", None)
-    if image_file:
-        return runtime_image_ref_from_file(image_file)
-    if image:
-        if image == "latest":
-            return latest_runtime_image_ref(
-                workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
-                branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
-                artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
-            )
-        return normalize_runtime_image_ref(image)
     has_explicit_ref = bool(getattr(args, "runtime_image_ref", None))
     has_ref_file = bool(getattr(args, "runtime_image_ref_file", None))
-    use_latest = bool(getattr(args, "latest_image", False)) or (
-        default_latest and not has_explicit_ref and not has_ref_file
-    )
-    if use_latest:
+    if default_latest and not has_explicit_ref and not has_ref_file:
         return latest_runtime_image_ref(
             workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
             branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
@@ -357,43 +275,6 @@ def image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = Fals
         return runtime_image_ref_from_file(args.runtime_image_ref_file)
     value = getattr(args, "runtime_image_ref", None)
     return normalize_runtime_image_ref(value) if value else None
-
-
-def args_selects_latest_image(args: argparse.Namespace, *, default_latest: bool = False) -> bool:
-    if getattr(args, "image_file", None) or getattr(args, "runtime_image_ref_file", None):
-        return False
-    image = str(getattr(args, "image", "") or "").strip()
-    if image:
-        return image == "latest"
-    if getattr(args, "runtime_image_ref", None):
-        return False
-    return bool(getattr(args, "latest_image", False)) or default_latest
-
-
-def recent_images_from_args(args: argparse.Namespace, *, limit: int = 3) -> tuple[RuntimeImageInfo, ...]:
-    return recent_runtime_images(
-        workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
-        branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
-        artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
-        limit=limit,
-    )
-
-
-def runtime_image_context_from_args(
-    args: argparse.Namespace,
-    *,
-    default_latest: bool = False,
-) -> tuple[str | None, tuple[RuntimeImageInfo, ...], tuple[str, ...]]:
-    recent_images: tuple[RuntimeImageInfo, ...] = ()
-    warnings: list[str] = []
-    selects_latest = args_selects_latest_image(args, default_latest=default_latest)
-    try:
-        recent_images = recent_images_from_args(args, limit=3)
-    except Exception as exc:
-        warnings.append(f"failed to list recent train images: {exc}")
-    if selects_latest and recent_images:
-        return recent_images[0].runtime_image_ref, recent_images, tuple(warnings)
-    return image_ref_from_args(args, default_latest=default_latest), recent_images, tuple(warnings)
 
 
 def _connect_from_args(args: argparse.Namespace):
@@ -522,35 +403,6 @@ def format_demands(demands: Sequence[QueueDemand]) -> str:
     return "\n".join(lines)
 
 
-def format_capacity_policy(policy: Mapping[str, Any]) -> str:
-    lines = [
-        f"capacity_policy schema={policy.get('schema_version', 'unknown')} updated={policy.get('updated_at', 'unknown')}",
-        f"purpose={policy.get('purpose', '')}",
-    ]
-    defaults = policy.get("defaults")
-    if isinstance(defaults, Mapping):
-        lines.append("defaults:")
-        for key, value in sorted(defaults.items()):
-            lines.append(f"  {key}={value}")
-    lanes = policy.get("lanes")
-    if isinstance(lanes, Sequence) and not isinstance(lanes, str):
-        lines.append("lanes:")
-        for lane in lanes:
-            if not isinstance(lane, Mapping):
-                continue
-            lines.append(
-                "  "
-                f"{lane.get('name')} target={lane.get('target')} "
-                f"manager={lane.get('manager')} "
-                f"max_train_containers={lane.get('max_train_containers', 'machine-limit')}"
-            )
-    checks = policy.get("policy_checks")
-    if isinstance(checks, Sequence) and not isinstance(checks, str):
-        lines.append("policy_checks:")
-        lines.extend(f"  {check}" for check in checks)
-    return "\n".join(lines)
-
-
 def format_elapsed_since(value: Any, *, now: datetime | None = None) -> str:
     if not value:
         return "unknown"
@@ -580,30 +432,6 @@ def format_elapsed_since(value: Any, *, now: datetime | None = None) -> str:
     if hours < 48:
         return f"{hours}h_ago"
     return f"{hours // 24}d_ago"
-
-
-def format_elapsed_duration_since(value: Any, *, now: datetime | None = None) -> str:
-    elapsed = format_elapsed_since(value, now=now)
-    return elapsed.removesuffix("_ago")
-
-
-def format_utc_minute(value: Any) -> str:
-    if not value:
-        return "unknown"
-    timestamp: datetime
-    if isinstance(value, datetime):
-        timestamp = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return "unknown"
-        try:
-            timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return text
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -1428,9 +1256,14 @@ def train_container_slot_usage(machine: MachineConfig) -> tuple[int, int, int]:
     return len(active), capacity, max(0, capacity - len(active))
 
 
-def machine_available_train_slots(machine: MachineConfig) -> int:
-    _, _, available = train_container_slot_usage(machine)
-    return available
+def machine_available_train_slots(machine: MachineConfig, *, limit: int | None = None) -> int:
+    active, capacity, available = train_container_slot_usage(machine)
+    if limit is None:
+        return available
+    if limit < 1:
+        raise ValueError("fleet container limit must be at least 1")
+    desired_capacity = min(limit, capacity)
+    return max(0, desired_capacity - active)
 
 
 def launch_next_jobs(
@@ -1442,7 +1275,8 @@ def launch_next_jobs(
     color: bool | None = None,
 ) -> int:
     launched = 0
-    active, capacity, slots = train_container_slot_usage(machine)
+    active, capacity, _available = train_container_slot_usage(machine)
+    slots = machine_available_train_slots(machine, limit=int(limit))
     if slots <= 0:
         log_shepherd_event(
             machine=machine.name,
@@ -1455,7 +1289,7 @@ def launch_next_jobs(
             color=color,
         )
         return 0
-    for _ in range(min(int(limit), slots)):
+    for _ in range(slots):
         claimed = launch_claimed_job_container(
             conn,
             machine=machine,
@@ -1512,42 +1346,12 @@ def machine_mutation_lock(conn, machine_name: str):
         release_shepherd_lock(conn, lock)
 
 
-def cmd_container_launch(args: argparse.Namespace) -> int:
-    machine = resolve_machine(load_registry_from_args(args), args.machine)
-    shared_env_file = shared_runner_env_file_from_args(args)
-    if not args.execute:
-        print(
-            f"dry_run: would claim and launch {TRAIN_JOB_KIND}_job_id={args.job_id} "
-            f"machine={machine.name}"
-        )
-        return 0
-    conn = _connect_from_args(args)
-    try:
-        try:
-            with machine_mutation_lock(conn, machine.name):
-                launched = launch_claimed_job_container(
-                    conn,
-                    machine=machine,
-                    job_id=args.job_id,
-                    shared_env_file=shared_env_file,
-                )
-        except ShepherdLockBusy as exc:
-            log_shepherd_event(machine=exc.machine, action="lock", result="busy")
-            return 2
-    finally:
-        conn.close()
-    if launched is None:
-        print("launch_claimed=0")
-    return 0
-
-
 def cmd_container_launch_next(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
     shared_env_file = shared_runner_env_file_from_args(args)
     color = not getattr(args, "no_color", False)
     if not args.execute:
-        slots = machine_available_train_slots(machine)
-        planned = min(int(args.limit), slots)
+        planned = machine_available_train_slots(machine, limit=int(args.limit))
         log_shepherd_event(
             machine=machine.name,
             action="launch-next",
@@ -1789,19 +1593,6 @@ def cmd_ps(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_policy(args: argparse.Namespace) -> int:
-    repo_root = repo_root_from_args(args)
-    registry = load_registry_from_args(args)
-    policy = load_capacity_policy(repo_root, args.policy)
-    validate_capacity_policy(policy, registry)
-    print(format_capacity_policy(policy))
-    return 0
-
-
-def cmd_reconcile(args: argparse.Namespace) -> int:
-    return cmd_container_reconcile(args)
-
-
 def cmd_watch_latest(args: argparse.Namespace) -> int:
     return cmd_container_watch_dashboard(args)
 
@@ -1832,12 +1623,6 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(execute=True)
     parser.add_argument(
-        "--execute",
-        dest="execute",
-        action="store_true",
-        help="Apply planned changes; this is the default.",
-    )
-    parser.add_argument(
         "--dry-run",
         dest="execute",
         action="store_false",
@@ -1849,31 +1634,6 @@ def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--runtime-image-ref")
     group.add_argument("--runtime-image-ref-file", type=Path)
-
-
-def add_reconcile_parser(subparsers: argparse._SubParsersAction) -> None:
-    reconcile = subparsers.add_parser(
-        "reconcile",
-        help="Finalize or repair launch rows.",
-    )
-    add_common_args(reconcile)
-    reconcile.add_argument("--machine", required=True)
-    reconcile.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    add_dry_run_arg(reconcile)
-    reconcile.set_defaults(func=cmd_reconcile)
-
-
-def add_launch_next_parser(subparsers: argparse._SubParsersAction) -> None:
-    launch_next = subparsers.add_parser(
-        "launch-next",
-        help="Fill open slots once without the full shepherd loop.",
-    )
-    add_common_args(launch_next)
-    launch_next.add_argument("--machine", required=True)
-    launch_next.add_argument("--job-kind", choices=("train",), default="train")
-    launch_next.add_argument("--limit", type=int, default=1)
-    add_dry_run_arg(launch_next)
-    launch_next.set_defaults(func=cmd_container_launch_next)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1889,26 +1649,12 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--machine", help="Limit listing to one machine.")
     ps.set_defaults(func=cmd_ps)
 
-    policy = subparsers.add_parser("policy", help="Print the repo capacity policy.")
-    add_common_args(policy)
-    policy.add_argument("--policy", type=Path, default=DEFAULT_CAPACITY_POLICY)
-    policy.set_defaults(func=cmd_policy)
-
-    launch = subparsers.add_parser("launch", help="Launch one claimed job as one container.")
-    add_common_args(launch)
-    launch.add_argument("--machine", required=True)
-    launch.add_argument("--job-id", type=int, required=True)
-    launch.add_argument("--job-kind", choices=("train",), default="train")
-    add_dry_run_arg(launch)
-    launch.set_defaults(func=cmd_container_launch)
-
     shepherd = subparsers.add_parser(
         "shepherd",
         help="Run the mutating one-job-container orchestration loop for one machine.",
     )
     add_common_args(shepherd)
     shepherd.add_argument("--machine", required=True)
-    shepherd.add_argument("--job-kind", choices=("train",), default="train")
     shepherd.add_argument("--limit", type=int, default=1)
     shepherd.add_argument("--interval", type=float, default=30.0, help="Polling interval in seconds.")
     shepherd.add_argument("--once", action="store_true", help="Run one reconcile/fill pass and exit.")
@@ -1954,14 +1700,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(setup)
     add_runtime_image_args(setup)
     setup.set_defaults(func=cmd_setup_host)
-
-    diagnostics = subparsers.add_parser(
-        "diagnostics",
-        help="Run lower-level fleet repair helpers.",
-    )
-    diagnostic_subparsers = diagnostics.add_subparsers(dest="diagnostic_command", required=True)
-    add_reconcile_parser(diagnostic_subparsers)
-    add_launch_next_parser(diagnostic_subparsers)
 
     return parser
 

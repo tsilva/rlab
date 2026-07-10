@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Any
-
 import cv2
 import numpy as np
 
@@ -65,14 +63,3 @@ def write_video(frames: list[np.ndarray], output: Path, fps: float, scale: int) 
     if process.returncode != 0:
         message = stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"ffmpeg failed to write {output}: {message}")
-
-
-def replay_actions_for_video(env, actions: list[Any], seed: int) -> list[np.ndarray]:
-    env.reset(seed=seed)
-    frames = [env.render()]
-    for action in actions:
-        _obs, _reward, terminated, truncated, _info = env.step(action)
-        frames.append(env.render())
-        if terminated or truncated:
-            break
-    return frames

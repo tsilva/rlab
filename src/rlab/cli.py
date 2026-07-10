@@ -16,7 +16,7 @@ from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     add_train_config_args,
     build_train_command_from_fields,
-    train_config_field_names,
+    validate_and_normalize_train_config,
 )
 
 
@@ -51,13 +51,11 @@ def apply_train_config_json(
         return args
 
     payload = load_train_config_json(Path(path))
+    payload = validate_and_normalize_train_config(
+        payload,
+        label=f"train config file {path}",
+    )
     args._train_config_json_fields = set(payload)
-    valid_dests = train_config_field_names()
-    unknown = sorted(str(key) for key in payload if key not in valid_dests)
-    if unknown:
-        raise ValueError(
-            f"unknown train config field(s) in {path}: {', '.join(unknown)}",
-        )
 
     for key, value in payload.items():
         if key == "train_config_json" or key in explicit_dests:

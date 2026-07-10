@@ -26,6 +26,7 @@ from rlab.runtime_refs import (
 )
 from rlab.recipe_documents import (
     assert_no_secrets,
+    compiled_recipe_payload,
     load_recipe_document,
     recipe_goal_slug,
     recipe_metadata,
@@ -35,8 +36,9 @@ from rlab.recipe_documents import (
     validate_launch_seed_config,
 )
 from rlab.seeds import validate_training_seed
-from rlab.recipe_schema import require_explicit_queue_train_config, validate_train_recipe_schema
+from rlab.recipe_schema import require_explicit_queue_train_config, validate_materialized_train_recipe
 from rlab.provider_config import provider_num_envs
+from rlab.train_config import validate_and_normalize_train_config
 
 
 SCHEMA_SQL = """
@@ -388,7 +390,7 @@ def enqueue_train_jobs_from_recipe_document(
     repo_dirty: bool = False,
     seeds: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
-    validate_train_recipe_schema(document)
+    validate_materialized_train_recipe(document)
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
     utc = _utc_stamp()
@@ -404,16 +406,11 @@ def enqueue_train_jobs_from_recipe_document(
                 label="recipe seed",
                 seed_span=provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs")),
             )
-            train_config["seed"] = seed
-        train_config.setdefault("recipe_slug", document_slug)
-        if recipe_path:
-            train_config.setdefault("recipe_path", recipe_path)
         row_run_target = normalize_run_target(run_target or train_config.get("run_target"))
-        if row_run_target:
-            train_config["run_target"] = row_run_target
+        for row_owned_key in ("seed", "recipe_slug", "recipe_path", "run_target"):
+            train_config.pop(row_owned_key, None)
         group_id = str(document["group_id"])
-        payload = dict(document)
-        payload.setdefault("recipe_id", document_slug)
+        payload = compiled_recipe_payload(document)
         row = enqueue_train_job(
             conn,
             goal_slug=goal_slug,
@@ -427,20 +424,11 @@ def enqueue_train_jobs_from_recipe_document(
             run_target=row_run_target,
             train_config=train_config,
             max_attempts=int(document.get("max_attempts") or 1),
-            run_name=(
-                _format_queue_template(
-                    document.get("run_name_template"),
-                    seed=seed,
-                    recipe_id=document_slug,
-                    utc=utc,
-                    group_id=group_id,
-                )
-                or _format_default_run_name(
-                    group_id,
-                    label=str(document.get("run_name_label") or document_slug),
-                    seed=seed,
-                    utc=utc,
-                )
+            run_name=_format_default_run_name(
+                str(document.get("batch_id") or group_id),
+                label=str(document.get("run_name_label") or document_slug),
+                seed=seed,
+                utc=utc,
             ),
             run_description=_format_queue_template(
                 document.get("description"),
@@ -504,7 +492,7 @@ def enqueue_train_job(
     goal_slug = str(goal_slug).strip()
     if not goal_slug:
         raise ValueError("goal_slug is required")
-    config = dict(train_config)
+    config = validate_and_normalize_train_config(train_config)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -821,20 +809,6 @@ def request_cancel_train_job(conn, *, job_id: int) -> int:
                 {"job_id": job_id},
             )
             return int(cur.rowcount)
-
-
-def _normalize_positive_ids(values: Sequence[int]) -> tuple[int, ...]:
-    ids = tuple(int(value) for value in values)
-    invalid = [value for value in ids if value <= 0]
-    if invalid:
-        raise ValueError(f"job ids must be positive integers: {invalid}")
-    return ids
-
-
-def _normalize_stale_limit(value: int | None) -> int | None:
-    if value is None or int(value) <= 0:
-        return None
-    return int(value)
 
 
 def _terminal_status_from_result(result: Mapping[str, Any]) -> str:

@@ -5,9 +5,9 @@ not training recipes and they are not promotion evidence by themselves. Use them
 to catch runtime, throughput, artifact, eval, and fleet regressions before a
 larger experiment batch burns time.
 
-Profiles live as YAML files in `experiments/benchmarks/profiles/`. Shared
-baseline expectations live in `experiments/benchmarks/baselines.yaml`. Results
-belong under `logs/benchmarks/` and should stay out of source control.
+Profiles and their gate expectations live as YAML files in
+`experiments/benchmarks/profiles/`. Results belong under `logs/benchmarks/` and
+should stay out of source control.
 
 Environment-sensitive profiles declare `environment_contract.schema_version: 2`
 and `task_termination_boundary: vector_step`. Results from the retired native

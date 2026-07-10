@@ -8,9 +8,7 @@ on:
       - .dockerignore
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
-      - experiments/fleet.yaml
-      - experiments/instances.yaml
-      - experiments/policies/**
+      - experiments/machines.yaml
       - scripts/**
       - src/**
       - INSTANCES.md
@@ -23,9 +21,7 @@ on:
       - .dockerignore
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
-      - experiments/fleet.yaml
-      - experiments/instances.yaml
-      - experiments/policies/**
+      - experiments/machines.yaml
       - scripts/**
       - src/**
       - INSTANCES.md

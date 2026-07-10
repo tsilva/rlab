@@ -28,9 +28,9 @@ TensorBoard-synced SB3 metrics. Post-training checkpoint eval logs `global_step`
 
 These are the first metrics to check when choosing policies.
 
-Queue-backed train recipes use `selection_metrics` as an ordered list of training
-signals. Goal-owned eval settings do not define selection metrics; they only define
-the checkpoint measurement protocol. Post-training checkpoint eval writes
+Goal contracts use `objective.rank` as the single ordered checkpoint-selection
+contract. Goal-owned eval settings define the checkpoint measurement protocol.
+Post-training checkpoint eval writes
 canonical `eval/*` metrics to the producing W&B run with `global_step` set to
 the checkpoint timestep. W&B is the source of truth for train and eval metrics;
 the queue database stores train-job state, not result metric projections.

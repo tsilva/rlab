@@ -4,9 +4,6 @@ defaults:
 recipe_id: b93-slowent-l12bias-extended
 template_vars:
   env_id: SuperMarioBros-Nes-v0
-  recipe: historical-b93
-  schedule: slowent
-  variant: l12bias-extended
 description: >-
   Seed {seed} extends the reproduced historical B93/B116 Level1-1/Level1-2
   mixed PPO settings beyond the original 5M-step high-watermark cap, preserving

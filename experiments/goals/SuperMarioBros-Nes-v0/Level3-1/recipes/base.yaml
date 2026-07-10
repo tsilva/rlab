@@ -2,5 +2,4 @@ defaults:
 - ../../_single-level-transfer@_global_
 - ../_goal@goal
 - _self_
-template_vars:
-  batch_id: b278
+batch_id: b278

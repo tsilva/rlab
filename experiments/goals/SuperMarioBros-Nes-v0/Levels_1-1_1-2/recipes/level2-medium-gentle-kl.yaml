@@ -4,9 +4,6 @@ defaults:
 recipe_id: level2-medium-gentle-kl
 template_vars:
   env_id: SuperMarioBros-Nes-v0
-  recipe: task-conditioned-lowkl
-  schedule: lrdecay
-  variant: level2-medium-gentle-kl
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} 40/60 Level1-2-medium
   sampling recipe with an intermediate PPO update envelope, testing whether

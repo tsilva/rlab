@@ -7,11 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from rlab.config_loader import load_mapping_document
 from rlab.fleet import docker_image_ref
 from rlab.runtime_refs import runtime_image_ref_from_file
-from rlab.train_config import validate_train_config_fields
+from rlab.train_config import validate_and_normalize_train_config
 from rlab.validation import int_list
 from rlab.validation import require_int
 from rlab.validation import require_mapping
@@ -84,10 +83,7 @@ def _slug(value: str) -> str:
 def _profile_payload(path: Path) -> dict[str, Any]:
     if path.suffix.lower() not in {".yaml", ".yml"}:
         raise ValueError(f"benchmark profile must be YAML: {path}")
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"{path} must contain a profile object")
-    return payload
+    return load_mapping_document(path, label=f"benchmark profile {path}")
 
 
 def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "profile") -> None:
@@ -122,7 +118,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
 
     if kind in {"ppo_loop_throughput", "artifact_storage_smoke"}:
         config = require_mapping(payload.get("train_config"), label=f"{label}.train_config")
-        validate_train_config_fields(config, label=f"{label}.train_config")
+        validate_and_normalize_train_config(config, label=f"{label}.train_config")
         require_non_empty_string(
             config,
             "game",

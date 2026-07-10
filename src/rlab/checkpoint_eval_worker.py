@@ -9,7 +9,6 @@ from typing import Any
 
 from stable_baselines3 import PPO
 
-from rlab.artifact_worker import resume_wandb_run
 from rlab.artifacts import sanitize_artifact_name
 from rlab.checkpoint_eval_config import (
     CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
@@ -60,7 +59,7 @@ from rlab.metric_names import (
 )
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import DEFAULT_EVAL_SEED
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
 
 
 def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:

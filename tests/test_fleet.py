@@ -271,35 +271,31 @@ class FleetHostTests(unittest.TestCase):
 
             self.assertEqual(runtime_image_ref_from_file(path), RUNTIME_IMAGE_REF)
 
-    def test_capacity_policy_renders_missing_container_limit_plainly(self) -> None:
-        registry = sample_registry()
-        policy = {"lanes": [{"name": "beast", "manager": "rlab_fleet", "host": "beast-3"}]}
-
-        fleet.validate_capacity_policy(policy, registry)
-        rendered = fleet.format_capacity_policy(policy)
-
-        self.assertIn("max_train_containers=machine-limit", rendered)
-
-    def test_capacity_policy_accepts_local_docker_fleet_machine(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            registry = load_machine_registry(path)
-        policy = {
-            "lanes": [
-                {
-                    "name": "localhost-smoke",
-                    "manager": "rlab_fleet",
-                    "host": "beast-test",
-                    "max_train_containers": 1,
-                }
-            ]
-        }
-
-        fleet.validate_capacity_policy(policy, registry)
-
-
 class JobContainerTests(unittest.TestCase):
+    def test_shepherd_limit_caps_total_active_containers(self) -> None:
+        registry = sample_registry()
+        machine = resolve_machine(registry, "beast-3")
+        active = [
+            fleet.JobContainer(
+                machine=machine.name,
+                name=f"job-{index}",
+                state="running",
+                status="Up",
+                labels={fleet.JOB_KIND_LABEL: fleet.TRAIN_JOB_KIND},
+            )
+            for index in range(3)
+        ]
+
+        with mock.patch.object(fleet, "list_job_containers", return_value=active):
+            self.assertEqual(
+                fleet.machine_available_train_slots(machine, limit=4),
+                1,
+            )
+            self.assertEqual(
+                fleet.machine_available_train_slots(machine, limit=3),
+                0,
+            )
+
     def test_job_container_run_command_uses_run_job_payload_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "machines.yaml"

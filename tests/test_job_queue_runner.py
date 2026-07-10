@@ -8,7 +8,7 @@ from pathlib import Path
 from rlab import job_queue, wandb_leaders
 from rlab.job_execution import normalize_train_config, train_command_for_job, write_train_config_file
 from rlab.recipe_documents import materialize_train_recipe_document
-from rlab.recipe_schema import validate_train_recipe_schema
+from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.seeds import DEFAULT_EVAL_SEED
 
 
@@ -92,9 +92,7 @@ def valid_train_recipe() -> dict:
         "description": "Candidate seed {seed} for {recipe_id}.",
         "seeds": [23, 24],
         "group_id": "b-test",
-        "run_name_template": "{group_id}_{recipe_id}_s{seed}_{timestamp}",
         "tags": ["b55", "confirm"],
-        "selection_metrics": ["train/completion_episode_rate", "train/reward/mean"],
         "train_config": explicit_train_config(),
     }
 
@@ -197,7 +195,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(insert_params["run_target"], "rtx4090")
         self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
 
-    def test_enqueue_train_jobs_from_recipe_document_materializes_run_target(self) -> None:
+    def test_enqueue_train_jobs_keeps_run_target_in_queue_column(self) -> None:
         conn = FakeConnection(
             row={
                 "id": 10,
@@ -218,7 +216,7 @@ class JobQueueTests(unittest.TestCase):
         insert_params = conn.cursor_obj.executed_params_list[0]
         train_config = insert_params["train_config"].adapted
         self.assertEqual(insert_params["run_target"], "local-macbook")
-        self.assertEqual(train_config["run_target"], "local-macbook")
+        self.assertNotIn("run_target", train_config)
 
     def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
@@ -264,7 +262,7 @@ class JobQueueTests(unittest.TestCase):
                     ValueError,
                     rf"unknown train recipe field.*{field}",
                 ):
-                    validate_train_recipe_schema(materialized)
+                    validate_materialized_train_recipe(materialized)
 
     def test_materialization_keeps_supported_train_config_sections(self) -> None:
         document = valid_train_recipe()
@@ -338,9 +336,10 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(
             [row["run_name"] for row in rows],
-            ["b-test_candidate_s23_20260626T120000Z", "b-test_candidate_s24_20260626T120000Z"],
+            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
         )
-        self.assertEqual([call["train_config"]["seed"] for call in calls], [23, 24])
+        self.assertEqual([call["seed"] for call in calls], [23, 24])
+        self.assertTrue(all("seed" not in call["train_config"] for call in calls))
         self.assertEqual(calls[0]["recipe_slug"], "candidate")
         self.assertEqual(calls[0]["recipe_path"], "experiments/goals/mario/recipes/candidate.yaml")
         self.assertEqual(calls[0]["recipe_sha256"], "abc123")
@@ -452,6 +451,7 @@ class JobExecutionTests(unittest.TestCase):
             "recipe_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
             "run_name": "lowkl_seed23",
             "run_description": "Codex-authored smoke job.",
+            "seed": 23,
             "wandb_group": "level1-1-lowkl-lrdecay",
             "wandb_tags": ["fallback"],
             "runtime_image_ref": RUNTIME_IMAGE_REF,
@@ -469,6 +469,8 @@ class JobExecutionTests(unittest.TestCase):
             "screen,goal_id:Level1-1,recipe_id:base,level_id:Level1-1",
         )
         self.assertEqual(written_config["recipe_slug"], "base")
+        self.assertEqual(written_config["seed"], 23)
+        self.assertEqual(written_config["run_target"], "rtx4090")
         self.assertEqual(written_config["queue_train_job_id"], 12)
         self.assertEqual(command[-3:], ["rlab.train", "--train-config-json", str(config_path)])
         self.assertNotIn("WANDB_API_KEY", json.dumps(written_config))

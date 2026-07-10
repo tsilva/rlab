@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +16,11 @@ from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import validate_training_seed
-from rlab.wandb_artifacts import artifact_download_dir, download_model_artifact
 
 
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
 METRIC_ROW_RE = re.compile(r"\|\s+(?P<key>[A-Za-z0-9_./-]+)\s+\|\s+(?P<value>[^|]+?)\s+\|")
 WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
-RESUME_ARTIFACT_ROOT = Path("artifacts/train_resumes")
 
 
 def strip_env_file_quotes(value: str) -> str:
@@ -37,7 +33,6 @@ def strip_env_file_quotes(value: str) -> str:
 def normalize_train_config(
     job: dict[str, Any],
     *,
-    resolve_resume_artifact: bool = True,
     require_explicit_train_fields: bool = True,
 ) -> dict[str, Any]:
     """Merge queue-row execution metadata into an already materialized recipe train_config.
@@ -66,6 +61,8 @@ def normalize_train_config(
     recipe_path = str(job.get("recipe_path") or "").strip()
     if recipe_path:
         config["recipe_path"] = recipe_path
+    if job.get("seed") is not None:
+        config["seed"] = int(job["seed"])
     if job.get("id") is not None:
         config["queue_train_job_id"] = int(job["id"])
     for level in normalize_level_states(config):
@@ -82,18 +79,6 @@ def normalize_train_config(
         config["runtime_image_ref"] = job["runtime_image_ref"]
     if job.get("run_target"):
         config["run_target"] = job["run_target"]
-    resume_artifact = config.pop("resume_artifact", None)
-    if resume_artifact:
-        if config.get("resume"):
-            raise ValueError("Use only one of resume or resume_artifact in train_config")
-        if resolve_resume_artifact:
-            resume_ref = str(resume_artifact)
-            config["resume"] = str(
-                download_model_artifact(
-                    resume_ref,
-                    artifact_download_dir(RESUME_ARTIFACT_ROOT, resume_ref),
-                )
-            )
     if require_explicit_train_fields:
         require_explicit_queue_train_config(config)
     if config.get("wandb_artifact_storage_uri") in {
@@ -176,7 +161,6 @@ def parse_wandb_run_url(log_text: str) -> str | None:
 def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, Any]:
     config = normalize_train_config(
         job,
-        resolve_resume_artifact=False,
         require_explicit_train_fields=False,
     )
     run_name = str(config["run_name"])
@@ -218,44 +202,3 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         "metrics_json": metrics,
         "phase_counts": phase_counts,
     }
-
-
-def should_purge_successful_run_data(job: dict[str, Any], result: Mapping[str, Any]) -> bool:
-    config = normalize_train_config(job, resolve_resume_artifact=False)
-    if not bool(config.get("wandb")):
-        return False
-    if str(config.get("wandb_mode") or "online") != "online":
-        return False
-    if bool(config.get("no_wandb_artifacts")):
-        return False
-    return bool(result.get("artifact_refs"))
-
-
-def purge_successful_run_data(job: dict[str, Any], result: Mapping[str, Any]) -> bool:
-    config = normalize_train_config(job, resolve_resume_artifact=False)
-    runs_dir = Path(str(config.get("runs_dir") or "runs"))
-    raw_run_dir = str(result.get("run_dir") or "").strip()
-    if not raw_run_dir:
-        return False
-    run_dir = Path(raw_run_dir)
-    try:
-        runs_root = runs_dir.resolve()
-        target = run_dir.resolve()
-    except OSError as exc:
-        print(f"warning: could not resolve run cleanup paths run_dir={run_dir}: {exc}", flush=True)
-        return False
-    if target == runs_root or not target.is_relative_to(runs_root):
-        print(
-            f"warning: refusing to purge run_dir outside runs_dir: run_dir={target} runs_dir={runs_root}",
-            flush=True,
-        )
-        return False
-    if not target.exists():
-        return False
-    try:
-        shutil.rmtree(target)
-    except OSError as exc:
-        print(f"warning: could not purge successful run data {target}: {exc}", flush=True)
-        return False
-    print(f"purged successful run data: {target}", flush=True)
-    return True

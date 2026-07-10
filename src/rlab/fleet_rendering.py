@@ -10,7 +10,6 @@ from typing import Any
 
 from rlab.fleet_labels import JOB_ID_LABEL
 from rlab.machines import MachineConfig
-from rlab.runtime_refs import runtime_image_digest_slug
 
 
 @dataclass(frozen=True)
@@ -114,25 +113,6 @@ def used_total_ratio(value: str) -> float | None:
     return max(0.0, min(1.0, float(match.group(1)) / total))
 
 
-def usage_meter(value: str, *, ratio: float | None = None, color: bool, width: int = 10) -> str:
-    if not value or value == "unknown":
-        return colorize("unknown", "dim", enabled=color)
-    if ratio is None:
-        ratio = percent_ratio(value) or used_total_ratio(value)
-    if ratio is None:
-        return highlight_dashboard_text(value, color=color)
-    filled = max(0, min(width, round(ratio * width)))
-    empty = max(0, width - filled)
-    style = heat_style(ratio)
-    if color:
-        bar = (
-            f"[{colorize('#' * filled, style, enabled=True)}"
-            f"{colorize('-' * empty, 'dim', enabled=True)}]"
-        )
-        return f"{bar} {colorize(value, style, enabled=True)}"
-    return f"[{'#' * filled}{'-' * empty}] {value}"
-
-
 def highlight_dashboard_text(text: str, *, color: bool) -> str:
     if not color:
         return text
@@ -194,10 +174,6 @@ def style_table(table: str, *, color: bool) -> str:
     for index in range(2, len(lines)):
         lines[index] = highlight_dashboard_text(lines[index], color=True)
     return "\n".join(lines)
-
-
-def compact_ref(runtime_image_ref: str) -> str:
-    return runtime_image_digest_slug(runtime_image_ref)
 
 
 def truncate_cell(value: Any, width: int) -> str:

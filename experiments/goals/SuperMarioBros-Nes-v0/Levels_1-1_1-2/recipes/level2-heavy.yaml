@@ -4,9 +4,6 @@ defaults:
 recipe_id: level2-heavy
 template_vars:
   env_id: SuperMarioBros-Nes-v0
-  recipe: task-conditioned-lowkl
-  schedule: lrdecay
-  variant: level2-heavy
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} baseline with Level1-2
   sampled more often than Level1-1, preserving one shared policy and the same

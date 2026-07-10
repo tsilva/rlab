@@ -1,10 +1,10 @@
 # GPU Instances
 
-This repo currently supports local one-job Docker containers only. Training jobs
-are created in the queue DB with `rlab train`; Mac-side `rlab fleet shepherd`
-claims queued jobs and reconciles Docker containers on `beast-3` and `beast-2`
-over SSH. Do not use provider launchers for this project while the beast path is
-being hardened.
+This repo currently supports one-job Docker containers on registered local or
+SSH Docker machines. Training jobs are created in the queue DB with `rlab
+train`; Mac-side `rlab fleet shepherd` claims queued jobs and reconciles Docker
+containers locally or on `beast-3` and `beast-2` over SSH. Do not use provider
+launchers for this project while the beast path is being hardened.
 
 ## Quick Choice
 
@@ -19,9 +19,8 @@ being hardened.
 Concrete beast host operation, target mapping, and hard capacity live in
 `experiments/machines.yaml`: backend, SSH/Docker access, payload/output paths,
 env file, mounts, enforced
-`max_parallel_containers` slot caps, and host runtime paths. Scheduling lanes and
-policy checks live in `experiments/policies/capacity_policy.yaml`; only lanes that
-intentionally run below machine capacity define a smaller soft cap.
+`max_parallel_containers` slot caps, and host runtime paths. Use the shepherd's
+`--limit` option when a run intentionally needs a smaller operating shape.
 
 ## Standard Workflow
 
@@ -36,7 +35,6 @@ rlab train \
 Inspect and reconcile local capacity from the MacBook:
 
 ```bash
-rlab fleet policy
 rlab fleet status
 rlab fleet ps
 rlab fleet watch --machine beast-3
@@ -58,8 +56,8 @@ which rows need shepherd action. Use `shepherd --once` for a single
 reconcile-and-fill pass, or omit `--once` for the long-running mutating
 orchestrator. Shepherd reconciles, claims, launches, finalizes, streams a
 line-oriented action log, and prunes stale Docker images from the host once no
-active container or queued demand needs them. Lower-level helpers live under
-`rlab fleet diagnostics reconcile` and `rlab fleet diagnostics launch-next`.
+active container or queued demand needs them. `rlab fleet shepherd --once` is
+the only supported mutating repair-and-fill pass.
 
 ## Host Setup
 

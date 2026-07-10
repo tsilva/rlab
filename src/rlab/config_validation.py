@@ -12,11 +12,10 @@ import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
-from rlab.config_loader import load_composed_mapping, load_mapping_document
+from rlab.config_loader import load_composed_mapping
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_identity import validate_task_config
 from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
-from rlab.fleet import load_capacity_policy, validate_capacity_policy
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.seeds import validate_eval_seed
@@ -28,12 +27,10 @@ from rlab.validation import (
     require_key as _require_key,
     require_mapping as _require_mapping,
     require_non_empty_string as _require_non_empty_string,
-    require_schema_version as _require_schema_version,
     string_list,
 )
 
 
-BENCHMARK_BASELINES_SCHEMA_VERSION = 1
 ENV_CONFIG_ALLOWED_KEYS = env_config_allowed_keys() | {"n_envs", "task"}
 
 
@@ -70,22 +67,6 @@ def _display_path(path: Path, repo_root: Path) -> str:
         return str(path)
 
 
-def _require_number(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    label: str,
-    minimum: float | None = None,
-) -> float:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError(f"{_label_path(label, key)} must be a number")
-    number = float(value)
-    if minimum is not None and number < minimum:
-        raise ValueError(f"{_label_path(label, key)} must be >= {minimum:g}")
-    return number
-
-
 def _require_bool(document: Mapping[str, Any], key: str, *, label: str) -> bool:
     value = _require_key(document, key, label=label)
     if not isinstance(value, bool):
@@ -102,29 +83,6 @@ def _require_string_list(
 ) -> list[str]:
     value = _require_key(document, key, label=label)
     return string_list(value, label=_label_path(label, key), allow_empty=allow_empty)
-
-
-def _require_int_list(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    label: str,
-    length: int,
-    minimum: int | None = None,
-) -> list[int]:
-    value = _require_key(document, key, label=label)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise ValueError(f"{_label_path(label, key)} must be a list")
-    if len(value) != length:
-        raise ValueError(f"{_label_path(label, key)} must contain {length} integers")
-    result: list[int] = []
-    for index, item in enumerate(value):
-        if not _is_int(item):
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be an integer")
-        if minimum is not None and item < minimum:
-            raise ValueError(f"{_label_path(label, key)}[{index}] must be >= {minimum}")
-        result.append(item)
-    return result
 
 
 def _validate_obs_crop(preprocessing: Mapping[str, Any], *, label: str) -> None:
@@ -410,17 +368,6 @@ def _validate_objective_rank(objective: Mapping[str, Any], *, label: str) -> Non
     _validate_rank_order(rank, label=f"{label}.rank")
 
 
-def _validate_selection_policy(selection_policy: Mapping[str, Any], *, label: str) -> None:
-    allowed_selection_keys = {"rank_order"}
-    extra_selection_keys = sorted(set(selection_policy) - allowed_selection_keys)
-    if extra_selection_keys:
-        raise ValueError(
-            f"{label} must contain only rank_order; unexpected keys: {extra_selection_keys}"
-        )
-    rank_order = _require_key(selection_policy, "rank_order", label=label)
-    _validate_rank_order(rank_order, label=f"{label}.rank_order")
-
-
 def _validate_goal_release(document: Mapping[str, Any], *, label: str) -> None:
     if "release" not in document:
         return
@@ -633,44 +580,8 @@ def validate_env_config_file(path: Path) -> None:
         raise ValueError(f"{label} must not define state or states")
 
 
-def validate_fleet_and_capacity(repo_root: Path) -> None:
-    registry = load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
-    policy = load_capacity_policy(repo_root)
-    _require_schema_version(policy, 1, label="capacity policy")
-    validate_capacity_policy(policy, registry)
-    lanes = policy.get("lanes")
-    if not isinstance(lanes, Sequence) or isinstance(lanes, str | bytes) or not lanes:
-        raise ValueError("capacity policy lanes must be a non-empty list")
-    for index, raw in enumerate(lanes):
-        label = f"capacity policy lanes[{index}]"
-        lane = _require_mapping(raw, label=label)
-        _require_non_empty_string(lane, "name", label=label)
-        _require_non_empty_string(lane, "target", label=label)
-        _require_non_empty_string(lane, "manager", label=label)
-        if "max_train_containers" in lane:
-            _require_int(lane, "max_train_containers", label=label, minimum=1)
-        _require_string_list(lane, "use_for", label=label)
-
-
 def validate_machine_config(repo_root: Path) -> None:
     load_machine_registry(repo_root / DEFAULT_MACHINE_REGISTRY)
-
-
-def validate_benchmark_baselines(path: Path) -> None:
-    document = load_mapping_document(path, label=f"benchmark baselines file {path}")
-    label = f"benchmark baselines file {path}"
-    _require_schema_version(document, BENCHMARK_BASELINES_SCHEMA_VERSION, label=label)
-    baselines = _require_mapping(
-        _require_key(document, "baselines", label=label), label=f"{label}.baselines"
-    )
-    if not baselines:
-        raise ValueError(f"{label}.baselines must not be empty")
-    for name, raw in baselines.items():
-        baseline_label = f"{label}.baselines.{name}"
-        baseline = _require_mapping(raw, label=baseline_label)
-        _require_non_empty_string(baseline, "target", label=baseline_label)
-        _require_non_empty_string(baseline, "host", label=baseline_label)
-        _require_int(baseline, "workers", label=baseline_label, minimum=1)
 
 
 def _capture_issue(issues: list[ValidationIssue], path: Path, repo_root: Path, action: Any) -> None:
@@ -738,35 +649,13 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
         _capture_issue(issues, path, repo_root, lambda path=path: validate_env_config_file(path))
 
     machines_path = experiments_dir / "machines.yaml"
-    capacity_path = experiments_dir / "policies" / "capacity_policy.yaml"
     counts["machine_configs"] = int(machines_path.is_file())
-    counts["capacity_policies"] = int(capacity_path.is_file())
     if machines_path.is_file():
         _capture_issue(issues, machines_path, repo_root, lambda: validate_machine_config(repo_root))
     else:
         issues.append(ValidationIssue(path="experiments/machines.yaml", message="file is required"))
-    if machines_path.is_file() and capacity_path.is_file():
-        _capture_issue(
-            issues, capacity_path, repo_root, lambda: validate_fleet_and_capacity(repo_root)
-        )
-    elif not capacity_path.is_file():
-        issues.append(
-            ValidationIssue(
-                path="experiments/policies/capacity_policy.yaml", message="file is required"
-            )
-        )
 
     benchmark_dir = experiments_dir / "benchmarks"
-    benchmark_baselines = benchmark_dir / "baselines.yaml"
-    counts["benchmark_baselines"] = int(benchmark_baselines.is_file())
-    if benchmark_baselines.is_file():
-        _capture_issue(
-            issues,
-            benchmark_baselines,
-            repo_root,
-            lambda: validate_benchmark_baselines(benchmark_baselines),
-        )
-
     profile_dir = benchmark_dir / "profiles"
     if profile_dir.is_dir():
         _capture_issue(issues, profile_dir, repo_root, lambda: load_benchmark_profiles(profile_dir))

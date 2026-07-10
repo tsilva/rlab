@@ -1,6 +1,6 @@
 # Experiments
 
-This directory holds shared machine config, active fleet policy/scripts, and
+This directory holds shared machine config, active experiment scripts, and
 goal-scoped experiment capsules.
 Keep broad repo rules in the top-level runbooks:
 
@@ -16,7 +16,6 @@ scratch directories.
 Current machine-readable research state:
 
 - `goals/`: active goal capsules, including contracts and checked-in recipes.
-- `policies/`: active fleet capacity and scheduling policies.
 - `scripts/`: active experiment utilities used by benchmark profiles and tooling.
 
 Historical goal reports, old recipe fragments, and the former `history/` tree

@@ -367,55 +367,18 @@ class FleetShepherdSplitTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertTrue(conn.closed)
 
-    def test_exact_launch_runs_under_machine_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            args = fleet.build_parser().parse_args(
-                [
-                    "launch",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--job-id",
-                    "7",
-                    "--execute",
-                ]
-            )
-            conn = FakeConnection()
-
-            with (
-                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
-                mock.patch.object(
-                    fleet,
-                    "machine_mutation_lock",
-                    return_value=contextlib.nullcontext(),
-                ) as machine_lock,
-                mock.patch.object(fleet, "launch_claimed_job_container", return_value=None),
-            ):
-                status = fleet.cmd_container_launch(args)
-
-        self.assertEqual(status, 0)
-        machine_lock.assert_called_once_with(conn, "beast-test")
-        self.assertTrue(conn.closed)
-
     def test_launch_next_runs_reconcile_fill_pass_under_machine_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "machines.yaml"
             write_registry(path)
-            args = fleet.build_parser().parse_args(
-                [
-                    "diagnostics",
-                    "launch-next",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--limit",
-                    "3",
-                    "--execute",
-                ]
+            args = SimpleNamespace(
+                machines=path,
+                machine="beast-test",
+                limit=3,
+                execute=True,
+                direct=False,
+                repo_root=None,
+                no_color=True,
             )
             conn = FakeConnection()
 
@@ -443,16 +406,13 @@ class FleetShepherdSplitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "machines.yaml"
             write_registry(path)
-            args = fleet.build_parser().parse_args(
-                [
-                    "diagnostics",
-                    "reconcile",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--execute",
-                ]
+            args = SimpleNamespace(
+                machines=path,
+                machine="beast-test",
+                execute=True,
+                direct=False,
+                repo_root=None,
+                no_color=True,
             )
             conn = FakeConnection()
 

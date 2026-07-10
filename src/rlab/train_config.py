@@ -421,6 +421,31 @@ def validate_train_config_fields(
             validate_train_config_value(key, train_config[key], label=label)
 
 
+def validate_and_normalize_train_config(
+    train_config: Mapping[str, Any],
+    *,
+    label: str = "train_config",
+    required_keys: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Validate one flat train config and normalize its structured rule fields."""
+
+    from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
+    from rlab.early_stop import normalize_early_stop_config
+
+    normalized = dict(train_config)
+    validate_train_config_fields(normalized, label=label, required_keys=required_keys)
+    if normalized.get("early_stop") is not None:
+        normalized["early_stop"] = normalize_early_stop_config(
+            normalized["early_stop"], label=f"{label}.early_stop"
+        )
+    if normalized.get("checkpoint_eval_stages") is not None:
+        normalized["checkpoint_eval_stages"] = normalize_checkpoint_eval_stages(
+            normalized["checkpoint_eval_stages"],
+            label=f"{label}.checkpoint_eval_stages",
+        )
+    return normalized
+
+
 TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField(
         "timesteps",
