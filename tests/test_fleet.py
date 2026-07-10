@@ -171,7 +171,7 @@ class FleetHostTests(unittest.TestCase):
         fleet.validate_capacity_policy(policy, registry)
         rendered = fleet.format_capacity_policy(policy)
 
-        self.assertIn("max_train_containers=None", rendered)
+        self.assertIn("max_train_containers=machine-limit", rendered)
 
     def test_capacity_policy_accepts_local_docker_fleet_machine(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

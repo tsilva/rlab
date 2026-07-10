@@ -17,7 +17,7 @@ from rlab.eval_metrics import (
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.metric_names import EVAL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
-from rlab.train import (
+from rlab.checkpoint_eval_worker import (
     eval_config_from_training_config,
     eval_score as eval_checkpoint_score,
     log_checkpoint_eval_metrics,
@@ -179,7 +179,7 @@ class EvalMetricTests(unittest.TestCase):
             eval_checkpoint_score(slower_higher_reward),
         )
 
-    def test_post_train_checkpoint_eval_logs_checkpoint_step_as_metric(self) -> None:
+    def test_async_checkpoint_eval_logs_checkpoint_step_as_metric(self) -> None:
         run = FakeWandbRun()
 
         log_checkpoint_eval(run)
@@ -189,21 +189,21 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(run.payload["global_step"], 120000)
         self.assertEqual(run.payload["eval/checkpoint/step"], 120000)
         self.assertEqual(run.payload[EVAL_DURATION_SECONDS], 12.5)
-        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "async_worker")
         self.assertEqual(run.summary["leader/checkpoint/completion_rate"], 0.8)
         self.assertEqual(run.summary["leader/checkpoint/completion_rate_mean"], 0.9)
         self.assertEqual(run.summary["leader/checkpoint/reward_mean"], 10.0)
         self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
 
-    def test_post_train_checkpoint_summary_handles_wandb_summary_without_pop(self) -> None:
+    def test_async_checkpoint_summary_handles_wandb_summary_without_pop(self) -> None:
         run = FakeWandbRun(summary=WandbLikeSummary())
 
         log_checkpoint_eval(run)
 
         self.assertNotIn("leader/checkpoint/steps_to_completion_goal", run.summary)
-        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "post_train_inline")
+        self.assertEqual(run.summary["leader/checkpoint/eval_source"], "async_worker")
 
-    def test_post_train_checkpoint_summary_tracks_steps_to_completion_goal(self) -> None:
+    def test_async_checkpoint_summary_tracks_steps_to_completion_goal(self) -> None:
         run = FakeWandbRun()
         metrics = checkpoint_metrics(
             **{
@@ -259,7 +259,7 @@ class EvalMetricTests(unittest.TestCase):
             "entity/project/run-checkpoint:step-3500000",
         )
 
-    def test_post_train_eval_config_keeps_level_change_done_event(self) -> None:
+    def test_checkpoint_eval_config_keeps_level_change_done_event(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
             info_events={
@@ -275,7 +275,7 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(eval_config.done_on_events, ("level_change",))
         self.assertEqual(config.done_on_events, ("life_loss", "level_change"))
 
-    def test_post_train_eval_config_drops_life_loss_done_event(self) -> None:
+    def test_checkpoint_eval_config_drops_life_loss_done_event(self) -> None:
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
             info_events={"life_loss": ("lives", "decrease")},

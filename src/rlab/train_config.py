@@ -90,7 +90,6 @@ def add_train_config_args(
     parser: argparse.ArgumentParser,
     *,
     env_defaults: EnvConfig | None = None,
-    preset_choices: Sequence[str] = (),
     parse_json_value: Callable[[str], Any],
     parse_obs_crop: Callable[[Any], Any],
 ) -> None:
@@ -101,9 +100,7 @@ def add_train_config_args(
             kwargs["help"] = argparse.SUPPRESS
         elif field.help is not None:
             kwargs["help"] = field.help
-        if field.dest == "preset" and preset_choices:
-            kwargs["choices"] = sorted(preset_choices)
-        elif field.choices:
+        if field.choices:
             kwargs["choices"] = field.choices
         if field.kind == "store_true":
             kwargs["action"] = "store_true"
@@ -431,7 +428,6 @@ def validate_train_config_fields(
 
 
 TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
-    TrainConfigField("preset", ("--preset",), default=None),
     TrainConfigField(
         "timesteps",
         ("--timesteps",),
@@ -658,14 +654,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "checkpoint_freq", ("--checkpoint-freq",), type_name="int", default=500_000, validation_min=0
-    ),
-    TrainConfigField(
-        "post_train_eval",
-        ("--post-train-eval",),
-        false_flag="--no-post-train-eval",
-        kind="bool_optional",
-        default=True,
-        help="Evaluate checkpoint artifacts in this training process after learning finishes.",
     ),
     TrainConfigField(
         "post_train_eval_episodes",

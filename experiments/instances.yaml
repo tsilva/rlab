@@ -9,8 +9,6 @@ instances:
     cpus: 12+
     memory: 48+
     image_id: ''
-    default_workers: 6
-    hardware_max_workers: 6
     expected_aggregate_wall_fps: null
     lower_contention_workers:
     - 3
@@ -31,8 +29,6 @@ instances:
     memory: 8+
     image_id: ''
     prebuilt_image: true
-    default_workers: 4
-    hardware_max_workers: 4
     fast_turnaround_workers: 2
     notes:
     - Mac-side rlab fleet shepherd manages one train container per queued job on this host.
@@ -46,8 +42,6 @@ instances:
     kind: fleet
     infra: local_docker/local-macbook
     accelerator: CPU/MPS host
-    default_workers: 1
-    hardware_max_workers: 1
     notes:
     - Mac-side rlab fleet shepherd can run one queue-backed local Docker train container.
     - Best for smoke tests and queue/fleet debugging rather than long PPO batches.

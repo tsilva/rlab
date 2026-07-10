@@ -68,7 +68,7 @@ from rlab.play import build_parser as build_play_parser
 from rlab.vec_wrappers import normalize_vec_wrapper_specs
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.targets import SuperMarioBros3NesV0Target, SuperMarioBrosNesV0Target, target_for_game
-from rlab.train import (
+from rlab.checkpoint_eval_worker import (
     eval_checkpoint_artifact_ref,
 )
 

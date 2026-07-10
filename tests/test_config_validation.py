@@ -368,8 +368,8 @@ environment_hash: sha256:deadbeef
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)
 
-    def test_release_is_registered_on_unified_cli(self) -> None:
-        self.assertIn("release", COMMANDS)
+    def test_retired_commands_are_not_registered_on_unified_cli(self) -> None:
+        self.assertTrue({"monitor", "promote", "release"}.isdisjoint(COMMANDS))
 
     def test_goal_validator_accepts_huggingface_release_target(self) -> None:
         document = load_goal_contract(

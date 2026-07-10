@@ -21,20 +21,6 @@ from rlab.train_config import (
 )
 
 
-TRAINING_PRESETS: dict[str, dict[str, Any]] = {
-    "smoke": {
-        "timesteps": 512,
-        "n_envs": 1,
-        "batch_size": 128,
-        "max_episode_steps": 600,
-        "checkpoint_freq": 256,
-        "run_name": "smoke",
-        "run_description": "Tiny local smoke run that checks the rlab training path compiles and saves.",
-    },
-    "baseline": {},
-}
-
-
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
     return build_train_command_from_fields(options)
 
@@ -98,7 +84,6 @@ def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args._train_config_json_fields = set()
     args._explicit_train_arg_dests = set(explicit_dests)
     apply_train_config_json(args, parser, explicit_dests)
-    args = apply_preset(args)
     validate_early_stop_args(args)
     validate_checkpoint_eval_stage_args(args)
     validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
@@ -130,35 +115,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_train_config_args(
         parser,
         env_defaults=EnvConfig(),
-        preset_choices=TRAINING_PRESETS,
         parse_json_value=parse_json_value,
         parse_obs_crop=parse_obs_crop,
     )
     return parser
 
 
-def parser_defaults() -> dict[str, Any]:
-    return vars(build_parser().parse_args([]))
-
-
-def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
-    if not args.preset:
-        return args
-    defaults = parser_defaults()
-    preset_fields = set(getattr(args, "_preset_fields", set()))
-    for key, value in TRAINING_PRESETS[args.preset].items():
-        if getattr(args, key) == defaults.get(key):
-            setattr(args, key, value)
-            preset_fields.add(key)
-    args._preset_fields = preset_fields
-    return args
-
-
 def explicit_n_envs(args: argparse.Namespace) -> int | None:
     explicit_fields = (
         set(getattr(args, "_explicit_train_arg_dests", set()))
         | set(getattr(args, "_train_config_json_fields", set()))
-        | set(getattr(args, "_preset_fields", set()))
     )
     return int(args.n_envs) if "n_envs" in explicit_fields else None
 

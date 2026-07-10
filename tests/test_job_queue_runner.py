@@ -7,6 +7,8 @@ from pathlib import Path
 
 from rlab import job_queue, wandb_leaders
 from rlab.job_execution import normalize_train_config, train_command_for_job, write_train_config_file
+from rlab.recipe_documents import materialize_train_recipe_document
+from rlab.recipe_schema import validate_train_recipe_schema
 from rlab.seeds import DEFAULT_EVAL_SEED
 
 
@@ -228,6 +230,44 @@ class JobQueueTests(unittest.TestCase):
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
             )
+
+    def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
+        rejected_fields = {
+            "env": {"action_set": "right"},
+            "state": "Level9-9",
+            "states": ["Level9-8", "Level9-9"],
+            "state_probs": [0.25, 0.75],
+            "resume": "checkpoint.zip",
+            "overrides": {"train": {"policy": {"learning_rate": 9e-4}}},
+        }
+
+        for field, value in rejected_fields.items():
+            with self.subTest(field=field):
+                document = valid_train_recipe()
+                expected_train_config = dict(document["train_config"])
+                document[field] = value
+
+                materialized = materialize_train_recipe_document(document)
+
+                self.assertEqual(materialized["train_config"], expected_train_config)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"unknown train recipe field.*{field}",
+                ):
+                    validate_train_recipe_schema(materialized)
+
+    def test_materialization_keeps_supported_train_config_sections(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"].pop("wandb_mode")
+        document["train"] = {"policy": {"learning_rate": 2e-4}}
+        document["reward"] = {"reward_mode": "raw"}
+        document["logging"] = {"wandb_mode": "offline"}
+
+        materialized = materialize_train_recipe_document(document)
+
+        self.assertEqual(materialized["train_config"]["learning_rate"], 2e-4)
+        self.assertEqual(materialized["train_config"]["reward_mode"], "raw")
+        self.assertEqual(materialized["train_config"]["wandb_mode"], "offline")
 
     def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
         document = valid_train_recipe()

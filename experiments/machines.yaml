@@ -11,7 +11,6 @@ machines:
       pull_policy: always
     limits:
       max_parallel_containers: 6
-      max_train_containers: 6
     paths:
       host_root: /home/tsilva/rlab
       payloads_dir: /home/tsilva/rlab/payloads
@@ -37,7 +36,6 @@ machines:
       pull_policy: always
     limits:
       max_parallel_containers: 4
-      max_train_containers: 4
     paths:
       host_root: /home/tsilva/rlab
       payloads_dir: /home/tsilva/rlab/payloads
@@ -58,7 +56,6 @@ machines:
       gpu_args: []
     limits:
       max_parallel_containers: 1
-      max_train_containers: 1
     paths:
       host_root: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet
       payloads_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/payloads

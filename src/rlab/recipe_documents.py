@@ -32,8 +32,7 @@ SECRET_KEY_FRAGMENTS = (
     "database_url",
 )
 LEGACY_EVENT_TRAIN_CONFIG_KEYS = ("done_on_info_json", "done_on_info")
-TRAIN_CONFIG_SECTION_KEYS = ("env", "train", "reward", "logging")
-TRAIN_CONFIG_TOP_LEVEL_KEYS = ("state", "states", "state_probs", "resume")
+TRAIN_CONFIG_SECTION_KEYS = ("train", "reward", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
 PROVIDER_OWNED_INFO_EVENTS = {
     "stable-retro-turbo": frozenset({"life_loss", "level_change"}),
@@ -200,8 +199,6 @@ def _train_config_section_value(
         section = _train_config_from_train_section(value)
     if not strip_goal_owned:
         return section
-    if key == "env":
-        return _without_keys(section, GOAL_OWNED_ENV_CONFIG_KEYS)
     if key == "logging":
         return _without_keys(section, GOAL_OWNED_OBJECTIVE_CONFIG_KEYS)
     if key == "train":
@@ -274,39 +271,6 @@ def _explicit_train_environment_config(document: Mapping[str, Any]) -> Mapping[s
     return _train_environment_section_config(environment)
 
 
-def _top_level_train_config_items(
-    document: Mapping[str, Any],
-    *,
-    strip_goal_owned: bool = False,
-) -> dict[str, Any]:
-    items: dict[str, Any] = {}
-    blocked = GOAL_OWNED_ENV_CONFIG_KEYS if strip_goal_owned else frozenset()
-    for key in TRAIN_CONFIG_TOP_LEVEL_KEYS:
-        if key in blocked:
-            continue
-        value = document.get(key)
-        if _non_empty_config_value(value):
-            items[key] = copy.deepcopy(value)
-    return items
-
-
-def _train_config_mapping_value(
-    document: Mapping[str, Any],
-    key: str,
-    *,
-    strip_goal_owned: bool = False,
-) -> Mapping[str, Any] | None:
-    value = document.get(key)
-    if not isinstance(value, Mapping):
-        return None
-    if not strip_goal_owned:
-        return value
-    return _without_keys(
-        value,
-        GOAL_OWNED_ENV_CONFIG_KEYS | GOAL_OWNED_OBJECTIVE_CONFIG_KEYS,
-    )
-
-
 def _merge_train_config_sections(
     document: Mapping[str, Any],
     *,
@@ -325,44 +289,14 @@ def _merge_train_config_sections(
         if isinstance(explicit_environment, Mapping):
             train_config = deep_merge(train_config, explicit_environment)
 
-    existing_train_config = _train_config_mapping_value(
-        document,
-        "train_config",
-        strip_goal_owned=strip_goal_owned,
-    )
+    existing_train_config = document.get("train_config")
     if isinstance(existing_train_config, Mapping):
-        train_config = deep_merge(train_config, existing_train_config)
-
-    train_config = deep_merge(
-        train_config,
-        _top_level_train_config_items(document, strip_goal_owned=strip_goal_owned),
-    )
-
-    overrides = document.get("overrides")
-    if isinstance(overrides, Mapping):
-        override_train_config = _train_config_mapping_value(
-            overrides,
-            "train_config",
-            strip_goal_owned=strip_goal_owned,
-        )
-        if isinstance(override_train_config, Mapping):
-            train_config = deep_merge(train_config, override_train_config)
-        for key in TRAIN_CONFIG_SECTION_KEYS:
-            value = _train_config_section_value(
-                overrides,
-                key,
-                strip_goal_owned=strip_goal_owned,
-            )
-            if isinstance(value, Mapping):
-                train_config = deep_merge(train_config, value)
         if strip_goal_owned:
-            explicit_environment = _explicit_train_environment_config(overrides)
-            if isinstance(explicit_environment, Mapping):
-                train_config = deep_merge(train_config, explicit_environment)
-        train_config = deep_merge(
-            train_config,
-            _top_level_train_config_items(overrides, strip_goal_owned=strip_goal_owned),
-        )
+            existing_train_config = _without_keys(
+                existing_train_config,
+                GOAL_OWNED_ENV_CONFIG_KEYS | GOAL_OWNED_OBJECTIVE_CONFIG_KEYS,
+            )
+        train_config = deep_merge(train_config, existing_train_config)
 
     return train_config
 

@@ -12,7 +12,6 @@ import yaml
 
 from rlab.benchmark_profiles import load_benchmark_profiles
 from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
-from rlab.compute_targets import load_instance_config
 from rlab.config_loader import load_composed_mapping, load_mapping_document
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_wrappers import normalize_env_wrapper_specs
@@ -638,8 +637,7 @@ def validate_env_config_file(path: Path) -> None:
 
 
 def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
-    repo_root = repo_root or Path(".")
-    config = load_instance_config(repo_root, path)
+    config = load_mapping_document(path, label=f"instance config {path}")
     instances = _require_mapping(config.get("instances"), label=f"instance config {path}.instances")
     if not instances:
         raise ValueError(f"instance config {path}.instances must not be empty")
@@ -647,12 +645,6 @@ def validate_instance_config(path: Path, repo_root: Path | None = None) -> None:
         label = f"instance config {path}.instances.{name}"
         instance = _require_mapping(raw, label=label)
         _require_non_empty_string(instance, "kind", label=label)
-        default_workers = _require_int(instance, "default_workers", label=label, minimum=1)
-        max_workers = _require_int(
-            instance, "hardware_max_workers", label=label, minimum=default_workers
-        )
-        if max_workers < default_workers:
-            raise ValueError(f"{label}.hardware_max_workers must be >= default_workers")
 
 
 def validate_fleet_and_capacity(repo_root: Path) -> None:
@@ -669,7 +661,8 @@ def validate_fleet_and_capacity(repo_root: Path) -> None:
         _require_non_empty_string(lane, "name", label=label)
         _require_non_empty_string(lane, "target", label=label)
         _require_non_empty_string(lane, "manager", label=label)
-        _require_int(lane, "max_train_containers", label=label, minimum=1)
+        if "max_train_containers" in lane:
+            _require_int(lane, "max_train_containers", label=label, minimum=1)
         _require_string_list(lane, "use_for", label=label)
 
 

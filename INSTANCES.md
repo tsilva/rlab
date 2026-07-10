@@ -16,12 +16,12 @@ being hardened.
 | Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers |
 | Smoke and queue/fleet debugging | `local-macbook` | 1 local Docker train container |
 
-Machine-readable target defaults live in `experiments/instances.yaml`; these
-use `default_workers` and `hardware_max_workers` for descriptive capacity.
-Concrete beast host operation lives in `experiments/machines.yaml`: backend,
+Machine-readable target metadata lives in `experiments/instances.yaml`.
+Concrete beast host operation and hard capacity live in `experiments/machines.yaml`: backend,
 SSH/Docker access, payload/output paths, env file, mounts, enforced
 `max_parallel_containers` slot caps, and host runtime paths. Scheduling lanes and
-policy checks live in `experiments/policies/capacity_policy.yaml`.
+policy checks live in `experiments/policies/capacity_policy.yaml`; only lanes that
+intentionally run below machine capacity define a smaller soft cap.
 
 ## Standard Workflow
 

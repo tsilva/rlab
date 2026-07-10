@@ -472,7 +472,7 @@ def format_capacity_policy(policy: Mapping[str, Any]) -> str:
                 "  "
                 f"{lane.get('name')} target={lane.get('target')} "
                 f"manager={lane.get('manager')} "
-                f"max_train_containers={lane.get('max_train_containers')}"
+                f"max_train_containers={lane.get('max_train_containers', 'machine-limit')}"
             )
     checks = policy.get("policy_checks")
     if isinstance(checks, Sequence) and not isinstance(checks, str):

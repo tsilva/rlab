@@ -16,7 +16,6 @@ recipe_overrides:
 - train.policy.batch_size=128
 - train.environment.env_config.max_episode_steps=600
 - train.checkpoint_freq=256
-- train.post_train_eval=false
 - logging.wandb=false
 - logging.wandb_mode=disabled
 - logging.wandb_artifact_storage_uri=

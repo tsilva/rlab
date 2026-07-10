@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import numpy as np
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback
 
-from rlab.artifacts import checkpoint_step, log_wandb_model_artifact, write_model_metadata
+from rlab.artifacts import write_model_metadata
 from rlab.early_stop import (
     evaluate_early_stop_config,
     flat_metric_rule_from_early_stop,
@@ -56,59 +54,6 @@ from rlab.metric_names import (
 from rlab.metric_store import MetricStore, file_sha256
 
 
-@dataclass
-class PendingCheckpointTiming:
-    step: int
-    started_at: float
-    local_save_seconds: float | None = None
-
-
-class CheckpointArtifactTimingState:
-    def __init__(self) -> None:
-        self.pending: PendingCheckpointTiming | None = None
-
-    def begin(self, step: int, started_at: float) -> None:
-        self.pending = PendingCheckpointTiming(step=step, started_at=started_at)
-
-    def record_save(self, step: int, local_save_seconds: float) -> None:
-        if self.pending is None or self.pending.step != step:
-            return
-        self.pending.local_save_seconds = local_save_seconds
-
-    def get(self, step: int | None) -> PendingCheckpointTiming | None:
-        if step is None or self.pending is None or self.pending.step != step:
-            return None
-        return self.pending
-
-    def clear(self, step: int | None) -> None:
-        if self.get(step) is not None:
-            self.pending = None
-
-
-class TimedCheckpointCallback(CheckpointCallback):
-    def __init__(
-        self,
-        *args,
-        timing_state: CheckpointArtifactTimingState,
-        clock: Callable[[], float] | None = None,
-        **kwargs,
-    ) -> None:
-        super().__init__(*args, **kwargs)
-        self.timing_state = timing_state
-        self.clock = clock or time.perf_counter
-
-    def _on_step(self) -> bool:
-        should_save = self.save_freq > 0 and self.n_calls % self.save_freq == 0
-        if not should_save:
-            return super()._on_step()
-
-        started_at = self.clock()
-        self.timing_state.begin(self.num_timesteps, started_at)
-        result = super()._on_step()
-        self.timing_state.record_save(self.num_timesteps, self.clock() - started_at)
-        return result
-
-
 class LedgerCheckpointCallback(BaseCallback):
     def __init__(
         self,
@@ -119,8 +64,6 @@ class LedgerCheckpointCallback(BaseCallback):
         save_path: str | Path,
         name_prefix: str,
         metric_store_path: Path | str,
-        timing_state: CheckpointArtifactTimingState | None = None,
-        clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__()
         self.args = args
@@ -129,8 +72,6 @@ class LedgerCheckpointCallback(BaseCallback):
         self.save_path = Path(save_path)
         self.name_prefix = name_prefix
         self.metric_store = MetricStore(metric_store_path)
-        self.timing_state = timing_state
-        self.clock = clock or time.perf_counter
 
     def _init_callback(self) -> None:
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -143,16 +84,10 @@ class LedgerCheckpointCallback(BaseCallback):
         return True
 
     def save_checkpoint(self, step: int, *, kind: str) -> Path:
-        started_at = self.clock()
-        if self.timing_state is not None:
-            self.timing_state.begin(step, started_at)
         final_path = self.save_path / f"{self.name_prefix}_{step}_steps.zip"
         temp_path = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}.zip"
         self.model.save(str(temp_path))
         temp_path.replace(final_path)
-        local_save_seconds = self.clock() - started_at
-        if self.timing_state is not None:
-            self.timing_state.record_save(step, local_save_seconds)
         metadata_path = write_model_metadata(
             final_path,
             self.args,
@@ -173,62 +108,6 @@ class LedgerCheckpointCallback(BaseCallback):
             flush=True,
         )
         return final_path
-
-
-class WandbCheckpointArtifactCallback(BaseCallback):
-    def __init__(
-        self,
-        wandb_run,
-        args: argparse.Namespace,
-        config: EnvConfig,
-        checkpoint_dir: str,
-        scan_freq: int,
-        timing_state: CheckpointArtifactTimingState | None = None,
-        clock: Callable[[], float] | None = None,
-    ):
-        super().__init__()
-        self.wandb_run = wandb_run
-        self.args = args
-        self.config = config
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.scan_freq = scan_freq
-        self.timing_state = timing_state
-        self.clock = clock or time.perf_counter
-        self.logged_paths: set[Path] = set()
-
-    def _on_step(self) -> bool:
-        if self.scan_freq <= 1 or self.n_calls % self.scan_freq == 0:
-            self.log_new_checkpoints()
-        return True
-
-    def log_new_checkpoints(self) -> None:
-        for checkpoint_path in sorted(self.checkpoint_dir.glob("*.zip")):
-            resolved_path = checkpoint_path.resolve()
-            if resolved_path in self.logged_paths:
-                continue
-            step = checkpoint_step(checkpoint_path)
-            aliases = ["latest"]
-            if step is not None:
-                aliases.append(f"step-{step}")
-            pending_timing = self.timing_state.get(step) if self.timing_state is not None else None
-            log_wandb_model_artifact(
-                self.wandb_run,
-                self.args,
-                self.config,
-                checkpoint_path,
-                kind="checkpoint",
-                aliases=aliases,
-                metric_step=self.num_timesteps,
-                local_save_seconds=pending_timing.local_save_seconds
-                if pending_timing is not None
-                else None,
-                stall_started_at=pending_timing.started_at if pending_timing is not None else None,
-                clock=self.clock,
-                purge_after_upload=False,
-            )
-            if self.timing_state is not None:
-                self.timing_state.clear(step)
-            self.logged_paths.add(resolved_path)
 
 
 class ThroughputCallback(BaseCallback):

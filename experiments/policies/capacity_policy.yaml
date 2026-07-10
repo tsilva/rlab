@@ -10,7 +10,6 @@ lanes:
   target: rtx4090
   host: beast-3
   manager: rlab_fleet_shepherd
-  max_train_containers: 6
   use_for:
   - screen
   - confirm_when_total_throughput_matters
@@ -30,7 +29,6 @@ lanes:
   target: rtx2060
   host: beast-2
   manager: rlab_fleet_shepherd
-  max_train_containers: 4
   use_for:
   - cheap_screen
   - small_ablation
@@ -39,7 +37,6 @@ lanes:
   target: local-macbook
   host: local-macbook
   manager: rlab_fleet_shepherd
-  max_train_containers: 1
   use_for:
   - smoke
   - debug

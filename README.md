@@ -110,7 +110,6 @@ rlab jobs cancel-train <train_job_id>
 rlab fleet policy
 rlab fleet shepherd --machine beast-3 --once
 rlab fleet watch --machine beast-3
-rlab monitor --view all
 rlab benchmark list
 rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 ```
@@ -120,7 +119,7 @@ The command surface is intentionally one binary:
 - `rlab train` enqueues queue-backed train jobs from checked-in recipes.
 - `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate saved checkpoints asynchronously, and async checkpoint eval is the supported checkpoint-promotion path.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
-- `rlab jobs`, `rlab fleet`, and `rlab monitor` operate the queue and one-job container fleet.
+- `rlab jobs` and `rlab fleet` operate and inspect the queue and one-job container fleet.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
@@ -168,7 +167,7 @@ Use `shepherd --once` for a single reconcile-and-fill pass. Lower-level repair
 helpers live under `rlab fleet diagnostics reconcile` and
 `rlab fleet diagnostics launch-next`.
 
-Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.yaml`, and `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
+Hard fleet capacity comes from `experiments/machines.yaml`; target metadata lives in `experiments/instances.yaml`, and scenario-specific soft caps live in `experiments/policies/capacity_policy.yaml`. Read `INSTANCES.md` before changing hardware targets, concurrency, cleanup behavior, or beast host recommendations.
 
 ## Notes
 
@@ -176,16 +175,12 @@ Fleet capacity comes from `experiments/machines.yaml`, `experiments/instances.ya
 - The installed console command is `rlab`; examples should not use `uv run`.
 - Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
 - Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
-- Every training run should include `--run-description`.
+- Every queue-backed training recipe must include a non-empty `description`; `rlab train` records it as the run description.
 - Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts` is set.
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set `CHECKPOINT_BUCKET_URI` or pass `--wandb-artifact-storage-uri`, along with the required `AWS_*` credentials.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
 - Local eval outputs are written under `runs/local_evals/<run-name>/`.
-
-## Architecture
-
-![rlab architecture diagram](./architecture.png)
 
 ## License
 
