@@ -368,15 +368,16 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_stable_retro_atari_uses_atari_vec_env_contract(self) -> None:
         class ManualAtariVectorEnv:
-            metadata = {"autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP}
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.SAME_STEP}
 
             def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
-                if autoreset_mode is not gym.vector.AutoresetMode.NEXT_STEP:
-                    raise ValueError("Atari backend requires next-step autoreset")
+                if autoreset_mode is not gym.vector.AutoresetMode.SAME_STEP:
+                    raise ValueError("Atari backend requires same-step autoreset")
                 self.game = game
                 self.num_envs = num_envs
                 self.autoreset_mode = autoreset_mode
                 self.kwargs = kwargs
+                self.reset_calls = 0
                 self.single_observation_space = gym.spaces.Box(
                     0, 255, shape=(4, 84, 84), dtype=np.uint8
                 )
@@ -390,16 +391,21 @@ class MarioNativeProviderTests(unittest.TestCase):
 
             def reset(self, *, seed=None, options=None):
                 del seed, options
+                self.reset_calls += 1
                 return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), {}
 
             def step(self, actions):
                 del actions
+                observations = np.full(
+                    (self.num_envs, 4, 84, 84), 2, dtype=np.uint8
+                )
+                final_observations = np.full_like(observations, 9)
                 return (
-                    np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8),
+                    observations,
                     np.zeros(self.num_envs, dtype=np.float32),
+                    np.asarray([True] + [False] * (self.num_envs - 1)),
                     np.zeros(self.num_envs, dtype=np.bool_),
-                    np.zeros(self.num_envs, dtype=np.bool_),
-                    {},
+                    {"final_obs": final_observations},
                 )
 
             def close(self):
@@ -440,6 +446,20 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(env.kwargs["obs_resize"], (84, 84))
         self.assertEqual(env.kwargs["sticky_action_prob"], 0.25)
         self.assertNotIn("obs_crop", env.kwargs)
+        env.reset(seed=123)
+        observations, _rewards, terminated, _truncated, infos = env.step(
+            np.zeros(16, dtype=np.int64)
+        )
+        self.assertTrue(terminated[0])
+        self.assertEqual(int(observations[0, 0, 0, 0]), 9)
+        self.assertEqual(int(observations[1, 0, 0, 0]), 2)
+        self.assertNotIn("final_obs", infos)
+        reset_observations, _reset_infos = env.reset(
+            seed=[124] + [None] * 15,
+            options={"reset_mask": np.asarray([True] + [False] * 15)},
+        )
+        self.assertEqual(int(reset_observations[0, 0, 0, 0]), 2)
+        self.assertEqual(env.reset_calls, 1)
 
 
 class AleManualLifecycleTests(unittest.TestCase):
