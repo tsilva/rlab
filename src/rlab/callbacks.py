@@ -498,9 +498,52 @@ class RolloutDiagnosticsHelper(CallbackHelper):
             self.wandb_run.log(payload, step=self.num_timesteps)
 
 
-class RewardDiagnosticsHelper(CallbackHelper):
-    """Log per-rollout reward component distributions from runtime records."""
+class _BufferedStats:
+    """Reusable contiguous storage for one rollout's vector batches."""
 
+    __slots__ = ("buffer", "size")
+
+    def __init__(self) -> None:
+        self.buffer = np.empty(0, dtype=np.float64)
+        self.size = 0
+
+    def reset(self) -> None:
+        self.size = 0
+
+    def update(self, value: Any, *, reserve: int) -> None:
+        values = np.asarray(value).reshape(-1)
+        if values.size == 0:
+            return
+        end = self.size + values.size
+        if end > self.buffer.size:
+            capacity = max(end, reserve, max(64, self.buffer.size * 2))
+            grown = np.empty(capacity, dtype=np.float64)
+            grown[: self.size] = self.buffer[: self.size]
+            self.buffer = grown
+        self.buffer[self.size : end] = values
+        self.size = end
+
+    def flush(self, prefix: str) -> tuple[dict[str, float], float]:
+        values = self.buffer[: self.size]
+        values = values[np.isfinite(values)]
+        self.reset()
+        if values.size == 0:
+            return {}, 0.0
+        abs_sum = float(np.sum(np.abs(values)))
+        return (
+            {
+                stat_metric(prefix, "mean"): float(np.mean(values)),
+                stat_metric(prefix, "std"): float(np.std(values)),
+                stat_metric(prefix, "min"): float(np.min(values)),
+                stat_metric(prefix, "max"): float(np.max(values)),
+                stat_metric(prefix, "abs_mean"): abs_sum / values.size,
+                stat_metric(prefix, "nonzero_rate"): float(np.mean(values != 0.0)),
+            },
+            abs_sum,
+        )
+
+
+class _RewardStatsAccumulator:
     component_info_keys = {
         "shaped": "shaped_reward",
         "raw": "raw_reward",
@@ -515,91 +558,64 @@ class RewardDiagnosticsHelper(CallbackHelper):
     }
     reward_share_components = ("prog_x", "score", "death", "done", "time", "native")
 
-    def __init__(self):
-        super().__init__()
-        self.component_values: dict[str, list[float]] = {
-            component: [] for component in self.component_info_keys
-        }
+    def __init__(self) -> None:
+        self.components = {component: _BufferedStats() for component in self.component_info_keys}
 
-    def _on_records(self, records: Iterable[Any]) -> bool:
-        for record in records:
-            if not hasattr(record, "num_envs") or hasattr(record, "lane"):
-                continue
-            metrics = getattr(record, "metrics", {}) or {}
-            for component, info_key in self.component_info_keys.items():
-                value = metrics.get(info_key)
-                if value is None:
-                    continue
-                values = np.asarray(value, dtype=np.float64).reshape(-1)
-                finite = values[np.isfinite(values)]
-                self.component_values[component].extend(finite.tolist())
-        return True
+    def consume(self, metrics: Mapping[str, Any], *, reserve: int) -> None:
+        for component, info_key in self.component_info_keys.items():
+            value = metrics.get(info_key)
+            if value is not None:
+                self.components[component].update(value, reserve=reserve)
 
-    def _on_rollout_end(self) -> None:
-        self.record_reward_shares()
-        for component, values in self.component_values.items():
-            if not values:
-                continue
-            array = np.asarray(values, dtype=np.float64)
-            prefix = f"{TRAIN_REWARD_COMPONENT_ROOT}/{component}"
-            self.logger.record(stat_metric(prefix, "mean"), float(np.mean(array)))
-            self.logger.record(stat_metric(prefix, "std"), float(np.std(array)))
-            self.logger.record(stat_metric(prefix, "min"), float(np.min(array)))
-            self.logger.record(stat_metric(prefix, "max"), float(np.max(array)))
-            self.logger.record(stat_metric(prefix, "abs_mean"), float(np.mean(np.abs(array))))
-            self.logger.record(stat_metric(prefix, "nonzero_rate"), float(np.mean(array != 0.0)))
-            values.clear()
-
-    def record_reward_shares(self) -> None:
+    def flush(self) -> dict[str, float]:
+        payload: dict[str, float] = {}
         abs_sums: dict[str, float] = {}
-        for component in self.reward_share_components:
-            values = self.component_values.get(component, ())
-            abs_sums[component] = float(np.sum(np.abs(np.asarray(values, dtype=np.float64))))
-
+        for component, accumulator in self.components.items():
+            prefix = f"{TRAIN_REWARD_COMPONENT_ROOT}/{component}"
+            metrics, abs_sum = accumulator.flush(prefix)
+            payload.update(metrics)
+            if component in self.reward_share_components:
+                abs_sums[component] = abs_sum
         total_abs_sum = sum(abs_sums.values())
-        for component, abs_sum in abs_sums.items():
-            share = abs_sum / total_abs_sum if total_abs_sum > 0.0 else 0.0
-            self.logger.record(f"{TRAIN_REWARD_SHARE_ROOT}/{component}", share)
+        payload.update(
+            {
+                f"{TRAIN_REWARD_SHARE_ROOT}/{component}": (
+                    abs_sum / total_abs_sum if total_abs_sum > 0.0 else 0.0
+                )
+                for component, abs_sum in abs_sums.items()
+            }
+        )
+        return payload
 
 
-class DoneMetricsHelper(CallbackHelper):
+class _DoneMetricsReducer:
     ep_window_size = 100
 
     def __init__(
         self,
-        wandb_run=None,
         event_names: Sequence[str] = (),
-    ):
-        super().__init__()
-        self.wandb_run = wandb_run
+    ) -> None:
         self.event_names = tuple(str(name) for name in event_names)
         self.done_count = 0
         self.reason_counts: dict[str, int] = {}
         self.detail_counts: dict[str, int] = {}
         self.detail_episode_windows: dict[str, deque[bool]] = {}
 
-    def _on_records(self, records: Iterable[Any]) -> bool:
-        for record in records:
-            if not hasattr(record, "episode_return"):
-                continue
-            events = set(getattr(record, "events", ()))
-            start_id = getattr(record, "start_id", None)
-            metric_source = task_metric_source(start_id) if start_id is not None else None
-            reason_payloads = {
-                event: ({"prev": metric_source} if metric_source is not None else {})
-                for event in sorted(events - {"timeout"})
-            }
-            if bool(getattr(record, "truncated", False)):
-                reason_payloads["max_steps"] = {}
-            if not reason_payloads:
-                reason_payloads["unclassified"] = {}
-            payload = self.record_done(reason_payloads, source_value=metric_source)
-            if self.wandb_run is not None:
-                self.wandb_run.log(
-                    {GLOBAL_STEP: self.num_timesteps, **payload},
-                    step=self.num_timesteps,
-                )
-        return True
+    def consume(self, record: Any) -> dict[str, int | float] | None:
+        if not hasattr(record, "episode_return"):
+            return None
+        events = set(getattr(record, "events", ()))
+        start_id = getattr(record, "start_id", None)
+        metric_source = task_metric_source(start_id) if start_id is not None else None
+        reason_payloads = {
+            event: ({"prev": metric_source} if metric_source is not None else {})
+            for event in sorted(events - {"timeout"})
+        }
+        if bool(getattr(record, "truncated", False)):
+            reason_payloads["max_steps"] = {}
+        if not reason_payloads:
+            reason_payloads["unclassified"] = {}
+        return self.record_done(reason_payloads, source_value=metric_source)
 
     def record_done(
         self,
@@ -703,75 +719,58 @@ class DoneMetricsHelper(CallbackHelper):
         payload.update(self.record_ep_window_rates())
         payload.setdefault(TRAIN_DONE_MAX_STEPS, self.reason_counts.get("max_steps", 0))
         payload.setdefault(TRAIN_DONE_UNCLASSIFIED, self.reason_counts.get("unclassified", 0))
-        for key, value in payload.items():
-            self.logger.record(key, value)
         return payload
 
 
-class LevelCompletionMetricsHelper(CallbackHelper):
+class _LevelCompletionMetricsReducer:
     ep_window_size = 100
     completion_source_event = "level_change"
 
-    def __init__(
-        self,
-        wandb_run=None,
-    ):
-        super().__init__()
-        self.wandb_run = wandb_run
+    def __init__(self) -> None:
         self.complete_counts: dict[str, int] = {}
         self.attempt_windows: dict[str, deque[bool]] = {}
         self.latest_current_rates: dict[str, float] = {}
         self.latest_rates: dict[str, float] = {}
         self.current_sources: list[Any | None] = []
 
-    def _on_records(self, records: Iterable[Any]) -> bool:
+    def consume(self, record: Any) -> dict[str, int | float]:
         payload: dict[str, int | float] = {}
-        for record in records:
-            events = set(getattr(record, "events", ()))
-            lane = int(getattr(record, "lane", 0))
-            self.ensure_slots(lane + 1)
-            start_id = getattr(record, "start_id", None)
-            if self.current_sources[lane] is None and start_id is not None:
-                self.current_sources[lane] = task_metric_source(start_id)
+        events = set(getattr(record, "events", ()))
+        lane = int(getattr(record, "lane", 0))
+        self.ensure_slots(lane + 1)
+        start_id = getattr(record, "start_id", None)
+        if self.current_sources[lane] is None and start_id is not None:
+            self.current_sources[lane] = task_metric_source(start_id)
 
-            if not hasattr(record, "episode_return"):
-                transition = (getattr(record, "transitions", {}) or {}).get(
-                    self.completion_source_event
-                )
-                if self.completion_source_event not in events or transition is None:
-                    continue
-                source, target = transition
-                source = tuple(np.asarray(source).tolist())
-                target = tuple(np.asarray(target).tolist())
-                if "life_loss" not in events:
-                    result = self.record_attempt(source, completed=True)
-                    self.record_metrics(result)
-                    payload.update(result)
-                    self.current_sources[lane] = target
-                continue
-
-            outcome = getattr(record, "outcome", None)
-            outcome_name = str(getattr(outcome, "name", outcome)).lower()
-            if outcome_name == "success" and "life_loss" not in events:
-                self.current_sources[lane] = None
-                continue
-            source = self.current_sources[lane]
-            if source is None:
-                metrics = getattr(record, "metrics", {}) or {}
-                if "level_hi" in metrics and "level_lo" in metrics:
-                    source = (int(metrics["level_hi"]), int(metrics["level_lo"]))
-            if source is None:
-                continue
-            result = self.record_attempt(source, completed=False)
-            self.record_metrics(result)
-            payload.update(result)
-            self.current_sources[lane] = None
-        if payload and self.wandb_run is not None:
-            self.wandb_run.log(
-                {GLOBAL_STEP: self.num_timesteps, **payload},
-                step=self.num_timesteps,
+        if not hasattr(record, "episode_return"):
+            transition = (getattr(record, "transitions", {}) or {}).get(
+                self.completion_source_event
             )
-        return True
+            if self.completion_source_event not in events or transition is None:
+                return payload
+            source, target = transition
+            source = tuple(np.asarray(source).tolist())
+            target = tuple(np.asarray(target).tolist())
+            if "life_loss" not in events:
+                payload.update(self.record_attempt(source, completed=True))
+                self.current_sources[lane] = target
+            return payload
+
+        outcome = getattr(record, "outcome", None)
+        outcome_name = str(getattr(outcome, "name", outcome)).lower()
+        if outcome_name == "success" and "life_loss" not in events:
+            self.current_sources[lane] = None
+            return payload
+        source = self.current_sources[lane]
+        if source is None:
+            metrics = getattr(record, "metrics", {}) or {}
+            if "level_hi" in metrics and "level_lo" in metrics:
+                source = (int(metrics["level_hi"]), int(metrics["level_lo"]))
+        if source is None:
+            return payload
+        payload.update(self.record_attempt(source, completed=False))
+        self.current_sources[lane] = None
+        return payload
 
     def ensure_slots(self, count: int) -> None:
         while len(self.current_sources) < count:
@@ -808,9 +807,47 @@ class LevelCompletionMetricsHelper(CallbackHelper):
             ) / len(self.latest_rates)
         return payload
 
-    def record_metrics(self, payload: Mapping[str, int | float]) -> None:
+
+class RuntimeMetricsHelper(CallbackHelper):
+    """Reduce runtime records and publish one scalar payload per rollout."""
+
+    def __init__(self, *, wandb_run=None, event_names: Sequence[str] = ()) -> None:
+        super().__init__()
+        self.wandb_run = wandb_run
+        self.reward_stats = _RewardStatsAccumulator()
+        self.done_metrics = _DoneMetricsReducer(event_names=event_names)
+        self.completion_metrics = _LevelCompletionMetricsReducer()
+        self.pending_metrics: dict[str, int | float] = {}
+
+    def _on_records(self, records: Iterable[Any]) -> bool:
+        for record in records:
+            if hasattr(record, "num_envs") and not hasattr(record, "lane"):
+                num_envs = int(record.num_envs)
+                rollout_steps = int(getattr(self.model, "n_steps", 1))
+                self.reward_stats.consume(
+                    getattr(record, "metrics", {}) or {},
+                    reserve=num_envs * rollout_steps,
+                )
+                continue
+            done_payload = self.done_metrics.consume(record)
+            if done_payload:
+                self.pending_metrics.update(done_payload)
+            self.pending_metrics.update(self.completion_metrics.consume(record))
+        return True
+
+    def _on_rollout_end(self) -> None:
+        payload = self.pending_metrics
+        payload.update(self.reward_stats.flush())
+        self.pending_metrics = {}
+        if not payload:
+            return
         for key, value in payload.items():
             self.logger.record(key, value)
+        if self.wandb_run is not None:
+            self.wandb_run.log(
+                {GLOBAL_STEP: self.num_timesteps, **payload},
+                step=self.num_timesteps,
+            )
 
 
 class RlabCallback(BaseCallback):
@@ -821,26 +858,56 @@ class RlabCallback(BaseCallback):
         self.components = tuple(components)
         self._record_source: Any | None = None
         self._record_source_searched = False
+        hook_names = (
+            "_init_callback",
+            "_on_training_start",
+            "_on_rollout_start",
+            "_on_rollout_end",
+            "_on_training_end",
+        )
+        self._hooks = {
+            hook: tuple(
+                (component, method)
+                for component in self.components
+                if callable(method := getattr(component, hook, None))
+            )
+            for hook in hook_names
+        }
+        self._step_operations = tuple(
+            (
+                component,
+                record_hook if callable(record_hook) else getattr(component, "_on_step", None),
+                callable(record_hook),
+            )
+            for component in self.components
+            if callable(record_hook := getattr(component, "_on_records", None))
+            or callable(getattr(component, "_on_step", None))
+        )
 
     def _bind(self, component: CallbackHelper) -> None:
         component.bind(self)
 
     def _call(self, hook: str) -> bool:
-        records: list[Any] | None = None
-        for component in self.components:
+        for component, method in self._hooks[hook]:
             self._bind(component)
-            record_hook = getattr(component, "_on_records", None)
-            if hook == "_on_step" and callable(record_hook):
+            if method() is False:
+                return False
+        return True
+
+    def _call_step(self) -> bool:
+        records: Iterable[Any] | None = None
+        for component, method, consumes_records in self._step_operations:
+            self._bind(component)
+            if consumes_records:
                 if records is None:
                     source = self._find_record_source()
                     if source is None:
                         raise RuntimeError("RlabCallback requires RlabVecEnv.drain_records()")
-                    records = list(source.drain_records())
-                if record_hook(records) is False:
-                    return False
-                continue
-            method = getattr(component, hook, None)
-            if callable(method) and method() is False:
+                    records = source.drain_records()
+                result = method(records)
+            else:
+                result = method()
+            if result is False:
                 return False
         return True
 
@@ -868,7 +935,7 @@ class RlabCallback(BaseCallback):
         self._call("_on_rollout_start")
 
     def _on_step(self) -> bool:
-        return self._call("_on_step")
+        return self._call_step()
 
     def _on_rollout_end(self) -> None:
         self._call("_on_rollout_end")

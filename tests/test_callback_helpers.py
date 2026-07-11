@@ -11,14 +11,13 @@ import numpy as np
 
 import rlab.metric_names as metric_names
 from rlab.callbacks import (
-    DoneMetricsHelper,
+    CallbackHelper,
     LedgerCheckpointHelper,
-    LevelCompletionMetricsHelper,
     MetricStoreMirrorHelper,
     MetricThresholdStopHelper,
-    RewardDiagnosticsHelper,
     RlabCallback,
     RolloutDiagnosticsHelper,
+    RuntimeMetricsHelper,
     ThroughputHelper,
     TimeElapsedHelper,
     task_metric_source,
@@ -45,11 +44,11 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
-class DoneMetricsHelperTests(unittest.TestCase):
+class RuntimeMetricsHelperTests(unittest.TestCase):
     def test_consumes_episode_records_without_info_payloads(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = DoneMetricsHelper(event_names=("life_loss", "level_change", "stalled"))
+        callback = RuntimeMetricsHelper(event_names=("life_loss", "level_change", "stalled"))
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
         callback.num_timesteps = 20
 
@@ -71,11 +70,40 @@ class DoneMetricsHelperTests(unittest.TestCase):
                 ]
             )
         )
+        self.assertEqual(logger.records, {})
+        callback._on_rollout_end()
         self.assertEqual(logger.records["train/done/all"], 2)
         self.assertEqual(logger.records["train/done/life_loss"], 1)
         self.assertEqual(logger.records["train/done/stalled"], 1)
         self.assertEqual(logger.records["train/done/max_steps"], 1)
         self.assertEqual(logger.records["train/done/unclassified"], 0)
+
+    def test_done_source_rate_emits_after_full_episode_window(self) -> None:
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        callback = RuntimeMetricsHelper(event_names=("life_loss", "stalled"))
+        callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
+
+        records = [
+            SimpleNamespace(
+                episode_return=0.0,
+                events=(("life_loss",) if index < 50 else ("stalled",)),
+                start_id="Level1-1",
+                truncated=False,
+            )
+            for index in range(100)
+        ]
+        callback._on_records(records)
+        callback._on_rollout_end()
+
+        self.assertEqual(
+            logger.records["train/done/life_loss/from/0-0/ep_window/rate"],
+            0.5,
+        )
+        self.assertEqual(
+            logger.records["train/done/stalled/from/0-0/ep_window/rate"],
+            0.5,
+        )
 
 
 class RlabCallbackTests(unittest.TestCase):
@@ -125,8 +153,7 @@ class RlabCallbackTests(unittest.TestCase):
         model = Model(env)
         callback = RlabCallback(
             [
-                DoneMetricsHelper(),
-                LevelCompletionMetricsHelper(),
+                RuntimeMetricsHelper(),
             ]
         )
         callback.model = model  # type: ignore[assignment]
@@ -134,6 +161,7 @@ class RlabCallbackTests(unittest.TestCase):
         callback.locals = {}
 
         self.assertTrue(callback._on_step())
+        callback._on_rollout_end()
 
         self.assertEqual(env.drain_calls, 1)
         self.assertEqual(model.logger.records["train/done/all"], 1)
@@ -144,12 +172,38 @@ class RlabCallbackTests(unittest.TestCase):
             1,
         )
 
+    def test_precomputed_step_dispatch_preserves_component_order(self) -> None:
+        calls: list[str] = []
 
-class LevelCompletionMetricsHelperTests(unittest.TestCase):
+        class StepHelper(CallbackHelper):
+            def __init__(self, name: str) -> None:
+                super().__init__()
+                self.name = name
+
+            def _on_step(self) -> bool:
+                calls.append(self.name)
+                return True
+
+        class RecordHelper(CallbackHelper):
+            def _on_records(self, records) -> bool:
+                calls.append(f"records:{len(records)}")
+                return True
+
+        env = SimpleNamespace(drain_records=lambda: [object()])
+        model = SimpleNamespace(env=env, logger=SimpleNamespace())
+        callback = RlabCallback([StepHelper("first"), RecordHelper(), StepHelper("last")])
+        callback.model = model  # type: ignore[assignment]
+        callback.locals = {}
+
+        self.assertTrue(callback._on_step())
+        self.assertEqual(calls, ["first", "records:1", "last"])
+
+
+class RuntimeMetricsCompletionTests(unittest.TestCase):
     def test_consumes_task_and_episode_records(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = LevelCompletionMetricsHelper()
+        callback = RuntimeMetricsHelper()
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
 
         self.assertTrue(
@@ -178,6 +232,7 @@ class LevelCompletionMetricsHelperTests(unittest.TestCase):
                 ]
             )
         )
+        callback._on_rollout_end()
         self.assertEqual(
             logger.records["train/info/level_complete/from/0-0/count"],
             1,
@@ -185,6 +240,56 @@ class LevelCompletionMetricsHelperTests(unittest.TestCase):
         self.assertEqual(
             logger.records["train/info/level_complete/from/0-1/count"],
             0,
+        )
+
+    def test_completion_window_and_simultaneous_failure_precedence(self) -> None:
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        callback = RuntimeMetricsHelper()
+        callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
+
+        clean_events = [
+            SimpleNamespace(
+                lane=index,
+                start_id="Level1-1",
+                events=("level_change",),
+                transitions={"level_change": ((0, 0), (0, 1))},
+            )
+            for index in range(99)
+        ]
+        simultaneous_event = SimpleNamespace(
+            lane=99,
+            start_id="Level1-1",
+            events=("life_loss", "level_change"),
+            transitions={"level_change": ((0, 0), (0, 1))},
+        )
+        failed_episode = SimpleNamespace(
+            lane=99,
+            start_id="Level1-1",
+            events=("life_loss", "level_change"),
+            episode_return=0.0,
+            outcome="failure",
+            truncated=False,
+            metrics={"level_hi": 0, "level_lo": 0},
+        )
+        callback._on_records([*clean_events, simultaneous_event, failed_episode])
+        callback._on_rollout_end()
+
+        self.assertEqual(
+            logger.records["train/info/level_complete/from/0-0/count"],
+            99,
+        )
+        self.assertEqual(
+            logger.records["train/info/level_complete/from/0-0/attempts"],
+            100,
+        )
+        self.assertEqual(
+            logger.records["train/info/level_complete/from/0-0/rate"],
+            0.99,
+        )
+        self.assertEqual(
+            logger.records["train/info/level_complete/rate/min/last"],
+            0.99,
         )
 
 
@@ -577,11 +682,11 @@ class RolloutDiagnosticsHelperTests(unittest.TestCase):
         self.assertEqual(records["rollout/advantage/abs_mean"], 1.0)
 
 
-class RewardDiagnosticsHelperTests(unittest.TestCase):
+class RuntimeMetricsRewardTests(unittest.TestCase):
     def test_consumes_batched_metric_records(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = RewardDiagnosticsHelper()
+        callback = RuntimeMetricsHelper()
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
 
         self.assertTrue(
@@ -601,3 +706,140 @@ class RewardDiagnosticsHelperTests(unittest.TestCase):
         callback._on_rollout_end()
         self.assertEqual(logger.records["train/reward/shaped/mean"], 2.0)
         self.assertEqual(logger.records["train/reward/death/mean"], -1.0)
+
+    def test_streams_reward_stats_filters_nonfinite_values_and_resets(self) -> None:
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        callback = RuntimeMetricsHelper()
+        callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
+
+        values = np.asarray([1.0, -2.0, np.nan, np.inf])
+        callback._on_records([SimpleNamespace(num_envs=4, metrics={"shaped_reward": values})])
+        values[:] = 100.0
+        callback._on_records(
+            [
+                SimpleNamespace(
+                    num_envs=2,
+                    metrics={"shaped_reward": np.asarray([0.0, 5.0])},
+                )
+            ]
+        )
+        callback._on_rollout_end()
+
+        expected = np.asarray([1.0, -2.0, 0.0, 5.0])
+        self.assertAlmostEqual(logger.records["train/reward/shaped/mean"], np.mean(expected))
+        self.assertAlmostEqual(logger.records["train/reward/shaped/std"], np.std(expected))
+        self.assertEqual(logger.records["train/reward/shaped/min"], -2.0)
+        self.assertEqual(logger.records["train/reward/shaped/max"], 5.0)
+        self.assertAlmostEqual(
+            logger.records["train/reward/shaped/nonzero_rate"],
+            0.75,
+        )
+
+        logger.records.clear()
+        callback._on_records(
+            [
+                SimpleNamespace(
+                    num_envs=2,
+                    metrics={"shaped_reward": np.asarray([7.0, 7.0])},
+                )
+            ]
+        )
+        callback._on_rollout_end()
+        self.assertEqual(logger.records["train/reward/shaped/mean"], 7.0)
+        self.assertEqual(logger.records["train/reward/shaped/std"], 0.0)
+
+    def test_reward_shares_use_absolute_rollout_contribution(self) -> None:
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        callback = RuntimeMetricsHelper()
+        callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
+
+        callback._on_records(
+            [
+                SimpleNamespace(
+                    num_envs=2,
+                    metrics={
+                        "progress_reward_component": np.asarray([1.0, 1.0]),
+                        "death_penalty_component": np.asarray([0.0, -2.0]),
+                    },
+                )
+            ]
+        )
+        callback._on_rollout_end()
+
+        self.assertEqual(logger.records["train/reward_share/prog_x"], 0.5)
+        self.assertEqual(logger.records["train/reward_share/death"], 0.5)
+        self.assertEqual(logger.records["train/reward_share/score"], 0.0)
+
+    def test_flushes_one_wandb_payload_per_rollout(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.payloads: list[tuple[dict[str, object], int]] = []
+
+            def log(self, payload: dict[str, object], *, step: int) -> None:
+                self.payloads.append((payload, step))
+
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        run = FakeRun()
+        callback = RuntimeMetricsHelper(wandb_run=run)
+        callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
+        callback.num_timesteps = 64
+
+        for _ in range(3):
+            callback._on_records(
+                [
+                    SimpleNamespace(
+                        lane=0,
+                        start_id="Level1-1",
+                        events=("life_loss",),
+                        truncated=False,
+                        episode_return=0.0,
+                        outcome="failure",
+                        metrics={"level_hi": 0, "level_lo": 0},
+                    )
+                ]
+            )
+        self.assertEqual(run.payloads, [])
+
+        callback._on_rollout_end()
+
+        self.assertEqual(len(run.payloads), 1)
+        payload, step = run.payloads[0]
+        self.assertEqual(step, 64)
+        self.assertEqual(payload[metric_names.GLOBAL_STEP], 64)
+        self.assertEqual(payload["train/done/all"], 3)
+
+    def test_reward_accumulator_reuses_preallocated_buffers(self) -> None:
+        callback = RuntimeMetricsHelper()
+        callback.model = SimpleNamespace(n_steps=100)  # type: ignore[assignment]
+        for _ in range(100):
+            callback._on_records(
+                [
+                    SimpleNamespace(
+                        num_envs=16,
+                        metrics={"shaped_reward": np.ones(16, dtype=np.float32)},
+                    )
+                ]
+            )
+
+        accumulator = callback.reward_stats.components["shaped"]
+        buffer_id = id(accumulator.buffer)
+        self.assertEqual(accumulator.size, 1600)
+        self.assertEqual(accumulator.buffer.size, 1600)
+
+        callback.model = SimpleNamespace(
+            logger=SimpleNamespace(record=lambda *_: None), n_steps=100
+        )
+        callback._on_rollout_end()
+        callback._on_records(
+            [
+                SimpleNamespace(
+                    num_envs=16,
+                    metrics={"shaped_reward": np.ones(16, dtype=np.float32)},
+                )
+            ]
+        )
+        self.assertEqual(id(accumulator.buffer), buffer_id)
+        self.assertEqual(accumulator.size, 16)

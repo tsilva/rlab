@@ -24,14 +24,12 @@ from rlab.artifacts import (
 )
 from rlab.callbacks import (
     CallbackHelper,
-    DoneMetricsHelper,
     LedgerCheckpointHelper,
-    LevelCompletionMetricsHelper,
     MetricStoreMirrorHelper,
     MetricThresholdStopHelper,
-    RewardDiagnosticsHelper,
     RlabCallback,
     RolloutDiagnosticsHelper,
+    RuntimeMetricsHelper,
     ThroughputHelper,
     TimeElapsedHelper,
 )
@@ -281,11 +279,10 @@ def main(argv: list[str] | None = None) -> None:
         Sb3HumanOutputFormatHelper(),
         TimeElapsedHelper(wandb_run=wandb_run),
         ThroughputHelper(),
-        DoneMetricsHelper(
+        RuntimeMetricsHelper(
             wandb_run=wandb_run,
             event_names=tuple(config.task.get("events", {})),
         ),
-        LevelCompletionMetricsHelper(wandb_run=wandb_run),
         MetricStoreMirrorHelper(store_path),
         *(
             [
@@ -299,7 +296,6 @@ def main(argv: list[str] | None = None) -> None:
             else []
         ),
         RolloutDiagnosticsHelper(wandb_run=wandb_run),
-        RewardDiagnosticsHelper(),
     ]
     checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:

@@ -5,8 +5,9 @@ This file describes the metrics this repo currently logs to Weights & Biases fro
 
 Training runs call `wandb.init(..., sync_tensorboard=True)` and define `global_step` as the
 step metric for all logged keys. Most scalar metrics are recorded through the SB3 logger and
-synced from TensorBoard. A few callbacks also call `wandb_run.log(...)` directly for histograms,
-videos, and done-count updates.
+synced from TensorBoard. Runtime reward, done, and completion records are reduced in memory and
+flushed as one scalar W&B payload at each rollout boundary. Histograms and videos use separate
+direct W&B calls.
 
 ## Naming Conventions
 
@@ -301,7 +302,9 @@ the critic's predicted returns are large regardless of sign.
 
 ## Reward Component Diagnostics
 
-Logged at rollout end from vectorized task-metric batches drained from `RlabVecEnv`.
+Logged at rollout end from vectorized task-metric batches drained from `RlabVecEnv`. Component
+arrays are copied into reusable preallocated NumPy rollout buffers and reduced in one batch; values
+are not retained in per-step or per-lane Python containers.
 
 `train/reward/<component>/<stat>` is logged for each component that appears during the rollout.
 
