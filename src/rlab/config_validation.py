@@ -15,7 +15,7 @@ from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.config_loader import load_composed_mapping
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_identity import validate_task_config
-from rlab.env_registry import qualify_env_id, resolve_env_id, resolve_env_provider
+from rlab.env_registry import env_supports_states, qualify_env_id, resolve_env_id
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.seeds import validate_eval_seed
@@ -524,7 +524,7 @@ def _validate_goal_contract_document(
         if "env_provider" in environment
         else str(env_config.get("env_provider", "")).strip()
     )
-    supports_states = resolve_env_provider(env_provider).supports_states
+    supports_states = env_supports_states(env_provider, str(env_config.get("game") or ""))
     if "state" in env_config and "states" in env_config:
         raise ValueError(
             f"{label}.train.environment.env_config must define only one of state or states"

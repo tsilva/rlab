@@ -6,7 +6,7 @@ tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"
 - "env_id:{env_id}"
-title: Baseline ALE Ms. Pac-Man PPO training
+title: Baseline stable-retro Atari Ms. Pac-Man PPO training
 objective:
   rank:
   - max(eval/reward/mean)
@@ -15,23 +15,20 @@ objective:
 train:
   checkpoint_freq: 500000
   environment:
-    env_provider: &atari_env_provider ale-py
+    env_provider: &atari_env_provider stable-retro-turbo
     env_config:
       <<: &atari_mspacman_env_config
-        game: ms_pacman
+        game: MsPacman-Atari2600-v0
         n_envs: 16
         env_args:
           num_threads: 4
-          max_num_frames_per_episode: 216000
-          repeat_action_probability: 0.25
-          img_height: 84
-          img_width: 84
-          grayscale: true
-          stack_num: 4
-          frameskip: 4
-          maxpool: true
-          reward_clipping: true
+          max_episode_steps: 216000
+          reward_clip: true
     preprocessing:
+      frame_skip: 4
+      max_pool_frames: true
+      sticky_action_prob: 0.25
+      observation_size: 84
       # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
       # The raw-coordinate bottom mask below scales to 15 policy rows.
       obs_crop:

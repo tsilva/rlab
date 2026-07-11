@@ -33,8 +33,8 @@ class ConfigValidationTests(unittest.TestCase):
         document = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
 
         train_config = document["train_config"]
-        self.assertEqual(train_config["env_provider"], "ale-py")
-        self.assertEqual(train_config["game"], "breakout")
+        self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
+        self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
         self.assertEqual(
             train_config["selection_rank"],
             [
@@ -47,41 +47,37 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["env_args"],
             {
                 "num_threads": 4,
-                "max_num_frames_per_episode": 216000,
-                "repeat_action_probability": 0.25,
-                "img_height": 84,
-                "img_width": 84,
-                "grayscale": True,
-                "stack_num": 4,
-                "frameskip": 4,
-                "maxpool": True,
-                "reward_clipping": True,
+                "max_episode_steps": 216000,
+                "reward_clip": True,
             },
         )
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 16)
         self.assertNotIn("env_threads", train_config)
-        self.assertNotIn("frame_skip", train_config)
-        self.assertNotIn("max_pool_frames", train_config)
-        self.assertNotIn("sticky_action_prob", train_config)
-        self.assertNotIn("observation_size", train_config)
+        self.assertEqual(train_config["frame_skip"], 4)
+        self.assertTrue(train_config["max_pool_frames"])
+        self.assertEqual(train_config["sticky_action_prob"], 0.25)
+        self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
         self.assertNotIn("clip_rewards", train_config)
         self.assertEqual(train_config["obs_crop"], [34, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
         self.assertNotIn("obs_resize_algorithm", train_config)
-        self.assertEqual(document["environment"]["env_id"], "ale-py:breakout")
-        self.assertEqual(document["environment"]["provider_args"]["frameskip"], 4)
+        self.assertEqual(
+            document["environment"]["env_id"],
+            "stable-retro-turbo:Breakout-Atari2600-v0",
+        )
+        self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
 
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
         breakout = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
         document = load_recipe_document(Path("experiments/goals/alepy__mspacman/recipes/base.yaml"))
 
         train_config = document["train_config"]
-        self.assertEqual(train_config["env_provider"], "ale-py")
-        self.assertEqual(train_config["game"], "ms_pacman")
+        self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
+        self.assertEqual(train_config["game"], "MsPacman-Atari2600-v0")
         self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["env_args"]["num_threads"], 4)
         self.assertNotIn("state", train_config)
@@ -95,17 +91,18 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["task"]["reward"], breakout["train_config"]["task"]["reward"]
         )
-        for key in (
-            "env_threads",
-            "frame_skip",
-            "max_pool_frames",
-            "sticky_action_prob",
-            "observation_size",
-        ):
+        for key in ("env_threads",):
             self.assertNotIn(key, train_config)
+        self.assertEqual(train_config["frame_skip"], 4)
+        self.assertTrue(train_config["max_pool_frames"])
+        self.assertEqual(train_config["sticky_action_prob"], 0.25)
+        self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("obs_resize_algorithm", train_config)
-        self.assertEqual(document["environment"]["env_id"], "ale-py:ms_pacman")
-        self.assertEqual(document["environment"]["provider_args"]["frameskip"], 4)
+        self.assertEqual(
+            document["environment"]["env_id"],
+            "stable-retro-turbo:MsPacman-Atari2600-v0",
+        )
+        self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
 
     def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

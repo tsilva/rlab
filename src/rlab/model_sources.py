@@ -41,6 +41,10 @@ DEFAULT_ARTIFACT_LOOKUP_PROJECTS = (
     "ms_pacman",
     "breakout",
 )
+LEGACY_GOAL_PROJECTS = {
+    "alepy__breakout": "breakout",
+    "alepy__mspacman": "ms_pacman",
+}
 MAX_PARALLEL_ARTIFACT_LOOKUPS = 4
 
 
@@ -280,6 +284,10 @@ def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[s
     entity = default_project.split("/", 1)[0]
     local_projects = _local_goal_project_map()
     inferred: list[str] = []
+    for goal_id, project in LEGACY_GOAL_PROJECTS.items():
+        if run_name == goal_id or run_name.startswith(f"{goal_id}_"):
+            inferred.append(_project_path(entity, project))
+            break
     for goal_id, project in sorted(local_projects.items(), key=lambda item: len(item[0]), reverse=True):
         if run_name == goal_id or run_name.startswith(f"{goal_id}_"):
             inferred.append(_project_path(entity, project))

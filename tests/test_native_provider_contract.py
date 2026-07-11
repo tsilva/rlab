@@ -159,7 +159,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
         self.assertGreaterEqual(installed, Version("0.2.21"))
         installed_retro = Version(importlib.metadata.version("stable-retro-turbo"))
-        self.assertGreaterEqual(installed_retro, Version("1.0.1.post13"))
+        self.assertGreaterEqual(installed_retro, Version("1.0.1.post18"))
 
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:
@@ -365,6 +365,81 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(env.kwargs["obs_crop_mode"], "remove")
         self.assertEqual(env.kwargs["obs_crop_fill"], 0)
         self.assertNotIn("done_on", env.kwargs)
+
+    def test_stable_retro_atari_uses_atari_vec_env_contract(self) -> None:
+        class ManualAtariVectorEnv:
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP}
+
+            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
+                if autoreset_mode is not gym.vector.AutoresetMode.NEXT_STEP:
+                    raise ValueError("Atari backend requires next-step autoreset")
+                self.game = game
+                self.num_envs = num_envs
+                self.autoreset_mode = autoreset_mode
+                self.kwargs = kwargs
+                self.single_observation_space = gym.spaces.Box(
+                    0, 255, shape=(4, 84, 84), dtype=np.uint8
+                )
+                self.single_action_space = gym.spaces.Discrete(4)
+                self.observation_space = gym.vector.utils.batch_space(
+                    self.single_observation_space, num_envs
+                )
+                self.action_space = gym.vector.utils.batch_space(
+                    self.single_action_space, num_envs
+                )
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), {}
+
+            def step(self, actions):
+                del actions
+                return (
+                    np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8),
+                    np.zeros(self.num_envs, dtype=np.float32),
+                    np.zeros(self.num_envs, dtype=np.bool_),
+                    np.zeros(self.num_envs, dtype=np.bool_),
+                    {},
+                )
+
+            def close(self):
+                return None
+
+        config = EnvConfig(
+            env_provider="stable-retro-turbo",
+            game="Breakout-Atari2600-v0",
+            obs_crop=(34, 0, 0, 0),
+            obs_crop_mode="mask",
+            sticky_action_prob=0.25,
+            env_args={"num_threads": 4, "max_episode_steps": 216_000, "reward_clip": True},
+            task={
+                "id": "identity",
+                "action": {"set": "native"},
+                "signals": {},
+                "events": {},
+                "termination": {},
+                "reward": {"reward_mode": "native"},
+            },
+        )
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=16,
+            native_obs_crop=lambda value: value.obs_crop,
+            state_weight_mapping=lambda _config: {},
+        )
+        env = make_provider_vec_env(
+            config,
+            native_kwargs=kwargs,
+            atari_vec_env_type=ManualAtariVectorEnv,
+        )
+
+        self.assertEqual(env.game, "Breakout-Atari2600-v0")
+        self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
+        self.assertEqual(env.kwargs["num_threads"], 4)
+        self.assertEqual(env.kwargs["max_episode_steps"], 216_000)
+        self.assertEqual(env.kwargs["obs_resize"], (84, 84))
+        self.assertEqual(env.kwargs["sticky_action_prob"], 0.25)
+        self.assertNotIn("obs_crop", env.kwargs)
 
 
 class AleManualLifecycleTests(unittest.TestCase):

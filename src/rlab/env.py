@@ -11,6 +11,7 @@ import stable_retro as retro
 from rlab import env_providers as provider_runtime
 from rlab.batch_runtime import BatchRuntime, ProviderDescriptor, RlabVecEnv
 from rlab.env_providers import (
+    DEFAULT_ATARI_VEC_ENV as AtariVecEnv,
     DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
     ale_py_atari_vector_env_type as _ale_py_atari_vector_env_type,
     provider_descriptor,
@@ -20,6 +21,8 @@ from rlab.env_providers import (
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
+    env_supports_states,
+    is_stable_retro_atari_env,
     qualify_env_id,
     resolve_env_provider,
 )
@@ -126,7 +129,9 @@ def resolve_mixed_state_config(config: EnvConfig, n_envs: int) -> EnvConfig:
     if n_envs < 1:
         raise ValueError("n_envs must be >= 1")
     provider = resolve_env_provider(config.env_provider)
-    if not provider.supports_states and (config.state or config.states or config.state_probs):
+    if not env_supports_states(provider.provider_id, config.game) and (
+        config.state or config.states or config.state_probs
+    ):
         raise ValueError(
             f"environment provider {provider.provider_id!r} does not support "
             "state, states, or state_probs"
@@ -266,6 +271,7 @@ def make_provider_vec_env(config: EnvConfig, *, native_kwargs: Mapping[str, Any]
         config,
         native_kwargs=native_kwargs,
         retro_vec_env_type=RetroVecEnv,
+        atari_vec_env_type=AtariVecEnv,
         super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
         ale_py_vec_env_type=_ale_py_atari_vector_env_type,
     )
@@ -294,7 +300,12 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
         raise ValueError("generic native-vector tasks require native rewards")
     if task_conditioning(config).get("enabled"):
         raise ValueError("generic native-vector tasks do not support task conditioning")
-    observation_mask = native_obs_crop(config) if config.env_provider == ALE_PY_PROVIDER.provider_id else None
+    observation_mask = (
+        native_obs_crop(config)
+        if config.env_provider == ALE_PY_PROVIDER.provider_id
+        or is_stable_retro_atari_env(config.env_provider, config.game)
+        else None
+    )
     source_shape = (210, 160) if observation_mask is not None else None
     return IdentityTaskDefinition(
         observation_mask=observation_mask,
@@ -345,7 +356,17 @@ def assert_rom_imported(game: str) -> str:
 
 def assert_provider_runtime_available(config: EnvConfig) -> None:
     provider = resolve_env_provider(config.env_provider)
-    if provider.uses_stable_retro_roms:
+    if is_stable_retro_atari_env(provider.provider_id, config.game):
+        from ale_py import roms
+        from stable_retro.atari_vec_env import ale_game_id
+
+        game = ale_game_id(config.game)
+        if roms.get_rom_path(game) is None:
+            raise FileNotFoundError(
+                f"{config.game} is not available to stable-retro-turbo's Atari backend. "
+                "Install an ALE ROM package or import ROMs with ale-import-roms."
+            )
+    elif provider.uses_stable_retro_roms:
         assert_rom_imported(config.game)
     elif provider.provider_id == ALE_PY_PROVIDER.provider_id:
         from ale_py import roms

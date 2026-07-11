@@ -7,6 +7,7 @@ import numpy as np
 import gymnasium as gym
 
 from gymnasium.vector import AutoresetMode
+from stable_retro import AtariVecEnv as DEFAULT_ATARI_VEC_ENV
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
 from rlab.batch_runtime import ProviderDescriptor, SignalSpec
@@ -15,6 +16,7 @@ from rlab.env_registry import (
     GYMNASIUM_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER,
+    is_stable_retro_atari_env,
     resolve_env_provider,
 )
 
@@ -173,6 +175,29 @@ def provider_native_vec_kwargs(
             "maxpool": config.max_pool_frames,
             "episodic_life": False,
             "reward_clipping": False,
+        }
+        defaults.update(native_kwargs)
+        return defaults
+
+    if is_stable_retro_atari_env(provider.provider_id, config.game):
+        if config.state or config.states or config.state_probs:
+            raise ValueError(
+                "stable-retro-turbo Atari environments use power-on reset and do not "
+                "support state, states, or state_probs"
+            )
+        obs_crop = native_obs_crop(config)
+        if obs_crop is not None and config.obs_crop_mode != "mask":
+            raise ValueError(
+                "stable-retro-turbo Atari environments only support obs_crop_mode='mask'"
+            )
+        defaults = {
+            "num_envs": n_envs,
+            "obs_resize": (config.observation_size, config.observation_size),
+            "obs_grayscale": True,
+            "frame_skip": config.frame_skip,
+            "frame_stack": 4,
+            "maxpool_last_two": config.max_pool_frames,
+            "sticky_action_prob": config.sticky_action_prob,
         }
         defaults.update(native_kwargs)
         return defaults
@@ -433,8 +458,17 @@ def _stable_retro_turbo_make_vec_env(
     *,
     native_kwargs: Mapping[str, Any],
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
+    atari_vec_env_type=DEFAULT_ATARI_VEC_ENV,
 ):
     _require_provider(config, STABLE_RETRO_TURBO_PROVIDER.provider_id)
+    if is_stable_retro_atari_env(config.env_provider, config.game):
+        kwargs = dict(native_kwargs)
+        kwargs["autoreset_mode"] = AutoresetMode.NEXT_STEP
+        env = atari_vec_env_type(
+            config.game,
+            **kwargs,
+        )
+        return _AleManualResetAdapter(env)
     env_type = retro_vec_env_type
     env = env_type(
         config.game,
@@ -482,6 +516,7 @@ def make_provider_vec_env(
     *,
     native_kwargs: Mapping[str, Any],
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
+    atari_vec_env_type=DEFAULT_ATARI_VEC_ENV,
     super_mario_vec_env_type=super_mario_bros_nes_turbo_vec_env_type,
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
 ):
@@ -491,6 +526,7 @@ def make_provider_vec_env(
             config,
             native_kwargs=native_kwargs,
             retro_vec_env_type=retro_vec_env_type,
+            atari_vec_env_type=atari_vec_env_type,
         )
     if provider.provider_id == SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id:
         return _super_mario_bros_nes_turbo_make_vec_env(

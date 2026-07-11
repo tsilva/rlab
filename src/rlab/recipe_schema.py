@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rlab.config_loader import QUEUE_TEMPLATE_VALUES, validate_template_string
-from rlab.env_registry import resolve_env_provider
+from rlab.env_registry import env_supports_states
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     queue_required_train_config_fields,
@@ -178,7 +178,8 @@ def validate_materialized_train_recipe(
         and all(isinstance(state, str) and bool(state.strip()) for state in states)
     )
     provider_id = str(train_config.get("env_provider") or "").strip()
-    supports_states = resolve_env_provider(provider_id).supports_states if provider_id else True
+    game = str(train_config.get("game") or "").strip()
+    supports_states = env_supports_states(provider_id, game) if provider_id else True
     if supports_states and not has_state and not has_states:
         raise ValueError(
             f"{label_path(label, 'train_config')} must define non-empty state or states"

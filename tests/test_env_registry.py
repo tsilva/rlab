@@ -30,6 +30,18 @@ def test_resolves_registered_stable_retro_turbo_smb3_env_id() -> None:
     assert resolved.import_name == "stable_retro"
 
 
+def test_resolves_registered_stable_retro_turbo_atari_env_ids() -> None:
+    for game in ("Breakout-Atari2600-v0", "MsPacman-Atari2600-v0"):
+        env_id = f"stable-retro-turbo:{game}"
+
+        resolved = resolve_env_id(env_id)
+
+        assert env_id in registered_env_ids()
+        assert resolved.provider_id == "stable-retro-turbo"
+        assert resolved.provider_env_id == game
+        assert resolved.import_name == "stable_retro"
+
+
 def test_resolves_registered_supermariobrosnes_turbo_env_id() -> None:
     env_id = "supermariobrosnes-turbo:SuperMarioBros-Nes-v0"
 

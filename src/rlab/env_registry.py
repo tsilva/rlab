@@ -24,7 +24,12 @@ class ResolvedEnvId:
 STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     provider_id="stable-retro-turbo",
     import_name="stable_retro",
-    env_ids=("SuperMarioBros-Nes-v0", "SuperMarioBros3-Nes-v0"),
+    env_ids=(
+        "SuperMarioBros-Nes-v0",
+        "SuperMarioBros3-Nes-v0",
+        "Breakout-Atari2600-v0",
+        "MsPacman-Atari2600-v0",
+    ),
     uses_stable_retro_roms=True,
 )
 
@@ -55,6 +60,22 @@ ENV_PROVIDERS: dict[str, EnvProvider] = {
     ALE_PY_PROVIDER.provider_id: ALE_PY_PROVIDER,
     GYMNASIUM_PROVIDER.provider_id: GYMNASIUM_PROVIDER,
 }
+
+STABLE_RETRO_ATARI_ENV_IDS = frozenset(
+    {"Breakout-Atari2600-v0", "MsPacman-Atari2600-v0"}
+)
+
+
+def is_stable_retro_atari_env(provider_id: str, game: str) -> bool:
+    return (
+        str(provider_id) == STABLE_RETRO_TURBO_PROVIDER.provider_id
+        and str(game) in STABLE_RETRO_ATARI_ENV_IDS
+    )
+
+
+def env_supports_states(provider_id: str, game: str) -> bool:
+    provider = resolve_env_provider(provider_id)
+    return provider.supports_states and not is_stable_retro_atari_env(provider_id, game)
 
 
 def registered_env_ids() -> tuple[str, ...]:

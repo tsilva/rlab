@@ -1,7 +1,7 @@
 recipe_id: base
 description: >-
-  Seed {seed} trains a PPO Ms. Pac-Man policy for 100M steps on ale-py's native
-  AtariVectorEnv with bottom HUD masking. The environment contract is
+  Seed {seed} trains a PPO Ms. Pac-Man policy for 100M steps on stable-retro-turbo's
+  AtariVecEnv with bottom HUD masking. The environment contract is
   provider-native and intentionally keeps Atari choices in YAML rather than
   borrowing Mario-specific wrappers or state semantics.
 train:
