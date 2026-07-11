@@ -62,10 +62,19 @@ def artifact_download_dir(root: Path, ref: str) -> Path:
     return root / safe_artifact_stem(ref.replace("/", "_").replace(":", "_"))
 
 
+def immutable_artifact_ref(ref: str, artifact: Any) -> str:
+    version = str(getattr(artifact, "version", "") or "").strip()
+    if not version:
+        raise ValueError(f"W&B artifact {ref!r} did not resolve to an immutable version")
+    return f"{ref.rsplit(':', 1)[0]}:{version}"
+
+
 def download_artifact_model(artifact: Any, root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     path = Path(artifact.download(root=str(root)))
-    model_path = model_zip_from_download(path)
+    metadata = getattr(artifact, "metadata", {}) or {}
+    expected_filename = metadata.get("filename") if isinstance(metadata, dict) else None
+    model_path = model_zip_from_download(path, expected_filename=expected_filename)
     write_downloaded_artifact_metadata(model_path, artifact)
     return model_path
 
@@ -76,7 +85,8 @@ def download_model_artifact(ref: str, root: Path) -> Path:
     import wandb
 
     artifact = wandb.Api().artifact(ref, type="model")
-    return download_artifact_model(artifact, root)
+    resolved_ref = immutable_artifact_ref(ref, artifact)
+    return download_artifact_model(artifact, artifact_download_dir(root, resolved_ref))
 
 
 def metadata_from_wandb_artifact(artifact, model_path: Path) -> dict:
@@ -101,7 +111,15 @@ def write_downloaded_artifact_metadata(model_path: Path, artifact) -> Path | Non
     return path
 
 
-def model_zip_from_download(path: Path) -> Path:
+def model_zip_from_download(path: Path, *, expected_filename: str | None = None) -> Path:
+    if expected_filename:
+        expected_path = path / expected_filename
+        if not expected_path.is_file():
+            raise FileNotFoundError(
+                f"W&B artifact declared model file {expected_filename!r}, "
+                f"but it was not found in {path}"
+            )
+        return expected_path
     zip_files = sorted(path.glob("*.zip"))
     if not zip_files:
         raise FileNotFoundError(f"No .zip model file found in downloaded artifact: {path}")

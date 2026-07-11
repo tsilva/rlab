@@ -21,7 +21,6 @@ from rlab.env_config import env_config_from_args
 from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
 from rlab.recipe_documents import load_goal_contract_document
 from rlab.wandb_artifacts import (
-    artifact_download_dir,
     artifact_qualified_name,
     checkpoint_step_from_artifact,
     download_model_artifact,
@@ -559,7 +558,7 @@ def model_artifact_checkpoint_step(artifact: Any, model_path: Path | None = None
 
 
 def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
-    model_path = download_model_artifact(ref, artifact_download_dir(root, ref))
+    model_path = download_model_artifact(ref, root)
     return ResolvedModelSource(
         model_path=model_path,
         artifact_ref=ref,

@@ -65,6 +65,7 @@ from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
 from rlab.wandb_artifacts import (
     artifact_download_dir,
+    download_model_artifact,
     model_artifact_ref,
     safe_artifact_stem,
 )
@@ -239,6 +240,62 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(
                 artifact_download_dir(Path(tmp_dir), "entity/project/run-best:latest"),
                 Path(tmp_dir) / "entity_project_run-best_latest",
+            )
+
+    def test_wandb_alias_downloads_cache_by_resolved_immutable_version(self) -> None:
+        requested_ref = "entity/project/run-checkpoint:latest"
+        versions = [
+            ("v14", "ppo_game_6500000_steps.zip"),
+            ("v15", "ppo_game_8000000_steps.zip"),
+        ]
+        download_roots: list[Path] = []
+
+        class FakeArtifact:
+            def __init__(self, version: str, filename: str) -> None:
+                self.version = version
+                self.metadata = {"filename": filename}
+                self.filename = filename
+
+            def download(self, root: str) -> str:
+                path = Path(root)
+                download_roots.append(path)
+                path.mkdir(parents=True, exist_ok=True)
+                (path / self.filename).write_bytes(b"model")
+                return str(path)
+
+        class FakeApi:
+            def artifact(self, ref: str, type: str | None = None):
+                self.assertEqual(ref, requested_ref)
+                self.assertEqual(type, "model")
+                version, filename = versions.pop(0)
+                return FakeArtifact(version, filename)
+
+        fake_api = FakeApi()
+        fake_api.assertEqual = self.assertEqual
+        fake_wandb = types.SimpleNamespace(Api=lambda: fake_api)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            with (
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
+                patch("rlab.wandb_artifacts.load_wandb_env"),
+            ):
+                first = download_model_artifact(requested_ref, root)
+                second = download_model_artifact(requested_ref, root)
+
+            self.assertEqual(
+                first,
+                root / "entity_project_run-checkpoint_v14" / "ppo_game_6500000_steps.zip",
+            )
+            self.assertEqual(
+                second,
+                root / "entity_project_run-checkpoint_v15" / "ppo_game_8000000_steps.zip",
+            )
+            self.assertEqual(
+                download_roots,
+                [
+                    root / "entity_project_run-checkpoint_v14",
+                    root / "entity_project_run-checkpoint_v15",
+                ],
             )
 
     def test_s3_artifact_uri_includes_wandb_rom_id_prefix(self) -> None:
