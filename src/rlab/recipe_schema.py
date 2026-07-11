@@ -53,7 +53,6 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
         "logging",
         "objective",
         "release",
-        "reward",
         "title",
         "train",
     }

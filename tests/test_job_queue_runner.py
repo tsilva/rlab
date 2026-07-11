@@ -7,7 +7,7 @@ from pathlib import Path
 
 from rlab import job_queue, wandb_leaders
 from rlab.job_execution import normalize_train_config, train_command_for_job, write_train_config_file
-from rlab.recipe_documents import materialize_train_recipe_document
+from rlab.recipe_documents import materialize_train_recipe_document, validate_source_recipe_shape
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.seeds import DEFAULT_EVAL_SEED
 
@@ -264,7 +264,7 @@ class JobQueueTests(unittest.TestCase):
                 ):
                     validate_materialized_train_recipe(materialized)
 
-    def test_materialization_keeps_supported_train_config_sections(self) -> None:
+    def test_materialization_rejects_mixed_source_and_compiled_shapes(self) -> None:
         document = valid_train_recipe()
         document["train_config"].pop("wandb_mode")
         document["train"] = {
@@ -282,11 +282,20 @@ class JobQueueTests(unittest.TestCase):
         }
         document["logging"] = {"wandb_mode": "offline"}
 
-        materialized = materialize_train_recipe_document(document)
+        with self.assertRaisesRegex(ValueError, "cannot mix compiled train_config"):
+            materialize_train_recipe_document(document)
 
-        self.assertEqual(materialized["train_config"]["learning_rate"], 2e-4)
-        self.assertEqual(materialized["train_config"]["task"]["reward"]["reward_mode"], "native")
-        self.assertEqual(materialized["train_config"]["wandb_mode"], "offline")
+    def test_source_recipe_shape_rejects_compiled_and_flat_policy_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "compiled or retired source field.*train_config"):
+            validate_source_recipe_shape(
+                {"train_config": explicit_train_config()},
+                label="recipe",
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported flat field.*learning_rate"):
+            validate_source_recipe_shape(
+                {"train": {"learning_rate": 2e-4}},
+                label="recipe",
+            )
 
     def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
         document = valid_train_recipe()

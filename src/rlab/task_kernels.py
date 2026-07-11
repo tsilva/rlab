@@ -19,6 +19,52 @@ SignalSource = str | tuple[str, ...]
 IMAGE_CHANNEL_COUNTS = frozenset({1, 3, 4})
 
 
+def default_task_document(task_id: str) -> dict[str, Any]:
+    if task_id == "identity":
+        return {
+            "id": "identity",
+            "action": {"set": "native"},
+            "signals": {},
+            "events": {},
+            "termination": {"max_episode_steps": 4500},
+            "reward": {"reward_mode": "native"},
+        }
+    if task_id != "mario":
+        raise ValueError(f"unknown task definition: {task_id!r}")
+    return {
+        "id": "mario",
+        "action": {"set": "simple"},
+        "signals": {
+            "x": ["xscrollHi", "xscrollLo"],
+            "score": "score",
+            "lives": "lives",
+            "level": ["levelHi", "levelLo"],
+        },
+        "events": {
+            "life_loss": {"signal": "lives", "operation": "decrease"},
+            "level_change": {"signal": "level", "operation": "change"},
+        },
+        "termination": {
+            "failure": ["life_loss"],
+            "success": ["level_change"],
+            "max_episode_steps": 4500,
+        },
+        "reward": {
+            "reward_mode": "baseline",
+            "use_native_reward": False,
+            "clip_rewards": False,
+            "progress_reward_cap": 30.0,
+            "progress_reward_scale": 1.0,
+            "terminal_reward": 50.0,
+            "reward_scale": 10.0,
+            "time_penalty": 0.0,
+            "death_penalty": 25.0,
+            "completion_reward": 0.0,
+            "score_progress_clipped": False,
+        },
+    }
+
+
 def _policy_observation_space(space: gym.Space) -> gym.Space:
     if isinstance(space, gym.spaces.Box) and len(space.shape) == 3:
         channels_first = (
@@ -534,13 +580,6 @@ class SignalBindings:
         if values.ndim != 1:
             raise ValueError(f"semantic signal {semantic_name!r} must be scalar per lane")
         return values
-
-    def unchecked_scalar(self, semantic_name: str, signals: Mapping[str, Any]) -> np.ndarray:
-        columns = self.unchecked_columns(semantic_name, signals)
-        if len(columns) != 1:
-            raise ValueError(f"semantic signal {semantic_name!r} is not scalar")
-        return columns[0]
-
 
 class IdentityTaskDefinition:
     def __init__(

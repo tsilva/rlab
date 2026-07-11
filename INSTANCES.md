@@ -147,8 +147,8 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch
   outputs under ignored paths such as `runs/`, `logs/`, `models/`, and `wandb/`.
 - `rlab fleet` may remove old managed containers only when there are no
-  pending/running jobs for that container's profile/digest/target and no active
-  queue lease owned by one of its workers.
+  pending or running jobs demanding that immutable runtime digest and run
+  target, and no active launch or container uses the digest.
 - In the recoverable job-container path, one container is one job attempt. The
   shepherd/launcher is the only mutating DB actor; the read-only watcher never
   claims, launches, releases, or finalizes jobs. The container reads a payload,

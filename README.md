@@ -157,17 +157,13 @@ jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned,
 one-job Docker containers on registered local or SSH Docker machines.
 
 ```bash
-rlab fleet status
-rlab fleet ps
 rlab fleet shepherd --machine beast-3 --limit 5 --once
-rlab fleet shepherd --machine beast-3 --limit 5
-rlab fleet watch --machine beast-3
 ```
 
 Hard fleet capacity and target mapping come from `experiments/machines.yaml`.
 `INSTANCES.md` is the authoritative operator guide for shepherd operation,
-host setup, cleanup, hardware targets, concurrency, and beast host
-recommendations.
+status and watch commands, host setup, cleanup, hardware targets, concurrency,
+and beast host recommendations.
 
 ## Notes
 

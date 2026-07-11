@@ -2,7 +2,8 @@
 
 This image is the shared runtime contract for train/eval workers. It contains
 the repo code, locked Python dependencies from `uv.lock`, system libraries
-needed by Stable Retro, and the `rlab-*` console scripts. It intentionally does
+needed by Stable Retro, the `rlab` CLI, and the container-only
+`rlab-container-entrypoint` and `rlab-container-smoke` executables. It intentionally does
 not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
 ## Build Locally
@@ -36,7 +37,7 @@ Run one claimed job payload:
 
 ```bash
 docker run --rm --gpus all \
-  --env-file .env.fleet \
+  --env-file /home/tsilva/rlab/.env.runner \
   -e RLAB_ROM_DIR=/roms \
   -v /home/tsilva/rlab/payloads:/root/rlab/payloads:ro \
   -v /home/tsilva/rlab/outputs:/root/rlab/outputs \
@@ -68,17 +69,11 @@ Use tags for humans and digests for runs. The workflow uploads
 that file into queue creation with `--runtime-image-ref-file` so jobs do not
 depend on mutable tags.
 
-## Local Fleet Manager
+## Fleet Integration
 
-For `beast-2` and `beast-3`, Mac-side `rlab fleet` reconciles Docker containers
-directly over SSH and keeps the queue in charge of scheduling; the beast hosts
-only need Docker, NVIDIA runtime support, mounts, and the fleet env file.
-
-```bash
-rlab fleet setup-host --host beast-3
-rlab fleet shepherd --machine beast-3 --limit 1
-rlab fleet watch --machine beast-3
-```
+Mac-side `rlab fleet` reconciles these one-job containers over local Docker or
+SSH while the queue remains the scheduling authority. See `INSTANCES.md` for
+the canonical setup, shepherd, watch, capacity, and cleanup commands.
 
 Each launched container owns exactly one queue launch and is labeled with
 `rlab.job-container=true`, `rlab.job-id`, `rlab.launch-id`, `rlab.machine`, and

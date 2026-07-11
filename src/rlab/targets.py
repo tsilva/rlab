@@ -41,10 +41,6 @@ class RetroTarget:
     game: ClassVar[str] = ""
     default_state: ClassVar[str] = ""
     default_hud_crop_top: ClassVar[int] = 0
-    default_action_set: ClassVar[str] = "native"
-    default_reward_mode: ClassVar[str] = "native"
-    native_life_variable: ClassVar[str | None] = None
-    native_level_variables: ClassVar[tuple[str, ...]] = ()
     action_library: ClassVar[dict[str, np.ndarray]] = {}
     action_sets: ClassVar[dict[str, tuple[str, ...]]] = {}
     eval_semantics: ClassVar[EvalSemantics] = EvalSemantics()
@@ -62,11 +58,6 @@ class RetroTarget:
     def action_masks_for_set(cls, action_set: str) -> tuple[np.ndarray, ...]:
         return tuple(cls.action_library[name] for name in cls.action_names_for_set(action_set))
 
-    @classmethod
-    def uses_discrete_actions(cls, action_set: str) -> bool:
-        return bool(cls.action_masks_for_set(action_set))
-
-
 class GenericRetroTarget(RetroTarget):
     pass
 
@@ -75,10 +66,6 @@ class SuperMarioBrosNesV0Target(RetroTarget):
     game = "SuperMarioBros-Nes-v0"
     default_state = "Level1-1"
     default_hud_crop_top = 32
-    default_action_set = "simple"
-    default_reward_mode = "baseline"
-    native_life_variable = "lives"
-    native_level_variables = ("levelHi", "levelLo")
     eval_semantics = EvalSemantics(
         completion_reason="level_change",
         completion_info_keys=("completion_event", "level_complete"),

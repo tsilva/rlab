@@ -11,6 +11,7 @@ from unittest import mock
 
 from rlab import fleet, job_queue, run_job
 from rlab.machines import load_machine_registry, resolve_machine
+from tests.fleet_fakes import FakeConnection, write_machine_registry
 
 
 RUNTIME_IMAGE_REF = (
@@ -27,74 +28,12 @@ STALE_IMAGE_REF = (
 )
 
 
-class FakeCursor:
-    def __init__(self, row=None, rows=None) -> None:
-        self.row = row
-        self.rows = rows or []
-        self.executed_sql = ""
-        self.executed_params = {}
-        self.executed_sqls = []
-        self.executed_params_list = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def execute(self, sql, params=None) -> None:
-        self.executed_sql = sql
-        self.executed_params = params or {}
-        self.executed_sqls.append(sql)
-        self.executed_params_list.append(params or {})
-
-    def fetchone(self):
-        return self.row
-
-    def fetchall(self):
-        return self.rows
-
-
-class FakeConnection:
-    def __init__(self, row=None, rows=None) -> None:
-        self.cursor_obj = FakeCursor(row=row, rows=rows)
-        self.closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def cursor(self):
-        return self.cursor_obj
-
-    def close(self) -> None:
-        self.closed = True
-
-
 def write_registry(path: Path) -> None:
-    path.write_text(
-        """
-machines:
-  beast-test:
-    backend: docker_ssh
-    ssh_target: tsilva@beast-test
-    run_target: rtx4090
-    docker:
-      command: ["sudo", "-n", "docker"]
-    limits:
-      max_parallel_containers: 5
-      max_train_containers: 4
-    paths:
-      host_root: /host/rlab
-      payloads_dir: /host/rlab/payloads
-      outputs_dir: /host/rlab/outputs
-      logs_dir: /host/rlab/logs
-      roms_dir: /host/roms
-      env_file: /host/rlab/.env.runner
-""",
-        encoding="utf-8",
+    write_machine_registry(
+        path,
+        backend="docker_ssh",
+        max_parallel_containers=5,
+        host_root="/host/rlab",
     )
 
 
@@ -107,9 +46,19 @@ class MachineRegistryTests(unittest.TestCase):
             machine = resolve_machine(load_machine_registry(path), "beast-test")
 
         self.assertEqual(machine.backend, "docker_ssh")
-        self.assertEqual(machine.max_containers_for_kind("train"), 4)
-        self.assertEqual(machine.max_containers_for_kind("other"), 5)
+        self.assertEqual(machine.limits.max_parallel_containers, 5)
         self.assertEqual(machine.paths.container_payloads_dir, "/input/payloads")
+
+    def test_machine_registry_rejects_removed_per_kind_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["machines"]["beast-test"]["limits"]["max_train_containers"] = 4
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unknown field.*max_train_containers"):
+                load_machine_registry(path)
 
     def test_job_container_run_command_uses_dumb_run_job_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,7 +217,7 @@ class FleetShepherdSplitTests(unittest.TestCase):
         output = fleet.render_machine_watch_dashboard(snapshot)
 
         self.assertIn("capacity=1/5", output)
-        self.assertIn("train=1/4", output)
+        self.assertIn("train=1/5", output)
         self.assertIn("train_pending=4", output)
         self.assertNotIn("eval" + "_pending", output)
         self.assertIn("launch-live", output)

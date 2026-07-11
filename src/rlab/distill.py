@@ -26,6 +26,7 @@ from rlab.model_sources import add_model_source_args, resolve_single_model_sourc
 from rlab.play import model_observation, task_info_value_from_info
 from rlab.train import resolve_sb3_device
 from rlab.train_config import DEVICE_CHOICES
+from rlab.task_kernels import default_task_document
 
 
 DEFAULT_TEACHERS = (
@@ -39,6 +40,28 @@ DEFAULT_INFO_VALUES = ((0, 0), (0, 1))
 def mario_student_config(*, termination_events: Sequence[str] = ()) -> EnvConfig:
     failure = [name for name in termination_events if name != "level_change"]
     success = [name for name in termination_events if name == "level_change"]
+    task = default_task_document("mario")
+    task["termination"] = {
+        "failure": failure,
+        "success": success,
+        "max_episode_steps": 0,
+    }
+    task["reward"].update(
+        {
+            "reward_mode": "score",
+            "progress_reward_scale": 1.0,
+            "terminal_reward": 50.0,
+            "death_penalty": 25.0,
+            "completion_reward": 0.0,
+            "reward_scale": 10.0,
+            "score_progress_clipped": False,
+        }
+    )
+    task["conditioning"] = {
+        "enabled": True,
+        "signal": "level",
+        "values": [list(value) for value in DEFAULT_INFO_VALUES],
+    }
     return resolve_env_config(
         EnvConfig(
             env_provider="supermariobrosnes-turbo",
@@ -46,39 +69,7 @@ def mario_student_config(*, termination_events: Sequence[str] = ()) -> EnvConfig
             state="Level1-1",
             states=DEFAULT_STATES,
             state_probs=(0.5, 0.5),
-            task={
-                "id": "mario",
-                "action": {"set": "simple"},
-                "signals": {
-                    "x": ["xscrollHi", "xscrollLo"],
-                    "score": "score",
-                    "lives": "lives",
-                    "level": ["levelHi", "levelLo"],
-                },
-                "events": {
-                    "life_loss": {"signal": "lives", "operation": "decrease"},
-                    "level_change": {"signal": "level", "operation": "change"},
-                },
-                "termination": {
-                    "failure": failure,
-                    "success": success,
-                    "max_episode_steps": 0,
-                },
-                "reward": {
-                    "reward_mode": "score",
-                    "progress_reward_scale": 1.0,
-                    "terminal_reward": 50.0,
-                    "death_penalty": 25.0,
-                    "completion_reward": 0.0,
-                    "reward_scale": 10.0,
-                    "score_progress_clipped": False,
-                },
-                "conditioning": {
-                    "enabled": True,
-                    "signal": "level",
-                    "values": [list(value) for value in DEFAULT_INFO_VALUES],
-                },
-            },
+            task=task,
             frame_skip=4,
             max_pool_frames=False,
             sticky_action_prob=0.0,

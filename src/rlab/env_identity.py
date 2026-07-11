@@ -8,6 +8,8 @@ from typing import Any
 
 from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
+from rlab.preprocessing import preprocessing_contract
+from rlab.task_kernels import default_task_document
 from rlab.validation import normalize_obs_crop
 
 
@@ -25,13 +27,6 @@ PREPROCESSING_KEYS = (
     "obs_crop_mode",
     "obs_crop_fill",
     "obs_resize_algorithm",
-)
-NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
-    {
-        "batch_size",
-        "game",
-        "num_envs",
-    }
 )
 IDENTITY_REWARD_KEYS = frozenset({"reward_mode"})
 MARIO_REWARD_KEYS = frozenset(
@@ -57,34 +52,14 @@ def _normalize_preprocessing(identity: dict[str, Any]) -> None:
         return
     env_id = identity.get("env_id")
     provider_id = str(env_id).split(":", 1)[0] if isinstance(env_id, str) and ":" in env_id else ""
-    pipeline = (
-        "stable_retro_native_vec_env"
-        if provider_id in ("", "stable-retro-turbo")
-        else f"{provider_id.replace('-', '_')}_native_vec_env"
-    )
-    preprocessing.setdefault("pipeline", pipeline)
-    preprocessing.setdefault("frame_skip", 4)
-    preprocessing.setdefault("frame_stack", 4)
-    preprocessing.setdefault("max_pool_frames", True)
-    preprocessing.setdefault("sticky_action_prob", 0.0)
-    preprocessing.setdefault("obs_grayscale", True)
-    preprocessing.setdefault("obs_resize_algorithm", "area")
-    preprocessing.setdefault("obs_copy", "safe_view")
-    if "obs_resize" not in preprocessing:
-        observation_size = preprocessing.get("observation_size", 84)
-        preprocessing["obs_resize"] = [observation_size, observation_size]
-    preprocessing.pop("observation_size", None)
-    if "obs_crop" not in preprocessing:
-        hud_crop_top = preprocessing.get("hud_crop_top")
-        preprocessing["obs_crop"] = [hud_crop_top, 0, 0, 0] if hud_crop_top else None
-    preprocessing.pop("hud_crop_top", None)
     task = identity.get("task")
-    conditioning = task.get("conditioning") if isinstance(task, Mapping) else None
-    if isinstance(conditioning, Mapping) and conditioning.get("enabled"):
-        layout = "dict_image_task"
-    else:
-        layout = "channel_first"
-    preprocessing.setdefault("policy_observation_layout", layout)
+    canonical = preprocessing_contract(
+        preprocessing,
+        provider_id=provider_id,
+        task=task if isinstance(task, Mapping) else None,
+    )
+    preprocessing.clear()
+    preprocessing.update(canonical)
 
 
 def canonical_json(value: Any) -> str:
@@ -136,41 +111,6 @@ def _task_id(provider_id: str, game: str) -> str:
     return "identity"
 
 
-def _mario_task_defaults() -> dict[str, Any]:
-    return {
-        "id": "mario",
-        "action": {"set": "simple"},
-        "signals": {
-            "x": ["xscrollHi", "xscrollLo"],
-            "score": "score",
-            "lives": "lives",
-            "level": ["levelHi", "levelLo"],
-        },
-        "events": {
-            "life_loss": {"signal": "lives", "operation": "decrease"},
-            "level_change": {"signal": "level", "operation": "change"},
-        },
-        "termination": {
-            "failure": ["life_loss"],
-            "success": ["level_change"],
-            "max_episode_steps": 4500,
-        },
-        "reward": {
-            "reward_mode": "baseline",
-            "use_native_reward": False,
-            "clip_rewards": False,
-            "progress_reward_cap": 30.0,
-            "progress_reward_scale": 1.0,
-            "terminal_reward": 50.0,
-            "reward_scale": 10.0,
-            "time_penalty": 0.0,
-            "death_penalty": 25.0,
-            "completion_reward": 0.0,
-            "score_progress_clipped": False,
-        },
-    }
-
-
 def task_config_from_train_config(
     train_config: Mapping[str, Any],
     *,
@@ -183,18 +123,7 @@ def task_config_from_train_config(
     provider_id = str(train_config.get("env_provider") or "")
     game = str(provider_game(train_config) or train_config.get("game") or "")
     inferred_id = _task_id(provider_id, game)
-    canonical = (
-        _mario_task_defaults()
-        if inferred_id == "mario"
-        else {
-            "id": "identity",
-            "action": {"set": "native"},
-            "signals": {},
-            "events": {},
-            "termination": {"max_episode_steps": 4500},
-            "reward": {"reward_mode": "native"},
-        }
-    )
+    canonical = default_task_document(inferred_id)
 
     embedded_task = train_config.get("task")
     if isinstance(embedded_task, Mapping) and embedded_task:
@@ -403,7 +332,45 @@ def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
     return list(normalized) if normalized is not None else None
 
 
-def train_config_from_environment(environment: Mapping[str, Any] | None) -> dict[str, Any]:
+def train_config_from_source_environment(
+    environment: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(environment, Mapping):
+        return {}
+    unexpected = sorted(
+        set(environment) - {"env_provider", "env_config", "preprocessing", "task"}
+    )
+    if unexpected:
+        raise ValueError(
+            "source environment has unexpected field(s): " + ", ".join(unexpected)
+        )
+    env_config = environment.get("env_config")
+    if not isinstance(env_config, Mapping):
+        raise ValueError("source environment.env_config must be an object")
+    train_config = deepcopy(dict(env_config))
+    provider = environment.get("env_provider")
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError("source environment.env_provider must be a non-empty string")
+    train_config["env_provider"] = provider.strip()
+    preprocessing = environment.get("preprocessing")
+    if preprocessing is not None:
+        if not isinstance(preprocessing, Mapping):
+            raise ValueError("source environment.preprocessing must be an object")
+        train_config.update(deepcopy(dict(preprocessing)))
+    game = provider_game(train_config)
+    if game is not None:
+        train_config.setdefault("game", game)
+    task = environment.get("task")
+    train_config["task"] = task_config_from_train_config(
+        train_config,
+        task=task if isinstance(task, Mapping) else None,
+    )
+    return train_config
+
+
+def train_config_from_environment_identity(
+    environment: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     if not isinstance(environment, Mapping):
         return {}
     train_config: dict[str, Any] = {}

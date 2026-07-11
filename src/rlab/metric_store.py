@@ -169,13 +169,6 @@ class MetricStore:
             ).fetchone()
         return None if row is None else float(row["value"])
 
-    def latest_metrics(self, names: Sequence[str]) -> dict[str, float]:
-        return {
-            name: value
-            for name in names
-            if (value := self.latest_metric(name)) is not None
-        }
-
     def record_checkpoint(
         self,
         *,

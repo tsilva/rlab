@@ -270,7 +270,7 @@ def render_machine_watch_dashboard(snapshot: MachineWatchSnapshot, *, color: boo
     clock = colorize(captured, "white", enabled=color)
     title = colorize("rlab fleet watch", "bright_cyan", enabled=color)
     capacity = f"{len(active_containers)}/{machine.limits.max_parallel_containers}"
-    train_capacity = f"{active_by_kind['train']}/{machine.max_containers_for_kind('train')}"
+    train_capacity = f"{active_by_kind['train']}/{machine.limits.max_parallel_containers}"
     header = [
         f"{title} {colorize('time', 'gray', enabled=color)} {clock}",
         (

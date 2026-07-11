@@ -130,27 +130,6 @@ def shell_join(parts: Sequence[str]) -> str:
     return shlex.join([str(part) for part in parts])
 
 
-def host_command(machine: MachineConfig, remote_args: Sequence[str]) -> list[str]:
-    return ["ssh", *machine.ssh_options, machine.ssh_target, shell_join(remote_args)]
-
-
-def run_host_script(
-    machine: MachineConfig,
-    script: str,
-    *,
-    local: bool = False,
-    capture: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    command = ["bash", "-lc", script] if local else host_command(machine, ["bash", "-lc", script])
-    return subprocess.run(
-        command,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
-    )
-
-
 def selected_setup_machines(registry: MachineRegistry, machine_filter: str | None) -> list[MachineConfig]:
     machines = (
         [resolve_machine(registry, machine_filter)]
@@ -403,37 +382,6 @@ def format_demands(demands: Sequence[QueueDemand]) -> str:
     return "\n".join(lines)
 
 
-def format_elapsed_since(value: Any, *, now: datetime | None = None) -> str:
-    if not value:
-        return "unknown"
-    timestamp: datetime
-    if isinstance(value, datetime):
-        timestamp = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return "unknown"
-        try:
-            timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return text
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    current = now or datetime.now(UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    seconds = max(0, int((current - timestamp).total_seconds()))
-    if seconds < 60:
-        return f"{seconds}s_ago"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes}m_ago"
-    hours = minutes // 60
-    if hours < 48:
-        return f"{hours}h_ago"
-    return f"{hours // 24}d_ago"
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
@@ -629,7 +577,13 @@ def parse_docker_labels(value: str) -> dict[str, str]:
     return labels
 
 
-def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
+def _parse_containers(
+    machine: MachineConfig,
+    output: str,
+    *,
+    required_label: str,
+    required_value: str | None = None,
+) -> list[JobContainer]:
     containers: list[JobContainer] = []
     for line in output.splitlines():
         if not line.strip():
@@ -639,7 +593,9 @@ def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContain
         except json.JSONDecodeError:
             continue
         labels = parse_docker_labels(str(row.get("Labels") or ""))
-        if labels.get(JOB_CONTAINER_LABEL) != "true":
+        if required_label not in labels or (
+            required_value is not None and labels[required_label] != required_value
+        ):
             continue
         containers.append(
             JobContainer(
@@ -651,66 +607,71 @@ def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContain
             )
         )
     return containers
+
+
+def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
+    return _parse_containers(
+        machine,
+        output,
+        required_label=JOB_CONTAINER_LABEL,
+        required_value="true",
+    )
 
 
 def parse_runtime_image_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
-    containers: list[JobContainer] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        labels = parse_docker_labels(str(row.get("Labels") or ""))
-        if not labels.get(f"{LABEL_PREFIX}runtime-image-ref"):
-            continue
-        containers.append(
-            JobContainer(
-                machine=machine.name,
-                name=str(row.get("Names") or row.get("Name") or ""),
-                state=str(row.get("State") or "").lower(),
-                status=str(row.get("Status") or ""),
-                labels=labels,
-            )
-        )
-    return containers
+    return _parse_containers(
+        machine,
+        output,
+        required_label=f"{LABEL_PREFIX}runtime-image-ref",
+    )
+
+
+def _list_containers(
+    machine: MachineConfig,
+    *,
+    required_label: str,
+    required_value: str | None = None,
+) -> list[JobContainer]:
+    label_filter = (
+        f"label={required_label}={required_value}"
+        if required_value is not None
+        else f"label={required_label}"
+    )
+    result = run_machine_docker(
+        machine,
+        [
+            "ps",
+            "-a",
+            "--filter",
+            label_filter,
+            "--format",
+            "{{json .}}",
+        ],
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
+    return _parse_containers(
+        machine,
+        result.stdout,
+        required_label=required_label,
+        required_value=required_value,
+    )
 
 
 def list_job_containers(machine: MachineConfig) -> list[JobContainer]:
-    result = run_machine_docker(
+    return _list_containers(
         machine,
-        [
-            "ps",
-            "-a",
-            "--filter",
-            f"label={JOB_CONTAINER_LABEL}=true",
-            "--format",
-            "{{json .}}",
-        ],
-        capture=True,
+        required_label=JOB_CONTAINER_LABEL,
+        required_value="true",
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
-    return parse_job_containers(machine, result.stdout)
 
 
 def list_runtime_image_containers(machine: MachineConfig) -> list[JobContainer]:
-    result = run_machine_docker(
+    return _list_containers(
         machine,
-        [
-            "ps",
-            "-a",
-            "--filter",
-            f"label={LABEL_PREFIX}runtime-image-ref",
-            "--format",
-            "{{json .}}",
-        ],
-        capture=True,
+        required_label=f"{LABEL_PREFIX}runtime-image-ref",
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
-    return parse_runtime_image_containers(machine, result.stdout)
 
 
 def parse_runtime_host_images(
@@ -1252,7 +1213,7 @@ def train_container_slot_usage(machine: MachineConfig) -> tuple[int, int, int]:
         if container.job_kind == TRAIN_JOB_KIND
         and container.state in {"running", "created", "restarting"}
     ]
-    capacity = machine.max_containers_for_kind(TRAIN_JOB_KIND)
+    capacity = machine.limits.max_parallel_containers
     return len(active), capacity, max(0, capacity - len(active))
 
 
@@ -1523,7 +1484,7 @@ def cmd_setup_host(args: argparse.Namespace) -> int:
         if not args.execute:
             print("dry_run: rerun without --dry-run to run setup over SSH")
             continue
-        result = run_host_script(machine, script)
+        result = run_machine_shell(machine, script)
         if result.returncode != 0:
             status = int(result.returncode)
     return status

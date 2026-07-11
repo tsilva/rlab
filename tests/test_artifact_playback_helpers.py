@@ -546,7 +546,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(metadata["environment"]["preprocessing"]["frame_stack"], 4)
             self.assertEqual(
-                metadata["training_metadata"]["preprocessing"]["maxpool_last_two"],
+                metadata["training_metadata"]["preprocessing"]["max_pool_frames"],
                 False,
             )
             self.assertEqual(

@@ -20,19 +20,18 @@ FieldKind = Literal["value", "store_true", "bool_optional"]
 TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
+FieldOwner = Literal["runtime", "goal_environment", "goal_objective"]
 
 @dataclass(frozen=True)
 class TrainConfigField:
     dest: str
-    flags: tuple[str, ...]
-    false_flag: str | None = None
+    flag: str
     kind: FieldKind = "value"
     type_name: TypeName = "str"
     default: Any = None
     env_default: str | None = None
     choices: tuple[str, ...] = ()
     help: str | None = None
-    suppress_help: bool = False
     serialize: SerializeMode = "str"
     env_config_key: str | None = None
     queue_required: bool = False
@@ -42,14 +41,11 @@ class TrainConfigField:
     sequence_items: SequenceItemKind | None = None
     allow_empty_sequence: bool = False
     mapping_value: bool = False
+    owner: FieldOwner = "runtime"
 
     @property
     def command_flag(self) -> str:
-        return self.flags[0]
-
-    @property
-    def command_false_flag(self) -> str:
-        return self.false_flag or f"--no-{self.command_flag.removeprefix('--')}"
+        return self.flag
 
     @property
     def is_env_config_field(self) -> bool:
@@ -89,12 +85,9 @@ def _add_config_field_argument(
     parse_json_value: Callable[[str], Any],
     parse_obs_crop: Callable[[Any], Any],
     dest: str | None = None,
-    option_flags: tuple[str, ...] | None = None,
 ) -> None:
     kwargs: dict[str, Any] = {"dest": dest or field.dest, "default": default}
-    if field.suppress_help:
-        kwargs["help"] = argparse.SUPPRESS
-    elif field.help is not None:
+    if field.help is not None:
         kwargs["help"] = field.help
     if field.choices:
         kwargs["choices"] = field.choices
@@ -110,9 +103,7 @@ def _add_config_field_argument(
         )
         if type_callable is not None:
             kwargs["type"] = type_callable
-    if option_flags is None:
-        option_flags = field.flags[:1] if field.kind == "bool_optional" else field.flags
-    parser.add_argument(*option_flags, **kwargs)
+    parser.add_argument(field.flag, **kwargs)
 
 
 def add_train_config_args(
@@ -145,7 +136,6 @@ def add_env_config_args(
     for field in env_config_arg_fields():
         dest = field.dest
         default = _env_default(defaults, field)
-        option_flags = None
         _add_config_field_argument(
             parser,
             field,
@@ -153,7 +143,6 @@ def add_env_config_args(
             parse_json_value=parse_json_value,
             parse_obs_crop=parse_obs_crop,
             dest=dest,
-            option_flags=option_flags,
         )
     parser.add_argument("--max-steps", type=int, default=max_steps_default)
 
@@ -200,19 +189,15 @@ def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
             continue
         if field.kind == "bool_optional":
             if value is True:
-                cmd.append(field.flags[0])
+                cmd.append(field.command_flag)
             elif value is False:
-                cmd.append(field.command_false_flag)
+                cmd.append(f"--no-{field.command_flag.removeprefix('--')}")
             continue
         serialized = _serialize_value(field, value)
         if serialized is None:
             continue
         cmd.extend([field.command_flag, serialized])
     return cmd
-
-
-def train_config_field_names() -> frozenset[str]:
-    return frozenset(field.dest for field in TRAIN_CONFIG_FIELDS)
 
 
 def train_config_field_for_key(
@@ -237,6 +222,20 @@ def env_config_arg_fields() -> tuple[TrainConfigField, ...]:
 def env_config_allowed_keys() -> frozenset[str]:
     keys: set[str] = set()
     for field in env_config_arg_fields():
+        keys.add(field.dest)
+        if field.env_config_key:
+            keys.add(field.env_config_key)
+    return frozenset(keys)
+
+
+def train_config_keys_owned_by(owner: FieldOwner) -> frozenset[str]:
+    keys: set[str] = set()
+    for field in TRAIN_CONFIG_FIELDS:
+        is_owned = field.owner == owner or (
+            owner == "goal_environment" and field.is_env_config_field
+        )
+        if not is_owned:
+            continue
         keys.add(field.dest)
         if field.env_config_key:
             keys.add(field.env_config_key)
@@ -444,16 +443,23 @@ def validate_and_normalize_train_config(
 TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField(
         "timesteps",
-        ("--timesteps",),
+        "--timesteps",
         type_name="int",
         default=1_000_000,
         queue_required=True,
         validation_min=1,
     ),
-    TrainConfigField("n_envs", ("--n-envs",), type_name="int", default=8, validation_min=1),
+    TrainConfigField(
+        "n_envs",
+        "--n-envs",
+        type_name="int",
+        default=8,
+        validation_min=1,
+        owner="goal_environment",
+    ),
     TrainConfigField(
         "seed",
-        ("--seed",),
+        "--seed",
         type_name="int",
         default=DEFAULT_TRAIN_SEED,
         help=(
@@ -461,17 +467,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
             f"{EVAL_SEED_START}; seeds >= {EVAL_SEED_START} are reserved for eval."
         ),
     ),
-    TrainConfigField("run_name", ("--run-name",), default="ppo_retro"),
+    TrainConfigField("run_name", "--run-name", default="ppo_retro"),
     TrainConfigField(
         "run_description",
-        ("--run-description",),
+        "--run-description",
         default="",
         help="Human-readable description of the experiment or ablation being run.",
     ),
-    TrainConfigField("runs_dir", ("--runs-dir",), default="runs"),
+    TrainConfigField("runs_dir", "--runs-dir", default="runs"),
     TrainConfigField(
         "env_provider",
-        ("--env-provider",),
+        "--env-provider",
         env_default="env_provider",
         env_config_key="env_provider",
         non_empty=True,
@@ -479,7 +485,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "game",
-        ("--game",),
+        "--game",
         env_default="game",
         env_config_key="game",
         queue_required=True,
@@ -488,7 +494,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "env_args",
-        ("--env-args",),
+        "--env-args",
         type_name="json",
         default={},
         env_default="env_args",
@@ -499,7 +505,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "task",
-        ("--task-json",),
+        "--task-json",
         type_name="json",
         default={},
         env_default="task",
@@ -510,7 +516,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "state",
-        ("--state",),
+        "--state",
         env_default="state",
         env_config_key="state",
         non_empty=True,
@@ -518,7 +524,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "states",
-        ("--states",),
+        "--states",
         default="",
         serialize="csv",
         env_config_key="states",
@@ -527,7 +533,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "state_probs",
-        ("--state-probs",),
+        "--state-probs",
         default="",
         serialize="csv",
         env_config_key="state_probs",
@@ -536,7 +542,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "frame_skip",
-        ("--frame-skip",),
+        "--frame-skip",
         type_name="int",
         default=4,
         env_config_key="frame_skip",
@@ -544,7 +550,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "sticky_action_prob",
-        ("--sticky-action-prob",),
+        "--sticky-action-prob",
         type_name="float",
         env_default="sticky_action_prob",
         env_config_key="sticky_action_prob",
@@ -552,8 +558,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "max_pool_frames",
-        ("--max-pool-frames",),
-        false_flag="--no-max-pool-frames",
+        "--max-pool-frames",
         kind="bool_optional",
         default=True,
         env_config_key="max_pool_frames",
@@ -561,7 +566,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "observation_size",
-        ("--observation-size",),
+        "--observation-size",
         type_name="int",
         env_default="observation_size",
         env_config_key="observation_size",
@@ -569,7 +574,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "hud_crop_top",
-        ("--hud-crop-top",),
+        "--hud-crop-top",
         type_name="int",
         env_default="hud_crop_top",
         env_config_key="hud_crop_top",
@@ -578,7 +583,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "obs_crop",
-        ("--obs-crop",),
+        "--obs-crop",
         type_name="obs_crop",
         env_default="obs_crop",
         serialize="csv",
@@ -587,7 +592,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "obs_crop_mode",
-        ("--obs-crop-mode",),
+        "--obs-crop-mode",
         env_default="obs_crop_mode",
         choices=("remove", "mask"),
         env_config_key="obs_crop_mode",
@@ -596,7 +601,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "obs_crop_fill",
-        ("--obs-crop-fill",),
+        "--obs-crop-fill",
         type_name="int",
         env_default="obs_crop_fill",
         env_config_key="obs_crop_fill",
@@ -606,7 +611,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "obs_resize_algorithm",
-        ("--obs-resize-algorithm",),
+        "--obs-resize-algorithm",
         env_default="obs_resize_algorithm",
         env_config_key="obs_resize_algorithm",
         non_empty=True,
@@ -614,21 +619,21 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "checkpoint_freq",
-        ("--checkpoint-freq",),
+        "--checkpoint-freq",
         type_name="int",
         default=500_000,
         validation_min=0,
     ),
     TrainConfigField(
         "post_train_eval_episodes",
-        ("--post-train-eval-episodes",),
+        "--post-train-eval-episodes",
         type_name="int",
         default=100,
         help="Episodes per checkpoint for post-training checkpoint eval.",
     ),
     TrainConfigField(
         "checkpoint_eval_n_envs",
-        ("--checkpoint-eval-n-envs",),
+        "--checkpoint-eval-n-envs",
         type_name="int",
         default=20,
         validation_min=1,
@@ -636,136 +641,136 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "checkpoint_eval_stages",
-        ("--checkpoint-eval-stages",),
+        "--checkpoint-eval-stages",
         type_name="json",
         default=None,
         serialize="json",
+        owner="goal_objective",
         help="JSON list of cheap checkpoint eval stages for async candidate-stop screening.",
     ),
     TrainConfigField(
         "post_train_eval_max_steps",
-        ("--post-train-eval-max-steps",),
+        "--post-train-eval-max-steps",
         type_name="int",
         default=0,
         help="Max steps per post-training eval episode; <=0 uses --max-episode-steps.",
     ),
     TrainConfigField(
         "post_train_eval_stochastic",
-        ("--post-train-eval-stochastic",),
-        false_flag="--no-post-train-eval-stochastic",
+        "--post-train-eval-stochastic",
         kind="bool_optional",
         default=True,
         help="Use stochastic policy sampling for post-training checkpoint eval.",
     ),
     TrainConfigField(
         "early_stop",
-        ("--early-stop",),
+        "--early-stop",
         type_name="json",
         default=None,
         serialize="json",
+        owner="goal_objective",
         help="JSON early-stop list of AND-combined metric threshold rules.",
     ),
-    TrainConfigField("learning_rate", ("--learning-rate",), type_name="float", default=1e-4),
+    TrainConfigField("learning_rate", "--learning-rate", type_name="float", default=1e-4),
     TrainConfigField(
         "learning_rate_final",
-        ("--learning-rate-final",),
+        "--learning-rate-final",
         type_name="float",
         default=None,
         help="If set, linearly decay learning rate from --learning-rate to this value over training.",
     ),
     TrainConfigField(
         "learning_rate_schedule_timesteps",
-        ("--learning-rate-schedule-timesteps",),
+        "--learning-rate-schedule-timesteps",
         type_name="int",
         default=0,
         help="Timesteps over which to decay learning rate; <=0 decays over --timesteps.",
     ),
-    TrainConfigField("n_steps", ("--n-steps",), type_name="int", default=512),
-    TrainConfigField("batch_size", ("--batch-size",), type_name="int", default=256),
-    TrainConfigField("n_epochs", ("--n-epochs",), type_name="int", default=10),
+    TrainConfigField("n_steps", "--n-steps", type_name="int", default=512),
+    TrainConfigField("batch_size", "--batch-size", type_name="int", default=256),
+    TrainConfigField("n_epochs", "--n-epochs", type_name="int", default=10),
     TrainConfigField(
-        "device", ("--device",), default="auto", choices=DEVICE_CHOICES, non_empty=True
+        "device", "--device", default="auto", choices=DEVICE_CHOICES, non_empty=True
     ),
-    TrainConfigField("gamma", ("--gamma",), type_name="float", default=0.9),
-    TrainConfigField("gae_lambda", ("--gae-lambda",), type_name="float", default=1.0),
-    TrainConfigField("ent_coef", ("--ent-coef",), type_name="float", default=0.01),
+    TrainConfigField("gamma", "--gamma", type_name="float", default=0.9),
+    TrainConfigField("gae_lambda", "--gae-lambda", type_name="float", default=1.0),
+    TrainConfigField("ent_coef", "--ent-coef", type_name="float", default=0.01),
     TrainConfigField(
         "ent_coef_final",
-        ("--ent-coef-final",),
+        "--ent-coef-final",
         type_name="float",
         default=None,
         help="If set, linearly decay entropy coefficient from --ent-coef to this value.",
     ),
     TrainConfigField(
         "ent_coef_schedule_timesteps",
-        ("--ent-coef-schedule-timesteps",),
+        "--ent-coef-schedule-timesteps",
         type_name="int",
         default=0,
         help="Timesteps over which to decay entropy coefficient; <=0 decays over --timesteps.",
     ),
-    TrainConfigField("vf_coef", ("--vf-coef",), type_name="float", default=1.0),
-    TrainConfigField("clip_range", ("--clip-range",), type_name="float", default=0.2),
+    TrainConfigField("vf_coef", "--vf-coef", type_name="float", default=1.0),
+    TrainConfigField("clip_range", "--clip-range", type_name="float", default=0.2),
     TrainConfigField(
         "clip_range_vf",
-        ("--clip-range-vf",),
+        "--clip-range-vf",
         type_name="float",
         default=None,
         help="Optional PPO value-function clipping range; omitted keeps SB3 default.",
     ),
     TrainConfigField(
         "policy_net_arch",
-        ("--policy-net-arch",),
+        "--policy-net-arch",
         default="",
         help="Comma-separated policy MLP hidden sizes after the CNN/combined extractor.",
     ),
     TrainConfigField(
         "value_net_arch",
-        ("--value-net-arch",),
+        "--value-net-arch",
         default="",
         help="Comma-separated value MLP hidden sizes after the CNN/combined extractor.",
     ),
     TrainConfigField(
         "normalize_advantage",
-        ("--normalize-advantage",),
-        false_flag="--no-normalize-advantage",
+        "--normalize-advantage",
         kind="bool_optional",
         default=False,
         help="Normalize PPO advantages before policy updates.",
     ),
     TrainConfigField(
         "advantage_normalization",
-        ("--advantage-normalization",),
+        "--advantage-normalization",
         default="auto",
         choices=ADVANTAGE_NORMALIZATION_CHOICES,
         non_empty=True,
         help="PPO advantage normalization mode. auto preserves --normalize-advantage; per-task normalizes each task-conditioned rollout slice once before PPO epochs.",
     ),
-    TrainConfigField("adam_eps", ("--adam-eps",), type_name="float", default=1e-8),
+    TrainConfigField("adam_eps", "--adam-eps", type_name="float", default=1e-8),
     TrainConfigField(
         "target_kl",
-        ("--target-kl",),
+        "--target-kl",
         type_name="float",
         default=None,
         serialize="skip_nonpositive_float",
     ),
     TrainConfigField(
-        "resume", ("--resume",), default=None, help="Path to an existing PPO .zip checkpoint"
+        "resume", "--resume", default=None, help="Path to an existing PPO .zip checkpoint"
     ),
     TrainConfigField(
         "wandb",
-        ("--wandb",),
+        "--wandb",
         kind="store_true",
         default=False,
         queue_required=True,
         help="Log training to Weights & Biases",
     ),
-    TrainConfigField("wandb_project", ("--wandb-project",), default=None),
-    TrainConfigField("wandb_entity", ("--wandb-entity",), default=None),
-    TrainConfigField("wandb_group", ("--wandb-group",), default=None),
-    TrainConfigField("wandb_tags", ("--wandb-tags",), default="", help="Comma-separated W&B tags"),
+    TrainConfigField("wandb_project", "--wandb-project", default=None),
+    TrainConfigField("wandb_entity", "--wandb-entity", default=None),
+    TrainConfigField("wandb_group", "--wandb-group", default=None),
+    TrainConfigField("wandb_tags", "--wandb-tags", default="", help="Comma-separated W&B tags"),
     TrainConfigField(
         "wandb_mode",
-        ("--wandb-mode",),
+        "--wandb-mode",
         default="online",
         choices=WANDB_MODE_CHOICES,
         queue_required=True,
@@ -773,34 +778,34 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "runtime_image_ref",
-        ("--runtime-image-ref",),
+        "--runtime-image-ref",
         default="",
         help="Immutable runtime image ref recorded as run metadata; does not affect training.",
     ),
     TrainConfigField(
         "run_target",
-        ("--run-target",),
+        "--run-target",
         default="",
         help="Canonical compute target recorded as run metadata; does not affect training.",
     ),
     TrainConfigField(
-        "goal_slug", ("--goal-slug",), default="", help="Research goal slug recorded in W&B config."
+        "goal_slug", "--goal-slug", default="", help="Research goal slug recorded in W&B config."
     ),
     TrainConfigField(
         "recipe_slug",
-        ("--recipe-slug",),
+        "--recipe-slug",
         default="",
         help="Experiment recipe slug recorded in W&B config.",
     ),
     TrainConfigField(
         "recipe_path",
-        ("--recipe-path",),
+        "--recipe-path",
         default="",
         help="Experiment recipe path recorded in W&B config.",
     ),
     TrainConfigField(
         "recipe_overrides",
-        ("--recipe-overrides",),
+        "--recipe-overrides",
         type_name="json",
         default=(),
         serialize="json",
@@ -808,21 +813,21 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "queue_train_job_id",
-        ("--queue-train-job-id",),
+        "--queue-train-job-id",
         type_name="int",
         default=0,
         help="Queue train job id recorded in W&B config; 0 means local/unqueued.",
     ),
     TrainConfigField(
         "no_wandb_artifacts",
-        ("--no-wandb-artifacts",),
+        "--no-wandb-artifacts",
         kind="store_true",
         default=False,
         help="Disable W&B model uploads",
     ),
     TrainConfigField(
         "wandb_artifact_storage_uri",
-        ("--wandb-artifact-storage-uri",),
+        "--wandb-artifact-storage-uri",
         default="",
         queue_required=True,
         help="Optional s3://bucket/prefix base URI for model artifacts. Model zips are stored under <game-id>/... below that URI, and W&B logs reference artifacts instead of storing file bytes.",

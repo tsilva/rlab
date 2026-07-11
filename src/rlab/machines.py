@@ -14,7 +14,6 @@ DEFAULT_MACHINE_REGISTRY = Path("experiments/machines.yaml")
 @dataclass(frozen=True)
 class MachineLimits:
     max_parallel_containers: int
-    max_train_containers: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,12 +42,6 @@ class MachineConfig:
     limits: MachineLimits
     paths: MachinePaths
 
-    def max_containers_for_kind(self, job_kind: str) -> int:
-        if job_kind == "train" and self.limits.max_train_containers is not None:
-            return self.limits.max_train_containers
-        return self.limits.max_parallel_containers
-
-
 @dataclass(frozen=True)
 class MachineRegistry:
     machines: dict[str, MachineConfig]
@@ -74,12 +67,6 @@ def _positive_int(value: Any, *, label: str) -> int:
     return result
 
 
-def _optional_positive_int(value: Any, *, label: str) -> int | None:
-    if value is None:
-        return None
-    return _positive_int(value, label=label)
-
-
 def load_config_file(path: Path) -> dict[str, Any]:
     return load_mapping_document(path, label=str(path))
 
@@ -97,6 +84,11 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
     docker = raw.get("docker") if isinstance(raw.get("docker"), Mapping) else {}
     default_gpu_args: tuple[str, ...] = ("--gpus", "all") if backend == "docker_ssh" else ()
     limits_raw = raw.get("limits") if isinstance(raw.get("limits"), Mapping) else {}
+    unknown_limit_keys = sorted(set(limits_raw) - {"max_parallel_containers"})
+    if unknown_limit_keys:
+        raise ValueError(
+            f"machine {name!r} limits has unknown field(s): {', '.join(unknown_limit_keys)}"
+        )
     paths_raw = raw.get("paths") if isinstance(raw.get("paths"), Mapping) else {}
     host_root = str(paths_raw.get("host_root") or "/home/tsilva/rlab")
     return MachineConfig(
@@ -112,10 +104,6 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
             max_parallel_containers=_positive_int(
                 limits_raw.get("max_parallel_containers"),
                 label=f"machine {name} limits.max_parallel_containers",
-            ),
-            max_train_containers=_optional_positive_int(
-                limits_raw.get("max_train_containers"),
-                label=f"machine {name} limits.max_train_containers",
             ),
         ),
         paths=MachinePaths(

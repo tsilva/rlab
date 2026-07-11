@@ -6,7 +6,7 @@ from rlab.env_identity import (
     ENVIRONMENT_HASH_ALGORITHM,
     environment_hash,
     environment_identity_from_train_config,
-    train_config_from_environment,
+    train_config_from_environment_identity,
     validate_task_config,
 )
 from rlab.env_metadata import sanitize_env_config_metadata
@@ -49,7 +49,7 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
         self.assertNotIn("reward", identity)
 
     def test_canonical_task_lowers_to_current_env_config_without_wrappers(self) -> None:
-        train_config = train_config_from_environment(
+        train_config = train_config_from_environment_identity(
             {
                 "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
                 "task": {

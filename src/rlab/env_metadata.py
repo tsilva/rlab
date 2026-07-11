@@ -4,12 +4,13 @@ import importlib.metadata
 from dataclasses import asdict
 from typing import Any
 
-from rlab.env import EnvConfig, native_obs_crop, state_distribution_metadata, validate_obs_crop
+from rlab.env import EnvConfig, state_distribution_metadata, validate_obs_crop
 from rlab.env_identity import (
     environment_hash,
     environment_identity_from_train_config,
     task_config_from_train_config,
 )
+from rlab.preprocessing import preprocessing_contract
 
 
 PLAYBACK_ENV_ARG_KEYS = {
@@ -67,30 +68,7 @@ def _package_version(package: str) -> str | None:
 
 
 def training_preprocessing_metadata(config: EnvConfig) -> dict[str, Any]:
-    pipeline = (
-        "stable_retro_native_vec_env"
-        if config.env_provider == "stable-retro-turbo"
-        else f"{config.env_provider.replace('-', '_')}_native_vec_env"
-    )
-    return {
-        "pipeline": pipeline,
-        "obs_resize": [config.observation_size, config.observation_size],
-        "obs_crop": list(native_obs_crop(config) or ()) or None,
-        "obs_crop_mode": config.obs_crop_mode,
-        "obs_crop_fill": config.obs_crop_fill,
-        "obs_grayscale": True,
-        "obs_resize_algorithm": config.obs_resize_algorithm,
-        "frame_skip": config.frame_skip,
-        "frame_stack": 4,
-        "maxpool_last_two": config.max_pool_frames,
-        "sticky_action_prob": config.sticky_action_prob,
-        "obs_copy": "safe_view",
-        "policy_observation_layout": (
-            "dict_image_task"
-            if bool(config.task.get("conditioning", {}).get("enabled"))
-            else "channel_first"
-        ),
-    }
+    return preprocessing_contract(config)
 
 
 def training_metadata(config: EnvConfig) -> dict[str, Any]:

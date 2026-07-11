@@ -13,6 +13,7 @@ from unittest import mock
 from rlab import fleet
 from rlab.machines import load_machine_registry, resolve_machine
 from rlab.runtime_refs import runtime_image_ref_from_file
+from tests.fleet_fakes import FakeConnection, write_machine_registry
 
 
 RUNTIME_IMAGE_REF = (
@@ -25,62 +26,12 @@ OTHER_IMAGE_REF = (
 )
 
 
-class FakeCursor:
-    def __init__(self, rows=None, row=None) -> None:
-        self.rows = rows if rows is not None else []
-        self.row = row
-        self.executed_sql = ""
-        self.executed_params = {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def execute(self, sql, params=None) -> None:
-        self.executed_sql = sql
-        self.executed_params = params or {}
-
-    def fetchall(self):
-        return self.rows
-
-    def fetchone(self):
-        return self.row if self.row is not None else (self.rows[0] if self.rows else None)
-
-
-class FakeConnection:
-    def __init__(self, rows=None, row=None) -> None:
-        self.cursor_obj = FakeCursor(rows=rows, row=row)
-
-    def cursor(self):
-        return self.cursor_obj
-
-    def close(self):
-        pass
-
-
 def write_registry(path: Path) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "machines": {
-                    "beast-test": {
-                        "backend": "local_docker",
-                        "run_target": "rtx4090",
-                        "pull_policy": "never",
-                        "limits": {"max_parallel_containers": 2},
-                        "paths": {
-                            "host_root": "/tmp/rlab",
-                            "payloads_dir": "/tmp/rlab/payloads",
-                            "outputs_dir": "/tmp/rlab/outputs",
-                            "roms_dir": "/roms",
-                        },
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
+    write_machine_registry(
+        path,
+        backend="local_docker",
+        max_parallel_containers=2,
+        host_root="/tmp/rlab",
     )
 
 
@@ -96,7 +47,7 @@ def sample_registry_path(root: Path) -> Path:
                         "ssh_target": "tsilva@beast-3",
                         "run_target": "rtx4090",
                         "docker": {"command": ["sudo", "-n", "docker"]},
-                        "limits": {"max_parallel_containers": 5, "max_train_containers": 5},
+                        "limits": {"max_parallel_containers": 5},
                         "paths": {"roms_dir": "/roms-host"},
                     }
                 }
@@ -139,6 +90,22 @@ class FleetHostTests(unittest.TestCase):
 
         self.assertIn("sudo -n docker info", script)
         self.assertIn("/roms-host", script)
+
+    def test_setup_host_uses_the_shared_machine_shell_transport(self) -> None:
+        registry = sample_registry()
+        args = fleet.build_parser().parse_args(["setup-host", "--host", "beast-3"])
+        completed = SimpleNamespace(returncode=0)
+
+        with (
+            mock.patch.object(fleet, "load_registry_from_args", return_value=registry),
+            mock.patch.object(fleet, "run_machine_shell", return_value=completed) as run,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            status = fleet.cmd_setup_host(args)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(run.call_args.args[0].name, "beast-3")
+        self.assertIn("sudo -n docker info", run.call_args.args[1])
 
     def test_load_shared_runner_env_normalizes_quotes_and_ignores_machine_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,44 +351,6 @@ class JobContainerTests(unittest.TestCase):
 
 
 class RuntimeImagePruneTests(unittest.TestCase):
-    def test_stale_runtime_image_plan_preserves_active_containers_and_demand(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-        images = (
-            fleet.RuntimeHostImage(
-                machine="beast-test",
-                repository="ghcr.io/tsilva/rlab/rlab-train",
-                digest=RUNTIME_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
-                image_id="keep-demand",
-            ),
-            fleet.RuntimeHostImage(
-                machine="beast-test",
-                repository="ghcr.io/tsilva/rlab/rlab-train",
-                digest=OTHER_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
-                image_id="stale",
-            ),
-        )
-        demands = [
-            fleet.QueueDemand(
-                runtime_image_ref=RUNTIME_IMAGE_REF,
-                run_target="rtx4090",
-                pending_count=1,
-                running_count=0,
-                oldest_job_id=7,
-            )
-        ]
-
-        stale = fleet.stale_runtime_host_images(
-            machine=machine,
-            images=images,
-            demands=demands,
-            containers=(),
-        )
-
-        self.assertEqual([image.runtime_image_ref for image in stale], [OTHER_IMAGE_REF])
-
     def test_shepherd_busy_lock_returns_distinct_status(self) -> None:
         args = Namespace(
             machine="beast-test",

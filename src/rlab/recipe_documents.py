@@ -12,12 +12,13 @@ from rlab.config_loader import (
     ComposedDocument,
     TEMPLATE_VARS_KEY,
     deep_merge,
+    load_mapping_document,
     load_composed_mapping,
     render_template_vars,
 )
 from rlab.env_identity import (
     attach_environment_identity,
-    train_config_from_environment,
+    train_config_from_source_environment,
     validate_task_config,
 )
 from rlab.provider_config import provider_num_envs
@@ -27,6 +28,7 @@ from rlab.recipe_schema import (
     validate_materialized_train_recipe,
 )
 from rlab.seeds import validate_training_seed
+from rlab.train_config import train_config_keys_owned_by
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -38,8 +40,11 @@ SECRET_KEY_FRAGMENTS = (
     "credential",
     "database_url",
 )
-TRAIN_CONFIG_SECTION_KEYS = ("train", "reward", "logging")
+TRAIN_CONFIG_SECTION_KEYS = ("train", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
+GOAL_TRAIN_CONFIG_KEYS = frozenset(
+    {"checkpoint_freq", "checkpoint_eval_stages", "early_stop"}
+)
 GOAL_GAME_DIR_NAME = "SuperMarioBros-Nes-v0"
 QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
@@ -63,33 +68,11 @@ GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("tags", "1"): frozenset({"slug", "recipe_id", "recipe_slug"}),
     ("tags", "2"): frozenset({"env_id"}),
 }
-GOAL_OWNED_ENV_CONFIG_KEYS = frozenset(
-    {
-        "env_provider",
-        "provider",
-        "env_id",
-        "env_args",
-        "game",
-        "state",
-        "states",
-        "state_probs",
-        "frame_skip",
-        "max_pool_frames",
-        "sticky_action_prob",
-        "obs_crop",
-        "obs_resize_algorithm",
-        "observation_size",
-        "hud_crop_top",
-        "task",
-        "n_envs",
-    }
-)
-GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = frozenset(
-    {
-        "checkpoint_eval_stages",
-        "early_stop",
-    }
-)
+GOAL_OWNED_ENV_CONFIG_KEYS = train_config_keys_owned_by("goal_environment") | {
+    "provider",
+    "env_id",
+}
+GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = train_config_keys_owned_by("goal_objective")
 
 
 def _contains_secret_key(value: Any, path: str = "") -> str | None:
@@ -122,8 +105,7 @@ def _document_train_environment(document: Mapping[str, Any]) -> Mapping[str, Any
         train_environment = train_section.get("environment")
         if isinstance(train_environment, Mapping):
             return train_environment
-    environment = document.get("environment")
-    return environment if isinstance(environment, Mapping) else None
+    return None
 
 
 def _without_keys(value: Mapping[str, Any], keys: frozenset[str]) -> dict[str, Any]:
@@ -185,7 +167,7 @@ def _train_config_section_value(
 
 
 def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[str, Any]:
-    config = train_config_from_environment(environment)
+    config = train_config_from_source_environment(environment)
     direct_items = {
         key: copy.deepcopy(value)
         for key, value in environment.items()
@@ -217,7 +199,7 @@ def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, An
     policy = {
         key: copy.deepcopy(value)
         for key, value in section.items()
-        if key not in TRAIN_NESTED_SECTION_KEYS
+        if key in GOAL_TRAIN_CONFIG_KEYS
     }
     nested_policy = section.get("policy")
     if isinstance(nested_policy, Mapping):
@@ -259,8 +241,6 @@ def _merge_train_config_sections(
 ) -> dict[str, Any]:
     strip_goal_owned = goal_document is not None
     train_config: dict[str, Any] = _goal_train_defaults(goal_document or {})
-    if not train_config:
-        train_config = train_config_from_environment(_document_train_environment(document))
     for key in TRAIN_CONFIG_SECTION_KEYS:
         value = _train_config_section_value(document, key, strip_goal_owned=strip_goal_owned)
         if isinstance(value, Mapping):
@@ -269,15 +249,6 @@ def _merge_train_config_sections(
         explicit_environment = _explicit_train_environment_config(document)
         if isinstance(explicit_environment, Mapping):
             train_config = deep_merge(train_config, explicit_environment)
-
-    existing_train_config = document.get("train_config")
-    if isinstance(existing_train_config, Mapping):
-        if strip_goal_owned:
-            existing_train_config = _without_keys(
-                existing_train_config,
-                GOAL_OWNED_ENV_CONFIG_KEYS | GOAL_OWNED_OBJECTIVE_CONFIG_KEYS,
-            )
-        train_config = deep_merge(train_config, existing_train_config)
 
     return train_config
 
@@ -415,6 +386,14 @@ def materialize_train_recipe_document(
     goal_composition: ComposedDocument | None = None,
 ) -> dict[str, Any]:
     materialized = copy.deepcopy(dict(document))
+    source_sections = [key for key in TRAIN_CONFIG_SECTION_KEYS if key in materialized]
+    if isinstance(materialized.get("train_config"), Mapping):
+        if source_sections:
+            raise ValueError(
+                "recipe cannot mix compiled train_config with source section(s): "
+                + ", ".join(source_sections)
+            )
+        return materialized
     normalized_train = _normalized_train_section(materialized.get("train"))
     if normalized_train:
         materialized["train"] = normalized_train
@@ -452,8 +431,32 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
             assert_no_template_vars(nested, label=f"{label}[{index}]")
 
 
+def validate_source_recipe_shape(document: Mapping[str, Any], *, label: str) -> None:
+    retired = sorted(set(document) & {"environment", "reward", "train_config"})
+    if retired:
+        raise ValueError(
+            f"{label} uses compiled or retired source field(s): {', '.join(retired)}; "
+            "author recipes with train.environment, train.policy, and logging"
+        )
+    train = document.get("train")
+    if train is None:
+        return
+    if not isinstance(train, Mapping):
+        raise ValueError(f"{label}.train must be an object")
+    unexpected = sorted(set(train) - TRAIN_NESTED_SECTION_KEYS - GOAL_TRAIN_CONFIG_KEYS)
+    if unexpected:
+        raise ValueError(
+            f"{label}.train uses unsupported flat field(s): {', '.join(unexpected)}; "
+            "put policy options under train.policy"
+        )
+
+
 def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) -> dict[str, Any]:
     _reject_active_specs_path(path)
+    validate_source_recipe_shape(
+        load_mapping_document(path, label=f"recipe file {path}"),
+        label=f"recipe file {path}",
+    )
     recipe_override_list = [str(item).strip() for item in recipe_overrides if str(item).strip()]
     composed = load_composed_mapping(
         path,
@@ -466,6 +469,7 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
         label=f"recipe file {path}",
         deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
     )
+    validate_source_recipe_shape(document, label=f"composed recipe file {path}")
     sources = list(composed.sources)
     embedded_goal = document.get("goal")
     goal_composition = (
