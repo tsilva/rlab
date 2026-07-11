@@ -1458,6 +1458,7 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/60/436356477a1bce8651dd14f635bb37d3733a28d1c1011ebbcf2760ace9f6/stable_retro_turbo-1.0.1.post18-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:20ddd77e34f4efd4a0dc5f912aed0cf4d9dd9ec2d61a77840985ca4f7f5be7f6", size = 85918704, upload-time = "2026-07-11T19:22:11.941Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/d9/f4caa020767c6760c48209315c5c21fdb264912f5f78107ce8b7e0584d6c/stable_retro_turbo-1.0.1.post18-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:018a732e9f5dde0b6f91f908529c60ebe2829e1018ba89d26f7a063df33489bd", size = 91590657, upload-time = "2026-07-11T19:22:16.004Z" },
 ]
 
 [[package]]
