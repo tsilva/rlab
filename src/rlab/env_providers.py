@@ -394,15 +394,20 @@ class _AleManualResetAdapter:
                 dtype=np.int64,
             )
         # AtariVectorEnv.reset forwards NumPy arrays to the nanobind-backed
-        # ALEVectorInterface.  Its Python 3.14 binding accepts only sequences,
-        # despite AtariVectorEnv documenting ndarray seeds.  Call the same
-        # underlying reset with ordinary Python lists so masked resets work on
-        # both bindings without changing the provider contract.
+        # ALEVectorInterface. Its Linux Python 3.14 binding accepts only signed
+        # 32-bit sequence elements, despite AtariVectorEnv documenting ndarray
+        # seeds. Call the same underlying reset with ordinary Python lists and
+        # fold rlab's uint32 episode seeds into the accepted non-negative range.
         native_ale = getattr(self.env, "ale", None)
         native_reset = getattr(native_ale, "reset", None)
         if callable(native_reset) and isinstance(compact_seed, np.ndarray):
             reset_indices = np.flatnonzero(mask).tolist()
-            result = native_reset(reset_indices, compact_seed.tolist())
+            max_ale_seed = np.iinfo(np.int32).max
+            reset_seeds = [
+                value if (value := int(seed_value)) < 0 else value % max_ale_seed
+                for seed_value in compact_seed
+            ]
+            result = native_reset(reset_indices, reset_seeds)
         else:
             result = self.env.reset(seed=compact_seed, options=reset_options)
         self._observations = np.asarray(result[0])

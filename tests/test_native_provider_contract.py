@@ -393,11 +393,11 @@ class AleManualLifecycleTests(unittest.TestCase):
         fake = FakeAle()
         env = _AleManualResetAdapter(fake)
         env.reset(
-            seed=[7, None],
+            seed=[2**31, None],
             options={"reset_mask": np.asarray([True, False], dtype=np.bool_)},
         )
 
-        self.assertEqual(fake.ale.calls, [([0], [7])])
+        self.assertEqual(fake.ale.calls, [([0], [1])])
 
     def test_next_step_engine_cannot_autoreset_behind_runtime(self) -> None:
         class FakeAle:
