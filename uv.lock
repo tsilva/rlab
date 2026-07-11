@@ -17,8 +17,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-10T21:30:05Z"
-stable-retro-turbo = "2026-07-10T21:30:05Z"
+supermariobrosnes-turbo = "2026-07-11T07:06:36Z"
+stable-retro-turbo = "2026-07-11T07:06:36Z"
 
 [manifest]
 constraints = [
@@ -1207,15 +1207,15 @@ wheels = [
 
 [[package]]
 name = "supermariobrosnes-turbo"
-version = "0.2.21"
+version = "0.2.23"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gymnasium", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "numpy", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/6d/28efe303a69c22269db552d780bfd8c32ad13b56048df5f1c2db2dd278bb/supermariobrosnes_turbo-0.2.21-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:214bab500b3ec4d83fb18b69a0864e00ca14f0f76be9148cfec5f3fbf472f968", size = 425076, upload-time = "2026-07-10T16:42:55.968Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/1b/b84240ec79dd06810c5b9ebc7e0e85c398b715f15bf6dd030c9f203f6aa8/supermariobrosnes_turbo-0.2.21-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3a0af357b1a6638e74b8259d525bb96486db018c00b0185336aee1f0ed359d53", size = 464419, upload-time = "2026-07-10T16:42:57.539Z" },
+    { url = "https://files.pythonhosted.org/packages/49/ac/aa977722ce9bbfd5d39f488907646e3a4501d9a9425dbb458ebb778a18c0/supermariobrosnes_turbo-0.2.23-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:d69c0f043e5680fe8568cda51042b0f1cbb482c12413fccbb6461d1a9812c6bc", size = 427135, upload-time = "2026-07-10T22:03:12.736Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/9c/87ea3c010dbdd82843d28e4fe5a280b68cbf3f3275518d79e927b137d1ac/supermariobrosnes_turbo-0.2.23-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:546d0a968e98bb1c013ce0221348f9f95dc88f0d8a314d68026a6bda0c8c4471", size = 466746, upload-time = "2026-07-10T22:03:14.517Z" },
 ]
 
 [[package]]
