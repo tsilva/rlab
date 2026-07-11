@@ -368,6 +368,37 @@ class MarioNativeProviderTests(unittest.TestCase):
 
 
 class AleManualLifecycleTests(unittest.TestCase):
+    def test_masked_reset_uses_sequence_arguments_for_native_ale_binding(self) -> None:
+        class RawAle:
+            def __init__(self):
+                self.calls: list[tuple[list[int], list[int]]] = []
+
+            def reset(self, reset_indices, reset_seeds):
+                self.calls.append((reset_indices, reset_seeds))
+                return np.zeros((2, 1), dtype=np.uint8), {}
+
+        class FakeAle:
+            num_envs = 2
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP}
+
+            def __init__(self):
+                self.ale = RawAle()
+
+            def reset(self, *, seed=None, options=None):
+                raise AssertionError("adapter must call the native ALE reset")
+
+            def close(self):
+                return None
+
+        fake = FakeAle()
+        env = _AleManualResetAdapter(fake)
+        env.reset(
+            seed=[7, None],
+            options={"reset_mask": np.asarray([True, False], dtype=np.bool_)},
+        )
+
+        self.assertEqual(fake.ale.calls, [([0], [7])])
+
     def test_next_step_engine_cannot_autoreset_behind_runtime(self) -> None:
         class FakeAle:
             num_envs = 2
