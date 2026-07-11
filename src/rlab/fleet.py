@@ -16,6 +16,7 @@ from typing import Any
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
+    adopt_successful_train_launch,
     active_job_launches,
     claim_job_launch,
     connect,
@@ -1083,8 +1084,12 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
     launches = active_job_launches(conn, machine=machine.name)
     containers = {container.launch_id: container for container in list_job_containers(machine)}
     reconciled = 0
+    released_launch_ids: set[str] = set()
     for launch in launches:
         launch_id = str(launch["launch_id"])
+        if launch_id in released_launch_ids:
+            reconciled += 1
+            continue
         container = containers.get(launch_id)
         if container is None:
             result = read_remote_result(machine, str(launch["output_uri"]))
@@ -1152,6 +1157,32 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
             continue
         result = read_remote_result(machine, str(launch["output_uri"]))
         if result is not None:
+            if str(result.get("status")) == "succeeded":
+                superseded = tuple(
+                    str(candidate["launch_id"])
+                    for candidate in launches
+                    if candidate["job_id"] == launch["job_id"]
+                    and candidate["launch_id"] != launch_id
+                    and (
+                        (sibling := containers.get(str(candidate["launch_id"]))) is None
+                        or sibling.state not in {"created", "restarting", "running"}
+                    )
+                )
+                if superseded:
+                    released = adopt_successful_train_launch(
+                        conn,
+                        launch_id=launch_id,
+                        superseded_launch_ids=superseded,
+                    )
+                    released_launch_ids.update(released)
+                    log_shepherd_event(
+                        machine=machine.name,
+                        action="supersede",
+                        result="ok",
+                        launch_id=launch_id,
+                        released=",".join(released),
+                        color=color,
+                    )
             finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
             log_shepherd_event(
                 machine=machine.name,

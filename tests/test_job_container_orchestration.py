@@ -231,6 +231,67 @@ class FleetShepherdSplitTests(unittest.TestCase):
         self.assertIn("\033[", color_output)
         self.assertIn("ok", color_output)
 
+    def test_reconcile_finalizes_successful_launch_after_inactive_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "machines.yaml"
+            write_registry(path)
+            machine = resolve_machine(load_machine_registry(path), "beast-test")
+        successful = {
+            "launch_id": "launch-success",
+            "job_id": 12,
+            "job_kind": "train",
+            "output_uri": "/out/success",
+        }
+        duplicate = {
+            "launch_id": "launch-duplicate",
+            "job_id": 12,
+            "job_kind": "train",
+            "output_uri": "/out/duplicate",
+        }
+        containers = [
+            fleet.JobContainer(
+                machine="beast-test",
+                name="success",
+                state="exited",
+                status="Exited (0)",
+                labels={fleet.LAUNCH_ID_LABEL: "launch-success"},
+            ),
+            fleet.JobContainer(
+                machine="beast-test",
+                name="duplicate",
+                state="exited",
+                status="Exited (137)",
+                labels={fleet.LAUNCH_ID_LABEL: "launch-duplicate"},
+            ),
+        ]
+        result = {"job_kind": "train", "status": "succeeded", "exit_code": 0}
+
+        with (
+            mock.patch.object(fleet, "active_job_launches", return_value=[successful, duplicate]),
+            mock.patch.object(fleet, "list_job_containers", return_value=containers),
+            mock.patch.object(
+                fleet,
+                "read_remote_result",
+                side_effect=lambda _machine, output_uri: result if output_uri == "/out/success" else None,
+            ),
+            mock.patch.object(
+                fleet,
+                "adopt_successful_train_launch",
+                return_value=("launch-duplicate",),
+            ) as adopt,
+            mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
+            mock.patch.object(fleet, "log_shepherd_event"),
+        ):
+            reconciled = fleet.reconcile_machine_launches(FakeConnection(), machine, color=False)
+
+        self.assertEqual(reconciled, 2)
+        adopt.assert_called_once_with(
+            mock.ANY,
+            launch_id="launch-success",
+            superseded_launch_ids=("launch-duplicate",),
+        )
+        finish.assert_called_once_with(mock.ANY, launch_id="launch-success", result=result)
+
     def test_shepherd_once_reconciles_then_fills_slots_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "machines.yaml"

@@ -754,6 +754,69 @@ def release_job_launch(
             return dict(launch)
 
 
+def adopt_successful_train_launch(
+    conn,
+    *,
+    launch_id: str,
+    superseded_launch_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Make a successful launch finalizable after inactive duplicate launches."""
+    superseded = tuple(str(value) for value in superseded_launch_ids if str(value) != launch_id)
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM job_launches
+                WHERE launch_id = %(launch_id)s
+                  AND job_kind = 'train'
+                  AND state IN ('launching', 'running')
+                FOR UPDATE
+                """,
+                {"launch_id": launch_id},
+            )
+            launch = cur.fetchone()
+            if not launch:
+                raise RuntimeError(f"active train launch not found: {launch_id}")
+            job_id = int(launch["job_id"])
+            if superseded:
+                cur.execute(
+                    """
+                    UPDATE job_launches
+                    SET state = 'released',
+                        error = %(error)s,
+                        last_observed_at = now(),
+                        finished_at = now()
+                    WHERE job_id = %(job_id)s
+                      AND launch_id = ANY(%(launch_ids)s)
+                      AND state IN ('launching', 'running')
+                    RETURNING launch_id
+                    """,
+                    {
+                        "job_id": job_id,
+                        "launch_ids": list(superseded),
+                        "error": f"superseded by successful launch {launch_id}",
+                    },
+                )
+                released = tuple(str(row["launch_id"]) for row in cur.fetchall())
+            else:
+                released = ()
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET lease_owner = %(launch_id)s,
+                    heartbeat_at = now()
+                WHERE id = %(job_id)s
+                  AND status IN ('launching', 'running')
+                RETURNING id
+                """,
+                {"job_id": job_id, "launch_id": launch_id},
+            )
+            if not cur.fetchone():
+                raise RuntimeError(f"active train job not found for launch {launch_id}")
+            return released
+
+
 def active_job_launches(
     conn,
     *,
