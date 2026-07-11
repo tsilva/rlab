@@ -11,7 +11,6 @@ import stable_retro as retro
 from rlab import env_providers as provider_runtime
 from rlab.batch_runtime import BatchRuntime, ProviderDescriptor, RlabVecEnv
 from rlab.env_providers import (
-    DEFAULT_ATARI_VEC_ENV as AtariVecEnv,
     DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
     ale_py_atari_vector_env_type as _ale_py_atari_vector_env_type,
     provider_descriptor,
@@ -271,7 +270,6 @@ def make_provider_vec_env(config: EnvConfig, *, native_kwargs: Mapping[str, Any]
         config,
         native_kwargs=native_kwargs,
         retro_vec_env_type=RetroVecEnv,
-        atari_vec_env_type=AtariVecEnv,
         super_mario_vec_env_type=_super_mario_bros_nes_turbo_vec_env_type,
         ale_py_vec_env_type=_ale_py_atari_vector_env_type,
     )

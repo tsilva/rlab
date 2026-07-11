@@ -9,6 +9,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Mapping
+from dataclasses import replace
 from itertools import count
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -46,6 +47,7 @@ from rlab.eval_metrics import (
     is_level_complete,
     single_env_action,
 )
+from rlab.env_registry import ALE_PY_PROVIDER, is_stable_retro_atari_env
 from rlab.model_sources import (
     model_source_ref,
     positional_model_source_arg,
@@ -307,6 +309,13 @@ def playback_should_end_episode(terminated: bool, truncated: bool, completed: bo
     # the environment actually terminates or truncates the episode.
     del completed
     return bool(terminated or truncated)
+
+
+def playback_step_indices(max_episode_steps: int):
+    """Iterate forever when zero denotes an unbounded episode."""
+    if max_episode_steps <= 0:
+        return count()
+    return range(max_episode_steps)
 
 
 def vector_env_frame(env) -> np.ndarray:
@@ -586,6 +595,36 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def display_replay_config(config):
+    env_args = dict(config.env_args or {})
+    if is_stable_retro_atari_env(config.env_provider, config.game):
+        env_args.update(
+            {
+                "obs_resize": (210, 160),
+                "obs_grayscale": False,
+                "frame_stack": 1,
+            }
+        )
+        return replace(
+            config,
+            env_args=env_args,
+            obs_crop=(0, 0, 0, 0),
+            hud_crop_top=0,
+        )
+    if config.env_provider == ALE_PY_PROVIDER.provider_id:
+        env_args.update(
+            {
+                "img_height": 210,
+                "img_width": 160,
+                "grayscale": False,
+                "stack_num": 1,
+            }
+        )
+        return replace(
+            config,
+            env_args=env_args,
+            obs_crop=(0, 0, 0, 0),
+            hud_crop_top=0,
+        )
     return config
 
 
@@ -705,7 +744,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Downloaded model: {args.model}", flush=True)
     artifact_config = load_playback_env_config(source.model_path)
     config = playback_runtime_config(artifact_config)
-    display_config = artifact_config
+    display_config = display_replay_config(artifact_config)
     print_resolved_play_launch(
         args,
         argv=argv_list,
@@ -879,7 +918,7 @@ def main(argv: list[str] | None = None) -> None:
             max_x_pos = 0
             final_info = {}
             max_episode_steps = task_max_episode_steps(config)
-            for step_idx in range(max_episode_steps):
+            for step_idx in playback_step_indices(max_episode_steps):
                 if not wait_for_step(frame, overlay):
                     return
                 image_obs = fast_env_obs(policy_obs)

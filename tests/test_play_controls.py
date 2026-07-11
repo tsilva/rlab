@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from itertools import islice
 from types import SimpleNamespace
 
 import numpy as np
 
 from rlab.env import EnvConfig
-from rlab.play import StepOverControls, playback_runtime_config, vector_env_frame
+from rlab.play import (
+    StepOverControls,
+    playback_runtime_config,
+    playback_step_indices,
+    vector_env_frame,
+)
 
 
 def test_step_over_controls_advance_once_on_space_press() -> None:
@@ -59,6 +65,14 @@ def test_playback_runtime_config_requests_clean_mario_completion_records() -> No
 
     assert configured.task["termination"]["success"] == ["level_change"]
     assert original.task["termination"]["success"] == []
+
+
+def test_zero_max_episode_steps_keeps_playback_running() -> None:
+    assert list(islice(playback_step_indices(0), 4)) == [0, 1, 2, 3]
+
+
+def test_positive_max_episode_steps_caps_playback() -> None:
+    assert list(playback_step_indices(3)) == [0, 1, 2]
 
 
 def test_vector_env_frame_returns_owned_lane_frame() -> None:

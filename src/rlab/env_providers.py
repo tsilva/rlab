@@ -7,7 +7,6 @@ import numpy as np
 import gymnasium as gym
 
 from gymnasium.vector import AutoresetMode
-from stable_retro import AtariVecEnv as DEFAULT_ATARI_VEC_ENV
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
 from rlab.batch_runtime import ProviderDescriptor, SignalSpec
@@ -133,6 +132,17 @@ def ale_py_atari_vector_env_type():
             "ale-py provider requires ale-py with native vector env support",
         ) from exc
     return AtariVectorEnv
+
+
+def stable_retro_atari_vec_env_type():
+    try:
+        from stable_retro import AtariVecEnv
+    except ImportError as exc:
+        raise ImportError(
+            "stable-retro-turbo Atari environments require "
+            "stable-retro-turbo>=1.0.1.post18"
+        ) from exc
+    return AtariVecEnv
 
 
 def provider_native_vec_kwargs(
@@ -535,13 +545,20 @@ class _StableRetroAtariAdapter:
         if self._observations is None:
             return []
         observations = self._observations
-        if observations.ndim != 4:
+        if observations.ndim == 5 and observations.shape[-1] in (1, 3, 4):
+            frames = observations[:, -1]
+        elif observations.ndim == 4 and observations.shape[-1] in (1, 3, 4):
+            frames = observations
+        elif observations.ndim == 4:
+            frames = observations[:, -1]
+        else:
             raise ValueError(
                 f"unsupported stable-retro Atari observation shape: {observations.shape}"
             )
-        frames = observations[:, -1]
         if frames.ndim == 3:
             frames = np.repeat(frames[..., None], 3, axis=-1)
+        elif frames.ndim == 4 and frames.shape[-1] == 1:
+            frames = np.repeat(frames, 3, axis=-1)
         return [np.asarray(frame) for frame in frames]
 
     def close(self):
@@ -553,10 +570,12 @@ def _stable_retro_turbo_make_vec_env(
     *,
     native_kwargs: Mapping[str, Any],
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
-    atari_vec_env_type=DEFAULT_ATARI_VEC_ENV,
+    atari_vec_env_type=None,
 ):
     _require_provider(config, STABLE_RETRO_TURBO_PROVIDER.provider_id)
     if is_stable_retro_atari_env(config.env_provider, config.game):
+        if atari_vec_env_type is None:
+            atari_vec_env_type = stable_retro_atari_vec_env_type()
         kwargs = dict(native_kwargs)
         kwargs["autoreset_mode"] = AutoresetMode.SAME_STEP
         env = atari_vec_env_type(
@@ -611,7 +630,7 @@ def make_provider_vec_env(
     *,
     native_kwargs: Mapping[str, Any],
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
-    atari_vec_env_type=DEFAULT_ATARI_VEC_ENV,
+    atari_vec_env_type=None,
     super_mario_vec_env_type=super_mario_bros_nes_turbo_vec_env_type,
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
 ):

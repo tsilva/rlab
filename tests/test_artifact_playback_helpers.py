@@ -760,6 +760,45 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
 
+    def test_stable_retro_atari_display_uses_native_resolution_rgb(self) -> None:
+        policy_config = EnvConfig(
+            env_provider="stable-retro-turbo",
+            game="Breakout-Atari2600-v0",
+            env_args={"num_threads": 2, "maxpool_last_two": True},
+        )
+
+        config = display_replay_config(policy_config)
+
+        self.assertEqual(config.env_provider, policy_config.env_provider)
+        self.assertEqual(config.env_args["obs_resize"], (210, 160))
+        self.assertFalse(config.env_args["obs_grayscale"])
+        self.assertEqual(config.env_args["frame_stack"], 1)
+        self.assertTrue(config.env_args["maxpool_last_two"])
+        self.assertEqual(config.env_args["num_threads"], 2)
+        self.assertEqual(config.obs_crop, (0, 0, 0, 0))
+        self.assertEqual(config.hud_crop_top, 0)
+        self.assertEqual(
+            policy_config.env_args,
+            {"num_threads": 2, "maxpool_last_two": True},
+        )
+
+    def test_ale_py_display_uses_native_resolution_rgb(self) -> None:
+        policy_config = EnvConfig(
+            env_provider="ale-py",
+            game="breakout",
+            env_args={"maxpool": True},
+        )
+
+        config = display_replay_config(policy_config)
+
+        self.assertEqual(config.env_args["img_height"], 210)
+        self.assertEqual(config.env_args["img_width"], 160)
+        self.assertFalse(config.env_args["grayscale"])
+        self.assertEqual(config.env_args["stack_num"], 1)
+        self.assertTrue(config.env_args["maxpool"])
+        self.assertEqual(config.obs_crop, (0, 0, 0, 0))
+        self.assertEqual(config.hud_crop_top, 0)
+
     def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
         args = argparse.Namespace(
             artifact_ref="run",

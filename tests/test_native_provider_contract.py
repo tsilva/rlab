@@ -9,6 +9,7 @@ import numpy as np
 from rlab.env import EnvConfig
 from rlab.env_providers import (
     _AleManualResetAdapter,
+    _StableRetroAtariAdapter,
     _StartInfoAdapter,
     make_provider_vec_env,
     provider_descriptor,
@@ -519,6 +520,29 @@ class AleManualLifecycleTests(unittest.TestCase):
 
         self.assertEqual([frame.shape for frame in frames], [(3, 5, 3), (3, 5, 3)])
         np.testing.assert_array_equal(frames[0][..., 0], frames[0][..., 1])
+
+    def test_stable_retro_atari_rgb_stack_is_rendered_in_color(self) -> None:
+        class FakeAtari:
+            num_envs = 1
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.SAME_STEP}
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                observations = np.zeros((1, 1, 3, 5, 3), dtype=np.uint8)
+                observations[..., 0] = 17
+                observations[..., 1] = 29
+                observations[..., 2] = 41
+                return observations, {}
+
+            def close(self):
+                return None
+
+        env = _StableRetroAtariAdapter(FakeAtari())
+        env.reset()
+        frames = env.get_images()
+
+        self.assertEqual(frames[0].shape, (3, 5, 3))
+        np.testing.assert_array_equal(frames[0][0, 0], np.asarray([17, 29, 41]))
 
 
 if __name__ == "__main__":
