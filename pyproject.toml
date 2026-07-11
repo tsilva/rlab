@@ -5,8 +5,8 @@ description = "Generic reinforcement-learning lab for training and evaluating ga
 readme = "README.md"
 requires-python = "==3.14.*"
 dependencies = [
-    "stable-retro-turbo>=1.0.1.post18; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "stable-retro-turbo>=1.0.1.post18; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "stable-retro-turbo==1.0.1.post19; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "stable-retro-turbo==1.0.1.post19; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "supermariobrosnes-turbo>=0.2.21; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "supermariobrosnes-turbo>=0.2.21; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
@@ -40,7 +40,7 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-stable-retro-turbo = "2026-07-11T19:22:16Z"
+stable-retro-turbo = "2026-07-11T21:45:26Z"
 supermariobrosnes-turbo = "2026-07-11T07:06:36Z"
 
 [tool.ruff]

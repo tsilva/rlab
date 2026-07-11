@@ -160,7 +160,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
         self.assertGreaterEqual(installed, Version("0.2.21"))
         installed_retro = Version(importlib.metadata.version("stable-retro-turbo"))
-        self.assertGreaterEqual(installed_retro, Version("1.0.1.post18"))
+        self.assertEqual(installed_retro, Version("1.0.1.post19"))
 
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:
@@ -369,16 +369,18 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_stable_retro_atari_uses_atari_vec_env_contract(self) -> None:
         class ManualAtariVectorEnv:
-            metadata = {"autoreset_mode": gym.vector.AutoresetMode.SAME_STEP}
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
             def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
-                if autoreset_mode is not gym.vector.AutoresetMode.SAME_STEP:
-                    raise ValueError("Atari backend requires same-step autoreset")
+                if autoreset_mode is not gym.vector.AutoresetMode.DISABLED:
+                    raise ValueError("Atari backend requires disabled autoreset")
                 self.game = game
                 self.num_envs = num_envs
                 self.autoreset_mode = autoreset_mode
                 self.kwargs = kwargs
                 self.reset_calls = 0
+                self.reset_masks = []
+                self.observations = np.zeros((num_envs, 4, 84, 84), dtype=np.uint8)
                 self.single_observation_space = gym.spaces.Box(
                     0, 255, shape=(4, 84, 84), dtype=np.uint8
                 )
@@ -391,22 +393,27 @@ class MarioNativeProviderTests(unittest.TestCase):
                 )
 
             def reset(self, *, seed=None, options=None):
-                del seed, options
+                del seed
                 self.reset_calls += 1
-                return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), {}
+                options = dict(options or {})
+                mask = np.asarray(
+                    options.get("reset_mask", np.ones(self.num_envs, dtype=np.bool_)),
+                    dtype=np.bool_,
+                )
+                self.reset_masks.append(mask.copy())
+                self.observations[mask] = 0
+                return self.observations.copy(), {}
 
             def step(self, actions):
                 del actions
-                observations = np.full(
-                    (self.num_envs, 4, 84, 84), 2, dtype=np.uint8
-                )
-                final_observations = np.full_like(observations, 9)
+                self.observations.fill(2)
+                self.observations[0] = 9
                 return (
-                    observations,
+                    self.observations.copy(),
                     np.zeros(self.num_envs, dtype=np.float32),
                     np.asarray([True] + [False] * (self.num_envs - 1)),
                     np.zeros(self.num_envs, dtype=np.bool_),
-                    {"final_obs": final_observations},
+                    {},
                 )
 
             def close(self):
@@ -454,13 +461,15 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertTrue(terminated[0])
         self.assertEqual(int(observations[0, 0, 0, 0]), 9)
         self.assertEqual(int(observations[1, 0, 0, 0]), 2)
-        self.assertNotIn("final_obs", infos)
+        self.assertEqual(infos, {})
         reset_observations, _reset_infos = env.reset(
             seed=[124] + [None] * 15,
             options={"reset_mask": np.asarray([True] + [False] * 15)},
         )
-        self.assertEqual(int(reset_observations[0, 0, 0, 0]), 2)
-        self.assertEqual(env.reset_calls, 1)
+        self.assertEqual(int(reset_observations[0, 0, 0, 0]), 0)
+        self.assertEqual(int(reset_observations[1, 0, 0, 0]), 2)
+        self.assertEqual(env.reset_calls, 2)
+        np.testing.assert_array_equal(env.reset_masks[-1], [True] + [False] * 15)
 
 
 class AleManualLifecycleTests(unittest.TestCase):
@@ -524,7 +533,7 @@ class AleManualLifecycleTests(unittest.TestCase):
     def test_stable_retro_atari_rgb_stack_is_rendered_in_color(self) -> None:
         class FakeAtari:
             num_envs = 1
-            metadata = {"autoreset_mode": gym.vector.AutoresetMode.SAME_STEP}
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
             def reset(self, *, seed=None, options=None):
                 del seed, options

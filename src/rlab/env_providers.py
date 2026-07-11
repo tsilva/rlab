@@ -140,7 +140,7 @@ def stable_retro_atari_vec_env_type():
     except ImportError as exc:
         raise ImportError(
             "stable-retro-turbo Atari environments require "
-            "stable-retro-turbo>=1.0.1.post18"
+            "stable-retro-turbo==1.0.1.post19"
         ) from exc
     return AtariVecEnv
 
@@ -464,16 +464,10 @@ class _AleManualResetAdapter:
 
 
 class _StableRetroAtariAdapter:
-    """Expose AtariVecEnv same-step resets through rlab's manual lifecycle."""
+    """Cache Atari observations for rendering without changing its manual lifecycle."""
 
     def __init__(self, env: Any):
         self.env = env
-        self.autoreset_mode = AutoresetMode.DISABLED
-        self.metadata = dict(getattr(env, "metadata", {}))
-        self.metadata["autoreset_mode"] = AutoresetMode.DISABLED
-        self._pending_reset = np.zeros(env.num_envs, dtype=np.bool_)
-        self._reset_observations: np.ndarray | None = None
-        self._reset_infos: Mapping[str, Any] | None = None
         self._observations: np.ndarray | None = None
 
     def __getattr__(self, name: str) -> Any:
@@ -482,64 +476,14 @@ class _StableRetroAtariAdapter:
         return getattr(self.env, name)
 
     def reset(self, *, seed=None, options=None):
-        reset_options = dict(options or {})
-        mask = np.asarray(
-            reset_options.get("reset_mask", np.ones(self.env.num_envs, dtype=np.bool_)),
-            dtype=np.bool_,
-        )
-        if np.any(self._pending_reset):
-            if not np.array_equal(mask, self._pending_reset):
-                raise RuntimeError(
-                    "stable-retro Atari reset mask must match the lanes autoreset by the last step"
-                )
-            if self._reset_observations is None or self._reset_infos is None:
-                raise RuntimeError("stable-retro Atari reset cache is unavailable")
-            observations = self._reset_observations
-            infos = self._reset_infos
-            self._pending_reset[:] = False
-            self._reset_observations = None
-            self._reset_infos = None
-            return observations, infos
-        if not np.all(mask):
-            raise RuntimeError(
-                "stable-retro Atari cannot partially reset lanes before a native same-step reset"
-            )
-        native_seed = seed
-        if isinstance(seed, (list, tuple)):
-            native_seed = np.asarray(
-                [-1 if value is None else int(value) for value in seed],
-                dtype=np.int64,
-            )
-        observations, infos = self.env.reset(seed=native_seed, options=reset_options)
+        observations, infos = self.env.reset(seed=seed, options=options)
         self._observations = np.asarray(observations)
         return observations, infos
 
     def step(self, actions):
-        if np.any(self._pending_reset):
-            raise RuntimeError("stable-retro Atari done lanes must be consumed by reset before step")
-        observations, rewards, terminated, truncated, infos = self.env.step(actions)
-        autoreset_observations = np.asarray(observations)
-        self._observations = autoreset_observations
-        dones = np.asarray(terminated, dtype=np.bool_) | np.asarray(truncated, dtype=np.bool_)
-        if not np.any(dones):
-            return observations, rewards, terminated, truncated, infos
-        if not isinstance(infos, Mapping) or "final_obs" not in infos:
-            raise RuntimeError(
-                "stable-retro Atari same-step autoreset must expose final_obs for done lanes"
-            )
-        result_infos = dict(infos)
-        final_observations = np.asarray(result_infos.pop("final_obs"))
-        if final_observations.shape != autoreset_observations.shape:
-            raise RuntimeError(
-                "stable-retro Atari final_obs shape does not match batched observations: "
-                f"{final_observations.shape} != {autoreset_observations.shape}"
-            )
-        terminal_observations = autoreset_observations.copy()
-        terminal_observations[dones] = final_observations[dones]
-        self._pending_reset[:] = dones
-        self._reset_observations = autoreset_observations
-        self._reset_infos = result_infos
-        return terminal_observations, rewards, terminated, truncated, result_infos
+        result = self.env.step(actions)
+        self._observations = np.asarray(result[0])
+        return result
 
     def get_images(self):
         if self._observations is None:
@@ -576,12 +520,11 @@ def _stable_retro_turbo_make_vec_env(
     if is_stable_retro_atari_env(config.env_provider, config.game):
         if atari_vec_env_type is None:
             atari_vec_env_type = stable_retro_atari_vec_env_type()
-        kwargs = dict(native_kwargs)
-        kwargs["autoreset_mode"] = AutoresetMode.SAME_STEP
         env = atari_vec_env_type(
             config.game,
-            **kwargs,
+            **_disabled_autoreset_kwargs(native_kwargs),
         )
+        env = _require_disabled_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
         return _StableRetroAtariAdapter(env)
     env_type = retro_vec_env_type
     env = env_type(
