@@ -393,16 +393,6 @@ class _AleManualResetAdapter:
                 [-1 if seed[index] is None else int(seed[index]) for index in np.flatnonzero(mask)],
                 dtype=np.int64,
             )
-        # ALE's Linux Python 3.14 binding accepts only signed 32-bit seed
-        # values, while rlab's episode seeds span uint32. Preserve its native
-        # masked-reset lifecycle and fold only non-negative seeds into the
-        # accepted range before calling the public wrapper.
-        if isinstance(compact_seed, np.ndarray):
-            max_ale_seed = np.iinfo(np.int32).max
-            compact_seed = np.asarray([
-                value if (value := int(seed_value)) < 0 else value % max_ale_seed
-                for seed_value in compact_seed
-            ], dtype=np.int32)
         result = self.env.reset(seed=compact_seed, options=reset_options)
         self._observations = np.asarray(result[0])
         self._pending_reset[mask] = False
@@ -477,14 +467,8 @@ def _ale_py_make_vec_env(
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
 ):
     _require_provider(config, ALE_PY_PROVIDER.provider_id)
-    kwargs = dict(native_kwargs)
-    if int(kwargs["num_envs"]) > 1:
-        raise RuntimeError(
-            "ale-py AtariVectorEnv cannot satisfy rlab's masked manual-reset contract "
-            "with more than one lane: its fixed-size native batch blocks partial resets. "
-            "Use n_envs=1 until ALE provides a native disabled-autoreset vector backend."
-        )
     env_type = ale_py_vec_env_type()
+    kwargs = dict(native_kwargs)
     kwargs["autoreset_mode"] = AutoresetMode.NEXT_STEP
     env = env_type(
         config.game,

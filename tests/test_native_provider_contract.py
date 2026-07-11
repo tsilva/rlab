@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import unittest
-from types import SimpleNamespace
 
 import gymnasium as gym
 import numpy as np
@@ -11,7 +10,6 @@ from rlab.env import EnvConfig
 from rlab.env_providers import (
     _AleManualResetAdapter,
     _StartInfoAdapter,
-    _ale_py_make_vec_env,
     make_provider_vec_env,
     provider_descriptor,
     provider_native_vec_kwargs,
@@ -370,40 +368,6 @@ class MarioNativeProviderTests(unittest.TestCase):
 
 
 class AleManualLifecycleTests(unittest.TestCase):
-    def test_masked_reset_normalizes_uint32_seed_for_native_wrapper(self) -> None:
-        class FakeAle:
-            num_envs = 2
-            metadata = {"autoreset_mode": gym.vector.AutoresetMode.NEXT_STEP}
-
-            def __init__(self):
-                self.seeds: list[np.ndarray] = []
-
-            def reset(self, *, seed=None, options=None):
-                del options
-                self.seeds.append(np.asarray(seed).copy())
-                return np.zeros((2, 1), dtype=np.uint8), {}
-
-            def close(self):
-                return None
-
-        fake = FakeAle()
-        env = _AleManualResetAdapter(fake)
-        env.reset(
-            seed=[2**31, None],
-            options={"reset_mask": np.asarray([True, False], dtype=np.bool_)},
-        )
-
-        np.testing.assert_array_equal(fake.seeds, [np.asarray([1], dtype=np.int32)])
-
-    def test_rejects_multi_lane_ale_before_native_construction(self) -> None:
-        config = SimpleNamespace(env_provider="ale-py", game="breakout")
-        with self.assertRaisesRegex(RuntimeError, "masked manual-reset contract"):
-            _ale_py_make_vec_env(
-                config,
-                native_kwargs={"num_envs": 2},
-                ale_py_vec_env_type=lambda: self.fail("must not construct ALE"),
-            )
-
     def test_next_step_engine_cannot_autoreset_behind_runtime(self) -> None:
         class FakeAle:
             num_envs = 2
