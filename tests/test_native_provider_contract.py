@@ -415,7 +415,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         config = EnvConfig(
             env_provider="stable-retro-turbo",
             game="Breakout-Atari2600-v0",
-            obs_crop=(34, 0, 0, 0),
+            obs_crop=(17, 0, 0, 0),
             obs_crop_mode="mask",
             sticky_action_prob=0.25,
             env_args={"num_threads": 4, "max_episode_steps": 216_000, "reward_clip": True},

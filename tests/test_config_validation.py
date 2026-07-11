@@ -61,9 +61,16 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
         self.assertNotIn("clip_rewards", train_config)
-        self.assertEqual(train_config["obs_crop"], [34, 0, 0, 0])
+        self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
+        self.assertEqual(
+            document["environment"]["preprocessing"]["obs_crop"], [17, 0, 0, 0]
+        )
+        self.assertEqual(
+            document["goal"]["eval"]["environment"]["preprocessing"]["obs_crop"],
+            [17, 0, 0, 0],
+        )
         self.assertNotIn("obs_resize_algorithm", train_config)
         self.assertEqual(
             document["environment"]["env_id"],
