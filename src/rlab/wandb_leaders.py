@@ -9,38 +9,36 @@ from statistics import mean
 from typing import Any
 
 from rlab.json_utils import json_safe
+from rlab.metric_names import (
+    LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_BEST_REWARD,
+    LEADER_CHECKPOINT_COMPLETION_RATE,
+    LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,
+    LEADER_CHECKPOINT_EVAL_SOURCE,
+    LEADER_CHECKPOINT_MAX_X_MAX,
+    LEADER_CHECKPOINT_OBJECTIVE,
+    LEADER_CHECKPOINT_OBJECTIVE_NAME,
+    LEADER_CHECKPOINT_REWARD_MEAN,
+    LEADER_CHECKPOINT_RANK,
+    LEADER_CHECKPOINT_RANK_VALUES,
+    LEADER_CHECKPOINT_STEP,
+    LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+)
+from rlab.ranking import default_objective_rank, parse_objective_rank, rank_score
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
-RUN_OBJECTIVE_KEYS = (
-    "train/info/level_complete/rate/min/last",
-)
-RUN_PRIMARY_ORDER = "-summary_metrics.train/info/level_complete/rate/min/last"
-CHECKPOINT_COMPLETION_KEYS = (
-    "leader/checkpoint/completion_rate",
-)
-CHECKPOINT_COMPLETION_MEAN_KEYS = (
-    "leader/checkpoint/completion_rate_mean",
-)
-CHECKPOINT_OBJECTIVE_KEYS = (
-    "leader/checkpoint/objective",
-)
-CHECKPOINT_OBJECTIVE_NAME_KEYS = (
-    "leader/checkpoint/objective_name",
-)
-CHECKPOINT_MAX_X_KEYS = (
-    "leader/checkpoint/max_x_max",
-)
-CHECKPOINT_REWARD_KEYS = (
-    "leader/checkpoint/reward_mean",
-)
-CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS = (
-    "leader/checkpoint/steps_to_completion_goal",
-)
-CHECKPOINT_STEP_KEYS = (
-    "leader/checkpoint/step",
-)
-CHECKPOINT_PRIMARY_ORDER = "-summary_metrics.leader/checkpoint/objective"
+RUN_OBJECTIVE_KEYS = (TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,)
+RUN_PRIMARY_ORDER = f"-summary_metrics.{TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}"
+CHECKPOINT_COMPLETION_KEYS = (LEADER_CHECKPOINT_COMPLETION_RATE,)
+CHECKPOINT_COMPLETION_MEAN_KEYS = (LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,)
+CHECKPOINT_OBJECTIVE_KEYS = (LEADER_CHECKPOINT_OBJECTIVE,)
+CHECKPOINT_MAX_X_KEYS = (LEADER_CHECKPOINT_MAX_X_MAX,)
+CHECKPOINT_REWARD_KEYS = (LEADER_CHECKPOINT_REWARD_MEAN,)
+CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS = (LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,)
+CHECKPOINT_STEP_KEYS = (LEADER_CHECKPOINT_STEP,)
+CHECKPOINT_PRIMARY_ORDER = f"-summary_metrics.{LEADER_CHECKPOINT_OBJECTIVE}"
 WANDB_RUNS_PER_PAGE = 200
 
 
@@ -83,6 +81,7 @@ class CheckpointLeader:
     checkpoint_step: int | None
     artifact_ref: str
     eval_source: str
+    rank_score: tuple[float, ...]
 
 
 def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
@@ -174,12 +173,12 @@ def checkpoint_summary_filter() -> dict[str, Any]:
         "$and": [
             {
                 "$or": [
-                    _exists_filter("leader/checkpoint/objective"),
-                    _exists_filter("leader/checkpoint/completion_rate"),
+                    _exists_filter(LEADER_CHECKPOINT_OBJECTIVE),
+                    _exists_filter(LEADER_CHECKPOINT_COMPLETION_RATE),
                 ]
             },
-            _exists_filter("leader/checkpoint/reward_mean"),
-            _exists_filter("leader/checkpoint/artifact_ref"),
+            _exists_filter(LEADER_CHECKPOINT_REWARD_MEAN),
+            _exists_filter(LEADER_CHECKPOINT_ARTIFACT_REF),
         ]
     }
 
@@ -245,20 +244,42 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     completion = _first_float(summary, CHECKPOINT_COMPLETION_KEYS)
     completion_mean = _first_float(summary, CHECKPOINT_COMPLETION_MEAN_KEYS)
     objective = _first_float(summary, CHECKPOINT_OBJECTIVE_KEYS)
-    objective_name = _first_text(_mapping_value(summary, "leader/checkpoint/objective_name"))
+    objective_name = _first_text(_mapping_value(summary, LEADER_CHECKPOINT_OBJECTIVE_NAME))
     max_x = _first_float(summary, CHECKPOINT_MAX_X_KEYS)
     reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
     checkpoint_step = _optional_int(_first_float(summary, CHECKPOINT_STEP_KEYS))
     steps_to_completion_goal = _first_float(summary, CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS)
     artifact_ref = _first_text(
-        _mapping_value(summary, "leader/checkpoint/artifact_ref"),
+        _mapping_value(summary, LEADER_CHECKPOINT_ARTIFACT_REF),
     )
     if objective is None:
         objective = completion
-        objective_name = "leader/checkpoint/completion_rate" if completion is not None else ""
+        objective_name = LEADER_CHECKPOINT_COMPLETION_RATE if completion is not None else ""
     if objective is None or reward is None or not artifact_ref:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
+    rank = parse_objective_rank(_mapping_value(summary, LEADER_CHECKPOINT_RANK))
+    if not rank:
+        rank = parse_objective_rank(config.get("selection_rank"))
+    rank_metrics: dict[str, Any] = {
+        "eval/done/level_change/from_rate/min": completion,
+        "eval/done/level_change/from_rate/mean": completion_mean,
+        "eval/reward/mean": reward,
+        "eval/best/reward": _first_float(summary, (LEADER_CHECKPOINT_BEST_REWARD,)),
+        LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL: steps_to_completion_goal,
+        "checkpoint_step": checkpoint_step,
+    }
+    saved_rank_values = _mapping_value(summary, LEADER_CHECKPOINT_RANK_VALUES)
+    if rank and isinstance(saved_rank_values, Sequence) and not isinstance(
+        saved_rank_values, str | bytes
+    ):
+        rank_metrics.update(
+            {
+                criterion.metric: value
+                for criterion, value in zip(rank, saved_rank_values, strict=False)
+            }
+        )
+    rank = rank or default_objective_rank(rank_metrics)
     return CheckpointLeader(
         goal_slug=_first_text(
             config.get("goal_slug"),
@@ -278,24 +299,15 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         steps_to_completion_goal=steps_to_completion_goal,
         checkpoint_step=checkpoint_step,
         artifact_ref=artifact_ref,
-        eval_source=_first_text(_mapping_value(summary, "leader/checkpoint/eval_source")),
+        eval_source=_first_text(_mapping_value(summary, LEADER_CHECKPOINT_EVAL_SOURCE)),
+        rank_score=rank_score(rank_metrics, rank),
     )
 
 
 def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[CheckpointLeader]:
     return sorted(
         leaders,
-        key=lambda item: (
-            item.objective,
-            item.completion_rate if item.completion_rate is not None else float("-inf"),
-            item.completion_rate_mean
-            if item.completion_rate_mean is not None
-            else float("-inf"),
-            -item.steps_to_completion_goal
-            if item.steps_to_completion_goal is not None
-            else float("-inf"),
-            item.reward_mean,
-        ),
+        key=lambda item: item.rank_score,
         reverse=True,
     )
 

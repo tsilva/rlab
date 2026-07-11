@@ -18,9 +18,9 @@ train:
     env_provider: &atari_env_provider ale-py
     env_config:
       <<: &atari_breakout_env_config
+        game: breakout
+        n_envs: 16
         env_args:
-          game: breakout
-          num_envs: 16
           num_threads: 4
           max_num_frames_per_episode: 216000
           repeat_action_probability: 0.25

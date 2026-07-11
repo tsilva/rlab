@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from string import Formatter
 from typing import Any
 
+from rlab.config_loader import QUEUE_TEMPLATE_VALUES, validate_template_string
 from rlab.env_registry import resolve_env_provider
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
@@ -33,9 +33,6 @@ TRAIN_RECIPE_REQUIRED_FIELDS = (
 )
 TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS = queue_required_train_config_fields()
 EXPLICIT_QUEUE_TRAIN_CONFIG_FIELDS = TRAIN_RECIPE_REQUIRED_TRAIN_CONFIG_FIELDS
-TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS = frozenset(
-    {"group_id", "seed", "recipe_id", "timestamp", "utc"}
-)
 TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     {
         "schema_version",
@@ -85,16 +82,6 @@ def require_explicit_queue_train_config(
         )
 
 
-def _format_field_names(template: str) -> set[str]:
-    names: set[str] = set()
-    for _, field_name, _, _ in Formatter().parse(template):
-        if not field_name:
-            continue
-        root_name = field_name.split(".", 1)[0].split("[", 1)[0]
-        names.add(root_name)
-    return names
-
-
 def _require_template(
     document: Mapping[str, Any],
     key: str,
@@ -103,29 +90,12 @@ def _require_template(
     required_fields: set[str],
 ) -> str:
     template = require_non_empty_string(document, key, label=label, strip=False)
-    field_names = _format_field_names(template)
-    unknown = sorted(field_names - TRAIN_RECIPE_ALLOWED_TEMPLATE_FIELDS)
-    if unknown:
-        raise ValueError(
-            f"{label_path(label, key)} uses unsupported template field(s): {', '.join(unknown)}"
-        )
-    missing = sorted(required_fields - field_names)
-    if missing:
-        raise ValueError(
-            f"{label_path(label, key)} must include template field(s): {', '.join(missing)}"
-        )
-    try:
-        template.format(
-            seed=123,
-            recipe_id="candidate",
-            timestamp="20260626T120000Z",
-            utc="20260626T120000Z",
-            group_id="b-test",
-        )
-    except (IndexError, KeyError, ValueError) as exc:
-        raise ValueError(
-            f"{label_path(label, key)} is not a valid format template: {exc}"
-        ) from exc
+    validate_template_string(
+        template,
+        allowed_values=QUEUE_TEMPLATE_VALUES,
+        required_fields=frozenset(required_fields),
+        label=label_path(label, key),
+    )
     return template
 
 

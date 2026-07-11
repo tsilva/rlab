@@ -7,10 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rlab.artifact_worker import process_upload
-from rlab.checkpoint_eval_config import CHECKPOINT_EVAL_CANDIDATE_PASS
 from rlab.checkpoint_eval_worker import process_eval
 from rlab.env import EnvConfig
-from rlab.metric_names import EVAL_DURATION_SECONDS, EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN
+from rlab.metric_names import (
+    CHECKPOINT_EVAL_CANDIDATE_PASS,
+    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+    EVAL_DURATION_SECONDS,
+)
 from rlab.metric_store import MetricStore, metric_store_path
 
 

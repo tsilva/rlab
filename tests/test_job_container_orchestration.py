@@ -11,7 +11,7 @@ from unittest import mock
 
 from rlab import fleet, job_queue, run_job
 from rlab.machines import load_machine_registry, resolve_machine
-from tests.fleet_fakes import FakeConnection, write_machine_registry
+from tests.db_fakes import FakeConnection, write_machine_registry
 
 
 RUNTIME_IMAGE_REF = (

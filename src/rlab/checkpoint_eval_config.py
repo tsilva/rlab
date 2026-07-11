@@ -7,12 +7,6 @@ from typing import Any
 from rlab.early_stop import normalize_early_stop_config
 
 
-CHECKPOINT_EVAL_CANDIDATE_PASS = "checkpoint_eval/candidate/pass"
-CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "checkpoint_eval/candidate/stage_index"
-CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP = "checkpoint_eval/candidate/checkpoint_step"
-CHECKPOINT_EVAL_CANDIDATE_EPISODES = "checkpoint_eval/candidate/episodes"
-
-
 def staged_metric_name(stage_name: str, metric_name: str) -> str:
     if metric_name == "global_step":
         return metric_name

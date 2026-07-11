@@ -348,6 +348,14 @@ def train_config_from_source_environment(
     if not isinstance(env_config, Mapping):
         raise ValueError("source environment.env_config must be an object")
     train_config = deepcopy(dict(env_config))
+    env_args = train_config.get("env_args")
+    if isinstance(env_args, Mapping):
+        aliases = sorted(set(env_args) & {"game", "num_envs"})
+        if aliases:
+            raise ValueError(
+                "source environment.env_config.env_args uses canonical field(s) "
+                f"{aliases}; put game and n_envs directly in env_config"
+            )
     provider = environment.get("env_provider")
     if not isinstance(provider, str) or not provider.strip():
         raise ValueError("source environment.env_provider must be a non-empty string")
@@ -377,6 +385,16 @@ def train_config_from_environment_identity(
     env_config = environment.get("env_config")
     if isinstance(env_config, Mapping):
         train_config.update(deepcopy(dict(env_config)))
+    env_args = train_config.get("env_args")
+    if isinstance(env_args, Mapping):
+        env_args = deepcopy(dict(env_args))
+        legacy_game = env_args.pop("game", None)
+        legacy_num_envs = env_args.pop("num_envs", None)
+        if legacy_game is not None:
+            train_config.setdefault("game", legacy_game)
+        if legacy_num_envs is not None:
+            train_config.setdefault("n_envs", legacy_num_envs)
+        train_config["env_args"] = env_args
     env_id = environment.get("env_id")
     if env_id is not None:
         resolved = resolve_env_id(str(env_id))

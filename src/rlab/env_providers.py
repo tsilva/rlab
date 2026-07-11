@@ -147,14 +147,6 @@ def provider_native_vec_kwargs(
         raise ValueError(
             "provider task detectors are unsupported; configure task events and termination"
         )
-    game = native_kwargs.pop("game", None)
-    if game is not None and str(game) != str(config.game):
-        raise ValueError(f"env_args.game must match EnvConfig.game: {game!r} != {config.game!r}")
-    if "num_envs" in native_kwargs and int(native_kwargs["num_envs"]) != int(n_envs):
-        raise ValueError(
-            "env_args.num_envs must match requested n_envs: "
-            f"{native_kwargs['num_envs']!r} != {n_envs!r}"
-        )
     provider = resolve_env_provider(config.env_provider)
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:

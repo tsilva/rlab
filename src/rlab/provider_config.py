@@ -31,11 +31,7 @@ def provider_env_args(config: Any) -> Mapping[str, Any]:
 
 def provider_game(config: Any) -> str | None:
     game = _get(config, "game")
-    if game:
-        return str(game)
-    env_args = provider_env_args(config)
-    arg_game = env_args.get("game")
-    return str(arg_game) if arg_game else None
+    return str(game) if game else None
 
 
 def provider_env_id(config: Any) -> str | None:
@@ -55,18 +51,11 @@ def provider_num_envs(
     explicit_n_envs: Any = None,
     default_n_envs: int = DEFAULT_TRAIN_N_ENVS,
 ) -> int:
-    env_args = provider_env_args(config)
-    provider_n_envs = env_args.get("num_envs")
     if explicit_n_envs is not None:
-        n_envs = int(explicit_n_envs)
-        if provider_n_envs is not None and int(provider_n_envs) != n_envs:
-            raise ValueError(
-                "env_args.num_envs must match requested n_envs: "
-                f"{provider_n_envs!r} != {n_envs!r}",
-            )
-        return n_envs
-    if provider_n_envs is not None:
-        return int(provider_n_envs)
+        return int(explicit_n_envs)
+    configured_n_envs = _get(config, "n_envs")
+    if configured_n_envs is not None:
+        return int(configured_n_envs)
     return int(default_n_envs)
 
 

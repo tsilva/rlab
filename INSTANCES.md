@@ -81,7 +81,7 @@ queue service and do not schedule experiments.
 
 ## beast-3 / RTX4090
 
-- Target: `rtx4090`, alias `beast-3`.
+- Machine: `beast-3`; queue target: `rtx4090`.
 - Host resources: RTX4090, at least 12 CPUs, and at least 48 GB memory.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
@@ -103,7 +103,7 @@ intentionally testing small-GPU behavior.
 
 ## beast-2 / RTX2060
 
-- Target: `rtx2060`, alias `beast-2`.
+- Machine: `beast-2`; queue target: `rtx2060`.
 - Host resources: RTX2060, at least 4 CPUs, and at least 8 GB memory.
 - Access: `ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26` until hostname
   resolution is restored.
@@ -123,7 +123,7 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 
 ## Local MacBook
 
-- Target: `local-macbook`, aliases `macbook` and `local`.
+- Machine and queue target: `local-macbook`.
 - Backend: `local_docker`.
 - Host resources: local CPU/MPS host.
 - Use for queue-backed smoke tests and local fleet debugging.

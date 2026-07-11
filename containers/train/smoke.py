@@ -44,7 +44,7 @@ def main() -> None:
     except Exception as exc:
         print(f"torch_probe_error={type(exc).__name__}: {exc}")
 
-    game = os.environ.get("RETRO_GAME") or os.environ.get("RLAB_SMOKE_GAME")
+    game = os.environ.get("RETRO_GAME")
     if game:
         import stable_retro as retro
 
@@ -55,4 +55,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

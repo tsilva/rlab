@@ -21,6 +21,7 @@ TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
 FieldOwner = Literal["runtime", "goal_environment", "goal_objective"]
+SourceSection = Literal["runtime", "goal_train"]
 
 @dataclass(frozen=True)
 class TrainConfigField:
@@ -42,6 +43,7 @@ class TrainConfigField:
     allow_empty_sequence: bool = False
     mapping_value: bool = False
     owner: FieldOwner = "runtime"
+    source_section: SourceSection = "runtime"
 
     @property
     def command_flag(self) -> str:
@@ -240,6 +242,10 @@ def train_config_keys_owned_by(owner: FieldOwner) -> frozenset[str]:
         if field.env_config_key:
             keys.add(field.env_config_key)
     return frozenset(keys)
+
+
+def train_config_keys_in_source_section(section: SourceSection) -> frozenset[str]:
+    return frozenset(field.dest for field in TRAIN_CONFIG_FIELDS if field.source_section == section)
 
 
 def _label_path(label: str, key: str) -> str:
@@ -623,6 +629,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=500_000,
         validation_min=0,
+        source_section="goal_train",
     ),
     TrainConfigField(
         "post_train_eval_episodes",
@@ -646,6 +653,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=None,
         serialize="json",
         owner="goal_objective",
+        source_section="goal_train",
         help="JSON list of cheap checkpoint eval stages for async candidate-stop screening.",
     ),
     TrainConfigField(
@@ -669,7 +677,18 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=None,
         serialize="json",
         owner="goal_objective",
+        source_section="goal_train",
         help="JSON early-stop list of AND-combined metric threshold rules.",
+    ),
+    TrainConfigField(
+        "selection_rank",
+        "--selection-rank",
+        type_name="json",
+        default=(),
+        serialize="json",
+        sequence_items="str",
+        owner="goal_objective",
+        help="Ordered objective.rank contract carried into checkpoint selection.",
     ),
     TrainConfigField("learning_rate", "--learning-rate", type_name="float", default=1e-4),
     TrainConfigField(

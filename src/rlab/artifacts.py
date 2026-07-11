@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,7 @@ from rlab.metric_names import (
 from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_project
 
 
-MODEL_METADATA_VERSION = 2
+MODEL_METADATA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -92,9 +92,6 @@ def build_model_metadata(
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "run_target": getattr(args, "run_target", ""),
         "checkpoint_step": step,
-        "env_config": training["env_config"],
-        "environment": training["environment"],
-        "environment_hash": training["environment_hash"],
         "training_metadata": training,
         "training_metadata_hash": stable_json_hash(training),
     }
@@ -109,20 +106,25 @@ def write_model_metadata(
 ) -> Path | None:
     if not model_path.is_file():
         return None
+    return write_model_metadata_payload(
+        model_path,
+        build_model_metadata(
+            args,
+            config,
+            model_path,
+            kind,
+            checkpoint_step_value=checkpoint_step_value,
+        ),
+    )
+
+
+def write_model_metadata_payload(
+    model_path: Path,
+    metadata: Mapping[str, Any],
+) -> Path:
     path = model_metadata_path(model_path)
     path.write_text(
-        json.dumps(
-            build_model_metadata(
-                args,
-                config,
-                model_path,
-                kind,
-                checkpoint_step_value=checkpoint_step_value,
-            ),
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
+        json.dumps(dict(metadata), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
@@ -431,13 +433,14 @@ def log_wandb_model_artifact(
     artifact_step = step if step is not None else metric_step
 
     metadata_started_at = timer()
-    sidecar_path = write_model_metadata(
-        model_path,
+    metadata = build_model_metadata(
         args,
         config,
+        model_path,
         kind,
         checkpoint_step_value=artifact_step,
     )
+    sidecar_path = write_model_metadata_payload(model_path, metadata)
     metadata_seconds = timer() - metadata_started_at
 
     if not wandb_artifacts_enabled(wandb_run, args):
@@ -461,24 +464,6 @@ def log_wandb_model_artifact(
 
     import wandb
 
-    metadata: dict[str, Any] = {
-        "run_name": args.run_name,
-        "run_description": args.run_description,
-        "goal_slug": getattr(args, "goal_slug", ""),
-        "recipe_slug": getattr(args, "recipe_slug", ""),
-        "recipe_path": getattr(args, "recipe_path", ""),
-        "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
-        "kind": kind,
-        "filename": model_path.name,
-        "checkpoint_step": artifact_step,
-        "metadata_version": MODEL_METADATA_VERSION,
-    }
-    training = training_metadata(config)
-    metadata["env_config"] = training["env_config"]
-    metadata["environment"] = training["environment"]
-    metadata["environment_hash"] = training["environment_hash"]
-    metadata["training_metadata"] = training
-    metadata["training_metadata_hash"] = stable_json_hash(training)
     run_id = getattr(wandb_run, "id", None)
     if run_id:
         metadata["wandb_run_id"] = run_id

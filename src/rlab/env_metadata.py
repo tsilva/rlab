@@ -90,6 +90,7 @@ def training_metadata(config: EnvConfig) -> dict[str, Any]:
 
 
 def env_config_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Read canonical v3 metadata while retaining v2/top-level playback compatibility."""
     training = metadata.get("training_metadata")
     if isinstance(training, dict):
         env_config = training.get("env_config", {})
@@ -103,6 +104,14 @@ def sanitize_env_config_metadata(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(config)
     if not cleaned:
         return {}
+    env_args = cleaned.get("env_args")
+    if isinstance(env_args, dict):
+        env_args = dict(env_args)
+        legacy_game = env_args.pop("game", None)
+        env_args.pop("num_envs", None)
+        if legacy_game is not None:
+            cleaned.setdefault("game", legacy_game)
+        cleaned["env_args"] = env_args
     unexpected = sorted(set(cleaned) - ENV_CONFIG_METADATA_KEYS)
     if unexpected:
         raise ValueError(f"artifact environment config has unexpected keys: {unexpected}")

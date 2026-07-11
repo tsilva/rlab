@@ -10,6 +10,7 @@ from rlab.job_execution import normalize_train_config, train_command_for_job, wr
 from rlab.recipe_documents import materialize_train_recipe_document, validate_source_recipe_shape
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.seeds import DEFAULT_EVAL_SEED
+from tests.db_fakes import FakeConnection
 
 
 RUNTIME_IMAGE_REF = (
@@ -27,48 +28,6 @@ class FakeWandbRun:
         self.group = group
         self.tags = ()
         self.url = f"https://wandb.ai/entity/project/runs/{run_id}"
-
-
-class FakeCursor:
-    def __init__(self, row=None, rows=None) -> None:
-        self.row = row
-        self.rows = rows if rows is not None else []
-        self.executed_sql = ""
-        self.executed_params = {}
-        self.executed_sqls = []
-        self.executed_params_list = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def execute(self, sql, params=None) -> None:
-        self.executed_sql = sql
-        self.executed_params = params or {}
-        self.executed_sqls.append(sql)
-        self.executed_params_list.append(params or {})
-
-    def fetchone(self):
-        return self.row
-
-    def fetchall(self):
-        return self.rows
-
-
-class FakeConnection:
-    def __init__(self, row=None, rows=None) -> None:
-        self.cursor_obj = FakeCursor(row=row, rows=rows)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def cursor(self):
-        return self.cursor_obj
 
 
 def explicit_train_config(**overrides) -> dict:

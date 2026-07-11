@@ -15,6 +15,14 @@ import yaml
 
 YAML_EXTENSIONS = {".yaml", ".yml"}
 TEMPLATE_VARS_KEY = "template_vars"
+QUEUE_TEMPLATE_VALUES: dict[str, Any] = {
+    "group_id": "b-test",
+    "seed": 123,
+    "recipe_id": "candidate",
+    "timestamp": "20260626T120000Z",
+    "utc": "20260626T120000Z",
+}
+QUEUE_TEMPLATE_FIELDS = frozenset(QUEUE_TEMPLATE_VALUES)
 
 _LEVEL_ID_RE = re.compile(r"^Level(?P<world>\d+)-(?P<level>\d+)$", re.IGNORECASE)
 
@@ -316,6 +324,37 @@ def _render_template_string(
                 f"{label} uses unknown template field {root_name!r}; allowed: {allowed}"
             )
     return "".join(chunks)
+
+
+def validate_template_string(
+    value: str,
+    *,
+    allowed_values: Mapping[str, Any],
+    required_fields: frozenset[str] = frozenset(),
+    label: str,
+) -> frozenset[str]:
+    try:
+        parsed = list(Formatter().parse(value))
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a valid format template: {exc}") from exc
+    fields = frozenset(
+        _template_field_root(field_name)
+        for _literal, field_name, _format_spec, _conversion in parsed
+        if field_name
+    )
+    unknown = sorted(fields - set(allowed_values))
+    if unknown:
+        raise ValueError(f"{label} uses unsupported template field(s): {', '.join(unknown)}")
+    missing = sorted(required_fields - fields)
+    if missing:
+        raise ValueError(f"{label} must include template field(s): {', '.join(missing)}")
+    _render_template_string(
+        value,
+        context=allowed_values,
+        deferred_fields=frozenset(),
+        label=label,
+    )
+    return fields
 
 
 def _render_template_value(

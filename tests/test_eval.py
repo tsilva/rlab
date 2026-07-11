@@ -160,7 +160,25 @@ class EvalMetricTests(unittest.TestCase):
             "checkpoint_step": 5000000,
         }
 
-        self.assertEqual(eval_checkpoint_score(metrics), (34.0, 55.0, -5000000.0, 34.0))
+        self.assertEqual(eval_checkpoint_score(metrics), (34.0, 55.0, -5000000.0))
+
+    def test_checkpoint_score_executes_explicit_goal_rank(self) -> None:
+        metrics = {
+            "reward_mean": 34.0,
+            "reward_max": 55.0,
+            "checkpoint_step": 5000000,
+        }
+
+        self.assertEqual(
+            eval_checkpoint_score(
+                metrics,
+                [
+                    "min(leader/checkpoint/steps_to_completion_goal)",
+                    "max(eval/reward/mean)",
+                ],
+            ),
+            (-5000000.0, 34.0),
+        )
 
     def test_generic_eval_summary_does_not_emit_mario_completion_metrics(self) -> None:
         summary = summarize_episode_results(

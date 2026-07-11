@@ -13,7 +13,7 @@ from unittest import mock
 from rlab import fleet
 from rlab.machines import load_machine_registry, resolve_machine
 from rlab.runtime_refs import runtime_image_ref_from_file
-from tests.fleet_fakes import FakeConnection, write_machine_registry
+from tests.db_fakes import FakeConnection, write_machine_registry
 
 
 RUNTIME_IMAGE_REF = (

@@ -72,7 +72,8 @@ depend on mutable tags.
 ## Fleet Integration
 
 Mac-side `rlab fleet` reconciles these one-job containers over local Docker or
-SSH while the queue remains the scheduling authority. See `INSTANCES.md` for
+SSH while the queue remains the scheduling authority. See
+[INSTANCES.md](../../INSTANCES.md) for
 the canonical setup, shepherd, watch, capacity, and cleanup commands.
 
 Each launched container owns exactly one queue launch and is labeled with

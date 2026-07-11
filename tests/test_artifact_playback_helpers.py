@@ -527,24 +527,27 @@ class CommandAndArtifactTests(unittest.TestCase):
 
             self.assertEqual(path, model_metadata_path(model_path))
             metadata = load_model_metadata(model_path)
+            training = metadata["training_metadata"]
+            env_config = training["env_config"]
+            environment = training["environment"]
             self.assertEqual(metadata["checkpoint_step"], 100)
-            self.assertEqual(metadata["env_config"]["max_pool_frames"], False)
-            self.assertEqual(metadata["env_config"]["observation_size"], 96)
-            self.assertEqual(metadata["env_config"]["obs_crop"], [0, 0, 32, 0])
-            self.assertEqual(metadata["env_config"]["obs_crop_mode"], "mask")
-            self.assertEqual(metadata["env_config"]["obs_crop_fill"], 7)
-            self.assertEqual(metadata["env_config"]["task"]["id"], "mario")
-            self.assertEqual(metadata["env_config"]["task"]["action"]["set"], "simple")
+            self.assertEqual(env_config["max_pool_frames"], False)
+            self.assertEqual(env_config["observation_size"], 96)
+            self.assertEqual(env_config["obs_crop"], [0, 0, 32, 0])
+            self.assertEqual(env_config["obs_crop_mode"], "mask")
+            self.assertEqual(env_config["obs_crop_fill"], 7)
+            self.assertEqual(env_config["task"]["id"], "mario")
+            self.assertEqual(env_config["task"]["action"]["set"], "simple")
             self.assertEqual(
-                metadata["environment"]["preprocessing"]["obs_crop"],
+                environment["preprocessing"]["obs_crop"],
                 [0, 0, 32, 0],
             )
-            self.assertEqual(metadata["environment"]["preprocessing"]["obs_crop_mode"], "mask")
-            self.assertEqual(metadata["environment"]["preprocessing"]["obs_crop_fill"], 7)
+            self.assertEqual(environment["preprocessing"]["obs_crop_mode"], "mask")
+            self.assertEqual(environment["preprocessing"]["obs_crop_fill"], 7)
             self.assertEqual(
-                metadata["environment"]["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
+                environment["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
             )
-            self.assertEqual(metadata["environment"]["preprocessing"]["frame_stack"], 4)
+            self.assertEqual(environment["preprocessing"]["frame_stack"], 4)
             self.assertEqual(
                 metadata["training_metadata"]["preprocessing"]["max_pool_frames"],
                 False,
@@ -564,22 +567,20 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertNotIn("frame_maxpool", metadata["training_metadata"]["preprocessing"])
             self.assertNotIn("action_sticky_prob", metadata["training_metadata"]["preprocessing"])
             self.assertNotIn("copy_observations", metadata["training_metadata"]["preprocessing"])
-            self.assertIn("environment_hash", metadata)
+            self.assertNotIn("env_config", metadata)
+            self.assertNotIn("environment", metadata)
+            self.assertNotIn("environment_hash", metadata)
             self.assertIn("training_metadata", metadata)
             self.assertIn("training_metadata_hash", metadata)
-            self.assertEqual(
-                metadata["training_metadata"]["environment_hash"],
-                metadata["environment_hash"],
-            )
             self.assertEqual(
                 metadata["training_metadata"]["preprocessing"]["frame_stack"],
                 4,
             )
             self.assertTrue(metadata["training_metadata"]["preprocessing"]["obs_grayscale"])
-            self.assertEqual(metadata["env_config"]["state_sampling_mode"], "weighted")
-            self.assertEqual(metadata["env_config"]["state_probs"], [0.25, 0.75])
+            self.assertEqual(env_config["state_sampling_mode"], "weighted")
+            self.assertEqual(env_config["state_probs"], [0.25, 0.75])
             self.assertEqual(
-                metadata["env_config"]["state_distribution"],
+                env_config["state_distribution"],
                 [
                     {"state": "Level1-1", "probability": 0.25},
                     {"state": "Level1-2", "probability": 0.75},
@@ -589,6 +590,29 @@ class CommandAndArtifactTests(unittest.TestCase):
                 require_training_metadata(model_path)["env_config"]["observation_size"],
                 96,
             )
+
+    def test_playback_reads_legacy_v2_top_level_environment_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "legacy.zip"
+            model_path.write_bytes(b"zip")
+            model_metadata_path(model_path).write_text(
+                json.dumps(
+                    {
+                        "metadata_version": 2,
+                        "env_config": {
+                            "env_provider": "ale-py",
+                            "env_args": {"game": "breakout", "num_envs": 16},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_playback_env_config(model_path)
+
+            self.assertEqual(config.game, "breakout")
+            self.assertNotIn("game", config.env_args)
+            self.assertNotIn("num_envs", config.env_args)
 
     def test_playback_config_loads_from_model_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

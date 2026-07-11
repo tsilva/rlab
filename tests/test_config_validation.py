@@ -36,10 +36,16 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["env_provider"], "ale-py")
         self.assertEqual(train_config["game"], "breakout")
         self.assertEqual(
+            train_config["selection_rank"],
+            [
+                "max(eval/reward/mean)",
+                "max(eval/best/reward)",
+                "min(leader/checkpoint/steps_to_completion_goal)",
+            ],
+        )
+        self.assertEqual(
             train_config["env_args"],
             {
-                "game": "breakout",
-                "num_envs": 16,
                 "num_threads": 4,
                 "max_num_frames_per_episode": 216000,
                 "repeat_action_probability": 0.25,
@@ -54,7 +60,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
-        self.assertNotIn("n_envs", train_config)
+        self.assertEqual(train_config["n_envs"], 16)
         self.assertNotIn("env_threads", train_config)
         self.assertNotIn("frame_skip", train_config)
         self.assertNotIn("max_pool_frames", train_config)
@@ -76,7 +82,7 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "ale-py")
         self.assertEqual(train_config["game"], "ms_pacman")
-        self.assertEqual(train_config["env_args"]["game"], "ms_pacman")
+        self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["env_args"]["num_threads"], 4)
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
@@ -90,7 +96,6 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["reward"], breakout["train_config"]["task"]["reward"]
         )
         for key in (
-            "n_envs",
             "env_threads",
             "frame_skip",
             "max_pool_frames",

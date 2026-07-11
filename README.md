@@ -172,9 +172,12 @@ and beast host recommendations.
 - Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
 - Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
 - Every queue-backed training recipe must include a non-empty `description`; `rlab train` records it as the run description.
-- Training logs to W&B and uploads model artifacts unless `--no-wandb-artifacts` is set.
+- Training logs to W&B and uploads model artifacts unless the recipe sets
+  `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
-- Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set `CHECKPOINT_BUCKET_URI` or pass `--wandb-artifact-storage-uri`, along with the required `AWS_*` credentials.
+- Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
+  `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
+  along with the required `AWS_*` credentials.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
 - Local eval outputs are written under `runs/local_evals/<run-name>/`.
 

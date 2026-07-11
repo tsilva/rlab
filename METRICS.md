@@ -382,10 +382,8 @@ changes, on native env done, or at the configured max-step horizon.
 | `eval/done/unclassified/rate` | `eval/done/unclassified / eval/done/all`. |
 | `eval/death/count` | Eval episodes where the target-specific death flag was observed at least once during the eval horizon. Currently Mario-specific. |
 | `eval/death/rate` | `eval/death/count / eval episodes`. Currently Mario-specific. |
-| `eval/death/x_hist` | W&B histogram of death X positions. Logged when target semantics define death positions and positions exist. |
 | `eval/best/reward` | Return of the best eval episode. Mario ranks best episodes by completion, then max X, then reward; generic targets rank by reward. |
 | `eval/best/x` | Max global X position of the best eval episode. Logged only when the target defines global X progress. |
-| `eval/best/video` | W&B video for the best eval episode, when video recording is enabled. |
 | `eval/checkpoint/step` | Checkpoint timestep being evaluated by the async eval worker. Eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by the async eval worker. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
@@ -397,12 +395,15 @@ changes, on native env done, or at the configured max-step horizon.
 | `checkpoint_eval/candidate/checkpoint_step` | Checkpoint timestep that produced the current candidate early-stop signal. |
 | `checkpoint_eval/candidate/stage_index` | Stage index that produced the current candidate early-stop signal. |
 | `checkpoint_eval/candidate/episodes` | Number of episodes used by the candidate-stop stage. |
-| `leader/checkpoint/objective` | W&B summary field for the best evaluated checkpoint on a source run. Uses the target-specific primary eval objective: Mario completion bottleneck when present, otherwise `eval/reward/mean`. Used by `rlab leaders checkpoints`. |
+| `leader/checkpoint/objective` | Raw value of the first `objective.rank` metric for the best evaluated checkpoint on a source run. Used by `rlab leaders checkpoints` as a query prefilter; final ordering replays the full saved rank. |
 | `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/done/level_change/from_rate/min` or `eval/reward/mean`. |
+| `leader/checkpoint/rank` | Ordered `objective.rank` expressions used to select this checkpoint. |
+| `leader/checkpoint/rank_values` | Raw metric values for `leader/checkpoint/rank`, retained so leader queries reproduce the goal contract rather than a hardcoded order. |
 | `leader/checkpoint/completion_rate` | W&B summary field for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/min` when available. Omitted for generic targets without a completion event. |
 | `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/mean` when available. Omitted for generic targets without a completion event. |
-| `leader/checkpoint/steps_to_completion_goal` | Checkpoint timestep for the source run's best evaluated checkpoint once `leader/checkpoint/completion_rate >= 0.99`. Lower is better and is used after min and mean per-start completion, before eval reward, so solved runs are ranked by sample efficiency. |
-| `leader/checkpoint/reward_mean` | W&B summary tiebreaker for the source run's best evaluated checkpoint, after min and mean per-start completion and solved checkpoint timesteps. |
+| `leader/checkpoint/best_reward` | Best episode return for the selected checkpoint. |
+| `leader/checkpoint/steps_to_completion_goal` | Checkpoint timestep used by the corresponding `objective.rank` criterion. Completion-aware ranks omit it until bottleneck completion reaches `0.99`; reward-only ranks use it directly as the sample-efficiency tiebreaker. |
+| `leader/checkpoint/reward_mean` | Mean eval reward for the selected checkpoint. Its position in selection is determined only by `objective.rank`. |
 | `leader/checkpoint/max_x_max` | Progress field for the source run's best evaluated checkpoint. Reported for inspection but not part of the current objective rank. |
 | `leader/checkpoint/step` | Checkpoint step for the source run's current best evaluated checkpoint. |
 | `leader/checkpoint/artifact_ref` | Artifact ref for the source run's current best evaluated checkpoint. |
@@ -455,11 +456,10 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `truncated_rate` | `truncated_count / episodes`. Same rate as `eval/done/max_steps/rate`. |
 | `unclassified_count` | Eval episodes that ended without level completion or max-step truncation. Same count as `eval/done/unclassified`. |
 | `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/done/unclassified/rate`. |
-| `death_x_histogram` | Local JSON histogram of death X positions. W&B receives `eval/death/x_hist` when death positions exist. |
+| `death_x_histogram` | Local JSON histogram of death X positions. This structured value is not emitted as a W&B scalar. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
 | `best_episode` | Best episode record ranked by target eval semantics. Mario uses completion, then max X, then reward; generic targets use reward. |
-| `best_model_score` | Checkpoint eval ranking tuple. Completion-aware targets use completion, solved checkpoint timesteps when available, then reward; generic targets use reward. |
-| `best_episode_video` | Local best-episode video path when video recording is enabled. W&B receives `eval/best/video`. |
+| `best_episode_video` | Local best-episode video path when video recording is enabled. The checkpoint artifact owns the file; the path is not emitted as a W&B metric. |
 | `eval_n_envs` | Number of vector env slots used by post-train or local eval summaries. |
 | `checkpoint_step` | Checkpoint step attached by post-train eval summaries. W&B receives `eval/checkpoint/step`. |
 | `checkpoint_artifact` | Checkpoint artifact or local checkpoint ref attached by post-train eval summaries. W&B receives `eval/checkpoint/artifact`. |

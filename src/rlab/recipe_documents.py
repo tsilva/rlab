@@ -10,6 +10,7 @@ from typing import Any
 from rlab.config_loader import (
     YAML_EXTENSIONS,
     ComposedDocument,
+    QUEUE_TEMPLATE_FIELDS,
     TEMPLATE_VARS_KEY,
     deep_merge,
     load_mapping_document,
@@ -28,7 +29,7 @@ from rlab.recipe_schema import (
     validate_materialized_train_recipe,
 )
 from rlab.seeds import validate_training_seed
-from rlab.train_config import train_config_keys_owned_by
+from rlab.train_config import train_config_keys_in_source_section, train_config_keys_owned_by
 
 
 SECRET_KEY_FRAGMENTS = (
@@ -42,11 +43,8 @@ SECRET_KEY_FRAGMENTS = (
 )
 TRAIN_CONFIG_SECTION_KEYS = ("train", "logging")
 TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
-GOAL_TRAIN_CONFIG_KEYS = frozenset(
-    {"checkpoint_freq", "checkpoint_eval_stages", "early_stop"}
-)
+GOAL_TRAIN_CONFIG_KEYS = train_config_keys_in_source_section("goal_train")
 GOAL_GAME_DIR_NAME = "SuperMarioBros-Nes-v0"
-QUEUE_TEMPLATE_FIELDS = frozenset({"group_id", "seed", "recipe_id", "timestamp", "utc"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
@@ -125,6 +123,9 @@ def _goal_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(train, Mapping):
         config = deep_merge(config, _train_config_from_train_section(train))
     config = deep_merge(config, _eval_train_defaults(document))
+    objective = document.get("objective")
+    if isinstance(objective, Mapping) and isinstance(objective.get("rank"), Sequence):
+        config["selection_rank"] = copy.deepcopy(objective["rank"])
     return config
 
 
@@ -167,26 +168,7 @@ def _train_config_section_value(
 
 
 def _train_environment_section_config(environment: Mapping[str, Any]) -> dict[str, Any]:
-    config = train_config_from_source_environment(environment)
-    direct_items = {
-        key: copy.deepcopy(value)
-        for key, value in environment.items()
-        if key
-        not in {
-            "env_config",
-            "env_id",
-            "state",
-            "states",
-            "state_probs",
-            "action",
-            "preprocessing",
-            "task_conditioning",
-            "termination",
-            "reward",
-            "task",
-        }
-    }
-    return deep_merge(config, direct_items)
+    return train_config_from_source_environment(environment)
 
 
 def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -431,7 +413,9 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
             assert_no_template_vars(nested, label=f"{label}[{index}]")
 
 
-def validate_source_recipe_shape(document: Mapping[str, Any], *, label: str) -> None:
+def validate_source_recipe_shape(
+    document: Mapping[str, Any], *, label: str, allow_goal_train_fields: bool = False
+) -> None:
     retired = sorted(set(document) & {"environment", "reward", "train_config"})
     if retired:
         raise ValueError(
@@ -443,7 +427,8 @@ def validate_source_recipe_shape(document: Mapping[str, Any], *, label: str) -> 
         return
     if not isinstance(train, Mapping):
         raise ValueError(f"{label}.train must be an object")
-    unexpected = sorted(set(train) - TRAIN_NESTED_SECTION_KEYS - GOAL_TRAIN_CONFIG_KEYS)
+    allowed = TRAIN_NESTED_SECTION_KEYS | (GOAL_TRAIN_CONFIG_KEYS if allow_goal_train_fields else set())
+    unexpected = sorted(set(train) - allowed)
     if unexpected:
         raise ValueError(
             f"{label}.train uses unsupported flat field(s): {', '.join(unexpected)}; "
@@ -469,7 +454,11 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
         label=f"recipe file {path}",
         deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
     )
-    validate_source_recipe_shape(document, label=f"composed recipe file {path}")
+    validate_source_recipe_shape(
+        document,
+        label=f"composed recipe file {path}",
+        allow_goal_train_fields=True,
+    )
     sources = list(composed.sources)
     embedded_goal = document.get("goal")
     goal_composition = (

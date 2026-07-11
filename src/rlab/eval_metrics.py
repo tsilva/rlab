@@ -22,7 +22,6 @@ from rlab.metric_names import (
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.task_kernels import Outcome
 
-COMPLETION_GOAL_RATE = 0.99
 DEFAULT_EVAL_SEMANTICS = target_for_game("SuperMarioBros-Nes-v0").eval_semantics
 
 
@@ -412,28 +411,6 @@ def completion_score(metrics: dict[str, Any]) -> tuple[float, float] | None:
     if completion_min == float("-inf"):
         return None
     return (float(completion_min), float(completion_mean))
-
-
-def eval_selection_objective_name(metrics: dict[str, Any]) -> str:
-    if completion_score(metrics) is not None:
-        return EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN
-    return "eval/reward/mean"
-
-
-def eval_selection_score(metrics: dict[str, Any]) -> tuple[float, float, float, float]:
-    completion = completion_score(metrics)
-    reward_mean = metric_float(metrics, "reward_mean")
-    reward_max = metric_float(metrics, "reward_max")
-    checkpoint_step = metric_float(metrics, "checkpoint_step")
-    if completion is None:
-        return (reward_mean, reward_max, -checkpoint_step, reward_mean)
-    completion_min, completion_mean = completion
-    steps_to_goal = (
-        checkpoint_step
-        if completion_min >= COMPLETION_GOAL_RATE and checkpoint_step > float("-inf")
-        else float("inf")
-    )
-    return (completion_min, completion_mean, -steps_to_goal, reward_mean)
 
 
 def run_eval_episode(

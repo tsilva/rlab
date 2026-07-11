@@ -11,10 +11,6 @@ from stable_baselines3 import PPO
 
 from rlab.artifacts import sanitize_artifact_name
 from rlab.checkpoint_eval_config import (
-    CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
-    CHECKPOINT_EVAL_CANDIDATE_EPISODES,
-    CHECKPOINT_EVAL_CANDIDATE_PASS,
-    CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX,
     normalize_checkpoint_eval_stages,
     staged_metric_name,
 )
@@ -26,8 +22,11 @@ from rlab.env_config import env_config_from_args
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.eval_metrics import flat_numeric_metrics
 from rlab.eval_metrics import completion_score as eval_completion_score
-from rlab.eval_metrics import eval_selection_objective_name, eval_selection_score
 from rlab.metric_names import (
+    CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
+    CHECKPOINT_EVAL_CANDIDATE_EPISODES,
+    CHECKPOINT_EVAL_CANDIDATE_PASS,
+    CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX,
     EVAL_BEST_X,
     EVAL_BEST_REWARD,
     EVAL_CHECKPOINT_ARTIFACT,
@@ -45,6 +44,7 @@ from rlab.metric_names import (
     EVAL_REWARD_STD,
     GLOBAL_STEP,
     LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_BEST_REWARD,
     LEADER_CHECKPOINT_COMPLETION_RATE,
     LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,
     LEADER_CHECKPOINT_EVAL_SOURCE,
@@ -53,11 +53,20 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_OBJECTIVE,
     LEADER_CHECKPOINT_OBJECTIVE_NAME,
     LEADER_CHECKPOINT_REWARD_MEAN,
+    LEADER_CHECKPOINT_RANK,
+    LEADER_CHECKPOINT_RANK_VALUES,
     LEADER_CHECKPOINT_STEP,
     LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
     LEADER_CHECKPOINT_UPDATED_AT,
 )
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.ranking import (
+    default_objective_rank,
+    objective_rank_strings,
+    parse_objective_rank,
+    rank_metric_values,
+    rank_score,
+)
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
 
@@ -76,8 +85,11 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     return str(checkpoint_path)
 
 
-def eval_score(metrics: dict[str, object]) -> tuple[float, float, float, float]:
-    return eval_selection_score(dict(metrics))
+def eval_score(
+    metrics: dict[str, object], selection_rank: object = ()
+) -> tuple[float, ...]:
+    criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
+    return rank_score(metrics, criteria)
 
 
 def update_best_checkpoint_summary(
@@ -88,6 +100,7 @@ def update_best_checkpoint_summary(
     checkpoint_step_value: int,
     artifact_ref: str,
     eval_source: str = "async_worker",
+    selection_rank: object = (),
 ) -> None:
     if wandb_run is None:
         return
@@ -110,44 +123,61 @@ def update_best_checkpoint_summary(
         except (TypeError, ValueError):
             return float("-inf")
 
-    score = eval_score(metrics)
-    objective_name = eval_selection_objective_name(dict(metrics))
+    criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
+    score = rank_score(metrics, criteria)
+    values = rank_metric_values(metrics, criteria)
+    objective_name = criteria[0].metric
     try:
         previous_objective_name = str(
             wandb_run.summary.get(LEADER_CHECKPOINT_OBJECTIVE_NAME) or ""
         )
     except AttributeError:
         previous_objective_name = ""
-    previous_objective = summary_float(LEADER_CHECKPOINT_OBJECTIVE)
-    previous_completion = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE)
-    previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
-    previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
-    previous_step_score = (
-        -previous_steps_to_goal
-        if previous_steps_to_goal > float("-inf")
-        else float("-inf")
-    )
-    if previous_objective_name == objective_name and previous_objective > float("-inf"):
-        previous = (
-            previous_objective,
-            previous_completion_mean
-            if objective_name != "eval/reward/mean"
-            else summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
-            previous_step_score,
-            summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
-        )
+    try:
+        previous_rank = parse_objective_rank(wandb_run.summary.get(LEADER_CHECKPOINT_RANK))
+        previous_values = wandb_run.summary.get(LEADER_CHECKPOINT_RANK_VALUES)
+    except AttributeError:
+        previous_rank = ()
+        previous_values = None
+    if previous_rank == criteria and isinstance(previous_values, list | tuple):
+        previous_metrics = {
+            criterion.metric: value
+            for criterion, value in zip(criteria, previous_values, strict=False)
+        }
+        previous = rank_score(previous_metrics, criteria)
     else:
-        previous = (
-            previous_completion,
-            previous_completion_mean,
-            previous_step_score,
-            summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
+        previous_objective = summary_float(LEADER_CHECKPOINT_OBJECTIVE)
+        previous_completion = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE)
+        previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
+        previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
+        previous_step_score = (
+            -previous_steps_to_goal
+            if previous_steps_to_goal > float("-inf")
+            else float("-inf")
         )
+        if previous_objective_name == objective_name and previous_objective > float("-inf"):
+            previous = (
+                previous_objective,
+                previous_completion_mean
+                if objective_name != "eval/reward/mean"
+                else summary_float(LEADER_CHECKPOINT_BEST_REWARD),
+                previous_step_score,
+                summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
+            )[: len(score)]
+        else:
+            previous = (
+                previous_completion,
+                previous_completion_mean,
+                previous_step_score,
+                summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
+            )[: len(score)]
     if score < previous:
         return
 
-    wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE] = score[0]
+    wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE] = values[0]
     wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE_NAME] = objective_name
+    wandb_run.summary[LEADER_CHECKPOINT_RANK] = list(objective_rank_strings(criteria))
+    wandb_run.summary[LEADER_CHECKPOINT_RANK_VALUES] = list(values)
     completion = eval_completion_score(dict(metrics))
     if completion is not None:
         wandb_run.summary[LEADER_CHECKPOINT_COMPLETION_RATE] = completion[0]
@@ -155,10 +185,18 @@ def update_best_checkpoint_summary(
     else:
         remove_summary_key(LEADER_CHECKPOINT_COMPLETION_RATE)
         remove_summary_key(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
-    wandb_run.summary[LEADER_CHECKPOINT_REWARD_MEAN] = score[3]
+    wandb_run.summary[LEADER_CHECKPOINT_REWARD_MEAN] = metrics.get("reward_mean")
+    best_episode = metrics.get("best_episode")
+    wandb_run.summary[LEADER_CHECKPOINT_BEST_REWARD] = (
+        best_episode.get("reward") if isinstance(best_episode, dict) else metrics.get("reward_max")
+    )
     wandb_run.summary[LEADER_CHECKPOINT_MAX_X_MAX] = metrics.get("max_x_max")
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
-    if score[2] > float("-inf"):
+    if any(
+        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL
+        and value is not None
+        for criterion, value in zip(criteria, values, strict=True)
+    ):
         wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL] = checkpoint_step_value
     else:
         remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
@@ -218,6 +256,7 @@ def log_checkpoint_eval_metrics(
         checkpoint_step_value=checkpoint_step_value,
         artifact_ref=artifact_ref,
         eval_source=eval_source,
+        selection_rank=getattr(args, "selection_rank", ()),
     )
 
 

@@ -240,11 +240,9 @@ def _goal_train_environment(
     *,
     label: str,
 ) -> Mapping[str, Any]:
-    if "environment" in train:
-        return _require_mapping(train["environment"], label=f"{label}.train.environment")
     return _require_mapping(
-        _require_key(document, "environment", label=label),
-        label=f"{label}.environment",
+        _require_key(train, "environment", label=f"{label}.train"),
+        label=f"{label}.train.environment",
     )
 
 

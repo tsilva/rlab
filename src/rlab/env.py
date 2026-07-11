@@ -24,7 +24,7 @@ from rlab.env_registry import (
     resolve_env_provider,
 )
 from rlab.env_identity import task_config_from_train_config, validate_task_config
-from rlab.targets import GenericRetroTarget, target_for_game
+from rlab.targets import target_for_game
 from rlab.task_kernels import IdentityTaskDefinition, MarioTaskConfig, MarioTaskDefinition
 from rlab.validation import normalize_obs_crop as validate_obs_crop
 
@@ -32,12 +32,7 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 GAME = os.environ.get("RETRO_GAME", "")
-DEFAULT_STATE = os.environ.get("RETRO_STATE", "")
 DEFAULT_OBS_RESIZE_ALGORITHM = "area"
-DEFAULT_HUD_CROP_TOP = GenericRetroTarget.default_hud_crop_top
-
-def action_names_for_set(action_set: str, game: str = GAME) -> tuple[str, ...]:
-    return target_for_game(game).action_names_for_set(action_set)
 
 
 @dataclass(frozen=True)
@@ -46,7 +41,7 @@ class EnvConfig:
     game: str = GAME
     env_args: dict[str, Any] = field(default_factory=dict)
     task: dict[str, Any] = field(default_factory=dict)
-    state: str = DEFAULT_STATE
+    state: str = ""
     states: tuple[str, ...] = ()
     state_probs: tuple[float, ...] = ()
     frame_skip: int = 4
@@ -336,7 +331,7 @@ def make_eval_vec_env(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
     return make_vec_envs(config=resolve_env_config(config), n_envs=n_envs, seed=seed)
 
 
-def assert_rom_imported(game: str = GAME) -> str:
+def assert_rom_imported(game: str) -> str:
     if not game:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
     try:

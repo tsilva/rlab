@@ -68,8 +68,6 @@ from rlab.fleet_rendering import (
 
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
 DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
-DEFAULT_WATCH_STALE_OLDER_THAN_SECONDS = 300
-DEFAULT_WATCH_STALE_LIMIT = 50
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
 SHARED_RUNNER_ENV_KEYS = (
     "WANDB_API_KEY",
@@ -128,18 +126,6 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
 
 def shell_join(parts: Sequence[str]) -> str:
     return shlex.join([str(part) for part in parts])
-
-
-def selected_setup_machines(registry: MachineRegistry, machine_filter: str | None) -> list[MachineConfig]:
-    machines = (
-        [resolve_machine(registry, machine_filter)]
-        if machine_filter
-        else list(registry.machines.values())
-    )
-    selected = [machine for machine in machines if machine.backend == "docker_ssh"]
-    if not selected:
-        raise ValueError("no docker_ssh machines selected for setup-host")
-    return selected
 
 
 def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None = None) -> str:
@@ -615,14 +601,6 @@ def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContain
         output,
         required_label=JOB_CONTAINER_LABEL,
         required_value="true",
-    )
-
-
-def parse_runtime_image_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
-    return _parse_containers(
-        machine,
-        output,
-        required_label=f"{LABEL_PREFIX}runtime-image-ref",
     )
 
 
@@ -1337,34 +1315,31 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
     shared_env_file = shared_runner_env_file_from_args(args)
     color = not getattr(args, "no_color", False)
     if not args.execute:
-        while True:
-            planned = machine_available_train_slots(machine, limit=int(args.limit))
-            log_shepherd_event(
-                machine=machine.name,
-                action="reconcile",
-                result="planned",
-                mode="dry-run",
-                color=color,
-            )
-            log_shepherd_event(
-                machine=machine.name,
-                action="launch-next",
-                result="planned",
-                mode="dry-run",
-                job_kind=TRAIN_JOB_KIND,
-                planned=planned,
-                color=color,
-            )
-            log_shepherd_event(
-                machine=machine.name,
-                action="prune-image",
-                result="planned",
-                mode="dry-run",
-                color=color,
-            )
-            if args.once:
-                return 0
-            time.sleep(args.interval)
+        planned = machine_available_train_slots(machine, limit=int(args.limit))
+        log_shepherd_event(
+            machine=machine.name,
+            action="reconcile",
+            result="planned",
+            mode="dry-run",
+            color=color,
+        )
+        log_shepherd_event(
+            machine=machine.name,
+            action="launch-next",
+            result="planned",
+            mode="dry-run",
+            job_kind=TRAIN_JOB_KIND,
+            planned=planned,
+            color=color,
+        )
+        log_shepherd_event(
+            machine=machine.name,
+            action="prune-image",
+            result="planned",
+            mode="dry-run",
+            color=color,
+        )
+        return 0
 
     conn = _connect_from_args(args)
     try:
@@ -1474,25 +1449,22 @@ def cmd_ps(args: argparse.Namespace) -> int:
 
 
 def cmd_setup_host(args: argparse.Namespace) -> int:
-    registry = load_registry_from_args(args)
+    machine = resolve_machine(load_registry_from_args(args), args.host)
     runtime_image_ref = image_ref_from_args(args)
-    status = 0
-    for machine in selected_setup_machines(registry, args.host):
-        script = setup_host_script(machine, runtime_image_ref=runtime_image_ref)
-        print(f"host: {machine.name}")
-        print(script.rstrip())
-        if not args.execute:
-            print("dry_run: rerun without --dry-run to run setup over SSH")
-            continue
-        result = run_machine_shell(machine, script)
-        if result.returncode != 0:
-            status = int(result.returncode)
-    return status
+    script = setup_host_script(machine, runtime_image_ref=runtime_image_ref)
+    print(f"host: {machine.name}")
+    print(script.rstrip())
+    if not args.execute:
+        print("dry_run: rerun without --dry-run to run setup over SSH")
+        return 0
+    return int(run_machine_shell(machine, script).returncode)
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo-root", default=None)
+def add_machine_registry_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+
+
+def add_database_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
 
 
@@ -1517,11 +1489,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     status = subparsers.add_parser("status", help="Print train queue demand and active leases.")
-    add_common_args(status)
+    add_database_arg(status)
     status.set_defaults(func=cmd_status)
 
     ps = subparsers.add_parser("ps", help="List one-job containers across configured machines.")
-    add_common_args(ps)
+    add_machine_registry_arg(ps)
     ps.add_argument("--machine", help="Limit listing to one machine.")
     ps.set_defaults(func=cmd_ps)
 
@@ -1529,7 +1501,9 @@ def build_parser() -> argparse.ArgumentParser:
         "shepherd",
         help="Run the mutating one-job-container orchestration loop for one machine.",
     )
-    add_common_args(shepherd)
+    add_machine_registry_arg(shepherd)
+    add_database_arg(shepherd)
+    shepherd.add_argument("--repo-root", default=None)
     shepherd.add_argument("--machine", required=True)
     shepherd.add_argument("--limit", type=int, default=1)
     shepherd.add_argument("--interval", type=float, default=30.0, help="Polling interval in seconds.")
@@ -1547,7 +1521,8 @@ def build_parser() -> argparse.ArgumentParser:
         "watch",
         help="Run a read-only one-job-container dashboard.",
     )
-    add_common_args(watch_latest)
+    add_machine_registry_arg(watch_latest)
+    add_database_arg(watch_latest)
     watch_latest.add_argument(
         "--machine",
         required=True,
@@ -1571,7 +1546,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_latest.set_defaults(func=cmd_container_watch_dashboard)
 
     setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for job containers.")
-    add_common_args(setup)
+    add_machine_registry_arg(setup)
     setup.add_argument("--host", required=True, help="Fleet host to set up.")
     add_dry_run_arg(setup)
     add_runtime_image_args(setup)

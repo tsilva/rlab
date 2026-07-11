@@ -17,7 +17,6 @@ from stable_baselines3 import PPO
 from rlab.cli import parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
-    action_names_for_set,
     assert_provider_runtime_available,
     make_eval_vec_env,
     resolve_env_config,
@@ -215,7 +214,7 @@ def main(argv: list[str] | None = None) -> None:
             },
         )
     else:
-        action_names = action_names_for_set(task_action_set(config), game=config.game)
+        action_names = target_for_game(config.game).action_names_for_set(task_action_set(config))
         env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
         episodes = [
             run_scripted_episode(
