@@ -31,7 +31,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - `stable-retro-turbo` must preserve ROM identity, save-state starts, observations, raw signals, and engine termination across training, evaluation, and playback.
 - Atari environments must use `stable-retro-turbo`'s native `RetroVecEnv` with the packaged Stella core, not an `ale-py` vector environment constructed by rlab.
 - Breakout and Ms. Pac-Man training must use disabled autoreset and masked lane reset through the same rlab facade as Mario.
-- Breakout must automatically issue FIRE after full reset and life loss without treating life loss or level progression as an episode boundary.
+- Every Breakout policy action must include FIRE so full resets and life losses relaunch automatically without suppressing paddle movement; life loss and level progression must not be episode boundaries.
 - Official Farama Stable Retro is unsupported; `stable-retro-turbo` with rlab's native-vector lifecycle extension is the supported Retro runtime.
 - SuperMarioBros-NES Turbo must match the applicable `stable-retro-turbo` public environment contract, with every provider-specific difference explicit and validated.
 - Official ViZDoom Gymnasium environments are unsupported unless a provider supplies a registered native vector entry point with disabled/manual autoreset, masked reset, columnar signals, and rendering; scalar ViZDoom environments must not be synthesized into vectors.

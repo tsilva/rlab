@@ -83,24 +83,17 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["action"],
             {
                 "set": "breakout_minimal",
-                "auto_fire": {
-                    "action": 1,
-                    "repeat_steps": 4,
-                    "signal": "lives",
-                    "operation": "decrease",
-                },
                 "codec": {
                     "type": "discrete_lookup",
                     "values": [
-                        [0, 0, 0, 0, 0, 0, 0, 0],
                         [1, 0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 1, 0],
-                        [0, 0, 0, 0, 0, 0, 0, 1],
+                        [1, 0, 0, 0, 0, 0, 1, 0],
+                        [1, 0, 0, 0, 0, 0, 0, 1],
                     ],
                 },
             },
         )
-        self.assertEqual(train_config["task"]["signals"], {"lives": "lives"})
+        self.assertEqual(train_config["task"]["signals"], {})
         self.assertEqual(train_config["task"]["events"], {})
         self.assertEqual(
             train_config["task"]["termination"],
