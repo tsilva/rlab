@@ -11,26 +11,10 @@ from rlab.env_identity import (
     task_config_from_train_config,
 )
 from rlab.preprocessing import preprocessing_contract
+from rlab.train_config import playback_env_arg_keys
 
 
-PLAYBACK_ENV_ARG_KEYS = {
-    "env_provider": ("env_provider",),
-    "game": ("game",),
-    "env_args": ("env_args",),
-    "state": ("state",),
-    "states": ("states",),
-    "state_probs": ("state_probs",),
-    "frame_skip": ("frame_skip",),
-    "max_pool_frames": ("max_pool_frames",),
-    "sticky_action_prob": ("sticky_action_prob",),
-    "observation_size": ("observation_size",),
-    "hud_crop_top": ("hud_crop_top",),
-    "obs_crop": ("obs_crop",),
-    "obs_crop_mode": ("obs_crop_mode",),
-    "obs_crop_fill": ("obs_crop_fill",),
-    "obs_resize_algorithm": ("obs_resize_algorithm",),
-    "task": ("task",),
-}
+PLAYBACK_ENV_ARG_KEYS = playback_env_arg_keys()
 
 ENV_CONFIG_METADATA_KEYS = frozenset(
     {

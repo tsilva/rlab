@@ -18,6 +18,7 @@ from rlab.env_identity import validate_task_config
 from rlab.env_registry import env_supports_states, qualify_env_id, resolve_env_id
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
+from rlab.ranking import parse_objective_rank
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
 from rlab.validation import (
@@ -253,8 +254,7 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         _require_key(document, "eval", label=label),
         label=f"{label}.eval",
     )
-    if "episodes" in eval_section:
-        _require_int(eval_section, "episodes", label=f"{label}.eval", minimum=1)
+    _require_int(eval_section, "episodes", label=f"{label}.eval", minimum=1)
     eval_environment = eval_section.get("environment")
     if isinstance(eval_environment, Mapping):
         eval_environment_keys = {
@@ -270,20 +270,18 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             _require_key(eval_environment, "env_config", label=f"{label}.eval.environment"),
             label=f"{label}.eval.environment.env_config",
         )
+        if "max_episodes" in eval_env_config:
+            raise ValueError(
+                f"{label}.eval.environment.env_config.max_episodes moved to "
+                f"{label}.eval.episodes"
+            )
         _validate_environment_env_config(
             eval_environment,
             eval_env_config,
             label=f"{label}.eval.environment",
             require_game=True,
-            allowed_extra_keys={"max_episodes", "seed", "n_envs", "max_steps"},
+            allowed_extra_keys={"seed", "n_envs", "max_steps"},
         )
-        if "max_episodes" in eval_env_config:
-            _require_int(
-                eval_env_config,
-                "max_episodes",
-                label=f"{label}.eval.environment.env_config",
-                minimum=1,
-            )
         if "seed" in eval_env_config:
             seed = _require_int(
                 eval_env_config,
@@ -318,7 +316,7 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(f"{label}.eval.eval moved to eval.policy")
     policy = eval_section.get("policy")
     if isinstance(policy, Mapping):
-        for moved_key in ("max_episodes", "seed", "n_envs", "max_steps"):
+        for moved_key in ("seed", "n_envs", "max_steps"):
             if moved_key in policy:
                 raise ValueError(
                     f"{label}.eval.policy.{moved_key} moved to "
@@ -331,28 +329,11 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
 
 
 def _validate_rank_order(rank_order: Any, *, label: str) -> None:
-    if (
-        not isinstance(rank_order, Sequence)
-        or isinstance(rank_order, str | bytes)
-        or not rank_order
-    ):
-        raise ValueError(f"{label} must be a non-empty list")
-    for index, raw_item in enumerate(rank_order):
-        item_label = f"{label}[{index}]"
-        if isinstance(raw_item, str):
-            continue
-        item = _require_mapping(raw_item, label=item_label)
-        allowed_keys = {"metric", "aggregation", "direction"}
-        extra_keys = sorted(set(item) - allowed_keys)
-        if extra_keys:
-            raise ValueError(f"{item_label} has unexpected keys: {extra_keys}")
-        _require_non_empty_string(item, "metric", label=item_label)
-        if "aggregation" in item:
-            _require_non_empty_string(item, "aggregation", label=item_label)
-        if "direction" in item:
-            direction = _require_non_empty_string(item, "direction", label=item_label)
-            if direction not in {"maximize", "minimize"}:
-                raise ValueError(f"{item_label}.direction must be maximize or minimize")
+    if parse_objective_rank(rank_order):
+        return
+    raise ValueError(
+        f"{label} must be a non-empty list of max(metric) or min(metric) strings"
+    )
 
 
 def _validate_objective_rank(objective: Mapping[str, Any], *, label: str) -> None:

@@ -135,14 +135,18 @@ def _eval_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
         return {}
     episodes = eval_section.get("episodes")
     if episodes is None:
-        environment = eval_section.get("environment")
-        if isinstance(environment, Mapping):
-            env_config = environment.get("env_config")
-            if isinstance(env_config, Mapping):
-                episodes = env_config.get("max_episodes")
-    if episodes is None:
         return {}
-    return {"post_train_eval_episodes": copy.deepcopy(episodes)}
+    defaults: dict[str, Any] = {"post_train_eval_episodes": copy.deepcopy(episodes)}
+    environment = eval_section.get("environment")
+    if not isinstance(environment, Mapping):
+        return defaults
+    eval_config = _train_environment_section_config(environment)
+    if "n_envs" in eval_config:
+        defaults["checkpoint_eval_n_envs"] = eval_config.pop("n_envs")
+    if "max_steps" in eval_config:
+        defaults["post_train_eval_max_steps"] = eval_config.pop("max_steps")
+    defaults["checkpoint_eval_environment"] = eval_config
+    return defaults
 
 
 def _train_config_section_value(

@@ -10,6 +10,10 @@ from typing import Any
 
 from rlab.json_utils import json_safe
 from rlab.metric_names import (
+    EVAL_BEST_REWARD,
+    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+    EVAL_REWARD_MEAN,
     LEADER_CHECKPOINT_ARTIFACT_REF,
     LEADER_CHECKPOINT_BEST_REWARD,
     LEADER_CHECKPOINT_COMPLETION_RATE,
@@ -262,10 +266,10 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     if not rank:
         rank = parse_objective_rank(config.get("selection_rank"))
     rank_metrics: dict[str, Any] = {
-        "eval/done/level_change/from_rate/min": completion,
-        "eval/done/level_change/from_rate/mean": completion_mean,
-        "eval/reward/mean": reward,
-        "eval/best/reward": _first_float(summary, (LEADER_CHECKPOINT_BEST_REWARD,)),
+        EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: completion,
+        EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN: completion_mean,
+        EVAL_REWARD_MEAN: reward,
+        EVAL_BEST_REWARD: _first_float(summary, (LEADER_CHECKPOINT_BEST_REWARD,)),
         LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL: steps_to_completion_goal,
         "checkpoint_step": checkpoint_step,
     }

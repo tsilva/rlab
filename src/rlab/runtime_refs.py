@@ -188,6 +188,26 @@ def latest_runtime_image_ref(
     )[0].runtime_image_ref
 
 
+def runtime_image_ref_from_args(
+    args: Any,
+    *,
+    default_latest: bool = False,
+) -> str | None:
+    ref_file = getattr(args, "runtime_image_ref_file", None)
+    if ref_file:
+        return runtime_image_ref_from_file(Path(ref_file))
+    value = getattr(args, "runtime_image_ref", None)
+    if value:
+        return normalize_runtime_image_ref(value)
+    if not default_latest:
+        return None
+    return latest_runtime_image_ref(
+        workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
+        branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
+        artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
+    )
+
+
 def runtime_image_digest(value: str) -> str:
     match = DIGEST_IMAGE_REF_RE.fullmatch(normalize_runtime_image_ref(value))
     assert match is not None

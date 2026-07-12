@@ -10,12 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from rlab.artifacts import (
-    apply_config_defaults,
-    explicit_arg_dests,
-    load_model_metadata,
-    write_model_metadata,
-)
+from rlab.artifacts import apply_config_defaults, load_model_metadata, write_model_metadata
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
@@ -768,7 +763,3 @@ def apply_model_source_defaults(
     if metadata_path is not None:
         print(f"Wrote playback metadata: {metadata_path}", flush=True)
     return True
-
-
-def explicit_source_arg_dests(parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
-    return explicit_arg_dests(parser, argv)

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
@@ -38,13 +39,9 @@ from rlab.machines import (
     resolve_machine,
 )
 from rlab.runtime_refs import (
-    DEFAULT_IMAGE_ARTIFACT,
-    DEFAULT_IMAGE_BRANCH,
-    DEFAULT_IMAGE_WORKFLOW,
-    latest_runtime_image_ref,
     normalize_runtime_image_ref,
     runtime_image_digest_slug,
-    runtime_image_ref_from_file,
+    runtime_image_ref_from_args,
 )
 from rlab.fleet_labels import (
     JOB_CONTAINER_LABEL,
@@ -226,21 +223,6 @@ def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None =
             ]
         )
     return "\n".join(lines) + "\n"
-
-
-def image_ref_from_args(args: argparse.Namespace, *, default_latest: bool = False) -> str | None:
-    has_explicit_ref = bool(getattr(args, "runtime_image_ref", None))
-    has_ref_file = bool(getattr(args, "runtime_image_ref_file", None))
-    if default_latest and not has_explicit_ref and not has_ref_file:
-        return latest_runtime_image_ref(
-            workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
-            branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
-            artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
-        )
-    if getattr(args, "runtime_image_ref_file", None):
-        return runtime_image_ref_from_file(args.runtime_image_ref_file)
-    value = getattr(args, "runtime_image_ref", None)
-    return normalize_runtime_image_ref(value) if value else None
 
 
 def _connect_from_args(args: argparse.Namespace):
@@ -1345,33 +1327,6 @@ def cmd_container_shepherd(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.machine)
     shared_env_file = shared_runner_env_file_from_args(args)
     color = not getattr(args, "no_color", False)
-    if not args.execute:
-        planned = machine_available_train_slots(machine, limit=int(args.limit))
-        log_shepherd_event(
-            machine=machine.name,
-            action="reconcile",
-            result="planned",
-            mode="dry-run",
-            color=color,
-        )
-        log_shepherd_event(
-            machine=machine.name,
-            action="launch-next",
-            result="planned",
-            mode="dry-run",
-            job_kind=TRAIN_JOB_KIND,
-            planned=planned,
-            color=color,
-        )
-        log_shepherd_event(
-            machine=machine.name,
-            action="prune-image",
-            result="planned",
-            mode="dry-run",
-            color=color,
-        )
-        return 0
-
     conn = _connect_from_args(args)
     try:
         try:
@@ -1481,7 +1436,7 @@ def cmd_ps(args: argparse.Namespace) -> int:
 
 def cmd_setup_host(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.host)
-    runtime_image_ref = image_ref_from_args(args)
+    runtime_image_ref = runtime_image_ref_from_args(args)
     script = setup_host_script(machine, runtime_image_ref=runtime_image_ref)
     print(f"host: {machine.name}")
     print(script.rstrip())
@@ -1496,17 +1451,7 @@ def add_machine_registry_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_database_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-
-
-def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
-    parser.set_defaults(execute=True)
-    parser.add_argument(
-        "--dry-run",
-        dest="execute",
-        action="store_false",
-        help="Preview planned changes without applying them.",
-    )
+    add_direct_database_arg(parser)
 
 
 def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
@@ -1545,7 +1490,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exit when a poll or action fails instead of retrying forever.",
     )
     shepherd.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    add_dry_run_arg(shepherd)
     shepherd.set_defaults(func=cmd_container_shepherd)
 
     watch_latest = subparsers.add_parser(

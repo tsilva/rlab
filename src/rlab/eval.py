@@ -14,6 +14,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 from stable_baselines3 import PPO
 
+from rlab.cli_args import explicit_arg_dests
 from rlab.cli import parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
@@ -33,7 +34,6 @@ from rlab.eval_runner import evaluate_model_episodes
 from rlab.model_sources import (
     add_model_source_args,
     apply_model_source_defaults,
-    explicit_source_arg_dests,
     model_source_ref,
     resolve_single_model_source,
 )
@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     parser_defaults = vars(parser.parse_args([]))
-    explicit_dests = explicit_source_arg_dests(parser, argv_list)
+    explicit_dests = explicit_arg_dests(parser, argv_list)
     args = parser.parse_args(argv_list)
     args.seed = validate_eval_seed(args.seed)
     if args.n_envs < 1:

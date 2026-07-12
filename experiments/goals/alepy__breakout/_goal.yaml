@@ -48,11 +48,11 @@ train:
       reward:
         reward_mode: native
 eval:
+  episodes: 100
   environment:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_breakout_env_config
-      max_episodes: 100
     preprocessing:
       # Keep the top wall (it begins at source row 17) while removing the score.
       obs_crop:

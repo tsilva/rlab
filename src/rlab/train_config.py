@@ -230,6 +230,13 @@ def env_config_allowed_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
+def playback_env_arg_keys() -> dict[str, tuple[str, ...]]:
+    return {
+        field.dest: (field.env_config_key or field.dest,)
+        for field in env_config_arg_fields()
+    }
+
+
 def train_config_keys_owned_by(owner: FieldOwner) -> frozenset[str]:
     keys: set[str] = set()
     for field in TRAIN_CONFIG_FIELDS:
@@ -637,6 +644,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=100,
         help="Episodes per checkpoint for post-training checkpoint eval.",
+    ),
+    TrainConfigField(
+        "checkpoint_eval_environment",
+        "--checkpoint-eval-environment",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        owner="goal_objective",
+        source_section="goal_train",
+        help="Resolved goal-owned environment contract for checkpoint evaluation.",
     ),
     TrainConfigField(
         "checkpoint_eval_n_envs",

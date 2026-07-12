@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from rlab.cli_args import explicit_arg_dests
 from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env import EnvConfig
@@ -22,16 +23,6 @@ from rlab.train_config import (
 
 def build_train_command(options: Mapping[str, Any]) -> list[str]:
     return build_train_command_from_fields(options)
-
-
-def explicit_train_arg_dests(parser: argparse.ArgumentParser, argv: Sequence[str]) -> set[str]:
-    option_dests: dict[str, str] = {}
-    for action in parser._actions:
-        for option in action.option_strings:
-            option_dests[option] = action.dest
-    return {
-        option_dests[arg.split("=", 1)[0]] for arg in argv if arg.split("=", 1)[0] in option_dests
-    }
 
 
 def load_train_config_json(path: Path) -> dict[str, Any]:
@@ -76,7 +67,7 @@ def parse_json_value(value: str) -> Any:
 def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    explicit_dests = explicit_train_arg_dests(parser, argv_list or [])
+    explicit_dests = explicit_arg_dests(parser, argv_list or [])
     args = parser.parse_args(argv_list)
     args._train_config_json_fields = set()
     args._explicit_train_arg_dests = set(explicit_dests)

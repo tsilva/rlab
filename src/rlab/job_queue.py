@@ -14,15 +14,15 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 
+from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.dotenv import load_env_file
 from rlab.json_utils import json_safe
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
-    latest_runtime_image_ref,
     normalize_runtime_image_ref,
-    runtime_image_ref_from_file,
+    runtime_image_ref_from_args,
 )
 from rlab.recipe_documents import (
     assert_no_secrets,
@@ -1044,7 +1044,7 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         prog="rlab train",
         description="Create queue-backed train jobs from a checked-in recipe file.",
     )
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
+    add_direct_database_arg(parser)
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--runtime-image-ref")
     parser.add_argument(
@@ -1110,34 +1110,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
-    parser.set_defaults(execute=True)
-    parser.add_argument(
-        "--dry-run",
-        dest="execute",
-        action="store_false",
-        help="Preview planned changes without applying them.",
-    )
-
-
 def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(args.direct))
-
-
-def runtime_image_ref_from_args(
-    args: argparse.Namespace, *, default_latest: bool = False
-) -> str | None:
-    if getattr(args, "runtime_image_ref_file", None):
-        return runtime_image_ref_from_file(args.runtime_image_ref_file)
-    if getattr(args, "runtime_image_ref", None):
-        return normalize_runtime_image_ref(args.runtime_image_ref)
-    if default_latest:
-        return latest_runtime_image_ref(
-            workflow=getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW),
-            branch=getattr(args, "image_branch", DEFAULT_IMAGE_BRANCH),
-            artifact_name=getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT),
-        )
-    return None
 
 
 def cmd_setup(args: argparse.Namespace) -> int:

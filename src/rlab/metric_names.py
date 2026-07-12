@@ -39,6 +39,7 @@ TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate/min/la
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "train/info/level_complete/rate/mean/last"
 
 EVAL_DONE_ALL = "eval/done/all"
+EVAL_DONE_ROOT = "eval/done/"
 EVAL_DONE_LEVEL_CHANGE = "eval/done/level_change"
 EVAL_DONE_LEVEL_CHANGE_RATE = "eval/done/level_change/rate"
 EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "eval/done/level_change/from_rate/min"
@@ -64,6 +65,9 @@ EVAL_CHECKPOINT_STEP = "eval/checkpoint/step"
 EVAL_CHECKPOINT_ARTIFACT = "eval/checkpoint/artifact"
 EVAL_CONFIG_HUD_CROP_TOP = "eval/config/hud_crop_top"
 EVAL_DURATION_SECONDS = "eval/duration/seconds"
+EVAL_SOURCE = "eval/source"
+EVAL_EPISODES = "eval/episodes"
+EVAL_INFO_ROOT = "eval/info/"
 
 CHECKPOINT_EVAL_CANDIDATE_PASS = "checkpoint_eval/candidate/pass"
 CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "checkpoint_eval/candidate/stage_index"
@@ -95,6 +99,16 @@ def metric_path_segment(value: object) -> str:
 
 def stat_metric(prefix: str, stat: str) -> str:
     return f"{prefix}/{stat}"
+
+
+def checkpoint_eval_stage_metric(stage_name: str, name: str) -> str:
+    return f"checkpoint_eval/{stage_name}/{name}"
+
+
+def staged_metric_name(stage_name: str, metric_name: str) -> str:
+    if metric_name == GLOBAL_STEP:
+        return metric_name
+    return checkpoint_eval_stage_metric(stage_name, metric_name.removeprefix("eval/"))
 
 
 def train_done_reason_metric(reason: object) -> str:

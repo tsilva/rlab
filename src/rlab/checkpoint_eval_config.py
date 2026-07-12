@@ -7,13 +7,6 @@ from typing import Any
 from rlab.early_stop import normalize_early_stop_config
 
 
-def staged_metric_name(stage_name: str, metric_name: str) -> str:
-    if metric_name == "global_step":
-        return metric_name
-    suffix = metric_name.removeprefix("eval/")
-    return f"checkpoint_eval/{stage_name}/{suffix}"
-
-
 def normalize_checkpoint_eval_stages(
     value: Any,
     *,

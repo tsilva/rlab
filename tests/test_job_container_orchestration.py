@@ -84,6 +84,10 @@ class MachineRegistryTests(unittest.TestCase):
 
 
 class FleetShepherdSplitTests(unittest.TestCase):
+    def test_shepherd_rejects_synthetic_dry_run(self) -> None:
+        with self.assertRaises(SystemExit):
+            fleet.build_parser().parse_args(["shepherd", "--machine", "beast-test", "--dry-run"])
+
     def test_parser_exposes_shepherd_command(self) -> None:
         args = fleet.build_parser().parse_args(
             ["shepherd", "--machine", "beast-test", "--limit", "5", "--once", "--no-color"]
@@ -377,40 +381,6 @@ class FleetShepherdSplitTests(unittest.TestCase):
         reconcile.assert_not_called()
         launch.assert_not_called()
         self.assertTrue(conn.closed)
-
-    def test_shepherd_dry_run_plans_reconcile_fill_and_prune_without_database(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            args = fleet.build_parser().parse_args(
-                [
-                    "shepherd",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--limit",
-                    "3",
-                    "--once",
-                    "--dry-run",
-                    "--no-color",
-                ]
-            )
-
-            with (
-                mock.patch.object(fleet, "machine_available_train_slots", return_value=2),
-                mock.patch.object(fleet, "_connect_from_args") as connect,
-                mock.patch.object(fleet, "log_shepherd_event") as log_event,
-            ):
-                status = fleet.cmd_container_shepherd(args)
-
-        self.assertEqual(status, 0)
-        connect.assert_not_called()
-        self.assertEqual(
-            [call.kwargs["action"] for call in log_event.call_args_list],
-            ["reconcile", "launch-next", "prune-image"],
-        )
-        self.assertEqual(log_event.call_args_list[1].kwargs["planned"], 2)
 
 
 class RuntimeImagePruneTests(unittest.TestCase):

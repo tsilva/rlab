@@ -16,6 +16,7 @@ from rlab.eval_metrics import (
     run_eval_episode,
     summarize_episode_results,
 )
+from rlab.metric_names import EVAL_DURATION_SECONDS
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.video import write_video
 
@@ -218,5 +219,5 @@ def evaluate_model_episodes(
         metrics["best_episode_video"] = str(video_path)
         written_video = video_path
 
-    metrics["eval/duration/seconds"] = time.perf_counter() - started_at
+    metrics[EVAL_DURATION_SECONDS] = time.perf_counter() - started_at
     return metrics, written_video

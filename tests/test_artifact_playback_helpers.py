@@ -21,7 +21,6 @@ from rlab.artifacts import (
     apply_config_defaults,
     build_s3_artifact_uri,
     checkpoint_step,
-    explicit_arg_dests,
     load_playback_env_config,
     load_model_metadata,
     log_wandb_model_artifact,
@@ -30,6 +29,7 @@ from rlab.artifacts import (
     require_training_metadata,
     write_model_metadata,
 )
+from rlab.cli_args import explicit_arg_dests
 from rlab.cli import build_parser as build_train_parser
 from rlab.cli import build_train_command
 from rlab.env import (

@@ -361,9 +361,9 @@ Reward share metrics compare absolute component magnitudes within a rollout.
 ## Evaluation Metrics
 
 These are logged by post-training checkpoint eval and by local `rlab eval` model checks.
-Post-training checkpoint eval preserves `level_change` as a terminal event while dropping life-loss
-termination. The eval loop keeps running after observed life-loss events, but stops when the level
-changes, on native env done, or at the configured max-step horizon.
+Post-training checkpoint eval uses the goal's declared `eval.environment` contract, including its
+provider, preprocessing, task termination, and reset semantics. The current Mario goals choose
+`level_change` as terminal while allowing life-loss observations to remain non-terminal.
 
 | Metric | Meaning |
 | --- | --- |
@@ -383,6 +383,7 @@ changes, on native env done, or at the configured max-step horizon.
 | `eval/done/terminated/rate` | `eval/done/terminated / eval/done/all`. |
 | `eval/done/unclassified` | Eval episodes that ended without level completion or max-step truncation. |
 | `eval/done/unclassified/rate` | `eval/done/unclassified / eval/done/all`. |
+| `eval/info/<name>` | Numeric task or provider information emitted by an eval episode, flattened under the canonical `eval/info/` prefix. |
 | `eval/death/count` | Eval episodes where the target-specific death flag was observed at least once during the eval horizon. Currently Mario-specific. |
 | `eval/death/rate` | `eval/death/count / eval episodes`. Currently Mario-specific. |
 | `eval/best/reward` | Return of the best eval episode. Mario ranks best episodes by completion, then max X, then reward; generic targets rank by reward. |
@@ -390,6 +391,8 @@ changes, on native env done, or at the configured max-step horizon.
 | `eval/checkpoint/step` | Checkpoint timestep being evaluated by the async eval worker. Eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by the async eval worker. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
+| `eval/source` | Producer of this eval payload, such as `async_worker` or a staged async worker name. |
+| `eval/episodes` | Number of episodes summarized in this eval payload. |
 | `eval/duration/seconds` | Wall-clock seconds spent inside `evaluate_model_episodes(...)`, including episode rollout and any requested best-episode video rendering. Logged to W&B for checkpoint eval when present. |
 | `checkpoint_eval/<stage>/<eval_metric_suffix>` | Training-time staged checkpoint eval metric. These mirror canonical `eval/*` metrics under a stage prefix, for example `checkpoint_eval/screen/done/level_change/from_rate/min`. They are for cheap async screening and are not promotion-quality full eval metrics. |
 | `checkpoint_eval/<stage>/pass` | `1` when the stage pass rules matched for that checkpoint, otherwise `0`. The default Mario `screen` and `confirm` stages require perfect per-start completion. |

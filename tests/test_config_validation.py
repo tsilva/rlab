@@ -13,6 +13,7 @@ from rlab.config_validation import (
     validate_experiment_tree,
     validate_goal_contract,
 )
+from rlab import config_validation
 from rlab.job_queue import load_recipe_document
 from rlab.main import COMMANDS
 
@@ -54,6 +55,12 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertNotIn("state", train_config)
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 16)
+        self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
+        self.assertEqual(
+            train_config["checkpoint_eval_environment"]["game"],
+            "Breakout-Atari2600-v0",
+        )
+        self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)
         self.assertEqual(train_config["frame_skip"], 4)
         self.assertTrue(train_config["max_pool_frames"])
@@ -124,7 +131,7 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - train/info/level_complete/rate/min/last
+  - max(train/info/level_complete/rate/min/last)
 train:
   early_stop:
   - metric: train/info/level_complete/rate/min/last
@@ -156,6 +163,7 @@ train:
         max_episode_steps: 4500
       reward: {}
 eval:
+  episodes: 100
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -166,7 +174,6 @@ eval:
       observation_size: 84
       hud_crop_top: 32
       obs_resize_algorithm: area
-      max_episodes: 100
     task:
       id: mario
       action: {set: simple}
@@ -186,6 +193,13 @@ eval:
             )
 
             validate_goal_contract(goal_path, root)
+
+    def test_goal_validator_rejects_rank_forms_the_runtime_cannot_parse(self) -> None:
+        with self.assertRaisesRegex(ValueError, "max\\(metric\\) or min\\(metric\\)"):
+            config_validation._validate_rank_order(
+                [{"metric": "eval/reward/mean", "direction": "maximize"}],
+                label="objective.rank",
+            )
 
     def test_goal_validator_requires_slug_to_match_goal_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -223,7 +237,7 @@ objective:
     operator: '>'
     threshold: 0.99
   rank:
-  - train/info/level_complete/rate/min/last
+  - max(train/info/level_complete/rate/min/last)
 train:
   environment:
     env_config:
@@ -244,6 +258,7 @@ train:
         termination: {max_episode_steps: 4500}
         reward: {reward_mode: native}
 eval:
+  episodes: 100
   environment:
     env_config:
       env_provider: stable-retro-turbo
@@ -261,7 +276,6 @@ eval:
         events: {}
         termination: {max_episode_steps: 4500}
         reward: {reward_mode: native}
-      max_episodes: 100
 """,
                 encoding="utf-8",
             )
@@ -284,7 +298,7 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - train/info/level_complete/rate/min/last
+  - max(train/info/level_complete/rate/min/last)
 train:
   early_stop:
   - metric: train/info/level_complete/rate/min/last

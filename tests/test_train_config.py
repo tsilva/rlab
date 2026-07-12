@@ -8,10 +8,12 @@ from pathlib import Path
 
 from rlab.cli import parse_train_args
 from rlab.env import EnvConfig
+from rlab.env_metadata import PLAYBACK_ENV_ARG_KEYS
 from rlab.train_config import (
     add_env_config_args,
     add_train_config_args,
     build_train_command_from_fields,
+    env_config_arg_fields,
     train_config_field_for_key,
     validate_train_config_fields,
     validate_train_config_value,
@@ -19,6 +21,15 @@ from rlab.train_config import (
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):
+    def test_playback_argument_registry_is_derived_from_environment_fields(self) -> None:
+        self.assertEqual(
+            PLAYBACK_ENV_ARG_KEYS,
+            {
+                field.dest: (field.env_config_key or field.dest,)
+                for field in env_config_arg_fields()
+            },
+        )
+
     def test_train_config_json_rejects_invalid_field_types_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train.json"

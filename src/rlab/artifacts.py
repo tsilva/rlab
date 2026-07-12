@@ -49,16 +49,6 @@ class ArtifactLogTiming:
     local_save_seconds: float | None = None
 
 
-def explicit_arg_dests(parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
-    option_dests: dict[str, str] = {}
-    for action in parser._actions:
-        for option in action.option_strings:
-            option_dests[option] = action.dest
-    return {
-        option_dests[arg.split("=", 1)[0]] for arg in argv if arg.split("=", 1)[0] in option_dests
-    }
-
-
 def stable_json_hash(value: Any) -> str:
     data = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()

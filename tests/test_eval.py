@@ -21,10 +21,11 @@ from rlab.metric_names import EVAL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
 from rlab.task_kernels import Outcome
 from rlab.checkpoint_eval_worker import (
-    eval_config_from_training_config,
+    checkpoint_eval_config_from_args,
     eval_score as eval_checkpoint_score,
     log_checkpoint_eval_metrics,
 )
+from rlab.task_kernels import default_task_document
 
 
 class FakeWandbRun:
@@ -101,6 +102,7 @@ def log_checkpoint_eval(
         checkpoint_path=Path(f"/tmp/model_{step}_steps.zip"),
         checkpoint_step_value=step,
         artifact_ref=artifact_ref,
+        config=EnvConfig(game="SuperMarioBros-Nes-v0", hud_crop_top=32),
     )
 
 
@@ -281,30 +283,42 @@ class EvalMetricTests(unittest.TestCase):
 
         self.assertEqual(run.summary["leader/checkpoint/steps_to_completion_goal"], 3500000)
 
-    def test_checkpoint_eval_config_keeps_level_change_done_event(self) -> None:
-        config = EnvConfig(
-            game="SuperMarioBros-Nes-v0",
-            task={
-                "termination": {
-                    "failure": ["life_loss"],
-                    "success": ["level_change"],
-                },
-            },
+    def test_checkpoint_eval_config_uses_goal_termination(self) -> None:
+        task = default_task_document("mario")
+        task["termination"] = {
+            **task["termination"],
+            "failure": [],
+            "success": ["level_change"],
+        }
+        eval_config = checkpoint_eval_config_from_args(
+            argparse.Namespace(
+                checkpoint_eval_environment={
+                    "env_provider": "supermariobrosnes-turbo",
+                    "game": "SuperMarioBros-Nes-v0",
+                    "task": task,
+                }
+            )
         )
-
-        eval_config = eval_config_from_training_config(config)
 
         self.assertEqual(eval_config.task["termination"]["failure"], [])
         self.assertEqual(eval_config.task["termination"]["success"], ["level_change"])
-        self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
 
-    def test_checkpoint_eval_config_drops_life_loss_done_event(self) -> None:
-        config = EnvConfig(
-            game="SuperMarioBros-Nes-v0",
-            task={"termination": {"failure": ["life_loss"], "success": []}},
+    def test_checkpoint_eval_config_does_not_inherit_training_termination(self) -> None:
+        task = default_task_document("mario")
+        task["termination"] = {
+            **task["termination"],
+            "failure": [],
+            "success": [],
+        }
+        eval_config = checkpoint_eval_config_from_args(
+            argparse.Namespace(
+                checkpoint_eval_environment={
+                    "env_provider": "supermariobrosnes-turbo",
+                    "game": "SuperMarioBros-Nes-v0",
+                    "task": task,
+                }
+            )
         )
-
-        eval_config = eval_config_from_training_config(config)
 
         self.assertEqual(eval_config.task["termination"]["failure"], [])
         self.assertEqual(eval_config.task["termination"]["success"], [])
