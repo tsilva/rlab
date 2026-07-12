@@ -2,11 +2,10 @@ recipe_id: base
 description: >-
   Seed {seed} trains a PPO Breakout policy for 50M steps on stable-retro-turbo's
   RetroVecEnv with the packaged Stella core and Start save state, masking the
-  score band while preserving the top wall. The policy uses a three-action
-  FIRE/FIRE+LEFT/FIRE+RIGHT discrete lookup that keeps the launch button held
-  without suppressing paddle movement, while the environment contract keeps
-  Atari choices in YAML rather than borrowing Mario-specific wrappers or state
-  semantics.
+  score band while preserving the top wall. The policy uses the standard
+  NOOP/FIRE/LEFT/RIGHT discrete lookup while Stable Retro owns reset-time FIRE.
+  The environment contract keeps Atari choices in YAML rather than borrowing
+  Mario-specific wrappers or state semantics.
 train:
   policy:
     timesteps: 50000000

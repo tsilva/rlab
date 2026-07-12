@@ -24,6 +24,7 @@ train:
         env_args:
           num_threads: 4
           reward_clip: true
+          use_fire_reset: true
     preprocessing:
       frame_skip: 4
       max_pool_frames: true
@@ -45,12 +46,12 @@ train:
         codec:
           type: discrete_lookup
           # Stable Retro Atari order: BUTTON, unused, SELECT, RESET,
-          # UP, DOWN, LEFT, RIGHT. Keep FIRE held so the executed action always
-          # matches the policy choice while launches happen automatically.
+          # UP, DOWN, LEFT, RIGHT. Reset-time FIRE is provider-owned.
           values:
-          - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE / stationary
-          - [1, 0, 0, 0, 0, 0, 1, 0] # FIRE + LEFT
-          - [1, 0, 0, 0, 0, 0, 0, 1] # FIRE + RIGHT
+          - [0, 0, 0, 0, 0, 0, 0, 0] # NOOP
+          - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE
+          - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
+          - [0, 0, 0, 0, 0, 0, 0, 1] # RIGHT
       signals: {}
       events: {}
       # Preserve the previous 216,000 raw-frame cap at frame_skip=4.
@@ -70,6 +71,7 @@ eval:
       env_args:
         num_threads: 4
         reward_clip: false
+        use_fire_reset: true
     preprocessing:
       # Keep the top wall (it begins at source row 17) while removing the score.
       obs_crop:

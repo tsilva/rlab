@@ -56,6 +56,7 @@ class ConfigValidationTests(unittest.TestCase):
             {
                 "num_threads": 4,
                 "reward_clip": True,
+                "use_fire_reset": True,
             },
         )
         self.assertEqual(train_config["state"], "Start")
@@ -69,7 +70,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertIs(train_config["env_args"]["reward_clip"], True)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["env_args"],
-            {"num_threads": 4, "reward_clip": False},
+            {"num_threads": 4, "reward_clip": False, "use_fire_reset": True},
         )
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)
@@ -86,9 +87,10 @@ class ConfigValidationTests(unittest.TestCase):
                 "codec": {
                     "type": "discrete_lookup",
                     "values": [
+                        [0, 0, 0, 0, 0, 0, 0, 0],
                         [1, 0, 0, 0, 0, 0, 0, 0],
-                        [1, 0, 0, 0, 0, 0, 1, 0],
-                        [1, 0, 0, 0, 0, 0, 0, 1],
+                        [0, 0, 0, 0, 0, 0, 1, 0],
+                        [0, 0, 0, 0, 0, 0, 0, 1],
                     ],
                 },
             },
@@ -147,6 +149,11 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["game"], "MsPacman-Atari2600-v0")
         self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["env_args"]["num_threads"], 4)
+        self.assertIs(train_config["env_args"]["use_fire_reset"], True)
+        self.assertIs(
+            train_config["checkpoint_eval_environment"]["env_args"]["use_fire_reset"],
+            True,
+        )
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])

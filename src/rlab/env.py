@@ -238,14 +238,6 @@ def task_action_values(config: EnvConfig) -> tuple[Any, ...] | None:
     return tuple(values) if isinstance(values, list | tuple) else None
 
 
-def task_auto_fire(config: EnvConfig) -> Mapping[str, Any]:
-    action = config.task.get("action", {})
-    if not isinstance(action, Mapping):
-        return {}
-    value = action.get("auto_fire", {})
-    return value if isinstance(value, Mapping) else {}
-
-
 def task_termination(config: EnvConfig) -> Mapping[str, Any]:
     value = config.task.get("termination", {})
     return value if isinstance(value, Mapping) else {}
@@ -298,7 +290,6 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
     if task_id != "identity":
         raise ValueError(f"unknown task kernel {task_id!r}")
     action_values = task_action_values(config)
-    auto_fire = task_auto_fire(config)
     if task_action_set(config) != "native" and action_values is None:
         raise ValueError(
             "generic native-vector tasks require native actions or a discrete lookup codec"
@@ -320,13 +311,6 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
         observation_source_shape=source_shape,
         max_episode_steps=task_max_episode_steps(config),
         action_values=action_values,
-        auto_action_id=(int(auto_fire["action"]) if auto_fire else None),
-        auto_action_repeat_steps=(int(auto_fire["repeat_steps"]) if auto_fire else 0),
-        auto_action_signal=(
-            config.task.get("signals", {}).get(auto_fire.get("signal"))
-            if auto_fire
-            else None
-        ),
     ).bind(descriptor, n_envs)
 
 

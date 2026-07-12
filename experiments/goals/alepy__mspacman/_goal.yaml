@@ -24,6 +24,7 @@ train:
         env_args:
           num_threads: 4
           reward_clip: true
+          use_fire_reset: true
     preprocessing:
       frame_skip: 4
       max_pool_frames: true

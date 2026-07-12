@@ -249,35 +249,6 @@ class ProviderContractTests(unittest.TestCase):
                 action_values=({"attack": [0, 0], "turn": 7},)
             ).bind(descriptor, provider.num_envs)
 
-    def test_identity_auto_action_runs_after_reset_and_signal_decrease(self):
-        provider = DeterministicNativeVectorProvider()
-        descriptor = descriptor_for(provider)
-        kernel = IdentityTaskDefinition(
-            action_values=([0, 0, 0], [1, 0, 0]),
-            auto_action_id=1,
-            auto_action_repeat_steps=2,
-            auto_action_signal="lives",
-        ).bind(descriptor, provider.num_envs)
-        runtime = BatchRuntime(provider, descriptor, kernel, run_seed=17)
-        policy_noop = np.zeros(provider.num_envs, dtype=np.int64)
-
-        runtime.reset()
-        runtime.step(policy_noop)
-        runtime.step(policy_noop)
-        runtime.step(policy_noop)
-        np.testing.assert_array_equal(provider.step_actions[0], [[1, 0, 0], [1, 0, 0]])
-        np.testing.assert_array_equal(provider.step_actions[1], [[1, 0, 0], [1, 0, 0]])
-        np.testing.assert_array_equal(provider.step_actions[2], [[0, 0, 0], [0, 0, 0]])
-
-        provider.queue_step(lives=[2, 3])
-        life_loss_step = runtime.step(policy_noop)
-        next_step = runtime.step(policy_noop)
-
-        self.assertFalse(np.any(life_loss_step.dones))
-        self.assertFalse(np.any(next_step.dones))
-        np.testing.assert_array_equal(provider.step_actions[-1], [[1, 0, 0], [0, 0, 0]])
-
-
 class BatchRuntimeTests(unittest.TestCase):
     def make_identity_runtime(self):
         provider = DeterministicNativeVectorProvider()
