@@ -132,7 +132,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(document["recipe_id"], "stable-updates")
         self.assertEqual(train_config["learning_rate"], 2.5e-4)
         self.assertEqual(train_config["learning_rate_final"], 2.5e-5)
-        self.assertEqual(train_config["learning_rate_schedule_timesteps"], 50_000_000)
+        self.assertEqual(train_config["learning_rate_schedule_timesteps"], 100_000_000)
         self.assertEqual(train_config["target_kl"], 0.03)
         self.assertIs(train_config["env_args"]["reward_clip"], True)
         self.assertIs(

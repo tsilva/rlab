@@ -1,6 +1,6 @@
 recipe_id: base
 description: >-
-  Seed {seed} trains a PPO Breakout policy for 50M steps on stable-retro-turbo's
+  Seed {seed} trains a PPO Breakout policy for 100M steps on stable-retro-turbo's
   RetroVecEnv with the packaged Stella core and Start save state, masking the
   score band while preserving the top wall. The policy uses the standard
   NOOP/FIRE/LEFT/RIGHT discrete lookup while Stable Retro owns reset-time FIRE.
@@ -8,7 +8,7 @@ description: >-
   Mario-specific wrappers or state semantics.
 train:
   policy:
-    timesteps: 50000000
+    timesteps: 100000000
     n_steps: 128
     batch_size: 256
     n_epochs: 4
