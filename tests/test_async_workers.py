@@ -115,7 +115,6 @@ class AsyncWorkerTests(unittest.TestCase):
             row = store.pending_artifact_uploads()[0]
 
             with (
-                patch("rlab.artifact_worker.resume_wandb_run", return_value=FakeWandbRun()),
                 patch(
                     "rlab.artifact_worker.log_wandb_model_artifact",
                     side_effect=RuntimeError("wandb 503"),
@@ -127,6 +126,7 @@ class AsyncWorkerTests(unittest.TestCase):
                     config=EnvConfig(),
                     run_dir=run_dir,
                     row=row,
+                    wandb_run=FakeWandbRun(),
                 )
 
             retry_rows = store.pending_artifact_uploads()
@@ -166,9 +166,10 @@ class AsyncWorkerTests(unittest.TestCase):
 
             with (
                 patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
-                patch("rlab.checkpoint_eval_worker.evaluate_model_episodes", return_value=(metrics, None)),
-                patch("rlab.checkpoint_eval_worker.resume_wandb_run", return_value=FakeWandbRun()),
-                patch("rlab.checkpoint_eval_worker.log_checkpoint_eval_metrics") as log_eval,
+                patch(
+                    "rlab.checkpoint_eval_worker.evaluate_model_episodes",
+                    return_value=(metrics, None),
+                ),
             ):
                 process_eval(
                     store=store,
@@ -181,9 +182,9 @@ class AsyncWorkerTests(unittest.TestCase):
             self.assertEqual(store.latest_metric(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN), 1.0)
             self.assertEqual(store.latest_metric(EVAL_DURATION_SECONDS), 12.5)
             self.assertEqual(store.phase_counts()["evals:succeeded"], 1)
-            log_eval.assert_called_once()
-            self.assertEqual(log_eval.call_args.kwargs["eval_source"], "async_worker")
-            self.assertEqual(log_eval.call_args.kwargs["checkpoint_step_value"], 200)
+            frames = store.pending_metric_frames()
+            self.assertEqual([frame["kind"] for frame in frames], ["checkpoint_eval"])
+            self.assertEqual(frames[0]["step"], 200)
 
             with store.connection() as conn:
                 row = conn.execute(
@@ -212,15 +213,12 @@ class AsyncWorkerTests(unittest.TestCase):
             stages = checkpoint_eval_stages()
             store.ensure_checkpoint_eval_stages(stages)
             row = store.pending_checkpoint_eval_stages()[0]
-            wandb_run = FakeWandbRun()
-
             with (
                 patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
                 patch(
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=10, completion=0.9), None),
                 ),
-                patch("rlab.checkpoint_eval_worker.resume_wandb_run", return_value=wandb_run),
             ):
                 process_eval(
                     store=store,
@@ -232,19 +230,14 @@ class AsyncWorkerTests(unittest.TestCase):
 
             self.assertIsNone(store.latest_metric(EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN))
             self.assertEqual(
-                store.latest_metric(
-                    "checkpoint_eval/screen/done/level_change/from_rate/min"
-                ),
+                store.latest_metric("checkpoint_eval/screen/done/level_change/from_rate/min"),
                 0.9,
             )
             self.assertEqual(store.latest_metric("checkpoint_eval/screen/pass"), 0.0)
             self.assertIsNone(store.latest_metric(CHECKPOINT_EVAL_CANDIDATE_PASS))
             self.assertEqual(store.phase_counts()["evals:non_candidate"], 1)
             self.assertEqual(store.phase_counts()["eval_stages:succeeded"], 1)
-            self.assertTrue(wandb_run.logged)
-            self.assertFalse(
-                any(key.startswith("eval/") for key in wandb_run.logged[0]),
-            )
+            self.assertEqual(store.pending_metric_frames()[0]["kind"], "history")
             with store.connection() as conn:
                 result = conn.execute(
                     "SELECT metrics_json FROM eval_results WHERE checkpoint_id = ?",
@@ -278,7 +271,6 @@ class AsyncWorkerTests(unittest.TestCase):
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=10, completion=1.0), None),
                 ),
-                patch("rlab.checkpoint_eval_worker.resume_wandb_run", return_value=FakeWandbRun()),
             ):
                 process_eval(
                     store=store,
@@ -298,7 +290,6 @@ class AsyncWorkerTests(unittest.TestCase):
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=30, completion=1.0), None),
                 ),
-                patch("rlab.checkpoint_eval_worker.resume_wandb_run", return_value=FakeWandbRun()),
             ):
                 process_eval(
                     store=store,

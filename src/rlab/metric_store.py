@@ -93,6 +93,42 @@ CREATE INDEX IF NOT EXISTS metric_observations_name_id_idx
 
 CREATE INDEX IF NOT EXISTS metric_observations_source_idx
   ON metric_observations (source, id DESC);
+
+CREATE TABLE IF NOT EXISTS metric_frames (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  step INTEGER,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'history',
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  published_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS metric_frames_status_idx
+  ON metric_frames (status, id);
+
+CREATE TABLE IF NOT EXISTS metric_latest (
+  name TEXT PRIMARY KEY,
+  value REAL NOT NULL,
+  step INTEGER,
+  source TEXT NOT NULL,
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  local_latest_step INTEGER,
+  published_step INTEGER,
+  publisher_heartbeat REAL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at REAL NOT NULL
+);
 """
 
 
@@ -133,8 +169,10 @@ class MetricStore:
         source: str,
         checkpoint_step: int | None = None,
         created_at: float | None = None,
+        publish: bool = True,
     ) -> int:
-        rows: list[tuple[str, float, int | None, str, int | None, float]] = []
+        del checkpoint_step  # retained for API compatibility; the frame already carries its step.
+        payload: dict[str, float] = {}
         now = time.time() if created_at is None else created_at
         for name, value in metrics.items():
             if isinstance(value, bool) or not isinstance(value, int | float):
@@ -142,32 +180,258 @@ class MetricStore:
             numeric = float(value)
             if not math.isfinite(numeric):
                 continue
-            rows.append((str(name), numeric, step, source, checkpoint_step, now))
-        if not rows:
+            payload[str(name)] = numeric
+        if not payload:
             return 0
+        payload.setdefault("global_step", float(step) if step is not None else 0.0)
+        event_id = self._metric_event_id(source=source, step=step, payload=payload)
         with self.connection() as conn:
+            if publish:
+                conn.execute(
+                    """
+                    INSERT INTO metric_frames
+                      (event_id, step, source, kind, payload_json, status, created_at, updated_at)
+                    VALUES (?, ?, ?, 'history', ?, 'pending', ?, ?)
+                    ON CONFLICT(event_id) DO NOTHING
+                    """,
+                    (event_id, step, source, json.dumps(payload, sort_keys=True), now, now),
+                )
             conn.executemany(
                 """
-                INSERT INTO metric_observations
-                  (name, value, step, source, checkpoint_step, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO metric_latest (name, value, step, source, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                  value = excluded.value,
+                  step = excluded.step,
+                  source = excluded.source,
+                  updated_at = excluded.updated_at
                 """,
-                rows,
+                [(name, value, step, source, now) for name, value in payload.items()],
             )
-        return len(rows)
+            conn.execute(
+                """
+                INSERT INTO telemetry_state (singleton, local_latest_step, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  local_latest_step = MAX(COALESCE(local_latest_step, 0), COALESCE(excluded.local_latest_step, 0)),
+                  updated_at = excluded.updated_at
+                """,
+                (step, now),
+            )
+        return len(payload) - (1 if "global_step" not in metrics else 0)
+
+    @staticmethod
+    def _metric_event_id(*, source: str, step: int | None, payload: Mapping[str, object]) -> str:
+        encoded = json.dumps(
+            {"source": source, "step": step, "payload": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def enqueue_event(
+        self,
+        *,
+        kind: str,
+        payload: Mapping[str, object],
+        step: int | None,
+        source: str,
+        event_id: str | None = None,
+        created_at: float | None = None,
+    ) -> str:
+        now = time.time() if created_at is None else created_at
+        normalized = dict(payload)
+        if step is not None:
+            normalized.setdefault("global_step", step)
+        event_id = event_id or self._metric_event_id(
+            source=source, step=step, payload={"kind": kind, **normalized}
+        )
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO metric_frames
+                  (event_id, step, source, kind, payload_json, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
+                    event_id,
+                    step,
+                    source,
+                    kind,
+                    json.dumps(normalized, sort_keys=True, default=str),
+                    now,
+                    now,
+                ),
+            )
+        return event_id
+
+    def pending_metric_frames(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM metric_frames
+                WHERE status IN ('pending', 'failed_retryable')
+                ORDER BY id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_metric_frame(self, frame_id: int) -> bool:
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE metric_frames
+                SET status = 'publishing', attempts = attempts + 1, updated_at = ?
+                WHERE id = ? AND status IN ('pending', 'failed_retryable')
+                """,
+                (now, frame_id),
+            )
+        return cursor.rowcount == 1
+
+    def mark_metric_frame_published(self, frame_id: int, *, step: int | None) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE metric_frames
+                SET status = 'published', last_error = NULL, published_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, frame_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO telemetry_state
+                  (singleton, published_step, publisher_heartbeat, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  published_step = MAX(COALESCE(published_step, 0), COALESCE(excluded.published_step, 0)),
+                  publisher_heartbeat = excluded.publisher_heartbeat,
+                  last_error = NULL,
+                  updated_at = excluded.updated_at
+                """,
+                (step, now, now),
+            )
+
+    def mark_metric_frame_failed(self, frame_id: int, error: str) -> None:
+        now = time.time()
+        message = error[:4000]
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE metric_frames
+                SET status = 'failed_retryable', last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (message, now, frame_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO telemetry_state
+                  (singleton, publisher_heartbeat, retry_count, last_error, updated_at)
+                VALUES (1, ?, 1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  publisher_heartbeat = excluded.publisher_heartbeat,
+                  retry_count = retry_count + 1,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at
+                """,
+                (now, message, now),
+            )
+
+    def reset_interrupted_metric_frames(self) -> int:
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE metric_frames
+                SET status = 'failed_retryable', last_error = 'publisher interrupted', updated_at = ?
+                WHERE status = 'publishing'
+                """,
+                (now,),
+            )
+        return cursor.rowcount
+
+    def telemetry_health(self) -> dict[str, object]:
+        with self.connection() as conn:
+            state = conn.execute("SELECT * FROM telemetry_state WHERE singleton = 1").fetchone()
+            backlog = conn.execute(
+                """
+                SELECT count(*) AS pending_frames, min(created_at) AS oldest_created_at
+                FROM metric_frames WHERE status != 'published'
+                """
+            ).fetchone()
+        result = dict(state) if state is not None else {}
+        result.update(dict(backlog))
+        return result
+
+    def touch_publisher(self) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO telemetry_state (singleton, publisher_heartbeat, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  publisher_heartbeat = excluded.publisher_heartbeat,
+                  updated_at = excluded.updated_at
+                """,
+                (now, now),
+            )
+
+    def record_publisher_error(self, error: str) -> None:
+        now = time.time()
+        message = error[:4000]
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO telemetry_state
+                  (singleton, publisher_heartbeat, retry_count, last_error, updated_at)
+                VALUES (1, ?, 1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  publisher_heartbeat = excluded.publisher_heartbeat,
+                  retry_count = retry_count + 1,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at
+                """,
+                (now, message, now),
+            )
 
     def latest_metric(self, name: str) -> float | None:
         with self.connection() as conn:
             row = conn.execute(
                 """
-                SELECT value FROM metric_observations
-                WHERE name = ?
-                ORDER BY id DESC
-                LIMIT 1
+                SELECT value FROM metric_latest WHERE name = ?
                 """,
                 (name,),
             ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT value FROM metric_observations
+                    WHERE name = ? ORDER BY id DESC LIMIT 1
+                    """,
+                    (name,),
+                ).fetchone()
         return None if row is None else float(row["value"])
+
+    def reset_interrupted_artifact_uploads(self) -> int:
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE artifact_uploads
+                SET status = 'failed_retryable', last_error = 'publisher interrupted', updated_at = ?
+                WHERE status = 'running'
+                """,
+                (now,),
+            )
+        return cursor.rowcount
 
     def record_checkpoint(
         self,
@@ -663,6 +927,10 @@ class MetricStore:
                 UNION ALL
                 SELECT 'eval_stages:' || status AS key, count(*) AS count
                 FROM checkpoint_eval_stages
+                GROUP BY status
+                UNION ALL
+                SELECT 'telemetry:' || status AS key, count(*) AS count
+                FROM metric_frames
                 GROUP BY status
                 """
             ).fetchall()

@@ -140,7 +140,7 @@ def stable_retro_atari_vec_env_type():
     except ImportError as exc:
         raise ImportError(
             "stable-retro-turbo Atari environments require "
-            "stable-retro-turbo==1.0.1.post19"
+            "stable-retro-turbo==1.0.1.post20"
         ) from exc
     return AtariVecEnv
 

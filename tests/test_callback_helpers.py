@@ -442,13 +442,13 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertIsNone(store.latest_metric("ignored/infinite"))
             self.assertIsNone(store.latest_metric("ignored/nan"))
             with store.connection() as conn:
-                count = conn.execute("SELECT count(*) FROM metric_observations").fetchone()[0]
+                count = conn.execute("SELECT count(*) FROM metric_frames").fetchone()[0]
             self.assertEqual(count, 1)
 
             callback.num_timesteps = 20
             callback._on_rollout_end()
             with store.connection() as conn:
-                count = conn.execute("SELECT count(*) FROM metric_observations").fetchone()[0]
+                count = conn.execute("SELECT count(*) FROM metric_frames").fetchone()[0]
             self.assertEqual(count, 1)
 
             model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.75
@@ -456,7 +456,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST), 0.75)
             with store.connection() as conn:
                 row = conn.execute(
-                    "SELECT step FROM metric_observations ORDER BY id DESC LIMIT 1"
+                    "SELECT step FROM metric_frames ORDER BY id DESC LIMIT 1"
                 ).fetchone()
             self.assertEqual(row[0], 20)
 
@@ -476,7 +476,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertEqual(store.latest_metric("train/optimizer_metric"), 1.25)
             with store.connection() as conn:
                 row = conn.execute(
-                    "SELECT step, source FROM metric_observations ORDER BY id DESC LIMIT 1"
+                    "SELECT step, source FROM metric_frames ORDER BY id DESC LIMIT 1"
                 ).fetchone()
             self.assertEqual(tuple(row), (10, "train"))
 
@@ -605,7 +605,7 @@ class ThroughputHelperTests(unittest.TestCase):
 
 
 class TimeElapsedHelperTests(unittest.TestCase):
-    def test_logs_elapsed_time_to_logger_and_wandb(self) -> None:
+    def test_records_elapsed_time_without_a_direct_wandb_write(self) -> None:
         class Logger:
             def __init__(self) -> None:
                 self.records: list[tuple[str, float]] = []
@@ -635,10 +635,7 @@ class TimeElapsedHelperTests(unittest.TestCase):
         callback._on_rollout_end()
 
         self.assertEqual(model.logger.records, [(metric_names.TIME_TIME_ELAPSED, 15.0)])
-        self.assertEqual(
-            run.payloads,
-            [({metric_names.GLOBAL_STEP: 8192, metric_names.TIME_TIME_ELAPSED: 15.0}, 8192)],
-        )
+        self.assertEqual(run.payloads, [])
 
 
 class RolloutDiagnosticsHelperTests(unittest.TestCase):
@@ -772,7 +769,7 @@ class RuntimeMetricsRewardTests(unittest.TestCase):
         self.assertEqual(logger.records["train/reward_share/death"], 0.5)
         self.assertEqual(logger.records["train/reward_share/score"], 0.0)
 
-    def test_flushes_one_wandb_payload_per_rollout(self) -> None:
+    def test_flushes_runtime_metrics_without_a_direct_wandb_write(self) -> None:
         class FakeRun:
             def __init__(self) -> None:
                 self.payloads: list[tuple[dict[str, object], int]] = []
@@ -805,11 +802,8 @@ class RuntimeMetricsRewardTests(unittest.TestCase):
 
         callback._on_rollout_end()
 
-        self.assertEqual(len(run.payloads), 1)
-        payload, step = run.payloads[0]
-        self.assertEqual(step, 64)
-        self.assertEqual(payload[metric_names.GLOBAL_STEP], 64)
-        self.assertEqual(payload["train/done/all"], 3)
+        self.assertEqual(run.payloads, [])
+        self.assertEqual(logger.records["train/done/all"], 3)
 
     def test_reward_accumulator_reuses_preallocated_buffers(self) -> None:
         callback = RuntimeMetricsHelper()

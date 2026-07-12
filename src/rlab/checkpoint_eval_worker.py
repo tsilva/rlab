@@ -74,7 +74,7 @@ from rlab.ranking import (
 )
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project
 
 
 def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
@@ -91,9 +91,7 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     return str(checkpoint_path)
 
 
-def eval_score(
-    metrics: dict[str, object], selection_rank: object = ()
-) -> tuple[float, ...]:
+def eval_score(metrics: dict[str, object], selection_rank: object = ()) -> tuple[float, ...]:
     criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
     return rank_score(metrics, criteria)
 
@@ -114,7 +112,7 @@ def update_best_checkpoint_summary(
     def remove_summary_key(key: str) -> None:
         try:
             del wandb_run.summary[key]
-        except (AttributeError, KeyError):
+        except AttributeError, KeyError:
             pass
 
     def summary_float(key: str) -> float:
@@ -126,7 +124,7 @@ def update_best_checkpoint_summary(
             return float("-inf")
         try:
             return float(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return float("-inf")
 
     criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
@@ -134,9 +132,7 @@ def update_best_checkpoint_summary(
     values = rank_metric_values(metrics, criteria)
     objective_name = criteria[0].metric
     try:
-        previous_objective_name = str(
-            wandb_run.summary.get(LEADER_CHECKPOINT_OBJECTIVE_NAME) or ""
-        )
+        previous_objective_name = str(wandb_run.summary.get(LEADER_CHECKPOINT_OBJECTIVE_NAME) or "")
     except AttributeError:
         previous_objective_name = ""
     try:
@@ -157,9 +153,7 @@ def update_best_checkpoint_summary(
         previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
         previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
         previous_step_score = (
-            -previous_steps_to_goal
-            if previous_steps_to_goal > float("-inf")
-            else float("-inf")
+            -previous_steps_to_goal if previous_steps_to_goal > float("-inf") else float("-inf")
         )
         if previous_objective_name == objective_name and previous_objective > float("-inf"):
             previous = (
@@ -199,8 +193,7 @@ def update_best_checkpoint_summary(
     wandb_run.summary[LEADER_CHECKPOINT_MAX_X_MAX] = metrics.get("max_x_max")
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
     if any(
-        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL
-        and value is not None
+        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL and value is not None
         for criterion, value in zip(criteria, values, strict=True)
     ):
         wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL] = checkpoint_step_value
@@ -270,7 +263,9 @@ def log_checkpoint_eval_metrics(
 def checkpoint_eval_config_from_args(args) -> EnvConfig:
     raw_config = getattr(args, "checkpoint_eval_environment", None)
     if not isinstance(raw_config, Mapping):
-        raise ValueError("checkpoint_eval_environment must be materialized from the goal eval contract")
+        raise ValueError(
+            "checkpoint_eval_environment must be materialized from the goal eval contract"
+        )
     config = env_config_from_config_dict(dict(raw_config))
     if config is None:
         raise ValueError("checkpoint_eval_environment did not define an environment")
@@ -288,7 +283,9 @@ def metric_payload(
     payload: dict[str, object] = {
         GLOBAL_STEP: checkpoint_step,
         EVAL_CHECKPOINT_STEP: checkpoint_step,
-        EVAL_CHECKPOINT_ARTIFACT: eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
+        EVAL_CHECKPOINT_ARTIFACT: eval_checkpoint_artifact_ref(
+            args, checkpoint_path, checkpoint_step
+        ),
         EVAL_REWARD_MEAN: metrics["reward_mean"],
         EVAL_REWARD_STD: metrics["reward_std"],
         EVAL_REWARD_MAX: metrics["reward_max"],
@@ -498,18 +495,6 @@ def process_staged_eval(
                 metrics=payload,
             )
 
-        wandb_run = None
-        try:
-            wandb_run = resume_wandb_run(args, run_dir)
-            log_staged_checkpoint_eval_metrics(wandb_run, {**payload, **candidate_payload})
-        except Exception as exc:
-            print(f"checkpoint staged eval W&B logging failed step={step}: {exc}", flush=True)
-        finally:
-            if wandb_run is not None:
-                try:
-                    wandb_run.finish()
-                except Exception:
-                    pass
         score = eval_score(metrics)
         summary = {
             "checkpoint_step": step,
@@ -594,30 +579,28 @@ def process_eval(
             checkpoint_step=step,
             config=config,
         )
-        store.append_metrics(payload, step=step, source="eval", checkpoint_step=step)
+        store.append_metrics(
+            payload,
+            step=step,
+            source="eval",
+            checkpoint_step=step,
+            publish=False,
+        )
         store.mark_eval_succeeded(checkpoint_id, episodes=episodes, metrics=payload)
         artifact_ref = eval_checkpoint_artifact_ref(args, checkpoint_path, step)
-        wandb_run = None
-        try:
-            wandb_run = resume_wandb_run(args, run_dir)
-            log_checkpoint_eval_metrics(
-                wandb_run,
-                args=args,
-                metrics=metrics,
-                checkpoint_path=checkpoint_path,
-                checkpoint_step_value=step,
-                artifact_ref=artifact_ref,
-                eval_source="async_worker",
-                config=config,
-            )
-        except Exception as exc:
-            print(f"checkpoint eval W&B logging failed step={step}: {exc}", flush=True)
-        finally:
-            if wandb_run is not None:
-                try:
-                    wandb_run.finish()
-                except Exception:
-                    pass
+        store.enqueue_event(
+            kind="checkpoint_eval",
+            payload={
+                "metrics": metrics,
+                "checkpoint_path": str(checkpoint_path),
+                "checkpoint_step": step,
+                "artifact_ref": artifact_ref,
+                "eval_source": "async_worker",
+            },
+            step=step,
+            source="checkpoint_eval",
+            event_id=f"checkpoint-eval:{checkpoint_id}:{step}",
+        )
         score = eval_score(metrics)
         summary = {
             "checkpoint_step": step,
@@ -659,7 +642,9 @@ def main(argv: list[str] | None = None) -> int:
                     keep_checkpoint_id=int(rows[0]["id"]),
                 )
                 if skipped:
-                    print(f"checkpoint staged eval skipped stale checkpoints: {skipped}", flush=True)
+                    print(
+                        f"checkpoint staged eval skipped stale checkpoints: {skipped}", flush=True
+                    )
                     rows = store.pending_checkpoint_eval_stages(limit=max(args.limit, 1))
         else:
             rows = store.pending_evals(limit=max(args.limit, 1))

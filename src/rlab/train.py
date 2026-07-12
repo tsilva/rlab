@@ -229,7 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     n_envs = effective_n_envs(args)
     config = resolve_mixed_state_config(config, n_envs=n_envs)
     assert_provider_runtime_available(config)
-    wandb_run = init_wandb(args, run_dir, config)
+    external_wandb_publisher = os.environ.get("RLAB_EXTERNAL_WANDB_PUBLISHER") == "1"
+    wandb_run = None if external_wandb_publisher else init_wandb(args, run_dir, config)
     write_wandb_url(wandb_run, run_dir)
     graceful_stop_flag = GracefulStopFlag()
     graceful_stop_signal = install_graceful_stop_handler(graceful_stop_flag)
@@ -277,13 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     components = [
         GracefulStopHelper(graceful_stop_flag),
         Sb3HumanOutputFormatHelper(),
-        TimeElapsedHelper(wandb_run=wandb_run),
+        TimeElapsedHelper(),
         ThroughputHelper(),
         RuntimeMetricsHelper(
-            wandb_run=wandb_run,
             event_names=tuple(config.task.get("events", {})),
         ),
-        MetricStoreMirrorHelper(store_path),
         *(
             [
                 MetricThresholdStopHelper(
@@ -295,7 +294,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.early_stop
             else []
         ),
-        RolloutDiagnosticsHelper(wandb_run=wandb_run),
+        RolloutDiagnosticsHelper(
+            wandb_run=wandb_run,
+            metric_store_path=store_path if external_wandb_publisher else None,
+            histogram_interval=64,
+        ),
+        MetricStoreMirrorHelper(store_path, wandb_run=wandb_run),
     ]
     checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:

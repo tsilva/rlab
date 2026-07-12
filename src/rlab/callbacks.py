@@ -232,7 +232,7 @@ class ThroughputHelper(CallbackHelper):
 
 
 class TimeElapsedHelper(CallbackHelper):
-    """Mirror elapsed SB3 learn-loop time into W&B history."""
+    """Record elapsed SB3 learn-loop time for the rollout metric frame."""
 
     def __init__(self, wandb_run=None, clock: Callable[[], float] | None = None):
         super().__init__()
@@ -249,14 +249,6 @@ class TimeElapsedHelper(CallbackHelper):
             return
 
         self.logger.record(TIME_TIME_ELAPSED, elapsed)
-        if self.wandb_run is not None:
-            self.wandb_run.log(
-                {
-                    GLOBAL_STEP: self.num_timesteps,
-                    TIME_TIME_ELAPSED: elapsed,
-                },
-                step=self.num_timesteps,
-            )
 
     def _on_step(self) -> bool:
         return True
@@ -396,11 +388,13 @@ class MetricStoreMirrorHelper(CallbackHelper):
         metric_store_path: Path | str,
         *,
         source: str = "train",
+        wandb_run=None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__()
         self.metric_store = MetricStore(metric_store_path, timeout=0.05)
         self.source = source
+        self.wandb_run = wandb_run
         self.clock = clock or time.perf_counter
         self.last_seen: dict[str, float] = {}
         self.last_warning: float | None = None
@@ -437,23 +431,44 @@ class MetricStoreMirrorHelper(CallbackHelper):
         if not payload:
             return
         try:
-            self.metric_store.append_metrics(payload, step=self.num_timesteps, source=self.source)
+            self.metric_store.append_metrics(
+                payload,
+                step=self.num_timesteps,
+                source=self.source,
+                publish=self.wandb_run is None,
+            )
+            if self.wandb_run is not None:
+                self.wandb_run.log({GLOBAL_STEP: self.num_timesteps, **payload})
         except Exception as exc:
             now = self.clock()
             if self.last_warning is None or now - self.last_warning >= 60:
-                print(f"warning: metric store write failed: {exc}", flush=True)
+                print(f"metric store write failed: {exc}", flush=True)
                 self.last_warning = now
+            raise RuntimeError("durable metric frame write failed") from exc
 
 
 class RolloutDiagnosticsHelper(CallbackHelper):
     """Log rollout-buffer value and advantage distributions."""
 
-    def __init__(self, wandb_run=None, log_histograms: bool = True):
+    def __init__(
+        self,
+        wandb_run=None,
+        log_histograms: bool = True,
+        *,
+        metric_store_path: Path | str | None = None,
+        histogram_interval: int = 64,
+    ):
         super().__init__()
         self.wandb_run = wandb_run
         self.log_histograms = log_histograms
+        self.metric_store = (
+            MetricStore(metric_store_path, timeout=0.05) if metric_store_path else None
+        )
+        self.histogram_interval = max(int(histogram_interval), 1)
+        self.rollout_count = 0
 
     def _on_rollout_end(self) -> None:
+        self.rollout_count += 1
         rollout_buffer = getattr(self.model, "rollout_buffer", None)
         if rollout_buffer is None:
             return
@@ -462,7 +477,8 @@ class RolloutDiagnosticsHelper(CallbackHelper):
         advantages = self._finite_values(getattr(rollout_buffer, "advantages", None))
         self._record_stats(ROLLOUT_VALUE_PRED, value_predictions)
         self._record_stats(ROLLOUT_ADVANTAGE, advantages)
-        self._log_wandb_histograms(value_predictions, advantages)
+        if self.rollout_count % self.histogram_interval == 0:
+            self._log_histograms(value_predictions, advantages)
 
     def _on_step(self) -> bool:
         return True
@@ -483,19 +499,32 @@ class RolloutDiagnosticsHelper(CallbackHelper):
         self.logger.record(stat_metric(prefix, "max"), float(np.max(values)))
         self.logger.record(stat_metric(prefix, "abs_mean"), float(np.mean(np.abs(values))))
 
-    def _log_wandb_histograms(self, value_predictions: np.ndarray, advantages: np.ndarray) -> None:
-        if self.wandb_run is None or not self.log_histograms:
+    def _log_histograms(self, value_predictions: np.ndarray, advantages: np.ndarray) -> None:
+        if not self.log_histograms:
             return
-
-        import wandb
-
-        payload: dict[str, object] = {GLOBAL_STEP: self.num_timesteps}
+        values: dict[str, list[float]] = {}
         if value_predictions.size > 0:
-            payload[ROLLOUT_VALUE_PRED_HIST] = wandb.Histogram(value_predictions)
+            values[ROLLOUT_VALUE_PRED_HIST] = value_predictions.tolist()
         if advantages.size > 0:
-            payload[ROLLOUT_ADVANTAGE_HIST] = wandb.Histogram(advantages)
-        if len(payload) > 1:
-            self.wandb_run.log(payload, step=self.num_timesteps)
+            values[ROLLOUT_ADVANTAGE_HIST] = advantages.tolist()
+        if not values:
+            return
+        if self.metric_store is not None:
+            self.metric_store.enqueue_event(
+                kind="histogram",
+                payload={"histograms": values},
+                step=self.num_timesteps,
+                source="train",
+            )
+        if self.wandb_run is not None:
+            import wandb
+
+            self.wandb_run.log(
+                {
+                    GLOBAL_STEP: self.num_timesteps,
+                    **{name: wandb.Histogram(data) for name, data in values.items()},
+                }
+            )
 
 
 class _BufferedStats:
@@ -843,11 +872,6 @@ class RuntimeMetricsHelper(CallbackHelper):
             return
         for key, value in payload.items():
             self.logger.record(key, value)
-        if self.wandb_run is not None:
-            self.wandb_run.log(
-                {GLOBAL_STEP: self.num_timesteps, **payload},
-                step=self.num_timesteps,
-            )
 
 
 class RlabCallback(BaseCallback):

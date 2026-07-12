@@ -37,7 +37,9 @@ def load_payload(path: Path) -> dict[str, Any]:
 def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "result.json"
-    path.write_text(json.dumps(json_safe(dict(result)), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(json_safe(dict(result)), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return path
 
 
@@ -84,7 +86,9 @@ def start_worker(
     return process
 
 
-def stop_workers(processes: list[subprocess.Popen], stop_file: Path, *, timeout: float = 30.0) -> list[dict[str, Any]]:
+def stop_workers(
+    processes: list[subprocess.Popen], stop_file: Path, *, timeout: float = 30.0
+) -> list[dict[str, Any]]:
     stop_file.parent.mkdir(parents=True, exist_ok=True)
     stop_file.write_text("stop\n", encoding="utf-8")
     results: list[dict[str, Any]] = []
@@ -132,38 +136,53 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     config_path = write_train_config_file(job, output_dir / "train_config.json")
     command = train_command_for_job(config_path)
     run_dir = run_dir_from_config(config_path)
-    stop_file = output_dir / "workers.stop"
-    workers: list[subprocess.Popen] = []
+    producer_stop_file = output_dir / "producers.stop"
+    publisher_stop_file = output_dir / "publisher.stop"
+    producer_workers: list[subprocess.Popen] = []
+    publisher_workers: list[subprocess.Popen] = []
+    config_document = json.loads(config_path.read_text(encoding="utf-8"))
+    wandb_enabled = bool(config_document.get("wandb", False))
     try:
-        for module, name in (
-            ("rlab.artifact_worker", "artifact_worker"),
-            ("rlab.checkpoint_eval_worker", "checkpoint_eval_worker"),
-        ):
-            workers.append(
-                start_worker(
-                    module=module,
-                    name=name,
-                    output_dir=output_dir,
-                    run_dir=run_dir,
-                    config_path=config_path,
-                    stop_file=stop_file,
-                )
+        publisher_workers.append(
+            start_worker(
+                module="rlab.wandb_publisher" if wandb_enabled else "rlab.artifact_worker",
+                name="wandb_publisher" if wandb_enabled else "artifact_worker",
+                output_dir=output_dir,
+                run_dir=run_dir,
+                config_path=config_path,
+                stop_file=publisher_stop_file,
             )
+        )
+        producer_workers.append(
+            start_worker(
+                module="rlab.checkpoint_eval_worker",
+                name="checkpoint_eval_worker",
+                output_dir=output_dir,
+                run_dir=run_dir,
+                config_path=config_path,
+                stop_file=producer_stop_file,
+            )
+        )
     except Exception:
-        stop_workers(workers, stop_file)
+        stop_workers(producer_workers, producer_stop_file)
+        stop_workers(publisher_workers, publisher_stop_file)
         raise
     log_path = log_dir / f"train_job_{job['id']}_{uuid.uuid4().hex[:8]}.log"
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
+            train_env = os.environ.copy()
+            if wandb_enabled:
+                train_env["RLAB_EXTERNAL_WANDB_PUBLISHER"] = "1"
             process = subprocess.run(
                 command,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
-                env=os.environ.copy(),
+                env=train_env,
             )
     finally:
-        worker_results = stop_workers(workers, stop_file)
+        worker_results = stop_workers(producer_workers, producer_stop_file)
+        worker_results.extend(stop_workers(publisher_workers, publisher_stop_file, timeout=120.0))
     metadata = collect_result_metadata(job, log_path)
     status = "succeeded" if process.returncode == 0 else "failed"
     result = {
@@ -189,7 +208,9 @@ def run_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run one claimed rlab job payload and write result.json.")
+    parser = argparse.ArgumentParser(
+        description="Run one claimed rlab job payload and write result.json."
+    )
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser

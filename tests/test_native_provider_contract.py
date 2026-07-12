@@ -160,7 +160,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
         self.assertGreaterEqual(installed, Version("0.2.21"))
         installed_retro = Version(importlib.metadata.version("stable-retro-turbo"))
-        self.assertEqual(installed_retro, Version("1.0.1.post19"))
+        self.assertEqual(installed_retro, Version("1.0.1.post20"))
 
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:

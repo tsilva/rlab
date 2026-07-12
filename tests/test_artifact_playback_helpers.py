@@ -395,7 +395,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(artifact.references[0][1], "ppo_test_100_steps.zip")
         self.assertEqual(aliases, ["latest", "step-100"])
         payload, step = fake_run.metric_logs[0]
-        self.assertEqual(step, 100)
+        self.assertIsNone(step)
         self.assertEqual(payload[metric_names.GLOBAL_STEP], 100)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_METADATA_SECONDS], 0.2)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS], 1.0)

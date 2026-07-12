@@ -3,11 +3,22 @@
 This file describes the metrics this repo currently logs to Weights & Biases from the active
 `src/rlab` training and evaluation paths.
 
-Training runs call `wandb.init(..., sync_tensorboard=True)` and define `global_step` as the
-step metric for all logged keys. Most scalar metrics are recorded through the SB3 logger and
-synced from TensorBoard. Runtime reward, done, and completion records are reduced in memory and
-flushed as one scalar W&B payload at each rollout boundary. Histograms and videos use separate
-direct W&B calls.
+Queue-backed training uses a durable SQLite telemetry outbox and exactly one long-lived W&B
+publisher. The trainer, checkpoint evaluator, and artifact producer write local frames; only the
+publisher initializes, logs to, and finishes the W&B run. Training scalars are reduced into one
+frame per rollout boundary. W&B's internal history step is only a delivery sequence: payloads do
+not set `Run.log(step=...)`, and `global_step` is the explicit chart axis. This lets an asynchronous
+evaluation for an older checkpoint arrive without rewinding W&B history.
+
+The local `rlab.sqlite` ledger is authoritative while a run is active or W&B is unavailable. W&B
+is an eventually consistent projection and becomes equivalent after the publisher drains. A W&B
+failure does not block the learner: frames remain retryable in the outbox. A local ledger write
+failure is reported because it breaks the durable-metrics contract. TensorBoard remains a local
+debugging output but is not used as the W&B transport.
+
+Rollout value-prediction and advantage histograms are published every 64 rollout boundaries,
+rather than every rollout. Their scalar distribution summaries still appear in every changed
+rollout frame.
 
 ## Naming Conventions
 
@@ -21,8 +32,7 @@ Use `rate` for fractions in `[0, 1]`, `count` for point-in-time counts, and stan
 `mean`, `std`, `min`, `max`, `abs_mean`, and `nonzero_rate` only where a metric family explicitly logs
 distribution statistics. Avoid aliases and alternate names for the same value.
 
-`global_step` is the W&B step axis for training metrics logged directly to W&B and for
-TensorBoard-synced SB3 metrics. Post-training checkpoint eval logs `global_step` and
+`global_step` is the W&B step axis for training and evaluation frames. Post-training checkpoint eval logs `global_step` and
 `eval/checkpoint/step` as the checkpoint timestep on the same W&B run that produced the checkpoint.
 
 ## Selection Metrics
@@ -33,8 +43,9 @@ Goal contracts use `objective.rank` as the single ordered checkpoint-selection
 contract. Goal-owned eval settings define the checkpoint measurement protocol.
 Post-training checkpoint eval writes
 canonical `eval/*` metrics to the producing W&B run with `global_step` set to
-the checkpoint timestep. W&B is the source of truth for train and eval metrics;
-the queue database stores train-job state, not result metric projections.
+the checkpoint timestep. The run-local SQLite ledger is the live and recovery source of truth;
+W&B is the query and visualization projection after pending telemetry has drained. The queue
+database stores train-job state, not result metric projections.
 
 | Metric | Meaning |
 | --- | --- |

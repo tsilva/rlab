@@ -183,12 +183,16 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         except json.JSONDecodeError:
             checkpoint_eval_summary = []
     phase_counts = {}
+    telemetry_health = {}
     store_path = metric_store_path(run_dir)
     if store_path.is_file():
         try:
-            phase_counts = MetricStore(store_path, timeout=0.05).phase_counts()
+            store = MetricStore(store_path, timeout=0.05)
+            phase_counts = store.phase_counts()
+            telemetry_health = store.telemetry_health()
         except Exception:
             phase_counts = {}
+            telemetry_health = {}
     return {
         "run_name": run_name,
         "run_dir": str(run_dir),
@@ -201,4 +205,5 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         "checkpoint_eval_summary": checkpoint_eval_summary,
         "metrics_json": metrics,
         "phase_counts": phase_counts,
+        "telemetry_health": telemetry_health,
     }

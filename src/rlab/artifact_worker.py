@@ -16,7 +16,7 @@ from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.train_config import materialized_train_args
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
+from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project
 
 
 def artifact_aliases(kind: str, step: int | None) -> list[str]:
@@ -51,19 +51,17 @@ def process_upload(
     config,
     run_dir: Path,
     row: dict[str, Any],
+    wandb_run=None,
 ):
     checkpoint_id = int(row["id"])
     if not store.claim_artifact_upload(checkpoint_id):
-        return
+        return False
     path = Path(str(row["path"]))
     kind = str(row["kind"])
     step = row.get("step")
     step_value = int(step) if step is not None else None
     aliases = artifact_aliases(kind, step_value)
-    wandb_run = None
     try:
-        if getattr(args, "wandb", False) and not getattr(args, "no_wandb_artifacts", False):
-            wandb_run = resume_wandb_run(args, run_dir)
         log_wandb_model_artifact(
             wandb_run,
             args,
@@ -81,15 +79,11 @@ def process_upload(
             artifact_ref=artifact_ref(args, kind, aliases),
             storage_uri=storage_uri,
         )
+        return True
     except Exception as exc:
         store.mark_artifact_failed(checkpoint_id, repr(exc))
         print(f"artifact worker upload failed checkpoint_id={checkpoint_id}: {exc}", flush=True)
-    finally:
-        if wandb_run is not None:
-            try:
-                wandb_run.finish()
-            except Exception:
-                pass
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     config = resolve_env_config(env_config_from_args(train_args, include_states=True))
     store = MetricStore(metric_store_path(args.run_dir))
     store.init()
+    if getattr(train_args, "wandb", False) and not getattr(train_args, "no_wandb_artifacts", False):
+        raise RuntimeError(
+            "artifact_worker cannot own a W&B run; start rlab.wandb_publisher instead"
+        )
     while True:
         rows = store.pending_artifact_uploads(limit=max(args.limit, 1))
         if not rows and args.stop_file.exists():

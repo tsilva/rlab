@@ -217,7 +217,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         tags=tags,
         config=wandb_config,
         dir=wandb_dir,
-        sync_tensorboard=True,
+        sync_tensorboard=False,
         save_code=True,
         mode=args.wandb_mode,
     )
@@ -356,7 +356,6 @@ def log_artifact_timing_metrics(
             GLOBAL_STEP: metric_step,
             **artifact_timing_payload(timing),
         },
-        step=metric_step,
     )
 
 
