@@ -49,6 +49,7 @@ from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
 from rlab.play import main as play_main
 from rlab.play import model_observation
+from rlab.play import ObsStackViewer
 from rlab.play import playback_should_end_episode
 from rlab.play import render_obs_stack
 from rlab.play import resolved_play_launch_lines
@@ -1032,6 +1033,59 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertTrue(np.all(image[:, 4:8, :] == 20))
         self.assertTrue(np.all(image[:, 8:12, :] == 30))
         self.assertTrue(np.all(image[:, 12:16, :] == 40))
+
+    def test_obs_stack_viewer_draws_with_pygame_window(self) -> None:
+        rendered = []
+
+        class FakeSurface:
+            def __init__(self):
+                self.blit_calls = []
+
+            def blit(self, source, position):
+                self.blit_calls.append((source, position))
+
+        class FakeWindow:
+            def __init__(self, title, **kwargs):
+                self.title = title
+                self.size = kwargs["size"]
+                self.position = kwargs.get("position")
+                self.surface = FakeSurface()
+                self.flips = 0
+                self.destroyed = False
+
+            def get_surface(self):
+                return self.surface
+
+            def flip(self):
+                self.flips += 1
+
+            def destroy(self):
+                self.destroyed = True
+
+        fake_pygame = types.SimpleNamespace(
+            Window=FakeWindow,
+            surfarray=types.SimpleNamespace(
+                make_surface=lambda image: rendered.append(image.copy()) or image
+            ),
+        )
+        frames = deque(
+            [np.full((3, 2, 1), value, dtype=np.uint8) for value in (10, 20, 30, 40)],
+            maxlen=4,
+        )
+
+        with patch("rlab.play.import_pygame", return_value=fake_pygame):
+            viewer = ObsStackViewer(scale=2, position=(40, 240))
+            self.assertTrue(viewer.show(frames))
+            window = viewer.window
+            viewer.close()
+
+        self.assertEqual(window.title, "rlab obs framestack")
+        self.assertEqual(window.size, (16, 6))
+        self.assertEqual(window.position, (40, 240))
+        self.assertEqual(window.flips, 1)
+        self.assertEqual(window.surface.blit_calls[0][1], (0, 0))
+        self.assertEqual(rendered[0].shape, (16, 6, 3))
+        self.assertTrue(window.destroyed)
 
     def test_eval_defaults_to_stochastic(self) -> None:
         with patch("rlab.eval.os.cpu_count", return_value=12):

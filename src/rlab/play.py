@@ -293,7 +293,12 @@ class PygameViewer:
 
     def show(self, frame: np.ndarray, overlay: list[str] | None = None) -> bool:
         for event in self.pygame.event.get():
-            if event.type == self.pygame.QUIT:
+            if event.type in {self.pygame.QUIT, self.pygame.WINDOWCLOSE}:
+                return False
+            if event.type == self.pygame.KEYDOWN and getattr(event, "key", None) in {
+                self.pygame.K_ESCAPE,
+                self.pygame.K_q,
+            }:
                 return False
             self.step_controls.handle_event(
                 event,
@@ -350,19 +355,22 @@ class StepOverControls:
 class ObsStackViewer:
     def __init__(self, scale: int, position: tuple[int, int] | None = None):
         self.scale = scale
-        self.window_name = "rlab obs framestack"
-        self.cv2 = None
+        self.position = position
+        self.pygame = import_pygame()
+        self.window = None
+        self.surface = None
 
-        try:
-            import cv2
-        except ImportError:
-            print("cv2 is not installed; --show-obs is disabled.", flush=True)
+    def _ensure_window(self, image: np.ndarray) -> None:
+        height, width = image.shape[:2]
+        if self.window is not None and self.window.size == (width, height):
             return
-
-        self.cv2 = cv2
-        cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
-        if position is not None:
-            cv2.moveWindow(self.window_name, position[0], position[1])
+        if self.window is not None:
+            self.window.destroy()
+        kwargs = {"size": (width, height)}
+        if self.position is not None:
+            kwargs["position"] = self.position
+        self.window = self.pygame.Window("rlab obs framestack", **kwargs)
+        self.surface = self.window.get_surface()
 
     def show(
         self,
@@ -370,17 +378,18 @@ class ObsStackViewer:
         heatmap: np.ndarray | None = None,
         heatmap_opacity: float = 0.45,
     ) -> bool:
-        if self.cv2 is None:
-            return True
         image = render_obs_stack(frames, self.scale, heatmap, heatmap_opacity)
-        self.cv2.imshow(self.window_name, self.cv2.cvtColor(image, self.cv2.COLOR_RGB2BGR))
-        key = self.cv2.waitKey(1) & 0xFF
-        return key not in {27, ord("q")}
+        self._ensure_window(image)
+        frame_surface = self.pygame.surfarray.make_surface(np.transpose(image, (1, 0, 2)))
+        self.surface.blit(frame_surface, (0, 0))
+        self.window.flip()
+        return True
 
     def close(self) -> None:
-        if self.cv2 is None:
-            return
-        self.cv2.destroyWindow(self.window_name)
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+            self.surface = None
 
 
 def add_play_source_args(parser: argparse.ArgumentParser) -> None:
