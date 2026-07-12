@@ -7,13 +7,19 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import gymnasium as gym
 import numpy as np
+from stable_baselines3 import PPO
+from stable_baselines3.common.logger import Logger
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 import rlab.metric_names as metric_names
 from rlab.callbacks import (
     CallbackHelper,
     LedgerCheckpointHelper,
-    MetricStoreMirrorHelper,
+    MetricStoreLoggerHelper,
+    MetricStoreOutputFormat,
     MetricThresholdStopHelper,
     RlabCallback,
     RolloutDiagnosticsHelper,
@@ -416,27 +422,28 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertIn("early_stop_value=1", marker)
             self.assertIn("timesteps=130000", marker)
 
-    def test_metric_store_mirror_writes_numeric_logger_values_at_rollout_end(self) -> None:
+    def test_metric_store_output_format_writes_complete_numeric_dump(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store_path = Path(tmp) / "run" / "rlab.sqlite"
-            model = self.FakeModel()
-            callback = MetricStoreMirrorHelper(store_path)
-            callback.model = model  # type: ignore[assignment]
-            callback.num_timesteps = 10
-            callback._on_training_start()
-
-            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.5
-            model.logger.records["ignored/text"] = "nope"
-            model.logger.records["ignored/bool"] = True
-            model.logger.records["ignored/infinite"] = float("inf")
-            model.logger.records["ignored/nan"] = float("nan")
-            callback._on_step()
-            callback._on_step()
+            output_format = MetricStoreOutputFormat(store_path)
+            output_format.write(
+                {
+                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST: 0.5,
+                    "rollout/ep_rew_mean": np.float32(4.25),
+                    "time/iterations": 3,
+                    "ignored/text": "nope",
+                    "ignored/bool": True,
+                    "ignored/infinite": float("inf"),
+                    "ignored/nan": float("nan"),
+                },
+                {},
+                step=10,
+            )
 
             store = MetricStore(store_path)
-            self.assertIsNone(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST))
-            callback._on_rollout_end()
             self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST), 0.5)
+            self.assertEqual(store.latest_metric("rollout/ep_rew_mean"), 4.25)
+            self.assertEqual(store.latest_metric("time/iterations"), 3.0)
             self.assertIsNone(store.latest_metric("ignored/text"))
             self.assertIsNone(store.latest_metric("ignored/bool"))
             self.assertIsNone(store.latest_metric("ignored/infinite"))
@@ -444,32 +451,24 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             with store.connection() as conn:
                 count = conn.execute("SELECT count(*) FROM metric_frames").fetchone()[0]
             self.assertEqual(count, 1)
-
-            callback.num_timesteps = 20
-            callback._on_rollout_end()
-            with store.connection() as conn:
-                count = conn.execute("SELECT count(*) FROM metric_frames").fetchone()[0]
-            self.assertEqual(count, 1)
-
-            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.75
-            callback._on_rollout_end()
-            self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST), 0.75)
             with store.connection() as conn:
                 row = conn.execute(
                     "SELECT step FROM metric_frames ORDER BY id DESC LIMIT 1"
                 ).fetchone()
-            self.assertEqual(row[0], 20)
+            self.assertEqual(row[0], 10)
 
-    def test_metric_store_mirror_flushes_final_training_metrics(self) -> None:
+    def test_metric_store_logger_helper_flushes_final_training_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store_path = Path(tmp) / "run" / "rlab.sqlite"
-            model = self.FakeModel()
-            callback = MetricStoreMirrorHelper(store_path)
+            logger = Logger(folder=None, output_formats=[])
+            model = SimpleNamespace(logger=logger)
+            callback = MetricStoreLoggerHelper(store_path)
             callback.model = model  # type: ignore[assignment]
             callback.num_timesteps = 10
             callback._on_training_start()
+            callback._on_training_start()
 
-            model.logger.records["train/optimizer_metric"] = 1.25
+            logger.record("train/optimizer_metric", 1.25)
             callback._on_training_end()
 
             store = MetricStore(store_path)
@@ -479,6 +478,47 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
                     "SELECT step, source FROM metric_frames ORDER BY id DESC LIMIT 1"
                 ).fetchone()
             self.assertEqual(tuple(row), (10, "train"))
+            self.assertEqual(logger.name_to_value, {})
+            self.assertEqual(logger.output_formats.count(callback.output_format), 1)
+
+    def test_sb3_lifecycle_publishes_rollout_metrics_after_dump_logs(self) -> None:
+        class OneStepEnv(gym.Env):
+            observation_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+            action_space = gym.spaces.Discrete(2)
+
+            def reset(self, *, seed=None, options=None):
+                super().reset(seed=seed)
+                return np.zeros(1, dtype=np.float32), {}
+
+            def step(self, action):
+                del action
+                return np.zeros(1, dtype=np.float32), 2.0, True, False, {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "run" / "rlab.sqlite"
+            env = DummyVecEnv([lambda: Monitor(OneStepEnv())])
+            model = PPO(
+                "MlpPolicy",
+                env,
+                n_steps=2,
+                batch_size=2,
+                n_epochs=1,
+                seed=1,
+                verbose=0,
+            )
+            callback = RlabCallback([MetricStoreLoggerHelper(store_path)])
+            try:
+                model.learn(total_timesteps=4, callback=callback)
+            finally:
+                env.close()
+
+            store = MetricStore(store_path)
+            self.assertEqual(store.latest_metric("rollout/ep_rew_mean"), 2.0)
+            self.assertEqual(store.latest_metric("rollout/ep_len_mean"), 1.0)
+            self.assertIsNotNone(store.latest_metric("time/fps"))
+            self.assertEqual(store.latest_metric("time/iterations"), 2.0)
+            self.assertEqual(store.latest_metric("time/total_timesteps"), 4.0)
+            self.assertIsNotNone(store.latest_metric("train/loss"))
 
 
 class LedgerCheckpointHelperTests(unittest.TestCase):

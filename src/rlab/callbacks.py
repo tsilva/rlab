@@ -6,11 +6,13 @@ import re
 import time
 import uuid
 from collections import deque
+from numbers import Real
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.logger import KVWriter
 
 from rlab.artifacts import write_model_metadata
 from rlab.early_stop import (
@@ -383,7 +385,63 @@ class MetricThresholdStopHelper(CallbackHelper):
         )
 
 
-class MetricStoreMirrorHelper(CallbackHelper):
+class MetricStoreOutputFormat(KVWriter):
+    """Persist the complete scalar payload received by SB3's logger dump."""
+
+    def __init__(
+        self,
+        metric_store_path: Path | str,
+        *,
+        source: str = "train",
+        wandb_run=None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.metric_store = MetricStore(metric_store_path, timeout=0.05)
+        self.source = source
+        self.wandb_run = wandb_run
+        self.clock = clock or time.perf_counter
+        self.last_warning: float | None = None
+        self.metric_store.init()
+
+    def write(
+        self,
+        key_values: dict[str, Any],
+        key_excluded: dict[str, tuple[str, ...]],
+        step: int = 0,
+    ) -> None:
+        del key_excluded
+        payload: dict[str, float] = {}
+        for key, value in key_values.items():
+            if isinstance(value, bool) or not isinstance(value, Real):
+                continue
+            numeric = float(value)
+            if math.isfinite(numeric):
+                payload[str(key)] = numeric
+        if not payload:
+            return
+        try:
+            self.metric_store.append_metrics(
+                payload,
+                step=step,
+                source=self.source,
+                publish=self.wandb_run is None,
+            )
+            if self.wandb_run is not None:
+                self.wandb_run.log({**payload, GLOBAL_STEP: step})
+        except Exception as exc:
+            now = self.clock()
+            if self.last_warning is None or now - self.last_warning >= 60:
+                print(f"metric store write failed: {exc}", flush=True)
+                self.last_warning = now
+            raise RuntimeError("durable metric frame write failed") from exc
+
+    def close(self) -> None:
+        """MetricStore owns no persistent connection and the W&B run is shared."""
+
+
+class MetricStoreLoggerHelper(CallbackHelper):
+    """Install the durable metric writer at SB3's authoritative dump boundary."""
+
     def __init__(
         self,
         metric_store_path: Path | str,
@@ -393,59 +451,25 @@ class MetricStoreMirrorHelper(CallbackHelper):
         clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__()
-        self.metric_store = MetricStore(metric_store_path, timeout=0.05)
-        self.source = source
-        self.wandb_run = wandb_run
-        self.clock = clock or time.perf_counter
-        self.last_seen: dict[str, float] = {}
-        self.last_warning: float | None = None
+        self.output_format = MetricStoreOutputFormat(
+            metric_store_path,
+            source=source,
+            wandb_run=wandb_run,
+            clock=clock,
+        )
 
     def _on_training_start(self) -> None:
-        self.metric_store.init()
+        output_formats = self.logger.output_formats
+        if self.output_format not in output_formats:
+            output_formats.append(self.output_format)
 
     def _on_step(self) -> bool:
         return True
 
-    def _on_rollout_end(self) -> None:
-        self.mirror_current_logger_values()
-
     def _on_training_end(self) -> None:
-        self.mirror_current_logger_values()
-
-    def mirror_current_logger_values(self) -> None:
-        logger = getattr(self.model, "logger", None)
-        payload: dict[str, float] = {}
-        for attr in ("name_to_value", "records"):
-            values = getattr(logger, attr, None)
-            if not isinstance(values, Mapping):
-                continue
-            for key, value in values.items():
-                if isinstance(value, bool) or not isinstance(value, int | float):
-                    continue
-                numeric = float(value)
-                if not math.isfinite(numeric):
-                    continue
-                if self.last_seen.get(str(key)) == numeric:
-                    continue
-                self.last_seen[str(key)] = numeric
-                payload[str(key)] = numeric
-        if not payload:
-            return
-        try:
-            self.metric_store.append_metrics(
-                payload,
-                step=self.num_timesteps,
-                source=self.source,
-                publish=self.wandb_run is None,
-            )
-            if self.wandb_run is not None:
-                self.wandb_run.log({GLOBAL_STEP: self.num_timesteps, **payload})
-        except Exception as exc:
-            now = self.clock()
-            if self.last_warning is None or now - self.last_warning >= 60:
-                print(f"metric store write failed: {exc}", flush=True)
-                self.last_warning = now
-            raise RuntimeError("durable metric frame write failed") from exc
+        pending = getattr(self.logger, "name_to_value", None)
+        if isinstance(pending, Mapping) and pending:
+            self.logger.dump(step=self.num_timesteps)
 
 
 class RolloutDiagnosticsHelper(CallbackHelper):

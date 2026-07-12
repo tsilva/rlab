@@ -28,7 +28,7 @@ from rlab.artifacts import (
 from rlab.callbacks import (
     CallbackHelper,
     LedgerCheckpointHelper,
-    MetricStoreMirrorHelper,
+    MetricStoreLoggerHelper,
     MetricThresholdStopHelper,
     RlabCallback,
     RolloutDiagnosticsHelper,
@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
             metric_store_path=store_path if external_wandb_publisher else None,
             histogram_interval=64,
         ),
-        MetricStoreMirrorHelper(store_path, wandb_run=wandb_run),
+        MetricStoreLoggerHelper(store_path, wandb_run=wandb_run),
     ]
     checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
     if checkpoint_save_freq is not None:

@@ -218,16 +218,20 @@ life-loss counter those episode boundaries still should be read through `train/d
 
 ## SB3 PPO Metrics
 
-These come from Stable-Baselines3 PPO and `VecMonitor`.
+These come from Stable-Baselines3 PPO and `VecMonitor`. rlab installs a durable SB3 logger output
+format, so the complete scalar payload is written to the SQLite telemetry outbox and W&B from inside
+SB3's `logger.dump()`, before SB3 clears it. PPO `train/*` values are produced after the normal
+rollout dump and are therefore published at the following dump; rlab performs a final dump at
+training end so the last PPO update is not lost.
 
 | Metric | Meaning |
 | --- | --- |
-| `rollout/ep_rew_mean` | Mean shaped episode return over SB3's monitor window. This is the reward used by training, not raw game score. |
-| `rollout/ep_len_mean` | Mean episode length over SB3's monitor window. |
+| `rollout/ep_rew_mean` | Mean shaped episode return over SB3's monitor window. This is the reward used by training, not raw game score. It appears only after at least one monitored episode completes. |
+| `rollout/ep_len_mean` | Mean episode length over SB3's monitor window. It appears only after at least one monitored episode completes. |
 | `time/fps` | Cumulative SB3 training throughput in environment steps per second. |
 | `time/iterations` | Number of PPO learn iterations completed. |
 | `time/time_elapsed` | Wall-clock seconds elapsed in the SB3 learn loop. Explicitly mirrored to W&B at rollout end with `global_step` as the step. |
-| `time/total_timesteps` | Total environment steps reached by SB3 training. |
+| `time/total_timesteps` | Total environment steps reached by SB3 training. This should match `global_step` on the same history frame. |
 | `train/approx_kl` | Approximate KL divergence between old and updated policies for the last PPO update. Spikes indicate large policy updates. |
 | `train/clip_fraction` | Fraction of policy updates clipped by PPO's ratio clipping. High values mean many updates hit the trust-region bound. |
 | `train/clip_range` | Active PPO policy clip range. |
