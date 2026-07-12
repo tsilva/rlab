@@ -30,7 +30,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 6)
 
-    def test_breakout_recipe_loads_without_state(self) -> None:
+    def test_breakout_recipe_loads_with_stable_retro_start_state(self) -> None:
         document = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
 
         train_config = document["train_config"]
@@ -48,11 +48,10 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["env_args"],
             {
                 "num_threads": 4,
-                "max_episode_steps": 216000,
                 "reward_clip": True,
             },
         )
-        self.assertNotIn("state", train_config)
+        self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
@@ -67,6 +66,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["sticky_action_prob"], 0.25)
         self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
+        self.assertEqual(train_config["task"]["termination"]["max_episode_steps"], 54000)
         self.assertNotIn("clip_rewards", train_config)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
@@ -94,7 +94,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["game"], "MsPacman-Atari2600-v0")
         self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["env_args"]["num_threads"], 4)
-        self.assertNotIn("state", train_config)
+        self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
@@ -111,6 +111,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertTrue(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.25)
         self.assertEqual(train_config["observation_size"], 84)
+        self.assertEqual(train_config["task"]["termination"]["max_episode_steps"], 54000)
         self.assertNotIn("obs_resize_algorithm", train_config)
         self.assertEqual(
             document["environment"]["env_id"],

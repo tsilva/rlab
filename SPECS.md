@@ -29,7 +29,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Policy actions may use native Gymnasium spaces or a task-owned, bind-time-validated discrete lookup codec; providers must not contain policy-specific action mappings.
 - Generic Gymnasium providers must support training, evaluation, and playback without ROMs, save states, or Mario-specific information fields.
 - `stable-retro-turbo` must preserve ROM identity, save-state starts, observations, raw signals, and engine termination across training, evaluation, and playback.
-- Atari environments must use `stable-retro-turbo`'s native `AtariVecEnv`, not an `ale-py` vector environment constructed by rlab.
+- Atari environments must use `stable-retro-turbo`'s native `RetroVecEnv` with the packaged Stella core, not an `ale-py` vector environment constructed by rlab.
 - Breakout and Ms. Pac-Man training must use disabled autoreset and masked lane reset through the same rlab facade as Mario.
 - Official Farama Stable Retro is unsupported; `stable-retro-turbo` with rlab's native-vector lifecycle extension is the supported Retro runtime.
 - SuperMarioBros-NES Turbo must match the applicable `stable-retro-turbo` public environment contract, with every provider-specific difference explicit and validated.

@@ -19,10 +19,10 @@ train:
     env_config:
       <<: &atari_mspacman_env_config
         game: MsPacman-Atari2600-v0
+        state: Start
         n_envs: 16
         env_args:
           num_threads: 4
-          max_episode_steps: 216000
           reward_clip: true
     preprocessing:
       frame_skip: 4
@@ -44,7 +44,9 @@ train:
         set: native
       signals: {}
       events: {}
-      termination: {}
+      # Preserve the previous 216,000 raw-frame cap at frame_skip=4.
+      termination:
+        max_episode_steps: 54000
       reward:
         reward_mode: native
 eval:

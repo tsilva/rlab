@@ -354,17 +354,7 @@ def assert_rom_imported(game: str) -> str:
 
 def assert_provider_runtime_available(config: EnvConfig) -> None:
     provider = resolve_env_provider(config.env_provider)
-    if is_stable_retro_atari_env(provider.provider_id, config.game):
-        from ale_py import roms
-        from stable_retro.atari_vec_env import ale_game_id
-
-        game = ale_game_id(config.game)
-        if roms.get_rom_path(game) is None:
-            raise FileNotFoundError(
-                f"{config.game} is not available to stable-retro-turbo's Atari backend. "
-                "Install an ALE ROM package or import ROMs with ale-import-roms."
-            )
-    elif provider.uses_stable_retro_roms:
+    if provider.uses_stable_retro_roms:
         assert_rom_imported(config.game)
     elif provider.provider_id == ALE_PY_PROVIDER.provider_id:
         from ale_py import roms

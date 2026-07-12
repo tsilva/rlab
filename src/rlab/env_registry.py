@@ -75,7 +75,7 @@ def is_stable_retro_atari_env(provider_id: str, game: str) -> bool:
 
 def env_supports_states(provider_id: str, game: str) -> bool:
     provider = resolve_env_provider(provider_id)
-    return provider.supports_states and not is_stable_retro_atari_env(provider_id, game)
+    return provider.supports_states
 
 
 def registered_env_ids() -> tuple[str, ...]:

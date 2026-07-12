@@ -9,7 +9,6 @@ import numpy as np
 from rlab.env import EnvConfig
 from rlab.env_providers import (
     _AleManualResetAdapter,
-    _StableRetroAtariAdapter,
     _StartInfoAdapter,
     make_provider_vec_env,
     provider_descriptor,
@@ -367,13 +366,13 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(env.kwargs["obs_crop_fill"], 0)
         self.assertNotIn("done_on", env.kwargs)
 
-    def test_stable_retro_atari_uses_atari_vec_env_contract(self) -> None:
-        class ManualAtariVectorEnv:
+    def test_stable_retro_atari_uses_retro_vec_env_contract(self) -> None:
+        class ManualRetroVectorEnv:
             metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
             def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
                 if autoreset_mode is not gym.vector.AutoresetMode.DISABLED:
-                    raise ValueError("Atari backend requires disabled autoreset")
+                    raise ValueError("RetroVecEnv requires disabled autoreset")
                 self.game = game
                 self.num_envs = num_envs
                 self.autoreset_mode = autoreset_mode
@@ -384,7 +383,7 @@ class MarioNativeProviderTests(unittest.TestCase):
                 self.single_observation_space = gym.spaces.Box(
                     0, 255, shape=(4, 84, 84), dtype=np.uint8
                 )
-                self.single_action_space = gym.spaces.Discrete(4)
+                self.single_action_space = gym.spaces.MultiBinary(8)
                 self.observation_space = gym.vector.utils.batch_space(
                     self.single_observation_space, num_envs
                 )
@@ -422,16 +421,17 @@ class MarioNativeProviderTests(unittest.TestCase):
         config = EnvConfig(
             env_provider="stable-retro-turbo",
             game="Breakout-Atari2600-v0",
+            state="Start",
             obs_crop=(17, 0, 0, 0),
             obs_crop_mode="mask",
             sticky_action_prob=0.25,
-            env_args={"num_threads": 4, "max_episode_steps": 216_000, "reward_clip": True},
+            env_args={"num_threads": 4, "reward_clip": True},
             task={
                 "id": "identity",
                 "action": {"set": "native"},
                 "signals": {},
                 "events": {},
-                "termination": {},
+                "termination": {"max_episode_steps": 54_000},
                 "reward": {"reward_mode": "native"},
             },
         )
@@ -444,19 +444,23 @@ class MarioNativeProviderTests(unittest.TestCase):
         env = make_provider_vec_env(
             config,
             native_kwargs=kwargs,
-            atari_vec_env_type=ManualAtariVectorEnv,
+            retro_vec_env_type=ManualRetroVectorEnv,
         )
 
         self.assertEqual(env.game, "Breakout-Atari2600-v0")
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
         self.assertEqual(env.kwargs["num_threads"], 4)
-        self.assertEqual(env.kwargs["max_episode_steps"], 216_000)
+        self.assertEqual(env.kwargs["state"], "Start")
         self.assertEqual(env.kwargs["obs_resize"], (84, 84))
+        self.assertEqual(env.kwargs["obs_crop"], (17, 0, 0, 0))
+        self.assertEqual(env.kwargs["obs_crop_mode"], "mask")
+        self.assertEqual(env.kwargs["obs_layout"], "chw")
+        self.assertEqual(env.kwargs["obs_copy"], "safe_view")
         self.assertEqual(env.kwargs["sticky_action_prob"], 0.25)
-        self.assertNotIn("obs_crop", env.kwargs)
+        self.assertNotIn("max_episode_steps", env.kwargs)
         env.reset(seed=123)
         observations, _rewards, terminated, _truncated, infos = env.step(
-            np.zeros(16, dtype=np.int64)
+            np.zeros((16, 8), dtype=np.int8)
         )
         self.assertTrue(terminated[0])
         self.assertEqual(int(observations[0, 0, 0, 0]), 9)
@@ -529,30 +533,6 @@ class AleManualLifecycleTests(unittest.TestCase):
 
         self.assertEqual([frame.shape for frame in frames], [(3, 5, 3), (3, 5, 3)])
         np.testing.assert_array_equal(frames[0][..., 0], frames[0][..., 1])
-
-    def test_stable_retro_atari_rgb_stack_is_rendered_in_color(self) -> None:
-        class FakeAtari:
-            num_envs = 1
-            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
-
-            def reset(self, *, seed=None, options=None):
-                del seed, options
-                observations = np.zeros((1, 1, 3, 5, 3), dtype=np.uint8)
-                observations[..., 0] = 17
-                observations[..., 1] = 29
-                observations[..., 2] = 41
-                return observations, {}
-
-            def close(self):
-                return None
-
-        env = _StableRetroAtariAdapter(FakeAtari())
-        env.reset()
-        frames = env.get_images()
-
-        self.assertEqual(frames[0].shape, (3, 5, 3))
-        np.testing.assert_array_equal(frames[0][0, 0], np.asarray([17, 29, 41]))
-
 
 if __name__ == "__main__":
     unittest.main()
