@@ -754,7 +754,7 @@ def cmd_sequence_eval(args: argparse.Namespace) -> int:
             config=config,
             seed=args.seed + idx,
             max_steps=args.max_steps,
-            deterministic=args.deterministic,
+            deterministic=False,
         )
         for idx in range(args.episodes)
     ]
@@ -787,7 +787,7 @@ def cmd_self_train(args: argparse.Namespace) -> int:
             successes=args.successes,
             max_attempts=args.max_attempts,
             max_steps=args.max_steps,
-            deterministic=args.deterministic,
+            deterministic=False,
         )
         if args.dataset_output:
             Path(args.dataset_output).parent.mkdir(parents=True, exist_ok=True)
@@ -854,7 +854,6 @@ def build_parser() -> argparse.ArgumentParser:
     seq.add_argument("--max-steps", type=int, default=9000)
     seq.add_argument("--seed", type=int, default=10000)
     seq.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
-    seq.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False)
     seq.add_argument("--output")
     seq.set_defaults(func=cmd_sequence_eval)
 
@@ -875,7 +874,6 @@ def build_parser() -> argparse.ArgumentParser:
     self_train.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
     self_train.add_argument("--freeze-image-features", action="store_true")
     self_train.add_argument("--action-logit-scale", type=float, default=5.0)
-    self_train.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False)
     self_train.set_defaults(func=cmd_self_train)
     return parser
 

@@ -481,11 +481,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.45,
         help="Heatmap opacity for --attribution overlays, in [0, 1].",
     )
-    parser.add_argument(
-        "--deterministic",
-        action="store_true",
-        help="Use deterministic argmax actions instead of stochastic policy sampling.",
-    )
     return parser
 
 
@@ -554,7 +549,7 @@ def resolved_play_launch_lines(
         _summary_line(
             "▶",
             "policy",
-            f"device={args.device} stochastic={not args.deterministic} "
+            f"device={args.device} stochastic=True "
             f"seed={args.seed} episodes={args.episodes} "
             f"max_steps={task_max_episode_steps(policy_config)} "
             f"step_over={getattr(args, 'step_over', False)}",
@@ -824,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
                     active_task_state=active_task_state,
                     active_info_value=active_info_value,
                 )
-                action, _ = model.predict(model_obs, deterministic=args.deterministic)
+                action, _ = model.predict(model_obs, deterministic=False)
                 heatmap = None
                 if attributor is not None and step_idx % args.attribution_interval == 0:
                     heatmap = attributor.attribute(args.attribution, model_obs, action)

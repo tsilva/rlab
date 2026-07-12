@@ -49,10 +49,6 @@ def default_eval_n_envs() -> int:
     return max(os.cpu_count() or 1, 1)
 
 
-def eval_deterministic(args: argparse.Namespace) -> bool:
-    return bool(args.deterministic)
-
-
 def scripted_action(policy: str, step_idx: int, action_names: tuple[str, ...]) -> int:
     if policy == "random":
         raise ValueError("random policy is sampled from the env action space")
@@ -126,11 +122,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=default_eval_n_envs(),
         help="Number of vectorized eval envs; defaults to the logical CPU core count.",
     )
-    parser.add_argument(
-        "--deterministic",
-        action="store_true",
-        help="Use deterministic argmax actions instead of stochastic policy sampling.",
-    )
     parser.add_argument("--video-fps", type=float, default=30.0)
     parser.add_argument("--video-scale", type=int, default=4)
     parser.add_argument("--output", help="Optional JSON output path")
@@ -188,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             episodes=args.episodes,
             seed=args.seed,
             max_steps=args.max_steps,
-            deterministic=eval_deterministic(args),
+            deterministic=False,
             n_envs=args.n_envs,
             progress=args.progress,
             progress_description="eval model",

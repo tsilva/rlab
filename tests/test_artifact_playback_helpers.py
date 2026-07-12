@@ -964,8 +964,7 @@ class CommandAndArtifactTests(unittest.TestCase):
     def test_gui_playback_defaults_to_stochastic(self) -> None:
         parser = build_play_parser()
 
-        self.assertFalse(parser.parse_args([]).deterministic)
-        self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        self.assertFalse(hasattr(parser.parse_args([]), "deterministic"))
         self.assertFalse(parser.parse_args([]).step_over)
         self.assertTrue(parser.parse_args(["--step-over"]).step_over)
         self.assertEqual(parser.parse_args([]).episodes, 0)
@@ -980,7 +979,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
         self.assertEqual(parser.parse_args([]).attribution_opacity, 0.45)
         help_text = parser.format_help()
-        self.assertIn("--deterministic", help_text)
+        self.assertNotIn("--deterministic", help_text)
         self.assertIn("--episodes", help_text)
         self.assertIn("--step-over", help_text)
         self.assertIn("--attribution", help_text)
@@ -1038,13 +1037,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         with patch("rlab.eval.os.cpu_count", return_value=12):
             parser = build_eval_parser()
 
-        self.assertFalse(parser.parse_args([]).deterministic)
-        self.assertTrue(parser.parse_args(["--deterministic"]).deterministic)
+        self.assertFalse(hasattr(parser.parse_args([]), "deterministic"))
         self.assertEqual(parser.parse_args([]).n_envs, 12)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
         self.assertEqual(parser.parse_args(["--n-envs", "5"]).n_envs, 5)
         help_text = parser.format_help()
-        self.assertIn("--deterministic", help_text)
+        self.assertNotIn("--deterministic", help_text)
         self.assertIn("--n-envs", help_text)
         self.assertNotIn("--record-best-video", help_text)
         self.assertNotIn("--stochastic", help_text)
@@ -1085,8 +1083,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         ref = "tsilva/SuperMarioBros-NES/run-checkpoint:latest"
 
-        self.assertFalse(parser.parse_args([ref]).deterministic)
-        self.assertTrue(parser.parse_args([ref, "--deterministic"]).deterministic)
+        self.assertFalse(hasattr(parser.parse_args([ref]), "deterministic"))
 
     def test_model_source_ref_uses_positional_artifact_ref(self) -> None:
         parser = build_play_parser()

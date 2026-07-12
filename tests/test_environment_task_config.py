@@ -136,6 +136,50 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "codec.type"):
             validate_task_config(invalid)
 
+    def test_identity_task_accepts_validated_auto_fire(self) -> None:
+        task = {
+            "id": "identity",
+            "action": {
+                "set": "breakout_minimal",
+                "auto_fire": {
+                    "action": 1,
+                    "repeat_steps": 4,
+                    "signal": "lives",
+                    "operation": "decrease",
+                },
+                "codec": {
+                    "type": "discrete_lookup",
+                    "values": [[0, 0], [1, 0]],
+                },
+            },
+            "signals": {"lives": "lives"},
+            "events": {},
+            "termination": {"max_episode_steps": 1000},
+            "reward": {"reward_mode": "native"},
+        }
+
+        validate_task_config(task)
+
+        invalid = {
+            **task,
+            "action": {
+                **task["action"],
+                "auto_fire": {**task["action"]["auto_fire"], "signal": "missing"},
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "references unknown signal"):
+            validate_task_config(invalid)
+
+        invalid_action = {
+            **task,
+            "action": {
+                **task["action"],
+                "auto_fire": {**task["action"]["auto_fire"], "action": 2},
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "outside the configured action codec"):
+            validate_task_config(invalid_action)
+
     def test_task_validation_rejects_unimplemented_kernel_and_mario_event_semantics(self) -> None:
         with self.assertRaisesRegex(ValueError, "no registered task kernel"):
             validate_task_config(

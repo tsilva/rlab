@@ -19,6 +19,13 @@ from rlab.main import COMMANDS
 
 
 class ConfigValidationTests(unittest.TestCase):
+    def test_goal_validator_rejects_deterministic_policy_eval(self) -> None:
+        with self.assertRaisesRegex(ValueError, "eval.policy.stochastic must be true"):
+            config_validation._validate_goal_eval(
+                {"eval": {"episodes": 1, "policy": {"stochastic": False}}},
+                label="goal",
+            )
+
     def test_checked_in_experiment_tree_validates(self) -> None:
         report = validate_experiment_tree(Path("."))
 
@@ -59,6 +66,11 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["checkpoint_eval_environment"]["game"],
             "Breakout-Atari2600-v0",
         )
+        self.assertIs(train_config["env_args"]["reward_clip"], True)
+        self.assertEqual(
+            train_config["checkpoint_eval_environment"]["env_args"],
+            {"num_threads": 4, "reward_clip": False},
+        )
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)
         self.assertEqual(train_config["frame_skip"], 4)
@@ -71,6 +83,12 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["action"],
             {
                 "set": "breakout_minimal",
+                "auto_fire": {
+                    "action": 1,
+                    "repeat_steps": 4,
+                    "signal": "lives",
+                    "operation": "decrease",
+                },
                 "codec": {
                     "type": "discrete_lookup",
                     "values": [
@@ -81,6 +99,12 @@ class ConfigValidationTests(unittest.TestCase):
                     ],
                 },
             },
+        )
+        self.assertEqual(train_config["task"]["signals"], {"lives": "lives"})
+        self.assertEqual(train_config["task"]["events"], {})
+        self.assertEqual(
+            train_config["task"]["termination"],
+            {"max_episode_steps": 54000},
         )
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["task"]["action"],
@@ -103,6 +127,23 @@ class ConfigValidationTests(unittest.TestCase):
             "stable-retro-turbo:Breakout-Atari2600-v0",
         )
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
+
+    def test_breakout_stable_updates_recipe_adds_late_update_guards(self) -> None:
+        document = load_recipe_document(
+            Path("experiments/goals/alepy__breakout/recipes/stable-updates.yaml")
+        )
+
+        train_config = document["train_config"]
+        self.assertEqual(document["recipe_id"], "stable-updates")
+        self.assertEqual(train_config["learning_rate"], 2.5e-4)
+        self.assertEqual(train_config["learning_rate_final"], 2.5e-5)
+        self.assertEqual(train_config["learning_rate_schedule_timesteps"], 50_000_000)
+        self.assertEqual(train_config["target_kl"], 0.03)
+        self.assertIs(train_config["env_args"]["reward_clip"], True)
+        self.assertIs(
+            train_config["checkpoint_eval_environment"]["env_args"]["reward_clip"],
+            False,
+        )
 
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
         breakout = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))

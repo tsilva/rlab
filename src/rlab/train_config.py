@@ -46,6 +46,7 @@ class TrainConfigField:
     mapping_value: bool = False
     owner: FieldOwner = "runtime"
     source_section: SourceSection = "runtime"
+    cli_exposed: bool = True
 
     @property
     def command_flag(self) -> str:
@@ -119,6 +120,9 @@ def add_train_config_args(
 ) -> None:
     env_defaults = env_defaults or EnvConfig()
     for field in TRAIN_CONFIG_FIELDS:
+        if not field.cli_exposed:
+            parser.set_defaults(**{field.dest: _env_default(env_defaults, field)})
+            continue
         _add_config_field_argument(
             parser,
             field,
@@ -171,6 +175,8 @@ def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
 def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
     cmd = [sys.executable, "-m", "rlab.train"]
     for field in TRAIN_CONFIG_FIELDS:
+        if not field.cli_exposed:
+            continue
         if field.dest not in options:
             continue
         value = options[field.dest]
@@ -449,6 +455,11 @@ def validate_and_normalize_train_config(
 
     normalized = dict(train_config)
     validate_train_config_fields(normalized, label=label, required_keys=required_keys)
+    if normalized.get("post_train_eval_stochastic") is False:
+        raise ValueError(
+            f"{label}.post_train_eval_stochastic must be true; "
+            "all policy evaluation uses stochastic sampling"
+        )
     if normalized.get("early_stop") is not None:
         normalized["early_stop"] = normalize_early_stop_config(
             normalized["early_stop"], label=f"{label}.early_stop"
@@ -694,7 +705,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--post-train-eval-stochastic",
         kind="bool_optional",
         default=True,
-        help="Use stochastic policy sampling for post-training checkpoint eval.",
+        help="Fixed true: post-training checkpoint eval uses stochastic policy sampling.",
+        cli_exposed=False,
     ),
     TrainConfigField(
         "early_stop",

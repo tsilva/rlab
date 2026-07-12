@@ -323,7 +323,12 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
                     f"{label}.eval.environment.env_config.{moved_key}"
                 )
         if "stochastic" in policy:
-            _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
+            stochastic = _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
+            if not stochastic:
+                raise ValueError(
+                    f"{label}.eval.policy.stochastic must be true; "
+                    "all policy evaluation uses stochastic sampling"
+                )
     elif policy is not None:
         raise ValueError(f"{label}.eval.policy must be an object")
 

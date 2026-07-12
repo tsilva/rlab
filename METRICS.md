@@ -226,7 +226,7 @@ training end so the last PPO update is not lost.
 
 | Metric | Meaning |
 | --- | --- |
-| `rollout/ep_rew_mean` | Mean shaped episode return over SB3's monitor window. This is the reward used by training, not raw game score. It appears only after at least one monitored episode completes. |
+| `rollout/ep_rew_mean` | Mean shaped episode return over SB3's monitor window. This is the reward used by training, not raw game score; current Breakout training clips native reward events. It appears only after at least one monitored episode completes. |
 | `rollout/ep_len_mean` | Mean episode length over SB3's monitor window. It appears only after at least one monitored episode completes. |
 | `time/fps` | Cumulative SB3 training throughput in environment steps per second. |
 | `time/iterations` | Number of PPO learn iterations completed. |
@@ -387,7 +387,7 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 
 | Metric | Meaning |
 | --- | --- |
-| `eval/reward/mean` | Mean eval episode return. |
+| `eval/reward/mean` | Mean eval episode return under the goal-owned eval reward contract. Current Breakout eval disables training-time reward clipping, so this is real game score. |
 | `eval/reward/std` | Standard deviation of eval episode returns. |
 | `eval/reward/max` | Maximum eval episode return. |
 | `eval/progress/x/mean` | Mean max global X position reached per eval episode. |
@@ -464,7 +464,7 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | Field | Meaning |
 | --- | --- |
 | `episodes` | Number of eval episodes summarized. |
-| `deterministic` | Whether eval used deterministic policy actions. |
+| `deterministic` | Policy-action mode provenance. Always `false`: all supported evaluation and playback paths use stochastic sampling. |
 | `reward_mean` | Mean eval episode return before mapping to `eval/reward/mean`. |
 | `reward_std` | Standard deviation of eval episode returns before mapping to `eval/reward/std`. |
 | `reward_max` | Maximum eval episode return before mapping to `eval/reward/max`. |

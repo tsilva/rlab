@@ -119,6 +119,10 @@ def evaluate_model_episodes(
     progress: bool = False,
     progress_description: str = "eval episodes",
 ) -> tuple[dict[str, Any], Path | None]:
+    if deterministic:
+        raise ValueError(
+            "deterministic policy evaluation is unsupported; use stochastic sampling"
+        )
     started_at = time.perf_counter()
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None

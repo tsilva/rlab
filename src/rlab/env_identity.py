@@ -151,7 +151,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
     action_set = action.get("set")
     if not isinstance(action_set, str) or not action_set.strip():
         raise ValueError(f"{label}.action.set must be a non-empty string")
-    extra_action_keys = sorted(set(action) - {"set", "codec"})
+    extra_action_keys = sorted(set(action) - {"set", "codec", "auto_fire"})
     if extra_action_keys:
         raise ValueError(f"{label}.action has unexpected keys: {extra_action_keys}")
     codec = action.get("codec")
@@ -172,6 +172,43 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         values = codec.get("values")
         if not isinstance(values, list | tuple) or not values:
             raise ValueError(f"{label}.action.codec.values must be a non-empty list")
+    auto_fire = action.get("auto_fire")
+    if auto_fire is not None:
+        if task_id != "identity":
+            raise ValueError(f"{label}.action.auto_fire is only supported by the identity task")
+        if not isinstance(auto_fire, Mapping):
+            raise ValueError(f"{label}.action.auto_fire must be an object")
+        extra_auto_fire_keys = sorted(
+            set(auto_fire) - {"action", "repeat_steps", "signal", "operation"}
+        )
+        if extra_auto_fire_keys:
+            raise ValueError(
+                f"{label}.action.auto_fire has unexpected keys: {extra_auto_fire_keys}"
+            )
+        action_id = auto_fire.get("action")
+        if not isinstance(action_id, int) or isinstance(action_id, bool) or action_id < 0:
+            raise ValueError(f"{label}.action.auto_fire.action must be a non-negative integer")
+        codec_values = codec.get("values") if isinstance(codec, Mapping) else None
+        if not isinstance(codec_values, list | tuple):
+            raise ValueError(f"{label}.action.auto_fire requires a discrete lookup codec")
+        if action_id >= len(codec_values):
+            raise ValueError(
+                f"{label}.action.auto_fire.action is outside the configured action codec"
+            )
+        repeat_steps = auto_fire.get("repeat_steps")
+        if (
+            not isinstance(repeat_steps, int)
+            or isinstance(repeat_steps, bool)
+            or repeat_steps < 1
+        ):
+            raise ValueError(f"{label}.action.auto_fire.repeat_steps must be a positive integer")
+        signal_name = auto_fire.get("signal")
+        if signal_name not in task["signals"]:
+            raise ValueError(
+                f"{label}.action.auto_fire.signal references unknown signal {signal_name!r}"
+            )
+        if auto_fire.get("operation") != "decrease":
+            raise ValueError(f"{label}.action.auto_fire.operation must be 'decrease'")
     signals = task["signals"]
     for name, source in signals.items():
         if not isinstance(name, str) or not name.strip():

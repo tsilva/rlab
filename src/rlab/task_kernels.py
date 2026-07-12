@@ -590,12 +590,18 @@ class IdentityTaskDefinition:
         observation_source_shape: tuple[int, int] | None = None,
         max_episode_steps: int = 0,
         action_values: Sequence[Any] | None = None,
+        auto_action_id: int | None = None,
+        auto_action_repeat_steps: int = 0,
+        auto_action_signal: SignalSource | None = None,
     ):
         self.observation_mask = observation_mask
         self.observation_mask_fill = int(observation_mask_fill)
         self.observation_source_shape = observation_source_shape
         self.max_episode_steps = int(max_episode_steps)
         self.action_values = None if action_values is None else tuple(action_values)
+        self.auto_action_id = auto_action_id
+        self.auto_action_repeat_steps = int(auto_action_repeat_steps)
+        self.auto_action_signal = auto_action_signal
         if self.max_episode_steps < 0:
             raise ValueError("max_episode_steps must be non-negative")
 
@@ -608,6 +614,9 @@ class IdentityTaskDefinition:
             observation_source_shape=self.observation_source_shape,
             max_episode_steps=self.max_episode_steps,
             action_values=self.action_values,
+            auto_action_id=self.auto_action_id,
+            auto_action_repeat_steps=self.auto_action_repeat_steps,
+            auto_action_signal=self.auto_action_signal,
         )
 
 
@@ -625,6 +634,9 @@ class IdentityTaskKernel:
         observation_source_shape: tuple[int, int] | None = None,
         max_episode_steps: int = 0,
         action_values: Sequence[Any] | None = None,
+        auto_action_id: int | None = None,
+        auto_action_repeat_steps: int = 0,
+        auto_action_signal: SignalSource | None = None,
     ):
         self.num_envs = int(num_envs)
         self._native_observation_space = descriptor.native_observation_space
@@ -647,6 +659,24 @@ class IdentityTaskKernel:
                 self.num_envs,
             )
             self.action_space = gym.spaces.Discrete(len(action_values))
+        if auto_action_id is not None and self._action_lookup is None:
+            raise ValueError("automatic actions require a discrete lookup codec")
+        if auto_action_id is not None and not 0 <= auto_action_id < self.action_space.n:
+            raise ValueError("automatic action id is outside the configured action codec")
+        if auto_action_id is not None and auto_action_repeat_steps < 1:
+            raise ValueError("automatic action repeat steps must be positive")
+        if auto_action_id is not None and auto_action_signal is None:
+            raise ValueError("automatic actions require a trigger signal")
+        self._auto_action_id = auto_action_id
+        self._auto_action_repeat_steps = int(auto_action_repeat_steps)
+        self._auto_action_remaining = np.zeros(self.num_envs, dtype=np.int64)
+        self._auto_action_indices = np.empty(self.num_envs, dtype=np.int64)
+        self._auto_action_bindings = (
+            SignalBindings(descriptor, {"trigger": auto_action_signal}, self.num_envs)
+            if auto_action_id is not None and auto_action_signal is not None
+            else None
+        )
+        self._auto_action_previous = np.zeros(self.num_envs, dtype=np.int64)
         self._rewards = np.empty(self.num_envs, dtype=np.float32)
         self._terminated = np.zeros(self.num_envs, dtype=bool)
         self._truncated = np.zeros(self.num_envs, dtype=bool)
@@ -667,6 +697,12 @@ class IdentityTaskKernel:
             raise ValueError(f"expected {self.num_envs} task action ids, got {indices.shape}")
         if np.any(indices < 0) or np.any(indices >= self.action_space.n):
             raise ValueError("task action id is outside the configured action codec")
+        if self._auto_action_id is not None:
+            np.copyto(self._auto_action_indices, indices)
+            pending = self._auto_action_remaining > 0
+            self._auto_action_indices[pending] = self._auto_action_id
+            self._auto_action_remaining[pending] -= 1
+            indices = self._auto_action_indices
         _map_action_lookup(self._action_lookup, indices, self._action_buffer)
         return self._action_buffer
 
@@ -721,7 +757,12 @@ class IdentityTaskKernel:
         provider_truncated: np.ndarray,
         signals: Mapping[str, Any],
     ) -> TaskStep:
-        del provider_terminated, provider_truncated, signals
+        del provider_terminated, provider_truncated
+        if self._auto_action_bindings is not None:
+            current = self._auto_action_bindings.scalar("trigger", signals).astype(np.int64)
+            decreased = current < self._auto_action_previous
+            self._auto_action_remaining[decreased] = self._auto_action_repeat_steps
+            np.copyto(self._auto_action_previous, current)
         np.copyto(self._rewards, np.asarray(native_rewards, dtype=np.float32))
         _identity_step_kernel(
             self._episode_steps,
@@ -745,8 +786,15 @@ class IdentityTaskKernel:
         reset_signals: Mapping[str, Any],
         mask: np.ndarray,
     ) -> bool:
-        del reset_observations, reset_signals
-        self._episode_steps[np.asarray(mask, dtype=bool)] = 0
+        del reset_observations
+        mask = np.asarray(mask, dtype=bool)
+        self._episode_steps[mask] = 0
+        if self._auto_action_bindings is not None:
+            current = self._auto_action_bindings.scalar(
+                "trigger", reset_signals, mask=mask
+            ).astype(np.int64)
+            self._auto_action_previous[mask] = current[mask]
+            self._auto_action_remaining[mask] = self._auto_action_repeat_steps
 
 
 @dataclass(frozen=True)

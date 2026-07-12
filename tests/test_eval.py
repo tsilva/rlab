@@ -108,6 +108,17 @@ def log_checkpoint_eval(
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_model_eval_rejects_deterministic_sampling(self) -> None:
+        with self.assertRaisesRegex(ValueError, "deterministic policy evaluation is unsupported"):
+            evaluate_model_episodes(
+                model=object(),
+                config=EnvConfig(game="SuperMarioBros-Nes-v0"),
+                episodes=1,
+                seed=10_000,
+                max_steps=10,
+                deterministic=True,
+            )
+
     def test_scripted_policy_resets_per_episode_and_uses_bound_action_space(self) -> None:
         class ActionSpace:
             def sample(self) -> int:
@@ -220,7 +231,7 @@ class EvalMetricTests(unittest.TestCase):
                     "final_info": {"ale.lives": 3},
                 },
             ],
-            deterministic=True,
+            deterministic=False,
             semantics=target_for_game("breakout").eval_semantics,
         )
 
@@ -450,7 +461,7 @@ class EvalMetricTests(unittest.TestCase):
             FakeEnv(),
             FakeModel(),
             max_steps=2,
-            deterministic=True,
+            deterministic=False,
             seed=7,
             default_start_state="Level1-1",
         )
@@ -572,7 +583,7 @@ class EvalMetricTests(unittest.TestCase):
                 episodes=2,
                 seed=7,
                 max_steps=10,
-                deterministic=True,
+                deterministic=False,
                 n_envs=2,
             )
 
@@ -677,7 +688,7 @@ class EvalMetricTests(unittest.TestCase):
                 episodes=2,
                 seed=7,
                 max_steps=10,
-                deterministic=True,
+                deterministic=False,
                 n_envs=2,
             )
 
@@ -782,7 +793,7 @@ class EvalMetricTests(unittest.TestCase):
                 episodes=1,
                 seed=7,
                 max_steps=2,
-                deterministic=True,
+                deterministic=False,
                 n_envs=2,
             )
 
@@ -858,7 +869,7 @@ class EvalMetricTests(unittest.TestCase):
                 episodes=3,
                 seed=7,
                 max_steps=10,
-                deterministic=True,
+                deterministic=False,
                 progress=True,
                 progress_description="eval checkpoint 4100000",
             )
@@ -937,7 +948,7 @@ class EvalMetricTests(unittest.TestCase):
                 episodes=1,
                 seed=10_007,
                 max_steps=10,
-                deterministic=True,
+                deterministic=False,
                 capture_best_video=True,
                 video_path=output,
             )

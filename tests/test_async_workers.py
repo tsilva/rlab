@@ -45,7 +45,7 @@ def worker_args(**overrides: object) -> argparse.Namespace:
         "post_train_eval_max_steps": 0,
         "max_episode_steps": 4500,
         "checkpoint_eval_n_envs": 1,
-        "post_train_eval_stochastic": False,
+        "post_train_eval_stochastic": True,
     }
     values.update(overrides)
     return argparse.Namespace(**values)

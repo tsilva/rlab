@@ -42,6 +42,13 @@ train:
       id: identity
       action:
         set: breakout_minimal
+        # FIRE is forced for four policy steps after reset or life loss. Four
+        # repeats make launch robust to the configured 0.25 sticky-action rate.
+        auto_fire:
+          action: 1
+          repeat_steps: 4
+          signal: lives
+          operation: decrease
         codec:
           type: discrete_lookup
           # Stable Retro Atari order: BUTTON, unused, SELECT, RESET,
@@ -51,7 +58,8 @@ train:
           - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE
           - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
           - [0, 0, 0, 0, 0, 0, 0, 1] # RIGHT
-      signals: {}
+      signals:
+        lives: lives
       events: {}
       # Preserve the previous 216,000 raw-frame cap at frame_skip=4.
       termination:
@@ -60,10 +68,16 @@ train:
         reward_mode: native
 eval:
   episodes: 100
+  policy:
+    stochastic: true
   environment:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_breakout_env_config
+      # Train on clipped rewards, but rank checkpoints by the real game score.
+      env_args:
+        num_threads: 4
+        reward_clip: false
     preprocessing:
       # Keep the top wall (it begins at source row 17) while removing the score.
       obs_crop:

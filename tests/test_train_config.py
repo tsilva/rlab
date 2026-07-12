@@ -15,6 +15,7 @@ from rlab.train_config import (
     env_config_arg_fields,
     materialized_train_args,
     train_config_field_for_key,
+    validate_and_normalize_train_config,
     validate_train_config_fields,
     validate_train_config_value,
 )
@@ -107,6 +108,16 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
 
         self.assertIn("--checkpoint-eval-n-envs", options)
         self.assertNotIn("--post-train-eval-n-envs", options)
+        self.assertNotIn("--post-train-eval-stochastic", options)
+        self.assertNotIn("--no-post-train-eval-stochastic", options)
+        self.assertTrue(parser.parse_args([]).post_train_eval_stochastic)
+
+    def test_train_config_rejects_deterministic_checkpoint_eval(self) -> None:
+        with self.assertRaisesRegex(ValueError, "post_train_eval_stochastic must be true"):
+            validate_and_normalize_train_config({"post_train_eval_stochastic": False})
+
+        command = build_train_command_from_fields({"post_train_eval_stochastic": True})
+        self.assertNotIn("--post-train-eval-stochastic", command)
 
     def test_build_train_command_accepts_canonical_task(self) -> None:
         task = {"id": "identity"}

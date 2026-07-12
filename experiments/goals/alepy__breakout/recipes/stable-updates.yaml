@@ -1,0 +1,17 @@
+defaults:
+- base@_global_
+- _self_
+recipe_id: stable-updates
+description: >-
+  Seed {seed} preserves the baseline Breakout environment and Atari PPO batch
+  shape, while linearly decaying the learning rate from 2.5e-4 to 2.5e-5 over
+  50M steps and stopping PPO epochs early when approximate KL becomes too
+  large. This tests whether the baseline's increasingly aggressive late
+  updates caused its jagged checkpoint regressions. Checkpoints are evaluated
+  stochastically with unclipped game score.
+train:
+  policy:
+    learning_rate: 2.5e-4
+    learning_rate_final: 2.5e-5
+    learning_rate_schedule_timesteps: 50000000
+    target_kl: 0.03
