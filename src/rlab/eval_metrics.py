@@ -424,6 +424,9 @@ def run_eval_episode(
     semantics: EvalSemantics | None = None,
 ) -> dict[str, Any]:
     semantics = semantics or default_eval_semantics()
+    reset_episode = getattr(model, "reset_episode", None)
+    if callable(reset_episode):
+        reset_episode()
     env.seed(seed)
     obs = env.reset()
     actions: list[Any] = []

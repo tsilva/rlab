@@ -14,6 +14,7 @@ from rlab.train_config import (
     add_train_config_args,
     build_train_command_from_fields,
     env_config_arg_fields,
+    materialized_train_args,
     train_config_field_for_key,
     validate_train_config_fields,
     validate_train_config_value,
@@ -25,7 +26,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertEqual(
             PLAYBACK_ENV_ARG_KEYS,
             {
-                field.dest: (field.env_config_key or field.dest,)
+                field.dest: (field.dest,)
                 for field in env_config_arg_fields()
             },
         )
@@ -37,6 +38,20 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "timesteps must be an integer"):
                 parse_train_args(["--train-config-json", str(path)])
+
+    def test_materialized_config_loader_matches_cli_json_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "train.json"
+            path.write_text(
+                json.dumps({"game": "SuperMarioBros-Nes-v0", "seed": 7, "wandb_tags": "one"}),
+                encoding="utf-8",
+            )
+
+            cli_args = parse_train_args(["--train-config-json", str(path)])
+            worker_args = materialized_train_args(path)
+
+        for key in ("game", "seed", "wandb_tags", "frame_skip", "checkpoint_eval_n_envs"):
+            self.assertEqual(getattr(worker_args, key), getattr(cli_args, key))
 
     def test_train_and_eval_parsers_share_env_field_behavior(self) -> None:
         train_parser = argparse.ArgumentParser()
@@ -74,7 +89,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
 
         self.assertIsNotNone(field)
         self.assertEqual(field.dest, "task")
-        self.assertEqual(field.env_config_key, "task")
+        self.assertTrue(field.environment)
 
     def test_checkpoint_eval_has_one_cli_flag(self) -> None:
         parser = argparse.ArgumentParser()

@@ -1,10 +1,9 @@
 schema_version: 1
 name: fleet-capacity-rtx4090
 kind: fleet_capacity
-description: Queue-backed Beast3 capacity check for the standard five-container RTX4090 shape.
-target: rtx4090
+description: Queue-backed Beast3 capacity check with five requested containers.
 host: beast-3
-workers: 5
+requested_workers: 5
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 runtime_image_ref_file: rlab-train-image.json
 gates:

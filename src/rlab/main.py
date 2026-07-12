@@ -9,12 +9,8 @@ CommandMain = Callable[[list[str] | None], object]
 
 
 def _run(command: CommandMain, argv: Sequence[str], *, prog: str) -> int:
-    previous_argv = sys.argv
-    sys.argv = [prog, *argv]
-    try:
-        result = command(list(argv))
-    finally:
-        sys.argv = previous_argv
+    del prog
+    result = command(list(argv))
     return int(result) if isinstance(result, int) else 0
 
 

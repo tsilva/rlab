@@ -94,7 +94,7 @@ def env_config_from_args(
     for field in env_config_arg_fields():
         if field.dest in {"states", "state_probs"} and not include_states:
             continue
-        key = field.env_config_key or field.dest
+        key = field.dest
         raw_value = (
             value(max_episode_steps_attr, defaults.max_episode_steps)
             if field.dest == "max_episode_steps"

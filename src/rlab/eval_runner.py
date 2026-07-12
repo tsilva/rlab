@@ -39,6 +39,12 @@ def _eval_runtime_config(
     )
 
 
+def _bind_policy_action_space(model: Any, action_space: Any) -> None:
+    bind_action_space = getattr(model, "bind_action_space", None)
+    if callable(bind_action_space):
+        bind_action_space(action_space)
+
+
 def _evaluate_model_episodes_vector(
     *,
     model,
@@ -60,6 +66,7 @@ def _evaluate_model_episodes_vector(
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
     try:
+        _bind_policy_action_space(model, getattr(eval_env, "action_space", None))
         torch.manual_seed(seed)
         obs = eval_env.reset()
         while len(episode_results) < episodes:
@@ -139,6 +146,7 @@ def evaluate_model_episodes(
             )
             eval_env = make_eval_vec_env(config=eval_config, n_envs=1, seed=seed)
             try:
+                _bind_policy_action_space(model, getattr(eval_env, "action_space", None))
                 for episode_idx in range(episodes):
                     episode_seed = seed + episode_idx
                     torch.manual_seed(episode_seed)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from rlab.env_identity import environment_identity_from_train_config, train_config_from_environment_identity
+from rlab.env_identity import environment_identity_from_train_config
 from rlab.env_registry import registered_env_ids, resolve_env_id
 
 
@@ -104,34 +104,3 @@ def test_rejects_unknown_provider_alias() -> None:
                 "game": "SuperMarioBros-Nes-v0",
             }
         )
-
-
-def test_train_config_materializes_provider_local_game_id() -> None:
-    train_config = train_config_from_environment_identity(
-        {"env_id": "stable-retro-turbo:SuperMarioBros-Nes-v0"}
-    )
-
-    assert train_config["game"] == "SuperMarioBros-Nes-v0"
-    assert train_config["env_provider"] == "stable-retro-turbo"
-
-
-def test_flat_state_materializes_train_config_state() -> None:
-    train_config = train_config_from_environment_identity(
-        {
-            "env_id": "stable-retro-turbo:SuperMarioBros-Nes-v0",
-            "state": "Level1-1",
-        }
-    )
-
-    assert train_config["state"] == "Level1-1"
-
-
-def test_flat_states_materializes_train_config_states() -> None:
-    train_config = train_config_from_environment_identity(
-        {
-            "env_id": "stable-retro-turbo:SuperMarioBros-Nes-v0",
-            "states": ["Level1-1", "Level1-2"],
-        }
-    )
-
-    assert train_config["states"] == ["Level1-1", "Level1-2"]

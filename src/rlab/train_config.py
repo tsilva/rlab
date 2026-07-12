@@ -5,10 +5,12 @@ import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from rlab.env import EnvConfig
-from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START
+from rlab.provider_config import provider_num_envs
+from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
 from rlab.validation import normalize_obs_crop
 
 
@@ -34,7 +36,7 @@ class TrainConfigField:
     choices: tuple[str, ...] = ()
     help: str | None = None
     serialize: SerializeMode = "str"
-    env_config_key: str | None = None
+    environment: bool = False
     queue_required: bool = False
     non_empty: bool = False
     validation_min: float | None = None
@@ -51,7 +53,7 @@ class TrainConfigField:
 
     @property
     def is_env_config_field(self) -> bool:
-        return self.env_config_key is not None
+        return self.environment
 
 
 def _env_default(env_defaults: EnvConfig, field: TrainConfigField) -> Any:
@@ -166,25 +168,12 @@ def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
     return str(value)
 
 
-def _canonical_train_command_options(options: Mapping[str, Any]) -> dict[str, Any]:
-    canonical = dict(options)
-    for field in TRAIN_CONFIG_FIELDS:
-        if (
-            field.env_config_key
-            and field.env_config_key in canonical
-            and field.dest not in canonical
-        ):
-            canonical[field.dest] = canonical[field.env_config_key]
-    return canonical
-
-
 def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
     cmd = [sys.executable, "-m", "rlab.train"]
-    canonical_options = _canonical_train_command_options(options)
     for field in TRAIN_CONFIG_FIELDS:
-        if field.dest not in canonical_options:
+        if field.dest not in options:
             continue
-        value = canonical_options[field.dest]
+        value = options[field.dest]
         if field.kind == "store_true":
             if value:
                 cmd.append(field.command_flag)
@@ -202,13 +191,39 @@ def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
     return cmd
 
 
-def train_config_field_for_key(
-    key: str, *, include_env_config_keys: bool = True
-) -> TrainConfigField | None:
+def load_materialized_train_config(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"train config file must contain a JSON object: {path}")
+    return validate_and_normalize_train_config(payload, label=f"train config file {path}")
+
+
+def materialized_train_args(path: Path) -> argparse.Namespace:
+    """Load queue/runtime JSON without routing an internal payload through CLI parsing."""
+
+    payload = load_materialized_train_config(path)
+    defaults = {
+        field.dest: _env_default(EnvConfig(), field)
+        for field in TRAIN_CONFIG_FIELDS
+    }
+    defaults.update(payload)
+    if isinstance(defaults.get("wandb_tags"), list | tuple):
+        defaults["wandb_tags"] = ",".join(str(tag) for tag in defaults["wandb_tags"])
+    args = argparse.Namespace(**defaults)
+    args.train_config_json = path
+    args._train_config_json_fields = set(payload)
+    args._explicit_train_arg_dests = set()
+    validate_training_seed(
+        args.seed,
+        label="train_config.seed",
+        seed_span=provider_num_envs(args, explicit_n_envs=payload.get("n_envs")),
+    )
+    return args
+
+
+def train_config_field_for_key(key: str) -> TrainConfigField | None:
     for field in TRAIN_CONFIG_FIELDS:
-        if field.dest == key or (
-            include_env_config_keys and field.env_config_key == key
-        ):
+        if field.dest == key:
             return field
     return None
 
@@ -222,17 +237,12 @@ def env_config_arg_fields() -> tuple[TrainConfigField, ...]:
 
 
 def env_config_allowed_keys() -> frozenset[str]:
-    keys: set[str] = set()
-    for field in env_config_arg_fields():
-        keys.add(field.dest)
-        if field.env_config_key:
-            keys.add(field.env_config_key)
-    return frozenset(keys)
+    return frozenset(field.dest for field in env_config_arg_fields())
 
 
 def playback_env_arg_keys() -> dict[str, tuple[str, ...]]:
     return {
-        field.dest: (field.env_config_key or field.dest,)
+        field.dest: (field.dest,)
         for field in env_config_arg_fields()
     }
 
@@ -246,8 +256,6 @@ def train_config_keys_owned_by(owner: FieldOwner) -> frozenset[str]:
         if not is_owned:
             continue
         keys.add(field.dest)
-        if field.env_config_key:
-            keys.add(field.env_config_key)
     return frozenset(keys)
 
 
@@ -492,7 +500,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "env_provider",
         "--env-provider",
         env_default="env_provider",
-        env_config_key="env_provider",
+        environment=True,
         non_empty=True,
         help="Environment provider id. Supported: stable-retro-turbo, supermariobrosnes-turbo, ale-py.",
     ),
@@ -500,7 +508,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "game",
         "--game",
         env_default="game",
-        env_config_key="game",
+        environment=True,
         queue_required=True,
         non_empty=True,
         help="Provider game id. Defaults to RETRO_GAME when set.",
@@ -512,7 +520,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default={},
         env_default="env_args",
         serialize="json",
-        env_config_key="env_args",
+        environment=True,
         mapping_value=True,
         help="Provider-native environment constructor arguments, serialized as a JSON object.",
     ),
@@ -523,7 +531,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default={},
         env_default="task",
         serialize="json",
-        env_config_key="task",
+        environment=True,
         mapping_value=True,
         help="Canonical bound-task definition as a JSON object.",
     ),
@@ -531,7 +539,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "state",
         "--state",
         env_default="state",
-        env_config_key="state",
+        environment=True,
         non_empty=True,
         help="Provider state. If omitted, registered targets may provide a default.",
     ),
@@ -540,7 +548,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--states",
         default="",
         serialize="csv",
-        env_config_key="states",
+        environment=True,
         sequence_items="str",
         help="Comma-separated provider states. Without --state-probs, provide exactly one state per env slot in order.",
     ),
@@ -549,7 +557,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--state-probs",
         default="",
         serialize="csv",
-        env_config_key="state_probs",
+        environment=True,
         sequence_items="number",
         help="Comma-separated non-negative sampling weights for --states. The native vector env normalizes weights and samples independently on each episode reset.",
     ),
@@ -558,7 +566,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--frame-skip",
         type_name="int",
         default=4,
-        env_config_key="frame_skip",
+        environment=True,
         validation_min=1,
     ),
     TrainConfigField(
@@ -566,7 +574,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--sticky-action-prob",
         type_name="float",
         env_default="sticky_action_prob",
-        env_config_key="sticky_action_prob",
+        environment=True,
         help="Probability of replaying the previous high-level action; 0 disables sticky actions.",
     ),
     TrainConfigField(
@@ -574,7 +582,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--max-pool-frames",
         kind="bool_optional",
         default=True,
-        env_config_key="max_pool_frames",
+        environment=True,
         help="Max-pool over the last two raw frames inside each frame-skip step.",
     ),
     TrainConfigField(
@@ -582,7 +590,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--observation-size",
         type_name="int",
         env_default="observation_size",
-        env_config_key="observation_size",
+        environment=True,
         validation_min=0,
     ),
     TrainConfigField(
@@ -590,7 +598,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--hud-crop-top",
         type_name="int",
         env_default="hud_crop_top",
-        env_config_key="hud_crop_top",
+        environment=True,
         validation_min=0,
         help="Crop this many pixels from the top of raw frames before grayscale resize; -1 uses the target default.",
     ),
@@ -600,7 +608,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="obs_crop",
         env_default="obs_crop",
         serialize="csv",
-        env_config_key="obs_crop",
+        environment=True,
         help="Four-sided raw-frame crop as top,right,bottom,left before grayscale resize.",
     ),
     TrainConfigField(
@@ -608,7 +616,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--obs-crop-mode",
         env_default="obs_crop_mode",
         choices=("remove", "mask"),
-        env_config_key="obs_crop_mode",
+        environment=True,
         non_empty=True,
         help="Whether obs_crop removes pixels or masks them before resize.",
     ),
@@ -617,7 +625,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--obs-crop-fill",
         type_name="int",
         env_default="obs_crop_fill",
-        env_config_key="obs_crop_fill",
+        environment=True,
         validation_min=0,
         validation_max=255,
         help="Pixel fill value for obs_crop_mode=mask.",
@@ -626,7 +634,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "obs_resize_algorithm",
         "--obs-resize-algorithm",
         env_default="obs_resize_algorithm",
-        env_config_key="obs_resize_algorithm",
+        environment=True,
         non_empty=True,
         help="Resize algorithm for native frame preprocessing.",
     ),

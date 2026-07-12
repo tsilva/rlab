@@ -132,21 +132,6 @@ def load_model_metadata(model_path: Path) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def require_training_metadata(model_path: Path) -> dict[str, Any]:
-    metadata = load_model_metadata(model_path)
-    version = metadata.get("metadata_version")
-    training = metadata.get("training_metadata")
-    if version != MODEL_METADATA_VERSION or not isinstance(training, dict):
-        raise ValueError(
-            f"{model_path} is missing v{MODEL_METADATA_VERSION} training metadata; "
-            "recreate or re-upload the checkpoint with current artifact metadata"
-        )
-    env_config = training.get("env_config")
-    if not isinstance(env_config, dict) or not env_config:
-        raise ValueError(f"{model_path} training metadata is missing env_config")
-    return training
-
-
 def env_config_from_model_metadata(
     model_path: Path,
 ) -> EnvConfig | None:
@@ -193,19 +178,6 @@ def apply_config_defaults(
             if config_key in config and config[config_key] is not None:
                 setattr(args, arg_name, config[config_key])
                 break
-
-
-def apply_model_config_defaults(
-    args: argparse.Namespace,
-    model_path: Path,
-    parser_defaults: dict[str, object],
-    explicit_dests: set[str],
-) -> bool:
-    saved_config = env_config_from_metadata(load_model_metadata(model_path))
-    if not saved_config:
-        return False
-    apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
-    return True
 
 
 def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):

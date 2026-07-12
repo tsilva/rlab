@@ -23,8 +23,8 @@ from rlab.eval_metrics import (
     single_env_action,
 )
 from rlab.model_sources import add_model_source_args, resolve_single_model_source
-from rlab.play import model_observation, task_info_value_from_info
-from rlab.train import resolve_sb3_device
+from rlab.device import resolve_sb3_device
+from rlab.policy_observation import model_observation, task_info_value_from_info
 from rlab.train_config import DEVICE_CHOICES
 from rlab.task_kernels import default_task_document
 

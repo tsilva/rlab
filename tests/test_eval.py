@@ -9,6 +9,7 @@ import numpy as np
 
 from rlab.batch_runtime import EpisodeRecord
 from rlab.env import EnvConfig
+from rlab.eval import ScriptedPolicy
 from rlab.eval_metrics import (
     episode_rank,
     episode_result_from_record,
@@ -107,6 +108,23 @@ def log_checkpoint_eval(
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_scripted_policy_resets_per_episode_and_uses_bound_action_space(self) -> None:
+        class ActionSpace:
+            def sample(self) -> int:
+                return 7
+
+        right = ScriptedPolicy("right", ("noop", "right_b", "right_a_b"))
+        first_action, _ = right.predict(None, deterministic=False)
+        right.predict(None, deterministic=False)
+        right.reset_episode()
+        reset_action, _ = right.predict(None, deterministic=False)
+        self.assertEqual(first_action.tolist(), reset_action.tolist())
+
+        random = ScriptedPolicy("random", ())
+        random.bind_action_space(ActionSpace())
+        action, _ = random.predict(None, deterministic=False)
+        self.assertEqual(action.tolist(), [7])
+
     def test_episode_record_clean_completion_precedence(self) -> None:
         success = EpisodeRecord(
             lane=0,

@@ -209,7 +209,7 @@ class GracefulStopHelper(CallbackHelper):
         return False
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     args = parse_train_args(argv)
     set_random_seed(args.seed)
 
@@ -360,7 +360,8 @@ def main(argv: list[str] | None = None) -> None:
         if wandb_run is not None:
             wandb_run.finish()
     print(f"saved {final_model_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -17,7 +17,7 @@ from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     add_train_config_args,
     build_train_command_from_fields,
-    validate_and_normalize_train_config,
+    load_materialized_train_config,
 )
 
 
@@ -26,10 +26,7 @@ def build_train_command(options: Mapping[str, Any]) -> list[str]:
 
 
 def load_train_config_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"--train-config-json must contain a JSON object: {path}")
-    return payload
+    return load_materialized_train_config(path)
 
 
 def apply_train_config_json(
@@ -42,10 +39,6 @@ def apply_train_config_json(
         return args
 
     payload = load_train_config_json(Path(path))
-    payload = validate_and_normalize_train_config(
-        payload,
-        label=f"train config file {path}",
-    )
     args._train_config_json_fields = set(payload)
 
     for key, value in payload.items():

@@ -6,7 +6,6 @@ from rlab.env_identity import (
     ENVIRONMENT_HASH_ALGORITHM,
     environment_hash,
     environment_identity_from_train_config,
-    train_config_from_environment_identity,
     validate_task_config,
 )
 from rlab.env_metadata import sanitize_env_config_metadata
@@ -48,31 +47,6 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
         self.assertTrue(environment_hash(identity).startswith("sha256:"))
         self.assertNotIn("reward", identity)
 
-    def test_canonical_task_lowers_to_current_env_config_without_wrappers(self) -> None:
-        train_config = train_config_from_environment_identity(
-            {
-                "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
-                "task": {
-                    "id": "mario",
-                    "action": {"set": "simple"},
-                    "signals": {"lives": "lives", "level": ["levelHi", "levelLo"]},
-                    "events": {
-                        "life_loss": {"signal": "lives", "operation": "decrease"},
-                        "level_change": {"signal": "level", "operation": "change"},
-                    },
-                    "termination": {
-                        "failure": ["life_loss"],
-                        "success": ["level_change"],
-                    },
-                    "reward": {"reward_mode": "score", "death_penalty": 25.0},
-                },
-            }
-        )
-
-        self.assertEqual(train_config["task"]["action"]["set"], "simple")
-        self.assertEqual(train_config["task"]["termination"]["failure"], ["life_loss"])
-        self.assertEqual(train_config["task"]["termination"]["success"], ["level_change"])
-        self.assertEqual(train_config["task"]["reward"]["reward_mode"], "score")
     def test_unknown_artifact_environment_metadata_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unexpected keys"):
             sanitize_env_config_metadata({

@@ -55,20 +55,6 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     }
 )
 TRAIN_RECIPE_ALLOWED_FIELDS = frozenset(TRAIN_RECIPE_REQUIRED_FIELDS) | TRAIN_RECIPE_OPTIONAL_FIELDS
-TRAIN_RECIPE_REMOVED_FIELDS = frozenset(
-    {
-        "hypothesis",
-        "run_description_template",
-        "run_name_template",
-        "selection_metrics",
-        "selection_policy",
-        "slug",
-        "wandb_tags",
-        "wandb_group",
-    }
-)
-
-
 def require_explicit_queue_train_config(
     train_config: Mapping[str, Any],
     *,
@@ -115,9 +101,6 @@ def validate_materialized_train_recipe(
     """Validate a goal-composed recipe immediately before queue persistence."""
 
     require_mapping(document, label=label)
-    removed_fields = sorted(field for field in TRAIN_RECIPE_REMOVED_FIELDS if field in document)
-    if removed_fields:
-        raise ValueError(f"{label} uses removed train recipe field(s): {', '.join(removed_fields)}")
     _reject_unknown_fields(document, label=label)
     if (
         "schema_version" in document

@@ -14,7 +14,6 @@ from rlab.artifacts import sanitize_artifact_name
 from rlab.checkpoint_eval_config import (
     normalize_checkpoint_eval_stages,
 )
-from rlab.cli import parse_train_args
 from rlab.device import resolve_sb3_device
 from rlab.early_stop import evaluate_early_stop_config
 from rlab.env import EnvConfig, resolve_env_config, task_max_episode_steps
@@ -74,6 +73,7 @@ from rlab.ranking import (
     rank_score,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED
+from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
 
 
@@ -645,7 +645,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    train_args = parse_train_args(["--train-config-json", str(args.train_config_json)])
+    train_args = materialized_train_args(args.train_config_json)
     config = checkpoint_eval_config_from_args(train_args)
     store = MetricStore(metric_store_path(args.run_dir))
     store.init()

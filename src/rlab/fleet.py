@@ -39,6 +39,7 @@ from rlab.machines import (
     resolve_machine,
 )
 from rlab.runtime_refs import (
+    docker_image_ref,
     normalize_runtime_image_ref,
     runtime_image_digest_slug,
     runtime_image_ref_from_args,
@@ -104,11 +105,6 @@ def default_repo_root() -> Path:
             if _is_fleet_repo_root(candidate):
                 return candidate.resolve()
     return Path.cwd().resolve()
-
-
-def docker_image_ref(runtime_image_ref: str) -> str:
-    normalized = normalize_runtime_image_ref(runtime_image_ref)
-    return normalized.removeprefix("docker:")
 
 
 def sanitize_slug(value: str, *, limit: int = 40) -> str:

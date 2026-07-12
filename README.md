@@ -122,6 +122,11 @@ The command surface is intentionally one binary:
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
+Specialized and maintenance commands are intentionally outside the normal research loop:
+
+- `rlab distill` contains Mario-specific behavior-cloning and sequence-evaluation experiments.
+- `rlab jobs reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
+
 ## Research Loop
 
 Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria.

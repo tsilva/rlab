@@ -41,6 +41,12 @@ def normalize_runtime_image_ref(value: str | None) -> str:
     return text
 
 
+def docker_image_ref(runtime_image_ref: str) -> str:
+    """Return Docker's image spelling for an immutable rlab runtime ref."""
+
+    return normalize_runtime_image_ref(runtime_image_ref).removeprefix("docker:")
+
+
 def runtime_image_payload_from_file(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8").strip()
     if not text:

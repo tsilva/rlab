@@ -19,17 +19,10 @@ from rlab.cli import parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
-    make_eval_vec_env,
     resolve_env_config,
     task_action_set,
 )
 from rlab.env_config import env_config_from_args, parse_obs_crop
-from rlab.eval_metrics import (
-    default_eval_semantics,
-    drain_episode_records,
-    episode_result_from_record,
-    summarize_episode_results,
-)
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.model_sources import (
     add_model_source_args,
@@ -38,7 +31,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
-from rlab.targets import EvalSemantics, target_for_game
+from rlab.targets import target_for_game
 from rlab.train_config import add_env_config_args
 
 
@@ -74,36 +67,31 @@ def scripted_action(policy: str, step_idx: int, action_names: tuple[str, ...]) -
     raise ValueError(f"unknown policy: {policy}")
 
 
-def run_scripted_episode(
-    env,
-    policy: str,
-    max_steps: int,
-    action_names: tuple[str, ...],
-    default_start_state: str | None = None,
-    semantics: EvalSemantics | None = None,
-):
-    semantics = semantics or default_eval_semantics()
-    obs = env.reset()
-    for step_idx in range(max_steps):
-        if policy == "random":
-            action = env.action_space.sample()
+class ScriptedPolicy:
+    """A one-lane policy adapter for the shared model-evaluation driver."""
+
+    def __init__(self, policy: str, action_names: tuple[str, ...]) -> None:
+        self.policy = policy
+        self.action_names = action_names
+        self.action_space = None
+        self.step_idx = 0
+
+    def bind_action_space(self, action_space) -> None:
+        self.action_space = action_space
+
+    def reset_episode(self) -> None:
+        self.step_idx = 0
+
+    def predict(self, _obs, deterministic: bool):
+        del deterministic
+        if self.policy == "random":
+            if self.action_space is None:
+                raise RuntimeError("scripted policy action space was not bound")
+            action = self.action_space.sample()
         else:
-            action = scripted_action(policy, step_idx, action_names)
-        obs, _rewards, dones, infos = env.step([action])
-        info = dict(infos[0])
-        records = drain_episode_records(env)
-        if records:
-            result = episode_result_from_record(
-                records[0],
-                semantics=semantics,
-                terminal_info=info,
-            )
-            if result.get("start_state") is None:
-                result["start_state"] = default_start_state
-            return result
-        if bool(dones[0]):
-            raise RuntimeError("RlabVecEnv returned done without an episode record")
-    raise RuntimeError("task runtime reached max_steps without a timeout episode record")
+            action = scripted_action(self.policy, self.step_idx, self.action_names)
+        self.step_idx += 1
+        return np.asarray([action]), None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     parser_defaults = vars(parser.parse_args([]))
@@ -193,7 +181,6 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
     assert_provider_runtime_available(config)
-    eval_semantics = target_for_game(config.game).eval_semantics
     model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
 
     if model is not None:
@@ -215,28 +202,22 @@ def main(argv: list[str] | None = None) -> None:
         )
     else:
         action_names = target_for_game(config.game).action_names_for_set(task_action_set(config))
-        env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
-        episodes = [
-            run_scripted_episode(
-                env,
-                policy=args.policy,
-                max_steps=args.max_steps,
-                action_names=action_names,
-                default_start_state=config.state,
-                semantics=eval_semantics,
-            )
-            for _ in range(args.episodes)
-        ]
-        env.close()
-        summary = summarize_episode_results(
-            episodes,
+        policy = ScriptedPolicy(args.policy, action_names)
+        summary, _ = evaluate_model_episodes(
+            model=policy,
+            config=config,
+            episodes=args.episodes,
+            seed=args.seed,
+            max_steps=args.max_steps,
             deterministic=False,
+            n_envs=1,
+            progress=args.progress,
+            progress_description=f"eval {args.policy}",
             extra={
                 "model": args.model,
                 "policy": args.policy,
                 "hud_crop_top": args.hud_crop_top,
             },
-            semantics=eval_semantics,
         )
     if args.summary_only:
         summary.pop("episode_results", None)
@@ -247,7 +228,8 @@ def main(argv: list[str] | None = None) -> None:
             json.dumps(summary, indent=2, default=json_default) + "\n",
             encoding="utf-8",
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

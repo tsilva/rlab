@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from rlab.config_loader import load_mapping_document
-from rlab.fleet import docker_image_ref
+from rlab.machines import load_machine_registry, resolve_machine
 from rlab.recipe_documents import load_recipe_document
-from rlab.runtime_refs import runtime_image_ref_from_file
+from rlab.runtime_refs import docker_image_ref, runtime_image_ref_from_file
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.validation import int_list
 from rlab.validation import require_int
@@ -141,6 +141,11 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
 
     if kind == "fleet_capacity":
+        if "target" in payload or "workers" in payload:
+            raise ValueError(
+                f"{label} must use host and requested_workers; machine target and capacity "
+                "come from experiments/machines.yaml"
+            )
         if not payload.get("recipe_file"):
             raise ValueError(f"{label}.recipe_file must be a non-empty string")
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
@@ -150,6 +155,20 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             label=label,
             require_present=False,
         )
+        host = require_non_empty_string(payload, "host", label=label, require_present=False)
+        requested_workers = require_int(
+            payload,
+            "requested_workers",
+            label=label,
+            minimum=1,
+            require_present=False,
+        )
+        machine = resolve_machine(load_machine_registry(), host)
+        if requested_workers > machine.limits.max_parallel_containers:
+            raise ValueError(
+                f"{label}.requested_workers={requested_workers} exceeds "
+                f"{host} capacity={machine.limits.max_parallel_containers}"
+            )
 
     if kind == "eval_contract":
         if not payload.get("artifact_ref") and not payload.get("model_path"):
@@ -337,7 +356,7 @@ def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                 "--machine",
                 host,
                 "--limit",
-                str(profile.get("workers", 1)),
+                str(profile["requested_workers"]),
                 "--once",
                 "--dry-run",
             ],

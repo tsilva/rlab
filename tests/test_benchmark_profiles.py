@@ -141,6 +141,26 @@ gates: {}
             with self.assertRaisesRegex(ValueError, "recipe_file"):
                 load_benchmark_profile(path)
 
+    def test_fleet_capacity_rejects_workers_above_machine_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(
+                """
+schema_version: 1
+name: bad
+kind: fleet_capacity
+host: local-macbook
+requested_workers: 2
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+runtime_image_ref_file: rlab-train-image.json
+gates: {}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "exceeds.*capacity"):
+                load_benchmark_profile(path)
+
     def test_benchmark_train_config_rejects_unknown_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.yaml"

@@ -16,7 +16,6 @@ from rlab.env_config import env_config_from_args
 from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
 from rlab.recipe_documents import load_goal_contract_document
 from rlab.wandb_artifacts import (
-    artifact_qualified_name,
     checkpoint_step_from_artifact,
     download_model_artifact,
     model_artifact_ref,
@@ -30,16 +29,16 @@ HUGGINGFACE_MODEL_SCHEME = "hf://"
 HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
 WANDB_RUN_URL_HOST = "wandb.ai"
 MODEL_ARTIFACT_KIND_SUFFIXES = tuple(f"-{kind}" for kind in MODEL_KIND_CHOICES)
-DEFAULT_ARTIFACT_LOOKUP_PROJECTS = (
-    "SuperMarioBros-Nes-v0",
-    "SuperMarioBros3-Nes-v0",
-    "ms_pacman",
-    "breakout",
+# Prefix entries retain bare-run playback for historical projects. Entries without a
+# prefix are fallback-only projects that predate goal-owned W&B project metadata.
+ARTIFACT_PROJECT_COMPATIBILITY = (
+    ("alepy__breakout", "breakout"),
+    ("alepy__mspacman", "ms_pacman"),
+    (None, "SuperMarioBros-Nes-v0"),
+    (None, "SuperMarioBros3-Nes-v0"),
+    (None, "ms_pacman"),
+    (None, "breakout"),
 )
-LEGACY_GOAL_PROJECTS = {
-    "alepy__breakout": "breakout",
-    "alepy__mspacman": "ms_pacman",
-}
 MAX_PARALLEL_ARTIFACT_LOOKUPS = 4
 
 
@@ -279,8 +278,8 @@ def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[s
     entity = default_project.split("/", 1)[0]
     local_projects = _local_goal_project_map()
     inferred: list[str] = []
-    for goal_id, project in LEGACY_GOAL_PROJECTS.items():
-        if run_name == goal_id or run_name.startswith(f"{goal_id}_"):
+    for prefix, project in ARTIFACT_PROJECT_COMPATIBILITY:
+        if prefix and (run_name == prefix or run_name.startswith(f"{prefix}_")):
             inferred.append(_project_path(entity, project))
             break
     for goal_id, project in sorted(local_projects.items(), key=lambda item: len(item[0]), reverse=True):
@@ -291,7 +290,7 @@ def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[s
         *inferred,
         default_project,
         *(_project_path(entity, project) for project in local_projects.values()),
-        *(_project_path(entity, project) for project in DEFAULT_ARTIFACT_LOOKUP_PROJECTS),
+        *(_project_path(entity, project) for prefix, project in ARTIFACT_PROJECT_COMPATIBILITY if not prefix),
     ]
     return _dedupe(projects)
 
@@ -523,40 +522,6 @@ def _mapping_value(mapping: Any, key: str) -> Any:
             return getter(key)
         except Exception:
             return None
-    return None
-
-
-def _artifact_kind(artifact: Any) -> str:
-    metadata = getattr(artifact, "metadata", {}) or {}
-    if isinstance(metadata, Mapping) and metadata.get("kind"):
-        return str(metadata["kind"])
-    name = artifact_qualified_name(artifact).split(":", 1)[0]
-    if name.endswith("-final"):
-        return "final"
-    if name.endswith("-best"):
-        return "best"
-    if name.endswith("-checkpoint"):
-        return "checkpoint"
-    return ""
-
-
-def _logged_run_global_step(artifact: Any) -> int | None:
-    try:
-        run = artifact.logged_by()
-    except Exception:
-        return None
-    if run is None:
-        return None
-    summary = getattr(run, "summary", {}) or {}
-    return _optional_int(_mapping_value(summary, "global_step"))
-
-
-def model_artifact_checkpoint_step(artifact: Any, model_path: Path | None = None) -> int | None:
-    step = checkpoint_step_from_artifact(artifact, model_path)
-    if step is not None:
-        return step
-    if _artifact_kind(artifact) == "final":
-        return _logged_run_global_step(artifact)
     return None
 
 

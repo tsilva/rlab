@@ -12,7 +12,6 @@ from collections.abc import Mapping
 from dataclasses import replace
 from itertools import count
 from types import ModuleType
-from typing import TYPE_CHECKING
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -20,9 +19,6 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import numpy as np
 import torch
-
-if TYPE_CHECKING:
-    from stable_baselines3 import PPO
 
 from rlab.artifacts import load_playback_env_config
 from rlab.device import resolve_sb3_device
@@ -54,6 +50,12 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.play_attribution import PolicyActionAttributor
+from rlab.policy_observation import (
+    model_observation,
+    task_info_value_from_info,
+    task_info_vars,
+    task_state_names,
+)
 from rlab.seeds import DEFAULT_EVAL_SEED, EVAL_SEED_START, validate_eval_seed
 from rlab.targets import target_for_game
 from rlab.wandb_utils import default_wandb_project_path
@@ -152,113 +154,6 @@ def fast_env_frames(obs: np.ndarray) -> deque[np.ndarray]:
     if arr.ndim == 3 and arr.shape[0] == 4:
         return deque([arr[idx, ..., None] for idx in range(arr.shape[0])], maxlen=4)
     raise ValueError(f"expected fast env obs with 4 stacked frames, got shape {arr.shape}")
-
-
-def task_state_names(config) -> tuple[str, ...]:
-    if task_info_vars(config):
-        return tuple(
-            ",".join(str(part) for part in value) for value in task_conditioning_info_values(config)
-        )
-    states = tuple(dict.fromkeys(config.states or ((config.state,) if config.state else ())))
-    if not states:
-        raise ValueError("task-conditioned playback requires at least one configured state")
-    return states
-
-
-def task_vector_for_state(
-    config,
-    task_dim: int,
-    active_state: str | None = None,
-    active_info_value: tuple[int | str, ...] | None = None,
-) -> np.ndarray:
-    info_vars = task_info_vars(config)
-    if info_vars:
-        values = task_conditioning_info_values(config)
-        if not values:
-            raise ValueError("info-var task-conditioned playback has no configured task values")
-        if task_dim != len(values):
-            raise ValueError(
-                "task-conditioned model expects "
-                f"{task_dim} task values, but playback metadata has {len(values)} "
-                f"info-value rows: {values}",
-            )
-        active_info_value = active_info_value or info_value_from_state_name(
-            active_state or config.state,
-            info_vars,
-        )
-        if active_info_value not in values:
-            raise ValueError(
-                f"playback info value {active_info_value!r} is not in "
-                f"task-conditioned info values {values!r}",
-            )
-        task = np.zeros((1, task_dim), dtype=np.float32)
-        task[0, values.index(active_info_value)] = 1.0
-        return task
-
-    states = task_state_names(config)
-    if task_dim != len(states):
-        raise ValueError(
-            "task-conditioned model expects "
-            f"{task_dim} task values, but playback metadata has {len(states)} state(s): {states}",
-        )
-    active_state = active_state or config.state or states[0]
-    if active_state not in states:
-        raise ValueError(
-            f"playback state {active_state!r} is not in task-conditioned state list {states!r}",
-        )
-    task = np.zeros((1, task_dim), dtype=np.float32)
-    task[0, states.index(active_state)] = 1.0
-    return task
-
-
-def model_observation(
-    model: PPO,
-    image_obs: np.ndarray,
-    config,
-    *,
-    active_task_state: str | None = None,
-    active_info_value: tuple[int | str, ...] | None = None,
-) -> np.ndarray | dict[str, np.ndarray]:
-    observation_space = model.observation_space
-    spaces = getattr(observation_space, "spaces", None)
-    if not isinstance(spaces, dict):
-        return image_obs
-    if "image" not in spaces or "task" not in spaces:
-        raise ValueError(
-            "dict-observation model must have 'image' and 'task' observation keys, "
-            f"got {tuple(spaces)}",
-        )
-    task_shape = getattr(spaces["task"], "shape", None)
-    if task_shape is None or len(task_shape) != 1:
-        raise ValueError(f"expected one-dimensional task observation, got {spaces['task']!r}")
-    return {
-        "image": image_obs,
-        "task": task_vector_for_state(
-            config,
-            task_dim=int(task_shape[0]),
-            active_state=active_task_state,
-            active_info_value=active_info_value,
-        ),
-    }
-
-
-def task_info_value_from_info(info: dict, config) -> tuple[int | str, ...] | None:
-    info_vars = task_info_vars(config)
-    if not info_vars:
-        return None
-    try:
-        value = tuple(info[var] for var in info_vars)
-    except KeyError:
-        return None
-    return value if value in task_conditioning_info_values(config) else None
-
-
-def task_info_vars(config) -> tuple[str, ...]:
-    conditioning = task_conditioning(config)
-    signal_name = conditioning.get("signal")
-    signals = config.task.get("signals", {})
-    source = signals.get(signal_name) if isinstance(signals, Mapping) else None
-    return (source,) if isinstance(source, str) else tuple(source or ())
 
 
 def task_conditioning_change_message(
@@ -728,7 +623,7 @@ def print_resolved_play_launch(
     print("\n".join(lines), flush=True)
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
@@ -839,12 +734,12 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if not update_controls():
-            return
+            return 0
         initial_overlay = step_over_overlay(
             ["r_step: 0.00", "r_total: 0.00", "max_x: 0", "step: 0"]
         )
         if not viewer.show(first_frame, initial_overlay):
-            return
+            return 0
         throttle()
         episode_iter = count() if args.episodes <= 0 else range(args.episodes)
         for episode in episode_iter:
@@ -913,14 +808,14 @@ def main(argv: list[str] | None = None) -> None:
                     flush=True,
                 )
             if not update_controls(frames):
-                return
+                return 0
             total_reward = 0.0
             max_x_pos = 0
             final_info = {}
             max_episode_steps = task_max_episode_steps(config)
             for step_idx in playback_step_indices(max_episode_steps):
                 if not wait_for_step(frame, overlay):
-                    return
+                    return 0
                 image_obs = fast_env_obs(policy_obs)
                 model_obs = model_observation(
                     model,
@@ -934,7 +829,7 @@ def main(argv: list[str] | None = None) -> None:
                 if attributor is not None and step_idx % args.attribution_interval == 0:
                     heatmap = attributor.attribute(args.attribution, model_obs, action)
                 if attributor is not None and not update_controls(frames, heatmap):
-                    return
+                    return 0
                 env_action = single_env_action(action)
                 policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
                 reward = float(np.asarray(rewards)[0])
@@ -995,7 +890,7 @@ def main(argv: list[str] | None = None) -> None:
                 drain_runtime_records(display_env)
                 frames = fast_env_frames(policy_obs)
                 if attributor is None and not update_controls(frames):
-                    return
+                    return 0
                 total_reward += float(reward)
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
                 final_info = dict(info)
@@ -1022,7 +917,7 @@ def main(argv: list[str] | None = None) -> None:
                     f"step: {step_idx + 1} seed: {episode_seed}",
                 ]
                 if not viewer.show(frame, step_over_overlay(overlay)):
-                    return
+                    return 0
                 throttle()
                 if playback_should_end_episode(terminated, truncated, completed):
                     status = (
@@ -1057,7 +952,8 @@ def main(argv: list[str] | None = None) -> None:
                 policy_env.close()
         except Exception:
             pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -17,7 +17,6 @@ import numpy as np
 
 import rlab.metric_names as metric_names
 from rlab.artifacts import (
-    apply_model_config_defaults,
     apply_config_defaults,
     build_s3_artifact_uri,
     checkpoint_step,
@@ -26,7 +25,6 @@ from rlab.artifacts import (
     log_wandb_model_artifact,
     model_metadata_path,
     playback_env_config,
-    require_training_metadata,
     write_model_metadata,
 )
 from rlab.cli_args import explicit_arg_dests
@@ -43,7 +41,6 @@ from rlab.model_sources import (
     ResolvedModelSource,
     artifact_lookup_project_paths,
     download_huggingface_model_source,
-    model_artifact_checkpoint_step,
     model_source_ref,
     parse_wandb_run_ref,
     parse_huggingface_model_ref,
@@ -473,22 +470,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             assert timing is not None
             self.assertEqual(timing.checkpoint_step, 2500000)
 
-    def test_final_artifact_step_falls_back_to_logged_run_global_step(self) -> None:
-        class Summary:
-            _json_dict = {"global_step": 2500000}
-
-        class Run:
-            summary = Summary()
-
-        class Artifact:
-            metadata = {"kind": "final", "checkpoint_step": None}
-            qualified_name = "entity/project/candidate-final:v0"
-
-            def logged_by(self) -> Run:
-                return Run()
-
-        self.assertEqual(model_artifact_checkpoint_step(Artifact()), 2500000)
-
     def test_wandb_artifact_logging_can_purge_uploaded_local_files(self) -> None:
         class FakeArtifact:
             def __init__(self, name: str, type: str, metadata: dict[str, object]) -> None:
@@ -644,7 +625,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(
-                require_training_metadata(model_path)["env_config"]["observation_size"],
+                load_model_metadata(model_path)["training_metadata"]["env_config"]["observation_size"],
                 96,
             )
 
@@ -737,9 +718,8 @@ class CommandAndArtifactTests(unittest.TestCase):
             args = parser.parse_args(argv)
             explicit_dests = explicit_arg_dests(parser, argv)
 
-            self.assertTrue(
-                apply_model_config_defaults(args, model_path, parser_defaults, explicit_dests)
-            )
+            saved_config = load_model_metadata(model_path)["training_metadata"]["env_config"]
+            apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
             config = env_config_from_args(
                 args,
                 max_episode_steps_attr="max_steps",

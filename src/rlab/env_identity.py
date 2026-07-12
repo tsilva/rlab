@@ -376,63 +376,6 @@ def train_config_from_source_environment(
     return train_config
 
 
-def train_config_from_environment_identity(
-    environment: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    if not isinstance(environment, Mapping):
-        return {}
-    train_config: dict[str, Any] = {}
-    env_config = environment.get("env_config")
-    if isinstance(env_config, Mapping):
-        train_config.update(deepcopy(dict(env_config)))
-    env_args = train_config.get("env_args")
-    if isinstance(env_args, Mapping):
-        env_args = deepcopy(dict(env_args))
-        legacy_game = env_args.pop("game", None)
-        legacy_num_envs = env_args.pop("num_envs", None)
-        if legacy_game is not None:
-            train_config.setdefault("game", legacy_game)
-        if legacy_num_envs is not None:
-            train_config.setdefault("n_envs", legacy_num_envs)
-        train_config["env_args"] = env_args
-    env_id = environment.get("env_id")
-    if env_id is not None:
-        resolved = resolve_env_id(str(env_id))
-        train_config["env_provider"] = resolved.provider_id
-        train_config["game"] = resolved.provider_env_id
-    env_provider = train_config.get("env_provider")
-    if env_provider is None and "env_provider" in environment:
-        env_provider = environment["env_provider"]
-        train_config["env_provider"] = deepcopy(env_provider)
-    game = provider_game(train_config)
-    if game is not None:
-        train_config.setdefault("game", game)
-    state_value = environment.get("state")
-    if isinstance(state_value, Mapping):
-        train_config.update(
-            deepcopy({key: state_value[key] for key in STATE_KEYS if key in state_value})
-        )
-    elif state_value is not None:
-        train_config["state"] = deepcopy(state_value)
-    if "states" in environment:
-        train_config["states"] = deepcopy(environment["states"])
-    if "state_probs" in environment:
-        train_config["state_probs"] = deepcopy(environment["state_probs"])
-    for section in ("preprocessing",):
-        value = environment.get(section)
-        if isinstance(value, Mapping):
-            train_config.update(deepcopy(dict(value)))
-    task = environment.get("task")
-    canonical_task = task_config_from_train_config(
-        train_config,
-        task=task if isinstance(task, Mapping) else None,
-    )
-    train_config["task"] = deepcopy(canonical_task)
-    if "obs_crop" in train_config:
-        train_config["obs_crop"] = _obs_crop_from_value(train_config["obs_crop"])
-    return train_config
-
-
 def attach_environment_identity(document: Mapping[str, Any]) -> dict[str, Any]:
     materialized = deepcopy(dict(document))
     train_config = materialized.get("train_config")

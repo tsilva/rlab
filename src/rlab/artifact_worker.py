@@ -12,10 +12,10 @@ from rlab.artifacts import (
     sanitize_artifact_name,
     wandb_artifact_storage_uri,
 )
-from rlab.cli import parse_train_args
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project, resume_wandb_run
 
 
@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    train_args = parse_train_args(["--train-config-json", str(args.train_config_json)])
+    train_args = materialized_train_args(args.train_config_json)
     config = resolve_env_config(env_config_from_args(train_args, include_states=True))
     store = MetricStore(metric_store_path(args.run_dir))
     store.init()
