@@ -3,6 +3,6 @@ name: container-smoke-train-image
 kind: container_smoke
 description: Docker train-image smoke using the digest recorded in rlab-train-image.json.
 runtime_image_ref_file: rlab-train-image.json
-gates:
+expectations:
   exit_code: 0
   stdout_contains: rlab_container_smoke=ok

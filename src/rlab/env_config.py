@@ -82,7 +82,6 @@ def parse_obs_crop(
 def env_config_from_args(
     args: argparse.Namespace,
     *,
-    max_episode_steps_attr: str = "max_episode_steps",
     include_states: bool = False,
 ) -> EnvConfig:
     defaults = EnvConfig()
@@ -95,11 +94,7 @@ def env_config_from_args(
         if field.dest in {"states", "state_probs"} and not include_states:
             continue
         key = field.dest
-        raw_value = (
-            value(max_episode_steps_attr, defaults.max_episode_steps)
-            if field.dest == "max_episode_steps"
-            else value(field.dest)
-        )
+        raw_value = value(field.dest)
         if field.dest == "states":
             config_kwargs[key] = parse_states(raw_value)
         elif field.dest == "state_probs":

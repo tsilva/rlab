@@ -5,13 +5,18 @@ not training recipes and they are not promotion evidence by themselves. Use them
 to catch runtime, throughput, artifact, eval, and fleet regressions before a
 larger experiment batch burns time.
 
-Profiles and their gate expectations live as YAML files in
+Profiles and their informational expectations live as YAML files in
 `experiments/benchmarks/profiles/`. Results belong under `logs/benchmarks/` and
 should stay out of source control.
 
-Environment-sensitive profiles declare `environment_contract.schema_version: 2`
-and `task_termination_boundary: vector_step`. Results from the retired native
-subframe-event or wrapper-stack contracts are not directly comparable.
+Benchmark success is determined by command exit status. Profile `expectations`
+document externally inspected evidence and are not executable gates. Values that
+affect execution, such as `max_runtime_overhead`, are top-level profile inputs.
+
+Environment-sensitive recipe-backed profiles derive their environment and task
+contract from the materialized recipe. Command plans and result files record the
+exact recipe, overrides, and runtime arguments used; manually copied contract
+summaries are intentionally unsupported.
 
 ```bash
 rlab benchmark list

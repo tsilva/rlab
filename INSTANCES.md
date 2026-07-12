@@ -38,7 +38,7 @@ Inspect and reconcile local capacity from the MacBook:
 rlab fleet status
 rlab fleet ps
 rlab fleet watch --machine beast-3
-rlab fleet shepherd --machine beast-3 --limit 5 --once
+rlab fleet shepherd --machine beast-3 --once
 ```
 
 For a manual recoverable one-job-per-container pass:
@@ -46,7 +46,6 @@ For a manual recoverable one-job-per-container pass:
 ```bash
 rlab fleet shepherd \
   --machine beast-3 \
-  --limit 5 \
   --once
 ```
 

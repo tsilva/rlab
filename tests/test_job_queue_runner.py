@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rlab import job_queue, wandb_leaders
 from rlab.job_execution import normalize_train_config, train_command_for_job, write_train_config_file
@@ -408,6 +409,23 @@ class JobQueueTests(unittest.TestCase):
 
 
 class JobExecutionTests(unittest.TestCase):
+    def test_artifact_storage_placeholder_uses_one_canonical_resolver(self) -> None:
+        job = {
+            "id": 12,
+            "train_config": {"wandb_artifact_storage_uri": "CHECKPOINT_BUCKET_URI"},
+        }
+        with patch.dict("os.environ", {"CHECKPOINT_BUCKET_URI": '"s3://bucket/checkpoints"'}):
+            config = normalize_train_config(job, require_explicit_train_fields=False)
+
+        self.assertEqual(config["wandb_artifact_storage_uri"], "s3://bucket/checkpoints")
+
+    def test_empty_artifact_storage_stays_deferred_at_queue_boundary(self) -> None:
+        job = {"id": 12, "train_config": {"wandb_artifact_storage_uri": ""}}
+        with patch.dict("os.environ", {"CHECKPOINT_BUCKET_URI": "s3://bucket/checkpoints"}):
+            config = normalize_train_config(job, require_explicit_train_fields=False)
+
+        self.assertEqual(config["wandb_artifact_storage_uri"], "")
+
     def test_train_command_uses_recipe_metadata_without_secrets(self) -> None:
         job = {
             "id": 12,

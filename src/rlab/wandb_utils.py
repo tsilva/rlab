@@ -49,6 +49,16 @@ def resolve_wandb_project(explicit_project: object, env_id: str | None) -> str:
     return project or wandb_project_for_env_id(env_id)
 
 
+def resolve_wandb_namespace(
+    explicit_entity: object,
+    explicit_project: object,
+    env_id: str | None,
+) -> tuple[str, str]:
+    entity = str(explicit_entity or "").strip() or wandb_entity_from_env()
+    project = resolve_wandb_project(explicit_project, env_id)
+    return entity, project
+
+
 def configure_wandb_metrics(run):
     if run is not None:
         run.define_metric("global_step", summary="max")

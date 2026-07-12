@@ -7,6 +7,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.utils import get_schedule_fn
 
 from rlab.callbacks import CallbackHelper
+from rlab.metric_names import TRAIN_ENT_COEF
 
 
 def linear_decay_schedule(
@@ -64,7 +65,7 @@ class EntropyCoefficientScheduleHelper(CallbackHelper):
     def _on_step(self) -> bool:
         ent_coef = self._current_value()
         self.model.ent_coef = ent_coef
-        self.logger.record("train/ent_coef", ent_coef)
+        self.logger.record(TRAIN_ENT_COEF, ent_coef)
         return True
 
 

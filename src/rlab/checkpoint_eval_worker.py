@@ -74,14 +74,14 @@ from rlab.ranking import (
 )
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
-from rlab.wandb_utils import DEFAULT_WANDB_ENTITY, resolve_wandb_project
+from rlab.wandb_utils import resolve_wandb_namespace
 
 
 def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     if getattr(args, "no_wandb_artifacts", False):
         return str(checkpoint_path)
-    entity = str(getattr(args, "wandb_entity", "") or DEFAULT_WANDB_ENTITY).strip()
-    project = resolve_wandb_project(
+    entity, project = resolve_wandb_namespace(
+        getattr(args, "wandb_entity", None),
         getattr(args, "wandb_project", None),
         str(getattr(args, "game", "") or ""),
     )

@@ -34,6 +34,7 @@ from rlab.metric_names import (
     THROUGHPUT_ROLLOUT_FPS,
     TRAIN_DONE_ALL,
     TRAIN_DONE_MAX_STEPS,
+    TRAIN_DONE_ROOT,
     TRAIN_DONE_UNCLASSIFIED,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT,
     TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST,
@@ -729,7 +730,7 @@ class _DoneMetricsReducer:
 
     @staticmethod
     def done_detail_metric_reason(metric: str) -> str | None:
-        prefix = "train/done/"
+        prefix = TRAIN_DONE_ROOT
         marker = "/from/"
         if not metric.startswith(prefix) or marker not in metric:
             return None

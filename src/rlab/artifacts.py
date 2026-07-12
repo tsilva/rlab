@@ -30,7 +30,7 @@ from rlab.metric_names import (
     TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS,
     TRAIN_ARTIFACT_WANDB_LOG_SECONDS,
 )
-from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_project
+from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_namespace
 
 
 MODEL_METADATA_VERSION = 3
@@ -206,11 +206,16 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]
-    project = resolve_wandb_project(getattr(args, "wandb_project", None), config.game)
+    entity, project = resolve_wandb_namespace(
+        getattr(args, "wandb_entity", None),
+        getattr(args, "wandb_project", None),
+        config.game,
+    )
+    args.wandb_entity = entity
     args.wandb_project = project
     wandb_run = wandb.init(
         project=project,
-        entity=args.wandb_entity,
+        entity=entity,
         group=args.wandb_group,
         name=args.run_name,
         notes=args.run_description or None,
@@ -252,18 +257,31 @@ def strip_env_file_quotes(value: str) -> str:
     return text
 
 
+CHECKPOINT_BUCKET_URI_PLACEHOLDERS = frozenset(
+    {"${CHECKPOINT_BUCKET_URI}", "$CHECKPOINT_BUCKET_URI", "CHECKPOINT_BUCKET_URI"}
+)
+
+
+def resolve_artifact_storage_uri(
+    configured: str,
+    environment: Mapping[str, str],
+    *,
+    allow_environment_fallback: bool = True,
+) -> str:
+    configured_uri = strip_env_file_quotes(configured)
+    if configured_uri in CHECKPOINT_BUCKET_URI_PLACEHOLDERS:
+        return strip_env_file_quotes(environment.get("CHECKPOINT_BUCKET_URI", ""))
+    if configured_uri or not allow_environment_fallback:
+        return configured_uri
+    return strip_env_file_quotes(
+        environment.get("WANDB_ARTIFACT_STORAGE_URI", "")
+    ) or strip_env_file_quotes(environment.get("CHECKPOINT_BUCKET_URI", ""))
+
+
 def wandb_artifact_storage_uri(args: argparse.Namespace) -> str:
-    configured_uri = strip_env_file_quotes(args.wandb_artifact_storage_uri)
-    if configured_uri in {
-        "${CHECKPOINT_BUCKET_URI}",
-        "$CHECKPOINT_BUCKET_URI",
-        "CHECKPOINT_BUCKET_URI",
-    }:
-        configured_uri = ""
-    return (
-        configured_uri
-        or strip_env_file_quotes(os.environ.get("WANDB_ARTIFACT_STORAGE_URI", ""))
-        or strip_env_file_quotes(os.environ.get("CHECKPOINT_BUCKET_URI", ""))
+    return resolve_artifact_storage_uri(
+        args.wandb_artifact_storage_uri,
+        os.environ,
     )
 
 

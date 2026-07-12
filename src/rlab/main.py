@@ -8,8 +8,7 @@ from collections.abc import Callable, Sequence
 CommandMain = Callable[[list[str] | None], object]
 
 
-def _run(command: CommandMain, argv: Sequence[str], *, prog: str) -> int:
-    del prog
+def _run(command: CommandMain, argv: Sequence[str]) -> int:
     result = command(list(argv))
     return int(result) if isinstance(result, int) else 0
 
@@ -23,61 +22,61 @@ def _train(argv: Sequence[str]) -> int:
 def _eval(argv: Sequence[str]) -> int:
     from rlab.eval import main as eval_main
 
-    return _run(eval_main, argv, prog="rlab eval")
+    return _run(eval_main, argv)
 
 
 def _jobs(argv: Sequence[str]) -> int:
     from rlab.job_queue import main as queue_main
 
-    return _run(queue_main, argv, prog="rlab jobs")
+    return _run(queue_main, argv)
 
 
 def _fleet(argv: Sequence[str]) -> int:
     from rlab.fleet import main as fleet_main
 
-    return _run(fleet_main, argv, prog="rlab fleet")
+    return _run(fleet_main, argv)
 
 
 def _leaders(argv: Sequence[str]) -> int:
     from rlab.wandb_leaders import main as leaders_main
 
-    return _run(leaders_main, argv, prog="rlab leaders")
+    return _run(leaders_main, argv)
 
 
 def _run_job(argv: Sequence[str]) -> int:
     from rlab.run_job import main as run_job_main
 
-    return _run(run_job_main, argv, prog="rlab run-job")
+    return _run(run_job_main, argv)
 
 
 def _play(argv: Sequence[str]) -> int:
     from rlab.play import main as play_main
 
-    return _run(play_main, argv, prog="rlab play")
+    return _run(play_main, argv)
 
 
 def _distill(argv: Sequence[str]) -> int:
     from rlab.distill import main as distill_main
 
-    return _run(distill_main, argv, prog="rlab distill")
+    return _run(distill_main, argv)
 
 
 def _import_roms(argv: Sequence[str]) -> int:
     from rlab.import_roms import main as import_roms_main
 
-    return _run(import_roms_main, argv, prog="rlab import-roms")
+    return _run(import_roms_main, argv)
 
 
 def _benchmark(argv: Sequence[str]) -> int:
     from rlab.benchmark import main as benchmark_main
 
-    return _run(benchmark_main, argv, prog="rlab benchmark")
+    return _run(benchmark_main, argv)
 
 
 def _validate(argv: Sequence[str]) -> int:
     from rlab.config_validation import main as validate_main
 
-    return _run(validate_main, argv, prog="rlab validate")
+    return _run(validate_main, argv)
 
 
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {

@@ -14,8 +14,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 from stable_baselines3 import PPO
 
-from rlab.cli_args import explicit_arg_dests
-from rlab.cli import parse_json_value
+from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -176,7 +175,6 @@ def main(argv: list[str] | None = None) -> int:
     config = resolve_env_config(
         env_config_from_args(
             args,
-            max_episode_steps_attr="max_steps",
             include_states=True,
         )
     )

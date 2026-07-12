@@ -6,7 +6,7 @@ host: beast-3
 requested_workers: 5
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 runtime_image_ref_file: rlab-train-image.json
-gates:
+expectations:
   expected_aggregate_wall_fps: 6200
   min_relative_to_baseline: 0.85
   profileless: true

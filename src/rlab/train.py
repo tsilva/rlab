@@ -2,10 +2,13 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import argparse
 import os
 import re
 import signal
+import sys
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -33,9 +36,11 @@ from rlab.callbacks import (
     ThroughputHelper,
     TimeElapsedHelper,
 )
-from rlab.cli import effective_n_envs, parse_train_args
+from rlab.cli_args import explicit_arg_dests, parse_json_value
+from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.device import resolve_sb3_device
 from rlab.env import (
+    EnvConfig,
     assert_provider_runtime_available,
     default_run_dir,
     make_training_vec_env,
@@ -44,16 +49,75 @@ from rlab.env import (
     task_conditioning,
 )
 from rlab.env_config import env_config_from_args
+from rlab.env_config import parse_obs_crop
+from rlab.early_stop import normalize_early_stop_config
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
+from rlab.provider_config import provider_num_envs
+from rlab.seeds import validate_training_seed
 from rlab.schedules import (
     EntropyCoefficientScheduleHelper,
     apply_resume_hyperparameters,
     learning_rate_schedule,
 )
 from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
+from rlab.train_config import add_train_config_args, load_materialized_train_config
 
 
 SB3_HUMAN_OUTPUT_MAX_LENGTH = 512
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train PPO on a registered provider environment")
+    parser.add_argument(
+        "--train-config-json",
+        type=Path,
+        help="JSON file containing train option values. Explicit CLI flags override file values.",
+    )
+    add_train_config_args(
+        parser,
+        env_defaults=EnvConfig(),
+        parse_json_value=parse_json_value,
+        parse_obs_crop=parse_obs_crop,
+    )
+    return parser
+
+
+def explicit_n_envs(args: argparse.Namespace) -> int | None:
+    explicit_fields = set(getattr(args, "_explicit_train_arg_dests", set())) | set(
+        getattr(args, "_train_config_json_fields", set())
+    )
+    return int(args.n_envs) if "n_envs" in explicit_fields else None
+
+
+def effective_n_envs(args: argparse.Namespace) -> int:
+    return provider_num_envs(args, explicit_n_envs=explicit_n_envs(args))
+
+
+def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    explicit_dests = explicit_arg_dests(parser, argv_list)
+    args = parser.parse_args(argv_list)
+    args._train_config_json_fields = set()
+    args._explicit_train_arg_dests = set(explicit_dests)
+    if args.train_config_json is not None:
+        payload = load_materialized_train_config(Path(args.train_config_json))
+        args._train_config_json_fields = set(payload)
+        for key, value in payload.items():
+            if key == "train_config_json" or key in explicit_dests:
+                continue
+            if key == "wandb_tags" and isinstance(value, list | tuple):
+                value = ",".join(str(tag) for tag in value)
+            setattr(args, key, value)
+    if args.early_stop is not None:
+        args.early_stop = normalize_early_stop_config(args.early_stop, label="--early-stop")
+    if args.checkpoint_eval_stages is not None:
+        args.checkpoint_eval_stages = normalize_checkpoint_eval_stages(
+            args.checkpoint_eval_stages,
+            label="--checkpoint-eval-stages",
+        )
+    validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
+    return args
 
 
 def policy_name_for_observation_space(observation_space) -> str:

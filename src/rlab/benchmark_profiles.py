@@ -100,7 +100,13 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
     if kind not in ALLOWED_KINDS:
         known = ", ".join(sorted(ALLOWED_KINDS))
         raise ValueError(f"{label}.kind must be one of {known}")
-    require_mapping(payload.get("gates", {}), label=f"{label}.gates")
+    if "gates" in payload:
+        raise ValueError(f"{label}.gates is unsupported; use informational expectations")
+    if "environment_contract" in payload:
+        raise ValueError(
+            f"{label}.environment_contract is unsupported; derive it from executed inputs"
+        )
+    require_mapping(payload.get("expectations", {}), label=f"{label}.expectations")
 
     if kind == "env_throughput":
         game = require_non_empty_string(payload, "game", label=label, require_present=False)
@@ -261,7 +267,6 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
 
 def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     script = str(profile.get("script") or "experiments/scripts/benchmarks/benchmark_env_sps.py")
-    gates = require_mapping(profile.get("gates", {}), label="gates")
     commands: list[BenchmarkCommand] = []
     for mode in string_list(profile.get("modes", ["fast"]), label="modes"):
         for envs in int_list(profile.get("envs", [1]), label="envs"):
@@ -290,7 +295,7 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                         "--repeats",
                         str(profile.get("repeats", 3)),
                         "--max-overhead",
-                        str(gates.get("max_runtime_overhead", 0.05)),
+                        str(profile.get("max_runtime_overhead", 0.05)),
                     ],
                     env={"STABLE_RETRO_DISABLE_AUDIO": "1"},
                 )

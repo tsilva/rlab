@@ -721,7 +721,7 @@ def apply_model_source_defaults(
     metadata_args = parser.parse_args([])
     apply_config_defaults(metadata_args, inferred_config, parser_defaults, set())
     metadata_config = resolve_env_config(
-        env_config_from_args(metadata_args, max_episode_steps_attr="max_steps")
+        env_config_from_args(metadata_args)
     )
     kind = metadata_kind or getattr(args, "artifact_kind", "checkpoint")
     metadata_path = write_model_metadata(source.model_path, args, metadata_config, kind=kind)

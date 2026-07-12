@@ -12,7 +12,7 @@ from unittest import mock
 
 from rlab import fleet
 from rlab.machines import load_machine_registry, resolve_machine
-from rlab.runtime_refs import runtime_image_ref_from_file
+from rlab.runtime_refs import runtime_image_ref_from_file, runtime_image_ref_from_payload
 from tests.db_fakes import FakeConnection, write_machine_registry
 
 
@@ -237,6 +237,16 @@ class FleetHostTests(unittest.TestCase):
             path.write_text(json.dumps({"runtime_image_ref": RUNTIME_IMAGE_REF}), encoding="utf-8")
 
             self.assertEqual(runtime_image_ref_from_file(path), RUNTIME_IMAGE_REF)
+
+    def test_runtime_image_ref_payload_rejects_historical_aliases(self) -> None:
+        for payload in (
+            {"image_ref": RUNTIME_IMAGE_REF},
+            {"docker_runtime_image_ref": RUNTIME_IMAGE_REF},
+            {"image": "ghcr.io/tsilva/rlab/rlab-train", "digest": "c" * 64},
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ValueError, "must include runtime_image_ref"):
+                    runtime_image_ref_from_payload(payload)
 
 class JobContainerTests(unittest.TestCase):
     def test_shepherd_limit_caps_total_active_containers(self) -> None:

@@ -22,9 +22,20 @@ If you are reinstalling after local changes:
 ./install.sh
 ```
 
-`install.sh` uses `uv tool install . -e` from the repo root. On a fresh checkout it installs the `rlab` command as an editable uv tool; when the tool already exists, rerunning it upgrades dependency versions.
+`install.sh` exports exact constraints from the committed `uv.lock` and installs the
+`rlab` command as an editable uv tool. Re-running it preserves the locked dependency
+versions and does not modify tracked files.
 
-This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the pinned `stable-retro-turbo` and `supermariobrosnes-turbo` releases recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
+Refresh the forward Stable Retro and Mario runtimes explicitly when that is intended:
+
+```bash
+./refresh-runtimes.sh
+```
+
+The refresh command advances the package-specific cutoffs, updates `uv.lock`, keeps
+the user-level uv configuration in sync, and then reinstalls the tool.
+
+This repo uses uv's seven-day `exclude-newer` protection, with package-specific exceptions for the exact Stable Retro requirement and minimum Mario runtime recorded in `uv-tool.toml`, `pyproject.toml`, `uv.lock`, and the user-level uv config used by `uv tool install`.
 
 After installation, run commands as plain `rlab ...`:
 
@@ -162,7 +173,7 @@ jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned,
 one-job Docker containers on registered local or SSH Docker machines.
 
 ```bash
-rlab fleet shepherd --machine beast-3 --limit 5 --once
+rlab fleet shepherd --machine beast-3 --once
 ```
 
 Hard fleet capacity and target mapping come from `experiments/machines.yaml`.

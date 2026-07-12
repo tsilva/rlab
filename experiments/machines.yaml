@@ -8,19 +8,10 @@ machines:
       - sudo
       - -n
       - docker
-      pull_policy: always
     limits:
       max_parallel_containers: 6
     paths:
       host_root: /home/tsilva/rlab
-      payloads_dir: /home/tsilva/rlab/payloads
-      outputs_dir: /home/tsilva/rlab/outputs
-      logs_dir: /home/tsilva/rlab/logs
-      roms_dir: /home/tsilva/roms
-      env_file: /home/tsilva/rlab/.env.runner
-      container_payloads_dir: /input/payloads
-      container_outputs_dir: /output
-      container_roms_dir: /roms
   beast-2:
     backend: docker_ssh
     ssh_target: tsilva@192.168.133.26
@@ -33,36 +24,19 @@ machines:
       - sudo
       - -n
       - docker
-      pull_policy: always
     limits:
       max_parallel_containers: 4
     paths:
       host_root: /home/tsilva/rlab
-      payloads_dir: /home/tsilva/rlab/payloads
-      outputs_dir: /home/tsilva/rlab/outputs
-      logs_dir: /home/tsilva/rlab/logs
-      roms_dir: /home/tsilva/roms
-      env_file: /home/tsilva/rlab/.env.runner
-      container_payloads_dir: /input/payloads
-      container_outputs_dir: /output
-      container_roms_dir: /roms
   local-macbook:
     backend: local_docker
     run_target: local-macbook
     docker:
       command:
       - docker
-      pull_policy: always
-      gpu_args: []
     limits:
       max_parallel_containers: 1
     paths:
       host_root: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet
-      payloads_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/payloads
-      outputs_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/outputs
-      logs_dir: /Users/tsilva/repos/tsilva/rlab/runs/local-fleet/logs
       roms_dir: /Users/tsilva/Desktop/roms
       env_file: /Users/tsilva/repos/tsilva/rlab/.env
-      container_payloads_dir: /input/payloads
-      container_outputs_dir: /output
-      container_roms_dir: /roms

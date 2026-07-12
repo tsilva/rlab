@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from rlab.artifacts import resolve_artifact_storage_uri
 from rlab.job_metadata import (
     append_unique_wandb_tag,
     normalize_level_states,
@@ -21,13 +22,6 @@ from rlab.seeds import validate_training_seed
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
 METRIC_ROW_RE = re.compile(r"\|\s+(?P<key>[A-Za-z0-9_./-]+)\s+\|\s+(?P<value>[^|]+?)\s+\|")
 WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
-
-
-def strip_env_file_quotes(value: str) -> str:
-    text = value.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
-        return text[1:-1]
-    return text
 
 
 def normalize_train_config(
@@ -81,14 +75,11 @@ def normalize_train_config(
         config["run_target"] = job["run_target"]
     if require_explicit_train_fields:
         require_explicit_queue_train_config(config)
-    if config.get("wandb_artifact_storage_uri") in {
-        "${CHECKPOINT_BUCKET_URI}",
-        "$CHECKPOINT_BUCKET_URI",
-        "CHECKPOINT_BUCKET_URI",
-    }:
-        config["wandb_artifact_storage_uri"] = strip_env_file_quotes(
-            os.environ.get("CHECKPOINT_BUCKET_URI", "")
-        )
+    config["wandb_artifact_storage_uri"] = resolve_artifact_storage_uri(
+        str(config.get("wandb_artifact_storage_uri") or ""),
+        os.environ,
+        allow_environment_fallback=False,
+    )
     return config
 
 

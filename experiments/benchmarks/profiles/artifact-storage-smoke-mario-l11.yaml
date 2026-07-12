@@ -2,9 +2,6 @@ schema_version: 1
 name: artifact-storage-smoke-mario-l11
 kind: artifact_storage_smoke
 description: Tiny checkpoint-producing W&B/R2 reference-artifact smoke on Mario Level1-1.
-environment_contract:
-  schema_version: 2
-  task_termination_boundary: vector_step
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
 - train.environment.env_provider=stable-retro-turbo
@@ -22,7 +19,7 @@ recipe_overrides:
 - logging.wandb_artifact_storage_uri=CHECKPOINT_BUCKET_URI
 run_name: benchmark_artifact_storage_smoke_mario_l11
 run_description: Benchmark artifact-storage smoke run for Mario Level1-1.
-gates:
+expectations:
   exit_code: 0
   checkpoint_artifact_logged: true
   artifact_location_prefix: s3://

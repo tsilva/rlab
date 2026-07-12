@@ -28,8 +28,6 @@ from rlab.artifacts import (
     write_model_metadata,
 )
 from rlab.cli_args import explicit_arg_dests
-from rlab.cli import build_parser as build_train_parser
-from rlab.cli import build_train_command
 from rlab.env import (
     EnvConfig,
     state_name_candidates_from_level_id,
@@ -60,6 +58,8 @@ from rlab.eval import build_parser as build_eval_parser
 from rlab.eval import main as eval_main
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
+from rlab.train import build_parser as build_train_parser
+from rlab.train_config import build_train_command_from_fields as build_train_command
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     download_model_artifact,
@@ -722,7 +722,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
             config = env_config_from_args(
                 args,
-                max_episode_steps_attr="max_steps",
                 include_states=True,
             )
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")

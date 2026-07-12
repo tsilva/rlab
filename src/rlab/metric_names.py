@@ -27,7 +27,11 @@ ROLLOUT_ADVANTAGE_HIST = "rollout/advantage/hist"
 
 TRAIN_REWARD_COMPONENT_ROOT = "train/reward"
 TRAIN_REWARD_SHARE_ROOT = "train/reward_share"
+TRAIN_ENT_COEF = "train/ent_coef"
+TRAIN_ADV_NORM_MODE = "train/adv_norm/mode"
+TRAIN_ADV_ROOT = "train/adv"
 
+TRAIN_DONE_ROOT = "train/done/"
 TRAIN_DONE_ALL = "train/done/all"
 TRAIN_DONE_MAX_STEPS = "train/done/max_steps"
 TRAIN_DONE_UNCLASSIFIED = "train/done/unclassified"
@@ -112,7 +116,11 @@ def staged_metric_name(stage_name: str, metric_name: str) -> str:
 
 
 def train_done_reason_metric(reason: object) -> str:
-    return f"train/done/{metric_path_segment(reason)}"
+    return f"{TRAIN_DONE_ROOT}{metric_path_segment(reason)}"
+
+
+def train_adv_task_metric(task_id: object, stat: str) -> str:
+    return f"{TRAIN_ADV_ROOT}/task{metric_path_segment(task_id)}/{metric_path_segment(stat)}"
 
 
 def metric_value_segment(value: object) -> str:

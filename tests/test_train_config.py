@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rlab.cli import parse_train_args
 from rlab.env import EnvConfig
 from rlab.env_metadata import PLAYBACK_ENV_ARG_KEYS
 from rlab.train_config import (
@@ -19,6 +18,7 @@ from rlab.train_config import (
     validate_train_config_fields,
     validate_train_config_value,
 )
+from rlab.train import parse_train_args
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):

@@ -60,17 +60,10 @@ def runtime_image_payload_from_file(path: Path) -> dict[str, Any]:
 
 
 def runtime_image_ref_from_payload(payload: Mapping[str, Any], *, label: str = "runtime image ref JSON") -> str:
-    for key in ("runtime_image_ref", "image_ref", "docker_runtime_image_ref"):
-        value = payload.get(key)
-        if value:
-            return normalize_runtime_image_ref(str(value))
-    image = str(payload.get("image") or payload.get("image_name") or "").strip()
-    digest = str(payload.get("digest") or "").strip()
-    if image and digest:
-        if not digest.startswith("sha256:"):
-            digest = f"sha256:{digest}"
-        return normalize_runtime_image_ref(f"docker:{image}@{digest}")
-    raise ValueError(f"{label} must include runtime_image_ref or image + digest")
+    value = payload.get("runtime_image_ref")
+    if not value:
+        raise ValueError(f"{label} must include runtime_image_ref")
+    return normalize_runtime_image_ref(str(value))
 
 
 def runtime_image_ref_from_file(path: Path) -> str:

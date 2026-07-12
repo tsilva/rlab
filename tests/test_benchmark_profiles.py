@@ -68,12 +68,32 @@ modes: [fast]
 envs: [1]
 steps: 10
 warmup: 1
-gates: {}
+expectations: {}
 """,
                 encoding="utf-8",
             )
 
             with self.assertRaisesRegex(ValueError, "actual saved state"):
+                load_benchmark_profile(path)
+
+    def test_benchmark_profile_rejects_non_executable_gate_vocabulary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(
+                """
+schema_version: 1
+name: bad
+kind: env_throughput
+game: SuperMarioBros-Nes-v0
+state: Level1-1
+steps: 10
+warmup: 1
+gates: {}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "gates is unsupported"):
                 load_benchmark_profile(path)
 
     def test_local_smoke_uses_queue_backed_local_fleet_commands(self) -> None:
@@ -105,6 +125,7 @@ gates: {}
             self.assertIn("stable-retro-turbo", command.argv)
             self.assertIn("Level1-1", command.argv)
             self.assertEqual(command.env, {"STABLE_RETRO_DISABLE_AUDIO": "1"})
+            self.assertEqual(command.argv[command.argv.index("--max-overhead") + 1], "0.05")
 
     def test_fleet_capacity_uses_unified_rlab_commands(self) -> None:
         profile = find_benchmark_profile("fleet-capacity-rtx4090")
@@ -133,7 +154,7 @@ name: bad
 kind: fleet_capacity
 spec_file: experiments/goals/example/recipes/candidate.yaml
 runtime_image_ref_file: rlab-train-image.json
-gates: {}
+expectations: {}
 """,
                 encoding="utf-8",
             )
@@ -153,7 +174,7 @@ host: local-macbook
 requested_workers: 2
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 runtime_image_ref_file: rlab-train-image.json
-gates: {}
+expectations: {}
 """,
                 encoding="utf-8",
             )
@@ -172,7 +193,7 @@ kind: ppo_loop_throughput
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
 - train.policy.timstepz=512
-gates: {}
+expectations: {}
 """,
                 encoding="utf-8",
             )
