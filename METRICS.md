@@ -245,6 +245,11 @@ training end so the last PPO update is not lost.
 | `train/std` | Mean learned action-distribution standard deviation, logged by SB3 only for policies with `log_std`. Usually absent for discrete-action Mario policies. |
 | `train/value_loss` | PPO value-function loss component. |
 
+Do not confuse `train/clip_range` with `train/clip_fraction`: the range is the configured PPO ratio
+limit, while a zero fraction means no sampled policy ratios crossed that limit. A zero fraction is
+not itself a disabled clip range; interpret it together with `train/approx_kl`, policy entropy, and
+reward progress to determine whether policy updates are too small.
+
 ## Throughput Metrics
 
 | Metric | Meaning |
