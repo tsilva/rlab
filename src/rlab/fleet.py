@@ -17,7 +17,7 @@ from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
-    adopt_successful_train_launch,
+    adopt_terminal_train_launch,
     active_job_launches,
     claim_job_launch,
     connect,
@@ -1135,32 +1135,31 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
             continue
         result = read_remote_result(machine, str(launch["output_uri"]))
         if result is not None:
-            if str(result.get("status")) == "succeeded":
-                superseded = tuple(
-                    str(candidate["launch_id"])
-                    for candidate in launches
-                    if candidate["job_id"] == launch["job_id"]
-                    and candidate["launch_id"] != launch_id
-                    and (
-                        (sibling := containers.get(str(candidate["launch_id"]))) is None
-                        or sibling.state not in {"created", "restarting", "running"}
-                    )
+            superseded = tuple(
+                str(candidate["launch_id"])
+                for candidate in launches
+                if candidate["job_id"] == launch["job_id"]
+                and candidate["launch_id"] != launch_id
+                and (
+                    (sibling := containers.get(str(candidate["launch_id"]))) is None
+                    or sibling.state not in {"created", "restarting", "running"}
                 )
-                if superseded:
-                    released = adopt_successful_train_launch(
-                        conn,
-                        launch_id=launch_id,
-                        superseded_launch_ids=superseded,
-                    )
-                    released_launch_ids.update(released)
-                    log_shepherd_event(
-                        machine=machine.name,
-                        action="supersede",
-                        result="ok",
-                        launch_id=launch_id,
-                        released=",".join(released),
-                        color=color,
-                    )
+            )
+            if superseded:
+                released = adopt_terminal_train_launch(
+                    conn,
+                    launch_id=launch_id,
+                    superseded_launch_ids=superseded,
+                )
+                released_launch_ids.update(released)
+                log_shepherd_event(
+                    machine=machine.name,
+                    action="supersede",
+                    result="ok",
+                    launch_id=launch_id,
+                    released=",".join(released),
+                    color=color,
+                )
             finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
             log_shepherd_event(
                 machine=machine.name,

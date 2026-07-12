@@ -754,13 +754,13 @@ def release_job_launch(
             return dict(launch)
 
 
-def adopt_successful_train_launch(
+def adopt_terminal_train_launch(
     conn,
     *,
     launch_id: str,
     superseded_launch_ids: Sequence[str],
 ) -> tuple[str, ...]:
-    """Make a successful launch finalizable after inactive duplicate launches."""
+    """Make a terminal launch finalizable after inactive duplicate launches."""
     superseded = tuple(str(value) for value in superseded_launch_ids if str(value) != launch_id)
     with conn:
         with conn.cursor() as cur:
@@ -795,7 +795,7 @@ def adopt_successful_train_launch(
                     {
                         "job_id": job_id,
                         "launch_ids": list(superseded),
-                        "error": f"superseded by successful launch {launch_id}",
+                        "error": f"superseded by terminal launch {launch_id}",
                     },
                 )
                 released = tuple(str(row["launch_id"]) for row in cur.fetchall())
