@@ -67,6 +67,25 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
         self.assertEqual(train_config["task"]["termination"]["max_episode_steps"], 54000)
+        self.assertEqual(
+            train_config["task"]["action"],
+            {
+                "set": "breakout_minimal",
+                "codec": {
+                    "type": "discrete_lookup",
+                    "values": [
+                        [0, 0, 0, 0, 0, 0, 0, 0],
+                        [1, 0, 0, 0, 0, 0, 0, 0],
+                        [0, 0, 0, 0, 0, 0, 1, 0],
+                        [0, 0, 0, 0, 0, 0, 0, 1],
+                    ],
+                },
+            },
+        )
+        self.assertEqual(
+            train_config["checkpoint_eval_environment"]["task"]["action"],
+            train_config["task"]["action"],
+        )
         self.assertNotIn("clip_rewards", train_config)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
@@ -99,7 +118,8 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["obs_crop"], [0, 0, 37, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
-        self.assertEqual(
+        self.assertEqual(train_config["task"]["action"], {"set": "native"})
+        self.assertNotEqual(
             train_config["task"]["action"], breakout["train_config"]["task"]["action"]
         )
         self.assertEqual(

@@ -41,7 +41,16 @@ train:
     task: &identity_task
       id: identity
       action:
-        set: native
+        set: breakout_minimal
+        codec:
+          type: discrete_lookup
+          # Stable Retro Atari order: BUTTON, unused, SELECT, RESET,
+          # UP, DOWN, LEFT, RIGHT.
+          values:
+          - [0, 0, 0, 0, 0, 0, 0, 0] # NOOP
+          - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE
+          - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
+          - [0, 0, 0, 0, 0, 0, 0, 1] # RIGHT
       signals: {}
       events: {}
       # Preserve the previous 216,000 raw-frame cap at frame_skip=4.
