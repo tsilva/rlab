@@ -34,7 +34,7 @@ app = modal.App(app_name)
     retries=0,
     timeout=config.promotion_timeout_seconds,
     startup_timeout=config.startup_timeout_seconds,
-    max_inputs=config.max_inputs_per_container,
+    single_use_containers=config.single_use_containers,
     include_source=False,
 )
 def evaluate_checkpoint(payload: dict) -> dict:

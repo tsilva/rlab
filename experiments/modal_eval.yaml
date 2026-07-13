@@ -13,7 +13,7 @@ resources:
   min_containers: 0
   buffer_containers: 0
   max_containers: 20
-  max_inputs_per_container: 10
+  single_use_containers: false
   scaledown_window_seconds: 60
   startup_timeout_seconds: 120
 timeouts:

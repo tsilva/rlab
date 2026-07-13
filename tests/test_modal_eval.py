@@ -134,7 +134,7 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.hard_max_active, 20)
         self.assertEqual(config.max_containers, 20)
         self.assertEqual(config.initial_effective_capacity, 1)
-        self.assertEqual(config.max_inputs_per_container, 10)
+        self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
 
     def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
