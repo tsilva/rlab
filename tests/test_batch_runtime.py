@@ -132,7 +132,40 @@ class DeterministicNativeVectorProvider:
         self.closed = True
 
 
-def descriptor_for(provider: DeterministicNativeVectorProvider) -> ProviderDescriptor:
+class DoubleBufferedNativeVectorProvider(DeterministicNativeVectorProvider):
+    """Provider whose previous observation survives one subsequent provider call."""
+
+    def __init__(self, num_envs: int = 2):
+        super().__init__(num_envs)
+        first = self._observations
+        second = {key: np.empty_like(value) for key, value in first.items()}
+        for key in first:
+            np.copyto(second[key], first[key])
+        self._observation_buffers = (first, second)
+        self._observation_buffer_index = 0
+
+    def _rotate_observations(self) -> None:
+        source = self._observation_buffers[self._observation_buffer_index]
+        self._observation_buffer_index = 1 - self._observation_buffer_index
+        target = self._observation_buffers[self._observation_buffer_index]
+        for key in source:
+            np.copyto(target[key], source[key])
+        self._observations = target
+
+    def reset(self, *, seed=None, options=None):
+        self._rotate_observations()
+        return super().reset(seed=seed, options=options)
+
+    def step(self, actions: Any):
+        self._rotate_observations()
+        return super().step(actions)
+
+
+def descriptor_for(
+    provider: DeterministicNativeVectorProvider,
+    *,
+    observation_buffer_depth: int = 1,
+) -> ProviderDescriptor:
     return ProviderDescriptor(
         provider_id="fake-native",
         native_observation_space=provider.single_observation_space,
@@ -143,6 +176,7 @@ def descriptor_for(provider: DeterministicNativeVectorProvider) -> ProviderDescr
         },
         start_catalog=("Level1-1", "Level1-2"),
         render_support=("rgb_array",),
+        observation_buffer_depth=observation_buffer_depth,
     )
 
 
@@ -185,6 +219,13 @@ class ProviderContractTests(unittest.TestCase):
                 native_observation_space=provider.single_observation_space,
                 native_action_space=provider.single_action_space,
                 autoreset_mode="same_step",
+            )
+        with self.assertRaisesRegex(ValueError, "observation_buffer_depth must be positive"):
+            ProviderDescriptor(
+                provider_id="bad-buffer-depth",
+                native_observation_space=provider.single_observation_space,
+                native_action_space=provider.single_action_space,
+                observation_buffer_depth=0,
             )
 
         descriptor = ProviderDescriptor(
@@ -230,6 +271,8 @@ class ProviderContractTests(unittest.TestCase):
         encoded = masked.encode_observations(observations)
         np.testing.assert_array_equal(encoded[:, :, :6, :], 7)
         np.testing.assert_array_equal(encoded[:, :, 6:, :], 0)
+        self.assertTrue(kernel.observation_encoding_is_view)
+        self.assertFalse(masked.observation_encoding_is_view)
 
     def test_identity_kernel_requires_action_codec_for_structured_actions(self):
         provider = DeterministicNativeVectorProvider()
@@ -336,6 +379,61 @@ class BatchRuntimeTests(unittest.TestCase):
         np.testing.assert_array_equal(second["image"], second_snapshot["image"])
         np.testing.assert_array_equal(third["image"], [[5, 6], [7, 8]])
         self.assertIsNot(first["image"], second["image"])
+
+    def test_reuses_provider_double_buffer_without_copy_on_nonterminal_steps(self):
+        provider = DoubleBufferedNativeVectorProvider()
+        descriptor = descriptor_for(provider, observation_buffer_depth=2)
+        runtime = BatchRuntime(
+            provider,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, provider.num_envs),
+            run_seed=17,
+        )
+
+        initial = runtime.reset()
+        self.assertIs(initial["image"], provider._observations["image"])
+        provider.queue_step(image=[[1, 2], [3, 4]])
+        second = runtime.step(np.zeros((2, 3), dtype=np.int8)).observations
+        second_snapshot = second["image"].copy()
+        self.assertIs(second["image"], provider._observations["image"])
+
+        provider.queue_step(image=[[5, 6], [7, 8]])
+        third = runtime.step(np.zeros((2, 3), dtype=np.int8)).observations
+
+        np.testing.assert_array_equal(second["image"], second_snapshot)
+        np.testing.assert_array_equal(third["image"], [[5, 6], [7, 8]])
+        self.assertIsNot(second["image"], third["image"])
+
+    def test_terminal_step_uses_owned_buffer_before_provider_masked_reset(self):
+        provider = DoubleBufferedNativeVectorProvider()
+        descriptor = descriptor_for(provider, observation_buffer_depth=2)
+        runtime = BatchRuntime(
+            provider,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, provider.num_envs),
+            run_seed=17,
+        )
+        runtime.reset()
+        provider.queue_step(
+            image=[[9, 9], [4, 4]],
+            terminated=[True, False],
+        )
+
+        step = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        returned_snapshot = step.observations["image"].copy()
+
+        np.testing.assert_array_equal(step.infos[0]["terminal_observation"]["image"], [9, 9])
+        np.testing.assert_array_equal(step.observations["image"], [[0, 0], [4, 4]])
+        self.assertFalse(
+            any(
+                np.shares_memory(step.observations["image"], buffer["image"])
+                for buffer in provider._observation_buffers
+            )
+        )
+
+        provider.queue_step(image=[[1, 1], [5, 5]])
+        runtime.step(np.zeros((2, 3), dtype=np.int8))
+        np.testing.assert_array_equal(step.observations["image"], returned_snapshot)
 
     def test_masked_reset_preserves_unselected_lane_state_and_rng_request(self):
         provider, runtime = self.make_identity_runtime()

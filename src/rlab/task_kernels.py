@@ -503,6 +503,7 @@ class BoundTaskKernel(Protocol):
     observation_space: gym.Space
     action_space: gym.Space
     event_names: tuple[str, ...]
+    observation_encoding_is_view: bool
 
     def map_actions(self, actions: Any) -> Any: ...
 
@@ -764,6 +765,7 @@ class IdentityTaskKernel:
         self._observation_mask_fill = int(observation_mask_fill)
         self._observation_source_shape = observation_source_shape
         self._masked_observation_buffer: np.ndarray | None = None
+        self.observation_encoding_is_view = observation_mask is None
 
     def map_actions(self, actions: Any) -> Any:
         if self._action_lookup is None:
@@ -1091,6 +1093,7 @@ class MarioTaskKernel:
                     ),
                 }
             )
+        self.observation_encoding_is_view = self._task_observation is None
 
         self._rewards = np.zeros(self.num_envs, dtype=np.float32)
         self._terminated = np.zeros(self.num_envs, dtype=bool)

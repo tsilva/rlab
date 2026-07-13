@@ -68,12 +68,16 @@ class ProviderDescriptor:
     lane_start_ids: tuple[str, ...] = ()
     render_support: tuple[str, ...] = ()
     autoreset_mode: str = "disabled"
+    observation_buffer_depth: int = 1
 
     def __post_init__(self) -> None:
         if not self.provider_id:
             raise ValueError("provider_id must not be empty")
         if self.autoreset_mode != "disabled":
             raise ValueError("the batch runtime requires disabled provider autoreset")
+        if int(self.observation_buffer_depth) < 1:
+            raise ValueError("provider observation_buffer_depth must be positive")
+        object.__setattr__(self, "observation_buffer_depth", int(self.observation_buffer_depth))
         normalized: dict[str, SignalSpec] = {}
         for key, spec in self.signal_schema.items():
             if key != spec.name:
@@ -351,6 +355,10 @@ class BatchRuntime:
         )
         self._observation_buffers: list[Any] = []
         self._current_observation_buffer = 0
+        self._reuse_provider_observations = (
+            descriptor.observation_buffer_depth >= 2
+            and bool(getattr(kernel, "observation_encoding_is_view", False))
+        )
         self._started_at = time.monotonic()
         self._native_step_seconds_total = 0.0
         self._native_step_calls_total = 0
@@ -404,12 +412,20 @@ class BatchRuntime:
             raise TypeError("native provider reset infos must be a columnar mapping")
         self.kernel.on_reset(observations, infos, mask)
         encoded = self.kernel.encode_observations(observations)
-        self._observation_buffers = [_copy_tree(encoded), _empty_tree_like(encoded)]
+        if self._reuse_provider_observations:
+            self._observation_buffers = [
+                _empty_tree_like(encoded),
+                _empty_tree_like(encoded),
+            ]
+            initial_observations = encoded
+        else:
+            self._observation_buffers = [_copy_tree(encoded), _empty_tree_like(encoded)]
+            initial_observations = self._observation_buffers[0]
         self._current_observation_buffer = 0
         info_columns = _InfoColumns(infos, self.num_envs)
         self.reset_infos = [info_columns.lane(lane) for lane in range(self.num_envs)]
         self._start_ids = self._actual_start_ids(infos, starts, mask)
-        return self._observation_buffers[0]
+        return initial_observations
 
     def _reset_options(
         self,
@@ -539,8 +555,11 @@ class BatchRuntime:
         done_indices = np.flatnonzero(dones) if any_done else self._empty_indices
 
         encoded_transition = self.kernel.encode_observations(observations)
-        next_observations = self._observation_buffers[next_buffer_index]
-        _copy_tree_into(next_observations, encoded_transition)
+        if self._reuse_provider_observations and not any_done:
+            next_observations = encoded_transition
+        else:
+            next_observations = self._observation_buffers[next_buffer_index]
+            _copy_tree_into(next_observations, encoded_transition)
 
         if getattr(self.kernel, "has_events", True):
             self._append_event_records(task_step)

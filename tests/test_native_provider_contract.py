@@ -270,6 +270,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(descriptor.start_catalog, ("Level1-1",))
         self.assertEqual(descriptor.lane_start_ids, ("Level1-1", "Level1-1"))
         self.assertEqual(descriptor.render_support, ("rgb_array",))
+        self.assertEqual(descriptor.observation_buffer_depth, 2)
         self.assertEqual(descriptor.signal_schema["lives"].dtype, np.dtype(np.int64))
         _observations, reset_infos = env.reset(
             seed=[1, None],
@@ -518,6 +519,8 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
         kernel = _bound_task_kernel(config, descriptor, 16)
         self.assertIsNone(kernel._observation_mask)
+        self.assertEqual(descriptor.observation_buffer_depth, 2)
+        self.assertTrue(kernel.observation_encoding_is_view)
 
 
 class AleManualLifecycleTests(unittest.TestCase):

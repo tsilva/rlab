@@ -366,6 +366,11 @@ def provider_descriptor(
 
     metadata = getattr(native_env, "metadata", {})
     render_modes = metadata.get("render_modes", ()) if isinstance(metadata, Mapping) else ()
+    obs_copy = getattr(native_env, "obs_copy", None)
+    if obs_copy is None:
+        native_kwargs = getattr(native_env, "kwargs", {})
+        if isinstance(native_kwargs, Mapping):
+            obs_copy = native_kwargs.get("obs_copy")
     return ProviderDescriptor(
         provider_id=provider.provider_id,
         native_observation_space=observation_space,
@@ -375,6 +380,7 @@ def provider_descriptor(
         start_probabilities=start_probabilities,
         lane_start_ids=lane_start_ids,
         render_support=tuple(str(mode) for mode in render_modes),
+        observation_buffer_depth=2 if obs_copy == "safe_view" else 1,
     )
 
 
