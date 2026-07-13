@@ -33,7 +33,6 @@ class MachinePaths:
 class MachineConfig:
     name: str
     backend: str
-    run_target: str
     ssh_target: str
     ssh_options: tuple[str, ...]
     docker_command: tuple[str, ...]
@@ -72,12 +71,21 @@ def load_config_file(path: Path) -> dict[str, Any]:
 
 
 def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
+    allowed_keys = {
+        "backend",
+        "ssh_target",
+        "ssh_options",
+        "docker",
+        "limits",
+        "paths",
+        "pull_policy",
+    }
+    unknown_keys = sorted(set(raw) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(f"machine {name!r} has unknown field(s): {', '.join(unknown_keys)}")
     backend = str(raw.get("backend") or "").strip()
     if backend not in {"docker_ssh", "local_docker"}:
         raise ValueError(f"machine {name!r} backend must be docker_ssh or local_docker")
-    run_target = str(raw.get("run_target") or "").strip()
-    if not run_target:
-        raise ValueError(f"machine {name!r} must define run_target")
     ssh_target = str(raw.get("ssh_target") or "").strip()
     if backend == "docker_ssh" and not ssh_target:
         raise ValueError(f"machine {name!r} backend docker_ssh requires ssh_target")
@@ -94,12 +102,11 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
     return MachineConfig(
         name=name,
         backend=backend,
-        run_target=run_target,
         ssh_target=ssh_target,
         ssh_options=_tuple(raw.get("ssh_options")),
         docker_command=_tuple(docker.get("command") or ("docker",)),
         docker_gpu_args=_tuple(docker.get("gpu_args", default_gpu_args)),
-        pull_policy=str(docker.get("pull_policy") or "always"),
+        pull_policy=str(docker.get("pull_policy") or raw.get("pull_policy") or "always"),
         limits=MachineLimits(
             max_parallel_containers=_positive_int(
                 limits_raw.get("max_parallel_containers"),

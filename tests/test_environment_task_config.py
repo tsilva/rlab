@@ -143,6 +143,38 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "action has unexpected keys"):
             validate_task_config(task_auto_fire)
 
+    def test_identity_task_accepts_equals_for_events(self) -> None:
+        task = {
+            "id": "identity",
+            "action": {"set": "native"},
+            "signals": {"ball_y": "ball_y"},
+            "events": {
+                "serve_stall": {
+                    "signal": "ball_y",
+                    "operation": "equals_for",
+                    "value": 0,
+                    "steps": 256,
+                }
+            },
+            "termination": {"failure": ["serve_stall"]},
+            "reward": {"reward_mode": "native"},
+        }
+
+        validate_task_config(task)
+
+        invalid = {
+            **task,
+            "events": {
+                "serve_stall": {
+                    "signal": "ball_y",
+                    "operation": "unchanged_for",
+                    "steps": 256,
+                }
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "require.*operation='equals_for'"):
+            validate_task_config(invalid)
+
     def test_task_validation_rejects_unimplemented_kernel_and_mario_event_semantics(self) -> None:
         with self.assertRaisesRegex(ValueError, "no registered task kernel"):
             validate_task_config(

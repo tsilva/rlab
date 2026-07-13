@@ -115,15 +115,16 @@ gates: {}
 
         self.assertEqual(
             [command.label for command in commands],
-            ["enqueue-local-smoke", "local-fleet-shepherd-once", "local-fleet-watch"],
+            ["train-local-smoke", "local-jobs-status"],
         )
         self.assertEqual(commands[0].argv[:2], ("rlab", "train"))
         self.assertNotIn("local", commands[0].argv[:3])
-        self.assertIn("--run-target", commands[0].argv)
+        self.assertIn("--machine", commands[0].argv)
         self.assertIn("local-macbook", commands[0].argv)
-        self.assertEqual(commands[1].argv[:3], ("rlab", "fleet", "shepherd"))
+        self.assertIn("--wait", commands[0].argv)
+        self.assertIn("terminal", commands[0].argv)
+        self.assertEqual(commands[1].argv[:3], ("rlab", "jobs", "status"))
         self.assertIn("local-macbook", commands[1].argv)
-        self.assertEqual(commands[2].argv[:3], ("rlab", "fleet", "watch"))
 
     def test_env_throughput_generates_mode_env_matrix(self) -> None:
         profile = find_benchmark_profile("retro-env-throughput-mario-l11")
@@ -145,17 +146,13 @@ gates: {}
         commands = build_benchmark_commands(profile)
 
         self.assertEqual(commands[0].argv[:2], ("rlab", "train"))
-        self.assertEqual(commands[1].argv[:3], ("rlab", "fleet", "shepherd"))
+        self.assertIn("--machine", commands[0].argv)
+        self.assertIn("beast-3", commands[0].argv)
+        self.assertIn("--wait", commands[0].argv)
+        self.assertIn("running", commands[0].argv)
+        self.assertEqual(commands[1].argv[:3], ("rlab", "jobs", "status"))
         self.assertIn("--machine", commands[1].argv)
-        self.assertIn("--limit", commands[1].argv)
-        self.assertIn("5", commands[1].argv)
-        self.assertIn("--once", commands[1].argv)
-        self.assertIn("--dry-run", commands[1].argv)
         self.assertIn("beast-3", commands[1].argv)
-        self.assertEqual(commands[2].argv[:3], ("rlab", "fleet", "watch"))
-        self.assertIn("--machine", commands[2].argv)
-        self.assertIn("--once", commands[2].argv)
-        self.assertIn("--no-tui", commands[2].argv)
 
     def test_fleet_capacity_rejects_unknown_spec_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -183,7 +180,7 @@ expectations: {}
 schema_version: 1
 name: bad
 kind: fleet_capacity
-host: local-macbook
+machine: local-macbook
 requested_workers: 2
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 runtime_image_ref_file: rlab-train-image.json

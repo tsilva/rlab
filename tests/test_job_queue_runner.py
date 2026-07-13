@@ -58,14 +58,14 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
-    def test_queue_demands_groups_by_runtime_digest_and_target(self) -> None:
+    def test_queue_demands_groups_by_machine_and_runtime_digest(self) -> None:
         conn = FakeConnection(
             rows=[
                 {
                     "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "run_target": "rtx4090",
+                    "machine": "beast-3",
                     "pending_count": 2,
-                    "running_count": 1,
+                    "active_count": 1,
                     "oldest_job_id": 7,
                 }
             ]
@@ -74,14 +74,18 @@ class JobQueueTests(unittest.TestCase):
         rows = job_queue.queue_demands(conn)
 
         self.assertEqual(rows[0].runtime_image_ref, RUNTIME_IMAGE_REF)
+        self.assertEqual(rows[0].machine, "beast-3")
         self.assertEqual(rows[0].pending_count, 2)
-        self.assertEqual(rows[0].running_count, 1)
-        self.assertIn("GROUP BY runtime_image_ref, run_target", conn.cursor_obj.executed_sql)
+        self.assertEqual(rows[0].active_count, 1)
+        self.assertIn("GROUP BY machine, runtime_image_ref", conn.cursor_obj.executed_sql)
 
     def test_schema_uses_recipe_columns_without_profile_or_spec_aliases(self) -> None:
         self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_slug TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_payload_json JSONB", job_queue.SCHEMA_SQL)
+        self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
+        self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
+        self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
 
     def test_wandb_run_leaders_rank_by_recipe_slug(self) -> None:
         runs = [
@@ -125,13 +129,13 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(leaders[0].worst_seed, 0.9)
         self.assertEqual(leaders[1].recipe_slug, "a")
 
-    def test_enqueue_train_job_persists_recipe_runtime_and_target(self) -> None:
+    def test_enqueue_train_job_persists_recipe_runtime_and_machine(self) -> None:
         conn = FakeConnection(
             row={
                 "id": 9,
                 "recipe_slug": "candidate",
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "run_target": "rtx4090",
+                "machine": "beast-3",
             }
         )
 
@@ -143,7 +147,7 @@ class JobQueueTests(unittest.TestCase):
             recipe_sha256="abc123",
             recipe_payload={"recipe_id": "candidate"},
             runtime_image_ref=RUNTIME_IMAGE_REF,
-            run_target="rtx4090",
+            machine="beast-3",
             train_config=explicit_train_config(),
         )
 
@@ -152,16 +156,16 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertIn("recipe_slug", insert_sql)
         self.assertEqual(insert_params["recipe_slug"], "candidate")
-        self.assertEqual(insert_params["run_target"], "rtx4090")
+        self.assertEqual(insert_params["machine"], "beast-3")
         self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
 
-    def test_enqueue_train_jobs_keeps_run_target_in_queue_column(self) -> None:
+    def test_enqueue_train_jobs_keeps_machine_in_queue_column(self) -> None:
         conn = FakeConnection(
             row={
                 "id": 10,
                 "recipe_slug": "candidate",
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "run_target": "local-macbook",
+                "machine": "local-macbook",
             }
         )
 
@@ -169,14 +173,14 @@ class JobQueueTests(unittest.TestCase):
             conn,
             document=valid_train_recipe(),
             runtime_image_ref=RUNTIME_IMAGE_REF,
-            run_target="local-macbook",
+            machine="local-macbook",
             seeds=[23],
         )
 
         insert_params = conn.cursor_obj.executed_params_list[0]
         train_config = insert_params["train_config"].adapted
-        self.assertEqual(insert_params["run_target"], "local-macbook")
-        self.assertNotIn("run_target", train_config)
+        self.assertEqual(insert_params["machine"], "local-macbook")
+        self.assertNotIn("machine", train_config)
 
     def test_enqueue_train_job_rejects_mutable_runtime_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "immutable docker digest ref"):
@@ -185,6 +189,7 @@ class JobQueueTests(unittest.TestCase):
                 goal_slug="goal",
                 recipe_slug="candidate",
                 runtime_image_ref="docker:ghcr.io/tsilva/rlab/rlab-train:latest",
+                machine="beast-3",
                 train_config=explicit_train_config(),
             )
 
@@ -197,6 +202,7 @@ class JobQueueTests(unittest.TestCase):
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
             )
 
     def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
@@ -266,6 +272,7 @@ class JobQueueTests(unittest.TestCase):
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
             )
 
     def test_enqueue_train_job_rejects_eval_reserved_seed(self) -> None:
@@ -275,6 +282,7 @@ class JobQueueTests(unittest.TestCase):
                 goal_slug="goal",
                 recipe_slug="candidate",
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
                 train_config=explicit_train_config(seed=DEFAULT_EVAL_SEED),
             )
 
@@ -291,9 +299,10 @@ class JobQueueTests(unittest.TestCase):
         job_queue._utc_stamp = lambda: "20260626T120000Z"
         try:
             rows = job_queue.enqueue_train_jobs_from_recipe_document(
-                object(),
+                FakeConnection(),
                 document=valid_train_recipe(),
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
                 recipe_path="experiments/goals/mario/recipes/candidate.yaml",
                 recipe_sha256="abc123",
                 repo_git_commit="deadbeef",
@@ -327,9 +336,10 @@ class JobQueueTests(unittest.TestCase):
         job_queue.enqueue_train_job = fake_enqueue
         try:
             job_queue.enqueue_train_jobs_from_recipe_document(
-                object(),
+                FakeConnection(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
             )
         finally:
             job_queue.enqueue_train_job = old_enqueue
@@ -392,6 +402,7 @@ class JobQueueTests(unittest.TestCase):
                 object(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
             )
 
     def test_load_recipe_document_rejects_active_specs_path(self) -> None:
@@ -403,9 +414,158 @@ class JobQueueTests(unittest.TestCase):
 
         report = job_queue.queue_status(conn, goal_slug="Level1-1")
 
-        self.assertEqual(report["goal_slug"], "Level1-1")
+        self.assertEqual(report["selector"], {"goal_slug": "Level1-1"})
         status_sql = conn.cursor_obj.executed_sqls[-1]
-        self.assertIn("recipe_slug", status_sql)
+        self.assertIn("job.goal_slug", status_sql)
+        self.assertNotIn("profile_id", status_sql)
+
+    def test_claim_uses_exact_machine_and_one_stable_launch(self) -> None:
+        conn = FakeConnection(
+            row={
+                "job_json": {"id": 7, "machine": "beast-3", "status": "launching"},
+                "launch_json": {
+                    "launch_id": "train-7",
+                    "job_kind": "train",
+                    "job_id": 7,
+                    "machine": "beast-3",
+                    "backend": "docker_ssh",
+                },
+            }
+        )
+
+        claimed = job_queue.claim_job_launch(
+            conn,
+            machine="beast-3",
+            backend="docker_ssh",
+            job_id=7,
+            launch_id=job_queue.new_train_launch_id(7),
+            output_uri="/output/train-7",
+        )
+
+        self.assertIsNotNone(claimed)
+        sql = conn.cursor_obj.executed_sqls[1]
+        self.assertIn("job.machine = %(machine)s", sql)
+        self.assertIn("NOT EXISTS (SELECT 1 FROM job_launches", sql)
+        self.assertEqual(conn.cursor_obj.executed_params_list[1]["launch_id"], "train-7")
+
+    def test_cancel_only_terminalizes_pending_jobs(self) -> None:
+        conn = FakeConnection(results=[{"rowcount": 1}])
+
+        changed = job_queue.request_cancel_train_job(conn, job_id=9)
+
+        self.assertEqual(changed, 1)
+        sql = conn.cursor_obj.executed_sqls[0]
+        self.assertIn("CASE WHEN status = 'pending' THEN 'canceled'", sql)
+        self.assertNotIn("status IN ('pending', 'launching') THEN 'canceled'", sql)
+
+    def test_result_identity_is_validated_before_mutation(self) -> None:
+        launch = {
+            "launch_id": "train-7",
+            "job_kind": "train",
+            "job_id": 7,
+            "machine": "beast-3",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "state": "running",
+            "cancel_requested": False,
+        }
+        conn = FakeConnection(results=[{"row": launch}])
+
+        with self.assertRaisesRegex(ValueError, "result machine mismatch"):
+            job_queue.finish_train_launch_from_result(
+                conn,
+                launch_id="train-7",
+                result={
+                    "schema_version": 1,
+                    "job_kind": "train",
+                    "job_id": 7,
+                    "launch_id": "train-7",
+                    "machine": "beast-2",
+                    "runtime_image_ref": RUNTIME_IMAGE_REF,
+                    "status": "succeeded",
+                    "exit_code": 0,
+                },
+            )
+
+        self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+
+    def test_cancel_intent_dominates_success_result(self) -> None:
+        launch = {
+            "launch_id": "train-7",
+            "job_kind": "train",
+            "job_id": 7,
+            "machine": "beast-3",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "state": "running",
+            "cancel_requested": True,
+        }
+        terminal_launch = {**launch, "state": "canceled"}
+        job = {"id": 7, "run_name": "run"}
+        conn = FakeConnection(
+            results=[
+                {"row": launch},
+                {"row": terminal_launch},
+                {"row": job},
+                {},
+            ]
+        )
+
+        job_queue.finish_train_launch_from_result(
+            conn,
+            launch_id="train-7",
+            result={
+                "schema_version": 1,
+                "job_kind": "train",
+                "job_id": 7,
+                "launch_id": "train-7",
+                "machine": "beast-3",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "status": "succeeded",
+                "exit_code": 0,
+            },
+        )
+
+        self.assertEqual(conn.cursor_obj.executed_params_list[1]["state"], "canceled")
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "canceled")
+
+    def test_idempotent_batch_returns_existing_jobs(self) -> None:
+        existing = [
+            {"id": 10, "request_hash": "same", "submission_ordinal": 0},
+            {"id": 11, "request_hash": "same", "submission_ordinal": 1},
+        ]
+        conn = FakeConnection(rows=existing)
+
+        with patch.object(job_queue, "_submission_request_hash", return_value="same"):
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
+                conn,
+                document=valid_train_recipe(),
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                submission_key="request-123",
+            )
+
+        self.assertEqual([row["id"] for row in rows], [10, 11])
+        self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+
+    def test_machine_controls_persist_drain_and_capacity(self) -> None:
+        row = {
+            "machine": "beast-3",
+            "drained": True,
+            "effective_capacity": 4,
+        }
+        conn = FakeConnection(row=row)
+
+        result = job_queue.set_machine_control(
+            conn,
+            machine="beast-3",
+            drained=True,
+            effective_capacity=4,
+            reason="maintenance",
+        )
+
+        self.assertEqual(result, row)
+        params = conn.cursor_obj.executed_params_list[1]
+        self.assertIs(params["drained"], True)
+        self.assertEqual(params["effective_capacity"], 4)
 
 
 class JobExecutionTests(unittest.TestCase):
@@ -447,7 +607,7 @@ class JobExecutionTests(unittest.TestCase):
             "wandb_group": "level1-1-lowkl-lrdecay",
             "wandb_tags": ["fallback"],
             "runtime_image_ref": RUNTIME_IMAGE_REF,
-            "run_target": "rtx4090",
+            "machine": "beast-3",
         }
 
         config = normalize_train_config(job)
@@ -462,7 +622,7 @@ class JobExecutionTests(unittest.TestCase):
         )
         self.assertEqual(written_config["recipe_slug"], "base")
         self.assertEqual(written_config["seed"], 23)
-        self.assertEqual(written_config["run_target"], "rtx4090")
+        self.assertEqual(written_config["machine"], "beast-3")
         self.assertEqual(written_config["queue_train_job_id"], 12)
         self.assertEqual(command[-3:], ["rlab.train", "--train-config-json", str(config_path)])
         self.assertNotIn("WANDB_API_KEY", json.dumps(written_config))

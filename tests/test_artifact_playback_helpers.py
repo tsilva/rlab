@@ -824,6 +824,13 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(playback_config.task["termination"]["success"], [])
         self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
 
+        contract_config = playback_env_config(
+            config,
+            respect_task_termination=True,
+        )
+        self.assertEqual(contract_config.task["termination"]["failure"], ["life_loss"])
+        self.assertEqual(contract_config.task["termination"]["success"], ["level_change"])
+
     def test_model_observation_wraps_task_conditioned_policy_input(self) -> None:
         class FakeModel:
             observation_space = gym.spaces.Dict(
@@ -951,6 +958,10 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertFalse(hasattr(parser.parse_args([]), "deterministic"))
         self.assertFalse(parser.parse_args([]).step_over)
         self.assertTrue(parser.parse_args(["--step-over"]).step_over)
+        self.assertFalse(parser.parse_args([]).respect_task_termination)
+        self.assertTrue(
+            parser.parse_args(["--respect-task-termination"]).respect_task_termination
+        )
         self.assertEqual(parser.parse_args([]).episodes, 0)
         self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)

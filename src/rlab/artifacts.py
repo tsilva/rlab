@@ -80,7 +80,7 @@ def build_model_metadata(
         "recipe_path": getattr(args, "recipe_path", ""),
         "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
-        "run_target": getattr(args, "run_target", ""),
+        "machine": getattr(args, "machine", ""),
         "checkpoint_step": step,
         "training_metadata": training,
         "training_metadata_hash": stable_json_hash(training),
@@ -141,11 +141,21 @@ def env_config_from_model_metadata(
     return env_config_from_config_dict(saved_config)
 
 
-def playback_env_config(config: EnvConfig) -> EnvConfig:
+def playback_env_config(
+    config: EnvConfig,
+    *,
+    respect_task_termination: bool = False,
+) -> EnvConfig:
+    if respect_task_termination:
+        return config
     return with_task_termination(config, failure=[], success=[], timeout=[])
 
 
-def load_playback_env_config(model_path: Path) -> EnvConfig:
+def load_playback_env_config(
+    model_path: Path,
+    *,
+    respect_task_termination: bool = False,
+) -> EnvConfig:
     metadata = load_model_metadata(model_path)
     saved_config = env_config_from_metadata(metadata)
     if not saved_config:
@@ -156,7 +166,10 @@ def load_playback_env_config(model_path: Path) -> EnvConfig:
     config = env_config_from_config_dict(saved_config)
     if config is None:
         raise SystemExit(f"{model_path} playback metadata does not contain an environment config")
-    return playback_env_config(resolve_env_config(config))
+    return playback_env_config(
+        resolve_env_config(config),
+        respect_task_termination=respect_task_termination,
+    )
 
 
 def apply_config_defaults(

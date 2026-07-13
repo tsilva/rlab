@@ -460,6 +460,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--respect-task-termination",
+        action="store_true",
+        help=(
+            "End episodes on the checkpoint's configured task success/failure events. "
+            "By default playback disables those boundaries for free exploration."
+        ),
+    )
+    parser.add_argument(
         "--show-obs",
         action="store_true",
         help="Open a second window showing the four preprocessed frames fed to the policy.",
@@ -535,7 +543,8 @@ def resolved_play_launch_lines(
             f"device={args.device} stochastic=True "
             f"seed={args.seed} episodes={args.episodes} "
             f"max_steps={task_max_episode_steps(policy_config)} "
-            f"step_over={getattr(args, 'step_over', False)}",
+            f"step_over={getattr(args, 'step_over', False)} "
+            f"respect_task_termination={getattr(args, 'respect_task_termination', False)}",
             "green",
         ),
         _summary_line(
@@ -615,7 +624,10 @@ def main(argv: list[str] | None = None) -> int:
     args.model = str(source.model_path)
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
-    artifact_config = load_playback_env_config(source.model_path)
+    artifact_config = load_playback_env_config(
+        source.model_path,
+        respect_task_termination=args.respect_task_termination,
+    )
     config = playback_runtime_config(artifact_config)
     display_config = display_replay_config(config)
     print_resolved_play_launch(

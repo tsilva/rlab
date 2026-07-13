@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping
@@ -37,10 +39,52 @@ def load_payload(path: Path) -> dict[str, Any]:
 def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "result.json"
-    path.write_text(
-        json.dumps(json_safe(dict(result)), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    payload = json.dumps(json_safe(dict(result)), indent=2, sort_keys=True) + "\n"
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".result-",
+        suffix=".json.tmp",
+        dir=output_dir,
+        text=True,
     )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return path
+
+
+def run_training_process(
+    command: list[str],
+    *,
+    log_file,
+    env: Mapping[str, str],
+) -> int:
+    """Run training while forwarding container termination as a graceful stop."""
+
+    process = subprocess.Popen(
+        command,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=dict(env),
+    )
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def request_graceful_stop(_signum, _frame) -> None:
+        if process.poll() is None:
+            graceful_signal = getattr(signal, "SIGUSR1", signal.SIGTERM)
+            process.send_signal(graceful_signal)
+
+    signal.signal(signal.SIGTERM, request_graceful_stop)
+    try:
+        return int(process.wait())
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def run_dir_from_config(config_path: Path) -> Path:
@@ -173,22 +217,20 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             train_env = os.environ.copy()
             if wandb_enabled:
                 train_env["RLAB_EXTERNAL_WANDB_PUBLISHER"] = "1"
-            process = subprocess.run(
+            returncode = run_training_process(
                 command,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
+                log_file=log_file,
                 env=train_env,
             )
     finally:
         worker_results = stop_workers(producer_workers, producer_stop_file)
         worker_results.extend(stop_workers(publisher_workers, publisher_stop_file, timeout=120.0))
     metadata = collect_result_metadata(job, log_path)
-    status = "succeeded" if process.returncode == 0 else "failed"
+    status = "succeeded" if returncode == 0 else "failed"
     result = {
         **base_result(payload),
         "status": status,
-        "exit_code": process.returncode,
+        "exit_code": returncode,
         "train": {
             "status": status,
             "result": metadata,
@@ -196,8 +238,8 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         },
         "workers": worker_results,
     }
-    if process.returncode != 0:
-        result["error"] = f"train process exited {process.returncode}"
+    if returncode != 0:
+        result["error"] = f"train process exited {returncode}"
     return result
 
 

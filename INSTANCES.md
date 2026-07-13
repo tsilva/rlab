@@ -1,26 +1,27 @@
 # GPU Instances
 
-This repo currently supports one-job Docker containers on registered local or
-SSH Docker machines. Training jobs are created in the queue DB with `rlab
-train`; Mac-side `rlab fleet shepherd` claims queued jobs and reconciles Docker
-containers locally or on `beast-3` and `beast-2` over SSH. Do not use provider
-launchers for this project while the beast path is being hardened.
+This repo supports one-job Docker containers on registered local or SSH Docker
+machines. Every queued `rlab train` job names one exact machine. A single
+Mac-side launchd service runs short reconciliation passes for `local-macbook`,
+`beast-3`, and `beast-2`; the runner machines remain simple SSH/Docker hosts.
+Do not use provider launchers for this project while the beast path is being
+hardened.
 
 ## Quick Choice
 
-| Use case | Target | Shape |
+| Use case | Machine | Shape |
 | --- | --- | --- |
-| Highest-throughput Mario PPO screening | `rtx4090` / `beast-3` | 6 train containers |
-| Lower-contention RTX4090 confirmation | `rtx4090` / `beast-3` | 3-4 train containers |
-| Small-GPU batch screening | `rtx2060` / `beast-2` | 4 train containers |
-| Faster RTX2060 turnaround | `rtx2060` / `beast-2` | 2 train containers |
+| Highest-throughput Mario PPO screening | `beast-3` | 6 train containers |
+| Lower-contention RTX4090 confirmation | `beast-3` | 3-4 train containers |
+| Small-GPU batch screening | `beast-2` | 4 train containers |
+| Faster RTX2060 turnaround | `beast-2` | 2 train containers |
 | Smoke and queue/fleet debugging | `local-macbook` | 1 local Docker train container |
 
-Concrete beast host operation, target mapping, and hard capacity live in
+Concrete host operation and hard capacity live in
 `experiments/machines.yaml`: backend, SSH/Docker access, payload/output paths,
-env file, mounts, enforced
-`max_parallel_containers` slot caps, and host runtime paths. Use the shepherd's
-`--limit` option when a run intentionally needs a smaller operating shape.
+env file, mounts, enforced `max_parallel_containers` slot caps, and host runtime
+paths. Use the durable fleet capacity override when a machine intentionally
+needs a smaller operating shape.
 
 ## Standard Workflow
 
@@ -29,34 +30,35 @@ Queue work from checked-in goal recipe files:
 ```bash
 rlab train \
   --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
+  --machine beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
-Inspect and reconcile local capacity from the MacBook:
+Install and inspect the Mac-side service, then observe jobs:
 
 ```bash
-rlab fleet status
-rlab fleet ps
-rlab fleet watch --machine beast-3
-rlab fleet shepherd --machine beast-3 --once
+rlab fleet service install
+rlab fleet service status --json
+rlab jobs status --machine beast-3 --json
 ```
 
-For a manual recoverable one-job-per-container pass:
+Mutating commands wake the service immediately; its 30-second launchd interval
+is the recovery path for missed wake-ups and remote completion. Each invocation
+loads current source, performs one bounded pass, and exits. launchd does not
+overlap invocations of the same service label.
+
+For a lower-contention machine shape:
 
 ```bash
-rlab fleet shepherd \
-  --machine beast-3 \
-  --once
+rlab fleet capacity --machine beast-3 --set 4
+rlab fleet capacity --machine beast-3 --reset
 ```
 
-In the job-container path, `watch --machine` is read-only: it shows machine
-capacity, queued demand, launch rows, labeled containers, result presence, and
-which rows need shepherd action. Use `shepherd --once` for a single
-reconcile-and-fill pass, or omit `--once` for the long-running mutating
-orchestrator. Shepherd reconciles, claims, launches, finalizes, streams a
-line-oriented action log, and prunes stale Docker images from the host once no
-active container or queued demand needs them. `rlab fleet shepherd --once` is
-the only supported mutating repair-and-fill pass.
+Use `rlab fleet drain --machine <name>` to stop new claims without killing
+running jobs and `rlab fleet resume --machine <name>` to admit work again.
+`rlab jobs status` is observational. The service is the only normal mutating
+reconciler: it claims, launches, finalizes, and prunes stale Docker images after
+no active container or exact-machine queued demand needs them.
 
 ## Host Setup
 
@@ -80,7 +82,7 @@ queue service and do not schedule experiments.
 
 ## beast-3 / RTX4090
 
-- Machine: `beast-3`; queue target: `rtx4090`.
+- Machine: `beast-3`.
 - Host resources: RTX4090, at least 12 CPUs, and at least 48 GB memory.
 - Access: `ssh tsilva@beast-3`.
 - Fleet role: primary screening and confirmation host.
@@ -102,7 +104,7 @@ intentionally testing small-GPU behavior.
 
 ## beast-2 / RTX2060
 
-- Machine: `beast-2`; queue target: `rtx2060`.
+- Machine: `beast-2`.
 - Host resources: RTX2060, at least 4 CPUs, and at least 8 GB memory.
 - Access: `ssh -o HostKeyAlias=beast-2 tsilva@192.168.133.26` until hostname
   resolution is restored.
@@ -122,7 +124,7 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 
 ## Local MacBook
 
-- Machine and queue target: `local-macbook`.
+- Machine: `local-macbook`.
 - Backend: `local_docker`.
 - Host resources: local CPU/MPS host.
 - Use for queue-backed smoke tests and local fleet debugging.
@@ -145,14 +147,15 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - Do not print DB, W&B, or AWS/R2 secrets.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch
   outputs under ignored paths such as `runs/`, `logs/`, `models/`, and `wandb/`.
-- `rlab fleet` may remove old managed containers only when there are no
-  pending or running jobs demanding that immutable runtime digest and run
-  target, and no active launch or container uses the digest.
-- In the recoverable job-container path, one container is one job attempt. The
-  shepherd/launcher is the only mutating DB actor; the read-only watcher never
-  claims, launches, releases, or finalizes jobs. The container reads a payload,
-  writes `result.json`, uploads W&B/artifacts, and exits. Restarted shepherds
-  reconcile DB launch rows, Docker labels, and durable output directories.
+- The service may remove old managed containers and images only when no queued
+  job on that exact machine demands the immutable runtime digest and no active
+  launch or container uses it.
+- In the recoverable job-container path, one container is one stable job
+  launch. The service is the only normal mutating DB actor; status and log
+  commands never claim, launch, cancel, or finalize jobs. The container reads a
+  payload, atomically publishes `result.json`, uploads W&B/artifacts, and exits.
+  Later service passes reconcile DB launch rows, Docker labels, and durable
+  output directories without creating a replacement launch.
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 
 The consolidated Mario runtime was compared against the deleted fused implementation from source

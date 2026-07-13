@@ -9,6 +9,7 @@ tags:
 title: Baseline stable-retro Atari Breakout PPO training
 objective:
   rank:
+  - min(eval/done/serve_stall/rate)
   - max(eval/reward/mean)
   - max(eval/best/reward)
   - min(leader/checkpoint/steps_to_completion_goal)
@@ -23,9 +24,9 @@ train:
         n_envs: 16
         env_args:
           info_filter: all
-          num_threads: 8
+          num_threads: 6
           reward_clip: true
-          use_fire_reset: true
+          use_fire_reset: false
     preprocessing:
       frame_skip: 4
       max_pool_frames: true
@@ -53,10 +54,19 @@ train:
           - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE
           - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
           - [0, 0, 0, 0, 0, 0, 0, 1] # RIGHT
-      signals: {}
-      events: {}
+      signals:
+        ball_y: ball_y
+      events:
+        serve_stall:
+          signal: ball_y
+          operation: equals_for
+          value: 0
+          # One policy step is four emulator frames; 256 steps is ~17 seconds.
+          steps: 256
       # Preserve the previous 216,000 raw-frame cap at frame_skip=4.
       termination:
+        failure:
+        - serve_stall
         max_episode_steps: 54000
       reward:
         reward_mode: native
@@ -71,9 +81,9 @@ eval:
       # Train on clipped rewards, but rank checkpoints by the real game score.
       env_args:
         info_filter: all
-        num_threads: 8
+        num_threads: 6
         reward_clip: false
-        use_fire_reset: true
+        use_fire_reset: false
     preprocessing:
       # Keep the top wall (it begins at source row 17) while removing the score.
       obs_crop:

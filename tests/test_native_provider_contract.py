@@ -456,6 +456,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(env.kwargs["obs_layout"], "chw")
         self.assertEqual(env.kwargs["obs_copy"], "safe_view")
         self.assertEqual(env.kwargs["sticky_action_prob"], 0.25)
+        self.assertIs(env.kwargs["use_fire_reset"], False)
         self.assertNotIn("max_episode_steps", env.kwargs)
         env.reset(seed=123)
         observations, _rewards, terminated, _truncated, infos = env.step(

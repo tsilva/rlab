@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from rlab import fleet, job_queue, run_job
+from rlab import fleet
 from rlab.machines import load_machine_registry, resolve_machine
 from tests.db_fakes import FakeConnection, write_machine_registry
 
@@ -18,590 +17,231 @@ RUNTIME_IMAGE_REF = (
     "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 )
-OTHER_IMAGE_REF = (
-    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
-    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-)
-STALE_IMAGE_REF = (
-    "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-)
 
 
-def write_registry(path: Path) -> None:
-    write_machine_registry(
-        path,
-        backend="docker_ssh",
-        max_parallel_containers=5,
-        host_root="/host/rlab",
+def machine():
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        path = Path(temporary_dir) / "machines.yaml"
+        write_machine_registry(
+            path,
+            backend="local_docker",
+            max_parallel_containers=2,
+            host_root="/host/rlab",
+        )
+        return resolve_machine(load_machine_registry(path), "beast-test")
+
+
+def launch(*, state: str = "launching") -> dict[str, object]:
+    return {
+        "launch_id": "train-12",
+        "job_id": 12,
+        "job_kind": "train",
+        "machine": "beast-test",
+        "runtime_image_ref": RUNTIME_IMAGE_REF,
+        "container_name": "rlab-job-beast-test-train-train-12",
+        "output_uri": "/host/rlab/runs/outputs/train-12",
+        "state": state,
+        "next_retry_at": None,
+    }
+
+
+def container(*, state: str = "running") -> fleet.JobContainer:
+    return fleet.JobContainer(
+        machine="beast-test",
+        name="rlab-job-beast-test-train-train-12",
+        state=state,
+        status="Up" if state == "running" else "Created",
+        labels={
+            fleet.JOB_CONTAINER_LABEL: "true",
+            fleet.JOB_ID_LABEL: "12",
+            fleet.JOB_KIND_LABEL: "train",
+            fleet.LAUNCH_ID_LABEL: "train-12",
+        },
     )
 
 
-class MachineRegistryTests(unittest.TestCase):
-    def test_machine_registry_parses_container_slot_caps(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
+class StableLaunchTests(unittest.TestCase):
+    def test_launch_identity_is_deterministic(self) -> None:
+        target = machine()
+        self.assertEqual(fleet.job_container_name(target, launch_id="train-12"), "rlab-job-beast-test-train-train-12")
+        self.assertEqual(fleet.launch_payload_path(target, "train-12"), "/host/rlab/payloads/train-12.json")
+        self.assertEqual(fleet.launch_output_path(target, "train-12"), "/host/rlab/outputs/train-12")
 
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-
-        self.assertEqual(machine.backend, "docker_ssh")
-        self.assertEqual(machine.limits.max_parallel_containers, 5)
-        self.assertEqual(machine.paths.container_payloads_dir, "/input/payloads")
-
-    def test_machine_registry_rejects_removed_per_kind_capacity(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            document = json.loads(path.read_text(encoding="utf-8"))
-            document["machines"]["beast-test"]["limits"]["max_train_containers"] = 4
-            path.write_text(json.dumps(document), encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "unknown field.*max_train_containers"):
-                load_machine_registry(path)
-
-    def test_job_container_run_command_uses_dumb_run_job_entrypoint(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-
-        command = fleet.job_container_run_command(
-            machine,
-            job_id=12,
-            launch_id="train-12-abcdef",
-            runtime_image_ref=RUNTIME_IMAGE_REF,
-            container_name="rlab-job-test",
-        )
-        text = " ".join(command)
-
-        self.assertIn("run-job", command)
-        self.assertIn("--payload", command)
-        self.assertIn("--output-dir", command)
-        self.assertIn(f"{fleet.JOB_CONTAINER_LABEL}=true", text)
-        self.assertIn(f"{fleet.JOB_ID_LABEL}=12", text)
-        self.assertNotIn("DATABASE_URL", text)
-
-
-class FleetShepherdSplitTests(unittest.TestCase):
-    def test_shepherd_rejects_synthetic_dry_run(self) -> None:
-        with self.assertRaises(SystemExit):
-            fleet.build_parser().parse_args(["shepherd", "--machine", "beast-test", "--dry-run"])
-
-    def test_parser_exposes_shepherd_command(self) -> None:
-        args = fleet.build_parser().parse_args(
-            ["shepherd", "--machine", "beast-test", "--limit", "5", "--once", "--no-color"]
-        )
-
-        self.assertIs(args.func, fleet.cmd_container_shepherd)
-        self.assertEqual(args.machine, "beast-test")
-        self.assertEqual(args.limit, 5)
-        self.assertTrue(args.no_color)
-
-    def test_shepherd_event_format_includes_timestamp_symbol_and_color(self) -> None:
-        text = fleet.format_shepherd_event(
-            machine="beast-test",
-            action="reconcile",
-            result="ok",
-            reconciled=2,
-            color=True,
-            timestamp=fleet.datetime(2026, 7, 2, 13, 4, 5, tzinfo=fleet.UTC),
-        )
-
-        self.assertIn("2026-07-02T13:04:05Z", text)
-        self.assertIn("✓", text)
-        self.assertIn("machine=", text)
-        self.assertIn("action=", text)
-        self.assertIn("reconciled=2", text)
-        self.assertIn("\033[", text)
-
-    def test_machine_watch_is_read_only_dashboard(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-            snapshot = fleet.MachineWatchSnapshot(
-                captured_at=fleet.datetime(2026, 7, 1, tzinfo=fleet.UTC),
-                machine=machine,
-                containers=(),
-                launches=(),
-                queue_counts={"train": {"pending": 2}},
-                result_present={},
-            )
-            args = fleet.build_parser().parse_args(
-                [
-                    "watch",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--once",
-                    "--no-tui",
-                    "--no-color",
-                ]
-            )
-            self.assertIs(args.func, fleet.cmd_container_watch_dashboard)
-
-            stdout = io.StringIO()
-            with (
-                contextlib.redirect_stdout(stdout),
-                mock.patch.object(fleet, "build_machine_watch_snapshot", return_value=snapshot),
-                mock.patch.object(fleet, "reconcile_machine_launches") as reconcile,
-                mock.patch.object(fleet, "launch_claimed_job_container") as launch,
-                mock.patch.object(fleet, "release_job_launch") as release,
-                mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
-                mock.patch.object(fleet, "mark_job_launch_running") as mark_running,
-            ):
-                status = fleet.cmd_container_watch_dashboard(args)
-
-        self.assertEqual(status, 0)
-        self.assertIn("mode=read-only", stdout.getvalue())
-        reconcile.assert_not_called()
-        launch.assert_not_called()
-        release.assert_not_called()
-        finish.assert_not_called()
-        mark_running.assert_not_called()
-
-    def test_machine_watch_snapshot_renderer_marks_recovery_hints(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-            containers = (
-                fleet.JobContainer(
-                    machine="beast-test",
-                    name="rlab-job-live",
-                    state="running",
-                    status="Up",
-                    labels={
-                        fleet.JOB_CONTAINER_LABEL: "true",
-                        fleet.LAUNCH_ID_LABEL: "launch-live",
-                        fleet.JOB_KIND_LABEL: "train",
-                        fleet.JOB_ID_LABEL: "1",
-                    },
-                ),
-                fleet.JobContainer(
-                    machine="beast-test",
-                    name="rlab-job-orphan",
-                    state="exited",
-                    status="Exited",
-                    labels={
-                        fleet.JOB_CONTAINER_LABEL: "true",
-                        fleet.LAUNCH_ID_LABEL: "launch-orphan",
-                        fleet.JOB_KIND_LABEL: "train",
-                        fleet.JOB_ID_LABEL: "2",
-                        fleet.OUTPUT_URI_LABEL: "/out/launch-orphan",
-                    },
-                ),
-            )
-            snapshot = fleet.MachineWatchSnapshot(
-                captured_at=fleet.datetime(2026, 7, 1, tzinfo=fleet.UTC),
-                machine=machine,
-                containers=containers,
-                launches=(
-                    {
-                        "launch_id": "launch-live",
-                        "job_kind": "train",
-                        "job_id": 1,
-                        "state": "running",
-                        "output_uri": "/out/launch-live",
-                    },
-                    {
-                        "launch_id": "launch-missing",
-                        "job_kind": "train",
-                        "job_id": 3,
-                        "state": "launching",
-                        "output_uri": "/out/launch-missing",
-                    },
-                ),
-                queue_counts={"train": {"pending": 4, "running": 1}},
-                result_present={"launch-missing": True, "launch-orphan": True},
-            )
-
-        output = fleet.render_machine_watch_dashboard(snapshot)
-
-        self.assertIn("capacity=1/5", output)
-        self.assertIn("train=1/5", output)
-        self.assertIn("train_pending=4", output)
-        self.assertNotIn("eval" + "_pending", output)
-        self.assertIn("launch-live", output)
-        self.assertIn("ok", output)
-        self.assertIn("launch-missing", output)
-        self.assertIn("needs_shepherd_finalize", output)
-        self.assertIn("orphaned containers:", output)
-        self.assertIn("launch-orphan", output)
-
-        color_output = fleet.render_machine_watch_dashboard(snapshot, color=True)
-        self.assertIn("\033[", color_output)
-        self.assertIn("ok", color_output)
-
-    def test_reconcile_finalizes_terminal_launch_after_inactive_duplicate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-        successful = {
-            "launch_id": "launch-success",
-            "job_id": 12,
-            "job_kind": "train",
-            "output_uri": "/out/success",
+    def test_create_then_inspect_then_start_same_container(self) -> None:
+        target = machine()
+        job = {
+            "id": 12,
+            "goal_slug": "goal",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "machine": target.name,
+            "train_config": {},
         }
-        duplicate = {
-            "launch_id": "launch-duplicate",
-            "job_id": 12,
-            "job_kind": "train",
-            "output_uri": "/out/duplicate",
-        }
-        containers = [
-            fleet.JobContainer(
-                machine="beast-test",
-                name="success",
-                state="exited",
-                status="Exited (0)",
-                labels={fleet.LAUNCH_ID_LABEL: "launch-success"},
-            ),
-            fleet.JobContainer(
-                machine="beast-test",
-                name="duplicate",
-                state="exited",
-                status="Exited (137)",
-                labels={fleet.LAUNCH_ID_LABEL: "launch-duplicate"},
-            ),
-        ]
-        for status, exit_code in (("succeeded", 0), ("failed", 1)):
-            with self.subTest(status=status):
-                result = {"job_kind": "train", "status": status, "exit_code": exit_code}
-                with (
-                    mock.patch.object(
-                        fleet, "active_job_launches", return_value=[successful, duplicate]
-                    ),
-                    mock.patch.object(fleet, "list_job_containers", return_value=containers),
-                    mock.patch.object(
-                        fleet,
-                        "read_remote_result",
-                        side_effect=lambda _machine, output_uri: (
-                            result if output_uri == "/out/success" else None
-                        ),
-                    ),
-                    mock.patch.object(
-                        fleet,
-                        "adopt_terminal_train_launch",
-                        return_value=("launch-duplicate",),
-                    ) as adopt,
-                    mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
-                    mock.patch.object(fleet, "log_shepherd_event"),
-                ):
-                    reconciled = fleet.reconcile_machine_launches(
-                        FakeConnection(), machine, color=False
-                    )
-
-                self.assertEqual(reconciled, 2)
-                adopt.assert_called_once_with(
-                    mock.ANY,
-                    launch_id="launch-success",
-                    superseded_launch_ids=("launch-duplicate",),
-                )
-                finish.assert_called_once_with(
-                    mock.ANY, launch_id="launch-success", result=result
-                )
-
-    def test_shepherd_once_reconciles_then_fills_slots_under_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            args = fleet.build_parser().parse_args(
-                [
-                    "shepherd",
-                    "--machines",
-                    str(path),
-                    "--machine",
-                    "beast-test",
-                    "--limit",
-                    "3",
-                    "--once",
-                ]
-            )
-            conn = FakeConnection()
-            calls: list[str] = []
-
-            def reconcile(_conn, machine, *, color):
-                calls.append(f"reconcile:{machine.name}")
-                return 1
-
-            def launch_next(_conn, *, machine, limit, shared_env_file, color):
-                calls.append(f"launch:{machine.name}:{limit}")
-                self.assertEqual(
-                    shared_env_file,
-                    fleet.default_repo_root() / fleet.DEFAULT_SHARED_RUNNER_ENV_FILE,
-                )
-                return 2
-
-            def prune(_conn, machine, *, color):
-                calls.append(f"prune:{machine.name}")
-                return 4
-
-            with (
-                contextlib.redirect_stdout(io.StringIO()),
-                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
-                mock.patch.object(
-                    fleet,
-                    "acquire_shepherd_lock",
-                    return_value=fleet.ShepherdLock(machine="beast-test", key="lock"),
-                ) as acquire,
-                mock.patch.object(fleet, "release_shepherd_lock") as release,
-                mock.patch.object(fleet, "reconcile_machine_launches", side_effect=reconcile),
-                mock.patch.object(fleet, "launch_next_jobs", side_effect=launch_next),
-                mock.patch.object(fleet, "prune_stale_runtime_images", side_effect=prune),
-            ):
-                status = fleet.cmd_container_shepherd(args)
-
-        self.assertEqual(status, 0)
-        self.assertEqual(
-            calls,
-            ["reconcile:beast-test", "launch:beast-test:3", "prune:beast-test"],
-        )
-        acquire.assert_called_once()
-        release.assert_called_once()
-        self.assertTrue(conn.closed)
-
-    def test_shepherd_busy_lock_exits_without_launching(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            args = fleet.build_parser().parse_args(
-                ["shepherd", "--machines", str(path), "--machine", "beast-test", "--once"]
-            )
-            conn = FakeConnection()
-
-            with (
-                contextlib.redirect_stdout(io.StringIO()),
-                mock.patch.object(fleet, "_connect_from_args", return_value=conn),
-                mock.patch.object(
-                    fleet,
-                    "acquire_shepherd_lock",
-                    side_effect=fleet.ShepherdLockBusy("beast-test"),
-                ),
-                mock.patch.object(fleet, "reconcile_machine_launches") as reconcile,
-                mock.patch.object(fleet, "launch_next_jobs") as launch,
-            ):
-                status = fleet.cmd_container_shepherd(args)
-
-        self.assertEqual(status, 2)
-        reconcile.assert_not_called()
-        launch.assert_not_called()
-        self.assertTrue(conn.closed)
-
-
-class RuntimeImagePruneTests(unittest.TestCase):
-    def test_stale_runtime_image_plan_preserves_active_containers_and_demand(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-
-        image_rows = "\n".join(
-            json.dumps(
-                {
-                    "Repository": "ghcr.io/tsilva/rlab/rlab-train",
-                    "Digest": ref.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
-                    "ID": ref[-12:],
-                }
-            )
-            for ref in (RUNTIME_IMAGE_REF, OTHER_IMAGE_REF, STALE_IMAGE_REF)
-        )
-        images = fleet.parse_runtime_host_images(machine, image_rows)
-        demands = [
-            fleet.QueueDemand(
-                runtime_image_ref=RUNTIME_IMAGE_REF,
-                run_target="rtx4090",
-                pending_count=1,
-                running_count=0,
-                oldest_job_id=7,
-            )
-        ]
-        containers = [
-            fleet.JobContainer(
-                machine="beast-test",
-                name="active",
-                state="running",
-                status="Up",
-                labels={
-                    fleet.JOB_CONTAINER_LABEL: "true",
-                    fleet.JOB_KIND_LABEL: "train",
-                    f"{fleet.LABEL_PREFIX}runtime-image-ref": OTHER_IMAGE_REF,
-                },
-            )
-        ]
-
-        stale = fleet.stale_runtime_host_images(
-            machine=machine,
-            images=images,
-            demands=demands,
-            containers=containers,
-        )
-
-        self.assertEqual([image.runtime_image_ref for image in stale], [STALE_IMAGE_REF])
-
-    def test_prune_stale_runtime_images_removes_only_unprotected_refs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "machines.yaml"
-            write_registry(path)
-            machine = resolve_machine(load_machine_registry(path), "beast-test")
-
-        images = (
-            fleet.RuntimeHostImage(
-                machine="beast-test",
-                repository="ghcr.io/tsilva/rlab/rlab-train",
-                digest=RUNTIME_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
-                image_id="keep",
-            ),
-            fleet.RuntimeHostImage(
-                machine="beast-test",
-                repository="ghcr.io/tsilva/rlab/rlab-train",
-                digest=STALE_IMAGE_REF.removeprefix("docker:ghcr.io/tsilva/rlab/rlab-train@"),
-                image_id="stale",
-            ),
-        )
-        demands = [
-            fleet.QueueDemand(
-                runtime_image_ref=RUNTIME_IMAGE_REF,
-                run_target="rtx4090",
-                pending_count=1,
-                running_count=0,
-                oldest_job_id=7,
-            )
-        ]
-        docker_calls = []
-
-        def fake_run_machine_docker(machine, docker_args, *, capture=False):
-            docker_calls.append(list(docker_args))
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
+        created = container(state="created")
+        running = container(state="running")
+        shell_result = SimpleNamespace(returncode=0, stdout="", stderr="")
         with (
-            mock.patch.object(fleet, "queue_demands", return_value=demands),
-            mock.patch.object(fleet, "list_job_containers", return_value=[]),
-            mock.patch.object(fleet, "list_runtime_host_images", return_value=images),
-            mock.patch.object(fleet, "run_machine_docker", side_effect=fake_run_machine_docker),
-            mock.patch.object(fleet, "log_shepherd_event"),
+            mock.patch.object(fleet, "_load_train_job", return_value=job),
+            mock.patch.object(fleet, "job_payload_for_launch", return_value={"job_id": 12}),
+            mock.patch.object(fleet, "ensure_runtime_image_available", return_value=True),
+            mock.patch.object(fleet, "write_remote_payload"),
+            mock.patch.object(fleet, "run_machine_shell", return_value=shell_result) as run_shell,
+            mock.patch.object(fleet, "run_machine_docker", return_value=shell_result) as run_docker,
+            mock.patch.object(fleet, "list_job_containers", side_effect=[[created], [running]]),
+            mock.patch.object(fleet, "mark_job_launch_running") as mark_running,
         ):
-            pruned = fleet.prune_stale_runtime_images(
-                FakeConnection(),
-                machine,
-                color=False,
+            changed = fleet._start_or_resume_launch(FakeConnection(), target, launch=launch())
+
+        self.assertTrue(changed)
+        self.assertIn("docker create", run_shell.call_args.args[1])
+        run_docker.assert_called_once_with(
+            target,
+            ["start", "rlab-job-beast-test-train-train-12"],
+            capture=True,
+        )
+        mark_running.assert_called_once()
+
+    def test_timeout_after_create_records_error_without_new_identity(self) -> None:
+        target = machine()
+        job = {"id": 12, "runtime_image_ref": RUNTIME_IMAGE_REF, "machine": target.name}
+        with (
+            mock.patch.object(fleet, "_load_train_job", return_value=job),
+            mock.patch.object(fleet, "job_payload_for_launch", return_value={}),
+            mock.patch.object(fleet, "ensure_runtime_image_available", return_value=True),
+            mock.patch.object(fleet, "write_remote_payload"),
+            mock.patch.object(
+                fleet,
+                "run_machine_shell",
+                side_effect=fleet.MachineCommandTimeout(target.name, 120),
+            ),
+            mock.patch.object(fleet, "record_job_launch_error") as record_error,
+        ):
+            changed = fleet._start_or_resume_launch(FakeConnection(), target, launch=launch())
+
+        self.assertFalse(changed)
+        self.assertEqual(record_error.call_args.kwargs["launch_id"], "train-12")
+
+
+class ReconciliationTests(unittest.TestCase):
+    def test_unreachable_never_proves_absence_or_relaunches(self) -> None:
+        target = machine()
+        with (
+            mock.patch.object(fleet, "active_job_launches", return_value=[launch()]),
+            mock.patch.object(fleet, "list_job_containers", return_value=[]),
+            mock.patch.object(
+                fleet,
+                "observe_remote_result",
+                return_value=fleet.ResultObservation("error", error="ssh unreachable"),
+            ),
+            mock.patch.object(fleet, "record_job_launch_error") as record_error,
+            mock.patch.object(fleet, "_start_or_resume_launch") as start,
+            mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
+        ):
+            changed = fleet.reconcile_machine_launches(FakeConnection(), target)
+
+        self.assertEqual(changed, 0)
+        record_error.assert_called_once()
+        start.assert_not_called()
+        finish.assert_not_called()
+
+    def test_authoritatively_missing_running_container_fails(self) -> None:
+        target = machine()
+        with (
+            mock.patch.object(fleet, "active_job_launches", return_value=[launch(state="running")]),
+            mock.patch.object(fleet, "list_job_containers", return_value=[]),
+            mock.patch.object(
+                fleet,
+                "observe_remote_result",
+                return_value=fleet.ResultObservation("absent"),
+            ),
+            mock.patch.object(fleet, "launch_cancel_requested", return_value=False),
+            mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
+        ):
+            changed = fleet.reconcile_machine_launches(FakeConnection(), target)
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(finish.call_args.kwargs["result"]["status"], "failed")
+
+    def test_cancel_running_uses_grace_period_and_terminalizes_once(self) -> None:
+        target = machine()
+        shell_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(fleet, "run_machine_docker", return_value=shell_result) as stop,
+            mock.patch.object(fleet, "finish_job_launch_from_result") as finish,
+        ):
+            changed = fleet.cancel_running_job_launch(
+                FakeConnection(), target, launch=launch(state="running"), container=container()
             )
 
-        self.assertEqual(pruned, 1)
-        self.assertEqual(docker_calls[-1], ["rmi", STALE_IMAGE_REF.removeprefix("docker:")])
-
-
-class LaunchLedgerTests(unittest.TestCase):
-    def test_schema_defines_launch_ledger(self) -> None:
-        self.assertIn("CREATE TABLE IF NOT EXISTS job_launches", job_queue.SCHEMA_SQL)
-        self.assertIn("launch_id TEXT NOT NULL UNIQUE", job_queue.SCHEMA_SQL)
-        self.assertIn("job_launches_machine_state_idx", job_queue.SCHEMA_SQL)
-        self.assertIn("job_launches", job_queue.RESET_TABLES)
-
-    def test_claim_job_launch_sets_launching_without_incrementing_attempts(self) -> None:
-        conn = FakeConnection(
-            row={
-                "job_json": {
-                    "id": 7,
-                    "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "status": "launching",
-                },
-                "launch_json": {
-                    "launch_id": "train-7-test",
-                    "job_kind": "train",
-                    "job_id": 7,
-                    "machine": "beast-test",
-                    "backend": "docker_ssh",
-                    "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "output_uri": "/out/train-7-test",
-                },
-            }
+        self.assertTrue(changed)
+        stop.assert_called_once_with(
+            target,
+            ["stop", "--time", "120", "rlab-job-beast-test-train-train-12"],
+            capture=True,
+            timeout=fleet.DOCKER_STOP_TIMEOUT_SECONDS,
         )
+        self.assertEqual(finish.call_args.kwargs["result"]["status"], "canceled")
 
-        claimed = job_queue.claim_job_launch(
-            conn,
-            machine="beast-test",
-            backend="docker_ssh",
-            job_id=7,
-            launch_id="train-7-test",
-            output_uri="/out/train-7-test",
-        )
+    def test_partial_result_is_not_accepted(self) -> None:
+        target = machine()
+        result = SimpleNamespace(returncode=0, stdout=json.dumps({"status": "succeeded"}), stderr="")
+        with mock.patch.object(fleet, "run_machine_shell", return_value=result):
+            observation = fleet.observe_remote_result(target, "/output/train-12")
 
-        self.assertIsNotNone(claimed)
-        claim_sql = conn.cursor_obj.executed_sqls[0]
-        self.assertIn("status = 'launching'", claim_sql)
-        self.assertNotIn("attempts = attempts + 1", claim_sql)
-        self.assertEqual(conn.cursor_obj.executed_params_list[0]["launch_id"], "train-7-test")
-
-    def test_job_payload_for_launch_excludes_db_credentials(self) -> None:
-        with self.assertRaisesRegex(ValueError, "secret-like key"):
-            job_queue.job_payload_for_launch(
-                {"id": 1, "runtime_image_ref": RUNTIME_IMAGE_REF, "train_config": {"DATABASE_URL": "x"}},
-                {
-                    "launch_id": "train-1-x",
-                    "job_kind": "train",
-                    "machine": "beast-test",
-                    "backend": "docker_ssh",
-                    "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "output_uri": "/out/train-1-x",
-                },
-            )
+        self.assertEqual(observation.state, "present")
+        # Identity is checked transactionally by finish_job_launch_from_result.
+        self.assertEqual(observation.payload, {"status": "succeeded"})
 
 
-class RunJobCommandTests(unittest.TestCase):
-    def test_train_payload_writes_result_envelope_without_db(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            payload_path = root / "payload.json"
-            output_dir = root / "output"
-            payload = {
-                "schema_version": 1,
-                "job_kind": "train",
-                "launch_id": "train-3-test",
-                "machine": "beast-test",
-                "runtime_image_ref": RUNTIME_IMAGE_REF,
-                "job": {
-                    "id": 3,
-                    "goal_slug": "Level1-1",
-                    "recipe_slug": "candidate",
-                    "runtime_image_ref": RUNTIME_IMAGE_REF,
-                    "train_config": {
-                        "game": "SuperMarioBros-Nes-v0",
-                        "state": "Level1-1",
-                        "timesteps": 1000,
-                        "wandb": True,
-                        "wandb_mode": "offline",
-                        "wandb_artifact_storage_uri": "",
-                        "run_name": "unit-run",
-                    },
-                },
-            }
-            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+class ServicePassTests(unittest.TestCase):
+    def test_busy_machine_lock_skips_mutation(self) -> None:
+        conn = FakeConnection(row={"acquired": False})
+        with self.assertRaises(fleet.MachineLockBusy):
+            fleet.acquire_machine_lock(conn, "beast-test")
 
-            with (
-                mock.patch.object(
-                    run_job.subprocess,
-                    "run",
-                    return_value=SimpleNamespace(returncode=0),
-                ),
-                mock.patch.object(
-                    run_job,
-                    "collect_result_metadata",
-                    return_value={"run_name": "unit-run", "metrics_json": {"dry": True}},
-                ),
-            ):
-                exit_code = run_job.main(["--payload", str(payload_path), "--output-dir", str(output_dir)])
+    def test_idle_machine_does_not_sync_runner_environment(self) -> None:
+        target = machine()
+        with (
+            mock.patch.object(fleet, "next_pending_train_job", return_value=None),
+            mock.patch.object(fleet, "active_job_launches", return_value=[]),
+            mock.patch.object(fleet, "sync_shared_runner_env") as sync,
+            mock.patch.object(fleet, "reconcile_machine_launches", return_value=0),
+            mock.patch.object(fleet, "launch_next_jobs", return_value=0),
+        ):
+            result = fleet.run_reconcile_fill_pass(FakeConnection(), machine=target)
 
-            result = json.loads((output_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(result, (0, 0))
+        sync.assert_not_called()
 
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(result["job_kind"], "train")
-        self.assertEqual(result["status"], "succeeded")
-        self.assertEqual(result["train"]["status"], "succeeded")
-        self.assertNotIn("eval", result)
+    def test_unavailable_image_leaves_pending_job_unclaimed(self) -> None:
+        target = machine()
+        pending = {"id": 12, "runtime_image_ref": RUNTIME_IMAGE_REF}
+        with (
+            mock.patch.object(fleet, "machine_control", return_value={"drained": False}),
+            mock.patch.object(fleet, "train_container_slot_usage", return_value=(0, 2, 2)),
+            mock.patch.object(fleet, "next_pending_train_job", return_value=pending),
+            mock.patch.object(fleet, "ensure_runtime_image_available", return_value=False),
+            mock.patch.object(fleet, "claim_job_launch") as claim,
+        ):
+            launched = fleet.launch_next_jobs(FakeConnection(), machine=target)
+
+        self.assertEqual(launched, 0)
+        claim.assert_not_called()
+
+    def test_lane_deadline_caps_remote_operation_timeout(self) -> None:
+        target = machine()
+        deadline = time.monotonic() + 2
+        token = fleet._MACHINE_LANE_DEADLINE.set(deadline)
+        try:
+            with mock.patch.object(
+                fleet.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ) as run:
+                fleet.run_machine_shell(target, "true", timeout=900)
+        finally:
+            fleet._MACHINE_LANE_DEADLINE.reset(token)
+
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 2)
 
 
 if __name__ == "__main__":

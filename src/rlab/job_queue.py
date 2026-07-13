@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -17,6 +19,7 @@ import psycopg2.extras
 from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.dotenv import load_env_file
 from rlab.json_utils import json_safe
+from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry, resolve_machine
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_BRANCH,
@@ -52,15 +55,16 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   repo_dirty BOOLEAN NOT NULL DEFAULT FALSE,
   recipe_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   runtime_image_ref TEXT NOT NULL,
-  run_target TEXT,
+  machine TEXT NOT NULL,
   train_config JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 1,
-  lease_owner TEXT,
-  lease_expires_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'launching', 'running', 'succeeded', 'failed', 'canceled')),
   cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
-  drain_requested BOOLEAN NOT NULL DEFAULT FALSE,
+  batch_id TEXT NOT NULL,
+  submission_key TEXT NOT NULL,
+  submission_ordinal INTEGER NOT NULL CHECK (submission_ordinal >= 0),
+  request_hash TEXT NOT NULL,
+  retried_from_job_id BIGINT REFERENCES train_jobs(id),
   run_name TEXT,
   run_description TEXT,
   seed INTEGER,
@@ -68,25 +72,27 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   wandb_tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
-  heartbeat_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
-  error TEXT
+  error TEXT,
+  UNIQUE (submission_key, submission_ordinal)
 );
 
 CREATE TABLE IF NOT EXISTS job_launches (
   id BIGSERIAL PRIMARY KEY,
   launch_id TEXT NOT NULL UNIQUE,
   job_kind TEXT NOT NULL CHECK (job_kind IN ('train')),
-  job_id BIGINT NOT NULL,
+  job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs(id) ON DELETE CASCADE,
   backend TEXT NOT NULL,
   machine TEXT NOT NULL,
   runtime_image_ref TEXT NOT NULL,
-  container_name TEXT,
+  container_name TEXT NOT NULL,
   provider_run_id TEXT,
   output_uri TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'launching',
+  state TEXT NOT NULL DEFAULT 'launching'
+    CHECK (state IN ('launching', 'running', 'succeeded', 'failed', 'canceled')),
   exit_code INTEGER,
   error TEXT,
+  next_retry_at TIMESTAMPTZ,
   result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
@@ -94,10 +100,18 @@ CREATE TABLE IF NOT EXISTS job_launches (
   finished_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS machine_controls (
+  machine TEXT PRIMARY KEY,
+  drained BOOLEAN NOT NULL DEFAULT FALSE,
+  effective_capacity INTEGER CHECK (effective_capacity IS NULL OR effective_capacity >= 1),
+  reason TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS job_events (
   id BIGSERIAL PRIMARY KEY,
   job_kind TEXT NOT NULL CHECK (job_kind IN ('train')),
-  job_id BIGINT NOT NULL,
+  job_id BIGINT NOT NULL REFERENCES train_jobs(id) ON DELETE CASCADE,
   event_type TEXT NOT NULL,
   message TEXT,
   metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -111,12 +125,12 @@ DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
-  ON train_jobs (status, id)
-  WHERE status IN ('pending', 'running');
+  ON train_jobs (machine, status, id)
+  WHERE status = 'pending' AND cancel_requested = FALSE;
 
 CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
-  ON train_jobs (runtime_image_ref, status, id)
-  WHERE status IN ('pending', 'running') AND runtime_image_ref IS NOT NULL;
+  ON train_jobs (machine, runtime_image_ref, status, id)
+  WHERE status IN ('pending', 'launching', 'running');
 
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
@@ -138,35 +152,36 @@ RESET_TABLES = (
     "job_events",
     "job_launches",
     "train_jobs",
+    "machine_controls",
 )
 TRAIN_JOB_KIND = "train"
+SCHEMA_MAINTENANCE_LOCK = "rlab-fleet-schema-maintenance"
 
 
 @dataclass(frozen=True)
 class QueueDemand:
+    machine: str
     runtime_image_ref: str
-    run_target: str | None
     pending_count: int
-    running_count: int
+    active_count: int
     oldest_job_id: int
 
     @property
     def total(self) -> int:
-        return self.pending_count + self.running_count
-
+        return self.pending_count + self.active_count
 
 QUEUE_DEMAND_SQL = """
 SELECT
+  machine,
   runtime_image_ref,
-  run_target,
   COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
-  COUNT(*) FILTER (WHERE status = 'running') AS running_count,
+  COUNT(*) FILTER (WHERE status IN ('launching', 'running')) AS active_count,
   MIN(id) AS oldest_job_id
 FROM train_jobs
 WHERE runtime_image_ref IS NOT NULL
   AND cancel_requested = FALSE
-  AND status IN ('pending', 'running')
-GROUP BY runtime_image_ref, run_target
+  AND status IN ('pending', 'launching', 'running')
+GROUP BY machine, runtime_image_ref
 ORDER BY oldest_job_id ASC
 """
 
@@ -177,26 +192,27 @@ def queue_demands(conn) -> list[QueueDemand]:
         rows = cur.fetchall()
     return [
         QueueDemand(
+            machine=str(row["machine"]),
             runtime_image_ref=normalize_runtime_image_ref(row["runtime_image_ref"]),
-            run_target=row.get("run_target"),
             pending_count=int(row["pending_count"]),
-            running_count=int(row["running_count"]),
+            active_count=int(row["active_count"]),
             oldest_job_id=int(row["oldest_job_id"]),
         )
         for row in rows
     ]
 
 
-def machine_queue_counts(conn) -> dict[str, dict[str, int]]:
+def machine_queue_counts(conn, *, machine: str) -> dict[str, dict[str, int]]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT status, COUNT(*) AS count
             FROM train_jobs
+            WHERE machine = %(machine)s
             GROUP BY status
             ORDER BY status
             """
-        )
+            , {"machine": normalize_machine(machine)})
         train_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
     return {"train": train_counts}
 
@@ -222,13 +238,19 @@ def database_url(use_direct: bool = False) -> str:
     return value
 
 
-def normalize_run_target(value: str | None) -> str | None:
-    text = str(value or "").strip()
-    return text or None
+def normalize_machine(value: str | None) -> str:
+    machine = str(value or "").strip()
+    if not machine:
+        raise ValueError("machine is required")
+    return machine
 
 
 def connect(url: str):
-    return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
+    return psycopg2.connect(
+        url,
+        connect_timeout=10,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
 
 
 def apply_schema(conn) -> None:
@@ -254,8 +276,9 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
         if not _table_exists(conn, table_name):
             continue
         path = export_dir / f"{table_name}.jsonl"
+        order_column = "machine" if table_name == "machine_controls" else "id"
         with conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM {table_name} ORDER BY id")
+            cur.execute(f"SELECT * FROM {table_name} ORDER BY {order_column}")
             rows = [dict(row) for row in cur.fetchall()]
         with path.open("w", encoding="utf-8") as handle:
             for row in rows:
@@ -269,19 +292,38 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
 
 
 def reset_schema(conn, *, export_dir: Path) -> Path:
-    exported = export_existing_tables(conn, export_dir)
     with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+                {"key": SCHEMA_MAINTENANCE_LOCK},
+            )
+        exported = export_existing_tables(conn, export_dir)
         with conn.cursor() as cur:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
                   job_events,
                   job_launches,
-                  train_jobs
+                  train_jobs,
+                  machine_controls
                 CASCADE
                 """
             )
             cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                  IF to_regclass('train_jobs') IS NULL
+                     OR to_regclass('job_launches') IS NULL
+                     OR to_regclass('machine_controls') IS NULL
+                     OR to_regclass('job_events') IS NULL THEN
+                    RAISE EXCEPTION 'queue schema validation failed';
+                  END IF;
+                END $$
+                """
+            )
     return exported
 
 
@@ -378,12 +420,48 @@ def _document_seeds(
     return [None]
 
 
+def _hash_json(value: Any) -> str:
+    encoded = json.dumps(json_safe(value), sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _submission_request_hash(
+    *,
+    document: Mapping[str, Any],
+    machine: str,
+    runtime_image_ref: str,
+    seeds: Sequence[int | None],
+) -> str:
+    return _hash_json(
+        {
+            "document": document,
+            "machine": machine,
+            "runtime_image_ref": runtime_image_ref,
+            "seeds": list(seeds),
+        }
+    )
+
+
+def _existing_submission(conn, *, submission_key: str) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM train_jobs
+            WHERE submission_key = %(submission_key)s
+            ORDER BY submission_ordinal
+            """,
+            {"submission_key": submission_key},
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def enqueue_train_jobs_from_recipe_document(
     conn,
     *,
     document: Mapping[str, Any],
     runtime_image_ref: str,
-    run_target: str | None = None,
+    machine: str,
+    submission_key: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
@@ -393,55 +471,103 @@ def enqueue_train_jobs_from_recipe_document(
     validate_materialized_train_recipe(document)
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
+    machine = normalize_machine(machine)
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     utc = _utc_stamp()
+    group_id = str(document["group_id"])
+    batch_id = str(document.get("batch_id") or group_id).strip()
+    explicit_submission_key = submission_key is not None
+    submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
+    if not submission_key:
+        raise ValueError("submission_key is required")
+    document_seeds = _document_seeds(document, seeds)
+    request_hash = _submission_request_hash(
+        document=document,
+        machine=machine,
+        runtime_image_ref=runtime_image_ref,
+        seeds=document_seeds,
+    )
+    if explicit_submission_key:
+        existing = _existing_submission(conn, submission_key=submission_key)
+        if existing:
+            if any(str(row["request_hash"]) != request_hash for row in existing):
+                raise ValueError(f"submission_key {submission_key!r} was reused with different content")
+            if len(existing) != len(document_seeds):
+                raise RuntimeError(
+                    f"submission_key {submission_key!r} is incomplete: "
+                    f"expected {len(document_seeds)} jobs, found {len(existing)}"
+                )
+            return existing
     rows = []
-    for seed in _document_seeds(document, seeds):
-        train_config = dict(document["train_config"])
-        recipe_overrides = document.get("recipe_overrides")
-        if isinstance(recipe_overrides, Sequence) and not isinstance(recipe_overrides, str | bytes):
-            train_config["recipe_overrides"] = [str(item) for item in recipe_overrides]
-        if seed is not None:
-            validate_training_seed(
-                seed,
-                label="recipe seed",
-                seed_span=provider_num_envs(train_config, explicit_n_envs=train_config.get("n_envs")),
+    with conn:
+        if explicit_submission_key:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+                    {"key": submission_key},
+                )
+                cur.execute(
+                    "SELECT * FROM train_jobs WHERE submission_key = %(key)s ORDER BY submission_ordinal",
+                    {"key": submission_key},
+                )
+                concurrent = [dict(row) for row in cur.fetchall()]
+            if concurrent:
+                if any(str(row["request_hash"]) != request_hash for row in concurrent):
+                    raise ValueError(
+                        f"submission_key {submission_key!r} was reused with different content"
+                    )
+                if len(concurrent) != len(document_seeds):
+                    raise RuntimeError(f"submission_key {submission_key!r} is incomplete")
+                return concurrent
+        for ordinal, seed in enumerate(document_seeds):
+            train_config = dict(document["train_config"])
+            recipe_overrides = document.get("recipe_overrides")
+            if isinstance(recipe_overrides, Sequence) and not isinstance(
+                recipe_overrides, str | bytes
+            ):
+                train_config["recipe_overrides"] = [str(item) for item in recipe_overrides]
+            if seed is not None:
+                validate_training_seed(
+                    seed,
+                    label="recipe seed",
+                    seed_span=provider_num_envs(
+                        train_config, explicit_n_envs=train_config.get("n_envs")
+                    ),
+                )
+            for row_owned_key in ("seed", "recipe_slug", "recipe_path", "machine"):
+                train_config.pop(row_owned_key, None)
+            row = enqueue_train_job(
+                conn,
+                goal_slug=goal_slug,
+                recipe_slug=document_slug,
+                recipe_path=recipe_path,
+                recipe_sha256=recipe_sha256,
+                repo_git_commit=repo_git_commit,
+                repo_dirty=repo_dirty,
+                recipe_payload=compiled_recipe_payload(document),
+                runtime_image_ref=runtime_image_ref,
+                machine=machine,
+                train_config=train_config,
+                batch_id=batch_id,
+                submission_key=submission_key,
+                submission_ordinal=ordinal,
+                request_hash=request_hash,
+                run_name=_format_default_run_name(
+                    batch_id, label=document_slug, seed=seed, utc=utc
+                ),
+                run_description=_format_queue_template(
+                    document.get("description"),
+                    seed=seed,
+                    recipe_id=document_slug,
+                    utc=utc,
+                    group_id=group_id,
+                ),
+                seed=seed,
+                wandb_group=group_id,
+                wandb_tags=recipe_tags(document),
+                manage_transaction=False,
             )
-        row_run_target = normalize_run_target(run_target or train_config.get("run_target"))
-        for row_owned_key in ("seed", "recipe_slug", "recipe_path", "run_target"):
-            train_config.pop(row_owned_key, None)
-        group_id = str(document["group_id"])
-        payload = compiled_recipe_payload(document)
-        row = enqueue_train_job(
-            conn,
-            goal_slug=goal_slug,
-            recipe_slug=document_slug,
-            recipe_path=recipe_path,
-            recipe_sha256=recipe_sha256,
-            repo_git_commit=repo_git_commit,
-            repo_dirty=repo_dirty,
-            recipe_payload=payload,
-            runtime_image_ref=runtime_image_ref,
-            run_target=row_run_target,
-            train_config=train_config,
-            max_attempts=int(document.get("max_attempts") or 1),
-            run_name=_format_default_run_name(
-                str(document.get("batch_id") or group_id),
-                label=document_slug,
-                seed=seed,
-                utc=utc,
-            ),
-            run_description=_format_queue_template(
-                document.get("description"),
-                seed=seed,
-                recipe_id=document_slug,
-                utc=utc,
-                group_id=group_id,
-            ),
-            seed=seed,
-            wandb_group=group_id,
-            wandb_tags=recipe_tags(document),
-        )
-        rows.append(row)
+            rows.append(row)
     return rows
 
 
@@ -450,7 +576,8 @@ def enqueue_train_jobs_from_recipe_file(
     *,
     path: Path,
     runtime_image_ref: str,
-    run_target: str | None = None,
+    machine: str,
+    submission_key: str | None = None,
     seeds: Sequence[int] = (),
     recipe_overrides: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
@@ -460,7 +587,8 @@ def enqueue_train_jobs_from_recipe_file(
         conn,
         document=document,
         runtime_image_ref=runtime_image_ref,
-        run_target=run_target,
+        machine=machine,
+        submission_key=submission_key,
         recipe_path=metadata["recipe_path"],
         recipe_sha256=metadata["recipe_sha256"],
         repo_git_commit=metadata["repo_git_commit"],
@@ -473,21 +601,26 @@ def enqueue_train_job(
     conn,
     *,
     goal_slug: str,
+    runtime_image_ref: str,
+    machine: str,
+    train_config: Mapping[str, Any],
     recipe_slug: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
     repo_dirty: bool = False,
     recipe_payload: Mapping[str, Any] | None = None,
-    runtime_image_ref: str,
-    train_config: Mapping[str, Any],
-    run_target: str | None = None,
-    max_attempts: int = 1,
+    batch_id: str | None = None,
+    submission_key: str | None = None,
+    submission_ordinal: int = 0,
+    request_hash: str | None = None,
+    retried_from_job_id: int | None = None,
     run_name: str | None = None,
     run_description: str | None = None,
     seed: int | None = None,
     wandb_group: str | None = None,
     wandb_tags: Sequence[str] = (),
+    manage_transaction: bool = True,
 ) -> dict[str, Any]:
     goal_slug = str(goal_slug).strip()
     if not goal_slug:
@@ -499,23 +632,42 @@ def enqueue_train_job(
     validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
-    run_target = normalize_run_target(run_target)
-    with conn:
+    machine = normalize_machine(machine)
+    batch_id = str(batch_id or wandb_group or f"b-{uuid.uuid4().hex[:10]}").strip()
+    submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
+    if submission_ordinal < 0:
+        raise ValueError("submission_ordinal must be at least zero")
+    request_hash = str(
+        request_hash
+        or _hash_json(
+            {
+                "goal_slug": goal_slug,
+                "recipe_slug": recipe_slug,
+                "runtime_image_ref": runtime_image_ref,
+                "machine": machine,
+                "train_config": config,
+                "seed": seed,
+            }
+        )
+    )
+
+    def insert() -> dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO train_jobs (
                   goal_slug, recipe_slug, recipe_path, recipe_sha256, repo_git_commit,
-                  repo_dirty, recipe_payload_json, runtime_image_ref,
-                  run_target, train_config, max_attempts, run_name,
-                  run_description, seed, wandb_group, wandb_tags
+                  repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
+                  batch_id, submission_key, submission_ordinal, request_hash,
+                  retried_from_job_id, run_name, run_description, seed, wandb_group, wandb_tags
                 )
                 VALUES (
                   %(goal_slug)s, %(recipe_slug)s, %(recipe_path)s, %(recipe_sha256)s,
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
-                  %(runtime_image_ref)s, %(run_target)s,
-                  %(train_config)s, %(max_attempts)s, %(run_name)s,
-                  %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
+                  %(runtime_image_ref)s, %(machine)s, %(train_config)s,
+                  %(batch_id)s, %(submission_key)s, %(submission_ordinal)s, %(request_hash)s,
+                  %(retried_from_job_id)s, %(run_name)s, %(run_description)s, %(seed)s,
+                  %(wandb_group)s, %(wandb_tags)s
                 )
                 RETURNING *
                 """,
@@ -528,9 +680,13 @@ def enqueue_train_job(
                     "repo_dirty": bool(repo_dirty),
                     "recipe_payload_json": json_arg(dict(recipe_payload or {})),
                     "runtime_image_ref": runtime_image_ref,
-                    "run_target": run_target,
+                    "machine": machine,
                     "train_config": json_arg(config),
-                    "max_attempts": max_attempts,
+                    "batch_id": batch_id,
+                    "submission_key": submission_key,
+                    "submission_ordinal": submission_ordinal,
+                    "request_hash": request_hash,
+                    "retried_from_job_id": retried_from_job_id,
                     "run_name": run_name,
                     "run_description": run_description,
                     "seed": seed,
@@ -544,16 +700,37 @@ def enqueue_train_job(
                 job_id=int(row["id"]),
                 event_type="enqueued",
                 message="train job enqueued",
-                metadata={"goal_slug": goal_slug, "recipe_slug": recipe_slug},
+                metadata={
+                    "goal_slug": goal_slug,
+                    "recipe_slug": recipe_slug,
+                    "machine": machine,
+                    "batch_id": batch_id,
+                },
             )
             return row
 
+    if manage_transaction:
+        with conn:
+            return insert()
+    return insert()
+
 
 def new_train_launch_id(job_id: int | None = None) -> str:
-    suffix = uuid.uuid4().hex[:12]
     if job_id is None:
-        return f"{TRAIN_JOB_KIND}-{suffix}"
-    return f"{TRAIN_JOB_KIND}-{int(job_id)}-{suffix}"
+        raise ValueError("job_id is required for a stable launch identity")
+    return f"{TRAIN_JOB_KIND}-{int(job_id)}"
+
+
+def _machine_control_lock_key(machine: str) -> str:
+    return f"rlab-fleet-machine-control:{normalize_machine(machine)}"
+
+
+def acquire_machine_control_xact_lock(conn, *, machine: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+            {"key": _machine_control_lock_key(machine)},
+        )
 
 
 def claim_job_launch(
@@ -562,7 +739,6 @@ def claim_job_launch(
     machine: str,
     backend: str,
     runtime_image_ref: str | None = None,
-    run_target: str | None = None,
     job_id: int | None = None,
     launch_id: str | None = None,
     container_name: str | None = None,
@@ -571,32 +747,41 @@ def claim_job_launch(
     runtime_image_ref = (
         normalize_runtime_image_ref(runtime_image_ref) if runtime_image_ref else None
     )
-    filters = ["cancel_requested = FALSE", "status = 'pending'"]
+    machine = normalize_machine(machine)
+    filters = [
+        "job.cancel_requested = FALSE",
+        "job.status = 'pending'",
+        "job.machine = %(machine)s",
+        "NOT EXISTS (SELECT 1 FROM job_launches existing WHERE existing.job_id = job.id)",
+        "NOT EXISTS (SELECT 1 FROM machine_controls control "
+        "WHERE control.machine = job.machine AND control.drained)",
+    ]
+    if job_id is None and launch_id is not None:
+        raise ValueError("job_id is required when launch_id is provided")
+    stable_launch_id = launch_id or (new_train_launch_id(job_id) if job_id is not None else None)
     params: dict[str, Any] = {
-        "machine": str(machine),
+        "machine": machine,
         "backend": str(backend),
         "output_uri": str(output_uri),
-        "launch_id": launch_id or new_train_launch_id(job_id),
+        "launch_id": stable_launch_id,
         "container_name": container_name,
         "job_kind": TRAIN_JOB_KIND,
     }
     if job_id is not None:
-        filters.append("id = %(job_id)s")
+        filters.append("job.id = %(job_id)s")
         params["job_id"] = int(job_id)
     if runtime_image_ref is not None:
-        filters.append("runtime_image_ref = %(runtime_image_ref)s")
+        filters.append("job.runtime_image_ref = %(runtime_image_ref)s")
         params["runtime_image_ref"] = runtime_image_ref
-    if run_target is not None:
-        filters.append("run_target = %(run_target)s")
-        params["run_target"] = normalize_run_target(run_target)
     where = "\n    AND ".join(filters)
     with conn:
+        acquire_machine_control_xact_lock(conn, machine=machine)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
                 WITH next_job AS (
-                  SELECT *
-                  FROM train_jobs
+                  SELECT job.*
+                  FROM train_jobs AS job
                   WHERE {where}
                   ORDER BY id ASC
                   LIMIT 1
@@ -605,9 +790,6 @@ def claim_job_launch(
                 updated AS (
                   UPDATE train_jobs AS job
                   SET status = 'launching',
-                      lease_owner = %(launch_id)s,
-                      lease_expires_at = NULL,
-                      heartbeat_at = now(),
                       error = NULL
                   FROM next_job
                   WHERE job.id = next_job.id
@@ -619,8 +801,11 @@ def claim_job_launch(
                     container_name, output_uri, state, last_observed_at
                   )
                   SELECT
-                    %(launch_id)s, %(job_kind)s, updated.id, %(backend)s, %(machine)s,
-                    updated.runtime_image_ref, %(container_name)s, %(output_uri)s,
+                    COALESCE(%(launch_id)s, 'train-' || updated.id::text),
+                    %(job_kind)s, updated.id, %(backend)s, %(machine)s,
+                    updated.runtime_image_ref,
+                    COALESCE(%(container_name)s, 'rlab-train-' || updated.id::text),
+                    %(output_uri)s,
                     'launching', now()
                   FROM updated
                   RETURNING *
@@ -663,8 +848,11 @@ def mark_job_launch_running(
                     container_name = COALESCE(%(container_name)s, container_name),
                     provider_run_id = COALESCE(%(provider_run_id)s, provider_run_id),
                     started_at = COALESCE(started_at, now()),
-                    last_observed_at = now()
+                    last_observed_at = now(),
+                    error = NULL,
+                    next_retry_at = NULL
                 WHERE launch_id = %(launch_id)s
+                  AND state IN ('launching', 'running')
                 RETURNING *
                 """,
                 {
@@ -682,15 +870,16 @@ def mark_job_launch_running(
                 """
                 UPDATE train_jobs
                 SET status = 'running',
-                    started_at = COALESCE(started_at, now()),
-                    heartbeat_at = now(),
-                    attempts = attempts + 1
+                    started_at = COALESCE(started_at, now())
                 WHERE id = %(job_id)s
-                  AND lease_owner = %(launch_id)s
                   AND status = 'launching'
+                RETURNING id
                 """,
                 {"job_id": launch["job_id"], "launch_id": launch_id},
             )
+            job = cur.fetchone()
+            if not job:
+                raise RuntimeError(f"job for launch {launch_id} is not launching")
             record_job_event(
                 conn,
                 job_id=int(launch["job_id"]),
@@ -701,120 +890,49 @@ def mark_job_launch_running(
             return dict(launch)
 
 
-def release_job_launch(
+def record_job_launch_error(
     conn,
     *,
     launch_id: str,
-    error: str | None = None,
+    error: str,
+    retry_after_seconds: float = 30.0,
 ) -> dict[str, Any] | None:
+    """Record an observation/control error without releasing the stable launch."""
+    retry_at = datetime.now(UTC) + timedelta(seconds=max(0.0, retry_after_seconds))
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE job_launches
-                SET state = 'released',
-                    error = %(error)s,
-                    last_observed_at = now(),
-                    finished_at = now()
+                UPDATE job_launches AS launch
+                SET error = %(error)s,
+                    next_retry_at = %(next_retry_at)s,
+                    last_observed_at = now()
                 WHERE launch_id = %(launch_id)s
+                  AND state IN ('launching', 'running')
                 RETURNING *
                 """,
-                {"launch_id": launch_id, "error": error},
+                {"launch_id": launch_id, "error": error, "next_retry_at": retry_at},
             )
             launch = cur.fetchone()
             if not launch:
                 return None
-            if launch["job_kind"] != TRAIN_JOB_KIND:
-                raise RuntimeError(f"launch {launch_id} is not a train launch")
             cur.execute(
                 """
                 UPDATE train_jobs
-                SET status = 'pending',
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    heartbeat_at = NULL,
-                    error = %(error)s
+                SET error = %(error)s
                 WHERE id = %(job_id)s
-                  AND lease_owner = %(launch_id)s
-                  AND status = 'launching'
+                  AND status IN ('launching', 'running')
                 """,
-                {
-                    "job_id": launch["job_id"],
-                    "launch_id": launch_id,
-                    "error": error,
-                },
+                {"job_id": launch["job_id"], "error": error},
             )
             record_job_event(
                 conn,
                 job_id=int(launch["job_id"]),
-                event_type="released",
+                event_type="control_error",
                 message=error,
-                metadata={"launch_id": launch_id},
+                metadata={"launch_id": launch_id, "next_retry_at": retry_at.isoformat()},
             )
             return dict(launch)
-
-
-def adopt_terminal_train_launch(
-    conn,
-    *,
-    launch_id: str,
-    superseded_launch_ids: Sequence[str],
-) -> tuple[str, ...]:
-    """Make a terminal launch finalizable after inactive duplicate launches."""
-    superseded = tuple(str(value) for value in superseded_launch_ids if str(value) != launch_id)
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM job_launches
-                WHERE launch_id = %(launch_id)s
-                  AND job_kind = 'train'
-                  AND state IN ('launching', 'running')
-                FOR UPDATE
-                """,
-                {"launch_id": launch_id},
-            )
-            launch = cur.fetchone()
-            if not launch:
-                raise RuntimeError(f"active train launch not found: {launch_id}")
-            job_id = int(launch["job_id"])
-            if superseded:
-                cur.execute(
-                    """
-                    UPDATE job_launches
-                    SET state = 'released',
-                        error = %(error)s,
-                        last_observed_at = now(),
-                        finished_at = now()
-                    WHERE job_id = %(job_id)s
-                      AND launch_id = ANY(%(launch_ids)s)
-                      AND state IN ('launching', 'running')
-                    RETURNING launch_id
-                    """,
-                    {
-                        "job_id": job_id,
-                        "launch_ids": list(superseded),
-                        "error": f"superseded by terminal launch {launch_id}",
-                    },
-                )
-                released = tuple(str(row["launch_id"]) for row in cur.fetchall())
-            else:
-                released = ()
-            cur.execute(
-                """
-                UPDATE train_jobs
-                SET lease_owner = %(launch_id)s,
-                    heartbeat_at = now()
-                WHERE id = %(job_id)s
-                  AND status IN ('launching', 'running')
-                RETURNING id
-                """,
-                {"job_id": job_id, "launch_id": launch_id},
-            )
-            if not cur.fetchone():
-                raise RuntimeError(f"active train job not found for launch {launch_id}")
-            return released
 
 
 def active_job_launches(
@@ -842,6 +960,142 @@ def active_job_launches(
         return [dict(row) for row in cur.fetchall()]
 
 
+def machine_control(conn, *, machine: str) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT machine, drained, effective_capacity, reason, updated_at
+            FROM machine_controls
+            WHERE machine = %(machine)s
+            """,
+            {"machine": machine},
+        )
+        row = cur.fetchone()
+    return dict(row) if row else {
+        "machine": machine,
+        "drained": False,
+        "effective_capacity": None,
+        "reason": None,
+    }
+
+
+def set_machine_control(
+    conn,
+    *,
+    machine: str,
+    drained: bool | None = None,
+    effective_capacity: int | None = None,
+    reset_capacity: bool = False,
+    reason: str | None = None,
+    manage_transaction: bool = True,
+) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    if effective_capacity is not None and effective_capacity < 1:
+        raise ValueError("effective_capacity must be at least one")
+    def update() -> dict[str, Any]:
+        acquire_machine_control_xact_lock(conn, machine=machine)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO machine_controls (machine, drained, effective_capacity, reason)
+                VALUES (
+                  %(machine)s,
+                  COALESCE(%(drained)s, FALSE),
+                  %(effective_capacity)s,
+                  %(reason)s
+                )
+                ON CONFLICT (machine) DO UPDATE
+                SET drained = COALESCE(%(drained)s, machine_controls.drained),
+                    effective_capacity = CASE
+                      WHEN %(reset_capacity)s THEN NULL
+                      WHEN %(effective_capacity)s IS NOT NULL THEN %(effective_capacity)s
+                      ELSE machine_controls.effective_capacity
+                    END,
+                    reason = COALESCE(%(reason)s, machine_controls.reason),
+                    updated_at = now()
+                RETURNING *
+                """,
+                {
+                    "machine": machine,
+                    "drained": drained,
+                    "effective_capacity": effective_capacity,
+                    "reset_capacity": reset_capacity,
+                    "reason": reason,
+                },
+            )
+            return dict(cur.fetchone())
+
+    if manage_transaction:
+        with conn:
+            return update()
+    return update()
+
+
+def machines_with_service_work(conn=None) -> tuple[str, ...]:
+    owned_connection = conn is None
+    if owned_connection:
+        conn = connect(database_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT machine
+                FROM train_jobs
+                WHERE status IN ('pending', 'launching', 'running')
+                   OR cancel_requested = TRUE
+                ORDER BY machine
+                """
+            )
+            return tuple(str(row["machine"]) for row in cur.fetchall())
+    finally:
+        if owned_connection:
+            conn.close()
+
+
+def count_nonterminal_jobs(conn=None) -> int:
+    owned_connection = conn is None
+    if owned_connection:
+        conn = connect(database_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM train_jobs
+                WHERE status IN ('pending', 'launching', 'running')
+                """
+            )
+            row = cur.fetchone()
+        return int(row["count"] if row else 0)
+    finally:
+        if owned_connection:
+            conn.close()
+
+
+def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT job.*
+            FROM train_jobs AS job
+            LEFT JOIN machine_controls AS control ON control.machine = job.machine
+            WHERE job.machine = %(machine)s
+              AND job.status = 'pending'
+              AND job.cancel_requested = FALSE
+              AND COALESCE(control.drained, FALSE) = FALSE
+              AND NOT EXISTS (
+                SELECT 1 FROM job_launches AS launch WHERE launch.job_id = job.id
+              )
+            ORDER BY job.id
+            LIMIT 1
+            """,
+            {"machine": normalize_machine(machine)},
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) -> dict[str, Any]:
     payload = {
         "schema_version": 1,
@@ -864,14 +1118,150 @@ def request_cancel_train_job(conn, *, job_id: int) -> int:
                 """
                 UPDATE train_jobs
                 SET cancel_requested = TRUE,
-                    status = CASE WHEN status IN ('pending', 'launching') THEN 'canceled' ELSE status END,
-                    finished_at = CASE WHEN status IN ('pending', 'launching') THEN now() ELSE finished_at END
+                    status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
+                    finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
                 WHERE id = %(job_id)s
                   AND status IN ('pending', 'launching', 'running')
                 """,
                 {"job_id": job_id},
             )
-            return int(cur.rowcount)
+            changed = int(cur.rowcount)
+        if changed:
+            record_job_event(
+                conn,
+                job_id=job_id,
+                event_type="cancel_requested",
+                message="operator requested cancellation",
+            )
+        return changed
+
+
+def request_cancel_train_jobs(
+    conn,
+    *,
+    job_id: int | None = None,
+    batch_id: str | None = None,
+    machine: str | None = None,
+    drain: bool = False,
+) -> list[int]:
+    selectors = sum(value is not None for value in (job_id, batch_id, machine))
+    if selectors != 1:
+        raise ValueError("exactly one of job_id, batch_id, or machine is required")
+    filters = ["status IN ('pending', 'launching', 'running')"]
+    params: dict[str, Any] = {}
+    if job_id is not None:
+        filters.append("id = %(job_id)s")
+        params["job_id"] = int(job_id)
+    elif batch_id is not None:
+        filters.append("batch_id = %(batch_id)s")
+        params["batch_id"] = str(batch_id)
+    else:
+        params["machine"] = normalize_machine(machine)
+        filters.append("machine = %(machine)s")
+    with conn:
+        if machine is not None:
+            acquire_machine_control_xact_lock(conn, machine=machine)
+        if drain:
+            if machine is None:
+                raise ValueError("drain is only valid with a machine selector")
+            set_machine_control(
+                conn,
+                machine=machine,
+                drained=True,
+                reason="cancel all active",
+                manage_transaction=False,
+            )
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE train_jobs
+                SET cancel_requested = TRUE,
+                    status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
+                    finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
+                WHERE {' AND '.join(filters)}
+                RETURNING id
+                """,
+                params,
+            )
+            job_ids = [int(row["id"]) for row in cur.fetchall()]
+        for canceled_job_id in job_ids:
+            record_job_event(
+                conn,
+                job_id=canceled_job_id,
+                event_type="cancel_requested",
+                message="operator requested cancellation",
+                metadata={"drain": bool(drain)},
+            )
+        return job_ids
+
+
+def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> dict[str, Any]:
+    """Create a new pending job from a terminal job; execution is never retried in place."""
+    submission_key = str(submission_key or f"retry-{job_id}-{uuid.uuid4().hex}")
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+                {"key": submission_key},
+            )
+            cur.execute(
+                "SELECT * FROM train_jobs WHERE submission_key = %(key)s ORDER BY submission_ordinal",
+                {"key": submission_key},
+            )
+            existing = [dict(row) for row in cur.fetchall()]
+            if existing:
+                if len(existing) != 1 or existing[0].get("retried_from_job_id") != int(job_id):
+                    raise ValueError(
+                        f"submission_key {submission_key!r} was reused for a different retry"
+                    )
+                return existing[0]
+            cur.execute(
+                """
+                SELECT *
+                FROM train_jobs
+                WHERE id = %(job_id)s
+                  AND status IN ('succeeded', 'failed', 'canceled')
+                FOR UPDATE
+                """,
+                {"job_id": int(job_id)},
+            )
+            source = cur.fetchone()
+            if not source:
+                raise ValueError(f"job {job_id} is not terminal or does not exist")
+        source = dict(source)
+        result = enqueue_train_job(
+            conn,
+            goal_slug=source["goal_slug"],
+            recipe_slug=source.get("recipe_slug"),
+            recipe_path=source.get("recipe_path"),
+            recipe_sha256=source.get("recipe_sha256"),
+            repo_git_commit=source.get("repo_git_commit"),
+            repo_dirty=bool(source.get("repo_dirty")),
+            recipe_payload=source.get("recipe_payload_json") or {},
+            runtime_image_ref=source["runtime_image_ref"],
+            machine=source["machine"],
+            train_config=source["train_config"],
+            batch_id=source["batch_id"],
+            submission_key=submission_key,
+            request_hash=_hash_json({"retry_of": int(job_id), "submission_key": submission_key}),
+            retried_from_job_id=int(job_id),
+            run_name=(
+                f"{source.get('run_name') or f'job-{job_id}'}-retry-{_utc_stamp()}"
+            ),
+            run_description=source.get("run_description"),
+            seed=source.get("seed"),
+            wandb_group=source.get("wandb_group"),
+            wandb_tags=source.get("wandb_tags") or (),
+            manage_transaction=False,
+        )
+        record_job_event(
+                conn,
+                job_id=int(result["id"]),
+                event_type="retried",
+                message=f"explicit retry of job {job_id}",
+                metadata={"retried_from_job_id": int(job_id)},
+            )
+        return result
 
 
 def _terminal_status_from_result(result: Mapping[str, Any]) -> str:
@@ -906,7 +1296,6 @@ def finish_train_launch_from_result(
     launch_id: str,
     result: Mapping[str, Any],
 ) -> None:
-    status = _terminal_status_from_result(result)
     exit_code = result.get("exit_code")
     error = str(result.get("error") or "") or None
     train_result = result.get("train")
@@ -914,6 +1303,46 @@ def finish_train_launch_from_result(
     train_payload = dict(train_payload or {})
     with conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  launch.*,
+                  job.cancel_requested,
+                  job.status AS job_status,
+                  job.machine AS job_machine
+                FROM job_launches AS launch
+                JOIN train_jobs AS job ON job.id = launch.job_id
+                WHERE launch.launch_id = %(launch_id)s
+                FOR UPDATE OF launch, job
+                """,
+                {"launch_id": launch_id},
+            )
+            launch = cur.fetchone()
+            if not launch:
+                raise RuntimeError(f"unknown launch_id {launch_id}")
+            expected = {
+                "schema_version": 1,
+                "job_id": int(launch["job_id"]),
+                "launch_id": launch_id,
+                "machine": str(launch["machine"]),
+                "runtime_image_ref": str(launch["runtime_image_ref"]),
+            }
+            for field, expected_value in expected.items():
+                actual = result.get(field)
+                if actual != expected_value:
+                    raise ValueError(
+                        f"result {field} mismatch for {launch_id}: "
+                        f"expected {expected_value!r}, got {actual!r}"
+                    )
+            status = (
+                "canceled" if bool(launch["cancel_requested"]) else _terminal_status_from_result(result)
+            )
+            if launch["state"] in {"succeeded", "failed", "canceled"}:
+                if launch["state"] == status:
+                    return
+                raise RuntimeError(
+                    f"launch {launch_id} is already terminal as {launch['state']}"
+                )
             cur.execute(
                 """
                 UPDATE job_launches
@@ -924,6 +1353,7 @@ def finish_train_launch_from_result(
                     last_observed_at = now(),
                     finished_at = now()
                 WHERE launch_id = %(launch_id)s
+                  AND state IN ('launching', 'running')
                 RETURNING *
                 """,
                 {
@@ -934,29 +1364,25 @@ def finish_train_launch_from_result(
                     "launch_id": launch_id,
                 },
             )
-            launch = cur.fetchone()
-            if not launch:
-                raise RuntimeError(f"unknown launch_id {launch_id}")
-            if launch["job_kind"] != "train":
+            updated_launch = cur.fetchone()
+            if not updated_launch:
+                raise RuntimeError(f"launch {launch_id} is already terminal")
+            if updated_launch["job_kind"] != "train":
                 raise RuntimeError(f"launch {launch_id} is not a train launch")
             cur.execute(
                 """
                 UPDATE train_jobs
                 SET status = %(status)s,
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    heartbeat_at = now(),
                     finished_at = now(),
                     error = %(error)s
                 WHERE id = %(job_id)s
-                  AND lease_owner = %(launch_id)s
                   AND status IN ('launching', 'running')
                 RETURNING *
                 """,
                 {
                     "status": status,
                     "error": error,
-                    "job_id": launch["job_id"],
+                    "job_id": updated_launch["job_id"],
                     "launch_id": launch_id,
                 },
             )
@@ -991,50 +1417,103 @@ def finish_job_launch_from_result(
         raise ValueError(f"result does not identify train job kind: {job_kind!r}")
 
 
-def queue_status(conn, *, goal_slug: str) -> dict[str, Any]:
-    goal_slug = str(goal_slug).strip()
+def queue_status(
+    conn,
+    *,
+    job_id: int | None = None,
+    batch_id: str | None = None,
+    machine: str | None = None,
+    goal_slug: str | None = None,
+    machine_capacities: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    selectors = sum(value is not None for value in (job_id, batch_id, machine, goal_slug))
+    if selectors != 1:
+        raise ValueError("exactly one job, batch, machine, or goal selector is required")
+    params: dict[str, Any] = {}
+    if job_id is not None:
+        where = "job.id = %(job_id)s"
+        params["job_id"] = int(job_id)
+        selector = {"job_id": int(job_id)}
+    elif batch_id is not None:
+        where = "job.batch_id = %(batch_id)s"
+        params["batch_id"] = str(batch_id)
+        selector = {"batch_id": str(batch_id)}
+    elif machine is not None:
+        where = "job.machine = %(machine)s"
+        params["machine"] = normalize_machine(machine)
+        selector = {"machine": params["machine"]}
+    else:
+        where = "job.goal_slug = %(goal_slug)s"
+        params["goal_slug"] = str(goal_slug).strip()
+        selector = {"goal_slug": params["goal_slug"]}
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT status, COUNT(*) AS count
-            FROM train_jobs
-            WHERE goal_slug = %(goal_slug)s
-            GROUP BY status
-            ORDER BY status
+            f"""
+            SELECT
+              job.*,
+              launch.launch_id,
+              launch.container_name,
+              launch.state AS launch_state,
+              launch.error AS launch_error,
+              launch.next_retry_at,
+              launch.output_uri,
+              launch.last_observed_at,
+              COALESCE(control.drained, FALSE) AS machine_drained,
+              control.effective_capacity,
+              (
+                SELECT COUNT(*)
+                FROM job_launches AS active_launch
+                WHERE active_launch.machine = job.machine
+                  AND active_launch.state IN ('launching', 'running')
+              ) AS active_reservations
+            FROM train_jobs AS job
+            LEFT JOIN job_launches AS launch ON launch.job_id = job.id
+            LEFT JOIN machine_controls AS control ON control.machine = job.machine
+            WHERE {where}
+            ORDER BY job.id
             """,
-            {"goal_slug": goal_slug},
+            params,
         )
-        train_jobs = {row["status"]: int(row["count"]) for row in cur.fetchall()}
-        cur.execute(
-            """
-            SELECT id, goal_slug, recipe_slug, status, run_name,
-                   run_target, lease_owner, heartbeat_at, created_at
-            FROM train_jobs
-            WHERE goal_slug = %(goal_slug)s
-              AND status IN ('pending', 'launching', 'running')
-            ORDER BY
-              CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-              id ASC
-            LIMIT 10
-            """,
-            {"goal_slug": goal_slug},
-        )
-        active_train_jobs = [dict(row) for row in cur.fetchall()]
-    return {
-        "goal_slug": goal_slug,
-        "train_jobs": train_jobs,
-        "active_train_jobs": active_train_jobs,
-    }
+        jobs = [dict(row) for row in cur.fetchall()]
+    capacities = dict(machine_capacities or {})
+    unreachable_terms = ("unreachable", "timed out", "permission denied", "connection")
+    for row in jobs:
+        blocked_reason = None
+        if row.get("cancel_requested") and row.get("status") in {"launching", "running"}:
+            blocked_reason = "canceling"
+        elif row.get("status") == "pending" and row.get("machine_drained"):
+            blocked_reason = "drained"
+        elif row.get("status") == "pending":
+            hard_capacity = capacities.get(str(row["machine"]))
+            override = row.get("effective_capacity")
+            effective = min(hard_capacity, int(override)) if hard_capacity and override else (
+                int(override) if override else hard_capacity
+            )
+            if effective is not None and int(row.get("active_reservations") or 0) >= effective:
+                blocked_reason = "at_capacity"
+        launch_error = str(row.get("launch_error") or "").lower()
+        if (
+            blocked_reason is None
+            and row.get("status") in {"launching", "running"}
+            and any(term in launch_error for term in unreachable_terms)
+        ):
+            blocked_reason = "unreachable"
+        row["blocked_reason"] = blocked_reason
+    counts: dict[str, int] = {}
+    for row in jobs:
+        counts[str(row["status"])] = counts.get(str(row["status"]), 0) + 1
+    return {"selector": selector, "counts": counts, "jobs": jobs}
 
 
 def print_status(report: Mapping[str, Any]) -> None:
-    print(f"goal: {report['goal_slug']}")
-    print(f"train_jobs: {json.dumps(report['train_jobs'], sort_keys=True)}")
-    print("active_train_jobs:")
-    for row in report.get("active_train_jobs", []):
+    print(f"selector: {json.dumps(report['selector'], sort_keys=True)}")
+    print(f"counts: {json.dumps(report['counts'], sort_keys=True)}")
+    print("jobs:")
+    for row in report.get("jobs", []):
         print(
             "  "
-            f"job={row['id']} status={row['status']} image={row.get('runtime_image_ref') or ''} "
+            f"job={row['id']} machine={row['machine']} status={row['status']} "
+            f"image={row.get('runtime_image_ref') or ''} "
             f"run={row.get('run_name') or ''}"
         )
 
@@ -1045,15 +1524,11 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         description="Create queue-backed train jobs from a checked-in recipe file.",
     )
     add_direct_database_arg(parser)
+    parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
+    parser.add_argument("--machine", required=True, help="Exact registered machine name.")
+    parser.add_argument("--request-id", dest="submission_key")
     parser.add_argument("--runtime-image-ref")
-    parser.add_argument(
-        "--run-target",
-        help=(
-            "Queue target to claim from a matching fleet machine, for example "
-            "rtx4090, rtx2060, or local-macbook."
-        ),
-    )
     parser.add_argument(
         "--runtime-image-ref-file",
         type=Path,
@@ -1066,6 +1541,9 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
     parser.add_argument("--seed", type=int, action="append", default=[])
+    parser.add_argument("--wait", choices=("running", "terminal"))
+    parser.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
+    parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--set",
         dest="recipe_overrides",
@@ -1100,18 +1578,90 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(reset)
     reset.set_defaults(func=cmd_reset_schema)
 
-    cancel = subparsers.add_parser("cancel-train", help="Request cancellation for a train job")
-    cancel.add_argument("job_id", type=int)
-    cancel.set_defaults(func=cmd_cancel_train)
-
-    status = subparsers.add_parser("status", help="Print compact queue status")
-    status.add_argument("--goal", required=True, dest="goal_slug")
+    status = subparsers.add_parser("status", help="Inspect jobs by job, batch, machine, or goal.")
+    add_job_selector(status, include_machine=True, include_goal=True)
+    status.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+    status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
+
+    wait = subparsers.add_parser("wait", help="Wait for jobs to run or become terminal.")
+    add_job_selector(wait, include_machine=False, include_goal=False)
+    wait.add_argument("--until", choices=("running", "terminal"), required=True)
+    wait.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
+    wait.add_argument("--json", action="store_true")
+    wait.set_defaults(func=cmd_wait)
+
+    cancel = subparsers.add_parser("cancel", help="Request idempotent job cancellation.")
+    add_job_selector(cancel, include_machine=True, include_goal=False)
+    cancel.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+    cancel.add_argument("--all-active", action="store_true")
+    cancel.add_argument("--drain", action="store_true")
+    cancel.add_argument("--wait", action="store_true")
+    cancel.add_argument("--timeout", type=parse_duration_seconds, default=10 * 60)
+    cancel.add_argument("--json", action="store_true")
+    cancel.set_defaults(func=cmd_cancel)
+
+    retry = subparsers.add_parser("retry", help="Create a new job from a terminal job.")
+    retry.add_argument("--job", dest="job_id", type=int, required=True)
+    retry.add_argument("--request-id", dest="submission_key")
+    retry.add_argument("--wait", choices=("running", "terminal"))
+    retry.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
+    retry.add_argument("--json", action="store_true")
+    retry.set_defaults(func=cmd_retry)
+
+    logs = subparsers.add_parser("logs", help="Read durable output logs for one job.")
+    logs.add_argument("--job", dest="job_id", type=int, required=True)
+    logs.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+    logs.add_argument("--tail", type=int, default=100)
+    logs.add_argument("--follow", action="store_true")
+    logs.set_defaults(func=cmd_logs)
     return parser
+
+
+def parse_duration_seconds(value: str | int | float) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smh]?)\s*", str(value))
+    if not match:
+        raise argparse.ArgumentTypeError("duration must use seconds, m, or h (for example 30s or 12h)")
+    amount = float(match.group(1))
+    multiplier = {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0}[match.group(2)]
+    return amount * multiplier
+
+
+def add_job_selector(
+    parser: argparse.ArgumentParser,
+    *,
+    include_machine: bool,
+    include_goal: bool,
+) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--job", dest="job_id", type=int)
+    group.add_argument("--batch", dest="batch_id")
+    if include_machine:
+        group.add_argument("--machine")
+    if include_goal:
+        group.add_argument("--goal", dest="goal_slug")
+
+
+def selector_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        key: getattr(args, key, None)
+        for key in ("job_id", "batch_id", "machine", "goal_slug")
+        if getattr(args, key, None) is not None
+    }
 
 
 def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(args.direct))
+
+
+def _machine_capacities(path: Path = DEFAULT_MACHINE_REGISTRY) -> dict[str, int]:
+    registry = load_machine_registry(path)
+    return {
+        name: machine.limits.max_parallel_containers
+        for name, machine in registry.machines.items()
+    }
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1134,16 +1684,21 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
         print(f"dry_run: would export queue tables to {export_dir} and reset schema")
         print("dry_run: rerun without --dry-run to apply")
         return 0
-    conn = _connect_from_args(args)
-    try:
-        exported = reset_schema(conn, export_dir=export_dir)
-    finally:
-        conn.close()
+    from rlab.fleet_service import default_service_paths, schema_change_service_guard
+
+    with schema_change_service_guard(default_service_paths()):
+        conn = _connect_from_args(args)
+        try:
+            exported = reset_schema(conn, export_dir=export_dir)
+        finally:
+            conn.close()
     print(f"queue_schema_reset=ok export_dir={exported}")
     return 0
 
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
+    registry = load_machine_registry(args.machines)
+    resolve_machine(registry, args.machine)
     runtime_image_ref = runtime_image_ref_from_args(args, default_latest=True)
     if not runtime_image_ref:
         raise SystemExit(
@@ -1155,41 +1710,267 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             conn,
             path=args.recipe_file,
             runtime_image_ref=runtime_image_ref,
-            run_target=args.run_target,
+            machine=args.machine,
+            submission_key=args.submission_key,
             seeds=args.seed,
             recipe_overrides=args.recipe_overrides,
         )
-    finally:
-        conn.close()
-    for row in rows:
-        print(
-            f"train_job_id={row['id']} image={row.get('runtime_image_ref') or ''} "
-            f"run_name={row.get('run_name') or ''}"
+        dispatch = dispatch_fleet_service()
+        wait_result = None
+        if args.wait:
+            wait_result = wait_for_job_ids(
+                conn,
+                [int(row["id"]) for row in rows],
+                until=args.wait,
+                timeout=float(args.timeout),
+            )
+        report = queue_status(
+            conn,
+            batch_id=str(rows[0]["batch_id"]),
+            machine_capacities={
+                name: machine.limits.max_parallel_containers
+                for name, machine in registry.machines.items()
+            },
         )
-    return 0
-
-
-def cmd_cancel_train(args: argparse.Namespace) -> int:
-    conn = _connect_from_args(args)
-    try:
-        count = request_cancel_train_job(conn, job_id=args.job_id)
     finally:
         conn.close()
-    print(f"cancel_requested={count}")
-    return 0
+    payload = {
+        "batch_id": rows[0]["batch_id"] if rows else None,
+        "job_ids": [int(row["id"]) for row in rows],
+        "machine": args.machine,
+        "runtime_image_ref": runtime_image_ref,
+        "dispatch": dispatch,
+        "jobs": report["jobs"],
+        "wait": wait_result,
+    }
+    if args.json:
+        print(json.dumps(json_safe(payload), sort_keys=True))
+    else:
+        print(
+            f"batch={payload['batch_id']} jobs={','.join(map(str, payload['job_ids']))} "
+            f"machine={args.machine} dispatch={dispatch}"
+        )
+        if wait_result:
+            print(json.dumps(json_safe(wait_result), sort_keys=True))
+    return 0 if not wait_result or wait_result["reached"] else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    capacities = _machine_capacities(args.machines)
+    if args.machine:
+        resolve_machine(load_machine_registry(args.machines), args.machine)
     conn = _connect_from_args(args)
     try:
         report = queue_status(
             conn,
-            goal_slug=args.goal_slug,
+            **selector_from_args(args),
+            machine_capacities=capacities,
         )
     finally:
         conn.close()
-    print_status(report)
+    if args.json:
+        print(json.dumps(json_safe(report), sort_keys=True))
+    else:
+        print_status(report)
     return 0
+
+
+def dispatch_fleet_service() -> str:
+    try:
+        from rlab.fleet_service import kick_service
+
+        return "kicked" if kick_service() else "degraded"
+    except Exception:
+        return "degraded"
+
+
+def _job_ids_for_selector(conn, *, job_id: int | None = None, batch_id: str | None = None) -> list[int]:
+    if (job_id is None) == (batch_id is None):
+        raise ValueError("exactly one job or batch selector is required")
+    with conn.cursor() as cur:
+        if job_id is not None:
+            cur.execute("SELECT id FROM train_jobs WHERE id = %(job_id)s", {"job_id": job_id})
+        else:
+            cur.execute(
+                "SELECT id FROM train_jobs WHERE batch_id = %(batch_id)s ORDER BY id",
+                {"batch_id": batch_id},
+            )
+        return [int(row["id"]) for row in cur.fetchall()]
+
+
+def wait_for_job_ids(
+    conn,
+    job_ids: Sequence[int],
+    *,
+    until: str,
+    timeout: float,
+    poll_interval: float = 2.0,
+) -> dict[str, Any]:
+    ids = tuple(sorted({int(job_id) for job_id in job_ids}))
+    if not ids:
+        raise ValueError("no jobs matched")
+    deadline = time.monotonic() + max(0.0, timeout)
+    terminal = {"succeeded", "failed", "canceled"}
+    while True:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, started_at, finished_at, error
+                FROM train_jobs
+                WHERE id = ANY(%(job_ids)s)
+                ORDER BY id
+                """,
+                {"job_ids": list(ids)},
+            )
+            rows = [dict(row) for row in cur.fetchall()]
+        if len(rows) != len(ids):
+            raise ValueError("one or more jobs no longer exist")
+        statuses = {str(row["status"]) for row in rows}
+        if until == "terminal":
+            reached = all(status in terminal for status in statuses)
+            terminal_before_target = False
+        elif until == "running":
+            reached = all(
+                row["status"] == "running" or row.get("started_at") is not None for row in rows
+            )
+            terminal_before_target = any(
+                row["status"] in terminal and row.get("started_at") is None for row in rows
+            )
+        else:
+            raise ValueError(f"unsupported wait target: {until}")
+        if reached or terminal_before_target:
+            return {
+                "until": until,
+                "reached": reached,
+                "timed_out": False,
+                "terminal_before_target": terminal_before_target,
+                "jobs": rows,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "until": until,
+                "reached": False,
+                "timed_out": True,
+                "terminal_before_target": False,
+                "jobs": rows,
+            }
+        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+
+def cmd_wait(args: argparse.Namespace) -> int:
+    conn = _connect_from_args(args)
+    try:
+        ids = _job_ids_for_selector(conn, job_id=args.job_id, batch_id=args.batch_id)
+        result = wait_for_job_ids(conn, ids, until=args.until, timeout=float(args.timeout))
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(json_safe(result), sort_keys=True))
+    else:
+        print(json.dumps(json_safe(result), sort_keys=True))
+    return 0 if result["reached"] else 1
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    if args.machine and not args.all_active:
+        raise SystemExit("--machine cancellation requires --all-active")
+    if args.all_active and not args.machine:
+        raise SystemExit("--all-active requires --machine")
+    if args.drain and not args.machine:
+        raise SystemExit("--drain requires --machine")
+    capacities = _machine_capacities(args.machines)
+    if args.machine:
+        resolve_machine(load_machine_registry(args.machines), args.machine)
+    conn = _connect_from_args(args)
+    try:
+        ids = request_cancel_train_jobs(
+            conn,
+            job_id=args.job_id,
+            batch_id=args.batch_id,
+            machine=args.machine,
+            drain=bool(args.drain),
+        )
+        dispatch = dispatch_fleet_service()
+        wait_result = (
+            wait_for_job_ids(conn, ids, until="terminal", timeout=float(args.timeout))
+            if args.wait and ids
+            else None
+        )
+        reports = [
+            queue_status(conn, job_id=job_id, machine_capacities=capacities)["jobs"][0]
+            for job_id in ids
+        ]
+    finally:
+        conn.close()
+    payload = {"job_ids": ids, "dispatch": dispatch, "jobs": reports, "wait": wait_result}
+    print(json.dumps(json_safe(payload), sort_keys=True))
+    return 0 if not wait_result or wait_result["reached"] else 1
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    capacities = _machine_capacities()
+    conn = _connect_from_args(args)
+    try:
+        row = retry_train_job(conn, job_id=args.job_id, submission_key=args.submission_key)
+        dispatch = dispatch_fleet_service()
+        wait_result = (
+            wait_for_job_ids(
+                conn,
+                [int(row["id"])],
+                until=args.wait,
+                timeout=float(args.timeout),
+            )
+            if args.wait
+            else None
+        )
+        report = queue_status(
+            conn,
+            job_id=int(row["id"]),
+            machine_capacities=capacities,
+        )
+    finally:
+        conn.close()
+    payload = {
+        "job_id": int(row["id"]),
+        "retried_from": args.job_id,
+        "batch_id": row["batch_id"],
+        "machine": row["machine"],
+        "runtime_image_ref": row["runtime_image_ref"],
+        "dispatch": dispatch,
+        "jobs": report["jobs"],
+        "wait": wait_result,
+    }
+    print(json.dumps(json_safe(payload), sort_keys=True))
+    return 0 if not wait_result or wait_result["reached"] else 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    conn = _connect_from_args(args)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT job.machine, launch.output_uri
+                FROM train_jobs AS job
+                JOIN job_launches AS launch ON launch.job_id = job.id
+                WHERE job.id = %(job_id)s
+                """,
+                {"job_id": args.job_id},
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise SystemExit(f"job {args.job_id} has no launch output")
+    from rlab.fleet import stream_job_logs
+
+    machine = resolve_machine(load_machine_registry(args.machines), str(row["machine"]))
+    return stream_job_logs(
+        machine,
+        str(row["output_uri"]),
+        tail=int(args.tail),
+        follow=bool(args.follow),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

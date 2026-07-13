@@ -5,9 +5,11 @@ from pathlib import Path
 
 
 class FakeCursor:
-    def __init__(self, row=None, rows=None) -> None:
+    def __init__(self, row=None, rows=None, results=None) -> None:
         self.row = row
         self.rows = [] if rows is None else rows
+        self.results = list(results or [])
+        self.rowcount = 0
         self.executed_sql = ""
         self.executed_params = {}
         self.executed_sqls = []
@@ -24,6 +26,11 @@ class FakeCursor:
         self.executed_params = params or {}
         self.executed_sqls.append(sql)
         self.executed_params_list.append(params or {})
+        if self.results:
+            result = self.results.pop(0)
+            self.row = result.get("row")
+            self.rows = result.get("rows", [])
+            self.rowcount = int(result.get("rowcount", 0))
 
     def fetchone(self):
         return self.row if self.row is not None else (self.rows[0] if self.rows else None)
@@ -33,8 +40,8 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self, row=None, rows=None) -> None:
-        self.cursor_obj = FakeCursor(row=row, rows=rows)
+    def __init__(self, row=None, rows=None, results=None) -> None:
+        self.cursor_obj = FakeCursor(row=row, rows=rows, results=results)
         self.closed = False
 
     def __enter__(self):
@@ -57,11 +64,9 @@ def write_machine_registry(
     max_parallel_containers: int,
     host_root: str,
     machine_name: str = "beast-test",
-    run_target: str = "rtx4090",
 ) -> None:
     machine = {
         "backend": backend,
-        "run_target": run_target,
         "pull_policy": "never",
         "limits": {"max_parallel_containers": max_parallel_containers},
         "paths": {

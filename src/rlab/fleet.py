@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -17,18 +18,19 @@ from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
-    adopt_terminal_train_launch,
     active_job_launches,
     claim_job_launch,
     connect,
     database_url,
     finish_job_launch_from_result,
     job_payload_for_launch,
-    machine_queue_counts,
+    machine_control,
     mark_job_launch_running,
     new_train_launch_id,
+    next_pending_train_job,
     queue_demands,
-    release_job_launch,
+    record_job_launch_error,
+    set_machine_control,
 )
 from rlab.json_utils import json_safe
 from rlab.machines import (
@@ -41,7 +43,6 @@ from rlab.machines import (
 from rlab.runtime_refs import (
     docker_image_ref,
     normalize_runtime_image_ref,
-    runtime_image_digest_slug,
     runtime_image_ref_from_args,
 )
 from rlab.fleet_labels import (
@@ -55,19 +56,12 @@ from rlab.fleet_labels import (
     MANAGED_LABEL,
     OUTPUT_URI_LABEL,
 )
-from rlab.fleet_rendering import (
-    MachineWatchSnapshot,
-    colorize,
-    format_utc_second,
-    highlight_dashboard_text,
-    render_machine_watch_dashboard,
-    write_tui_frame,
-)
-
-
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
-DEFAULT_WATCH_LATEST_INTERVAL_SECONDS = 15.0
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
+SSH_CONNECT_TIMEOUT_SECONDS = 10
+MACHINE_COMMAND_TIMEOUT_SECONDS = 120.0
+DOCKER_PULL_TIMEOUT_SECONDS = 900.0
+DOCKER_STOP_TIMEOUT_SECONDS = 150.0
 SHARED_RUNNER_ENV_KEYS = (
     "WANDB_API_KEY",
     "AWS_ACCESS_KEY_ID",
@@ -76,18 +70,28 @@ SHARED_RUNNER_ENV_KEYS = (
     "AWS_REGION",
     "CHECKPOINT_BUCKET_URI",
 )
+_MACHINE_LANE_DEADLINE: ContextVar[float | None] = ContextVar(
+    "rlab_machine_lane_deadline", default=None
+)
 
 
 @dataclass(frozen=True)
-class ShepherdLock:
+class MachineMutationLock:
     machine: str
     key: str
 
 
-class ShepherdLockBusy(RuntimeError):
+class MachineLockBusy(RuntimeError):
     def __init__(self, machine: str) -> None:
-        super().__init__(f"another shepherd is already running for machine={machine}")
+        super().__init__(f"another reconciler is already running for machine={machine}")
         self.machine = machine
+
+
+class MachineCommandTimeout(RuntimeError):
+    def __init__(self, machine: str, timeout: float) -> None:
+        super().__init__(f"machine command timed out machine={machine} timeout={timeout:g}s")
+        self.machine = machine
+        self.timeout = timeout
 
 
 def _candidate_repo_roots(start: Path) -> tuple[Path, ...]:
@@ -308,8 +312,6 @@ def shared_runner_env_sync_script(machine: MachineConfig) -> str:
 def sync_shared_runner_env(
     machine: MachineConfig,
     source_path: Path,
-    *,
-    color: bool | None = None,
 ) -> None:
     if machine.backend != "docker_ssh":
         return
@@ -324,37 +326,6 @@ def sync_shared_runner_env(
         raise RuntimeError(
             f"failed to sync shared runner env to machine={machine.name} exit={result.returncode}"
         )
-    log_shepherd_event(
-        machine=machine.name,
-        action="sync-env",
-        result="ok",
-        keys=len(SHARED_RUNNER_ENV_KEYS),
-        color=color,
-    )
-
-
-def format_demands(demands: Sequence[QueueDemand]) -> str:
-    if not demands:
-        return "queue demand: none"
-    lines = ["queue demand:"]
-    for demand in demands:
-        lines.append(
-            "  "
-            f"target={demand.run_target or 'any'} "
-            f"pending={demand.pending_count} running={demand.running_count} "
-            f"digest={runtime_image_digest_slug(demand.runtime_image_ref)}"
-        )
-    return "\n".join(lines)
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    conn = _connect_from_args(args)
-    try:
-        demands = queue_demands(conn)
-    finally:
-        conn.close()
-    print(format_demands(demands))
-    return 0
 
 
 @dataclass(frozen=True)
@@ -426,7 +397,7 @@ def machine_docker_command(machine: MachineConfig, args: Sequence[str]) -> list[
     return [*machine.docker_command, *args]
 
 
-def job_container_run_command(
+def job_container_create_command(
     machine: MachineConfig,
     *,
     job_id: int,
@@ -438,8 +409,7 @@ def job_container_run_command(
     cmd = machine_docker_command(
         machine,
         [
-            "run",
-            "-d",
+            "create",
             "--name",
             container_name,
             "--restart",
@@ -487,7 +457,19 @@ def job_container_run_command(
 def machine_ssh_prefix(machine: MachineConfig) -> list[str]:
     if machine.backend != "docker_ssh":
         return []
-    return ["ssh", *machine.ssh_options, machine.ssh_target]
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
+        *machine.ssh_options,
+        machine.ssh_target,
+    ]
 
 
 def run_machine_shell(
@@ -496,22 +478,31 @@ def run_machine_shell(
     *,
     input_text: str | None = None,
     capture: bool = False,
+    timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    if machine.backend == "local_docker":
+    effective_timeout = timeout
+    lane_deadline = _MACHINE_LANE_DEADLINE.get()
+    if timeout is not None and lane_deadline is not None:
+        remaining = lane_deadline - time.monotonic()
+        if remaining <= 0:
+            raise MachineCommandTimeout(machine.name, 0.0)
+        effective_timeout = min(float(timeout), max(0.1, remaining))
+    command = (
+        ["sh", "-lc", script]
+        if machine.backend == "local_docker"
+        else [*machine_ssh_prefix(machine), "sh", "-lc", shlex.quote(script)]
+    )
+    try:
         return subprocess.run(
-            ["sh", "-lc", script],
+            command,
             input=input_text,
             capture_output=capture,
             text=True,
             check=False,
+            timeout=effective_timeout,
         )
-    return subprocess.run(
-        [*machine_ssh_prefix(machine), "sh", "-lc", shlex.quote(script)],
-        input=input_text,
-        capture_output=capture,
-        text=True,
-        check=False,
-    )
+    except subprocess.TimeoutExpired as exc:
+        raise MachineCommandTimeout(machine.name, float(effective_timeout or 0.0)) from exc
 
 
 def run_machine_docker(
@@ -519,9 +510,10 @@ def run_machine_docker(
     docker_args: Sequence[str],
     *,
     capture: bool = False,
+    timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     command = shell_join(machine_docker_command(machine, docker_args))
-    return run_machine_shell(machine, command, capture=capture)
+    return run_machine_shell(machine, command, capture=capture, timeout=timeout)
 
 
 def write_remote_payload(machine: MachineConfig, path: str, payload: Mapping[str, Any]) -> None:
@@ -689,7 +681,7 @@ def protected_runtime_image_refs(
     for demand in demands:
         if demand.total <= 0:
             continue
-        if demand.run_target not in (None, machine.run_target):
+        if demand.machine != machine.name:
             continue
         protected.add(normalize_runtime_image_ref(demand.runtime_image_ref))
     for container in containers:
@@ -747,8 +739,6 @@ def stale_runtime_host_images(
 def prune_stale_runtime_images(
     conn,
     machine: MachineConfig,
-    *,
-    color: bool | None = None,
 ) -> int:
     demands = queue_demands(conn)
     containers = list_runtime_image_containers(machine)
@@ -767,238 +757,204 @@ def prune_stale_runtime_images(
         result = run_machine_docker(machine, ["rmi", image.image_ref], capture=True)
         if result.returncode == 0:
             pruned += 1
-            log_shepherd_event(
-                machine=machine.name,
-                action="prune-image",
-                result="ok",
-                image=image.digest,
-                repository=image.repository,
-                color=color,
-            )
-            continue
-        log_shepherd_event(
-            machine=machine.name,
-            action="prune-image",
-            result="failed",
-            image=image.digest,
-            repository=image.repository,
-            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
-            color=color,
-        )
     return pruned
 
 
-def read_remote_result(machine: MachineConfig, output_uri: str) -> dict[str, Any] | None:
-    result_path = f"{str(output_uri).rstrip('/')}/result.json"
-    result = run_machine_shell(machine, f"cat {shlex.quote(result_path)}", capture=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, dict):
-        raise ValueError(f"{result_path} did not contain a JSON object")
-    return payload
-
-
-def remote_result_exists(machine: MachineConfig, output_uri: str) -> bool:
-    result_path = f"{str(output_uri).rstrip('/')}/result.json"
-    result = run_machine_shell(machine, f"test -s {shlex.quote(result_path)}", capture=True)
-    return result.returncode == 0
-
-
-def build_machine_watch_snapshot(args: argparse.Namespace) -> MachineWatchSnapshot:
-    machine = resolve_machine(load_registry_from_args(args), args.machine)
-    warnings: list[str] = []
-    containers = tuple(sorted(list_job_containers(machine), key=lambda item: item.name))
-    conn = _connect_from_args(args)
-    try:
-        launches = tuple(
-            active_job_launches(
-                conn,
-                machine=machine.name,
-                states=("launching", "running"),
-            )
-        )
-        queue_counts = machine_queue_counts(conn)
-    finally:
-        conn.close()
-
-    containers_by_launch = {container.launch_id: container for container in containers if container.launch_id}
-    result_present: dict[str, bool] = {}
-    for launch in launches:
-        launch_id = str(launch["launch_id"])
-        container = containers_by_launch.get(launch_id)
-        if container is None or container.state != "running":
-            try:
-                result_present[launch_id] = remote_result_exists(machine, str(launch["output_uri"]))
-            except Exception as exc:
-                result_present[launch_id] = False
-                warnings.append(f"result check failed launch_id={launch_id}: {exc}")
-    for container in containers:
-        launch_id = container.launch_id
-        output_uri = container.labels.get(OUTPUT_URI_LABEL)
-        if not launch_id or not output_uri or container.state == "running":
+def prune_inactive_job_containers(conn, machine: MachineConfig) -> int:
+    active_launch_ids = {
+        str(launch["launch_id"])
+        for launch in active_job_launches(conn, machine=machine.name)
+    }
+    removed = 0
+    for container in list_job_containers(machine):
+        if container.state not in {"exited", "dead"}:
             continue
-        if launch_id in result_present:
+        if container.launch_id and container.launch_id in active_launch_ids:
             continue
-        try:
-            result_present[launch_id] = remote_result_exists(machine, output_uri)
-        except Exception as exc:
-            result_present[launch_id] = False
-            warnings.append(f"result check failed launch_id={launch_id}: {exc}")
+        result = run_machine_docker(machine, ["rm", container.name], capture=True)
+        if result.returncode == 0:
+            removed += 1
+    return removed
 
-    return MachineWatchSnapshot(
-        captured_at=datetime.now(UTC),
-        machine=machine,
-        containers=containers,
-        launches=launches,
-        queue_counts=queue_counts,
-        result_present=result_present,
-        warnings=tuple(warnings),
+
+@dataclass(frozen=True)
+class ResultObservation:
+    state: str
+    payload: dict[str, Any] | None = None
+    error: str | None = None
+
+
+def observe_remote_result(machine: MachineConfig, output_uri: str) -> ResultObservation:
+    result_path = f"{str(output_uri).rstrip('/')}/result.json"
+    script = (
+        f"if [ -s {shlex.quote(result_path)} ]; then cat {shlex.quote(result_path)}; "
+        f"elif [ -e {shlex.quote(result_path)} ]; then exit 3; else exit 4; fi"
     )
+    try:
+        result = run_machine_shell(machine, script, capture=True)
+    except MachineCommandTimeout as exc:
+        return ResultObservation("error", error=str(exc))
+    if result.returncode == 4:
+        return ResultObservation("absent")
+    if result.returncode != 0:
+        return ResultObservation(
+            "error",
+            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return ResultObservation("error", error=f"invalid result JSON: {exc}")
+    if not isinstance(payload, dict):
+        return ResultObservation("error", error="result JSON must be an object")
+    return ResultObservation("present", payload=payload)
 
 
-def shepherd_color_enabled(color: bool | None) -> bool:
-    return sys.stdout.isatty() if color is None else color
-
-
-def shepherd_event_style(action: str, result: str | None) -> str:
-    if result in {"ok", "started"}:
-        return "bright_green"
-    if result in {"busy", "skip"} or action in {"launch-next", "reconcile"}:
-        return "bright_yellow" if result == "start" else "bright_cyan"
-    if result in {"failed", "error"} or action == "error":
-        return "bright_red"
-    if action == "stop":
-        return "yellow"
-    return "white"
-
-
-def shepherd_event_icon(action: str, result: str | None) -> str:
-    if result in {"ok", "started"}:
-        return "✓"
-    if result in {"busy", "skip"}:
-        return "!"
-    if result in {"failed", "error"} or action == "error":
-        return "✕"
-    if action in {"launch", "launch-next"}:
-        return "→"
-    if action == "lock":
-        return "■"
-    if action == "stop":
-        return "■"
-    return "•"
-
-
-def format_shepherd_event(
+def stream_job_logs(
+    machine: MachineConfig,
+    output_uri: str,
     *,
-    machine: str,
-    action: str,
-    result: str | None = None,
-    color: bool | None = None,
-    timestamp: datetime | None = None,
-    **fields: Any,
-) -> str:
-    enabled = shepherd_color_enabled(color)
-    style = shepherd_event_style(action, result)
-    icon = colorize(shepherd_event_icon(action, result), style, enabled=enabled)
-    parts = [
-        colorize(format_utc_second(timestamp), "gray", enabled=enabled),
-        icon,
-        f"machine={colorize(machine, 'cyan', enabled=enabled)}",
-        f"action={colorize(action, style, enabled=enabled)}",
-    ]
-    if result is not None:
-        parts.append(f"result={colorize(result, style, enabled=enabled)}")
-    for key, value in fields.items():
-        if value is None:
-            continue
-        rendered = shlex.quote(str(value)) if isinstance(value, str) and any(char.isspace() for char in value) else str(value)
-        parts.append(f"{key}={highlight_dashboard_text(rendered, color=enabled)}")
-    return " ".join(parts)
-
-
-def log_shepherd_event(*, color: bool | None = None, **fields: Any) -> None:
-    print(format_shepherd_event(color=color, **fields), flush=True)
-
-
-def docker_pull_for_job(machine: MachineConfig, runtime_image_ref: str) -> int:
-    if machine.pull_policy == "never":
-        return 0
-    result = run_machine_docker(machine, ["pull", docker_image_ref(runtime_image_ref)], capture=False)
+    tail: int = 100,
+    follow: bool = False,
+) -> int:
+    log_dir = f"{str(output_uri).rstrip('/')}/logs"
+    follow_flag = "-F" if follow else ""
+    script = (
+        f"file=$(find {shlex.quote(log_dir)} -maxdepth 1 -type f "
+        "-name 'train_job_*.log' -print 2>/dev/null | sort | tail -n 1); "
+        "test -n \"$file\"; "
+        f"tail {follow_flag} -n {max(0, int(tail))} \"$file\""
+    )
+    result = run_machine_shell(
+        machine,
+        script,
+        capture=False,
+        timeout=None if follow else MACHINE_COMMAND_TIMEOUT_SECONDS,
+    )
     return int(result.returncode)
 
 
-def launch_claimed_job_container(
-    conn,
-    *,
-    machine: MachineConfig,
-    job_id: int | None = None,
-    shared_env_file: Path | None = None,
-    color: bool | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    if machine.backend == "docker_ssh":
-        sync_shared_runner_env(
+def ensure_runtime_image_available(machine: MachineConfig, runtime_image_ref: str) -> bool:
+    image = docker_image_ref(runtime_image_ref)
+    if machine.pull_policy != "never":
+        pulled = run_machine_docker(
             machine,
-            shared_env_file or (default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE),
-            color=color,
+            ["pull", image],
+            capture=True,
+            timeout=DOCKER_PULL_TIMEOUT_SECONDS,
         )
-    launch_id = new_train_launch_id(job_id)
-    claimed = claim_job_launch(
-        conn,
-        machine=machine.name,
-        backend=machine.backend,
-        job_id=job_id,
-        run_target=machine.run_target,
-        launch_id=launch_id,
-        output_uri=launch_output_path(machine, launch_id),
+        if pulled.returncode != 0:
+            return False
+    inspected = run_machine_docker(
+        machine,
+        ["image", "inspect", image],
+        capture=True,
     )
-    if claimed is None:
-        return None
-    job, launch = claimed
-    runtime_image_ref = str(job["runtime_image_ref"])
-    container_name = job_container_name(machine, launch_id=launch_id)
-    payload = job_payload_for_launch(job, {**launch, "container_name": container_name})
+    return inspected.returncode == 0
+
+
+def _load_train_job(conn, job_id: int) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM train_jobs WHERE id = %(job_id)s", {"job_id": int(job_id)})
+        row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"train job not found: {job_id}")
+    return dict(row)
+
+
+def _terminal_result(
+    launch: Mapping[str, Any],
+    *,
+    status: str,
+    error: str,
+    exit_code: int | None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "job_kind": launch["job_kind"],
+        "job_id": int(launch["job_id"]),
+        "launch_id": str(launch["launch_id"]),
+        "machine": str(launch["machine"]),
+        "runtime_image_ref": str(launch["runtime_image_ref"]),
+        "status": status,
+        "exit_code": exit_code,
+        "error": error,
+    }
+
+
+def _record_launch_error(conn, launch_id: str, error: str) -> None:
+    record_job_launch_error(conn, launch_id=launch_id, error=error, retry_after_seconds=30.0)
+
+
+def _start_or_resume_launch(
+    conn,
+    machine: MachineConfig,
+    *,
+    launch: Mapping[str, Any],
+    known_container: JobContainer | None = None,
+    image_ready: bool = False,
+) -> bool:
+    launch_id = str(launch["launch_id"])
+    container_name = str(launch["container_name"])
+    job = _load_train_job(conn, int(launch["job_id"]))
     try:
-        write_remote_payload(machine, launch_payload_path(machine, launch_id), payload)
-        pull_status = docker_pull_for_job(machine, runtime_image_ref)
-        if pull_status != 0:
-            release_job_launch(conn, launch_id=launch_id, error=f"docker pull failed {pull_status}")
-            raise RuntimeError(f"docker pull failed exit={pull_status}")
-        run_command = job_container_run_command(
+        if not image_ready and not ensure_runtime_image_available(
+            machine, str(launch["runtime_image_ref"])
+        ):
+            _record_launch_error(conn, launch_id, "runtime image is unavailable")
+            return False
+        write_remote_payload(
             machine,
-            job_id=int(job["id"]),
-            launch_id=launch_id,
-            runtime_image_ref=runtime_image_ref,
-            container_name=container_name,
+            launch_payload_path(machine, launch_id),
+            job_payload_for_launch(job, launch),
         )
-        result = run_machine_shell(machine, shell_join(run_command), capture=True)
-        if result.returncode != 0:
-            release_job_launch(
-                conn,
+        container = known_container
+        if container is None:
+            create_command = job_container_create_command(
+                machine,
+                job_id=int(job["id"]),
                 launch_id=launch_id,
-                error=f"docker run failed {result.returncode}: {result.stderr or result.stdout}",
+                runtime_image_ref=str(launch["runtime_image_ref"]),
+                container_name=container_name,
             )
-            raise RuntimeError(f"docker run failed exit={result.returncode}: {result.stderr or result.stdout}")
-        provider_run_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else container_name
+            created = run_machine_shell(
+                machine,
+                shell_join(create_command),
+                capture=True,
+                timeout=MACHINE_COMMAND_TIMEOUT_SECONDS,
+            )
+            containers = {item.launch_id: item for item in list_job_containers(machine)}
+            container = containers.get(launch_id)
+            if container is None:
+                detail = (created.stderr or created.stdout or "").strip()
+                _record_launch_error(
+                    conn,
+                    launch_id,
+                    detail or f"docker create failed exit={created.returncode}",
+                )
+                return False
+        if container.state != "running":
+            started = run_machine_docker(machine, ["start", container_name], capture=True)
+            containers = {item.launch_id: item for item in list_job_containers(machine)}
+            container = containers.get(launch_id)
+            if container is None or container.state != "running":
+                detail = (started.stderr or started.stdout or "").strip()
+                _record_launch_error(
+                    conn,
+                    launch_id,
+                    detail or f"docker start failed exit={started.returncode}",
+                )
+                return False
         mark_job_launch_running(
             conn,
             launch_id=launch_id,
             container_name=container_name,
-            provider_run_id=provider_run_id,
+            provider_run_id=container_name,
         )
-        log_shepherd_event(
-            machine=machine.name,
-            action="launch",
-            result="started",
-            job_kind=TRAIN_JOB_KIND,
-            job_id=job["id"],
-            launch_id=launch_id,
-            container=container_name,
-            color=color,
-        )
-        return job, launch
-    except Exception:
-        raise
+        return True
+    except Exception as exc:
+        _record_launch_error(conn, launch_id, str(exc))
+        return False
 
 
 def launch_cancel_requested(conn, launch: Mapping[str, Any]) -> bool:
@@ -1023,93 +979,83 @@ def cancel_running_job_launch(
     *,
     launch: Mapping[str, Any],
     container: JobContainer,
-    color: bool | None = None,
 ) -> bool:
     launch_id = str(launch["launch_id"])
-    result = run_machine_docker(machine, ["stop", container.name], capture=True)
+    docker_args = (
+        ["rm", "--force", container.name]
+        if container.state == "created"
+        else ["stop", "--time", "120", container.name]
+    )
+    result = run_machine_docker(
+        machine,
+        docker_args,
+        capture=True,
+        timeout=DOCKER_STOP_TIMEOUT_SECONDS,
+    )
     if result.returncode != 0:
-        log_shepherd_event(
-            machine=machine.name,
-            action="cancel",
-            result="failed",
-            launch_id=launch_id,
-            container=container.name,
-            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
-            color=color,
+        _record_launch_error(
+            conn,
+            launch_id,
+            (result.stderr or result.stdout or "").strip() or f"docker stop exit={result.returncode}",
         )
         return False
-    synthetic = {
-        "job_kind": launch["job_kind"],
-        "job_id": launch["job_id"],
-        "launch_id": launch_id,
-        "status": "canceled",
-        "exit_code": 130,
-        "error": "cancel requested",
-    }
-    finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
-    log_shepherd_event(
-        machine=machine.name,
-        action="cancel",
-        result="ok",
+    finish_job_launch_from_result(
+        conn,
         launch_id=launch_id,
-        container=container.name,
-        color=color,
+        result=_terminal_result(
+            launch,
+            status="canceled",
+            exit_code=130,
+            error="cancel requested",
+        ),
     )
     return True
 
 
-def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | None = None) -> int:
+def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
     launches = active_job_launches(conn, machine=machine.name)
     containers = {container.launch_id: container for container in list_job_containers(machine)}
     reconciled = 0
-    released_launch_ids: set[str] = set()
     for launch in launches:
         launch_id = str(launch["launch_id"])
-        if launch_id in released_launch_ids:
-            reconciled += 1
+        retry_at = launch.get("next_retry_at")
+        if retry_at is not None and retry_at > datetime.now(UTC):
             continue
         container = containers.get(launch_id)
         if container is None:
-            result = read_remote_result(machine, str(launch["output_uri"]))
-            if result is not None:
-                finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="finalize",
-                    result="ok",
+            observation = observe_remote_result(machine, str(launch["output_uri"]))
+            if observation.state == "present":
+                finish_job_launch_from_result(conn, launch_id=launch_id, result=observation.payload or {})
+                reconciled += 1
+            elif observation.state == "error":
+                _record_launch_error(conn, launch_id, observation.error or "result observation failed")
+            elif launch_cancel_requested(conn, launch):
+                finish_job_launch_from_result(
+                    conn,
                     launch_id=launch_id,
-                    source="result.json",
-                    color=color,
+                    result=_terminal_result(
+                        launch,
+                        status="canceled",
+                        exit_code=130,
+                        error="cancel requested; container authoritatively absent",
+                    ),
                 )
+                reconciled += 1
             elif launch["state"] == "launching":
-                release_job_launch(conn, launch_id=launch_id, error="launching container missing")
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="release",
-                    result="ok",
-                    launch_id=launch_id,
-                    reason="launching container missing",
-                    color=color,
-                )
+                if _start_or_resume_launch(conn, machine, launch=launch):
+                    reconciled += 1
             else:
-                synthetic = {
-                    "job_kind": launch["job_kind"],
-                    "job_id": launch["job_id"],
-                    "launch_id": launch_id,
-                    "status": "failed",
-                    "exit_code": None,
-                    "error": "running container missing and result.json not found",
-                }
-                finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="finalize",
-                    result="failed",
+                finish_job_launch_from_result(
+                    conn,
                     launch_id=launch_id,
-                    reason="running container missing",
-                    color=color,
+                    result=_terminal_result(
+                        launch,
+                        status="failed",
+                        exit_code=None,
+                        error="running container authoritatively absent without result.json",
+                    ),
                 )
-            reconciled += 1
+                reconciled += 1
             continue
         if (
             container.state in {"created", "restarting", "running"}
@@ -1120,132 +1066,105 @@ def reconcile_machine_launches(conn, machine: MachineConfig, *, color: bool | No
                 machine,
                 launch=launch,
                 container=container,
-                color=color,
             ):
                 reconciled += 1
                 continue
-        if container.state == "running":
-            mark_job_launch_running(
-                conn,
-                launch_id=launch_id,
-                container_name=container.name,
-                provider_run_id=container.name,
-            )
-            reconciled += 1
+        if container.state == "created":
+            if _start_or_resume_launch(conn, machine, launch=launch, known_container=container):
+                reconciled += 1
             continue
-        result = read_remote_result(machine, str(launch["output_uri"]))
-        if result is not None:
-            superseded = tuple(
-                str(candidate["launch_id"])
-                for candidate in launches
-                if candidate["job_id"] == launch["job_id"]
-                and candidate["launch_id"] != launch_id
-                and (
-                    (sibling := containers.get(str(candidate["launch_id"]))) is None
-                    or sibling.state not in {"created", "restarting", "running"}
-                )
-            )
-            if superseded:
-                released = adopt_terminal_train_launch(
+        if container.state == "running":
+            if launch["state"] == "launching":
+                mark_job_launch_running(
                     conn,
                     launch_id=launch_id,
-                    superseded_launch_ids=superseded,
+                    container_name=container.name,
+                    provider_run_id=container.name,
                 )
-                released_launch_ids.update(released)
-                log_shepherd_event(
-                    machine=machine.name,
-                    action="supersede",
-                    result="ok",
-                    launch_id=launch_id,
-                    released=",".join(released),
-                    color=color,
-                )
-            finish_job_launch_from_result(conn, launch_id=launch_id, result=result)
-            log_shepherd_event(
-                machine=machine.name,
-                action="finalize",
-                result="ok",
+                reconciled += 1
+            continue
+        observation = observe_remote_result(machine, str(launch["output_uri"]))
+        if observation.state == "present":
+            finish_job_launch_from_result(
+                conn,
                 launch_id=launch_id,
-                exit_state=container.state,
-                color=color,
+                result=observation.payload or {},
             )
+            reconciled += 1
+        elif observation.state == "error":
+            _record_launch_error(conn, launch_id, observation.error or "result observation failed")
         else:
-            synthetic = {
-                "job_kind": launch["job_kind"],
-                "job_id": launch["job_id"],
-                "launch_id": launch_id,
-                "status": "failed",
-                "exit_code": None,
-                "error": f"container exited without result.json: {container.status}",
-            }
-            finish_job_launch_from_result(conn, launch_id=launch_id, result=synthetic)
-            log_shepherd_event(
-                machine=machine.name,
-                action="finalize",
-                result="failed",
+            finish_job_launch_from_result(
+                conn,
                 launch_id=launch_id,
-                reason="missing result.json",
-                color=color,
+                result=_terminal_result(
+                    launch,
+                    status="failed",
+                    exit_code=None,
+                    error=f"container exited without result.json: {container.status}",
+                ),
             )
-        reconciled += 1
+            reconciled += 1
     return reconciled
 
 
-def train_container_slot_usage(machine: MachineConfig) -> tuple[int, int, int]:
+def train_container_slot_usage(conn, machine: MachineConfig) -> tuple[int, int, int]:
     containers = list_job_containers(machine)
-    active = [
-        container
-        for container in containers
-        if container.job_kind == TRAIN_JOB_KIND
-        and container.state in {"running", "created", "restarting"}
-    ]
-    capacity = machine.limits.max_parallel_containers
-    return len(active), capacity, max(0, capacity - len(active))
-
-
-def machine_available_train_slots(machine: MachineConfig, *, limit: int | None = None) -> int:
-    active, capacity, available = train_container_slot_usage(machine)
-    if limit is None:
-        return available
-    if limit < 1:
-        raise ValueError("fleet container limit must be at least 1")
-    desired_capacity = min(limit, capacity)
-    return max(0, desired_capacity - active)
+    launches = active_job_launches(conn, machine=machine.name)
+    reserved = {str(launch["launch_id"]) for launch in launches}
+    orphan_count = 0
+    for container in containers:
+        if container.job_kind != TRAIN_JOB_KIND or container.state not in {"running", "created", "restarting"}:
+            continue
+        if container.launch_id:
+            reserved.add(container.launch_id)
+        else:
+            orphan_count += 1
+    control = machine_control(conn, machine=machine.name)
+    configured = machine.limits.max_parallel_containers
+    requested = control.get("effective_capacity")
+    capacity = min(configured, int(requested)) if requested is not None else configured
+    used = len(reserved) + orphan_count
+    return used, capacity, max(0, capacity - used)
 
 
 def launch_next_jobs(
     conn,
     *,
     machine: MachineConfig,
-    limit: int,
-    shared_env_file: Path | None = None,
-    color: bool | None = None,
 ) -> int:
     launched = 0
-    active, capacity, _available = train_container_slot_usage(machine)
-    slots = machine_available_train_slots(machine, limit=int(limit))
-    if slots <= 0:
-        log_shepherd_event(
-            machine=machine.name,
-            action="launch-next",
-            result="skip",
-            reason="no_available_slots",
-            job_kind=TRAIN_JOB_KIND,
-            used=active,
-            max=capacity,
-            color=color,
-        )
+    available_images: set[str] = set()
+    control = machine_control(conn, machine=machine.name)
+    if bool(control.get("drained")):
         return 0
+    _used, _capacity, slots = train_container_slot_usage(conn, machine)
     for _ in range(slots):
-        claimed = launch_claimed_job_container(
+        pending = next_pending_train_job(conn, machine=machine.name)
+        if pending is None:
+            break
+        runtime_image_ref = str(pending["runtime_image_ref"])
+        if runtime_image_ref not in available_images:
+            if not ensure_runtime_image_available(machine, runtime_image_ref):
+                break
+            available_images.add(runtime_image_ref)
+        job_id = int(pending["id"])
+        launch_id = new_train_launch_id(job_id)
+        container_name = job_container_name(machine, launch_id=launch_id)
+        claimed = claim_job_launch(
             conn,
-            machine=machine,
-            shared_env_file=shared_env_file,
-            color=color,
+            machine=machine.name,
+            backend=machine.backend,
+            job_id=job_id,
+            launch_id=launch_id,
+            container_name=container_name,
+            output_uri=launch_output_path(machine, launch_id),
         )
         if claimed is None:
             break
-        launched += 1
+        _job, launch = claimed
+        if _start_or_resume_launch(conn, machine, launch=launch, image_ready=True):
+            launched += 1
     return launched
 
 
@@ -1253,52 +1172,35 @@ def run_reconcile_fill_pass(
     conn,
     *,
     machine: MachineConfig,
-    limit: int,
     shared_env_file: Path | None = None,
-    color: bool | None = None,
 ) -> tuple[int, int]:
-    log_shepherd_event(machine=machine.name, action="reconcile", result="start", color=color)
-    reconciled = reconcile_machine_launches(conn, machine, color=color)
-    log_shepherd_event(
-        machine=machine.name,
-        action="reconcile",
-        result="ok",
-        reconciled=reconciled,
-        color=color,
-    )
-    launched = launch_next_jobs(
-        conn,
-        machine=machine,
-        limit=limit,
-        shared_env_file=shared_env_file,
-        color=color,
-    )
-    log_shepherd_event(
-        machine=machine.name,
-        action="launch-next",
-        result="ok",
-        job_kind=TRAIN_JOB_KIND,
-        launched=launched,
-        color=color,
-    )
+    pending = next_pending_train_job(conn, machine=machine.name)
+    launching = active_job_launches(conn, machine=machine.name, states=("launching",))
+    if machine.backend == "docker_ssh" and (pending is not None or launching):
+        sync_shared_runner_env(
+            machine,
+            shared_env_file or (default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE),
+        )
+    reconciled = reconcile_machine_launches(conn, machine)
+    launched = launch_next_jobs(conn, machine=machine)
     return reconciled, launched
 
 
 @contextmanager
 def machine_mutation_lock(conn, machine_name: str):
-    lock = acquire_shepherd_lock(conn, machine_name)
+    lock = acquire_machine_lock(conn, machine_name)
     try:
         yield lock
     finally:
-        release_shepherd_lock(conn, lock)
+        release_machine_lock(conn, lock)
 
 
-def shepherd_lock_key(machine_name: str) -> str:
-    return f"rlab-fleet-shepherd:{machine_name}"
+def machine_lock_key(machine_name: str) -> str:
+    return f"rlab-fleet-reconciler:{machine_name}"
 
 
-def acquire_shepherd_lock(conn, machine_name: str) -> ShepherdLock:
-    key = shepherd_lock_key(machine_name)
+def acquire_machine_lock(conn, machine_name: str) -> MachineMutationLock:
+    key = machine_lock_key(machine_name)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT pg_try_advisory_lock(hashtextextended(%(key)s, 0)) AS acquired",
@@ -1306,11 +1208,11 @@ def acquire_shepherd_lock(conn, machine_name: str) -> ShepherdLock:
         )
         row = cur.fetchone()
     if not row or not row.get("acquired"):
-        raise ShepherdLockBusy(machine_name)
-    return ShepherdLock(machine=machine_name, key=key)
+        raise MachineLockBusy(machine_name)
+    return MachineMutationLock(machine=machine_name, key=key)
 
 
-def release_shepherd_lock(conn, lock: ShepherdLock) -> None:
+def release_machine_lock(conn, lock: MachineMutationLock) -> None:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT pg_advisory_unlock(hashtextextended(%(key)s, 0)) AS released",
@@ -1318,114 +1220,110 @@ def release_shepherd_lock(conn, lock: ShepherdLock) -> None:
         )
 
 
-def cmd_container_shepherd(args: argparse.Namespace) -> int:
-    machine = resolve_machine(load_registry_from_args(args), args.machine)
-    shared_env_file = shared_runner_env_file_from_args(args)
-    color = not getattr(args, "no_color", False)
+def _maintenance_due(path: Path, *, interval_seconds: float = 3600.0) -> bool:
+    try:
+        return time.time() - path.stat().st_mtime >= interval_seconds
+    except FileNotFoundError:
+        return True
+
+
+def run_service_machine_pass(
+    *,
+    machine_name: str,
+    machines_path: Path,
+    repo_root: Path,
+    deadline_monotonic: float,
+) -> dict[str, Any]:
+    if time.monotonic() >= deadline_monotonic:
+        raise TimeoutError(f"machine lane deadline expired before start: {machine_name}")
+    machine = resolve_machine(load_machine_registry(machines_path), machine_name)
+    deadline_token = _MACHINE_LANE_DEADLINE.set(deadline_monotonic)
+    conn = None
+    try:
+        conn = connect(database_url())
+        with machine_mutation_lock(conn, machine.name):
+            reconciled, launched = run_reconcile_fill_pass(
+                conn,
+                machine=machine,
+                shared_env_file=repo_root / DEFAULT_SHARED_RUNNER_ENV_FILE,
+            )
+            if time.monotonic() >= deadline_monotonic:
+                raise TimeoutError(f"machine lane deadline expired: {machine_name}")
+            maintenance_marker = repo_root / "logs" / "fleet" / f"maintenance-{machine.name}.stamp"
+            pruned = 0
+            removed_containers = 0
+            if reconciled or launched or _maintenance_due(maintenance_marker):
+                removed_containers = prune_inactive_job_containers(conn, machine)
+                pruned = prune_stale_runtime_images(conn, machine)
+                maintenance_marker.parent.mkdir(parents=True, exist_ok=True)
+                maintenance_marker.touch()
+            return {
+                "reconciled": reconciled,
+                "launched": launched,
+                "removed_containers": removed_containers,
+                "pruned_images": pruned,
+            }
+    finally:
+        if conn is not None:
+            conn.close()
+        _MACHINE_LANE_DEADLINE.reset(deadline_token)
+
+
+def _kick_after_machine_control() -> str:
+    from rlab.fleet_service import kick_service
+
+    try:
+        return "kicked" if kick_service() else "degraded"
+    except Exception:
+        return "degraded"
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    resolve_machine(load_registry_from_args(args), args.machine)
     conn = _connect_from_args(args)
     try:
-        try:
-            with machine_mutation_lock(conn, machine.name):
-                while True:
-                    try:
-                        _reconciled, _launched = run_reconcile_fill_pass(
-                            conn,
-                            machine=machine,
-                            limit=int(args.limit),
-                            shared_env_file=shared_env_file,
-                            color=color,
-                        )
-                        pruned = prune_stale_runtime_images(
-                            conn,
-                            machine,
-                            color=color,
-                        )
-                        log_shepherd_event(
-                            machine=machine.name,
-                            action="prune-image",
-                            result="ok",
-                            pruned=pruned,
-                            color=color,
-                        )
-                        if args.once:
-                            return 0
-                    except KeyboardInterrupt:
-                        log_shepherd_event(
-                            machine=machine.name,
-                            action="stop",
-                            reason="keyboard_interrupt",
-                            color=color,
-                        )
-                        return 130
-                    except Exception as exc:
-                        log_shepherd_event(
-                            machine=machine.name,
-                            action="error",
-                            result="error",
-                            error=str(exc),
-                            color=color,
-                        )
-                        if args.once or getattr(args, "fail_fast", False):
-                            return 1
-                    time.sleep(args.interval)
-        except ShepherdLockBusy as exc:
-            log_shepherd_event(machine=exc.machine, action="lock", result="busy", color=color)
-            return 2
+        control = set_machine_control(
+            conn,
+            machine=args.machine,
+            drained=True,
+            reason=args.reason or "operator drain",
+        )
     finally:
         conn.close()
+    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
+    return 0
 
 
-def cmd_container_watch_dashboard(args: argparse.Namespace) -> int:
-    while True:
-        try:
-            snapshot = build_machine_watch_snapshot(args)
-            write_tui_frame(
-                render_machine_watch_dashboard(snapshot, color=not args.no_color),
-                enabled=not args.no_tui,
-            )
-            if args.once:
-                return 0
-        except KeyboardInterrupt:
-            print("\nwatch stopped")
-            return 130
-        except Exception as exc:
-            message = (
-                f"rlab fleet watch machine={args.machine} mode=read-only\n"
-                f"snapshot failed: {exc}\n\nCtrl-C to stop."
-            )
-            write_tui_frame(message, enabled=not args.no_tui)
-            if args.once or getattr(args, "fail_fast", False):
-                return 1
-        time.sleep(args.interval)
+def cmd_resume(args: argparse.Namespace) -> int:
+    resolve_machine(load_registry_from_args(args), args.machine)
+    conn = _connect_from_args(args)
+    try:
+        control = set_machine_control(conn, machine=args.machine, drained=False, reason="resumed")
+    finally:
+        conn.close()
+    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
+    return 0
 
 
-def cmd_ps(args: argparse.Namespace) -> int:
-    registry = load_registry_from_args(args)
-    machines = (
-        [resolve_machine(registry, args.machine)]
-        if getattr(args, "machine", None)
-        else list(registry.machines.values())
-    )
-    lines: list[str] = []
-    for machine in machines:
-        try:
-            containers = sorted(list_job_containers(machine), key=lambda item: item.name)
-        except Exception as exc:
-            lines.append(f"{machine.name}: failed to list job containers: {exc}")
-            continue
-        if not containers:
-            lines.append(f"{machine.name}: job containers: none")
-            continue
-        lines.append(f"{machine.name}: job containers:")
-        for container in containers:
-            lines.append(
-                "  "
-                f"name={container.name} state={container.state or 'unknown'} "
-                f"status={container.status or 'unknown'} "
-                f"job={container.labels.get(JOB_ID_LABEL, 'unknown')} "
-                f"launch={container.launch_id or 'unknown'}"
-            )
-    print("\n".join(lines) if lines else "job containers: none")
+def cmd_capacity(args: argparse.Namespace) -> int:
+    machine = resolve_machine(load_registry_from_args(args), args.machine)
+    if args.capacity is not None and args.capacity > machine.limits.max_parallel_containers:
+        raise SystemExit(
+            f"capacity {args.capacity} exceeds configured maximum "
+            f"{machine.limits.max_parallel_containers} for {machine.name}"
+        )
+    conn = _connect_from_args(args)
+    try:
+        control = set_machine_control(
+            conn,
+            machine=machine.name,
+            effective_capacity=args.capacity,
+            reset_capacity=bool(args.reset),
+            reason="capacity reset" if args.reset else f"capacity set to {args.capacity}",
+        )
+    finally:
+        conn.close()
+    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
     return 0
 
 
@@ -1459,61 +1357,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage one-job rlab containers from queue state.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    status = subparsers.add_parser("status", help="Print train queue demand and active leases.")
-    add_database_arg(status)
-    status.set_defaults(func=cmd_status)
+    drain = subparsers.add_parser("drain", help="Block new claims for one machine.")
+    add_machine_registry_arg(drain)
+    add_database_arg(drain)
+    drain.add_argument("--machine", required=True)
+    drain.add_argument("--reason")
+    drain.set_defaults(func=cmd_drain)
 
-    ps = subparsers.add_parser("ps", help="List one-job containers across configured machines.")
-    add_machine_registry_arg(ps)
-    ps.add_argument("--machine", help="Limit listing to one machine.")
-    ps.set_defaults(func=cmd_ps)
+    resume = subparsers.add_parser("resume", help="Allow new claims for one machine.")
+    add_machine_registry_arg(resume)
+    add_database_arg(resume)
+    resume.add_argument("--machine", required=True)
+    resume.set_defaults(func=cmd_resume)
 
-    shepherd = subparsers.add_parser(
-        "shepherd",
-        help="Run the mutating one-job-container orchestration loop for one machine.",
-    )
-    add_machine_registry_arg(shepherd)
-    add_database_arg(shepherd)
-    shepherd.add_argument("--repo-root", default=None)
-    shepherd.add_argument("--machine", required=True)
-    shepherd.add_argument("--limit", type=int, default=1)
-    shepherd.add_argument("--interval", type=float, default=30.0, help="Polling interval in seconds.")
-    shepherd.add_argument("--once", action="store_true", help="Run one reconcile/fill pass and exit.")
-    shepherd.add_argument(
-        "--fail-fast",
-        action="store_true",
-        help="Exit when a poll or action fails instead of retrying forever.",
-    )
-    shepherd.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    shepherd.set_defaults(func=cmd_container_shepherd)
-
-    watch_latest = subparsers.add_parser(
-        "watch",
-        help="Run a read-only one-job-container dashboard.",
-    )
-    add_machine_registry_arg(watch_latest)
-    add_database_arg(watch_latest)
-    watch_latest.add_argument(
-        "--machine",
-        required=True,
-        help="Machine to monitor.",
-    )
-    watch_latest.add_argument(
-        "--interval",
-        type=float,
-        default=DEFAULT_WATCH_LATEST_INTERVAL_SECONDS,
-        help="Polling interval in seconds; defaults to 15.",
-    )
-    watch_latest.add_argument("--once", action="store_true", help="Render/apply one poll and exit.")
-    watch_latest.add_argument(
-        "--fail-fast",
-        action="store_true",
-        help="Exit when a poll or action fails instead of retrying forever.",
-    )
-    watch_latest.add_argument("--no-tui", action="store_true", help="Do not clear/redraw the terminal.")
-    watch_latest.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    watch_latest.add_argument("--width", type=int, help="Override dashboard width.")
-    watch_latest.set_defaults(func=cmd_container_watch_dashboard)
+    capacity = subparsers.add_parser("capacity", help="Set temporary effective machine capacity.")
+    add_machine_registry_arg(capacity)
+    add_database_arg(capacity)
+    capacity.add_argument("--machine", required=True)
+    capacity_action = capacity.add_mutually_exclusive_group(required=True)
+    capacity_action.add_argument("--set", dest="capacity", type=int)
+    capacity_action.add_argument("--reset", action="store_true")
+    capacity.set_defaults(func=cmd_capacity)
 
     setup = subparsers.add_parser("setup-host", help="Prepare SSH Docker hosts for job containers.")
     add_machine_registry_arg(setup)
@@ -1521,6 +1385,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(setup)
     add_runtime_image_args(setup)
     setup.set_defaults(func=cmd_setup_host)
+
+    from rlab.fleet_service import add_service_parser
+
+    add_service_parser(subparsers)
 
     return parser
 

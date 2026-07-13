@@ -57,7 +57,9 @@ Start with a queue-backed local smoke run:
 ```bash
 rlab train \
   --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
-  --run-target local-macbook \
+  --machine local-macbook \
+  --wait terminal \
+  --json \
   --set recipe_id=local-smoke \
   --set group_id=local-smoke \
   --set train.policy.timesteps=512 \
@@ -65,14 +67,12 @@ rlab train \
   --set logging.wandb=false \
   --set logging.wandb_mode=disabled \
   --set logging.wandb_artifact_storage_uri=
-
-rlab fleet shepherd --machine local-macbook --limit 1 --once
 ```
 
 Inspect the resulting launch and `result.json`:
 
 ```bash
-rlab fleet watch --machine local-macbook --once --no-tui
+rlab jobs status --machine local-macbook --json
 ```
 
 Queue comparable experiments from checked-in recipe files:
@@ -80,6 +80,7 @@ Queue comparable experiments from checked-in recipe files:
 ```bash
 rlab train \
   --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
+  --machine beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
@@ -89,6 +90,7 @@ apply repeatable Hydra/OmegaConf dotlist overrides from the CLI:
 ```bash
 rlab train \
   --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
+  --machine beast-3 \
   --set recipe_id=lr2e4 \
   --set group_id=Level1-1-lr2e4 \
   --set train.policy.learning_rate=2e-4 \
@@ -105,7 +107,7 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 
 ```bash
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
-rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml
+rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # installed CLI; works outside this checkout
 rlab play <entity>/<project>/<run-name>-checkpoint:latest
@@ -113,13 +115,16 @@ rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from H
 rlab play <checkpoint> --step-over
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
-rlab jobs status --goal <goal-slug>
+rlab jobs status --machine beast-3 --json
+rlab jobs wait --job <train-job-id> --until terminal --timeout 12h --json
+rlab jobs cancel --job <train-job-id> --wait --json
+rlab jobs logs --job <train-job-id> --follow
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
 rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
-rlab jobs cancel-train <train_job_id>
-rlab fleet shepherd --machine beast-3 --once
-rlab fleet watch --machine beast-3
+rlab fleet drain --machine beast-3
+rlab fleet resume --machine beast-3
+rlab fleet service status --json
 rlab benchmark list
 rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 ```
@@ -168,17 +173,20 @@ Learning-oriented standalone examples live under `examples/learning/`; productio
 
 ## Fleet
 
-Queue-backed training is the supported GPU workflow. `rlab train` creates train
-jobs, and `rlab fleet shepherd --machine <name>` reconciles digest-pinned,
-one-job Docker containers on registered local or SSH Docker machines.
+Queue-backed training is the supported GPU workflow. Every `rlab train` job
+names one registered machine. A single Mac-side launchd service performs short,
+bounded reconciliation passes for digest-pinned, one-job Docker containers on
+registered local or SSH Docker machines. Runner machines remain SSH/Docker-only.
 
 ```bash
-rlab fleet shepherd --machine beast-3 --once
+rlab fleet service install
+rlab fleet service status --json
+rlab jobs status --machine beast-3 --json
 ```
 
-Hard fleet capacity and target mapping come from `experiments/machines.yaml`.
-`INSTANCES.md` is the authoritative operator guide for shepherd operation,
-status and watch commands, host setup, cleanup, hardware targets, concurrency,
+Hard fleet capacity and exact machine configuration come from
+`experiments/machines.yaml`. `INSTANCES.md` is the authoritative operator guide
+for service operation, job status, host setup, cleanup, hardware, concurrency,
 and beast host recommendations.
 
 ## Notes

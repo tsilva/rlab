@@ -176,12 +176,56 @@ def _map_action_lookup(lookup: Any, indices: np.ndarray, output: Any) -> None:
 
 
 @njit(cache=True, nogil=True)
-def _identity_step_kernel(episode_steps, max_episode_steps, truncated, outcomes):
+def _identity_step_kernel(
+    episode_steps,
+    max_episode_steps,
+    terminated,
+    truncated,
+    outcomes,
+    event_bits,
+):
     for lane in range(episode_steps.shape[0]):
         episode_steps[lane] += 1
         timed_out = max_episode_steps > 0 and episode_steps[lane] >= max_episode_steps
+        terminated[lane] = False
         truncated[lane] = timed_out
         outcomes[lane] = 3 if timed_out else 0
+        event_bits[lane] = 0
+
+
+@njit(cache=True, nogil=True)
+def _identity_equals_for_event_kernel(
+    values,
+    expected_value,
+    required_steps,
+    consecutive_steps,
+    event_bit,
+    event_outcome,
+    terminated,
+    truncated,
+    outcomes,
+    event_bits,
+):
+    for lane in range(values.shape[0]):
+        if values[lane] == expected_value:
+            consecutive_steps[lane] += 1
+        else:
+            consecutive_steps[lane] = 0
+        if consecutive_steps[lane] != required_steps:
+            continue
+
+        event_bits[lane] |= event_bit
+        if event_outcome == 2:
+            terminated[lane] = True
+            truncated[lane] = False
+            outcomes[lane] = 2
+        elif event_outcome == 1 and outcomes[lane] != 2:
+            terminated[lane] = True
+            truncated[lane] = False
+            outcomes[lane] = 1
+        elif event_outcome == 3 and not terminated[lane]:
+            truncated[lane] = True
+            outcomes[lane] = 3
 
 
 @njit(cache=True, nogil=True)
@@ -581,6 +625,15 @@ class SignalBindings:
             raise ValueError(f"semantic signal {semantic_name!r} must be scalar per lane")
         return values
 
+@dataclass(frozen=True)
+class IdentityEqualsForEvent:
+    name: str
+    signal: str
+    value: int | float
+    steps: int
+    outcome: Outcome = Outcome.NEUTRAL
+
+
 class IdentityTaskDefinition:
     def __init__(
         self,
@@ -590,12 +643,49 @@ class IdentityTaskDefinition:
         observation_source_shape: tuple[int, int] | None = None,
         max_episode_steps: int = 0,
         action_values: Sequence[Any] | None = None,
+        signals: Mapping[str, SignalSource] | None = None,
+        events: Mapping[str, Mapping[str, Any]] | None = None,
+        termination: Mapping[str, Any] | None = None,
     ):
         self.observation_mask = observation_mask
         self.observation_mask_fill = int(observation_mask_fill)
         self.observation_source_shape = observation_source_shape
         self.max_episode_steps = int(max_episode_steps)
         self.action_values = None if action_values is None else tuple(action_values)
+        self.signals = {
+            str(name): source if isinstance(source, str) else tuple(source)
+            for name, source in (signals or {}).items()
+        }
+        raw_events = dict(events or {})
+        if len(raw_events) > 64:
+            raise ValueError("identity task supports at most 64 events")
+        event_outcomes: dict[str, Outcome] = {}
+        termination = dict(termination or {})
+        for outcome_name, outcome in (
+            ("success", Outcome.SUCCESS),
+            ("failure", Outcome.FAILURE),
+            ("timeout", Outcome.TIMEOUT),
+            ("neutral", Outcome.NEUTRAL),
+        ):
+            for name in termination.get(outcome_name, ()):
+                event_name = str(name)
+                if event_name in event_outcomes:
+                    raise ValueError(f"identity event {event_name!r} has multiple outcomes")
+                event_outcomes[event_name] = outcome
+        compiled_events: list[IdentityEqualsForEvent] = []
+        for name, rule in raw_events.items():
+            if rule.get("operation") != "equals_for":
+                raise ValueError(f"identity event {name!r} requires operation='equals_for'")
+            compiled_events.append(
+                IdentityEqualsForEvent(
+                    name=str(name),
+                    signal=str(rule["signal"]),
+                    value=rule["value"],
+                    steps=int(rule["steps"]),
+                    outcome=event_outcomes.get(str(name), Outcome.NEUTRAL),
+                )
+            )
+        self.events = tuple(compiled_events)
         if self.max_episode_steps < 0:
             raise ValueError("max_episode_steps must be non-negative")
 
@@ -608,13 +698,12 @@ class IdentityTaskDefinition:
             observation_source_shape=self.observation_source_shape,
             max_episode_steps=self.max_episode_steps,
             action_values=self.action_values,
+            signals=self.signals,
+            events=self.events,
         )
 
 
 class IdentityTaskKernel:
-    event_names: tuple[str, ...] = ()
-    has_events = False
-
     def __init__(
         self,
         descriptor: ProviderDescriptor,
@@ -625,6 +714,8 @@ class IdentityTaskKernel:
         observation_source_shape: tuple[int, int] | None = None,
         max_episode_steps: int = 0,
         action_values: Sequence[Any] | None = None,
+        signals: Mapping[str, SignalSource] | None = None,
+        events: Sequence[IdentityEqualsForEvent] = (),
     ):
         self.num_envs = int(num_envs)
         self._native_observation_space = descriptor.native_observation_space
@@ -654,6 +745,17 @@ class IdentityTaskKernel:
         self._events = np.zeros(self.num_envs, dtype=np.uint64)
         self._episode_steps = np.zeros(self.num_envs, dtype=np.int64)
         self._max_episode_steps = int(max_episode_steps)
+        self._event_configs = tuple(events)
+        self.event_names = tuple(event.name for event in self._event_configs)
+        self.has_events = bool(self._event_configs)
+        self._signal_bindings = (
+            SignalBindings(descriptor, signals or {}, self.num_envs)
+            if self._event_configs
+            else None
+        )
+        self._event_consecutive_steps = tuple(
+            np.zeros(self.num_envs, dtype=np.int64) for _event in self._event_configs
+        )
         self._observation_mask = observation_mask
         self._observation_mask_fill = int(observation_mask_fill)
         self._observation_source_shape = observation_source_shape
@@ -721,15 +823,31 @@ class IdentityTaskKernel:
         provider_truncated: np.ndarray,
         signals: Mapping[str, Any],
     ) -> TaskStep:
-        del provider_terminated, provider_truncated, signals
+        del provider_terminated, provider_truncated
         np.copyto(self._rewards, np.asarray(native_rewards, dtype=np.float32))
         _identity_step_kernel(
             self._episode_steps,
             self._max_episode_steps,
+            self._terminated,
             self._truncated,
             self._outcomes,
+            self._events,
         )
-        self._events.fill(0)
+        if self._signal_bindings is not None:
+            for index, event in enumerate(self._event_configs):
+                values = self._signal_bindings.scalar(event.signal, signals)
+                _identity_equals_for_event_kernel(
+                    values,
+                    event.value,
+                    event.steps,
+                    self._event_consecutive_steps[index],
+                    np.uint64(1 << index),
+                    int(event.outcome),
+                    self._terminated,
+                    self._truncated,
+                    self._outcomes,
+                    self._events,
+                )
         return TaskStep(
             self._rewards,
             self._terminated,
@@ -745,8 +863,16 @@ class IdentityTaskKernel:
         reset_signals: Mapping[str, Any],
         mask: np.ndarray,
     ) -> bool:
-        del reset_observations, reset_signals
+        del reset_observations
         mask = np.asarray(mask, dtype=bool)
+        if self._signal_bindings is not None:
+            for event, consecutive_steps in zip(
+                self._event_configs,
+                self._event_consecutive_steps,
+                strict=True,
+            ):
+                self._signal_bindings.scalar(event.signal, reset_signals, mask=mask)
+                consecutive_steps[mask] = 0
         self._episode_steps[mask] = 0
 
 

@@ -47,6 +47,7 @@ class DeterministicNativeVectorProvider:
         self._lives = np.full(num_envs, 3, dtype=np.int64)
         self._level_hi = np.ones(num_envs, dtype=np.int64)
         self._level_lo = np.ones(num_envs, dtype=np.int64)
+        self._ball_y = np.zeros(num_envs, dtype=np.int64)
         self._queued_steps: list[dict[str, Any]] = []
         self.reset_calls: list[dict[str, Any]] = []
         self.step_actions: list[Any] = []
@@ -62,6 +63,7 @@ class DeterministicNativeVectorProvider:
             "lives": self._lives,
             "level_hi": self._level_hi,
             "level_lo": self._level_lo,
+            "ball_y": self._ball_y,
         }
         if start_ids is not None:
             infos["start_id"] = np.asarray(start_ids, dtype=object)
@@ -96,6 +98,7 @@ class DeterministicNativeVectorProvider:
         self._lives[mask] = 3
         self._level_hi[mask] = 1
         self._level_lo[mask] = 1
+        self._ball_y[mask] = 0
         return self._observations, self._infos(starts)
 
     def step(self, actions: Any):
@@ -113,6 +116,7 @@ class DeterministicNativeVectorProvider:
             ("lives", self._lives),
             ("level_hi", self._level_hi),
             ("level_lo", self._level_lo),
+            ("ball_y", self._ball_y),
         ):
             if name in values:
                 target[:] = np.asarray(values[name], dtype=target.dtype)
@@ -135,7 +139,7 @@ def descriptor_for(provider: DeterministicNativeVectorProvider) -> ProviderDescr
         native_action_space=provider.single_action_space,
         signal_schema={
             name: SignalSpec(name, np.int64)
-            for name in ("x", "score", "lives", "level_hi", "level_lo")
+            for name in ("x", "score", "lives", "level_hi", "level_lo", "ball_y")
         },
         start_catalog=("Level1-1", "Level1-2"),
         render_support=("rgb_array",),
@@ -545,6 +549,50 @@ class MarioKernelTests(unittest.TestCase):
 
 
 class RlabVecEnvTests(unittest.TestCase):
+    def test_identity_equals_for_failure_resets_only_the_stalled_lane(self):
+        provider = DeterministicNativeVectorProvider()
+        descriptor = descriptor_for(provider)
+        kernel = IdentityTaskDefinition(
+            signals={"ball_y": "ball_y"},
+            events={
+                "serve_stall": {
+                    "signal": "ball_y",
+                    "operation": "equals_for",
+                    "value": 0,
+                    "steps": 3,
+                }
+            },
+            termination={"failure": ["serve_stall"]},
+        ).bind(descriptor, provider.num_envs)
+        runtime = BatchRuntime(provider, descriptor, kernel, run_seed=11)
+        runtime.reset()
+
+        provider.queue_step(ball_y=[0, 0], rewards=[0.0, 0.0])
+        first = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        self.assertFalse(first.dones.any())
+
+        provider.queue_step(ball_y=[5, 0], rewards=[0.0, 0.0])
+        second = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        self.assertFalse(second.dones.any())
+
+        provider.queue_step(ball_y=[0, 0], rewards=[0.0, 0.0])
+        third = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        np.testing.assert_array_equal(third.terminated, [False, True])
+        np.testing.assert_array_equal(third.truncated, [False, False])
+        np.testing.assert_array_equal(provider.reset_calls[-1]["mask"], [False, True])
+        record = next(
+            record for record in runtime.drain_records() if isinstance(record, EpisodeRecord)
+        )
+        self.assertEqual(record.events, ("serve_stall",))
+        self.assertEqual(record.outcome, Outcome.FAILURE)
+
+        provider.queue_step(ball_y=[0, 5], rewards=[0.0, 0.0])
+        fourth = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        self.assertFalse(fourth.dones.any())
+        provider.queue_step(ball_y=[0, 5], rewards=[0.0, 0.0])
+        fifth = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        np.testing.assert_array_equal(fifth.terminated, [True, False])
+
     def test_sb3_facade_returns_same_step_reset_observation_and_drains_records(self):
         provider = DeterministicNativeVectorProvider()
         descriptor = descriptor_for(provider)

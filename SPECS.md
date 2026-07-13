@@ -31,7 +31,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - `stable-retro-turbo` must preserve ROM identity, save-state starts, observations, raw signals, and engine termination across training, evaluation, and playback.
 - Atari environments must use `stable-retro-turbo`'s native `RetroVecEnv` with the packaged Stella core, not an `ale-py` vector environment constructed by rlab.
 - Breakout and Ms. Pac-Man training must use disabled autoreset and masked lane reset through the same rlab facade as Mario.
-- Stable Retro Atari environments must use the provider's `use_fire_reset` reset mechanic rather than task-kernel or action-codec FIRE overrides. Breakout must expose standard NOOP/FIRE/LEFT/RIGHT policy actions; life loss and level progression must not be episode boundaries.
+- Stable Retro Atari environments must use the provider's `use_fire_reset` reset mechanic rather than task-kernel or action-codec FIRE overrides; it is disabled by default. Breakout must expose standard NOOP/FIRE/LEFT/RIGHT policy actions; life loss and level progression must not be episode boundaries.
 - Official Farama Stable Retro is unsupported; `stable-retro-turbo` with rlab's native-vector lifecycle extension is the supported Retro runtime.
 - SuperMarioBros-NES Turbo must match the applicable `stable-retro-turbo` public environment contract, with every provider-specific difference explicit and validated.
 - Official ViZDoom Gymnasium environments are unsupported unless a provider supplies a registered native vector entry point with disabled/manual autoreset, masked reset, columnar signals, and rendering; scalar ViZDoom environments must not be synthesized into vectors.
@@ -48,6 +48,9 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Remote artifact caches must refresh when an artifact alias resolves to different content so alias advancement cannot reuse stale model files.
 - Visual releases must include reproducibility metadata and a representative replay.
 - Queued attempts must be isolated, use declared runtimes, preserve durable results, recover safely after interruption, separate observation from mutation, and clean unused resources without affecting active or demanded work.
+- Every queued job must name exactly one registered machine; resource-class targets, automatic placement, and silent machine fallback are unsupported.
+- Queue reconciliation must run from one user-session Mac launchd service that invokes bounded short-lived passes; runner machines remain SSH/Docker-only, and remote containers continue independently while the control Mac sleeps or is logged out.
+- A queued job has one stable launch/container identity and is never retried automatically after execution starts; an explicit retry creates a new traceable job.
 - Machine capacity, runtime paths, scheduling limits, and operator guidance must each have an authoritative source and remain mutually consistent.
 - Benchmark claims must be reproducible and compare matching provider, task-kernel, event-boundary, workload, concurrency, and host-load contracts; Stable Retro benchmarks must use `info_filter=all`, never `none`.
 - Changes must pass relevant automated verification and preserve internally consistent project configuration.

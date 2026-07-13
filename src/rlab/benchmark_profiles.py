@@ -141,15 +141,16 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         require_int(config, "timesteps", label=f"{label}.train_config", require_present=False)
 
     if kind == "local_smoke":
+        if "workers" in payload:
+            raise ValueError(f"{label} does not support invocation-local workers")
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
-        require_non_empty_string(payload, "run_target", label=label, require_present=False)
         require_non_empty_string(payload, "machine", label=label, require_present=False)
         string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
 
     if kind == "fleet_capacity":
-        if "target" in payload or "workers" in payload:
+        if "target" in payload or "host" in payload or "workers" in payload:
             raise ValueError(
-                f"{label} must use host and requested_workers; machine target and capacity "
+                f"{label} must use machine and requested_workers; hard capacity "
                 "come from experiments/machines.yaml"
             )
         if not payload.get("recipe_file"):
@@ -161,7 +162,9 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             label=label,
             require_present=False,
         )
-        host = require_non_empty_string(payload, "host", label=label, require_present=False)
+        machine_name = require_non_empty_string(
+            payload, "machine", label=label, require_present=False
+        )
         requested_workers = require_int(
             payload,
             "requested_workers",
@@ -169,11 +172,11 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             minimum=1,
             require_present=False,
         )
-        machine = resolve_machine(load_machine_registry(), host)
+        machine = resolve_machine(load_machine_registry(), machine_name)
         if requested_workers > machine.limits.max_parallel_containers:
             raise ValueError(
                 f"{label}.requested_workers={requested_workers} exceeds "
-                f"{host} capacity={machine.limits.max_parallel_containers}"
+                f"{machine_name} capacity={machine.limits.max_parallel_containers}"
             )
 
     if kind == "eval_contract":
@@ -220,14 +223,15 @@ def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
 def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     recipe_file = str(profile["recipe_file"])
     machine = str(profile.get("machine") or "local-macbook")
-    run_target = str(profile.get("run_target") or machine)
     enqueue = [
         "rlab",
         "train",
         "--recipe-file",
         recipe_file,
-        "--run-target",
-        run_target,
+        "--machine",
+        machine,
+        "--wait",
+        "terminal",
     ]
     if profile.get("runtime_image_ref_file"):
         enqueue.extend(["--runtime-image-ref-file", str(profile["runtime_image_ref_file"])])
@@ -236,30 +240,16 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     for override in string_list(profile.get("recipe_overrides", ()), label="recipe_overrides"):
         enqueue.extend(["--set", override])
     return [
-        _command("enqueue-local-smoke", enqueue),
+        _command("train-local-smoke", enqueue),
         _command(
-            "local-fleet-shepherd-once",
+            "local-jobs-status",
             [
                 "rlab",
-                "fleet",
-                "shepherd",
+                "jobs",
+                "status",
                 "--machine",
                 machine,
-                "--limit",
-                str(profile.get("workers", 1)),
-                "--once",
-            ],
-        ),
-        _command(
-            "local-fleet-watch",
-            [
-                "rlab",
-                "fleet",
-                "watch",
-                "--machine",
-                machine,
-                "--once",
-                "--no-tui",
+                "--json",
             ],
         ),
     ]
@@ -339,7 +329,7 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
 
 def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     recipe_file = str(profile["recipe_file"])
-    host = str(profile["host"])
+    machine = str(profile["machine"])
     commands = [
         _command(
             "enqueue-train",
@@ -348,34 +338,23 @@ def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                 "train",
                 "--recipe-file",
                 recipe_file,
+                "--machine",
+                machine,
                 "--runtime-image-ref-file",
                 str(profile["runtime_image_ref_file"]),
+                "--wait",
+                "running",
             ],
         ),
         _command(
-            "fleet-shepherd-once",
+            "machine-jobs-status",
             [
                 "rlab",
-                "fleet",
-                "shepherd",
+                "jobs",
+                "status",
                 "--machine",
-                host,
-                "--limit",
-                str(profile["requested_workers"]),
-                "--once",
-                "--dry-run",
-            ],
-        ),
-        _command(
-            "fleet-watch",
-            [
-                "rlab",
-                "fleet",
-                "watch",
-                "--machine",
-                host,
-                "--once",
-                "--no-tui",
+                machine,
+                "--json",
             ],
         ),
     ]

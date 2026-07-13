@@ -17,7 +17,7 @@ from rlab.eval_metrics import (
     run_eval_episode,
     summarize_episode_results,
 )
-from rlab.eval_runner import evaluate_model_episodes
+from rlab.eval_runner import _eval_runtime_config, evaluate_model_episodes
 from rlab.metric_names import EVAL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
 from rlab.task_kernels import Outcome
@@ -244,6 +244,57 @@ class EvalMetricTests(unittest.TestCase):
         self.assertNotIn("eval/done/level_change", summary)
         self.assertNotIn("max_x_mean", summary)
         self.assertNotIn("death_count", summary)
+
+    def test_generic_eval_summary_counts_configured_terminal_events(self) -> None:
+        summary = summarize_episode_results(
+            [
+                {
+                    "start_state": "Start",
+                    "reward": 10.0,
+                    "steps": 856,
+                    "terminated": True,
+                    "truncated": False,
+                    "events": ["serve_stall"],
+                    "final_info": {"ball_y": 0},
+                },
+                {
+                    "start_state": "Start",
+                    "reward": 4.0,
+                    "steps": 54000,
+                    "terminated": False,
+                    "truncated": True,
+                    "events": [],
+                    "final_info": {"ball_y": 32},
+                },
+            ],
+            deterministic=False,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertEqual(summary["eval/done/serve_stall"], 1)
+        self.assertEqual(summary["eval/done/serve_stall/rate"], 0.5)
+        self.assertEqual(summary["eval/done/serve_stall/from/Start"], 1)
+        self.assertEqual(summary["eval/done/serve_stall/from/Start/rate"], 0.5)
+        self.assertEqual(summary["eval/done/unclassified"], 0)
+
+    def test_eval_runtime_preserves_non_life_loss_failures(self) -> None:
+        config = EnvConfig(
+            game="Breakout-Atari2600-v0",
+            task={
+                "termination": {
+                    "failure": ["life_loss", "serve_stall"],
+                    "max_episode_steps": 54000,
+                }
+            },
+        )
+
+        runtime_config = _eval_runtime_config(
+            config,
+            max_steps=54000,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertEqual(runtime_config.task["termination"]["failure"], ["serve_stall"])
 
     def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
         slower_higher_reward = {

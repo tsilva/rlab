@@ -71,8 +71,8 @@ def normalize_train_config(
         )
     if job.get("runtime_image_ref"):
         config["runtime_image_ref"] = job["runtime_image_ref"]
-    if job.get("run_target"):
-        config["run_target"] = job["run_target"]
+    if job.get("machine"):
+        config["machine"] = job["machine"]
     if require_explicit_train_fields:
         require_explicit_queue_train_config(config)
     config["wandb_artifact_storage_uri"] = resolve_artifact_storage_uri(

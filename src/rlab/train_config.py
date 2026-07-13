@@ -840,10 +840,10 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Immutable runtime image ref recorded as run metadata; does not affect training.",
     ),
     TrainConfigField(
-        "run_target",
-        "--run-target",
+        "machine",
+        "--machine",
         default="",
-        help="Canonical compute target recorded as run metadata; does not affect training.",
+        help="Exact queue machine recorded as run metadata; does not affect training.",
     ),
     TrainConfigField(
         "goal_slug", "--goal-slug", default="", help="Research goal slug recorded in W&B config."

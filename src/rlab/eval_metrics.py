@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -17,6 +17,7 @@ from rlab.metric_names import (
     EVAL_DONE_TERMINATED_RATE,
     EVAL_DONE_UNCLASSIFIED,
     EVAL_DONE_UNCLASSIFIED_RATE,
+    eval_done_reason_metric,
     eval_done_value_metric,
 )
 from rlab.targets import EvalSemantics, target_for_game
@@ -181,10 +182,19 @@ def eval_done_from_metrics(
     episode_results: list[dict[str, Any]],
     *,
     semantics: EvalSemantics | None = None,
+    event_names: Sequence[str] = (),
 ) -> dict[str, int | float]:
     semantics = semantics or default_eval_semantics()
     metrics: dict[str, int | float] = {}
     completion_rates: list[float] = []
+    all_event_names = sorted(
+        set(str(name) for name in event_names)
+        | {
+            str(event)
+            for episode in episode_results
+            for event in (episode.get("events", ()) or ())
+        }
+    )
     states = sorted(
         {state for episode in episode_results if (state := episode_start_state(episode))}
     )
@@ -203,7 +213,7 @@ def eval_done_from_metrics(
         unclassified_count = sum(
             1
             for episode in state_episodes
-            if not episode_is_complete(episode) and not episode.get("truncated")
+            if not (episode.get("events", ()) or ()) and not episode.get("truncated")
         )
 
         all_metric = eval_done_value_metric("all", "from", state)
@@ -221,6 +231,13 @@ def eval_done_from_metrics(
                 f"{unclassified_metric}/rate": unclassified_count / denominator,
             },
         )
+        for event in all_event_names:
+            event_count = sum(
+                1 for episode in state_episodes if event in (episode.get("events", ()) or ())
+            )
+            event_metric = eval_done_value_metric(event, "from", state)
+            metrics[event_metric] = event_count
+            metrics[f"{event_metric}/rate"] = event_count / denominator
         if semantics.completion_reason:
             completion_rate = completion_count / denominator
             completion_rates.append(completion_rate)
@@ -304,6 +321,7 @@ def summarize_episode_results(
     deterministic: bool,
     extra: dict[str, Any] | None = None,
     semantics: EvalSemantics | None = None,
+    event_names: Sequence[str] = (),
 ) -> dict[str, Any]:
     if not episode_results:
         raise ValueError("episode_results must not be empty")
@@ -335,7 +353,7 @@ def summarize_episode_results(
     unclassified_count = sum(
         1
         for episode in episode_results
-        if not episode_is_complete(episode) and not episode.get("truncated")
+        if not (episode.get("events", ()) or ()) and not episode.get("truncated")
     )
     episode_count = len(episode_results)
     metrics: dict[str, Any] = {
@@ -359,6 +377,21 @@ def summarize_episode_results(
         EVAL_DONE_UNCLASSIFIED_RATE: unclassified_count / episode_count,
         "episode_results": episode_results,
     }
+    all_event_names = sorted(
+        set(str(name) for name in event_names)
+        | {
+            str(event)
+            for episode in episode_results
+            for event in (episode.get("events", ()) or ())
+        }
+    )
+    for event in all_event_names:
+        event_count = sum(
+            1 for episode in episode_results if event in (episode.get("events", ()) or ())
+        )
+        event_metric = eval_done_reason_metric(event)
+        metrics[event_metric] = event_count
+        metrics[f"{event_metric}/rate"] = event_count / episode_count
     metrics.update(progress_metrics)
     if semantics.completion_reason == "level_change":
         metrics.update(
@@ -377,7 +410,13 @@ def summarize_episode_results(
                 "death_x_histogram": death_location_histogram(death_x_positions),
             }
         )
-    metrics.update(eval_done_from_metrics(episode_results, semantics=semantics))
+    metrics.update(
+        eval_done_from_metrics(
+            episode_results,
+            semantics=semantics,
+            event_names=all_event_names,
+        )
+    )
     if extra:
         metrics = {**extra, **metrics}
     return metrics

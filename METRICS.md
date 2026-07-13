@@ -51,6 +51,7 @@ database stores train-job state, not result metric projections.
 | --- | --- |
 | `train/done/all` | Cumulative count of non-`global_reset` training `done=True` env-slot episode boundaries. This is exhaustive. |
 | `train/done/<reason>` | Cumulative count of done events attributed to `<reason>`, such as `life_loss`, `level_change`, `max_steps`, or `unclassified`. Reason counters are explanatory and do not have to sum to `train/done/all`. |
+| `train/done/serve_stall` | Cumulative Breakout training episodes terminated as task failures after `ball_y` remained zero for the configured consecutive policy-step threshold. Life loss itself remains nonterminal; this reason means the policy failed to relaunch the ball within the allowed serve window. |
 | `train/done/max_steps` | Cumulative count of terminal training episodes attributed to max-step truncation. Emitted as `0` before the first max-step episode. |
 | `train/done/unclassified` | Cumulative count of terminal training episodes that had no configured done reason and were not max-step truncations. Emitted as `0` before the first unclassified episode. |
 | `train/done/<reason>/from/<prev>` | Cumulative count of structured done events for `<reason>` whose native payload reported previous value `<prev>`. Multi-key values are joined with `-`, e.g. `0-0`. |
@@ -70,6 +71,7 @@ database stores train-job state, not result metric projections.
 | `eval/done/level_change/from/<start>/rate` | Eval completion fraction for episodes that started from `<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start eval completion fraction. Use this first when comparing multi-start-state policies. |
 | `eval/done/level_change/from_rate/mean` | Mean per-start eval completion fraction. |
+| `eval/done/<reason>/rate` | Fraction of eval episodes whose terminal task record contained configured event `<reason>`, including generic identity-task reasons such as `serve_stall`. |
 
 Current training does not log per-rollout done-count distribution stats such as `train/done/min`,
 `train/done/mean`, or `train/done/max`. The aggregate all-done counter is `train/done/all`.
@@ -84,7 +86,9 @@ what is ending training episodes.
 
 `eval/done/level_change/from_rate/min` is the eval selection metric for Mario-style multi-start-state
 policies that define a clean completion event. Environments without a target-level completion
-contract, such as Breakout, use `eval/reward/mean` as the checkpoint objective instead.
+contract, such as Breakout, normally use `eval/reward/mean` as their reward objective. The current
+Breakout goal first minimizes `eval/done/serve_stall/rate`, then ranks reward, so a checkpoint that
+cannot reliably relaunch the ball cannot hide that failure behind score accumulated earlier.
 The top-level eval metrics are pooled summaries and should be treated as secondary when
 per-start-state eval done metrics exist.
 After a checkpoint reaches the completion goal (`>=0.99` bottleneck completion), use
@@ -229,7 +233,7 @@ training end so the last PPO update is not lost.
 | Metric | Meaning |
 | --- | --- |
 | `rollout/ep_rew_mean` | Mean shaped episode return over SB3's monitor window. This is the reward used by training, not raw game score; current Breakout training clips native reward events. It appears only after at least one monitored episode completes. |
-| `rollout/ep_len_mean` | Mean episode length over SB3's monitor window. It appears only after at least one monitored episode completes. |
+| `rollout/ep_len_mean` | Mean episode length in policy environment steps over SB3's rolling window of the last 100 completed episodes. It appears only after at least one monitored episode completes. A long episode contributes only after it finishes and may span many PPO updates or saved checkpoints, so a spike must not be attributed to the nearest checkpoint without a frozen-policy evaluation. For example, Breakout's 54,000-step cap at frame skip 4 represents 216,000 emulator frames. |
 | `time/fps` | Cumulative SB3 training throughput in environment steps per second. |
 | `time/iterations` | Number of PPO learn iterations completed. |
 | `time/time_elapsed` | Wall-clock seconds elapsed in the SB3 learn loop. Explicitly mirrored to W&B at rollout end with `global_step` as the step. |
@@ -405,7 +409,9 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `eval/done/max_steps/rate` | `eval/done/max_steps / eval/done/all`. |
 | `eval/done/terminated` | Eval episodes that ended via native env termination without being marked as max-step truncations. This is generic and is emitted for all target types. |
 | `eval/done/terminated/rate` | `eval/done/terminated / eval/done/all`. |
-| `eval/done/unclassified` | Eval episodes that ended without level completion or max-step truncation. |
+| `eval/done/<reason>` | Eval episodes whose terminal task record contained configured event `<reason>`, including `serve_stall`. |
+| `eval/done/<reason>/rate` | `eval/done/<reason> / eval/done/all`. |
+| `eval/done/unclassified` | Eval episodes that ended without a configured task event and without max-step truncation. |
 | `eval/done/unclassified/rate` | `eval/done/unclassified / eval/done/all`. |
 | `eval/info/<name>` | Numeric task or provider information emitted by an eval episode, flattened under the canonical `eval/info/` prefix. |
 | `eval/death/count` | Eval episodes where the target-specific death flag was observed at least once during the eval horizon. Currently Mario-specific. |
@@ -442,7 +448,8 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `leader/checkpoint/updated_at` | UTC timestamp when the source run's best-checkpoint summary fields were last updated. |
 
 Per-start-state eval done metrics mirror the training done namespace as
-`eval/done/<reason>/from/<start>`. Eval preserves level-change termination but labels
+`eval/done/<reason>/from/<start>`. Eval preserves configured task failures other than life loss and
+preserves level-change termination, but labels
 `<start>` with the eval episode start state, for example `Level1-1`, rather than a native
 previous-value tuple such as `0-0`.
 
@@ -453,11 +460,13 @@ previous-value tuple such as `0-0`.
 | `eval/done/level_change/from/<start>/rate` | `eval/done/level_change/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/level_change/from_rate/min` | Minimum per-start-state level-change rate. Use this for balanced multi-state eval ranking. |
 | `eval/done/level_change/from_rate/mean` | Mean per-start-state level-change rate. |
+| `eval/done/<reason>/from/<start>` | Eval episodes from `<start>` whose terminal task record contained configured event `<reason>`. |
+| `eval/done/<reason>/from/<start>/rate` | `eval/done/<reason>/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. Can overlap with level-change counts. |
 | `eval/done/max_steps/from/<start>/rate` | `eval/done/max_steps/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/terminated/from/<start>` | Eval episodes from `<start>` that ended via native env termination without max-step truncation. |
 | `eval/done/terminated/from/<start>/rate` | `eval/done/terminated/from/<start> / eval/done/all/from/<start>`. |
-| `eval/done/unclassified/from/<start>` | Eval episodes from `<start>` that ended without level completion or max-step truncation. |
+| `eval/done/unclassified/from/<start>` | Eval episodes from `<start>` that ended without a configured task event or max-step truncation. |
 | `eval/done/unclassified/from/<start>/rate` | `eval/done/unclassified/from/<start> / eval/done/all/from/<start>`. |
 
 ## Eval JSON Summary Fields
@@ -509,7 +518,7 @@ state-distribution metadata.
 
 Queue-backed training also records flat W&B config fields for leaderboard queries:
 `goal_slug`, `recipe_slug`, `recipe_path`, `queue_train_job_id`, `runtime_image_ref`, and
-`run_target`. Use `rlab leaders runs` for run/recipe winners across seeds and
+`machine`. Use `rlab leaders runs` for run/recipe winners across seeds and
 `rlab leaders checkpoints` for the best evaluated checkpoints by source run.
 
 Training logs model artifacts when W&B artifacts are enabled:

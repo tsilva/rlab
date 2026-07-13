@@ -29,13 +29,16 @@ def _eval_runtime_config(
 ) -> EnvConfig:
     termination = task_termination(config)
     success = list(termination.get("success", ()))
+    failure = [
+        name for name in termination.get("failure", ()) if name != "life_loss"
+    ]
     if semantics.completion_reason == "level_change":
         success = list(dict.fromkeys((*success, "level_change")))
     return with_task_termination(
         config,
         max_episode_steps=max_steps,
         success=success,
-        failure=[],
+        failure=failure,
     )
 
 
@@ -198,6 +201,7 @@ def evaluate_model_episodes(
         deterministic=deterministic,
         extra={"eval_n_envs": n_envs, **(extra or {})},
         semantics=semantics,
+        event_names=tuple(config.task.get("events", {})),
     )
     metrics["best_episode"] = best_episode_result
 

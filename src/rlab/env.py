@@ -309,6 +309,9 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
         observation_source_shape=source_shape,
         max_episode_steps=task_max_episode_steps(config),
         action_values=action_values,
+        signals=config.task.get("signals", {}),
+        events=config.task.get("events", {}),
+        termination=task_termination(config),
     ).bind(descriptor, n_envs)
 
 

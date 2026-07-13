@@ -46,6 +46,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["selection_rank"],
             [
+                "min(eval/done/serve_stall/rate)",
                 "max(eval/reward/mean)",
                 "max(eval/best/reward)",
                 "min(leader/checkpoint/steps_to_completion_goal)",
@@ -55,9 +56,9 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["env_args"],
             {
                 "info_filter": "all",
-                "num_threads": 8,
+                "num_threads": 6,
                 "reward_clip": True,
-                "use_fire_reset": True,
+                "use_fire_reset": False,
             },
         )
         self.assertEqual(train_config["state"], "Start")
@@ -73,9 +74,9 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["checkpoint_eval_environment"]["env_args"],
             {
                 "info_filter": "all",
-                "num_threads": 8,
+                "num_threads": 6,
                 "reward_clip": False,
-                "use_fire_reset": True,
+                "use_fire_reset": False,
             },
         )
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
@@ -101,11 +102,21 @@ class ConfigValidationTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(train_config["task"]["signals"], {})
-        self.assertEqual(train_config["task"]["events"], {})
+        self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
+        self.assertEqual(
+            train_config["task"]["events"],
+            {
+                "serve_stall": {
+                    "signal": "ball_y",
+                    "operation": "equals_for",
+                    "value": 0,
+                    "steps": 256,
+                }
+            },
+        )
         self.assertEqual(
             train_config["task"]["termination"],
-            {"max_episode_steps": 54000},
+            {"failure": ["serve_stall"], "max_episode_steps": 54000},
         )
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["task"]["action"],
@@ -155,10 +166,10 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["game"], "MsPacman-Atari2600-v0")
         self.assertEqual(train_config["n_envs"], 16)
         self.assertEqual(train_config["env_args"]["num_threads"], 4)
-        self.assertIs(train_config["env_args"]["use_fire_reset"], True)
+        self.assertIs(train_config["env_args"]["use_fire_reset"], False)
         self.assertIs(
             train_config["checkpoint_eval_environment"]["env_args"]["use_fire_reset"],
-            True,
+            False,
         )
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)

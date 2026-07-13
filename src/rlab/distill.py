@@ -400,7 +400,7 @@ def fit_policy_supervised(
         recipe_path="",
         queue_train_job_id=0,
         runtime_image_ref="",
-        run_target="local-macbook",
+        machine="local-macbook",
     )
     write_model_metadata(output_path, metadata_args, env_config, "final")
     return {

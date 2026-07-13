@@ -15,6 +15,7 @@ from rlab.env_registry import (
     GYMNASIUM_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER,
+    is_stable_retro_atari_env,
     resolve_env_provider,
 )
 
@@ -200,6 +201,8 @@ def provider_native_vec_kwargs(
     else:
         defaults["state"] = config.state or None
     defaults.update(native_kwargs)
+    if is_stable_retro_atari_env(config.env_provider, config.game):
+        defaults.setdefault("use_fire_reset", False)
     task = config.task if isinstance(getattr(config, "task", None), Mapping) else {}
     if task.get("id") == "mario":
         signals = task.get("signals", {})

@@ -186,6 +186,8 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
             continue
         raise ValueError(f"{label}.signals.{name} must be a signal name or non-empty list")
     events = task["events"]
+    if len(events) > 64:
+        raise ValueError(f"{label}.events supports at most 64 events")
     for name, raw_rule in events.items():
         if not isinstance(raw_rule, Mapping):
             raise ValueError(f"{label}.events.{name} must be an object")
@@ -193,14 +195,31 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         if signal not in signals:
             raise ValueError(f"{label}.events.{name}.signal references unknown signal {signal!r}")
         operation = raw_rule.get("operation")
-        if operation not in {"change", "decrease", "increase", "unchanged_for"}:
+        if operation not in {
+            "change",
+            "decrease",
+            "increase",
+            "unchanged_for",
+            "equals_for",
+        }:
             raise ValueError(f"{label}.events.{name}.operation is unsupported: {operation!r}")
-        if operation == "unchanged_for":
+        if operation in {"unchanged_for", "equals_for"}:
             steps = raw_rule.get("steps")
             if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
                 raise ValueError(f"{label}.events.{name}.steps must be a positive integer")
-    if task_id == "identity" and events:
-        raise ValueError(f"{label}.events must be empty for the identity task")
+        if operation == "equals_for":
+            value = raw_rule.get("value")
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                raise ValueError(f"{label}.events.{name}.value must be a number")
+    if task_id == "identity":
+        unsupported_events = sorted(
+            name for name, rule in events.items() if rule.get("operation") != "equals_for"
+        )
+        if unsupported_events:
+            raise ValueError(
+                f"{label} identity events require operation='equals_for': "
+                + ", ".join(unsupported_events)
+            )
     if task_id == "mario":
         expected_events = {
             "life_loss": ("lives", "decrease"),
@@ -223,6 +242,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
                     f"and operation={expected_operation!r}"
                 )
     termination = task["termination"]
+    event_outcomes: dict[str, str] = {}
     for outcome in ("success", "failure", "timeout", "neutral"):
         if outcome not in termination:
             continue
@@ -234,6 +254,14 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
             raise ValueError(
                 f"{label}.termination.{outcome} references unknown events: {', '.join(missing)}"
             )
+        for name in names:
+            event_name = str(name)
+            previous = event_outcomes.get(event_name)
+            if previous is not None:
+                raise ValueError(
+                    f"{label}.events.{event_name} cannot map to both {previous} and {outcome}"
+                )
+            event_outcomes[event_name] = outcome
     for key in ("max_episode_steps", "no_progress_min_delta"):
         if key not in termination:
             continue

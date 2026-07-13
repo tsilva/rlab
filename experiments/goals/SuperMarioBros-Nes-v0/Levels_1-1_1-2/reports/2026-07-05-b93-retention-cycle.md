@@ -29,7 +29,7 @@ train containers.
   test whether late-window regressions are update-volatility rather than
   exposure failures.
 - Replenished the pending buffer with additional B93-family seeds so the
-  shepherd can backfill immediately after future cancels.
+  fleet service can backfill immediately after future cancels.
 - Later in the same cycle, canceled `b93-fastlowent-finish` seed 314 after it
   reached about 1.86M steps with only about `0.07` bottleneck clear-rate. This
   reinforced that the lower entropy-floor arm was not improving balanced
