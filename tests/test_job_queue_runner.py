@@ -65,6 +65,27 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_schema_upgrade_preserves_retired_eval_queue(self) -> None:
+        conn = FakeConnection(
+            results=[
+                {
+                    "rows": [
+                        {"column_name": "id"},
+                        {"column_name": "lease_owner"},
+                        {"column_name": "eval_config"},
+                    ]
+                },
+                {"row": {"table_name": None}},
+            ]
+        )
+
+        job_queue.prepare_schema_upgrade(conn)
+
+        self.assertIn(
+            "ALTER TABLE eval_jobs RENAME TO legacy_eval_jobs_pre_modal",
+            conn.cursor_obj.executed_sqls[-1],
+        )
+
     def test_train_enqueue_parser_accepts_explicit_modal_backend(self) -> None:
         args = job_queue.build_train_enqueue_parser().parse_args(
             [

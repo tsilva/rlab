@@ -360,8 +360,37 @@ def connect(url: str):
     )
 
 
+def prepare_schema_upgrade(conn) -> None:
+    """Preserve the retired eval queue before creating Modal eval tables.
+
+    Older installations used ``eval_jobs`` for a leased machine queue with a
+    completely different contract. Rename that table transactionally instead
+    of attempting an unsafe in-place reinterpretation or dropping its rows.
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'eval_jobs'
+            """
+        )
+        columns = {str(row["column_name"]) for row in cur.fetchall()}
+        if not columns or "job_key" in columns:
+            return
+        legacy_table = "legacy_eval_jobs_pre_modal"
+        cur.execute("SELECT to_regclass(%(table)s) AS table_name", {"table": legacy_table})
+        if cur.fetchone()["table_name"]:
+            raise RuntimeError(
+                "legacy eval_jobs schema is present but its preservation table already exists"
+            )
+        cur.execute(f"ALTER TABLE eval_jobs RENAME TO {legacy_table}")
+
+
 def apply_schema(conn) -> None:
     with conn:
+        prepare_schema_upgrade(conn)
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
 

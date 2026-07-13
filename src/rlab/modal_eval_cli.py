@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from rlab.dotenv import load_env_file
 from rlab.job_queue import connect, database_url
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
@@ -16,7 +17,12 @@ from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
 from rlab.runtime_refs import normalize_runtime_image_ref
 
 
-MODAL_SCHEMA_TABLES = ("eval_runs", "eval_jobs", "eval_attempts", "eval_backend_state")
+MODAL_SCHEMA_COLUMNS = {
+    "eval_runs": {"train_job_id", "contract_json"},
+    "eval_jobs": {"train_job_id", "job_key", "stage_index", "contract_json"},
+    "eval_attempts": {"eval_job_id", "modal_call_id", "result_uri"},
+    "eval_backend_state": {"backend", "effective_capacity"},
+}
 
 
 def _conn():
@@ -32,10 +38,21 @@ def _kick() -> None:
 def _missing_schema_tables(conn) -> list[str]:
     missing: list[str] = []
     with conn.cursor() as cur:
-        for table in MODAL_SCHEMA_TABLES:
+        for table, required_columns in MODAL_SCHEMA_COLUMNS.items():
             cur.execute("SELECT to_regclass(%(table)s) AS table_name", {"table": table})
             row = cur.fetchone()
             if not row or not row.get("table_name"):
+                missing.append(table)
+                continue
+            cur.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = %(table)s
+                """,
+                {"table": table},
+            )
+            columns = {str(value["column_name"]) for value in cur.fetchall()}
+            if not required_columns.issubset(columns):
                 missing.append(table)
     return missing
 
@@ -534,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 
