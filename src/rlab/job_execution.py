@@ -83,10 +83,15 @@ def normalize_train_config(
     return config
 
 
-def write_train_config_file(job: dict[str, Any], path: Path) -> Path:
+def write_train_config_file(
+    job: dict[str, Any], path: Path, *, runs_dir: Path | str | None = None
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    config = normalize_train_config(job)
+    if runs_dir is not None:
+        config["runs_dir"] = str(runs_dir)
     path.write_text(
-        json.dumps(normalize_train_config(job), indent=2, sort_keys=True) + "\n",
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path

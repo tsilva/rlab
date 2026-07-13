@@ -92,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     store = MetricStore(metric_store_path(cli_args.run_dir))
     store.init()
     store.reset_interrupted_metric_frames()
-    store.reset_interrupted_artifact_uploads()
+    modal_eval = str(getattr(args, "checkpoint_eval_backend", "local")) == "modal"
+    if not modal_eval:
+        store.reset_interrupted_artifact_uploads()
     run = None
     try:
         retry_delay = max(cli_args.poll_seconds, 0.1)
@@ -116,24 +118,26 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 limit=max(cli_args.limit, 1),
             )
-            for row in store.pending_artifact_uploads(limit=max(cli_args.limit, 1)):
-                uploaded = process_upload(
-                    store=store,
-                    args=args,
-                    config=config,
-                    run_dir=cli_args.run_dir,
-                    row=row,
-                    wandb_run=run,
-                )
-                activity += int(bool(uploaded))
+            if not modal_eval:
+                for row in store.pending_artifact_uploads(limit=max(cli_args.limit, 1)):
+                    uploaded = process_upload(
+                        store=store,
+                        args=args,
+                        config=config,
+                        run_dir=cli_args.run_dir,
+                        row=row,
+                        wandb_run=run,
+                    )
+                    activity += int(bool(uploaded))
             if cli_args.stop_file.exists():
-                if not store.pending_metric_frames(limit=1) and not store.pending_artifact_uploads(
-                    limit=1
+                if not store.pending_metric_frames(limit=1) and (
+                    modal_eval or not store.pending_artifact_uploads(limit=1)
                 ):
                     return 0
             if not activity:
                 has_backlog = bool(
-                    store.pending_metric_frames(limit=1) or store.pending_artifact_uploads(limit=1)
+                    store.pending_metric_frames(limit=1)
+                    or (not modal_eval and store.pending_artifact_uploads(limit=1))
                 )
                 time.sleep(retry_delay)
                 retry_delay = (

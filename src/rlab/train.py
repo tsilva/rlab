@@ -51,7 +51,7 @@ from rlab.env import (
 from rlab.env_config import env_config_from_args
 from rlab.env_config import parse_obs_crop
 from rlab.early_stop import normalize_early_stop_config
-from rlab.metric_store import MetricStore, file_sha256, metric_store_path
+from rlab.metric_store import MetricStore, metric_store_path
 from rlab.provider_config import provider_num_envs
 from rlab.seeds import validate_training_seed
 from rlab.schedules import (
@@ -193,7 +193,7 @@ def save_model_bundle(
         step=step,
         path=model_path,
         metadata_path=metadata_path,
-        sha256=file_sha256(model_path),
+        sha256=None,
     )
     print(f"{kind} model ready: id={checkpoint_id} step={step} path={model_path}", flush=True)
     return model_path

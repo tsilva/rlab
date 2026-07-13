@@ -52,6 +52,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Every queued job must name exactly one registered machine; resource-class targets, automatic placement, and silent machine fallback are unsupported.
 - Queue reconciliation must run from one user-session Mac launchd service that invokes bounded short-lived passes; runner machines remain SSH/Docker-only, and remote containers continue independently while the control Mac sleeps or is logged out.
 - A queued job has one stable launch/container identity and is never retried automatically after execution starts; an explicit retry creates a new traceable job.
+- The registered-machine, stable-container-identity, and explicit-retry requirements apply to queued training jobs. Backend-bound checkpoint-evaluation tasks are separately traceable, need not name a runner machine, and may make at most two independently recorded attempts while leaving training success unchanged.
 - Machine capacity, runtime paths, scheduling limits, and operator guidance must each have an authoritative source and remain mutually consistent.
 - Benchmark claims must be reproducible and compare matching provider, task-kernel, event-boundary, workload, concurrency, and host-load contracts; Stable Retro benchmarks must use `info_filter=all`, never `none`.
 - Changes must pass relevant automated verification and preserve internally consistent project configuration.

@@ -163,6 +163,27 @@ class GenericNativeProviderTests(unittest.TestCase):
         self.assertFalse(descriptor.signal_schema["ball_y"].available_on_reset)
         self.assertTrue(descriptor.signal_schema["ball_y"].available_on_step)
 
+    def test_descriptor_does_not_trust_safe_view_from_generic_provider(self) -> None:
+        env = RegisteredNativeVectorEnv(2, gym.vector.AutoresetMode.DISABLED)
+        env.obs_copy = "safe_view"
+        config = EnvConfig(
+            env_provider="gymnasium",
+            game=self.env_id,
+            state="",
+            task={
+                "id": "identity",
+                "action": {"set": "native"},
+                "signals": {},
+                "events": {},
+                "termination": {},
+                "reward": {"reward_mode": "native"},
+            },
+        )
+
+        descriptor = provider_descriptor(config, env, state_weight_mapping=lambda _config: {})
+
+        self.assertEqual(descriptor.observation_buffer_depth, 1)
+
 class MarioNativeProviderTests(unittest.TestCase):
     @staticmethod
     def config(**updates):

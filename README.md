@@ -132,7 +132,7 @@ rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 The command surface is intentionally one binary:
 
 - `rlab train` enqueues queue-backed train jobs from checked-in recipes.
-- `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate saved checkpoints asynchronously, and async checkpoint eval is the supported checkpoint-promotion path.
+- `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate saved checkpoints asynchronously; jobs materialized for Modal use bounded remote CPU workers, while direct training and explicit `rlab eval` stay local.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab jobs` and `rlab fleet` operate and inspect the queue and one-job container fleet.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
@@ -149,7 +149,7 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. W&B is the source of truth for run and eval metrics; the queue database stores train-job state.
+Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
 
 To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
 single-row limit:
@@ -199,6 +199,7 @@ and beast host recommendations.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
+- Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as its only wait queue, and remains disabled until its checked-in canary gates pass. Use `rlab eval modal smoke-local` for the credential-free integration path.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.

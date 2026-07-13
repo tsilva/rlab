@@ -42,6 +42,8 @@ from rlab.seeds import validate_training_seed
 from rlab.recipe_schema import require_explicit_queue_train_config, validate_materialized_train_recipe
 from rlab.provider_config import provider_num_envs
 from rlab.train_config import validate_and_normalize_train_config
+from rlab.modal_eval_assets import asset_manifest_for_game
+from rlab.modal_eval_config import load_modal_eval_config
 
 
 SCHEMA_SQL = """
@@ -118,6 +120,92 @@ CREATE TABLE IF NOT EXISTS job_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS eval_runs (
+  train_job_id BIGINT PRIMARY KEY REFERENCES train_jobs(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'awaiting_artifact_recovery', 'finalizing', 'complete', 'failed')),
+  contract_json JSONB NOT NULL,
+  next_announcement_id BIGINT NOT NULL DEFAULT 1 CHECK (next_announcement_id >= 1),
+  next_artifact_projection_id BIGINT NOT NULL DEFAULT 1 CHECK (next_artifact_projection_id >= 1),
+  complete_announcement_seen BOOLEAN NOT NULL DEFAULT FALSE,
+  last_scheduled_at TIMESTAMPTZ,
+  promoted_eval_job_id BIGINT,
+  promotion_json JSONB,
+  artifacts_projected_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS eval_jobs (
+  id BIGSERIAL PRIMARY KEY,
+  train_job_id BIGINT NOT NULL REFERENCES eval_runs(train_job_id) ON DELETE CASCADE,
+  ledger_id BIGINT NOT NULL,
+  checkpoint_step BIGINT NOT NULL,
+  checkpoint_sha256 TEXT NOT NULL,
+  checkpoint_uri TEXT NOT NULL,
+  metadata_uri TEXT NOT NULL,
+  stage_name TEXT NOT NULL,
+  stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
+  purpose TEXT NOT NULL CHECK (purpose IN ('screen', 'confirm', 'promotion')),
+  execution_key TEXT NOT NULL,
+  job_key TEXT NOT NULL UNIQUE,
+  contract_json JSONB NOT NULL,
+  source_announcement_json JSONB NOT NULL,
+  decision_rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  candidate_stop BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN (
+      'pending', 'dispatching', 'submitted', 'succeeded', 'failed', 'skipped_stale',
+      'blocked_budget', 'canceled'
+    )),
+  accepted_attempt_id BIGINT,
+  decision_json JSONB,
+  projected_at TIMESTAMPTZ,
+  projection_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  error TEXT,
+  UNIQUE (train_job_id, ledger_id, stage_name)
+);
+
+CREATE TABLE IF NOT EXISTS eval_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  attempt_id TEXT NOT NULL UNIQUE,
+  eval_job_id BIGINT NOT NULL REFERENCES eval_jobs(id) ON DELETE CASCADE,
+  attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 2),
+  status TEXT NOT NULL DEFAULT 'dispatching'
+    CHECK (status IN ('dispatching', 'submitted', 'succeeded', 'failed', 'expired', 'canceled')),
+  modal_app_name TEXT NOT NULL,
+  modal_function_name TEXT NOT NULL,
+  modal_call_id TEXT,
+  result_uri TEXT NOT NULL,
+  reserved_cost_usd DOUBLE PRECISION NOT NULL CHECK (reserved_cost_usd >= 0),
+  actual_cost_usd DOUBLE PRECISION CHECK (actual_cost_usd IS NULL OR actual_cost_usd >= 0),
+  expires_at TIMESTAMPTZ NOT NULL,
+  result_json JSONB,
+  receipt_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error TEXT,
+  UNIQUE (eval_job_id, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS eval_backend_state (
+  backend TEXT PRIMARY KEY CHECK (backend = 'modal'),
+  drained BOOLEAN NOT NULL DEFAULT FALSE,
+  effective_capacity INTEGER NOT NULL CHECK (effective_capacity >= 1),
+  round_robin_after_train_job_id BIGINT NOT NULL DEFAULT 0,
+  reason TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO eval_backend_state (backend, effective_capacity)
+VALUES ('modal', 1)
+ON CONFLICT (backend) DO NOTHING;
+
 DROP INDEX IF EXISTS train_jobs_runtime_claim_idx;
 DROP INDEX IF EXISTS train_jobs_claim_idx;
 DROP INDEX IF EXISTS train_jobs_spec_status_idx;
@@ -146,9 +234,22 @@ CREATE INDEX IF NOT EXISTS job_launches_job_idx
 
 CREATE INDEX IF NOT EXISTS job_events_job_idx
   ON job_events (job_kind, job_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS eval_jobs_status_idx
+  ON eval_jobs (status, stage_index DESC, train_job_id, created_at);
+
+CREATE INDEX IF NOT EXISTS eval_attempts_status_idx
+  ON eval_attempts (status, expires_at, created_at);
+
+CREATE INDEX IF NOT EXISTS eval_jobs_execution_idx
+  ON eval_jobs (execution_key, status);
 """
 
 RESET_TABLES = (
+    "eval_attempts",
+    "eval_jobs",
+    "eval_runs",
+    "eval_backend_state",
     "job_events",
     "job_launches",
     "train_jobs",
@@ -276,7 +377,15 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
         if not _table_exists(conn, table_name):
             continue
         path = export_dir / f"{table_name}.jsonl"
-        order_column = "machine" if table_name == "machine_controls" else "id"
+        order_column = (
+            "machine"
+            if table_name == "machine_controls"
+            else "backend"
+            if table_name == "eval_backend_state"
+            else "train_job_id"
+            if table_name == "eval_runs"
+            else "id"
+        )
         with conn.cursor() as cur:
             cur.execute(f"SELECT * FROM {table_name} ORDER BY {order_column}")
             rows = [dict(row) for row in cur.fetchall()]
@@ -303,6 +412,10 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
+                  eval_attempts,
+                  eval_jobs,
+                  eval_runs,
+                  eval_backend_state,
                   job_events,
                   job_launches,
                   train_jobs,
@@ -318,7 +431,11 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                   IF to_regclass('train_jobs') IS NULL
                      OR to_regclass('job_launches') IS NULL
                      OR to_regclass('machine_controls') IS NULL
-                     OR to_regclass('job_events') IS NULL THEN
+                     OR to_regclass('job_events') IS NULL
+                     OR to_regclass('eval_runs') IS NULL
+                     OR to_regclass('eval_jobs') IS NULL
+                     OR to_regclass('eval_attempts') IS NULL
+                     OR to_regclass('eval_backend_state') IS NULL THEN
                     RAISE EXCEPTION 'queue schema validation failed';
                   END IF;
                 END $$
@@ -625,7 +742,25 @@ def enqueue_train_job(
     goal_slug = str(goal_slug).strip()
     if not goal_slug:
         raise ValueError("goal_slug is required")
-    config = validate_and_normalize_train_config(train_config)
+    batch_id = str(batch_id or wandb_group or f"b-{uuid.uuid4().hex[:10]}").strip()
+    submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
+    if submission_ordinal < 0:
+        raise ValueError("submission_ordinal must be at least zero")
+    requested_config = dict(train_config)
+    if "checkpoint_eval_backend" not in requested_config:
+        modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
+        if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled:
+            requested_config["checkpoint_eval_backend"] = "modal"
+    config = validate_and_normalize_train_config(requested_config)
+    config["wandb_run_id"] = "rlab-" + _hash_json(
+        {"submission_key": submission_key, "submission_ordinal": submission_ordinal}
+    )[:24]
+    if str(config.get("checkpoint_eval_backend") or "local") == "modal":
+        if not config.get("checkpoint_eval_asset_manifest"):
+            config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
+                str(config.get("game") or "")
+            )
+        config.setdefault("checkpoint_eval_seed_protocol", "vector-lane-v1")
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -633,10 +768,6 @@ def enqueue_train_job(
     validate_launch_event_config(config)
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     machine = normalize_machine(machine)
-    batch_id = str(batch_id or wandb_group or f"b-{uuid.uuid4().hex[:10]}").strip()
-    submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
-    if submission_ordinal < 0:
-        raise ValueError("submission_ordinal must be at least zero")
     request_hash = str(
         request_hash
         or _hash_json(
@@ -1061,9 +1192,13 @@ def count_nonterminal_jobs(conn=None) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT COUNT(*) AS count
-                FROM train_jobs
-                WHERE status IN ('pending', 'launching', 'running')
+                SELECT
+                  (SELECT COUNT(*) FROM train_jobs
+                   WHERE status IN ('pending', 'launching', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM eval_jobs
+                   WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
+                  AS count
                 """
             )
             row = cur.fetchone()
@@ -1389,6 +1524,16 @@ def finish_train_launch_from_result(
             job = cur.fetchone()
             if not job:
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
+            if str(result.get("checkpoint_coordinator_status") or "") == "awaiting_artifact_recovery":
+                cur.execute(
+                    """
+                    UPDATE eval_runs SET status = 'awaiting_artifact_recovery',
+                      error = 'checkpoint coordinator drain ended with incomplete uploads',
+                      updated_at = now()
+                    WHERE train_job_id = %(job_id)s AND status <> 'complete'
+                    """,
+                    {"job_id": updated_launch["job_id"]},
+                )
             record_job_event(
                 conn,
                 job_id=int(job["id"]),

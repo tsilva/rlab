@@ -54,7 +54,7 @@ from rlab.metric_names import (
     train_done_value_metric,
     train_done_reason_metric,
 )
-from rlab.metric_store import MetricStore, file_sha256
+from rlab.metric_store import MetricStore
 
 
 def task_metric_source(start_id: Any) -> Any:
@@ -134,7 +134,7 @@ class LedgerCheckpointHelper(CallbackHelper):
             step=step,
             path=final_path,
             metadata_path=metadata_path,
-            sha256=file_sha256(final_path),
+            sha256=None,
         )
         print(
             f"checkpoint ready: id={checkpoint_id} step={step} path={final_path}",

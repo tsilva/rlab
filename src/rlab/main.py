@@ -20,6 +20,10 @@ def _train(argv: Sequence[str]) -> int:
 
 
 def _eval(argv: Sequence[str]) -> int:
+    if argv and argv[0] == "modal":
+        from rlab.modal_eval_cli import main as modal_eval_main
+
+        return _run(modal_eval_main, argv[1:])
     from rlab.eval import main as eval_main
 
     return _run(eval_main, argv)

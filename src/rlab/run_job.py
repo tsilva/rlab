@@ -178,7 +178,11 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     job = dict(payload["job"])
     log_dir = output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    config_path = write_train_config_file(job, output_dir / "train_config.json")
+    config_path = write_train_config_file(
+        job,
+        output_dir / "train_config.json",
+        runs_dir=output_dir / "runs",
+    )
     command = train_command_for_job(config_path)
     run_dir = run_dir_from_config(config_path)
     producer_stop_file = output_dir / "producers.stop"
@@ -187,21 +191,27 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     publisher_workers: list[subprocess.Popen] = []
     config_document = json.loads(config_path.read_text(encoding="utf-8"))
     wandb_enabled = bool(config_document.get("wandb", False))
+    modal_eval = str(config_document.get("checkpoint_eval_backend") or "local") == "modal"
     try:
-        publisher_workers.append(
-            start_worker(
-                module="rlab.wandb_publisher" if wandb_enabled else "rlab.artifact_worker",
-                name="wandb_publisher" if wandb_enabled else "artifact_worker",
-                output_dir=output_dir,
-                run_dir=run_dir,
-                config_path=config_path,
-                stop_file=publisher_stop_file,
+        if wandb_enabled or not modal_eval:
+            publisher_workers.append(
+                start_worker(
+                    module="rlab.wandb_publisher" if wandb_enabled else "rlab.artifact_worker",
+                    name="wandb_publisher" if wandb_enabled else "artifact_worker",
+                    output_dir=output_dir,
+                    run_dir=run_dir,
+                    config_path=config_path,
+                    stop_file=publisher_stop_file,
+                )
             )
-        )
         producer_workers.append(
             start_worker(
-                module="rlab.checkpoint_eval_worker",
-                name="checkpoint_eval_worker",
+                module=(
+                    "rlab.checkpoint_coordinator"
+                    if modal_eval
+                    else "rlab.checkpoint_eval_worker"
+                ),
+                name="checkpoint_coordinator" if modal_eval else "checkpoint_eval_worker",
                 output_dir=output_dir,
                 run_dir=run_dir,
                 config_path=config_path,
@@ -224,9 +234,16 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 env=train_env,
             )
     finally:
-        worker_results = stop_workers(producer_workers, producer_stop_file)
+        worker_results = stop_workers(
+            producer_workers, producer_stop_file, timeout=120.0 if modal_eval else 30.0
+        )
         worker_results.extend(stop_workers(publisher_workers, publisher_stop_file, timeout=120.0))
-    metadata = collect_result_metadata(job, log_path)
+    metadata_job = dict(job)
+    metadata_job["train_config"] = {
+        **dict(job.get("train_config") or {}),
+        "runs_dir": str(output_dir / "runs"),
+    }
+    metadata = collect_result_metadata(metadata_job, log_path)
     status = "succeeded" if returncode == 0 else "failed"
     result = {
         **base_result(payload),
@@ -239,6 +256,24 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         },
         "workers": worker_results,
     }
+    if modal_eval:
+        artifact_phases = dict(metadata.get("phase_counts") or {})
+        incomplete_artifacts = any(
+            key.startswith("artifacts:")
+            and key not in {"artifacts:uploaded", "artifacts:failed_terminal"}
+            and int(count) > 0
+            for key, count in artifact_phases.items()
+        )
+        coordinator_failed = any(
+            "checkpoint_coordinator" in str(worker.get("log_path") or "")
+            and int(worker.get("returncode") or 0) != 0
+            for worker in worker_results
+        )
+        result["checkpoint_coordinator_status"] = (
+            "awaiting_artifact_recovery"
+            if incomplete_artifacts or coordinator_failed
+            else "complete"
+        )
     if returncode != 0:
         result["error"] = f"train process exited {returncode}"
     return result

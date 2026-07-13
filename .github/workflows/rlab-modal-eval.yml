@@ -1,0 +1,41 @@
+name: rlab Modal eval deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_image_ref:
+        description: Immutable docker:ghcr.io/...@sha256:... train/eval runtime
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.runtime_image_ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      RLAB_MODAL_REGISTRY_SECRET: ${{ secrets.RLAB_MODAL_REGISTRY_SECRET_NAME }}
+      RLAB_MODAL_EVAL_RUNTIME_IMAGE: ${{ inputs.runtime_image_ref }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install locked deployment runtime
+        run: uv sync --frozen
+      - name: Validate immutable runtime ref
+        run: |
+          case "$RLAB_MODAL_EVAL_RUNTIME_IMAGE" in
+            docker:*@sha256:*) ;;
+            *) echo "runtime_image_ref must be an immutable docker digest ref" >&2; exit 2 ;;
+          esac
+      - name: Deploy immutable Modal evaluator
+        run: uv run modal deploy -m rlab.modal_app

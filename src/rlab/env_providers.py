@@ -371,6 +371,10 @@ def provider_descriptor(
         native_kwargs = getattr(native_env, "kwargs", {})
         if isinstance(native_kwargs, Mapping):
             obs_copy = native_kwargs.get("obs_copy")
+    supports_safe_views = provider.provider_id in {
+        STABLE_RETRO_TURBO_PROVIDER.provider_id,
+        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
+    }
     return ProviderDescriptor(
         provider_id=provider.provider_id,
         native_observation_space=observation_space,
@@ -380,7 +384,7 @@ def provider_descriptor(
         start_probabilities=start_probabilities,
         lane_start_ids=lane_start_ids,
         render_support=tuple(str(mode) for mode in render_modes),
-        observation_buffer_depth=2 if obs_copy == "safe_view" else 1,
+        observation_buffer_depth=2 if supports_safe_views and obs_copy == "safe_view" else 1,
     )
 
 

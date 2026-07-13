@@ -4,14 +4,19 @@ This file describes the metrics this repo currently logs to Weights & Biases fro
 `src/rlab` training and evaluation paths.
 
 Queue-backed training uses a durable SQLite telemetry outbox and exactly one long-lived W&B
-publisher. The trainer, checkpoint evaluator, and artifact producer write local frames; only the
-publisher initializes, logs to, and finishes the W&B run. Training scalars are reduced into one
+publisher. With local checkpoint evaluation, the trainer, evaluator, and artifact producer write
+local frames and only that publisher owns the live W&B run. With Modal checkpoint evaluation, the
+live publisher handles training telemetry only; the checkpoint coordinator imports accepted early-stop
+decisions into SQLite, and the fleet service resumes the same deterministic W&B run after training to
+project accepted evaluation metrics and R2 checkpoint references. Training scalars are reduced into one
 frame per rollout boundary. W&B's internal history step is only a delivery sequence: payloads do
 not set `Run.log(step=...)`, and `global_step` is the explicit chart axis. This lets an asynchronous
 evaluation for an older checkpoint arrive without rewinding W&B history.
 
-The local `rlab.sqlite` ledger is authoritative while a run is active or W&B is unavailable. W&B
-is an eventually consistent projection and becomes equivalent after the publisher drains. A W&B
+The local `rlab.sqlite` ledger is authoritative for live training and imported early-stop decisions.
+For Modal evaluation, immutable R2 attempt evidence plus the accepted PostgreSQL eval-job row are the
+promotion source of truth. W&B is an eventually consistent projection after the live publisher exits.
+A W&B
 failure does not block the learner: frames remain retryable in the outbox. A local ledger write
 failure is reported because it breaks the durable-metrics contract. TensorBoard remains a local
 debugging output but is not used as the W&B transport.
@@ -421,12 +426,13 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `eval/checkpoint/step` | Checkpoint timestep being evaluated by the async eval worker. Eval also logs this value as `global_step` so W&B panels plot the result at the evaluated model timestep without forcing W&B's internal history step backward. |
 | `eval/checkpoint/artifact` | W&B checkpoint artifact name or local checkpoint ref evaluated by the async eval worker. |
 | `eval/config/hud_crop_top` | HUD crop used for checkpoint eval. |
-| `eval/source` | Producer of this eval payload, such as `async_worker` or a staged async worker name. |
+| `eval/source` | Producer of this eval payload, such as `async_worker`, a staged async worker name, or `modal` for accepted remote evidence. |
 | `eval/episodes` | Number of episodes summarized in this eval payload. |
 | `eval/duration/seconds` | Wall-clock seconds spent inside `evaluate_model_episodes(...)`, including episode rollout and any requested best-episode video rendering. Logged to W&B for checkpoint eval when present. |
 | `checkpoint_eval/<stage>/<eval_metric_suffix>` | Training-time staged checkpoint eval metric. These mirror canonical `eval/*` metrics under a stage prefix, for example `checkpoint_eval/screen/done/level_change/from_rate/min`. They are for cheap async screening and are not promotion-quality full eval metrics. |
 | `checkpoint_eval/<stage>/pass` | `1` when the stage pass rules matched for that checkpoint, otherwise `0`. The default Mario `screen` and `confirm` stages require perfect per-start completion. |
 | `checkpoint_eval/<stage>/stage_index` | Numeric order of the staged checkpoint eval step. Lower stages are cheaper screens; later stages are stronger confirmation gates. |
+| `checkpoint_eval/<stage>/source` | Non-numeric evidence producer label. Modal decisions use `modal`; it is retained in decision/W&B payloads but is not inserted into SQLite's numeric latest-metric table. |
 | `checkpoint_eval/candidate/pass` | Candidate early-stop signal emitted only by a stage marked `candidate_stop` after its pass rules match. Mario training early stop watches this metric instead of canonical `eval/*`, so 10-episode screens cannot stop training by themselves. |
 | `checkpoint_eval/candidate/checkpoint_step` | Checkpoint timestep that produced the current candidate early-stop signal. |
 | `checkpoint_eval/candidate/stage_index` | Stage index that produced the current candidate early-stop signal. |
@@ -497,6 +503,11 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/done/unclassified/rate`. |
 | `death_x_histogram` | Local JSON histogram of death X positions. This structured value is not emitted as a W&B scalar. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
+| `episode_results[].seed_protocol` | Versioned stochastic RNG trace contract. Remote checkpoint eval currently requires `vector-lane-v1`. |
+| `episode_results[].seed` | Scalar eval uses `base_seed + episode_ordinal`; vector eval records the shared base seed because lane/reset order is traced separately. |
+| `episode_results[].seed_lane` | Vector lane that produced the episode; scalar eval uses lane `0`. |
+| `episode_results[].seed_episode_ordinal` | Zero-based reset/episode ordinal within that lane. The `(seed_lane, seed_episode_ordinal)` pair is unique within one evaluation. |
+| `episode_results[].start_state` | Provider start identity used to validate per-start episode counts before remote evidence can be accepted. |
 | `best_episode` | Best episode record ranked by target eval semantics. Mario uses completion, then max X, then reward; generic targets use reward. |
 | `best_episode_video` | Local best-episode video path when video recording is enabled. The checkpoint artifact owns the file; the path is not emitted as a W&B metric. |
 | `eval_n_envs` | Number of vector env slots used by post-train or local eval summaries. |
@@ -505,7 +516,7 @@ stored in stdout JSON or post-train eval outputs; only the `eval/*` subset above
 | `model` | Local model path used by local or post-train eval summaries. |
 | `policy` | Scripted policy name for scripted eval, or `ppo` for model eval. |
 | `hud_crop_top` | HUD crop used for eval. W&B receives `eval/config/hud_crop_top` in checkpoint eval. |
-| `eval_seed` | Seed used for checkpoint or local eval. Default eval runs use `10007` in the eval-reserved `10000+` range; train seeds are forbidden from that range. |
+| `eval_seed` | Seed used for checkpoint or local eval. Modal checkpoint eval materializes base seed `10000`; the standalone CLI default may differ within the eval-reserved `10000+` range. Train seeds are forbidden from that range. |
 
 ## W&B Config And Artifacts
 

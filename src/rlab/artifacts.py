@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -113,10 +114,17 @@ def write_model_metadata_payload(
     metadata: Mapping[str, Any],
 ) -> Path:
     path = model_metadata_path(model_path)
-    path.write_text(
-        json.dumps(dict(metadata), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(metadata), indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 
@@ -238,6 +246,8 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         sync_tensorboard=False,
         save_code=True,
         mode=args.wandb_mode,
+        id=str(getattr(args, "wandb_run_id", "") or "") or None,
+        resume="allow" if str(getattr(args, "wandb_run_id", "") or "") else None,
     )
     return configure_wandb_metrics(wandb_run)
 

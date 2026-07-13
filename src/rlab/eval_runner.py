@@ -68,6 +68,7 @@ def _evaluate_model_episodes_vector(
     eval_env = make_eval_vec_env(config=vec_config, n_envs=n_envs, seed=seed)
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
+    lane_episode_ordinals: dict[int, int] = {}
     try:
         _bind_policy_action_space(model, getattr(eval_env, "action_space", None))
         torch.manual_seed(seed)
@@ -80,6 +81,9 @@ def _evaluate_model_episodes_vector(
                 for index in np.flatnonzero(np.asarray(dones, dtype=bool))
             }
             for record in drain_episode_records(eval_env):
+                lane = int(record.lane)
+                lane_ordinal = lane_episode_ordinals.get(lane, 0)
+                lane_episode_ordinals[lane] = lane_ordinal + 1
                 result = episode_result_from_record(
                     record,
                     semantics=semantics,
@@ -87,7 +91,10 @@ def _evaluate_model_episodes_vector(
                 )
                 result = {
                     "episode": len(episode_results) + 1,
-                    "seed": None,
+                    "seed": seed,
+                    "seed_protocol": "vector-lane-v1",
+                    "seed_lane": lane,
+                    "seed_episode_ordinal": lane_ordinal,
                     **result,
                 }
                 episode_results.append(result)
@@ -168,7 +175,14 @@ def evaluate_model_episodes(
                         semantics=semantics,
                     )
                     actions = result.pop("actions")
-                    result = {"episode": episode_idx + 1, "seed": episode_seed, **result}
+                    result = {
+                        "episode": episode_idx + 1,
+                        "seed": episode_seed,
+                        "seed_protocol": "vector-lane-v1",
+                        "seed_lane": 0,
+                        "seed_episode_ordinal": episode_idx,
+                        **result,
+                    }
                     episode_results.append(result)
                     progress_bar.update(1)
                     if best_episode_result is None or episode_rank(
@@ -204,7 +218,6 @@ def evaluate_model_episodes(
         event_names=tuple(config.task.get("events", {})),
     )
     metrics["best_episode"] = best_episode_result
-
     written_video = None
     if (
         capture_best_video

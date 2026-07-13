@@ -1,0 +1,30 @@
+enabled: false
+deployment:
+  app_name_prefix: rlab-eval
+  function_name: evaluate_checkpoint
+limits:
+  hard_max_active: 20
+  initial_effective_capacity: 1
+  per_run_budget_usd: 5.0
+  rolling_24h_budget_usd: 20.0
+resources:
+  cpu: 4.0
+  memory_mib: 4096
+  min_containers: 0
+  buffer_containers: 0
+  max_containers: 20
+  single_use_containers: true
+  scaledown_window_seconds: 60
+  startup_timeout_seconds: 120
+timeouts:
+  screen_seconds: 900
+  confirm_seconds: 1800
+  promotion_seconds: 3600
+  child_margin_seconds: 60
+  expiry_margin_seconds: 900
+cost:
+  estimated_hourly_usd: 0.30
+protocol:
+  schema_version: 1
+  seed_protocol: vector-lane-v1
+  max_attempts: 2

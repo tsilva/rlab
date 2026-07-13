@@ -68,6 +68,7 @@ class ProviderDescriptor:
     lane_start_ids: tuple[str, ...] = ()
     render_support: tuple[str, ...] = ()
     autoreset_mode: str = "disabled"
+    # Number of rotating provider-owned observation batches.
     observation_buffer_depth: int = 1
 
     def __post_init__(self) -> None:
@@ -558,6 +559,7 @@ class BatchRuntime:
         if self._reuse_provider_observations and not any_done:
             next_observations = encoded_transition
         else:
+            # Terminal observations must survive the provider's masked reset.
             next_observations = self._observation_buffers[next_buffer_index]
             _copy_tree_into(next_observations, encoded_transition)
 

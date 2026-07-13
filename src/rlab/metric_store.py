@@ -459,7 +459,7 @@ class MetricStore:
                   kind = excluded.kind,
                   step = excluded.step,
                   metadata_path = excluded.metadata_path,
-                  sha256 = excluded.sha256,
+                  sha256 = COALESCE(excluded.sha256, checkpoints.sha256),
                   status = excluded.status,
                   updated_at = excluded.updated_at
                 """,
@@ -502,6 +502,159 @@ class MetricStore:
             statuses=("pending", "failed_retryable"),
             limit=limit,
         )
+
+    def checkpoint(self, checkpoint_id: int) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def checkpoints(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT * FROM checkpoints ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def set_checkpoint_sha256(self, checkpoint_id: int, sha256: str) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE checkpoints SET sha256 = ?, updated_at = ? WHERE id = ?",
+                (str(sha256), now, checkpoint_id),
+            )
+
+    def checkpoint_eval_stage_status(self, checkpoint_id: int, stage_name: str) -> str | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM checkpoint_eval_stages WHERE checkpoint_id = ? AND stage_name = ?",
+                (checkpoint_id, stage_name),
+            ).fetchone()
+        return str(row["status"]) if row is not None else None
+
+    def mark_artifact_terminal_failure(
+        self, checkpoint_id: int, *, error: str, storage_uri: str | None = None
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE artifact_uploads
+                SET status = 'failed_terminal', storage_uri = ?, last_error = ?, updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (storage_uri, error[:4000], now, checkpoint_id),
+            )
+
+    def apply_modal_eval_decision(
+        self,
+        checkpoint_id: int,
+        *,
+        stage_name: str,
+        stage_index: int,
+        episodes: int,
+        n_envs: int,
+        metrics: Mapping[str, object],
+        passed: bool,
+        candidate_stop: bool,
+    ) -> None:
+        now = time.time()
+        stage_status = "succeeded" if passed else "failed_gate"
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM checkpoint_eval_stages WHERE checkpoint_id = ? AND stage_name = ?",
+                (checkpoint_id, stage_name),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO checkpoint_eval_stages
+                      (checkpoint_id, stage_name, stage_index, status, episodes, n_envs,
+                       metrics_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        checkpoint_id,
+                        stage_name,
+                        stage_index,
+                        stage_status,
+                        episodes,
+                        n_envs,
+                        json.dumps(metrics, sort_keys=True, default=str),
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE checkpoint_eval_stages
+                    SET status = ?, episodes = ?, n_envs = ?, metrics_json = ?,
+                        last_error = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        stage_status,
+                        episodes,
+                        n_envs,
+                        json.dumps(metrics, sort_keys=True, default=str),
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+            eval_status = "candidate" if passed and candidate_stop else "non_candidate"
+            conn.execute(
+                """
+                UPDATE eval_results
+                SET status = ?, episodes = ?, metrics_json = ?, last_error = NULL, updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (
+                    eval_status,
+                    episodes,
+                    json.dumps(metrics, sort_keys=True, default=str),
+                    now,
+                    checkpoint_id,
+                ),
+            )
+        checkpoint = self.checkpoint(checkpoint_id)
+        if checkpoint is None:
+            raise ValueError(f"checkpoint ledger row disappeared: {checkpoint_id}")
+        checkpoint_step = int(checkpoint.get("step") or 0)
+        self.append_metrics(
+            metrics,
+            step=checkpoint_step,
+            source="modal_checkpoint_eval",
+            checkpoint_step=checkpoint_step,
+            publish=False,
+        )
+
+    def apply_modal_eval_skip(
+        self,
+        checkpoint_id: int,
+        *,
+        stage_name: str,
+        stage_index: int,
+        episodes: int,
+        n_envs: int,
+    ) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO checkpoint_eval_stages
+                  (checkpoint_id, stage_name, stage_index, status, episodes, n_envs,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, 'skipped_stale', ?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id, stage_name) DO UPDATE SET
+                  status = 'skipped_stale', updated_at = excluded.updated_at
+                """,
+                (checkpoint_id, stage_name, stage_index, episodes, n_envs, now, now),
+            )
+            conn.execute(
+                """
+                UPDATE eval_results SET status = 'skipped_stale', last_error = NULL, updated_at = ?
+                WHERE checkpoint_id = ?
+                """,
+                (now, checkpoint_id),
+            )
 
     def pending_evals(self, *, limit: int = 1) -> list[dict[str, Any]]:
         return self._pending_rows(

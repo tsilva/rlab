@@ -60,6 +60,36 @@ running jobs and `rlab fleet resume --machine <name>` to admit work again.
 reconciler: it claims, launches, finalizes, and prunes stale Docker images after
 no active container or exact-machine queued demand needs them.
 
+## Modal CPU Checkpoint Evaluation
+
+Modal is a backend-bound evaluation lane owned by the same Mac fleet service; it is not a
+registered training machine and must not be added to `experiments/machines.yaml`. Its checked-in
+deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The hard
+orchestration ceiling and the independent Modal `max_containers` guard are both 20, while rollout
+starts at effective capacity 1 and must be promoted through 2 before 20. The backend remains
+disabled in the checked-in config until the real parity, interruption, cap, and cost canaries pass.
+
+```bash
+rlab eval modal status
+rlab eval modal drain
+rlab eval modal resume --capacity 1
+rlab eval modal retry <eval-job-id>
+rlab eval modal recover <train-job-id>
+rlab eval modal assets sync --game <game-id>
+rlab eval modal smoke-local
+```
+
+PostgreSQL is the only wait queue. The service never submits work beyond the effective capacity,
+reserves worst-case cost before dispatch, and leaves budget-blocked jobs pending for operator
+inspection. Draining stops new Modal calls without stopping training. Checkpoint models, metadata,
+announcements, attempts, and decisions are immutable R2 objects; Modal return values are only
+receipts. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
+shared train/eval image digest. Worker retries are disabled; the fleet service may create one
+separately recorded second attempt for transient failures. Modal 1.5 exposes only single-use or
+unbounded-reuse containers, so v1 uses the stricter single-use setting rather than violating the
+ten-input lifetime ceiling; the cold-start canary decides whether a separately maintained CPU image
+is worthwhile.
+
 ## Host Setup
 
 Bootstrap each host after OS/Docker changes or when validating a new runtime
@@ -153,7 +183,10 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - In the recoverable job-container path, one container is one stable job
   launch. The service is the only normal mutating DB actor; status and log
   commands never claim, launch, cancel, or finalize jobs. The container reads a
-  payload, atomically publishes `result.json`, uploads W&B/artifacts, and exits.
+  payload and atomically publishes `result.json`. Queue-backed run directories live under the
+  host-mounted launch output so a checkpoint coordinator can recover incomplete R2 uploads after
+  the training container exits. The live W&B publisher owns training telemetry only when Modal
+  eval is selected; it does not upload checkpoint artifacts.
   Later service passes reconcile DB launch rows, Docker labels, and durable
   output directories without creating a replacement launch.
 ## Native Vector Runtime V2 Acceptance (2026-07-10)

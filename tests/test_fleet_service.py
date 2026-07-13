@@ -60,6 +60,14 @@ class FleetServiceTests(unittest.TestCase):
         )
         self.assertNotIn("-k", commands[0])
 
+    def test_redaction_removes_presigned_url_queries_and_url_fields(self) -> None:
+        url = "https://r2.example/checkpoint?X-Amz-Credential=secret&X-Amz-Signature=value"
+        self.assertEqual(
+            fleet_service.redact(url),
+            "https://r2.example/checkpoint?[REDACTED]",
+        )
+        self.assertEqual(fleet_service.redact({"model_get_url": url}), {"model_get_url": "[REDACTED]"})
+
     def test_install_validates_bootstraps_and_kicks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))

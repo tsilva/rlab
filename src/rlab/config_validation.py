@@ -17,6 +17,7 @@ from rlab.early_stop import normalize_early_stop_config
 from rlab.env_identity import validate_task_config
 from rlab.env_registry import env_supports_states, qualify_env_id, resolve_env_id
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
+from rlab.modal_eval_config import load_modal_eval_config
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.ranking import parse_objective_rank
 from rlab.seeds import validate_eval_seed
@@ -632,6 +633,18 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
         _capture_issue(issues, machines_path, repo_root, lambda: validate_machine_config(repo_root))
     else:
         issues.append(ValidationIssue(path="experiments/machines.yaml", message="file is required"))
+
+    modal_eval_path = experiments_dir / "modal_eval.yaml"
+    counts["modal_eval_configs"] = int(modal_eval_path.is_file())
+    if modal_eval_path.is_file():
+        _capture_issue(
+            issues,
+            modal_eval_path,
+            repo_root,
+            lambda: load_modal_eval_config(modal_eval_path),
+        )
+    else:
+        issues.append(ValidationIssue(path="experiments/modal_eval.yaml", message="file is required"))
 
     benchmark_dir = experiments_dir / "benchmarks"
     profile_dir = benchmark_dir / "profiles"

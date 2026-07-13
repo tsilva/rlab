@@ -100,11 +100,12 @@ def update_best_checkpoint_summary(
     wandb_run,
     *,
     metrics: dict[str, object],
-    checkpoint_path: Path,
+    checkpoint_path: Path | str,
     checkpoint_step_value: int,
     artifact_ref: str,
     eval_source: str = "async_worker",
     selection_rank: object = (),
+    force: bool = False,
 ) -> None:
     if wandb_run is None:
         return
@@ -171,7 +172,7 @@ def update_best_checkpoint_summary(
                 previous_step_score,
                 summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
             )[: len(score)]
-    if score < previous:
+    if not force and score < previous:
         return
 
     wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE] = values[0]
@@ -213,11 +214,13 @@ def log_checkpoint_eval_metrics(
     *,
     args,
     metrics: dict[str, object],
-    checkpoint_path: Path,
+    checkpoint_path: Path | str,
     checkpoint_step_value: int,
     artifact_ref: str,
     eval_source: str = "async_worker",
     config: EnvConfig,
+    update_leader: bool = True,
+    force_leader: bool = False,
 ) -> None:
     if wandb_run is None:
         return
@@ -249,15 +252,17 @@ def log_checkpoint_eval_metrics(
     payload.update(flat_numeric_metrics(metrics, EVAL_DONE_ROOT))
     payload.update(flat_numeric_metrics(metrics, EVAL_INFO_ROOT))
     wandb_run.log(payload)
-    update_best_checkpoint_summary(
-        wandb_run,
-        metrics=metrics,
-        checkpoint_path=checkpoint_path,
-        checkpoint_step_value=checkpoint_step_value,
-        artifact_ref=artifact_ref,
-        eval_source=eval_source,
-        selection_rank=getattr(args, "selection_rank", ()),
-    )
+    if update_leader:
+        update_best_checkpoint_summary(
+            wandb_run,
+            metrics=metrics,
+            checkpoint_path=checkpoint_path,
+            checkpoint_step_value=checkpoint_step_value,
+            artifact_ref=artifact_ref,
+            eval_source=eval_source,
+            selection_rank=getattr(args, "selection_rank", ()),
+            force=force_leader,
+        )
 
 
 def checkpoint_eval_config_from_args(args) -> EnvConfig:

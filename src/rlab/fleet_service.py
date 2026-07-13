@@ -19,6 +19,7 @@ from logging import Formatter, Logger
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 
 SERVICE_LABEL = "com.rlab.fleet-service"
@@ -32,6 +33,7 @@ TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "canceled"})
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 DiscoverMachines = Callable[[Path], Sequence[str]]
 ReconcileMachine = Callable[[Path, str, float], Mapping[str, Any] | None]
+ReconcileEval = Callable[[Path, float], Mapping[str, Any] | None]
 CountNonterminalJobs = Callable[[Path], int]
 
 
@@ -183,7 +185,8 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 _SENSITIVE_KEY = re.compile(
-    r"(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|database[_-]?url|dsn)",
+    r"(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|database[_-]?url|dsn|"
+    r"presigned|signed[_-]?url|(?:get|put)[_-]?url)",
     re.IGNORECASE,
 )
 _URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@", re.I)
@@ -201,7 +204,12 @@ def redact(value: Any, *, key: str | None = None) -> Any:
         return [redact(item) for item in value]
     if isinstance(value, str):
         text = _URL_CREDENTIALS.sub(r"\g<scheme>[REDACTED]@", value)
-        return _ASSIGNMENT_SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+        text = _ASSIGNMENT_SECRET.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+        if text.startswith(("http://", "https://")):
+            parts = urlsplit(text)
+            if parts.query:
+                text = urlunsplit((parts.scheme, parts.netloc, parts.path, "[REDACTED]", parts.fragment))
+        return text
     return value
 
 
@@ -558,7 +566,14 @@ def _default_count_nonterminal_jobs(repo_root: Path) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) AS count FROM train_jobs WHERE status <> ALL(%(terminal)s)",
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM train_jobs WHERE status <> ALL(%(terminal)s))
+                  +
+                  (SELECT COUNT(*) FROM eval_jobs
+                   WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
+                  AS count
+                """,
                 {"terminal": list(TERMINAL_JOB_STATES)},
             )
             row = cur.fetchone()
@@ -650,12 +665,28 @@ def _default_reconcile_machine(
     )
 
 
+def _default_reconcile_eval(
+    repo_root: Path,
+    deadline_monotonic: float,
+) -> Mapping[str, Any] | None:
+    config_path = repo_root / "experiments" / "modal_eval.yaml"
+    if not config_path.is_file():
+        return {"status": "unconfigured"}
+    from rlab.modal_eval_orchestrator import run_service_eval_pass
+
+    return run_service_eval_pass(
+        repo_root=repo_root,
+        deadline_monotonic=deadline_monotonic,
+    )
+
+
 def run_service_pass(
     *,
     repo_root: Path,
     state_dir: Path,
     discover_machines: DiscoverMachines = _default_discover_machines,
     reconcile_machine: ReconcileMachine = _default_reconcile_machine,
+    reconcile_eval: ReconcileEval = _default_reconcile_eval,
     max_machine_lanes: int = DEFAULT_MAX_MACHINE_LANES,
     lane_timeout_seconds: float = DEFAULT_LANE_TIMEOUT_SECONDS,
     pass_timeout_seconds: float = DEFAULT_PASS_TIMEOUT_SECONDS,
@@ -671,16 +702,16 @@ def run_service_pass(
         "repo_root": str(repo_root),
         "status": "running",
         "machines": [],
+        "eval": {"status": "running"},
     }
     event_log.emit("pass_started", repo_root=str(repo_root))
     try:
         machine_names = sorted(set(str(name) for name in discover_machines(repo_root)))
-        if not machine_names:
-            summary["status"] = "idle"
-        else:
-            workers = max(1, min(int(max_machine_lanes), len(machine_names)))
+        machine_workers = min(int(max_machine_lanes), len(machine_names))
+        workers = max(1, machine_workers + 1)
+        if workers:
             executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rlab-fleet")
-            futures: dict[Future[Mapping[str, Any] | None], tuple[str, float]] = {}
+            futures: dict[Future[Mapping[str, Any] | None], tuple[str, str, float]] = {}
             try:
                 for machine_name in machine_names:
                     lane_deadline = min(pass_deadline, clock() + lane_timeout_seconds)
@@ -690,37 +721,47 @@ def run_service_pass(
                         machine_name,
                         lane_deadline,
                     )
-                    futures[future] = (machine_name, lane_deadline)
+                    futures[future] = ("machine", machine_name, lane_deadline)
+                eval_deadline = min(pass_deadline, clock() + lane_timeout_seconds)
+                eval_future = executor.submit(reconcile_eval, repo_root, eval_deadline)
+                futures[eval_future] = ("eval", "modal", eval_deadline)
                 remaining = max(0.0, pass_deadline - clock())
                 done, pending = wait(futures, timeout=remaining)
                 machine_results: list[dict[str, Any]] = []
                 for future in done:
-                    machine_name, _deadline = futures[future]
+                    lane_kind, lane_name, _deadline = futures[future]
                     try:
                         detail = future.result()
                     except Exception as exc:
-                        machine_results.append(
-                            {
-                                "machine": machine_name,
-                                "status": "error",
-                                "error": redact(str(exc)),
-                            }
-                        )
+                        row = {"status": "error", "error": redact(str(exc))}
+                        if lane_kind == "machine":
+                            machine_results.append({"machine": lane_name, **row})
+                        else:
+                            summary["eval"] = row
                     else:
-                        machine_results.append(
-                            {
-                                "machine": machine_name,
-                                "status": "ok",
-                                "detail": redact(dict(detail or {})),
-                            }
-                        )
+                        row = {"status": "ok", "detail": redact(dict(detail or {}))}
+                        if lane_kind == "machine":
+                            machine_results.append({"machine": lane_name, **row})
+                        else:
+                            summary["eval"] = row
                 for future in pending:
-                    machine_name, _deadline = futures[future]
+                    lane_kind, lane_name, _deadline = futures[future]
                     future.cancel()
-                    machine_results.append({"machine": machine_name, "status": "timeout"})
+                    if lane_kind == "machine":
+                        machine_results.append({"machine": lane_name, "status": "timeout"})
+                    else:
+                        summary["eval"] = {"status": "timeout"}
                 summary["machines"] = sorted(machine_results, key=lambda row: row["machine"])
+                all_ok = all(row["status"] == "ok" for row in machine_results) and summary[
+                    "eval"
+                ]["status"] == "ok"
+                eval_detail_status = summary["eval"].get("detail", {}).get("status")
                 summary["status"] = (
-                    "ok" if all(row["status"] == "ok" for row in machine_results) else "degraded"
+                    "idle"
+                    if not machine_results and eval_detail_status in {"disabled", "unconfigured"}
+                    else "ok"
+                    if all_ok
+                    else "degraded"
                 )
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -736,6 +777,7 @@ def run_service_pass(
             status=summary["status"],
             duration_seconds=summary["duration_seconds"],
             machines=summary["machines"],
+            eval=summary["eval"],
             error=summary.get("error"),
         )
         event_log.close()
