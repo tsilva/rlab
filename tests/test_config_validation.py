@@ -85,7 +85,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertNotIn("env_threads", train_config)
         self.assertEqual(train_config["frame_skip"], 4)
         self.assertTrue(train_config["max_pool_frames"])
-        self.assertEqual(train_config["sticky_action_prob"], 0.25)
+        self.assertEqual(train_config["sticky_action_prob"], 0.0)
         self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
         self.assertEqual(train_config["task"]["termination"]["max_episode_steps"], 54000)

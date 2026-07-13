@@ -31,7 +31,7 @@ train:
     preprocessing:
       frame_skip: 4
       max_pool_frames: true
-      sticky_action_prob: 0.25
+      sticky_action_prob: 0.0
       observation_size: 84
       # Breakout's score ends at source row 14; the top wall starts at row 17.
       # Mask the score band and separator while preserving the full wall.
