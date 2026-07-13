@@ -7,13 +7,17 @@ resolution-markers = [
     "sys_platform == 'emscripten'",
     "sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
+required-markers = [
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
 
 [options]
 exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-13T14:56:06Z"
+supermariobrosnes-turbo = "2026-07-13T14:56:07Z"
 stable-retro-turbo = "2026-07-13T14:32:02Z"
 
 [manifest]
@@ -1781,6 +1785,7 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/1b/3b7ad966dc7d0cd0b49c4fb5299443f27062afd05d1359e83986a6bc6a9f/supermariobrosnes_turbo-0.2.25-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:2c4e2689164839daddf54ddc6480b9b9ea8457591190d922b30280696cacd20f", size = 429379, upload-time = "2026-07-13T14:56:05.027Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/e4/872bc7fe7e0e4363c79095d487d9e4c116909fc645038684402fe71b7c28/supermariobrosnes_turbo-0.2.25-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e6a649ef4d09462df0ee7f46c1aaf78acabeb0a807de6222722385a80c89d549", size = 468912, upload-time = "2026-07-13T14:56:06.414Z" },
 ]
 
 [[package]]
