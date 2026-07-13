@@ -740,7 +740,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
 
-    def test_stable_retro_atari_display_uses_native_resolution_rgb(self) -> None:
+    def test_stable_retro_atari_viewer_uses_policy_environment_config(self) -> None:
         policy_config = EnvConfig(
             env_provider="stable-retro-turbo",
             game="Breakout-Atari2600-v0",
@@ -749,20 +749,9 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         config = display_replay_config(policy_config)
 
-        self.assertEqual(config.env_provider, policy_config.env_provider)
-        self.assertEqual(config.env_args["obs_resize"], (210, 160))
-        self.assertFalse(config.env_args["obs_grayscale"])
-        self.assertEqual(config.env_args["frame_stack"], 1)
-        self.assertTrue(config.env_args["maxpool_last_two"])
-        self.assertEqual(config.env_args["num_threads"], 2)
-        self.assertEqual(config.obs_crop, (0, 0, 0, 0))
-        self.assertEqual(config.hud_crop_top, 0)
-        self.assertEqual(
-            policy_config.env_args,
-            {"num_threads": 2, "maxpool_last_two": True},
-        )
+        self.assertIs(config, policy_config)
 
-    def test_ale_py_display_uses_native_resolution_rgb(self) -> None:
+    def test_ale_py_viewer_uses_policy_environment_config(self) -> None:
         policy_config = EnvConfig(
             env_provider="ale-py",
             game="breakout",
@@ -771,13 +760,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         config = display_replay_config(policy_config)
 
-        self.assertEqual(config.env_args["img_height"], 210)
-        self.assertEqual(config.env_args["img_width"], 160)
-        self.assertFalse(config.env_args["grayscale"])
-        self.assertEqual(config.env_args["stack_num"], 1)
-        self.assertTrue(config.env_args["maxpool"])
-        self.assertEqual(config.obs_crop, (0, 0, 0, 0))
-        self.assertEqual(config.hud_crop_top, 0)
+        self.assertIs(config, policy_config)
 
     def test_resolved_play_launch_lines_summarize_repro_fields(self) -> None:
         args = argparse.Namespace(
@@ -815,14 +798,14 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("▶ resolved play launch", text)
         self.assertIn("◇ artifact:", text)
         self.assertIn("● policy/eval env:", text)
-        self.assertIn("○ viewer env:", text)
+        self.assertIn("○ viewer source:", text)
         self.assertIn("▤ preprocessing:", text)
         self.assertIn("⚙ action/reward:", text)
         self.assertIn("artifact: entity/project/run-checkpoint:latest", text)
         self.assertIn("model: model.zip", text)
         self.assertIn("policy/eval env: supermariobrosnes-turbo", text)
-        self.assertIn("viewer env: supermariobrosnes-turbo", text)
-        self.assertIn("visual_only=True", text)
+        self.assertIn("viewer source: supermariobrosnes-turbo", text)
+        self.assertIn("shared_with_policy=True", text)
         self.assertIn("source of truth:", text)
         self.assertIn("frame_skip=4", text)
         self.assertIn("max_pool=False", text)
@@ -1019,6 +1002,60 @@ class CommandAndArtifactTests(unittest.TestCase):
             runtime_config = assert_runtime.call_args.args[0]
             self.assertEqual(runtime_config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(runtime_config.game, "SuperMarioBros-Nes-v0")
+
+    def test_play_main_constructs_one_environment_for_policy_and_viewer(self) -> None:
+        class FakeEnv:
+            reset_infos = [{}]
+
+            def seed(self, seed):
+                self.last_seed = seed
+
+            def reset(self):
+                return np.zeros((1, 4, 84, 84), dtype=np.uint8)
+
+            def get_images(self):
+                return [np.zeros((210, 160, 3), dtype=np.uint8)]
+
+            def close(self):
+                self.closed = True
+
+        class FakeViewer:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+
+            def show(self, frame, overlay=None):
+                del frame, overlay
+                return False
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="stable-retro-turbo",
+                    game="Breakout-Atari2600-v0",
+                    state="Start",
+                ),
+                kind="checkpoint",
+            )
+            fake_env = FakeEnv()
+
+            with (
+                patch("rlab.play.assert_provider_runtime_available"),
+                patch("rlab.play.make_eval_vec_env", return_value=fake_env) as make_env,
+                patch("rlab.play.PygameViewer", FakeViewer),
+                patch("stable_baselines3.PPO.load", return_value=object()),
+                patch.object(sys, "stdout", io.StringIO()),
+            ):
+                self.assertEqual(play_main(["--model", str(model_path)]), 0)
+
+            make_env.assert_called_once()
+            self.assertTrue(fake_env.closed)
 
     def test_obs_stack_render_has_no_label_band(self) -> None:
         frames = deque(

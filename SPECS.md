@@ -44,6 +44,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Mario early stopping and checkpoint promotion must rely on goal-defined checkpoint evaluation, not training metrics alone.
 - Checkpoint promotion must rank candidates by worst-start completion, mean per-start completion, least timesteps to the completion goal, and then evaluation reward.
 - Playback must support local and remote model artifacts under the evaluation preprocessing contract.
+- Playback's game and policy-observation viewers must render the same policy environment step; playback must not advance an independent display environment.
 - Remote artifact caches must refresh when an artifact alias resolves to different content so alias advancement cannot reuse stale model files.
 - Visual releases must include reproducibility metadata and a representative replay.
 - Queued attempts must be isolated, use declared runtimes, preserve durable results, recover safely after interruption, separate observation from mutation, and clean unused resources without affecting active or demanded work.

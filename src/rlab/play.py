@@ -9,7 +9,6 @@ import sys
 import time
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import replace
 from itertools import count
 from types import ModuleType
 
@@ -43,7 +42,6 @@ from rlab.eval_metrics import (
     is_level_complete,
     single_env_action,
 )
-from rlab.env_registry import ALE_PY_PROVIDER, is_stable_retro_atari_env
 from rlab.model_sources import (
     model_source_ref,
     positional_model_source_arg,
@@ -494,36 +492,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def display_replay_config(config):
-    env_args = dict(config.env_args or {})
-    if is_stable_retro_atari_env(config.env_provider, config.game):
-        env_args.update(
-            {
-                "obs_resize": (210, 160),
-                "obs_grayscale": False,
-                "frame_stack": 1,
-            }
-        )
-        return replace(
-            config,
-            env_args=env_args,
-            obs_crop=(0, 0, 0, 0),
-            hud_crop_top=0,
-        )
-    if config.env_provider == ALE_PY_PROVIDER.provider_id:
-        env_args.update(
-            {
-                "img_height": 210,
-                "img_width": 160,
-                "grayscale": False,
-                "stack_num": 1,
-            }
-        )
-        return replace(
-            config,
-            env_args=env_args,
-            obs_crop=(0, 0, 0, 0),
-            hud_crop_top=0,
-        )
+    """Return the policy config because playback has exactly one environment.
+
+    Native providers expose their best available frame through ``get_images``.
+    Creating a second RGB-configured environment can silently diverge from the
+    policy state when the provider has stochastic transitions.
+    """
     return config
 
 
@@ -550,9 +524,9 @@ def resolved_play_launch_lines(
         ),
         _summary_line(
             "○",
-            "viewer env",
+            "viewer source",
             f"{display_config.env_provider} game={display_config.game} "
-            f"state={display_config.state or '-'} visual_only=True",
+            f"state={display_config.state or '-'} shared_with_policy=True",
             "blue",
         ),
         _summary_line(
@@ -603,7 +577,7 @@ def resolved_play_launch_lines(
         _summary_line(
             "✓",
             "source of truth",
-            "policy/eval env supplies model observations, rewards, dones, and info",
+            "one policy/eval env supplies both viewers, observations, rewards, dones, and info",
             "green",
         ),
     ]
@@ -643,7 +617,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Downloaded model: {args.model}", flush=True)
     artifact_config = load_playback_env_config(source.model_path)
     config = playback_runtime_config(artifact_config)
-    display_config = display_replay_config(artifact_config)
+    display_config = display_replay_config(config)
     print_resolved_play_launch(
         args,
         argv=argv_list,
@@ -657,13 +631,10 @@ def main(argv: list[str] | None = None) -> int:
     model = PPO.load(args.model, device=resolve_sb3_device(args.device))
     attributor = PolicyActionAttributor(model) if args.attribution != "none" else None
     policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
-    display_env = make_eval_vec_env(config=display_config, n_envs=1, seed=args.seed)
 
     policy_env.seed(args.seed)
     policy_env.reset()
-    display_env.seed(args.seed)
-    display_env.reset()
-    first_frame = vector_env_frame(display_env)
+    first_frame = vector_env_frame(policy_env)
     obs_stack_position = (40, 240)
     viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
     obs_viewer = (
@@ -752,9 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             policy_env.seed(episode_seed)
             policy_obs = policy_env.reset()
             policy_reset_info = dict(policy_env.reset_infos[0])
-            display_env.seed(episode_seed)
-            display_env.reset()
-            frame = vector_env_frame(display_env)
+            frame = vector_env_frame(policy_env)
             overlay = [
                 "r_step: 0.00",
                 "r_total: 0.00",
@@ -890,8 +859,6 @@ def main(argv: list[str] | None = None) -> int:
                             flush=True,
                         )
                         active_task_state = next_task_state
-                display_env.step(np.asarray([env_action]))
-                drain_runtime_records(display_env)
                 frames = fast_env_frames(policy_obs)
                 if attributor is None and not update_controls(frames):
                     return 0
@@ -905,7 +872,7 @@ def main(argv: list[str] | None = None) -> int:
                     completed = bool(episode_result.get("level_complete", False))
                 else:
                     completed = is_level_complete(final_info)
-                frame = vector_env_frame(display_env)
+                frame = vector_env_frame(policy_env)
                 overlay = [
                     f"r_step: {float(reward):.2f}",
                     f"r_total: {total_reward:.2f}",
@@ -951,9 +918,7 @@ def main(argv: list[str] | None = None) -> int:
             obs_viewer.close()
         viewer.close()
         try:
-            display_env.close()
-            if policy_env is not display_env:
-                policy_env.close()
+            policy_env.close()
         except Exception:
             pass
     return 0
