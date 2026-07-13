@@ -5,5 +5,5 @@ constraint-dependencies = [
 ]
 
 [exclude-newer-package]
-stable-retro-turbo = "2026-07-13T06:58:32Z"
+stable-retro-turbo = "2026-07-13T14:32:02Z"
 supermariobrosnes-turbo = "2026-07-13T06:58:32Z"
