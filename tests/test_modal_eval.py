@@ -299,6 +299,20 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
+    def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
+        store = ObjectStore("s3://bucket/prefix")
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"AWS_S3_ENDPOINT_URL": "https://account.r2.cloudflarestorage.com"},
+            ),
+            mock.patch("boto3.client") as client,
+        ):
+            store._s3_client()
+        config = client.call_args.kwargs["config"]
+        self.assertEqual(config.signature_version, "s3v4")
+        self.assertEqual(config.s3["addressing_style"], "path")
+
     def test_coordinator_reconciles_an_orphan_model_with_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)

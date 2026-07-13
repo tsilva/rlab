@@ -65,7 +65,13 @@ class ObjectStore:
                 os.environ.get("AWS_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3", "")
             )
             kwargs: dict[str, Any] = {
-                "config": Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 2})
+                "config": Config(
+                    signature_version="s3v4",
+                    s3={"addressing_style": "path"},
+                    connect_timeout=5,
+                    read_timeout=15,
+                    retries={"max_attempts": 2},
+                )
             }
             if endpoint:
                 kwargs["endpoint_url"] = endpoint
