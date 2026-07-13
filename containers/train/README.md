@@ -6,6 +6,13 @@ needed by Stable Retro, the `rlab` CLI, and the container-only
 `rlab-container-entrypoint` and `rlab-container-smoke` executables. It intentionally does
 not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
+The Dockerfile keeps locked dependencies in a heavyweight cacheable stage and
+installs the small `rlab` package in an independent `COPY --link` overlay. No
+command executes after that overlay is attached, so BuildKit can rebase normal
+source changes without materializing the multi-gigabyte dependency layer. Base
+images are digest-pinned so upstream tag movement cannot invalidate that stage
+unexpectedly.
+
 ## Build Locally
 
 ```bash
@@ -60,14 +67,25 @@ pushes to GitHub Container Registry:
 
 ```text
 ghcr.io/tsilva/rlab/rlab-train:git-<full-sha>
-ghcr.io/tsilva/rlab/rlab-train:ci-<run-id>-<attempt>
 ghcr.io/tsilva/rlab/rlab-train@sha256:<digest>
 ```
 
-Use tags for humans and digests for runs. The workflow uploads
+Use the Git tag for humans and digests for runs. Re-running the workflow for an
+already published commit reuses that immutable image rather than mutating its
+tag. The workflow uploads
 `rlab-train-image.json` with the full `docker:...@sha256:...` runtime ref. Feed
 that file into queue creation with `--runtime-image-ref-file` so jobs do not
 depend on mutable tags.
+
+Published builds export their BuildKit cache to the mutable `buildcache` tag in
+GHCR. That tag is build infrastructure only and must never be used as a runtime
+image selector.
+
+The workflow publishes a dependency-input-keyed `rlab-train-dependencies` image with a full
+SBOM and provenance when dependency inputs change. Per-commit runtime images
+reuse that cache, add only linked application layers, and retain their own
+source provenance plus the exact dependency-image digest in both OCI labels and
+`rlab-train-image.json`.
 
 ## Fleet Integration
 

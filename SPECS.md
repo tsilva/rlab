@@ -19,6 +19,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Invalid or internally inconsistent goals, training configurations, benchmarks, capacity rules, and machine settings must be rejected before execution.
 - Every run must be traceable to its goal, training configuration, overrides, seed, launch time, source state, resolved settings, and runtime identity.
 - Generated outputs and secrets must remain outside tracked project content, and normal operation must not expose credentials.
+- The supported application runtime is CPython 3.14; dependency resolution, provider packages, runtime images, and verification must remain installable on that runtime.
 - Supported environment providers must include native Gymnasium vector environments, `ale-py`, `stable-retro-turbo`, and SuperMarioBros-NES Turbo (`supermariobrosnes-turbo`) under explicit identities that reject unknown or incompatible configuration.
 - Every provider must expose a native Gymnasium `VectorEnv` with correct spaces, reset, step, observations, rewards, termination, truncation, and columnar information; scalar environments and synthetic vectorization are unsupported.
 - Native providers must use disabled/manual autoreset and masked lane reset.

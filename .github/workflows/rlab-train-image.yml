@@ -34,9 +34,14 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/rlab-train
+  DEPENDENCY_IMAGE_NAME: ${{ github.repository }}/rlab-train-dependencies
 
 jobs:
   build:
@@ -59,22 +64,79 @@ jobs:
       - name: Build metadata
         id: build_meta
         run: |
-          echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
-          echo "uv_lock_sha256=$(sha256sum uv.lock | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "python_image=$(awk -F= '/^ARG PYTHON_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)" >> "$GITHUB_OUTPUT"
-          echo "uv_image=$(awk -F= '/^ARG UV_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)" >> "$GITHUB_OUTPUT"
+          {
+            echo "created=$(git show -s --format=%cI HEAD)"
+            echo "uv_lock_sha256=$(sha256sum uv.lock | awk '{print $1}')"
+            echo "dependency_key=$(sha256sum containers/train/Dockerfile pyproject.toml uv.lock | sha256sum | awk '{print $1}')"
+            echo "python_image=$(awk -F= '/^ARG PYTHON_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
+            echo "uv_image=$(awk -F= '/^ARG UV_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Refuse immutable tag reuse
+      - name: Resolve immutable dependency image
+        id: existing_dependencies
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}"
+          tag="build-${{ steps.build_meta.outputs.dependency_key }}"
+          if metadata=$(docker buildx imagetools inspect "${image}:${tag}" 2>/dev/null); then
+            digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
+            test -n "$digest"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "Reusing immutable dependency image ${image}:${tag}@${digest}"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build dependency image
+        id: build_dependencies
+        if: github.event_name != 'pull_request' && steps.existing_dependencies.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/train/Dockerfile
+          target: dependencies
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:build-${{ steps.build_meta.outputs.dependency_key }}
+          build-args: |
+            UV_LOCK_SHA256=${{ steps.build_meta.outputs.uv_lock_sha256 }}
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
+            type=gha
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Resolve published dependency digest
+        id: published_dependencies
+        if: github.event_name != 'pull_request'
+        env:
+          BUILT_DIGEST: ${{ steps.build_dependencies.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing_dependencies.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve immutable image
+        id: existing_image
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           image="${REGISTRY}/${IMAGE_NAME}"
-          for tag in "git-${GITHUB_SHA}" "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; do
-            if docker buildx imagetools inspect "${image}:${tag}" >/dev/null 2>&1; then
-              echo "::error::Immutable image tag already exists: ${image}:${tag}"
-              exit 1
-            fi
-          done
+          tag="git-${GITHUB_SHA}"
+          if metadata=$(docker buildx imagetools inspect "${image}:${tag}" 2>/dev/null); then
+            digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
+            test -n "$digest"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "Reusing immutable image ${image}:${tag}@${digest}"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Docker metadata
         id: meta
@@ -83,10 +145,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=git-${{ github.sha }}
-            type=raw,value=ci-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build image
         id: build
+        if: github.event_name == 'pull_request' || steps.existing_image.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -94,14 +156,32 @@ jobs:
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           provenance: true
-          sbom: true
+          sbom: false
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.build_meta.outputs.created }}
             VCS_REF=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            UV_LOCK_SHA256=${{ steps.build_meta.outputs.uv_lock_sha256 }}
+            DEPENDENCY_IMAGE=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}
+            DEPENDENCY_IMAGE_DIGEST=${{ steps.published_dependencies.outputs.digest }}
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+            type=gha
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}:buildcache,mode=min,image-manifest=true,oci-mediatypes=true', env.REGISTRY, env.IMAGE_NAME) || '' }}
+
+      - name: Resolve published digest
+        id: published_image
+        if: github.event_name != 'pull_request'
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Write image digest artifact
         if: github.event_name != 'pull_request'
@@ -109,17 +189,17 @@ jobs:
           cat > rlab-train-image.json <<'JSON'
           {
             "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
-            "digest": "${{ steps.build.outputs.digest }}",
-            "runtime_image_ref": "docker:${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}",
+            "digest": "${{ steps.published_image.outputs.digest }}",
+            "runtime_image_ref": "docker:${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.published_image.outputs.digest }}",
             "source_sha": "${{ github.sha }}",
             "tags": [
-              "git-${{ github.sha }}",
-              "ci-${{ github.run_id }}-${{ github.run_attempt }}"
+              "git-${{ github.sha }}"
             ],
             "uv_lock_sha256": "${{ steps.build_meta.outputs.uv_lock_sha256 }}",
             "base_images": {
               "python": "${{ steps.build_meta.outputs.python_image }}",
-              "uv": "${{ steps.build_meta.outputs.uv_image }}"
+              "uv": "${{ steps.build_meta.outputs.uv_image }}",
+              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ steps.published_dependencies.outputs.digest }}"
             },
             "workflow_run_id": "${{ github.run_id }}",
             "workflow_run_attempt": "${{ github.run_attempt }}"
