@@ -54,7 +54,8 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["env_args"],
             {
-                "num_threads": 4,
+                "info_filter": "all",
+                "num_threads": 8,
                 "reward_clip": True,
                 "use_fire_reset": True,
             },
@@ -70,7 +71,12 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertIs(train_config["env_args"]["reward_clip"], True)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["env_args"],
-            {"num_threads": 4, "reward_clip": False, "use_fire_reset": True},
+            {
+                "info_filter": "all",
+                "num_threads": 8,
+                "reward_clip": False,
+                "use_fire_reset": True,
+            },
         )
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)

@@ -22,7 +22,8 @@ train:
         state: Start
         n_envs: 16
         env_args:
-          num_threads: 4
+          info_filter: all
+          num_threads: 8
           reward_clip: true
           use_fire_reset: true
     preprocessing:
@@ -69,7 +70,8 @@ eval:
       <<: *atari_breakout_env_config
       # Train on clipped rewards, but rank checkpoints by the real game score.
       env_args:
-        num_threads: 4
+        info_filter: all
+        num_threads: 8
         reward_clip: false
         use_fire_reset: true
     preprocessing:

@@ -78,7 +78,9 @@ Current training does not log per-rollout done-count distribution stats such as 
 
 Training level-complete metrics live under `train/info/level_complete/*` and count attempts, not full
 episodes. Use them for live training clear counts/rates when a policy can clear multiple levels
-inside one episode. Use `train/done/*` only to understand what is ending training episodes.
+inside one episode. They are emitted only for tasks that declare the `level_change` event; identity
+tasks such as Breakout do not run this Mario-specific reducer. Use `train/done/*` only to understand
+what is ending training episodes.
 
 `eval/done/level_change/from_rate/min` is the eval selection metric for Mario-style multi-start-state
 policies that define a clean completion event. Environments without a target-level completion
@@ -355,7 +357,9 @@ Stats:
 | `train/reward/<component>/nonzero_rate` | Fraction of collected values where the component was nonzero. |
 
 Reward share metrics compare absolute component magnitudes within a rollout.
-`train/reward_share/<component>` is logged for each share component:
+`train/reward_share/<component>` is logged for each share component only when the task emits reward
+component data during that rollout. Identity tasks with native rewards do not emit empty, zero-valued
+reward-share families:
 
 | Metric | Meaning |
 | --- | --- |

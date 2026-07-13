@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import tempfile
@@ -15,9 +16,21 @@ from rlab.benchmark_profiles import (
     load_benchmark_profiles,
 )
 from rlab.main import COMMANDS
+from experiments.scripts.benchmarks.benchmark_env_sps import benchmark_config
 
 
 class BenchmarkProfileTests(unittest.TestCase):
+    def test_stable_retro_env_throughput_benchmark_always_requests_all_info(self) -> None:
+        config = benchmark_config(
+            argparse.Namespace(
+                env_provider="stable-retro-turbo",
+                game="SuperMarioBros-Nes-v0",
+                state="Level1-1",
+            )
+        )
+
+        self.assertEqual(config.env_args["info_filter"], "all")
+
     def test_checked_in_benchmark_profiles_validate(self) -> None:
         profiles = load_benchmark_profiles()
 

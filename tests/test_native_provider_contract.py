@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 import stable_retro as retro
 
-from rlab.env import EnvConfig
+from rlab.env import EnvConfig, _bound_task_kernel
 from rlab.env_providers import (
     _AleManualResetAdapter,
     _StartInfoAdapter,
@@ -126,8 +126,6 @@ class GenericNativeProviderTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "no native Gymnasium vector entry point"):
             make_provider_vec_env(config, native_kwargs={"num_envs": 2})
-
-
 
 class MarioNativeProviderTests(unittest.TestCase):
     @staticmethod
@@ -425,7 +423,7 @@ class MarioNativeProviderTests(unittest.TestCase):
             obs_crop=(17, 0, 0, 0),
             obs_crop_mode="mask",
             sticky_action_prob=0.25,
-            env_args={"num_threads": 4, "reward_clip": True},
+            env_args={"info_filter": "all", "num_threads": 8, "reward_clip": True},
             task={
                 "id": "identity",
                 "action": {"set": "native"},
@@ -449,7 +447,8 @@ class MarioNativeProviderTests(unittest.TestCase):
 
         self.assertEqual(env.game, "Breakout-Atari2600-v0")
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
-        self.assertEqual(env.kwargs["num_threads"], 4)
+        self.assertEqual(env.kwargs["info_filter"], "all")
+        self.assertEqual(env.kwargs["num_threads"], 8)
         self.assertEqual(env.kwargs["state"], "Start")
         self.assertEqual(env.kwargs["obs_resize"], (84, 84))
         self.assertEqual(env.kwargs["obs_crop"], (17, 0, 0, 0))
@@ -474,6 +473,14 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(int(reset_observations[1, 0, 0, 0]), 2)
         self.assertEqual(env.reset_calls, 2)
         np.testing.assert_array_equal(env.reset_masks[-1], [True] + [False] * 15)
+
+        descriptor = provider_descriptor(
+            config,
+            env,
+            state_weight_mapping=lambda _config: {},
+        )
+        kernel = _bound_task_kernel(config, descriptor, 16)
+        self.assertIsNone(kernel._observation_mask)
 
 
 class AleManualLifecycleTests(unittest.TestCase):

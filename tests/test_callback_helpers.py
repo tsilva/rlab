@@ -54,7 +54,7 @@ class RuntimeMetricsHelperTests(unittest.TestCase):
     def test_consumes_episode_records_without_info_payloads(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = RuntimeMetricsHelper(event_names=("life_loss", "level_change", "stalled"))
+        callback = RuntimeMetricsHelper(event_names=("life_loss", "stalled"))
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
         callback.num_timesteps = 20
 
@@ -83,6 +83,8 @@ class RuntimeMetricsHelperTests(unittest.TestCase):
         self.assertEqual(logger.records["train/done/stalled"], 1)
         self.assertEqual(logger.records["train/done/max_steps"], 1)
         self.assertEqual(logger.records["train/done/unclassified"], 0)
+        self.assertFalse(any(key.startswith("train/info/level_complete") for key in logger.records))
+        self.assertFalse(any(key.startswith("train/reward_share") for key in logger.records))
 
     def test_done_source_rate_emits_after_full_episode_window(self) -> None:
         logger = SimpleNamespace(records={})
@@ -159,7 +161,7 @@ class RlabCallbackTests(unittest.TestCase):
         model = Model(env)
         callback = RlabCallback(
             [
-                RuntimeMetricsHelper(),
+                RuntimeMetricsHelper(event_names=("level_change",)),
             ]
         )
         callback.model = model  # type: ignore[assignment]
@@ -209,7 +211,7 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
     def test_consumes_task_and_episode_records(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = RuntimeMetricsHelper()
+        callback = RuntimeMetricsHelper(event_names=("level_change",))
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
 
         self.assertTrue(
@@ -251,7 +253,7 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
     def test_completion_window_and_simultaneous_failure_precedence(self) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        callback = RuntimeMetricsHelper()
+        callback = RuntimeMetricsHelper(event_names=("level_change",))
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
 
         clean_events = [

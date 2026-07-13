@@ -48,5 +48,5 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Visual releases must include reproducibility metadata and a representative replay.
 - Queued attempts must be isolated, use declared runtimes, preserve durable results, recover safely after interruption, separate observation from mutation, and clean unused resources without affecting active or demanded work.
 - Machine capacity, runtime paths, scheduling limits, and operator guidance must each have an authoritative source and remain mutually consistent.
-- Benchmark claims must be reproducible and compare matching provider, task-kernel, event-boundary, workload, concurrency, and host-load contracts.
+- Benchmark claims must be reproducible and compare matching provider, task-kernel, event-boundary, workload, concurrency, and host-load contracts; Stable Retro benchmarks must use `info_filter=all`, never `none`.
 - Changes must pass relevant automated verification and preserve internally consistent project configuration.

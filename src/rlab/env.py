@@ -21,7 +21,6 @@ from rlab.env_registry import (
     ALE_PY_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
     env_supports_states,
-    is_stable_retro_atari_env,
     qualify_env_id,
     resolve_env_provider,
 )
@@ -298,11 +297,10 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
         raise ValueError("generic native-vector tasks require native rewards")
     if task_conditioning(config).get("enabled"):
         raise ValueError("generic native-vector tasks do not support task conditioning")
+    # Stable Retro applies obs_crop natively. Only ale-py needs the task kernel
+    # to mask its already-resized observations.
     observation_mask = (
-        native_obs_crop(config)
-        if config.env_provider == ALE_PY_PROVIDER.provider_id
-        or is_stable_retro_atari_env(config.env_provider, config.game)
-        else None
+        native_obs_crop(config) if config.env_provider == ALE_PY_PROVIDER.provider_id else None
     )
     source_shape = (210, 160) if observation_mask is not None else None
     return IdentityTaskDefinition(

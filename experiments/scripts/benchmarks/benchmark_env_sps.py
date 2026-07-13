@@ -22,11 +22,17 @@ from rlab.targets import target_for_game
 
 
 def benchmark_config(args: argparse.Namespace) -> EnvConfig:
+    env_args = (
+        {"info_filter": "all"}
+        if args.env_provider in {"stable-retro-turbo", "supermariobrosnes-turbo"}
+        else {}
+    )
     return resolve_env_config(
         EnvConfig(
             env_provider=args.env_provider,
             game=args.game,
             state=args.state,
+            env_args=env_args,
             frame_skip=4,
             max_pool_frames=False,
             sticky_action_prob=0.0,

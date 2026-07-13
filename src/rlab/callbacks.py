@@ -624,21 +624,23 @@ class _RewardStatsAccumulator:
     def flush(self) -> dict[str, float]:
         payload: dict[str, float] = {}
         abs_sums: dict[str, float] = {}
+        has_reward_data = any(accumulator.size > 0 for accumulator in self.components.values())
         for component, accumulator in self.components.items():
             prefix = f"{TRAIN_REWARD_COMPONENT_ROOT}/{component}"
             metrics, abs_sum = accumulator.flush(prefix)
             payload.update(metrics)
             if component in self.reward_share_components:
                 abs_sums[component] = abs_sum
-        total_abs_sum = sum(abs_sums.values())
-        payload.update(
-            {
-                f"{TRAIN_REWARD_SHARE_ROOT}/{component}": (
-                    abs_sum / total_abs_sum if total_abs_sum > 0.0 else 0.0
-                )
-                for component, abs_sum in abs_sums.items()
-            }
-        )
+        if has_reward_data:
+            total_abs_sum = sum(abs_sums.values())
+            payload.update(
+                {
+                    f"{TRAIN_REWARD_SHARE_ROOT}/{component}": (
+                        abs_sum / total_abs_sum if total_abs_sum > 0.0 else 0.0
+                    )
+                    for component, abs_sum in abs_sums.items()
+                }
+            )
         return payload
 
 
@@ -870,7 +872,9 @@ class RuntimeMetricsHelper(CallbackHelper):
         self.wandb_run = wandb_run
         self.reward_stats = _RewardStatsAccumulator()
         self.done_metrics = _DoneMetricsReducer(event_names=event_names)
-        self.completion_metrics = _LevelCompletionMetricsReducer()
+        self.completion_metrics = (
+            _LevelCompletionMetricsReducer() if "level_change" in event_names else None
+        )
         self.pending_metrics: dict[str, int | float] = {}
 
     def _on_records(self, records: Iterable[Any]) -> bool:
@@ -886,7 +890,8 @@ class RuntimeMetricsHelper(CallbackHelper):
             done_payload = self.done_metrics.consume(record)
             if done_payload:
                 self.pending_metrics.update(done_payload)
-            self.pending_metrics.update(self.completion_metrics.consume(record))
+            if self.completion_metrics is not None:
+                self.pending_metrics.update(self.completion_metrics.consume(record))
         return True
 
     def _on_rollout_end(self) -> None:
