@@ -55,6 +55,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["env_args"],
             {
+                "info": "src/rlab/data/Breakout-Atari2600-v0.json",
                 "info_filter": "all",
                 "num_threads": 6,
                 "reward_clip": True,
@@ -73,6 +74,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["env_args"],
             {
+                "info": "src/rlab/data/Breakout-Atari2600-v0.json",
                 "info_filter": "all",
                 "num_threads": 6,
                 "reward_clip": False,
@@ -103,6 +105,11 @@ class ConfigValidationTests(unittest.TestCase):
             },
         )
         self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
+        info_path = Path(train_config["env_args"]["info"])
+        self.assertEqual(
+            json.loads(info_path.read_text(encoding="utf-8"))["info"]["ball_y"],
+            {"address": 229, "type": "|u1"},
+        )
         self.assertEqual(
             train_config["task"]["events"],
             {
