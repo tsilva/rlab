@@ -66,7 +66,7 @@ class ModalEvalConfig:
     min_containers: int
     buffer_containers: int
     max_containers: int
-    single_use_containers: bool
+    max_inputs_per_container: int
     scaledown_window_seconds: int
     startup_timeout_seconds: int
     screen_timeout_seconds: int
@@ -121,7 +121,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
                 "min_containers",
                 "buffer_containers",
                 "max_containers",
-                "single_use_containers",
+                "max_inputs_per_container",
                 "scaledown_window_seconds",
                 "startup_timeout_seconds",
             },
@@ -183,9 +183,9 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             resources.get("buffer_containers"), label="resources.buffer_containers"
         ),
         max_containers=modal_cap,
-        single_use_containers=_bool(
-            resources.get("single_use_containers", True),
-            label="resources.single_use_containers",
+        max_inputs_per_container=_positive_int(
+            resources.get("max_inputs_per_container"),
+            label="resources.max_inputs_per_container",
         ),
         scaledown_window_seconds=_positive_int(
             resources.get("scaledown_window_seconds"),

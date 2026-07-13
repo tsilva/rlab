@@ -70,6 +70,7 @@ COPY --link src ./src
 COPY --link METRICS.md INSTANCES.md ./
 COPY --link scripts ./scripts
 COPY --link experiments/machines.yaml ./experiments/
+COPY --link experiments/modal_eval.yaml ./experiments/
 COPY --link --chmod=755 containers/train/rlab /usr/local/bin/rlab
 COPY --link --chmod=755 containers/train/entrypoint.sh /usr/local/bin/rlab-container-entrypoint
 COPY --link --chmod=755 containers/train/smoke.py /usr/local/bin/rlab-container-smoke

@@ -18,6 +18,7 @@ app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
 registry_secret_name = os.environ.get("RLAB_MODAL_REGISTRY_SECRET", "").strip()
 registry_secret = modal.Secret.from_name(registry_secret_name) if registry_secret_name else None
 image = modal.Image.from_registry(registry_ref, secret=registry_secret)
+image = image.env({"RLAB_MODAL_EVAL_RUNTIME_IMAGE": runtime_image_ref})
 app = modal.App(app_name)
 
 
@@ -33,10 +34,32 @@ app = modal.App(app_name)
     retries=0,
     timeout=config.promotion_timeout_seconds,
     startup_timeout=config.startup_timeout_seconds,
-    single_use_containers=config.single_use_containers,
+    max_inputs=config.max_inputs_per_container,
     include_source=False,
 )
 def evaluate_checkpoint(payload: dict) -> dict:
     from rlab.modal_eval_worker import execute_attempt
 
     return execute_attempt(payload)
+
+
+@app.function(
+    name="startup_probe",
+    image=image,
+    cpu=0.125,
+    memory=128,
+    min_containers=0,
+    buffer_containers=0,
+    max_containers=1,
+    retries=0,
+    timeout=30,
+    startup_timeout=config.startup_timeout_seconds,
+    single_use_containers=True,
+    include_source=False,
+)
+def startup_probe() -> dict[str, str]:
+    """Prove the deployed image can import its packaged evaluator contract."""
+    return {
+        "app_name": app_name,
+        "runtime_image_ref": runtime_image_ref,
+    }

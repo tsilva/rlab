@@ -9,6 +9,7 @@ on:
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
       - experiments/machines.yaml
+      - experiments/modal_eval.yaml
       - scripts/**
       - src/**
       - INSTANCES.md
@@ -22,6 +23,7 @@ on:
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
       - experiments/machines.yaml
+      - experiments/modal_eval.yaml
       - scripts/**
       - src/**
       - INSTANCES.md

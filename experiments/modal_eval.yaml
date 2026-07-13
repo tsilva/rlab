@@ -1,4 +1,4 @@
-enabled: false
+enabled: true
 deployment:
   app_name_prefix: rlab-eval
   function_name: evaluate_checkpoint
@@ -13,7 +13,7 @@ resources:
   min_containers: 0
   buffer_containers: 0
   max_containers: 20
-  single_use_containers: true
+  max_inputs_per_container: 10
   scaledown_window_seconds: 60
   startup_timeout_seconds: 120
 timeouts:

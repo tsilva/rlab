@@ -130,11 +130,19 @@ class ModalEvalContractTests(unittest.TestCase):
 
     def test_checked_in_config_has_independent_twenty_call_guards(self) -> None:
         config = load_modal_eval_config(Path("experiments/modal_eval.yaml"))
-        self.assertFalse(config.enabled)
+        self.assertTrue(config.enabled)
         self.assertEqual(config.hard_max_active, 20)
         self.assertEqual(config.max_containers, 20)
         self.assertEqual(config.initial_effective_capacity, 1)
+        self.assertEqual(config.max_inputs_per_container, 10)
         self.assertEqual(config.max_attempts, 2)
+
+    def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
+        dockerfile = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(
+            "COPY --link experiments/modal_eval.yaml ./experiments/",
+            dockerfile,
+        )
 
     def test_config_rejects_unknown_fields_and_excess_capacity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

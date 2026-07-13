@@ -39,3 +39,24 @@ jobs:
           esac
       - name: Deploy immutable Modal evaluator
         run: uv run modal deploy -m rlab.modal_app
+      - name: Prove deployed worker image startup
+        run: |
+          uv run python - <<'PY'
+          import os
+
+          import modal
+
+          from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
+
+          runtime_image_ref = os.environ["RLAB_MODAL_EVAL_RUNTIME_IMAGE"]
+          config = load_modal_eval_config()
+          app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
+          result = modal.Function.from_name(app_name, "startup_probe").remote()
+          expected = {
+              "app_name": app_name,
+              "runtime_image_ref": runtime_image_ref,
+          }
+          if result != expected:
+              raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
+          print(f"Modal startup probe passed for {app_name}")
+          PY
