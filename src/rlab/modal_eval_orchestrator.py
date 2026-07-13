@@ -74,6 +74,7 @@ class DefaultModalInvoker:
             modal.exception.OutputExpiredError,
             modal.exception.RemoteError,
             modal.exception.UserCodeException,
+            RuntimeError,
         ) as exc:
             return "failed", repr(exc)
         except Exception as exc:

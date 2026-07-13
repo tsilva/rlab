@@ -12,6 +12,7 @@ from unittest import mock
 
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_orchestrator import (
+    DefaultModalInvoker,
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
@@ -220,6 +221,14 @@ class ModalEvalContractTests(unittest.TestCase):
 
 
 class ModalEvalSchedulingTests(unittest.TestCase):
+    def test_plain_runtime_error_from_modal_is_a_terminal_call_failure(self) -> None:
+        call = mock.MagicMock()
+        call.get.side_effect = RuntimeError("remote worker failed")
+        with mock.patch("modal.FunctionCall.from_id", return_value=call):
+            state, detail = DefaultModalInvoker().poll("fc-test")
+        self.assertEqual(state, "failed")
+        self.assertIn("remote worker failed", str(detail))
+
     def test_only_transient_failures_are_retryable(self) -> None:
         self.assertTrue(deterministic_eval_failure("checkpoint hash mismatch"))
         self.assertTrue(deterministic_eval_failure("environment contract is invalid"))
