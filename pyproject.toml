@@ -7,8 +7,8 @@ requires-python = "==3.14.*"
 dependencies = [
     "stable-retro-turbo==1.0.1.post29; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "stable-retro-turbo==1.0.1.post29; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "supermariobrosnes-turbo>=0.2.21; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "supermariobrosnes-turbo>=0.2.21; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "supermariobrosnes-turbo==0.2.25; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "supermariobrosnes-turbo==0.2.25; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tensorboard>=2.16,<3",
@@ -41,7 +41,7 @@ constraint-dependencies = [
 
 [tool.uv.exclude-newer-package]
 stable-retro-turbo = "2026-07-13T14:32:02Z"
-supermariobrosnes-turbo = "2026-07-13T06:58:32Z"
+supermariobrosnes-turbo = "2026-07-13T14:56:06Z"
 
 [tool.ruff]
 line-length = 100
