@@ -199,11 +199,13 @@ and beast host recommendations.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
-- Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as its only wait queue, and remains disabled until its checked-in canary gates pass. Use `rlab eval modal smoke-local` for the credential-free integration path.
-- Before enabling Modal globally, provision the queue schema and private game asset, deploy the
-  exact immutable runtime, then run `rlab eval modal preflight --runtime-image-ref <digest-ref>
-  --game <game-id>`. A canary can opt in without changing the global default by passing
-  `--checkpoint-eval-backend modal` to `rlab train`.
+- Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
+  its only wait queue, and is the default for newly enqueued queue-backed jobs at effective
+  capacity 1. Use `rlab eval modal smoke-local` for the credential-free integration path.
+- Before using a new runtime digest or game, provision its private asset, deploy the exact
+  immutable runtime, then run `rlab eval modal preflight --runtime-image-ref <digest-ref>
+  --game <game-id>`. Pass `--checkpoint-eval-backend local` to opt a submission into the explicit
+  local fallback.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.

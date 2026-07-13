@@ -66,8 +66,9 @@ Modal is a backend-bound evaluation lane owned by the same Mac fleet service; it
 registered training machine and must not be added to `experiments/machines.yaml`. Its checked-in
 deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The hard
 orchestration ceiling and the independent Modal `max_containers` guard are both 20, while rollout
-starts at effective capacity 1 and must be promoted through 2 before 20. The backend remains
-disabled in the checked-in config until the real parity, interruption, cap, and cost canaries pass.
+starts at effective capacity 1 and must be promoted through 2 before 20. Modal is the default for
+new queue-backed jobs at capacity 1; do not raise that capacity until the parity, interruption,
+cap-2, and cost canaries pass.
 
 ```bash
 rlab eval modal status
@@ -82,11 +83,10 @@ rlab eval modal assets sync --game <game-id>
 rlab eval modal smoke-local
 ```
 
-Before global enablement, select Modal explicitly on a canary submission with
-`rlab train ... --checkpoint-eval-backend modal`. The selected backend is materialized in the
-queue row and never changes for that job. `preflight` fails closed unless the additive PostgreSQL
-schema, active capacity, private ROM object, local Modal credentials, and exact runtime-specific
-deployment are all present.
+The selected backend is materialized in the queue row and never changes for that job. Use
+`rlab train ... --checkpoint-eval-backend local` only for an explicit fallback. `preflight` fails
+closed unless the additive PostgreSQL schema, active capacity, private ROM object, local Modal
+credentials, and exact runtime-specific deployment are all present.
 
 PostgreSQL is the only wait queue. The service never submits work beyond the effective capacity,
 reserves worst-case cost before dispatch, and leaves budget-blocked jobs pending for operator
@@ -95,9 +95,18 @@ announcements, attempts, and decisions are immutable R2 objects; Modal return va
 receipts. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
 shared train/eval image digest. Worker retries are disabled; the fleet service may create one
 separately recorded second attempt for transient failures. Modal 1.5 exposes only single-use or
-unbounded-reuse containers, so v1 uses the stricter single-use setting rather than violating the
-ten-input lifetime ceiling; the cold-start canary decides whether a separately maintained CPU image
-is worthwhile.
+unbounded-reuse containers. V1 uses warm-container reuse with a 60-second scale-down window because
+single-use containers impose the full cold-start cost on every evaluation; the global call cap and
+dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
+Modal supports `max_inputs > 1`.
+
+The 2026-07-13 Breakout cap-1 canary used runtime
+`sha256:ed1d6342ba2ba90c9832fb6e088a93c680dad09fcbda0ec71b8021f94a484498` and train job 8.
+Training completed 131,072 steps at 5,432 reported FPS without a local eval worker. Modal accepted
+the two-episode, two-lane `vector-lane-v1` promotion evaluation in 26.0 seconds for an estimated
+$0.00450, uploaded immutable R2 evidence, promoted eval job 4, and projected `eval/source=modal`
+into the exact finished W&B run. The deployment workflow's startup probe and the preflight command
+both passed for the digest-specific app before the canary was admitted.
 
 ## Host Setup
 
