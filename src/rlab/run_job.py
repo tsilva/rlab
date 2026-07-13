@@ -20,6 +20,7 @@ from rlab.job_execution import (
     write_train_config_file,
 )
 from rlab.env import default_run_dir
+from rlab.metric_store import MetricStore, metric_store_path
 
 
 RESULT_SCHEMA_VERSION = 1
@@ -185,6 +186,9 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     )
     command = train_command_for_job(config_path)
     run_dir = run_dir_from_config(config_path)
+    # Establish the ledger schema and persistent WAL mode before independent
+    # publisher/coordinator processes begin opening it concurrently.
+    MetricStore(metric_store_path(run_dir)).init()
     producer_stop_file = output_dir / "producers.stop"
     publisher_stop_file = output_dir / "publisher.stop"
     producer_workers: list[subprocess.Popen] = []
@@ -207,9 +211,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         producer_workers.append(
             start_worker(
                 module=(
-                    "rlab.checkpoint_coordinator"
-                    if modal_eval
-                    else "rlab.checkpoint_eval_worker"
+                    "rlab.checkpoint_coordinator" if modal_eval else "rlab.checkpoint_eval_worker"
                 ),
                 name="checkpoint_coordinator" if modal_eval else "checkpoint_eval_worker",
                 output_dir=output_dir,

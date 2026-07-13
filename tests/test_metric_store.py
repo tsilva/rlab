@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -13,20 +15,60 @@ STAGES = [
         "name": "screen",
         "episodes": 10,
         "n_envs": 2,
-        "pass": [{"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [
+            {"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}
+        ],
         "candidate_stop": False,
     },
     {
         "name": "confirm",
         "episodes": 30,
         "n_envs": 4,
-        "pass": [{"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [
+            {"metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN, "operator": ">=", "threshold": 1.0}
+        ],
         "candidate_stop": True,
     },
 ]
 
 
 class MetricStoreTests(unittest.TestCase):
+    def test_writer_waits_for_bounded_concurrent_lock_instead_of_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rlab.sqlite"
+            store = MetricStore(path, timeout=1.0)
+            store.init()
+            blocker = store.connect()
+            blocker.execute("BEGIN IMMEDIATE")
+            errors: list[BaseException] = []
+
+            def write() -> None:
+                try:
+                    store.append_metrics({"train/reward": 1.0}, step=10, source="train")
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            writer = threading.Thread(target=write)
+            writer.start()
+            time.sleep(0.15)
+            blocker.commit()
+            blocker.close()
+            writer.join(timeout=2.0)
+
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(store.latest_metric("train/reward"), 1.0)
+
+    def test_init_persists_wal_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+
+            with store.connect() as conn:
+                mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+            self.assertEqual(mode.lower(), "wal")
+
     def test_append_metrics_and_latest_lookup_keep_newest_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")

@@ -144,7 +144,7 @@ class MetricStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=self.timeout)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={max(0, int(self.timeout * 1000))}")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -159,6 +159,10 @@ class MetricStore:
 
     def init(self) -> None:
         with self.connection() as conn:
+            # Journal mode is persistent database state. Reapplying it on every
+            # short-lived connection requires an exclusive lock and can make a
+            # healthy WAL workload fail spuriously under concurrent writers.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA_SQL)
 
     def append_metrics(
@@ -505,7 +509,9 @@ class MetricStore:
 
     def checkpoint(self, checkpoint_id: int) -> dict[str, Any] | None:
         with self.connection() as conn:
-            row = conn.execute("SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,)
+            ).fetchone()
         return dict(row) if row is not None else None
 
     def checkpoints(self) -> list[dict[str, Any]]:

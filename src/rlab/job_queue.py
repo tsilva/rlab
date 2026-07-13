@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 import hashlib
@@ -39,7 +40,10 @@ from rlab.recipe_documents import (
     validate_launch_seed_config,
 )
 from rlab.seeds import validate_training_seed
-from rlab.recipe_schema import require_explicit_queue_train_config, validate_materialized_train_recipe
+from rlab.recipe_schema import (
+    require_explicit_queue_train_config,
+    validate_materialized_train_recipe,
+)
 from rlab.provider_config import provider_num_envs
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.modal_eval_assets import asset_manifest_for_game
@@ -271,6 +275,7 @@ class QueueDemand:
     def total(self) -> int:
         return self.pending_count + self.active_count
 
+
 QUEUE_DEMAND_SQL = """
 SELECT
   machine,
@@ -312,8 +317,9 @@ def machine_queue_counts(conn, *, machine: str) -> dict[str, dict[str, int]]:
             WHERE machine = %(machine)s
             GROUP BY status
             ORDER BY status
-            """
-            , {"machine": normalize_machine(machine)})
+            """,
+            {"machine": normalize_machine(machine)},
+        )
         train_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
     return {"train": train_counts}
 
@@ -584,7 +590,22 @@ def enqueue_train_jobs_from_recipe_document(
     repo_git_commit: str | None = None,
     repo_dirty: bool = False,
     seeds: Sequence[int] = (),
+    checkpoint_eval_backend: str | None = None,
 ) -> list[dict[str, Any]]:
+    document = copy.deepcopy(dict(document))
+    train_config = dict(document.get("train_config") or {})
+    backend = str(checkpoint_eval_backend or train_config.get("checkpoint_eval_backend") or "")
+    if not backend:
+        modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
+        backend = (
+            "modal"
+            if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled
+            else "local"
+        )
+    if backend not in {"local", "modal"}:
+        raise ValueError("checkpoint_eval_backend must be local or modal")
+    train_config["checkpoint_eval_backend"] = backend
+    document["train_config"] = train_config
     validate_materialized_train_recipe(document)
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
@@ -608,7 +629,9 @@ def enqueue_train_jobs_from_recipe_document(
         existing = _existing_submission(conn, submission_key=submission_key)
         if existing:
             if any(str(row["request_hash"]) != request_hash for row in existing):
-                raise ValueError(f"submission_key {submission_key!r} was reused with different content")
+                raise ValueError(
+                    f"submission_key {submission_key!r} was reused with different content"
+                )
             if len(existing) != len(document_seeds):
                 raise RuntimeError(
                     f"submission_key {submission_key!r} is incomplete: "
@@ -697,6 +720,7 @@ def enqueue_train_jobs_from_recipe_file(
     submission_key: str | None = None,
     seeds: Sequence[int] = (),
     recipe_overrides: Sequence[str] = (),
+    checkpoint_eval_backend: str | None = None,
 ) -> list[dict[str, Any]]:
     document = load_recipe_document(path, recipe_overrides=recipe_overrides)
     metadata = recipe_metadata(path, document)
@@ -711,6 +735,7 @@ def enqueue_train_jobs_from_recipe_file(
         repo_git_commit=metadata["repo_git_commit"],
         repo_dirty=metadata["repo_dirty"],
         seeds=seeds,
+        checkpoint_eval_backend=checkpoint_eval_backend,
     )
 
 
@@ -752,9 +777,12 @@ def enqueue_train_job(
         if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled:
             requested_config["checkpoint_eval_backend"] = "modal"
     config = validate_and_normalize_train_config(requested_config)
-    config["wandb_run_id"] = "rlab-" + _hash_json(
-        {"submission_key": submission_key, "submission_ordinal": submission_ordinal}
-    )[:24]
+    config["wandb_run_id"] = (
+        "rlab-"
+        + _hash_json({"submission_key": submission_key, "submission_ordinal": submission_ordinal})[
+            :24
+        ]
+    )
     if str(config.get("checkpoint_eval_backend") or "local") == "modal":
         if not config.get("checkpoint_eval_asset_manifest"):
             config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
@@ -1103,12 +1131,16 @@ def machine_control(conn, *, machine: str) -> dict[str, Any]:
             {"machine": machine},
         )
         row = cur.fetchone()
-    return dict(row) if row else {
-        "machine": machine,
-        "drained": False,
-        "effective_capacity": None,
-        "reason": None,
-    }
+    return (
+        dict(row)
+        if row
+        else {
+            "machine": machine,
+            "drained": False,
+            "effective_capacity": None,
+            "reason": None,
+        }
+    )
 
 
 def set_machine_control(
@@ -1124,6 +1156,7 @@ def set_machine_control(
     machine = normalize_machine(machine)
     if effective_capacity is not None and effective_capacity < 1:
         raise ValueError("effective_capacity must be at least one")
+
     def update() -> dict[str, Any]:
         acquire_machine_control_xact_lock(conn, machine=machine)
         with conn.cursor() as cur:
@@ -1313,7 +1346,7 @@ def request_cancel_train_jobs(
                 SET cancel_requested = TRUE,
                     status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
                     finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
-                WHERE {' AND '.join(filters)}
+                WHERE {" AND ".join(filters)}
                 RETURNING id
                 """,
                 params,
@@ -1380,9 +1413,7 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             submission_key=submission_key,
             request_hash=_hash_json({"retry_of": int(job_id), "submission_key": submission_key}),
             retried_from_job_id=int(job_id),
-            run_name=(
-                f"{source.get('run_name') or f'job-{job_id}'}-retry-{_utc_stamp()}"
-            ),
+            run_name=(f"{source.get('run_name') or f'job-{job_id}'}-retry-{_utc_stamp()}"),
             run_description=source.get("run_description"),
             seed=source.get("seed"),
             wandb_group=source.get("wandb_group"),
@@ -1390,12 +1421,12 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             manage_transaction=False,
         )
         record_job_event(
-                conn,
-                job_id=int(result["id"]),
-                event_type="retried",
-                message=f"explicit retry of job {job_id}",
-                metadata={"retried_from_job_id": int(job_id)},
-            )
+            conn,
+            job_id=int(result["id"]),
+            event_type="retried",
+            message=f"explicit retry of job {job_id}",
+            metadata={"retried_from_job_id": int(job_id)},
+        )
         return result
 
 
@@ -1470,14 +1501,14 @@ def finish_train_launch_from_result(
                         f"expected {expected_value!r}, got {actual!r}"
                     )
             status = (
-                "canceled" if bool(launch["cancel_requested"]) else _terminal_status_from_result(result)
+                "canceled"
+                if bool(launch["cancel_requested"])
+                else _terminal_status_from_result(result)
             )
             if launch["state"] in {"succeeded", "failed", "canceled"}:
                 if launch["state"] == status:
                     return
-                raise RuntimeError(
-                    f"launch {launch_id} is already terminal as {launch['state']}"
-                )
+                raise RuntimeError(f"launch {launch_id} is already terminal as {launch['state']}")
             cur.execute(
                 """
                 UPDATE job_launches
@@ -1524,7 +1555,10 @@ def finish_train_launch_from_result(
             job = cur.fetchone()
             if not job:
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
-            if str(result.get("checkpoint_coordinator_status") or "") == "awaiting_artifact_recovery":
+            if (
+                str(result.get("checkpoint_coordinator_status") or "")
+                == "awaiting_artifact_recovery"
+            ):
                 cur.execute(
                     """
                     UPDATE eval_runs SET status = 'awaiting_artifact_recovery',
@@ -1631,8 +1665,10 @@ def queue_status(
         elif row.get("status") == "pending":
             hard_capacity = capacities.get(str(row["machine"]))
             override = row.get("effective_capacity")
-            effective = min(hard_capacity, int(override)) if hard_capacity and override else (
-                int(override) if override else hard_capacity
+            effective = (
+                min(hard_capacity, int(override))
+                if hard_capacity and override
+                else (int(override) if override else hard_capacity)
             )
             if effective is not None and int(row.get("active_reservations") or 0) >= effective:
                 blocked_reason = "at_capacity"
@@ -1686,6 +1722,15 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
     parser.add_argument("--seed", type=int, action="append", default=[])
+    parser.add_argument(
+        "--checkpoint-eval-backend",
+        choices=("local", "modal"),
+        default=None,
+        help=(
+            "Materialize the checkpoint evaluation backend for this submission; "
+            "defaults to the checked-in Modal rollout policy."
+        ),
+    )
     parser.add_argument("--wait", choices=("running", "terminal"))
     parser.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
     parser.add_argument("--json", action="store_true")
@@ -1768,7 +1813,9 @@ def parse_duration_seconds(value: str | int | float) -> float:
         return float(value)
     match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smh]?)\s*", str(value))
     if not match:
-        raise argparse.ArgumentTypeError("duration must use seconds, m, or h (for example 30s or 12h)")
+        raise argparse.ArgumentTypeError(
+            "duration must use seconds, m, or h (for example 30s or 12h)"
+        )
     amount = float(match.group(1))
     multiplier = {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0}[match.group(2)]
     return amount * multiplier
@@ -1804,8 +1851,7 @@ def _connect_from_args(args: argparse.Namespace):
 def _machine_capacities(path: Path = DEFAULT_MACHINE_REGISTRY) -> dict[str, int]:
     registry = load_machine_registry(path)
     return {
-        name: machine.limits.max_parallel_containers
-        for name, machine in registry.machines.items()
+        name: machine.limits.max_parallel_containers for name, machine in registry.machines.items()
     }
 
 
@@ -1859,6 +1905,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             submission_key=args.submission_key,
             seeds=args.seed,
             recipe_overrides=args.recipe_overrides,
+            checkpoint_eval_backend=args.checkpoint_eval_backend,
         )
         dispatch = dispatch_fleet_service()
         wait_result = None
@@ -1929,7 +1976,9 @@ def dispatch_fleet_service() -> str:
         return "degraded"
 
 
-def _job_ids_for_selector(conn, *, job_id: int | None = None, batch_id: str | None = None) -> list[int]:
+def _job_ids_for_selector(
+    conn, *, job_id: int | None = None, batch_id: str | None = None
+) -> list[int]:
     if (job_id is None) == (batch_id is None):
         raise ValueError("exactly one job or batch selector is required")
     with conn.cursor() as cur:

@@ -28,6 +28,7 @@ from rlab.modal_eval_storage import ObjectStore, file_sha256
 from rlab.modal_eval_worker import execute_attempt
 from rlab.checkpoint_coordinator import process_upload, reconcile_orphan_models
 from rlab.metric_store import MetricStore
+from rlab import modal_eval_cli
 
 
 def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
@@ -84,6 +85,49 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_preflight_checks_schema_asset_backend_and_exact_deployment(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"drained": False, "effective_capacity": 1}
+        function = mock.MagicMock()
+        image_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
+        manifest = {
+            "game": "Game-Nes-v0",
+            "sha256": "c" * 64,
+            "object_uri": "s3://bucket/rom.nes",
+            "filename": "rom.nes",
+            "provider_rom_identity": "d" * 40,
+        }
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch.object(modal_eval_cli, "_missing_schema_tables", return_value=[]),
+            mock.patch.object(modal_eval_cli, "asset_manifest_for_game", return_value=manifest),
+            mock.patch.object(modal_eval_cli, "object_store_base_uri", return_value="s3://bucket"),
+            mock.patch.object(modal_eval_cli, "ObjectStore") as object_store,
+            mock.patch("modal.Function.from_name", return_value=function),
+        ):
+            object_store.return_value.head.return_value = {
+                "size": 1024,
+                "metadata": {"sha256": manifest["sha256"]},
+            }
+            report = modal_eval_cli.modal_preflight(
+                runtime_image_ref=image_ref,
+                game="Game-Nes-v0",
+            )
+
+        self.assertTrue(report["ready"])
+        self.assertEqual(
+            {check["name"] for check in report["checks"]},
+            {
+                "config_guards",
+                "postgres_schema",
+                "backend_state",
+                "rom_asset",
+                "modal_deployment",
+            },
+        )
+        function.hydrate.assert_called_once_with()
+
     def test_checked_in_config_has_independent_twenty_call_guards(self) -> None:
         config = load_modal_eval_config(Path("experiments/modal_eval.yaml"))
         self.assertFalse(config.enabled)
@@ -100,7 +144,9 @@ class ModalEvalContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resources has unknown"):
                 load_modal_eval_config(unknown)
             excessive = Path(temporary) / "excessive.yaml"
-            excessive.write_text(source.replace("initial_effective_capacity: 1", "initial_effective_capacity: 21"))
+            excessive.write_text(
+                source.replace("initial_effective_capacity: 1", "initial_effective_capacity: 21")
+            )
             with self.assertRaisesRegex(ValueError, "exceeds the hard cap"):
                 load_modal_eval_config(excessive)
 
@@ -170,6 +216,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertTrue(deterministic_eval_failure("checkpoint hash mismatch"))
         self.assertTrue(deterministic_eval_failure("environment contract is invalid"))
         self.assertFalse(deterministic_eval_failure("provider connection reset"))
+
     def test_available_slots_never_exceed_hard_cap_and_count_unknown_calls(self) -> None:
         self.assertEqual(
             available_eval_slots(effective_capacity=100, active_calls=19, hard_cap=20),
@@ -198,6 +245,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
                 config=config,
             )
         )
+
     def test_round_robin_reserves_a_slot_for_promotion(self) -> None:
         jobs = [
             {"id": 1, "train_job_id": 1, "stage_index": 1, "purpose": "confirm"},

@@ -7,10 +7,16 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from rlab.job_queue import connect, database_url
-from rlab.modal_eval_assets import sync_rom_asset
-from rlab.modal_eval_config import load_modal_eval_config
+from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
+from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
+from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
+from rlab.runtime_refs import normalize_runtime_image_ref
+
+
+MODAL_SCHEMA_TABLES = ("eval_runs", "eval_jobs", "eval_attempts", "eval_backend_state")
 
 
 def _conn():
@@ -23,9 +29,34 @@ def _kick() -> None:
     kick_service()
 
 
+def _missing_schema_tables(conn) -> list[str]:
+    missing: list[str] = []
+    with conn.cursor() as cur:
+        for table in MODAL_SCHEMA_TABLES:
+            cur.execute("SELECT to_regclass(%(table)s) AS table_name", {"table": table})
+            row = cur.fetchone()
+            if not row or not row.get("table_name"):
+                missing.append(table)
+    return missing
+
+
 def cmd_status(_args: argparse.Namespace) -> int:
     conn = _conn()
     try:
+        missing = _missing_schema_tables(conn)
+        if missing:
+            print(
+                json.dumps(
+                    {
+                        "ready": False,
+                        "missing_tables": missing,
+                        "remediation": "run: rlab jobs setup",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 1
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM eval_backend_state WHERE backend = 'modal'")
             backend = dict(cur.fetchone() or {})
@@ -41,10 +72,102 @@ def cmd_status(_args: argparse.Namespace) -> int:
                 "SELECT status, count(*) AS count FROM eval_attempts GROUP BY status ORDER BY status"
             )
             attempts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
-        print(json.dumps({"backend": backend, "runs": runs, "jobs": jobs, "attempts": attempts}, indent=2, default=str, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "ready": True,
+                    "backend": backend,
+                    "runs": runs,
+                    "jobs": jobs,
+                    "attempts": attempts,
+                },
+                indent=2,
+                default=str,
+                sort_keys=True,
+            )
+        )
         return 0
     finally:
         conn.close()
+
+
+def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    config = load_modal_eval_config()
+    app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: object) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+
+    add(
+        "config_guards",
+        config.hard_max_active == config.max_containers and config.initial_effective_capacity == 1,
+        f"enabled={str(config.enabled).lower()} hard_cap={config.hard_max_active} max_containers={config.max_containers}",
+    )
+
+    conn = None
+    try:
+        conn = _conn()
+        missing = _missing_schema_tables(conn)
+        add("postgres_schema", not missing, "ok" if not missing else f"missing={','.join(missing)}")
+        if not missing:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM eval_backend_state WHERE backend = 'modal'")
+                backend = dict(cur.fetchone() or {})
+            add(
+                "backend_state",
+                bool(backend)
+                and not bool(backend.get("drained"))
+                and int(backend.get("effective_capacity") or 0) >= 1,
+                (
+                    f"drained={str(bool(backend.get('drained'))).lower()} "
+                    f"capacity={int(backend.get('effective_capacity') or 0)}"
+                    if backend
+                    else "missing"
+                ),
+            )
+    except Exception as exc:
+        add("postgres_schema", False, type(exc).__name__)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    try:
+        manifest = asset_manifest_for_game(game)
+        store = ObjectStore(object_store_base_uri())
+        head = store.head(str(manifest["object_uri"]))
+        remote_sha = str(head.get("metadata", {}).get("sha256") or "")
+        expected_sha = str(manifest["sha256"])
+        add(
+            "rom_asset",
+            int(head["size"]) > 0 and (not remote_sha or remote_sha == expected_sha),
+            f"game={game} size={int(head['size'])} sha256={expected_sha[:12]}",
+        )
+    except Exception as exc:
+        add("rom_asset", False, type(exc).__name__)
+
+    try:
+        import modal
+
+        modal.Function.from_name(app_name, config.function_name).hydrate()
+        add("modal_deployment", True, f"app={app_name} function={config.function_name}")
+    except Exception as exc:
+        add("modal_deployment", False, f"app={app_name} error={type(exc).__name__}")
+
+    return {
+        "ready": all(bool(check["ok"]) for check in checks),
+        "runtime_image_ref": runtime_image_ref,
+        "app_name": app_name,
+        "game": game,
+        "checks": checks,
+    }
+
+
+def cmd_preflight(args: argparse.Namespace) -> int:
+    report = modal_preflight(runtime_image_ref=args.runtime_image_ref, game=args.game)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["ready"] else 1
 
 
 def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> int:
@@ -66,7 +189,9 @@ def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> 
                         (min(2, config.hard_max_active), config.hard_max_active),
                     }
                     if not allowed_increase:
-                        raise ValueError("capacity rollout must progress from 1 to 2 to the hard cap")
+                        raise ValueError(
+                            "capacity rollout must progress from 1 to 2 to the hard cap"
+                        )
                 cur.execute(
                     """
                     UPDATE eval_backend_state
@@ -245,9 +370,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
                     "name": "screen",
                     "episodes": 2,
                     "n_envs": 2,
-                    "pass": [
-                        {"metric": "eval/reward/mean", "operator": ">=", "threshold": 1.0}
-                    ],
+                    "pass": [{"metric": "eval/reward/mean", "operator": ">=", "threshold": 1.0}],
                     "candidate_stop": True,
                 }
             ],
@@ -382,6 +505,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")
     status.set_defaults(func=cmd_status)
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--runtime-image-ref", required=True)
+    preflight.add_argument("--game", required=True)
+    preflight.set_defaults(func=cmd_preflight)
     drain = commands.add_parser("drain")
     drain.add_argument("--reason", default="")
     drain.set_defaults(func=cmd_drain)

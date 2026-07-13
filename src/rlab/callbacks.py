@@ -396,7 +396,10 @@ class MetricStoreOutputFormat(KVWriter):
         wandb_run=None,
         clock: Callable[[], float] | None = None,
     ) -> None:
-        self.metric_store = MetricStore(metric_store_path, timeout=0.05)
+        # Training metrics are durable evidence. Let SQLite's bounded busy
+        # handler absorb brief publisher/coordinator transactions instead of
+        # terminating a multi-hour run after 50 ms of contention.
+        self.metric_store = MetricStore(metric_store_path)
         self.source = source
         self.wandb_run = wandb_run
         self.clock = clock or time.perf_counter
@@ -486,9 +489,7 @@ class RolloutDiagnosticsHelper(CallbackHelper):
         super().__init__()
         self.wandb_run = wandb_run
         self.log_histograms = log_histograms
-        self.metric_store = (
-            MetricStore(metric_store_path, timeout=0.05) if metric_store_path else None
-        )
+        self.metric_store = MetricStore(metric_store_path) if metric_store_path else None
         self.histogram_interval = max(int(histogram_interval), 1)
         self.rollout_count = 0
 

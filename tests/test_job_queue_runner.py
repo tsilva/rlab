@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rlab import job_queue, wandb_leaders
-from rlab.job_execution import normalize_train_config, train_command_for_job, write_train_config_file
+from rlab.job_execution import (
+    normalize_train_config,
+    train_command_for_job,
+    write_train_config_file,
+)
 from rlab.recipe_documents import materialize_train_recipe_document, validate_source_recipe_shape
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.seeds import DEFAULT_EVAL_SEED
@@ -21,7 +25,9 @@ RUNTIME_IMAGE_REF = (
 
 
 class FakeWandbRun:
-    def __init__(self, *, run_id: str, name: str, config: dict, summary: dict, group: str = "") -> None:
+    def __init__(
+        self, *, run_id: str, name: str, config: dict, summary: dict, group: str = ""
+    ) -> None:
         self.id = run_id
         self.name = name
         self.config = config
@@ -39,6 +45,7 @@ def explicit_train_config(**overrides) -> dict:
         "wandb": True,
         "wandb_mode": "online",
         "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
+        "checkpoint_eval_backend": "local",
     }
     config.update(overrides)
     return config
@@ -58,6 +65,47 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_train_enqueue_parser_accepts_explicit_modal_backend(self) -> None:
+        args = job_queue.build_train_enqueue_parser().parse_args(
+            [
+                "--recipe-file",
+                "recipe.yaml",
+                "--machine",
+                "beast-3",
+                "--runtime-image-ref",
+                RUNTIME_IMAGE_REF,
+                "--checkpoint-eval-backend",
+                "modal",
+            ]
+        )
+
+        self.assertEqual(args.checkpoint_eval_backend, "modal")
+
+    def test_submission_backend_override_is_materialized_before_enqueue(self) -> None:
+        calls = []
+        old_enqueue = job_queue.enqueue_train_job
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"id": 100 + len(calls), "run_name": kwargs["run_name"]}
+
+        job_queue.enqueue_train_job = fake_enqueue
+        try:
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=valid_train_recipe(),
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                checkpoint_eval_backend="modal",
+            )
+        finally:
+            job_queue.enqueue_train_job = old_enqueue
+
+        self.assertTrue(calls)
+        self.assertTrue(
+            all(call["train_config"]["checkpoint_eval_backend"] == "modal" for call in calls)
+        )
+
     def test_queue_demands_groups_by_machine_and_runtime_digest(self) -> None:
         conn = FakeConnection(
             rows=[

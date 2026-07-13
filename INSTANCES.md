@@ -71,6 +71,9 @@ disabled in the checked-in config until the real parity, interruption, cap, and 
 
 ```bash
 rlab eval modal status
+rlab eval modal preflight \
+  --runtime-image-ref docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
+  --game <game-id>
 rlab eval modal drain
 rlab eval modal resume --capacity 1
 rlab eval modal retry <eval-job-id>
@@ -78,6 +81,12 @@ rlab eval modal recover <train-job-id>
 rlab eval modal assets sync --game <game-id>
 rlab eval modal smoke-local
 ```
+
+Before global enablement, select Modal explicitly on a canary submission with
+`rlab train ... --checkpoint-eval-backend modal`. The selected backend is materialized in the
+queue row and never changes for that job. `preflight` fails closed unless the additive PostgreSQL
+schema, active capacity, private ROM object, local Modal credentials, and exact runtime-specific
+deployment are all present.
 
 PostgreSQL is the only wait queue. The service never submits work beyond the effective capacity,
 reserves worst-case cost before dispatch, and leaves budget-blocked jobs pending for operator
