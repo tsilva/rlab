@@ -555,14 +555,18 @@ class SignalBindings:
                 name
                 for source in self._bindings.values()
                 for name in ((source,) if isinstance(source, str) else source)
-                if not self._specs[name].available_on_reset
-                or not self._specs[name].available_on_step
+                if not self._specs[name].available_on_step
             }
         )
         if unavailable:
             raise ValueError(
-                "task signals must be available on reset and step: " + ", ".join(unavailable)
+                "task signals must be available on step: " + ", ".join(unavailable)
             )
+
+    def available_on_reset(self, semantic_name: str) -> bool:
+        source = self.source(semantic_name)
+        names = (source,) if isinstance(source, str) else source
+        return all(self._specs[name].available_on_reset for name in names)
 
     def source(self, semantic_name: str) -> SignalSource:
         try:
@@ -871,7 +875,8 @@ class IdentityTaskKernel:
                 self._event_consecutive_steps,
                 strict=True,
             ):
-                self._signal_bindings.scalar(event.signal, reset_signals, mask=mask)
+                if self._signal_bindings.available_on_reset(event.signal):
+                    self._signal_bindings.scalar(event.signal, reset_signals, mask=mask)
                 consecutive_steps[mask] = 0
         self._episode_steps[mask] = 0
 

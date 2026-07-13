@@ -27,6 +27,7 @@ class RunJobResultTests(unittest.TestCase):
 
             self.assertEqual(written, path)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["job_id"], 7)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
             self.assertEqual(list(output_dir.glob(".result-*.tmp")), [])
 
 

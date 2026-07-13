@@ -147,6 +147,36 @@ def descriptor_for(provider: DeterministicNativeVectorProvider) -> ProviderDescr
 
 
 class ProviderContractTests(unittest.TestCase):
+    def test_identity_event_accepts_step_only_signal(self):
+        provider = DeterministicNativeVectorProvider()
+        descriptor = ProviderDescriptor(
+            provider_id="step-only",
+            native_observation_space=provider.single_observation_space,
+            native_action_space=provider.single_action_space,
+            signal_schema={
+                "ball_y": SignalSpec(
+                    "ball_y",
+                    np.int64,
+                    available_on_reset=False,
+                    available_on_step=True,
+                )
+            },
+        )
+        kernel = IdentityTaskDefinition(
+            signals={"ball_y": "ball_y"},
+            events={
+                "serve_stall": {
+                    "signal": "ball_y",
+                    "operation": "equals_for",
+                    "value": 0,
+                    "steps": 3,
+                }
+            },
+            termination={"failure": ["serve_stall"]},
+        ).bind(descriptor, provider.num_envs)
+
+        kernel.on_reset({}, {}, np.ones(provider.num_envs, dtype=bool))
+
     def test_descriptor_rejects_autoreset_and_missing_mario_signals(self):
         provider = DeterministicNativeVectorProvider()
         with self.assertRaisesRegex(ValueError, "disabled provider autoreset"):

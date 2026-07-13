@@ -274,7 +274,17 @@ def provider_descriptor(
 
     task = config.task if isinstance(getattr(config, "task", None), Mapping) else {}
     configured_signals = task.get("signals", {}) if isinstance(task, Mapping) else {}
-    if not signal_schema and isinstance(configured_signals, Mapping) and configured_signals:
+    configured_source_names = (
+        {
+            str(name)
+            for source in configured_signals.values()
+            for name in ((source,) if isinstance(source, str) else source)
+        }
+        if isinstance(configured_signals, Mapping)
+        else set()
+    )
+    missing_source_names = configured_source_names - set(signal_schema)
+    if missing_source_names:
         reset_mask = np.ones(native_env.num_envs, dtype=np.bool_)
         reset_options: dict[str, Any] = {"reset_mask": reset_mask}
         values = getattr(native_env, "initial_state_names", ())
@@ -292,7 +302,7 @@ def provider_descriptor(
         if not isinstance(reset_infos, Mapping):
             raise TypeError("native provider reset infos must be a columnar mapping")
         for name, values in reset_infos.items():
-            if not isinstance(name, str) or name.startswith("_"):
+            if name not in missing_source_names:
                 continue
             column = np.asarray(values)
             if column.shape[:1] != (native_env.num_envs,):
@@ -302,6 +312,37 @@ def provider_descriptor(
                 dtype=column.dtype,
                 shape=column.shape[1:],
             )
+        missing_source_names -= set(signal_schema)
+        step = getattr(native_env, "step", None)
+        if missing_source_names and callable(step):
+            single_action_space = getattr(native_env, "single_action_space", None)
+            if single_action_space is None or not hasattr(single_action_space, "shape"):
+                raise ValueError("cannot probe provider step-only task signals")
+            action_shape = tuple(int(value) for value in single_action_space.shape)
+            action_dtype = getattr(single_action_space, "dtype", np.int64)
+            actions = np.zeros((native_env.num_envs, *action_shape), dtype=action_dtype)
+            try:
+                _step_obs, _rewards, _terminated, _truncated, step_infos = step(actions)
+                if not isinstance(step_infos, Mapping):
+                    raise TypeError("native provider step infos must be a columnar mapping")
+                for name, values in step_infos.items():
+                    if name not in missing_source_names:
+                        continue
+                    column = np.asarray(values)
+                    if column.shape[:1] != (native_env.num_envs,):
+                        continue
+                    signal_schema[name] = SignalSpec(
+                        name=name,
+                        dtype=column.dtype,
+                        shape=column.shape[1:],
+                        available_on_reset=False,
+                        available_on_step=True,
+                    )
+            finally:
+                native_env.reset(
+                    seed=[lane for lane in range(native_env.num_envs)],
+                    options=reset_options,
+                )
 
     if task.get("id") == "mario":
         if provider.provider_id not in {

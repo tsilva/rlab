@@ -127,6 +127,42 @@ class GenericNativeProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no native Gymnasium vector entry point"):
             make_provider_vec_env(config, native_kwargs={"num_envs": 2})
 
+    def test_descriptor_discovers_step_only_configured_signal(self) -> None:
+        class StepSignalEnv(RegisteredNativeVectorEnv):
+            def step(self, actions):
+                observations, rewards, terminated, truncated, _infos = super().step(actions)
+                return observations, rewards, terminated, truncated, {
+                    "ball_y": np.arange(self.num_envs, dtype=np.int64)
+                }
+
+        env = StepSignalEnv(2, gym.vector.AutoresetMode.DISABLED)
+        config = EnvConfig(
+            env_provider="gymnasium",
+            game=self.env_id,
+            state="",
+            task={
+                "id": "identity",
+                "action": {"set": "native"},
+                "signals": {"ball_y": "ball_y"},
+                "events": {
+                    "serve_stall": {
+                        "signal": "ball_y",
+                        "operation": "equals_for",
+                        "value": 0,
+                        "steps": 3,
+                    }
+                },
+                "termination": {"failure": ["serve_stall"]},
+                "reward": {"reward_mode": "native"},
+            },
+        )
+
+        descriptor = provider_descriptor(config, env, state_weight_mapping=lambda _config: {})
+
+        self.assertIn("ball_y", descriptor.signal_schema)
+        self.assertFalse(descriptor.signal_schema["ball_y"].available_on_reset)
+        self.assertTrue(descriptor.signal_schema["ball_y"].available_on_step)
+
 class MarioNativeProviderTests(unittest.TestCase):
     @staticmethod
     def config(**updates):

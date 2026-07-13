@@ -52,6 +52,7 @@ def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        temporary_path.chmod(0o644)
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)

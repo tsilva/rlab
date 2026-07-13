@@ -241,12 +241,16 @@ def _run_command(
     check: bool = False,
     capture_output: bool = True,
     text: bool = True,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(argv),
         check=check,
         capture_output=capture_output,
         text=text,
+        cwd=cwd,
+        env=dict(env) if env is not None else None,
     )
 
 
