@@ -1,16 +1,40 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ProviderConstructorContract:
+    canonical_args: frozenset[str]
+    explicit_env_args: frozenset[str]
+    required_values: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        overlap = self.canonical_args & self.explicit_env_args
+        if overlap:
+            raise ValueError(f"provider constructor argument ownership overlaps: {sorted(overlap)}")
+        unknown_required = set(self.required_values) - set(self.explicit_env_args)
+        if unknown_required:
+            raise ValueError(
+                "provider required values are not explicit env args: "
+                f"{sorted(unknown_required)}"
+            )
+        object.__setattr__(self, "required_values", MappingProxyType(dict(self.required_values)))
 
 
 @dataclass(frozen=True)
 class EnvProvider:
     provider_id: str
     import_name: str
+    distribution_name: str
     env_ids: tuple[str, ...]
     supports_states: bool = True
     uses_stable_retro_roms: bool = False
     allows_unregistered_env_ids: bool = False
+    constructor_contract: ProviderConstructorContract | None = None
 
 
 @dataclass(frozen=True)
@@ -24,6 +48,7 @@ class ResolvedEnvId:
 STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     provider_id="stable-retro-turbo",
     import_name="stable_retro",
+    distribution_name="stable-retro-turbo",
     env_ids=(
         "SuperMarioBros-Nes-v0",
         "SuperMarioBros3-Nes-v0",
@@ -31,24 +56,143 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
         "MsPacman-Atari2600-v0",
     ),
     uses_stable_retro_roms=True,
+    constructor_contract=ProviderConstructorContract(
+        canonical_args=frozenset(
+            {
+                "frame_skip",
+                "game",
+                "maxpool_last_two",
+                "num_envs",
+                "obs_crop",
+                "obs_crop_fill",
+                "obs_crop_mode",
+                "obs_resize",
+                "obs_resize_algorithm",
+                "state",
+                "sticky_action_prob",
+            }
+        ),
+        explicit_env_args=frozenset(
+            {
+                "autoreset_mode",
+                "done_on",
+                "frame_stack",
+                "info",
+                "info_filter",
+                "inttype",
+                "noop_reset_max",
+                "num_threads",
+                "obs_copy",
+                "obs_grayscale",
+                "obs_layout",
+                "obs_type",
+                "players",
+                "record",
+                "render_mode",
+                "reward_clip",
+                "rom_path",
+                "scenario",
+                "use_fire_reset",
+                "use_restricted_actions",
+            }
+        ),
+        required_values={"autoreset_mode": "disabled", "done_on": None},
+    ),
 )
 
 SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     provider_id="supermariobrosnes-turbo",
     import_name="supermariobrosnes_turbo",
+    distribution_name="supermariobrosnes-turbo",
     env_ids=("SuperMarioBros-Nes-v0",),
+    constructor_contract=ProviderConstructorContract(
+        canonical_args=frozenset(
+            {
+                "frame_skip",
+                "game",
+                "maxpool_last_two",
+                "num_envs",
+                "obs_crop",
+                "obs_crop_fill",
+                "obs_crop_mode",
+                "obs_resize",
+                "obs_resize_algorithm",
+                "state",
+                "sticky_action_prob",
+            }
+        ),
+        explicit_env_args=frozenset(
+            {
+                "autoreset_mode",
+                "done_on",
+                "frame_stack",
+                "info",
+                "info_filter",
+                "inttype",
+                "noop_reset_max",
+                "num_threads",
+                "obs_copy",
+                "obs_grayscale",
+                "obs_layout",
+                "obs_type",
+                "players",
+                "record",
+                "render_mode",
+                "reward_clip",
+                "rom_path",
+                "scenario",
+                "use_restricted_actions",
+            }
+        ),
+        required_values={"autoreset_mode": "disabled", "done_on": None},
+    ),
 )
 
 ALE_PY_PROVIDER = EnvProvider(
     provider_id="ale-py",
     import_name="ale_py",
+    distribution_name="ale-py",
     env_ids=("breakout", "ms_pacman"),
     supports_states=False,
+    constructor_contract=ProviderConstructorContract(
+        canonical_args=frozenset(
+            {
+                "frameskip",
+                "game",
+                "img_height",
+                "img_width",
+                "maxpool",
+                "num_envs",
+                "repeat_action_probability",
+            }
+        ),
+        explicit_env_args=frozenset(
+            {
+                "autoreset_mode",
+                "batch_size",
+                "continuous",
+                "continuous_action_threshold",
+                "episodic_life",
+                "full_action_space",
+                "grayscale",
+                "life_loss_info",
+                "max_num_frames_per_episode",
+                "noop_max",
+                "num_threads",
+                "reward_clipping",
+                "stack_num",
+                "thread_affinity_offset",
+                "use_fire_reset",
+            }
+        ),
+        required_values={"autoreset_mode": "next_step"},
+    ),
 )
 
 GYMNASIUM_PROVIDER = EnvProvider(
     provider_id="gymnasium",
     import_name="gymnasium",
+    distribution_name="gymnasium",
     env_ids=(),
     supports_states=False,
     allows_unregistered_env_ids=True,
@@ -95,6 +239,39 @@ def resolve_env_provider(provider_id: str) -> EnvProvider:
         known = ", ".join(sorted(ENV_PROVIDERS))
         raise ValueError(f"unknown environment provider {provider_id!r}; known providers: {known}")
     return provider
+
+
+def validate_provider_constructor_args(
+    provider_id: str,
+    env_args: Any,
+    *,
+    label: str,
+) -> None:
+    provider = resolve_env_provider(provider_id)
+    if not isinstance(env_args, Mapping):
+        raise ValueError(f"{label} must explicitly define provider arguments")
+    contract = provider.constructor_contract
+    if contract is None:
+        return
+    actual_args = set(env_args)
+    missing_args = sorted(contract.explicit_env_args - actual_args)
+    if missing_args:
+        raise ValueError(
+            f"{label} missing explicit {provider.provider_id} constructor argument(s): "
+            + ", ".join(missing_args)
+        )
+    unexpected_args = sorted(actual_args - contract.explicit_env_args)
+    if unexpected_args:
+        raise ValueError(
+            f"{label} has unexpected or canonically-owned {provider.provider_id} "
+            f"constructor argument(s): {', '.join(unexpected_args)}"
+        )
+    for key, expected in contract.required_values.items():
+        actual = env_args.get(key)
+        if actual == expected:
+            continue
+        expected_text = "null" if expected is None else repr(expected)
+        raise ValueError(f"{label}.{key} must be {expected_text}; got {actual!r}")
 
 
 def qualify_env_id(provider_id: str, provider_env_id: str) -> str:

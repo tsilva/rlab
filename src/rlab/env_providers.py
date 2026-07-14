@@ -31,10 +31,18 @@ def _is_disabled_autoreset_mode(value: Any) -> bool:
     return normalized == "disabled"
 
 
-def _disabled_autoreset_kwargs(native_kwargs: Mapping[str, Any]) -> dict[str, Any]:
-    kwargs = dict(native_kwargs)
-    kwargs["autoreset_mode"] = AutoresetMode.DISABLED
-    return kwargs
+def _declared_autoreset_mode(provider_id: str) -> AutoresetMode:
+    provider = resolve_env_provider(provider_id)
+    contract = provider.constructor_contract
+    if contract is None or "autoreset_mode" not in contract.required_values:
+        raise RuntimeError(f"provider {provider_id!r} has no declared constructor autoreset mode")
+    value = str(contract.required_values["autoreset_mode"]).strip().upper()
+    try:
+        return AutoresetMode[value]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"provider {provider_id!r} declares unknown autoreset mode {value!r}"
+        ) from exc
 
 
 def _require_disabled_autoreset_mode(env: Any, provider_id: str):
@@ -518,10 +526,11 @@ def _stable_retro_turbo_make_vec_env(
 ):
     _require_provider(config, STABLE_RETRO_TURBO_PROVIDER.provider_id)
     env_type = retro_vec_env_type
-    env = env_type(
-        config.game,
-        **_disabled_autoreset_kwargs(native_kwargs),
+    kwargs = dict(native_kwargs)
+    kwargs["autoreset_mode"] = _declared_autoreset_mode(
+        STABLE_RETRO_TURBO_PROVIDER.provider_id
     )
+    env = env_type(config.game, **kwargs)
     env = _require_disabled_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
     return _StartInfoAdapter(env)
 
@@ -534,7 +543,10 @@ def _super_mario_bros_nes_turbo_make_vec_env(
 ):
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     env_type = super_mario_vec_env_type()
-    kwargs = _disabled_autoreset_kwargs(native_kwargs)
+    kwargs = dict(native_kwargs)
+    kwargs["autoreset_mode"] = _declared_autoreset_mode(
+        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id
+    )
     if kwargs.get("rom_path") is None:
         try:
             import stable_retro.data
@@ -561,7 +573,7 @@ def _ale_py_make_vec_env(
     _require_provider(config, ALE_PY_PROVIDER.provider_id)
     env_type = ale_py_vec_env_type()
     kwargs = dict(native_kwargs)
-    kwargs["autoreset_mode"] = AutoresetMode.NEXT_STEP
+    kwargs["autoreset_mode"] = _declared_autoreset_mode(ALE_PY_PROVIDER.provider_id)
     env = env_type(
         config.game,
         **kwargs,

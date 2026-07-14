@@ -15,7 +15,12 @@ from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
 from rlab.config_loader import load_composed_mapping
 from rlab.early_stop import normalize_early_stop_config
 from rlab.env_identity import validate_task_config
-from rlab.env_registry import env_supports_states, qualify_env_id, resolve_env_id
+from rlab.env_registry import (
+    env_supports_states,
+    qualify_env_id,
+    resolve_env_id,
+    validate_provider_constructor_args,
+)
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
@@ -50,119 +55,6 @@ GOAL_REQUIRED_ENV_CONFIG_KEYS = frozenset(
         "sticky_action_prob",
     }
 )
-GOAL_PROVIDER_ARGS_FROM_ENV_CONFIG: dict[str, frozenset[str]] = {
-    "stable-retro-turbo": frozenset(
-        {
-            "frame_skip",
-            "game",
-            "maxpool_last_two",
-            "num_envs",
-            "obs_crop",
-            "obs_crop_fill",
-            "obs_crop_mode",
-            "obs_resize",
-            "obs_resize_algorithm",
-            "state",
-            "sticky_action_prob",
-        }
-    ),
-    "supermariobrosnes-turbo": frozenset(
-        {
-            "frame_skip",
-            "game",
-            "maxpool_last_two",
-            "num_envs",
-            "obs_crop",
-            "obs_crop_fill",
-            "obs_crop_mode",
-            "obs_resize",
-            "obs_resize_algorithm",
-            "state",
-            "sticky_action_prob",
-        }
-    ),
-    "ale-py": frozenset(
-        {
-            "frameskip",
-            "game",
-            "img_height",
-            "img_width",
-            "maxpool",
-            "num_envs",
-            "repeat_action_probability",
-        }
-    ),
-}
-GOAL_REQUIRED_PROVIDER_ENV_ARGS: dict[str, frozenset[str]] = {
-    "stable-retro-turbo": frozenset(
-        {
-            "autoreset_mode",
-            "done_on",
-            "frame_stack",
-            "info",
-            "info_filter",
-            "inttype",
-            "noop_reset_max",
-            "num_threads",
-            "obs_copy",
-            "obs_grayscale",
-            "obs_layout",
-            "obs_type",
-            "players",
-            "record",
-            "render_mode",
-            "reward_clip",
-            "rom_path",
-            "scenario",
-            "use_fire_reset",
-            "use_restricted_actions",
-        }
-    ),
-    "supermariobrosnes-turbo": frozenset(
-        {
-            "autoreset_mode",
-            "done_on",
-            "frame_stack",
-            "info",
-            "info_filter",
-            "inttype",
-            "noop_reset_max",
-            "num_threads",
-            "obs_copy",
-            "obs_grayscale",
-            "obs_layout",
-            "obs_type",
-            "players",
-            "record",
-            "render_mode",
-            "reward_clip",
-            "rom_path",
-            "scenario",
-            "use_restricted_actions",
-        }
-    ),
-    "ale-py": frozenset(
-        {
-            "autoreset_mode",
-            "batch_size",
-            "continuous",
-            "continuous_action_threshold",
-            "episodic_life",
-            "full_action_space",
-            "grayscale",
-            "life_loss_info",
-            "max_num_frames_per_episode",
-            "noop_max",
-            "num_threads",
-            "reward_clipping",
-            "stack_num",
-            "thread_affinity_offset",
-            "use_fire_reset",
-        }
-    ),
-}
-
-
 @dataclass(frozen=True)
 class ValidationIssue:
     path: str
@@ -330,35 +222,12 @@ def _validate_explicit_goal_environment_args(
         "state" in explicit_config or "states" in explicit_config
     ):
         raise ValueError(f"{label}.env_config must explicitly define state or states")
-    required_provider_args = GOAL_REQUIRED_PROVIDER_ENV_ARGS.get(provider_id)
     env_args = explicit_config.get("env_args")
-    if not isinstance(env_args, Mapping):
-        raise ValueError(f"{label}.env_config.env_args must explicitly define provider arguments")
-    if required_provider_args is not None:
-        missing_args = sorted(required_provider_args - set(env_args))
-        if missing_args:
-            raise ValueError(
-                f"{label}.env_config.env_args missing explicit {provider_id} constructor "
-                f"argument(s): {', '.join(missing_args)}"
-            )
-        unexpected_args = sorted(set(env_args) - required_provider_args)
-        if unexpected_args:
-            raise ValueError(
-                f"{label}.env_config.env_args has unexpected or canonically-owned "
-                f"{provider_id} constructor argument(s): {', '.join(unexpected_args)}"
-            )
-    if provider_id in {"stable-retro-turbo", "supermariobrosnes-turbo"}:
-        if env_args.get("autoreset_mode") != "disabled":
-            raise ValueError(f"{label}.env_config.env_args.autoreset_mode must be 'disabled'")
-        if env_args.get("done_on", object()) is not None:
-            raise ValueError(
-                f"{label}.env_config.env_args.done_on must be null; task termination is rlab-owned"
-            )
-    elif provider_id == "ale-py" and env_args.get("autoreset_mode") != "next_step":
-        raise ValueError(
-            f"{label}.env_config.env_args.autoreset_mode must be 'next_step'; "
-            "rlab exposes disabled reset through its ALE adapter"
-        )
+    validate_provider_constructor_args(
+        provider_id,
+        env_args,
+        label=f"{label}.env_config.env_args",
+    )
 
 
 def _validate_env_config(

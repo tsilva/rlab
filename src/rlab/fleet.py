@@ -3,18 +3,21 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import json
-import shlex
-import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
+from rlab.docker_host import (
+    DockerRunnerHost,
+    JobContainer,
+    RuntimeHostImage,
+    setup_docker_host,
+)
 from rlab.job_queue import (
     QueueDemand,
     TRAIN_JOB_KIND,
@@ -42,8 +45,8 @@ from rlab.machines import (
 )
 from rlab.runtime_refs import (
     docker_image_ref,
-    normalize_runtime_image_ref,
     runtime_image_ref_from_args,
+    normalize_runtime_image_ref,
 )
 from rlab.fleet_labels import (
     JOB_CONTAINER_LABEL,
@@ -57,11 +60,6 @@ from rlab.fleet_labels import (
     OUTPUT_URI_LABEL,
 )
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
-GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
-SSH_CONNECT_TIMEOUT_SECONDS = 10
-MACHINE_COMMAND_TIMEOUT_SECONDS = 120.0
-DOCKER_PULL_TIMEOUT_SECONDS = 900.0
-DOCKER_STOP_TIMEOUT_SECONDS = 150.0
 SHARED_RUNNER_ENV_KEYS = (
     "WANDB_API_KEY",
     "AWS_ACCESS_KEY_ID",
@@ -69,9 +67,6 @@ SHARED_RUNNER_ENV_KEYS = (
     "AWS_S3_ENDPOINT_URL",
     "AWS_REGION",
     "CHECKPOINT_BUCKET_URI",
-)
-_MACHINE_LANE_DEADLINE: ContextVar[float | None] = ContextVar(
-    "rlab_machine_lane_deadline", default=None
 )
 
 
@@ -85,13 +80,6 @@ class MachineLockBusy(RuntimeError):
     def __init__(self, machine: str) -> None:
         super().__init__(f"another reconciler is already running for machine={machine}")
         self.machine = machine
-
-
-class MachineCommandTimeout(RuntimeError):
-    def __init__(self, machine: str, timeout: float) -> None:
-        super().__init__(f"machine command timed out machine={machine} timeout={timeout:g}s")
-        self.machine = machine
-        self.timeout = timeout
 
 
 def _candidate_repo_roots(start: Path) -> tuple[Path, ...]:
@@ -120,109 +108,6 @@ def sanitize_slug(value: str, *, limit: int = 40) -> str:
             chars.append("-")
     slug = "".join(chars).strip("-") or "value"
     return slug[:limit].strip("-") or "value"
-
-
-def shell_join(parts: Sequence[str]) -> str:
-    return shlex.join([str(part) for part in parts])
-
-
-def setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None = None) -> str:
-    if machine.backend != "docker_ssh":
-        raise ValueError(f"setup-host requires a docker_ssh machine, got {machine.name!r}")
-    host_root = machine.paths.host_root.rstrip("/")
-    runs_dir = f"{host_root}/runs"
-    state_dir = f"{host_root}/fleet"
-    docker_info = shell_join(machine_docker_command(machine, ["info"]))
-    gpu_test = shell_join(
-        machine_docker_command(machine, ["run", "--rm", *machine.docker_gpu_args, GPU_TEST_IMAGE, "nvidia-smi"])
-    )
-    lines = [
-        "set -euo pipefail",
-        f"mkdir -p {shlex.quote(machine.paths.host_root)}",
-        f"mkdir -p {shlex.quote(runs_dir)} {shlex.quote(machine.paths.logs_dir)} "
-        f"{shlex.quote(machine.paths.roms_dir)} {shlex.quote(state_dir)}",
-        "if ! command -v docker >/dev/null 2>&1; then",
-        "  if command -v apt-get >/dev/null 2>&1; then",
-        "    sudo -n apt-get update",
-        "    sudo -n apt-get install -y docker.io",
-        "  else",
-        "    echo 'docker is missing and apt-get is unavailable' >&2",
-        "    exit 1",
-        "  fi",
-        "fi",
-        "sudo -n systemctl enable --now docker >/dev/null 2>&1 || true",
-        f"{docker_info} >/dev/null",
-        "if ! command -v nvidia-smi >/dev/null 2>&1; then",
-        "  echo 'warning: nvidia-smi is not on PATH' >&2",
-        "else",
-        "  nvidia-smi >/dev/null",
-        "fi",
-        "if ! command -v nvidia-ctk >/dev/null 2>&1; then",
-        "  if command -v apt-get >/dev/null 2>&1; then",
-        "    sudo -n apt-get install -y --no-install-recommends ca-certificates curl gnupg2",
-        "    sudo -n install -d -m 0755 /usr/share/keyrings",
-        "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | "
-        "sudo -n gpg --batch --yes --dearmor "
-        "-o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
-        "    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/"
-        "nvidia-container-toolkit.list | sed 's#deb https://#deb "
-        "[signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | "
-        "sudo -n tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null",
-        "    sudo -n apt-get update",
-        "    sudo -n apt-get install -y nvidia-container-toolkit",
-        "  else",
-        "    echo 'nvidia-ctk is missing and apt-get is unavailable' >&2",
-        "    exit 1",
-        "  fi",
-        "fi",
-        "if command -v nvidia-ctk >/dev/null 2>&1; then",
-        "  sudo -n nvidia-ctk runtime configure --runtime=docker",
-        "  sudo -n systemctl restart docker || true",
-        "fi",
-        f"if ! {gpu_test} >/dev/null; then",
-        f"  {gpu_test} >/dev/null",
-        "fi",
-        f"if [ ! -f {shlex.quote(machine.paths.env_file)} ]; then",
-        f"  umask 077; cat > {shlex.quote(machine.paths.env_file)} <<'EOF'",
-        "# rlab job-container secrets live here; fill values on the host.",
-        "TRAIN_QUEUE_DATABASE_URL=",
-        "WANDB_API_KEY=",
-        "AWS_ACCESS_KEY_ID=",
-        "AWS_SECRET_ACCESS_KEY=",
-        "AWS_S3_ENDPOINT_URL=",
-        "AWS_REGION=",
-        "CHECKPOINT_BUCKET_URI=",
-        "EOF",
-        "fi",
-        f"test -f {shlex.quote(machine.paths.env_file)}",
-    ]
-    if runtime_image_ref:
-        image = docker_image_ref(runtime_image_ref)
-        lines.extend(
-            [
-                shell_join(machine_docker_command(machine, ["pull", image])),
-                shell_join(
-                    machine_docker_command(
-                        machine,
-                        [
-                            "run",
-                            "--rm",
-                            *machine.docker_gpu_args,
-                            "--env-file",
-                            machine.paths.env_file,
-                            "-e",
-                            f"RLAB_ROM_DIR={machine.paths.container_roms_dir}",
-                            "-v",
-                            f"{machine.paths.roms_dir}:{machine.paths.container_roms_dir}:ro",
-                            image,
-                            "rlab-container-entrypoint",
-                            "rlab-container-smoke",
-                        ],
-                    )
-                ),
-            ]
-        )
-    return "\n".join(lines) + "\n"
 
 
 def _connect_from_args(args: argparse.Namespace):
@@ -270,97 +155,6 @@ def load_shared_runner_env(path: Path) -> dict[str, str]:
     return values
 
 
-def format_shared_runner_env(values: Mapping[str, str]) -> str:
-    return "".join(f"{key}={values[key]}\n" for key in SHARED_RUNNER_ENV_KEYS)
-
-
-def shared_runner_env_sync_script(machine: MachineConfig) -> str:
-    if machine.backend != "docker_ssh":
-        raise ValueError(f"shared runner env sync requires docker_ssh, got {machine.name!r}")
-    env_file = shlex.quote(machine.paths.env_file)
-    shared_keys = " ".join(SHARED_RUNNER_ENV_KEYS)
-    awk_program = (
-        f'BEGIN {{ split("{shared_keys}", keys, " "); '
-        "for (i in keys) shared[keys[i]] = 1 } !($1 in shared)"
-    )
-    verify_keys = " ".join(shlex.quote(key) for key in SHARED_RUNNER_ENV_KEYS)
-    return "\n".join(
-        [
-            "set -eu",
-            "shared_tmp=$(mktemp)",
-            "merged_tmp=$(mktemp)",
-            "trap 'rm -f \"$shared_tmp\" \"$merged_tmp\"' EXIT",
-            "umask 077",
-            'cat > "$shared_tmp"',
-            f"if [ -f {env_file} ]; then",
-            f"  awk -F= {shlex.quote(awk_program)} {env_file} > \"$merged_tmp\"",
-            "else",
-            '  : > "$merged_tmp"',
-            "fi",
-            'cat "$shared_tmp" >> "$merged_tmp"',
-            "owner=$(id -un)",
-            "group=$(id -gn)",
-            f'sudo -n install -o "$owner" -g "$group" -m 0600 "$merged_tmp" {env_file}',
-            f"for key in {verify_keys}; do",
-            f'  count=$(grep -c "^${{key}}=" {env_file} || true)',
-            '  test "$count" -eq 1',
-            "done",
-        ]
-    )
-
-
-def sync_shared_runner_env(
-    machine: MachineConfig,
-    source_path: Path,
-) -> None:
-    if machine.backend != "docker_ssh":
-        return
-    values = load_shared_runner_env(source_path)
-    result = run_machine_shell(
-        machine,
-        shared_runner_env_sync_script(machine),
-        input_text=format_shared_runner_env(values),
-        capture=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"failed to sync shared runner env to machine={machine.name} exit={result.returncode}"
-        )
-
-
-@dataclass(frozen=True)
-class JobContainer:
-    machine: str
-    name: str
-    state: str
-    status: str
-    labels: dict[str, str]
-
-    @property
-    def launch_id(self) -> str | None:
-        return self.labels.get(LAUNCH_ID_LABEL)
-
-    @property
-    def job_kind(self) -> str | None:
-        return self.labels.get(JOB_KIND_LABEL)
-
-
-@dataclass(frozen=True)
-class RuntimeHostImage:
-    machine: str
-    repository: str
-    digest: str
-    image_id: str
-
-    @property
-    def image_ref(self) -> str:
-        return f"{self.repository}@{self.digest}"
-
-    @property
-    def runtime_image_ref(self) -> str:
-        return f"docker:{self.image_ref}"
-
-
 def load_registry_from_args(args: argparse.Namespace) -> MachineRegistry:
     return load_machine_registry(args.machines)
 
@@ -375,289 +169,6 @@ def job_container_name(machine: MachineConfig, *, launch_id: str) -> str:
         f"{TRAIN_JOB_KIND}-"
         f"{sanitize_container_part(launch_id, limit=48)}"
     )[:120].strip("-")
-
-
-def launch_payload_path(machine: MachineConfig, launch_id: str) -> str:
-    return f"{machine.paths.payloads_dir.rstrip('/')}/{launch_id}.json"
-
-
-def launch_output_path(machine: MachineConfig, launch_id: str) -> str:
-    return f"{machine.paths.outputs_dir.rstrip('/')}/{launch_id}"
-
-
-def container_payload_path(machine: MachineConfig, launch_id: str) -> str:
-    return f"{machine.paths.container_payloads_dir.rstrip('/')}/{launch_id}.json"
-
-
-def container_output_path(machine: MachineConfig, launch_id: str) -> str:
-    return f"{machine.paths.container_outputs_dir.rstrip('/')}/{launch_id}"
-
-
-def machine_docker_command(machine: MachineConfig, args: Sequence[str]) -> list[str]:
-    return [*machine.docker_command, *args]
-
-
-def job_container_create_command(
-    machine: MachineConfig,
-    *,
-    job_id: int,
-    launch_id: str,
-    runtime_image_ref: str,
-    container_name: str,
-) -> list[str]:
-    image = docker_image_ref(runtime_image_ref)
-    cmd = machine_docker_command(
-        machine,
-        [
-            "create",
-            "--name",
-            container_name,
-            "--restart",
-            "no",
-            *machine.docker_gpu_args,
-            "--env-file",
-            machine.paths.env_file,
-            "-v",
-            f"{machine.paths.payloads_dir}:{machine.paths.container_payloads_dir}:ro",
-            "-v",
-            f"{machine.paths.outputs_dir}:{machine.paths.container_outputs_dir}",
-            "-v",
-            f"{machine.paths.roms_dir}:{machine.paths.container_roms_dir}:ro",
-            "-e",
-            f"RLAB_ROM_DIR={machine.paths.container_roms_dir}",
-        ],
-    )
-    labels = {
-        MANAGED_LABEL: "true",
-        JOB_CONTAINER_LABEL: "true",
-        MACHINE_LABEL: machine.name,
-        JOB_KIND_LABEL: TRAIN_JOB_KIND,
-        JOB_ID_LABEL: str(job_id),
-        LAUNCH_ID_LABEL: launch_id,
-        OUTPUT_URI_LABEL: launch_output_path(machine, launch_id),
-        f"{LABEL_PREFIX}runtime-image-ref": runtime_image_ref,
-    }
-    for key, value in sorted(labels.items()):
-        cmd.extend(["--label", f"{key}={value}"])
-    cmd.extend(
-        [
-            image,
-            "rlab-container-entrypoint",
-            "rlab",
-            "run-job",
-            "--payload",
-            container_payload_path(machine, launch_id),
-            "--output-dir",
-            container_output_path(machine, launch_id),
-        ]
-    )
-    return cmd
-
-
-def machine_ssh_prefix(machine: MachineConfig) -> list[str]:
-    if machine.backend != "docker_ssh":
-        return []
-    return [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
-        "-o",
-        "ServerAliveInterval=10",
-        "-o",
-        "ServerAliveCountMax=3",
-        *machine.ssh_options,
-        machine.ssh_target,
-    ]
-
-
-def run_machine_shell(
-    machine: MachineConfig,
-    script: str,
-    *,
-    input_text: str | None = None,
-    capture: bool = False,
-    timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    effective_timeout = timeout
-    lane_deadline = _MACHINE_LANE_DEADLINE.get()
-    if timeout is not None and lane_deadline is not None:
-        remaining = lane_deadline - time.monotonic()
-        if remaining <= 0:
-            raise MachineCommandTimeout(machine.name, 0.0)
-        effective_timeout = min(float(timeout), max(0.1, remaining))
-    command = (
-        ["sh", "-lc", script]
-        if machine.backend == "local_docker"
-        else [*machine_ssh_prefix(machine), "sh", "-lc", shlex.quote(script)]
-    )
-    try:
-        return subprocess.run(
-            command,
-            input=input_text,
-            capture_output=capture,
-            text=True,
-            check=False,
-            timeout=effective_timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise MachineCommandTimeout(machine.name, float(effective_timeout or 0.0)) from exc
-
-
-def run_machine_docker(
-    machine: MachineConfig,
-    docker_args: Sequence[str],
-    *,
-    capture: bool = False,
-    timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    command = shell_join(machine_docker_command(machine, docker_args))
-    return run_machine_shell(machine, command, capture=capture, timeout=timeout)
-
-
-def write_remote_payload(machine: MachineConfig, path: str, payload: Mapping[str, Any]) -> None:
-    payload_text = json.dumps(json_safe(dict(payload)), indent=2, sort_keys=True) + "\n"
-    script = f"mkdir -p {shlex.quote(str(Path(path).parent))} && cat > {shlex.quote(path)}"
-    result = run_machine_shell(machine, script, input_text=payload_text, capture=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"failed to write payload {path}: {result.stderr or result.stdout}")
-
-
-def parse_docker_labels(value: str) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for part in str(value or "").split(","):
-        if "=" not in part:
-            continue
-        key, label_value = part.split("=", 1)
-        labels[key.strip()] = label_value.strip()
-    return labels
-
-
-def _parse_containers(
-    machine: MachineConfig,
-    output: str,
-    *,
-    required_label: str,
-    required_value: str | None = None,
-) -> list[JobContainer]:
-    containers: list[JobContainer] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        labels = parse_docker_labels(str(row.get("Labels") or ""))
-        if required_label not in labels or (
-            required_value is not None and labels[required_label] != required_value
-        ):
-            continue
-        containers.append(
-            JobContainer(
-                machine=machine.name,
-                name=str(row.get("Names") or row.get("Name") or ""),
-                state=str(row.get("State") or "").lower(),
-                status=str(row.get("Status") or ""),
-                labels=labels,
-            )
-        )
-    return containers
-
-
-def parse_job_containers(machine: MachineConfig, output: str) -> list[JobContainer]:
-    return _parse_containers(
-        machine,
-        output,
-        required_label=JOB_CONTAINER_LABEL,
-        required_value="true",
-    )
-
-
-def _list_containers(
-    machine: MachineConfig,
-    *,
-    required_label: str,
-    required_value: str | None = None,
-) -> list[JobContainer]:
-    label_filter = (
-        f"label={required_label}={required_value}"
-        if required_value is not None
-        else f"label={required_label}"
-    )
-    result = run_machine_docker(
-        machine,
-        [
-            "ps",
-            "-a",
-            "--filter",
-            label_filter,
-            "--format",
-            "{{json .}}",
-        ],
-        capture=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"docker ps failed on {machine.name}: {result.stderr or result.stdout}")
-    return _parse_containers(
-        machine,
-        result.stdout,
-        required_label=required_label,
-        required_value=required_value,
-    )
-
-
-def list_job_containers(machine: MachineConfig) -> list[JobContainer]:
-    return _list_containers(
-        machine,
-        required_label=JOB_CONTAINER_LABEL,
-        required_value="true",
-    )
-
-
-def list_runtime_image_containers(machine: MachineConfig) -> list[JobContainer]:
-    return _list_containers(
-        machine,
-        required_label=f"{LABEL_PREFIX}runtime-image-ref",
-    )
-
-
-def parse_runtime_host_images(
-    machine: MachineConfig,
-    output: str,
-    *,
-    repositories: Sequence[str] = DEFAULT_RUNTIME_IMAGE_REPOSITORIES,
-) -> tuple[RuntimeHostImage, ...]:
-    allowed = set(repositories)
-    images: list[RuntimeHostImage] = []
-    seen: set[str] = set()
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        repository = str(row.get("Repository") or "").strip()
-        digest = str(row.get("Digest") or "").strip()
-        if repository not in allowed or not digest.startswith("sha256:"):
-            continue
-        image = RuntimeHostImage(
-            machine=machine.name,
-            repository=repository,
-            digest=digest,
-            image_id=str(row.get("ID") or "").strip(),
-        )
-        try:
-            normalize_runtime_image_ref(image.runtime_image_ref)
-        except ValueError:
-            continue
-        if image.runtime_image_ref in seen:
-            continue
-        seen.add(image.runtime_image_ref)
-        images.append(image)
-    return tuple(images)
 
 
 def runtime_image_repository(runtime_image_ref: str) -> str | None:
@@ -706,21 +217,6 @@ def repositories_for_runtime_images(protected_refs: set[str]) -> tuple[str, ...]
     return tuple(sorted(repositories))
 
 
-def list_runtime_host_images(
-    machine: MachineConfig,
-    *,
-    repositories: Sequence[str],
-) -> tuple[RuntimeHostImage, ...]:
-    result = run_machine_docker(
-        machine,
-        ["image", "ls", "--digests", "--format", "{{json .}}"],
-        capture=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"docker image ls failed on {machine.name}: {result.stderr or result.stdout}")
-    return parse_runtime_host_images(machine, result.stdout, repositories=repositories)
-
-
 def stale_runtime_host_images(
     *,
     machine: MachineConfig,
@@ -738,119 +234,42 @@ def stale_runtime_host_images(
 
 def prune_stale_runtime_images(
     conn,
-    machine: MachineConfig,
+    host: DockerRunnerHost,
 ) -> int:
+    machine = host.machine
     demands = queue_demands(conn)
-    containers = list_runtime_image_containers(machine)
+    containers = host.list_runtime_image_containers()
     protected = protected_runtime_image_refs(
         machine=machine,
         demands=demands,
         containers=containers,
     )
-    images = list_runtime_host_images(
-        machine,
-        repositories=repositories_for_runtime_images(protected),
+    images = host.list_runtime_images(
+        repositories_for_runtime_images(protected),
     )
     stale_images = tuple(image for image in images if image.runtime_image_ref not in protected)
     pruned = 0
     for image in stale_images:
-        result = run_machine_docker(machine, ["rmi", image.image_ref], capture=True)
-        if result.returncode == 0:
+        if host.remove_runtime_image(image.image_ref).ok:
             pruned += 1
     return pruned
 
 
-def prune_inactive_job_containers(conn, machine: MachineConfig) -> int:
+def prune_inactive_job_containers(conn, host: DockerRunnerHost) -> int:
+    machine = host.machine
     active_launch_ids = {
         str(launch["launch_id"])
         for launch in active_job_launches(conn, machine=machine.name)
     }
     removed = 0
-    for container in list_job_containers(machine):
+    for container in host.list_job_containers():
         if container.state not in {"exited", "dead"}:
             continue
         if container.launch_id and container.launch_id in active_launch_ids:
             continue
-        result = run_machine_docker(machine, ["rm", container.name], capture=True)
-        if result.returncode == 0:
+        if host.remove_container(container.name).ok:
             removed += 1
     return removed
-
-
-@dataclass(frozen=True)
-class ResultObservation:
-    state: str
-    payload: dict[str, Any] | None = None
-    error: str | None = None
-
-
-def observe_remote_result(machine: MachineConfig, output_uri: str) -> ResultObservation:
-    result_path = f"{str(output_uri).rstrip('/')}/result.json"
-    script = (
-        f"if [ -s {shlex.quote(result_path)} ]; then cat {shlex.quote(result_path)}; "
-        f"elif [ -e {shlex.quote(result_path)} ]; then exit 3; else exit 4; fi"
-    )
-    try:
-        result = run_machine_shell(machine, script, capture=True)
-    except MachineCommandTimeout as exc:
-        return ResultObservation("error", error=str(exc))
-    if result.returncode == 4:
-        return ResultObservation("absent")
-    if result.returncode != 0:
-        return ResultObservation(
-            "error",
-            error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
-        )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        return ResultObservation("error", error=f"invalid result JSON: {exc}")
-    if not isinstance(payload, dict):
-        return ResultObservation("error", error="result JSON must be an object")
-    return ResultObservation("present", payload=payload)
-
-
-def stream_job_logs(
-    machine: MachineConfig,
-    output_uri: str,
-    *,
-    tail: int = 100,
-    follow: bool = False,
-) -> int:
-    log_dir = f"{str(output_uri).rstrip('/')}/logs"
-    follow_flag = "-F" if follow else ""
-    script = (
-        f"file=$(find {shlex.quote(log_dir)} -maxdepth 1 -type f "
-        "-name 'train_job_*.log' -print 2>/dev/null | sort | tail -n 1); "
-        "test -n \"$file\"; "
-        f"tail {follow_flag} -n {max(0, int(tail))} \"$file\""
-    )
-    result = run_machine_shell(
-        machine,
-        script,
-        capture=False,
-        timeout=None if follow else MACHINE_COMMAND_TIMEOUT_SECONDS,
-    )
-    return int(result.returncode)
-
-
-def ensure_runtime_image_available(machine: MachineConfig, runtime_image_ref: str) -> bool:
-    image = docker_image_ref(runtime_image_ref)
-    if machine.pull_policy != "never":
-        pulled = run_machine_docker(
-            machine,
-            ["pull", image],
-            capture=True,
-            timeout=DOCKER_PULL_TIMEOUT_SECONDS,
-        )
-        if pulled.returncode != 0:
-            return False
-    inspected = run_machine_docker(
-        machine,
-        ["image", "inspect", image],
-        capture=True,
-    )
-    return inspected.returncode == 0
 
 
 def _load_train_job(conn, job_id: int) -> dict[str, Any]:
@@ -888,61 +307,57 @@ def _record_launch_error(conn, launch_id: str, error: str) -> None:
 
 def _start_or_resume_launch(
     conn,
-    machine: MachineConfig,
+    host: DockerRunnerHost,
     *,
     launch: Mapping[str, Any],
     known_container: JobContainer | None = None,
     image_ready: bool = False,
 ) -> bool:
+    machine = host.machine
     launch_id = str(launch["launch_id"])
     container_name = str(launch["container_name"])
     job = _load_train_job(conn, int(launch["job_id"]))
     try:
-        if not image_ready and not ensure_runtime_image_available(
-            machine, str(launch["runtime_image_ref"])
-        ):
+        if not image_ready and not host.ensure_runtime_image(str(launch["runtime_image_ref"])):
             _record_launch_error(conn, launch_id, "runtime image is unavailable")
             return False
-        write_remote_payload(
-            machine,
-            launch_payload_path(machine, launch_id),
-            job_payload_for_launch(job, launch),
-        )
+        host.write_payload(launch_id, job_payload_for_launch(job, launch))
         container = known_container
         if container is None:
-            create_command = job_container_create_command(
-                machine,
-                job_id=int(job["id"]),
+            labels = {
+                MANAGED_LABEL: "true",
+                JOB_CONTAINER_LABEL: "true",
+                MACHINE_LABEL: machine.name,
+                JOB_KIND_LABEL: TRAIN_JOB_KIND,
+                JOB_ID_LABEL: str(job["id"]),
+                LAUNCH_ID_LABEL: launch_id,
+                OUTPUT_URI_LABEL: host.output_host_path(launch_id),
+                f"{LABEL_PREFIX}runtime-image-ref": str(launch["runtime_image_ref"]),
+            }
+            created = host.create_train_container(
                 launch_id=launch_id,
-                runtime_image_ref=str(launch["runtime_image_ref"]),
                 container_name=container_name,
+                runtime_image_ref=str(launch["runtime_image_ref"]),
+                labels=labels,
             )
-            created = run_machine_shell(
-                machine,
-                shell_join(create_command),
-                capture=True,
-                timeout=MACHINE_COMMAND_TIMEOUT_SECONDS,
-            )
-            containers = {item.launch_id: item for item in list_job_containers(machine)}
+            containers = {item.launch_id: item for item in host.list_job_containers()}
             container = containers.get(launch_id)
             if container is None:
-                detail = (created.stderr or created.stdout or "").strip()
                 _record_launch_error(
                     conn,
                     launch_id,
-                    detail or f"docker create failed exit={created.returncode}",
+                    created.detail or "docker create failed",
                 )
                 return False
         if container.state != "running":
-            started = run_machine_docker(machine, ["start", container_name], capture=True)
-            containers = {item.launch_id: item for item in list_job_containers(machine)}
+            started = host.start_container(container_name)
+            containers = {item.launch_id: item for item in host.list_job_containers()}
             container = containers.get(launch_id)
             if container is None or container.state != "running":
-                detail = (started.stderr or started.stdout or "").strip()
                 _record_launch_error(
                     conn,
                     launch_id,
-                    detail or f"docker start failed exit={started.returncode}",
+                    started.detail or "docker start failed",
                 )
                 return False
         mark_job_launch_running(
@@ -975,28 +390,22 @@ def launch_cancel_requested(conn, launch: Mapping[str, Any]) -> bool:
 
 def cancel_running_job_launch(
     conn,
-    machine: MachineConfig,
+    host: DockerRunnerHost,
     *,
     launch: Mapping[str, Any],
     container: JobContainer,
 ) -> bool:
     launch_id = str(launch["launch_id"])
-    docker_args = (
-        ["rm", "--force", container.name]
+    result = (
+        host.remove_container(container.name, force=True)
         if container.state == "created"
-        else ["stop", "--time", "120", container.name]
+        else host.stop_container(container.name, grace_seconds=120)
     )
-    result = run_machine_docker(
-        machine,
-        docker_args,
-        capture=True,
-        timeout=DOCKER_STOP_TIMEOUT_SECONDS,
-    )
-    if result.returncode != 0:
+    if not result.ok:
         _record_launch_error(
             conn,
             launch_id,
-            (result.stderr or result.stdout or "").strip() or f"docker stop exit={result.returncode}",
+            result.detail or "docker stop failed",
         )
         return False
     finish_job_launch_from_result(
@@ -1012,9 +421,10 @@ def cancel_running_job_launch(
     return True
 
 
-def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
+def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
+    machine = host.machine
     launches = active_job_launches(conn, machine=machine.name)
-    containers = {container.launch_id: container for container in list_job_containers(machine)}
+    containers = {container.launch_id: container for container in host.list_job_containers()}
     reconciled = 0
     for launch in launches:
         launch_id = str(launch["launch_id"])
@@ -1023,7 +433,7 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
             continue
         container = containers.get(launch_id)
         if container is None:
-            observation = observe_remote_result(machine, str(launch["output_uri"]))
+            observation = host.observe_result(str(launch["output_uri"]))
             if observation.state == "present":
                 finish_job_launch_from_result(conn, launch_id=launch_id, result=observation.payload or {})
                 reconciled += 1
@@ -1042,7 +452,7 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
                 )
                 reconciled += 1
             elif launch["state"] == "launching":
-                if _start_or_resume_launch(conn, machine, launch=launch):
+                if _start_or_resume_launch(conn, host, launch=launch):
                     reconciled += 1
             else:
                 finish_job_launch_from_result(
@@ -1063,14 +473,14 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
         ):
             if cancel_running_job_launch(
                 conn,
-                machine,
+                host,
                 launch=launch,
                 container=container,
             ):
                 reconciled += 1
                 continue
         if container.state == "created":
-            if _start_or_resume_launch(conn, machine, launch=launch, known_container=container):
+            if _start_or_resume_launch(conn, host, launch=launch, known_container=container):
                 reconciled += 1
             continue
         if container.state == "running":
@@ -1083,7 +493,7 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
                 )
                 reconciled += 1
             continue
-        observation = observe_remote_result(machine, str(launch["output_uri"]))
+        observation = host.observe_result(str(launch["output_uri"]))
         if observation.state == "present":
             finish_job_launch_from_result(
                 conn,
@@ -1108,8 +518,9 @@ def reconcile_machine_launches(conn, machine: MachineConfig) -> int:
     return reconciled
 
 
-def train_container_slot_usage(conn, machine: MachineConfig) -> tuple[int, int, int]:
-    containers = list_job_containers(machine)
+def train_container_slot_usage(conn, host: DockerRunnerHost) -> tuple[int, int, int]:
+    machine = host.machine
+    containers = host.list_job_containers()
     launches = active_job_launches(conn, machine=machine.name)
     reserved = {str(launch["launch_id"]) for launch in launches}
     orphan_count = 0
@@ -1131,21 +542,22 @@ def train_container_slot_usage(conn, machine: MachineConfig) -> tuple[int, int, 
 def launch_next_jobs(
     conn,
     *,
-    machine: MachineConfig,
+    host: DockerRunnerHost,
 ) -> int:
+    machine = host.machine
     launched = 0
     available_images: set[str] = set()
     control = machine_control(conn, machine=machine.name)
     if bool(control.get("drained")):
         return 0
-    _used, _capacity, slots = train_container_slot_usage(conn, machine)
+    _used, _capacity, slots = train_container_slot_usage(conn, host)
     for _ in range(slots):
         pending = next_pending_train_job(conn, machine=machine.name)
         if pending is None:
             break
         runtime_image_ref = str(pending["runtime_image_ref"])
         if runtime_image_ref not in available_images:
-            if not ensure_runtime_image_available(machine, runtime_image_ref):
+            if not host.ensure_runtime_image(runtime_image_ref):
                 break
             available_images.add(runtime_image_ref)
         job_id = int(pending["id"])
@@ -1158,12 +570,12 @@ def launch_next_jobs(
             job_id=job_id,
             launch_id=launch_id,
             container_name=container_name,
-            output_uri=launch_output_path(machine, launch_id),
+            output_uri=host.output_host_path(launch_id),
         )
         if claimed is None:
             break
         _job, launch = claimed
-        if _start_or_resume_launch(conn, machine, launch=launch, image_ready=True):
+        if _start_or_resume_launch(conn, host, launch=launch, image_ready=True):
             launched += 1
     return launched
 
@@ -1171,18 +583,20 @@ def launch_next_jobs(
 def run_reconcile_fill_pass(
     conn,
     *,
-    machine: MachineConfig,
+    host: DockerRunnerHost,
     shared_env_file: Path | None = None,
 ) -> tuple[int, int]:
+    machine = host.machine
     pending = next_pending_train_job(conn, machine=machine.name)
     launching = active_job_launches(conn, machine=machine.name, states=("launching",))
     if machine.backend == "docker_ssh" and (pending is not None or launching):
-        sync_shared_runner_env(
-            machine,
-            shared_env_file or (default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE),
+        host.sync_shared_env(
+            load_shared_runner_env(
+                shared_env_file or (default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE)
+            )
         )
-    reconciled = reconcile_machine_launches(conn, machine)
-    launched = launch_next_jobs(conn, machine=machine)
+    reconciled = reconcile_machine_launches(conn, host)
+    launched = launch_next_jobs(conn, host=host)
     return reconciled, launched
 
 
@@ -1237,14 +651,14 @@ def run_service_machine_pass(
     if time.monotonic() >= deadline_monotonic:
         raise TimeoutError(f"machine lane deadline expired before start: {machine_name}")
     machine = resolve_machine(load_machine_registry(machines_path), machine_name)
-    deadline_token = _MACHINE_LANE_DEADLINE.set(deadline_monotonic)
+    host = DockerRunnerHost(machine, deadline_monotonic=deadline_monotonic)
     conn = None
     try:
         conn = connect(database_url())
         with machine_mutation_lock(conn, machine.name):
             reconciled, launched = run_reconcile_fill_pass(
                 conn,
-                machine=machine,
+                host=host,
                 shared_env_file=repo_root / DEFAULT_SHARED_RUNNER_ENV_FILE,
             )
             if time.monotonic() >= deadline_monotonic:
@@ -1253,8 +667,8 @@ def run_service_machine_pass(
             pruned = 0
             removed_containers = 0
             if reconciled or launched or _maintenance_due(maintenance_marker):
-                removed_containers = prune_inactive_job_containers(conn, machine)
-                pruned = prune_stale_runtime_images(conn, machine)
+                removed_containers = prune_inactive_job_containers(conn, host)
+                pruned = prune_stale_runtime_images(conn, host)
                 maintenance_marker.parent.mkdir(parents=True, exist_ok=True)
                 maintenance_marker.touch()
             return {
@@ -1266,7 +680,6 @@ def run_service_machine_pass(
     finally:
         if conn is not None:
             conn.close()
-        _MACHINE_LANE_DEADLINE.reset(deadline_token)
 
 
 def _kick_after_machine_control() -> str:
@@ -1330,13 +743,17 @@ def cmd_capacity(args: argparse.Namespace) -> int:
 def cmd_setup_host(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.host)
     runtime_image_ref = runtime_image_ref_from_args(args)
-    script = setup_host_script(machine, runtime_image_ref=runtime_image_ref)
+    script, returncode = setup_docker_host(
+        machine,
+        runtime_image_ref,
+        execute=bool(args.execute),
+    )
     print(f"host: {machine.name}")
     print(script.rstrip())
     if not args.execute:
         print("dry_run: rerun without --dry-run to run setup over SSH")
         return 0
-    return int(run_machine_shell(machine, script).returncode)
+    return int(returncode or 0)
 
 
 def add_machine_registry_arg(parser: argparse.ArgumentParser) -> None:

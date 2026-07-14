@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from rlab.env import EnvConfig, validate_obs_crop
@@ -103,4 +104,20 @@ def env_config_from_args(
             config_kwargs[key] = parse_obs_crop(raw_value)
         else:
             config_kwargs[key] = raw_value
+    return EnvConfig(**config_kwargs)
+
+
+def env_config_from_mapping(config: Mapping[str, Any]) -> EnvConfig:
+    config_kwargs: dict[str, Any] = {}
+    for field in env_config_arg_fields():
+        if field.dest not in config:
+            continue
+        value = config[field.dest]
+        if field.dest == "states":
+            value = parse_states(value)
+        elif field.dest == "state_probs":
+            value = parse_state_probs(value)
+        elif field.dest == "obs_crop":
+            value = parse_obs_crop(value)
+        config_kwargs[field.dest] = value
     return EnvConfig(**config_kwargs)

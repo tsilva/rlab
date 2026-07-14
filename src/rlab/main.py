@@ -83,6 +83,12 @@ def _validate(argv: Sequence[str]) -> int:
     return _run(validate_main, argv)
 
 
+def _env(argv: Sequence[str]) -> int:
+    from rlab.env_cli import main as env_main
+
+    return _run(env_main, argv)
+
+
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "train": ("enqueue queue-backed train jobs from checked-in recipes", _train),
     "eval": ("run local evals", _eval),
@@ -90,6 +96,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "import-roms": ("import ROMs into the installed rlab runtime", _import_roms),
     "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
     "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
+    "env": ("list, inspect, and preflight environment providers", _env),
     "jobs": ("manage queue schema, status, and cancellation", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),

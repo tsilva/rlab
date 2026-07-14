@@ -5,6 +5,7 @@ description: Tiny checkpoint-producing W&B/R2 reference-artifact smoke on Mario 
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
 - train.environment.env_provider=stable-retro-turbo
+- train.environment.env_config.env_args.use_fire_reset=false
 - train.policy.timesteps=512
 - train.environment.env_config.n_envs=1
 - train.policy.n_steps=128

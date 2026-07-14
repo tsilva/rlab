@@ -883,8 +883,16 @@ def download_huggingface_model_source(
     )
 
 
-def resolve_single_model_source(args: argparse.Namespace) -> ResolvedModelSource:
-    hf_ref = single_huggingface_model_ref(args)
+def resolve_single_model_source(
+    args: argparse.Namespace,
+    *,
+    resolved_ref: str | None = None,
+) -> ResolvedModelSource:
+    hf_ref = (
+        resolved_ref
+        if resolved_ref is not None and is_huggingface_model_ref(resolved_ref)
+        else single_huggingface_model_ref(args)
+    )
     if hf_ref is not None:
         return download_huggingface_model_source(
             hf_ref,
@@ -892,7 +900,7 @@ def resolve_single_model_source(args: argparse.Namespace) -> ResolvedModelSource
             filename=getattr(args, "hf_file", None),
             revision=getattr(args, "hf_revision", None),
         )
-    ref = single_model_artifact_ref(args)
+    ref = resolved_ref if resolved_ref is not None else single_model_artifact_ref(args)
     if ref is not None:
         return download_artifact_ref_source(ref, Path(args.artifact_root))
     model_path = Path(str(args.model))

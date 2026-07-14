@@ -18,6 +18,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from rlab.artifacts import load_playback_env_config
 from rlab.device import resolve_sb3_device
@@ -32,7 +33,6 @@ from rlab.env import (
     task_max_episode_steps,
     task_reward,
     task_termination,
-    with_task_termination,
 )
 from rlab.eval_metrics import (
     batch_metrics_for_lane,
@@ -219,13 +219,8 @@ def vector_env_frame(env) -> np.ndarray:
 
 
 def playback_runtime_config(config):
-    """Make record-producing task completion explicit for interactive playback."""
-    semantics = target_for_game(config.game).eval_semantics
-    if semantics.completion_reason != "level_change":
-        return config
-    termination = task_termination(config)
-    success = list(dict.fromkeys((*termination.get("success", ()), "level_change")))
-    return with_task_termination(config, success=success)
+    """Preserve the playback boundary policy selected from model metadata."""
+    return config
 
 
 def _heatmap_color(heatmap: np.ndarray) -> np.ndarray:
@@ -463,9 +458,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--respect-task-termination",
         action="store_true",
         help=(
-            "End episodes on the checkpoint's configured task success/failure events. "
-            "By default playback disables those boundaries for free exploration."
+            "End episodes on the checkpoint's configured task success, failure, stall, "
+            "and step-limit boundaries. By default playback only stops for native "
+            "environment termination."
         ),
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable model-download and player-startup progress bars.",
     )
     parser.add_argument(
         "--show-obs",
@@ -610,6 +611,21 @@ def print_resolved_play_launch(
     print("\n".join(lines), flush=True)
 
 
+@contextlib.contextmanager
+def startup_progress(name: str, *, disabled: bool = False):
+    """Show one independently timed progress bar for a startup operation."""
+
+    with tqdm(
+        total=1,
+        desc=name,
+        unit="operation",
+        dynamic_ncols=True,
+        disable=disabled,
+    ) as progress:
+        yield
+        progress.update(1)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
@@ -617,17 +633,21 @@ def main(argv: list[str] | None = None) -> int:
     args.seed = validate_eval_seed(args.seed)
     if args.attribution_interval is None:
         args.attribution_interval = 8 if args.attribution == "occlusion" else 1
-    ref = model_source_ref(args)
-    if ref is not None:
-        print(f"Downloading {ref}", flush=True)
-    source = resolve_single_model_source(args)
+    with startup_progress("Resolving model reference", disabled=args.no_progress):
+        ref = model_source_ref(args)
+    with startup_progress(
+        "Downloading model" if ref is not None else "Opening local model",
+        disabled=args.no_progress,
+    ):
+        source = resolve_single_model_source(args, resolved_ref=ref)
     args.model = str(source.model_path)
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
-    artifact_config = load_playback_env_config(
-        source.model_path,
-        respect_task_termination=args.respect_task_termination,
-    )
+    with startup_progress("Loading playback metadata", disabled=args.no_progress):
+        artifact_config = load_playback_env_config(
+            source.model_path,
+            respect_task_termination=args.respect_task_termination,
+        )
     config = playback_runtime_config(artifact_config)
     display_config = display_replay_config(config)
     print_resolved_play_launch(
@@ -637,23 +657,41 @@ def main(argv: list[str] | None = None) -> int:
         policy_config=config,
         display_config=display_config,
     )
-    assert_provider_runtime_available(config)
-    from stable_baselines3 import PPO
+    with startup_progress("Checking provider runtime", disabled=args.no_progress):
+        assert_provider_runtime_available(config)
 
-    model = PPO.load(args.model, device=resolve_sb3_device(args.device))
-    attributor = PolicyActionAttributor(model) if args.attribution != "none" else None
-    policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+    with startup_progress("Loading policy runtime", disabled=args.no_progress):
+        from stable_baselines3 import PPO
 
-    policy_env.seed(args.seed)
-    policy_env.reset()
-    first_frame = vector_env_frame(policy_env)
+    with startup_progress("Loading model checkpoint", disabled=args.no_progress):
+        model = PPO.load(args.model, device=resolve_sb3_device(args.device))
+    if args.attribution != "none":
+        with startup_progress("Preparing policy attribution", disabled=args.no_progress):
+            attributor = PolicyActionAttributor(model)
+    else:
+        attributor = None
+
+    with startup_progress("Creating policy environment", disabled=args.no_progress):
+        policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+
+    with startup_progress("Seeding policy environment", disabled=args.no_progress):
+        policy_env.seed(args.seed)
+    with startup_progress("Resetting policy environment", disabled=args.no_progress):
+        policy_env.reset()
+    with startup_progress("Reading initial game frame", disabled=args.no_progress):
+        first_frame = vector_env_frame(policy_env)
+
     obs_stack_position = (40, 240)
-    viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
-    obs_viewer = (
-        ObsStackViewer(scale=DEFAULT_OBS_VIEWER_SCALE, position=obs_stack_position)
-        if args.show_obs or attributor is not None
-        else None
-    )
+    with startup_progress("Creating game viewer", disabled=args.no_progress):
+        viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
+    if args.show_obs or attributor is not None:
+        with startup_progress("Creating observation viewer", disabled=args.no_progress):
+            obs_viewer = ObsStackViewer(
+                scale=DEFAULT_OBS_VIEWER_SCALE,
+                position=obs_stack_position,
+            )
+    else:
+        obs_viewer = None
     current_fps = args.fps
     actual_fps: float | None = None
     fps_ema_alpha = 0.12

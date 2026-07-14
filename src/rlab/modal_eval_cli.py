@@ -261,9 +261,8 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
-    from rlab.fleet import container_output_path, run_machine_docker
+    from rlab.docker_host import DockerRunnerHost, run_checkpoint_coordinator_container
     from rlab.machines import load_machine_registry, resolve_machine
-    from rlab.runtime_refs import docker_image_ref
 
     conn = _conn()
     try:
@@ -294,30 +293,14 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 f"{eval_run_status or 'missing'}, not awaiting_artifact_recovery"
             )
         machine = resolve_machine(load_machine_registry(), str(row["machine"]))
-        container_output = container_output_path(machine, str(row["launch_id"]))
+        host = DockerRunnerHost(machine)
         run_name = str(row.get("run_name") or f"train_job_{row['id']}")
-        docker_args = [
-            "run",
-            "--rm",
-            "--env-file",
-            machine.paths.env_file,
-            "-e",
-            "RLAB_IMPORT_ROMS=0",
-            "-v",
-            f"{machine.paths.outputs_dir}:{machine.paths.container_outputs_dir}",
-            docker_image_ref(str(row["runtime_image_ref"])),
-            "python",
-            "-m",
-            "rlab.checkpoint_coordinator",
-            "--run-dir",
-            f"{container_output}/runs/{run_name}",
-            "--train-config-json",
-            f"{container_output}/train_config.json",
-            "--drain-and-exit",
-        ]
-        recovered = run_machine_docker(machine, docker_args, capture=True, timeout=900)
-        if recovered.returncode:
-            raise RuntimeError(recovered.stderr or recovered.stdout)
+        run_checkpoint_coordinator_container(
+            host,
+            launch_id=str(row["launch_id"]),
+            run_name=run_name,
+            runtime_image_ref=str(row["runtime_image_ref"]),
+        )
         with conn:
             with conn.cursor() as cur:
                 cur.execute(

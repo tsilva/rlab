@@ -9,12 +9,13 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.env import EnvConfig, resolve_env_config, with_task_termination
+from rlab.env import EnvConfig, resolve_env_config
 from rlab.env_metadata import (
     PLAYBACK_ENV_ARG_KEYS,
     assert_metadata_runtime_versions,
@@ -165,7 +166,24 @@ def playback_env_config(
 ) -> EnvConfig:
     if respect_task_termination:
         return config
-    return with_task_termination(config, failure=[], success=[], timeout=[])
+    task = deepcopy(config.task)
+    termination = dict(task.get("termination", {}))
+    termination.update(
+        failure=[],
+        success=[],
+        timeout=[],
+        max_episode_steps=0,
+    )
+    task["termination"] = termination
+
+    # The Mario kernel treats a configured stalled event as a task truncation
+    # even when it is not listed as a failure. Interactive playback must only
+    # stop for provider-native termination, so omit that task-owned timer while
+    # preserving observational events such as life loss and level change.
+    events = dict(task.get("events", {}))
+    events.pop("stalled", None)
+    task["events"] = events
+    return replace(config, task=task)
 
 
 def load_playback_env_config(

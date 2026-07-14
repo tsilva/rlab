@@ -50,6 +50,7 @@ from rlab.play import display_replay_config
 from rlab.play import main as play_main
 from rlab.play import model_observation
 from rlab.play import ObsStackViewer
+from rlab.play import playback_runtime_config
 from rlab.play import playback_should_end_episode
 from rlab.play import render_obs_stack
 from rlab.play import resolved_play_launch_lines
@@ -682,7 +683,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.state, "Level2-1")
             self.assertFalse(config.max_pool_frames)
-            self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
+            self.assertEqual(config.task["termination"]["max_episode_steps"], 0)
             self.assertEqual(config.observation_size, 96)
             self.assertEqual(config.obs_crop, (32, 0, 0, 0))
             self.assertEqual(config.obs_crop_mode, "mask")
@@ -837,16 +838,29 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("termination_events=life_loss,level_change", text)
 
     def test_playback_env_config_disables_task_termination(self) -> None:
+        task = mario_task()
+        task["events"]["stalled"] = {
+            "signal": "x",
+            "operation": "unchanged_for",
+            "steps": 300,
+        }
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",
-            task=mario_task(),
+            task=task,
         )
 
         playback_config = playback_env_config(config)
 
         self.assertEqual(playback_config.task["termination"]["failure"], [])
         self.assertEqual(playback_config.task["termination"]["success"], [])
+        self.assertEqual(playback_config.task["termination"]["timeout"], [])
+        self.assertEqual(playback_config.task["termination"]["max_episode_steps"], 0)
+        self.assertNotIn("stalled", playback_config.task["events"])
+        self.assertIn("level_change", playback_config.task["events"])
+        self.assertIs(playback_runtime_config(playback_config), playback_config)
         self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
+        self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
+        self.assertIn("stalled", config.task["events"])
 
         contract_config = playback_env_config(
             config,
@@ -984,6 +998,8 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertTrue(parser.parse_args(["--step-over"]).step_over)
         self.assertFalse(parser.parse_args([]).respect_task_termination)
         self.assertTrue(parser.parse_args(["--respect-task-termination"]).respect_task_termination)
+        self.assertFalse(parser.parse_args([]).no_progress)
+        self.assertTrue(parser.parse_args(["--no-progress"]).no_progress)
         self.assertEqual(parser.parse_args([]).episodes, 0)
         self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)

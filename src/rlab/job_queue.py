@@ -2328,11 +2328,10 @@ def cmd_logs(args: argparse.Namespace) -> int:
         conn.close()
     if not row:
         raise SystemExit(f"job {args.job_id} has no launch output")
-    from rlab.fleet import stream_job_logs
+    from rlab.docker_host import DockerRunnerHost
 
     machine = resolve_machine(load_machine_registry(args.machines), str(row["machine"]))
-    return stream_job_logs(
-        machine,
+    return DockerRunnerHost(machine).stream_logs(
         str(row["output_uri"]),
         tail=int(args.tail),
         follow=bool(args.follow),

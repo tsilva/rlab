@@ -23,6 +23,7 @@ from rlab.env_registry import (
     env_supports_states,
     qualify_env_id,
     resolve_env_provider,
+    validate_provider_constructor_args,
 )
 from rlab.env_identity import task_config_from_train_config, validate_task_config
 from rlab.targets import target_for_game
@@ -282,6 +283,55 @@ def _provider_descriptor(config: EnvConfig, native_env: Any) -> ProviderDescript
     )
 
 
+def make_native_provider(
+    config: EnvConfig,
+    n_envs: int,
+) -> tuple[Any, ProviderDescriptor]:
+    """Construct and describe one provider, closing it if description fails."""
+
+    validate_provider_constructor_args(
+        config.env_provider,
+        config.env_args,
+        label="env_config.env_args",
+    )
+    native_kwargs = provider_native_vec_kwargs(
+        config,
+        n_envs=n_envs,
+        native_obs_crop=native_obs_crop,
+        state_weight_mapping=state_weight_mapping,
+    )
+    native_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
+    try:
+        descriptor = _provider_descriptor(config, native_env)
+    except BaseException:
+        native_env.close()
+        raise
+    return native_env, descriptor
+
+
+def bind_native_provider(
+    config: EnvConfig,
+    *,
+    n_envs: int,
+    seed: int,
+    native_env: Any,
+    descriptor: ProviderDescriptor,
+) -> RlabVecEnv:
+    """Transfer a constructed provider into the task runtime or close it on failure."""
+
+    runtime: BatchRuntime | None = None
+    try:
+        kernel = _bound_task_kernel(config, descriptor, n_envs)
+        runtime = BatchRuntime(native_env, descriptor, kernel, run_seed=seed)
+        return RlabVecEnv(runtime)
+    except BaseException:
+        if runtime is None:
+            native_env.close()
+        else:
+            runtime.close()
+        raise
+
+
 def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs: int):
     task_id = config.task.get("id")
     if task_id == "mario":
@@ -318,16 +368,13 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
 def make_vec_envs(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
-    native_kwargs = provider_native_vec_kwargs(
+    native_env, descriptor = make_native_provider(config, n_envs)
+    vec_env = bind_native_provider(
         config,
         n_envs=n_envs,
-        native_obs_crop=native_obs_crop,
-        state_weight_mapping=state_weight_mapping,
-    )
-    native_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
-    descriptor = _provider_descriptor(config, native_env)
-    vec_env = RlabVecEnv(
-        BatchRuntime(native_env, descriptor, _bound_task_kernel(config, descriptor, n_envs), run_seed=seed)
+        seed=seed,
+        native_env=native_env,
+        descriptor=descriptor,
     )
     vec_env.seed(seed)
     return vec_env

@@ -8,13 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from rlab import config_validation
 from rlab.config_validation import (
     load_goal_contract,
     main as validate_main,
     validate_experiment_tree,
     validate_goal_contract,
 )
-from rlab import config_validation
+from rlab.env_registry import resolve_env_provider
 from rlab.job_queue import load_recipe_document
 from rlab.main import COMMANDS
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
@@ -34,9 +35,9 @@ class ConfigValidationTests(unittest.TestCase):
         for provider_id, constructor in constructors.items():
             with self.subTest(provider_id=provider_id):
                 signature_args = set(inspect.signature(constructor).parameters)
-                covered_args = set(
-                    config_validation.GOAL_PROVIDER_ARGS_FROM_ENV_CONFIG[provider_id]
-                ) | set(config_validation.GOAL_REQUIRED_PROVIDER_ENV_ARGS[provider_id])
+                contract = resolve_env_provider(provider_id).constructor_contract
+                self.assertIsNotNone(contract)
+                covered_args = set(contract.canonical_args) | set(contract.explicit_env_args)
                 self.assertEqual(covered_args, signature_args)
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
