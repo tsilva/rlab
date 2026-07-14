@@ -899,11 +899,24 @@ class JobQueueTests(unittest.TestCase):
                 {},
             ]
         )
-        with patch.object(
-            job_queue,
-            "modal_eval_readiness_report",
-            return_value={"ready": True, "checks": []},
-        ) as preflight:
+        with (
+            patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                return_value={"ready": True, "checks": []},
+            ) as preflight,
+            patch.object(
+                job_queue,
+                "asset_manifest_for_game",
+                return_value={
+                    "game": "SuperMarioBros-Nes-v0",
+                    "sha256": "a" * 64,
+                    "object_uri": "s3://bucket/rom.nes",
+                    "filename": "rom.nes",
+                    "provider_rom_identity": "b" * 40,
+                },
+            ),
+        ):
             result = job_queue.retry_train_job(
                 conn,
                 job_id=7,
