@@ -8,13 +8,13 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
+from rlab.contract_versions import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION
 from rlab.json_utils import json_safe
 from rlab.train_config import TRAIN_CONFIG_FIELDS, validate_and_normalize_train_config
 from rlab.training_backend import training_backend_contract_payload
 
 
 RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
-TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION = 2
 
 
 def train_config_contract_payload() -> dict[str, Any]:

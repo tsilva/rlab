@@ -76,8 +76,8 @@ jobs:
 
           import modal
 
+          from rlab.contract_versions import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION
           from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
-          from rlab.runtime_contract import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION
 
           runtime_image_ref = os.environ["RLAB_MODAL_EVAL_RUNTIME_IMAGE"]
           config = load_modal_eval_config()

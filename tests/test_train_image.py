@@ -119,7 +119,7 @@ class TrainImageTests(unittest.TestCase):
         self.assertIn("--only-group modal-deploy --no-install-project", modal_workflow)
         self.assertIn("uv run --no-sync modal deploy", modal_workflow)
         self.assertIn(
-            "from rlab.runtime_contract import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION",
+            "from rlab.contract_versions import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION",
             modal_workflow,
         )
         self.assertIn(
