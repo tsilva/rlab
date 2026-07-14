@@ -222,7 +222,7 @@ UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06
 
 ## Publish a Policy
 
-Policies publish under `rlab-research` with a generated repository identity:
+Policies publish under `tsilva` with a generated repository identity:
 
 ```text
 <game-family>_<goal>_<policy-variant>_<algorithm>
@@ -231,7 +231,7 @@ Policies publish under `rlab-research` with a generated repository identity:
 For example:
 
 ```text
-rlab-research/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo
+tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo
 ```
 
 The game family comes from rlab's provider-neutral registry, the policy variant comes from the

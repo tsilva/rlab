@@ -15,7 +15,7 @@ from rlab.env_registry import game_family_for_environment
 from rlab.targets import target_for_game
 
 
-HUGGINGFACE_NAMESPACE = "rlab-research"
+HUGGINGFACE_NAMESPACE = "tsilva"
 REPO_NAMING_SCHEMA_VERSION = 1
 RELEASE_MANIFEST_VERSION = 1
 HUGGINGFACE_RELEASE_FILES = frozenset(

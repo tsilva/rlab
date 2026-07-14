@@ -38,7 +38,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
 2. Resolve the deterministic publication identity.
    - Run `.codex/skills/upload-checkpoint/scripts/prepare_release.py` with
      `--identity-only` before creating or moving any repository.
-   - The only supported namespace is `rlab-research`.
+   - The only supported namespace is `tsilva`.
    - The generated name is
      `<game-family>_<goal>_<policy-variant>_<algorithm>`; do not accept a manual repo name.
    - Provider, run, seed, recipe, environment hash, and runtime versions belong in metadata,
@@ -88,7 +88,7 @@ rlab: https://github.com/tsilva/rlab
   changing the Hub. The legacy algorithm and crop behavior must be supplied explicitly from
   repository and source-history evidence.
 - Review the collision-free mapping and retain its printed SHA-256. Applying it requires that
-  exact digest, membership in `rlab-research`, and empty destination names.
+  exact digest, authenticated ownership, and empty destination names.
 - Tag each historical source revision as `legacy-deterministic` before moving it. A move does
   not make that historical revision a schema-v1 release.
 - Do not create `v1` until the checkpoint has new stochastic evaluation evidence, a validated
@@ -97,7 +97,7 @@ rlab: https://github.com/tsilva/rlab
 
 ## Defaults
 
-- Hugging Face namespace: `rlab-research`.
+- Hugging Face namespace: `tsilva`.
 - Repository naming schema: `1`.
 - License: MIT for original publication material, with third-party obligations documented.
 - Hugging Face checkpoint filename: `model.zip`.

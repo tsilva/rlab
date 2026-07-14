@@ -23,12 +23,12 @@ rlab: https://github.com/tsilva/rlab
 
     updated = MODULE.replace_description_link_block(
         existing,
-        "Model: https://huggingface.co/rlab-research/new\n"
+        "Model: https://huggingface.co/tsilva/new\n"
         "rlab: https://github.com/tsilva/rlab",
     )
 
     assert "A PPO agent completes Level 1-4." in updated
-    assert "https://huggingface.co/rlab-research/new" in updated
+    assert "https://huggingface.co/tsilva/new" in updated
     assert "https://huggingface.co/tsilva/old" not in updated
     assert updated.count("Model:") == 1
     assert updated.count("rlab:") == 1

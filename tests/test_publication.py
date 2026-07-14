@@ -76,7 +76,7 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
         algorithm="ppo",
     )
     assert build_model_repo_id(native) == (
-        "rlab-research/NES-SuperMarioBros_Level1-1_"
+        "tsilva/NES-SuperMarioBros_Level1-1_"
         "gray84-hudmask-stack4-simple_ppo"
     )
 

@@ -32,11 +32,11 @@ rlab play hf://tsilva/old
     result = MODULE._migrated_readme(
         source,
         source_id="tsilva/old",
-        destination_id="rlab-research/new",
+        destination_id="tsilva/new",
         deleted_files=["candidate_eval_result.json", "verify_remote/replay.mp4"],
     )
 
-    assert "hf://rlab-research/new" in result
+    assert "hf://tsilva/new" in result
     assert "candidate_eval_result.json" not in result
     assert "verify_remote/replay.mp4" not in result
     assert "`model.zip`" in result
