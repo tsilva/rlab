@@ -3,10 +3,12 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import argparse
+import json
 import os
 import re
 import signal
 import sys
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -425,6 +427,19 @@ def main(argv: list[str] | None = None) -> int:
     print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
 
     callback = RlabCallback(components)
+
+    Path(run_dir, "learner_ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pid": os.getpid(),
+                "ready_at_unix": time.time(),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     final_model_path = Path(run_dir, "final_model.zip")
     env_closed = False

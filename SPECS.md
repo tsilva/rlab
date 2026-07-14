@@ -53,6 +53,8 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Remote artifact caches must refresh when an artifact alias resolves to different content so alias advancement cannot reuse stale model files.
 - Visual releases must include reproducibility metadata and a representative replay.
 - Queued attempts must be isolated, use declared runtimes, preserve durable results, recover safely after interruption, separate observation from mutation, and clean unused resources without affecting active or demanded work.
+- New queue-backed training must fail closed unless a release-complete immutable runtime matches the exact clean source revision, accepts the fully materialized train payload on the named machine, and has its required evaluation backend deployed; implicit fallback to older runtimes is unsupported.
+- A queue-backed train job is running only after both the learner and its W&B publisher are ready and the durable W&B run identity and URL are observable; container startup alone is a starting state.
 - Every queued job must name exactly one registered machine; resource-class targets, automatic placement, and silent machine fallback are unsupported.
 - Queue reconciliation must run from one user-session Mac launchd service that invokes bounded short-lived passes; runner machines remain SSH/Docker-only, and remote containers continue independently while the control Mac sleeps or is logged out.
 - A queued job has one stable launch/container identity and is never retried automatically after execution starts; an explicit retry creates a new traceable job.

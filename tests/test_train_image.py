@@ -117,6 +117,11 @@ class TrainImageTests(unittest.TestCase):
             "  publish-runtime:", maxsplit=1
         )[0]
         self.assertIn("if: github.event_name != 'pull_request'", deploy)
+        self.assertIn("train_config_contract_sha256", workflow)
+        self.assertIn('"schema_version": 2', workflow)
+        self.assertIn("startup_probe", workflow)
+        self.assertIn("python -m rlab.runtime_contract --validate-config-stdin", workflow)
+        self.assertIn("required: false", modal_workflow)
 
 
 if __name__ == "__main__":

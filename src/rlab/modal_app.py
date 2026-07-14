@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import modal
 
@@ -58,7 +59,7 @@ def evaluate_checkpoint(payload: dict) -> dict:
     single_use_containers=True,
     include_source=False,
 )
-def startup_probe() -> dict[str, str]:
+def startup_probe() -> dict[str, Any]:
     """Prove the deployed image can import its packaged evaluator contract."""
     return {
         **runtime_contract(runtime_image_ref=runtime_image_ref),

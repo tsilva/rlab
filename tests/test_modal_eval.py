@@ -143,9 +143,18 @@ class ModalEvalContractTests(unittest.TestCase):
             mock.patch.object(modal_eval_cli, "ObjectStore") as object_store,
             mock.patch("modal.Function.from_name", return_value=function),
         ):
+            from rlab.runtime_contract import train_config_contract_sha256
+
             object_store.return_value.head.return_value = {
                 "size": 1024,
                 "metadata": {"sha256": manifest["sha256"]},
+            }
+            function.remote.return_value = {
+                "schema_version": 1,
+                "app_name": "rlab-eval-" + "b" * 12,
+                "runtime_image_ref": image_ref,
+                "source_sha": "source",
+                "train_config_contract_sha256": train_config_contract_sha256(),
             }
             report = modal_eval_cli.modal_preflight(
                 runtime_image_ref=image_ref,
@@ -161,6 +170,7 @@ class ModalEvalContractTests(unittest.TestCase):
                 "backend_state",
                 "rom_asset",
                 "modal_deployment",
+                "modal_startup_probe",
             },
         )
         function.hydrate.assert_called_once_with()

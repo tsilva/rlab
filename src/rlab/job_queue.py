@@ -295,12 +295,12 @@ SELECT
   machine,
   runtime_image_ref,
   COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
-  COUNT(*) FILTER (WHERE status IN ('launching', 'running')) AS active_count,
+  COUNT(*) FILTER (WHERE status IN ('launching', 'starting', 'running')) AS active_count,
   MIN(id) AS oldest_job_id
 FROM train_jobs
 WHERE runtime_image_ref IS NOT NULL
   AND cancel_requested = FALSE
-  AND status IN ('pending', 'launching', 'running')
+  AND status IN ('pending', 'launching', 'starting', 'running')
 GROUP BY machine, runtime_image_ref
 ORDER BY oldest_job_id ASC
 """
@@ -1197,7 +1197,7 @@ def mark_job_launch_running(
             cur.execute(
                 """
                 UPDATE train_jobs
-                SET status = 'running',
+                SET status = 'starting',
                     started_at = COALESCE(started_at, now())
                 WHERE id = %(job_id)s
                   AND status = 'launching'
@@ -1211,11 +1211,62 @@ def mark_job_launch_running(
             record_job_event(
                 conn,
                 job_id=int(launch["job_id"]),
-                event_type="running",
+                event_type="starting",
                 message="job container started",
                 metadata={"launch_id": launch_id},
             )
             return dict(launch)
+
+
+def mark_train_job_ready(
+    conn,
+    *,
+    launch_id: str,
+    readiness: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    wandb_run_id = str(readiness.get("wandb_run_id") or "").strip()
+    wandb_url = str(readiness.get("wandb_url") or "").strip()
+    if not wandb_run_id or not wandb_url.startswith("https://wandb.ai/"):
+        raise ValueError("training readiness requires a W&B run id and URL")
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs AS job
+                SET status = 'running',
+                    ready_at = COALESCE(ready_at, now()),
+                    wandb_run_id = %(wandb_run_id)s,
+                    wandb_url = %(wandb_url)s,
+                    error = NULL
+                FROM job_launches AS launch
+                WHERE launch.launch_id = %(launch_id)s
+                  AND launch.job_id = job.id
+                  AND launch.state = 'running'
+                  AND job.status = 'starting'
+                RETURNING job.*
+                """,
+                {
+                    "launch_id": launch_id,
+                    "wandb_run_id": wandb_run_id,
+                    "wandb_url": wandb_url,
+                },
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            job = dict(row)
+            record_job_event(
+                conn,
+                job_id=int(job["id"]),
+                event_type="running",
+                message="learner and W&B publisher ready",
+                metadata={
+                    "launch_id": launch_id,
+                    "wandb_run_id": wandb_run_id,
+                    "wandb_url": wandb_url,
+                },
+            )
+            return job
 
 
 def record_job_launch_error(
@@ -1249,7 +1300,7 @@ def record_job_launch_error(
                 UPDATE train_jobs
                 SET error = %(error)s
                 WHERE id = %(job_id)s
-                  AND status IN ('launching', 'running')
+                  AND status IN ('launching', 'starting', 'running')
                 """,
                 {"job_id": launch["job_id"], "error": error},
             )
@@ -1375,7 +1426,7 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
                 """
                 SELECT DISTINCT machine
                 FROM train_jobs
-                WHERE status IN ('pending', 'launching', 'running')
+                WHERE status IN ('pending', 'launching', 'starting', 'running')
                    OR cancel_requested = TRUE
                 ORDER BY machine
                 """
@@ -1396,7 +1447,7 @@ def count_nonterminal_jobs(conn=None) -> int:
                 """
                 SELECT
                   (SELECT COUNT(*) FROM train_jobs
-                   WHERE status IN ('pending', 'launching', 'running'))
+                   WHERE status IN ('pending', 'launching', 'starting', 'running'))
                   +
                   (SELECT COUNT(*) FROM eval_jobs
                    WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
@@ -1458,7 +1509,7 @@ def request_cancel_train_job(conn, *, job_id: int) -> int:
                     status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
                     finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
                 WHERE id = %(job_id)s
-                  AND status IN ('pending', 'launching', 'running')
+                  AND status IN ('pending', 'launching', 'starting', 'running')
                 """,
                 {"job_id": job_id},
             )
@@ -1484,7 +1535,7 @@ def request_cancel_train_jobs(
     selectors = sum(value is not None for value in (job_id, batch_id, machine))
     if selectors != 1:
         raise ValueError("exactly one of job_id, batch_id, or machine is required")
-    filters = ["status IN ('pending', 'launching', 'running')"]
+    filters = ["status IN ('pending', 'launching', 'starting', 'running')"]
     params: dict[str, Any] = {}
     if job_id is not None:
         filters.append("id = %(job_id)s")
@@ -1532,7 +1583,15 @@ def request_cancel_train_jobs(
         return job_ids
 
 
-def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> dict[str, Any]:
+def retry_train_job(
+    conn,
+    *,
+    job_id: int,
+    submission_key: str | None = None,
+    runtime_image_ref: str | None = None,
+    repo_git_commit: str | None = None,
+    runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> dict[str, Any]:
     """Create a new pending job from a terminal job; execution is never retried in place."""
     submission_key = str(submission_key or f"retry-{job_id}-{uuid.uuid4().hex}")
     with conn:
@@ -1561,12 +1620,15 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
         raise ValueError(f"job {job_id} is not terminal or does not exist")
     preview = dict(preview)
     preview_config = dict(preview.get("train_config") or {})
+    effective_runtime_image_ref = str(
+        runtime_image_ref or preview["runtime_image_ref"]
+    )
     modal_readiness_validated = (
         str(preview_config.get("checkpoint_eval_backend") or "local") != "modal"
     )
     if not modal_readiness_validated:
         require_modal_eval_ready(
-            runtime_image_ref=str(preview["runtime_image_ref"]),
+            runtime_image_ref=effective_runtime_image_ref,
             game=str(preview_config.get("game") or ""),
         )
         modal_readiness_validated = True
@@ -1610,10 +1672,10 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             recipe_slug=source.get("recipe_slug"),
             recipe_path=source.get("recipe_path"),
             recipe_sha256=source.get("recipe_sha256"),
-            repo_git_commit=source.get("repo_git_commit"),
-            repo_dirty=bool(source.get("repo_dirty")),
+            repo_git_commit=repo_git_commit or source.get("repo_git_commit"),
+            repo_dirty=False if repo_git_commit else bool(source.get("repo_dirty")),
             recipe_payload=source.get("recipe_payload_json") or {},
-            runtime_image_ref=source["runtime_image_ref"],
+            runtime_image_ref=runtime_image_ref or source["runtime_image_ref"],
             machine=source["machine"],
             train_config=source["train_config"],
             batch_id=source["batch_id"],
@@ -1626,6 +1688,7 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             wandb_tags=source.get("wandb_tags") or (),
             manage_transaction=False,
             _modal_readiness_validated=modal_readiness_validated,
+            runtime_config_validator=runtime_config_validator,
         )
         record_job_event(
             conn,
@@ -1747,9 +1810,11 @@ def finish_train_launch_from_result(
                 UPDATE train_jobs
                 SET status = %(status)s,
                     finished_at = now(),
+                    wandb_run_id = COALESCE(%(wandb_run_id)s, wandb_run_id),
+                    wandb_url = COALESCE(%(wandb_url)s, wandb_url),
                     error = %(error)s
                 WHERE id = %(job_id)s
-                  AND status IN ('launching', 'running')
+                  AND status IN ('launching', 'starting', 'running')
                 RETURNING *
                 """,
                 {
@@ -1757,6 +1822,8 @@ def finish_train_launch_from_result(
                     "error": error,
                     "job_id": updated_launch["job_id"],
                     "launch_id": launch_id,
+                    "wandb_run_id": train_payload.get("wandb_run_id"),
+                    "wandb_url": train_payload.get("wandb_url"),
                 },
             )
             job = cur.fetchone()
@@ -1865,7 +1932,7 @@ def queue_status(
     unreachable_terms = ("unreachable", "timed out", "permission denied", "connection")
     for row in jobs:
         blocked_reason = None
-        if row.get("cancel_requested") and row.get("status") in {"launching", "running"}:
+        if row.get("cancel_requested") and row.get("status") in {"launching", "starting", "running"}:
             blocked_reason = "canceling"
         elif row.get("status") == "pending" and row.get("machine_drained"):
             blocked_reason = "drained"
@@ -1882,7 +1949,7 @@ def queue_status(
         launch_error = str(row.get("launch_error") or "").lower()
         if (
             blocked_reason is None
-            and row.get("status") in {"launching", "running"}
+            and row.get("status") in {"launching", "starting", "running"}
             and any(term in launch_error for term in unreachable_terms)
         ):
             blocked_reason = "unreachable"
@@ -2001,6 +2068,12 @@ def build_parser() -> argparse.ArgumentParser:
     retry = subparsers.add_parser("retry", help="Create a new job from a terminal job.")
     retry.add_argument("--job", dest="job_id", type=int, required=True)
     retry.add_argument("--request-id", dest="submission_key")
+    retry.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+    retry.add_argument("--runtime-image-ref")
+    retry.add_argument("--runtime-image-ref-file", type=Path)
+    retry.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
+    retry.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    retry.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
     retry.add_argument("--wait", choices=("running", "terminal"))
     retry.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
     retry.add_argument("--json", action="store_true")
@@ -2241,12 +2314,8 @@ def wait_for_job_ids(
             reached = all(status in terminal for status in statuses)
             terminal_before_target = False
         elif until == "running":
-            reached = all(
-                row["status"] == "running" or row.get("started_at") is not None for row in rows
-            )
-            terminal_before_target = any(
-                row["status"] in terminal and row.get("started_at") is None for row in rows
-            )
+            reached = all(row["status"] == "running" for row in rows)
+            terminal_before_target = any(row["status"] in terminal for row in rows)
         else:
             raise ValueError(f"unsupported wait target: {until}")
         if reached or terminal_before_target:
@@ -2319,10 +2388,43 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
-    capacities = _machine_capacities()
+    release = runtime_release_from_args(args)
+    registry = load_machine_registry(args.machines)
+    capacities = {
+        name: machine.limits.max_parallel_containers
+        for name, machine in registry.machines.items()
+    }
     conn = _connect_from_args(args)
     try:
-        row = retry_train_job(conn, job_id=args.job_id, submission_key=args.submission_key)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT machine FROM train_jobs WHERE id = %(job_id)s",
+                {"job_id": args.job_id},
+            )
+            source = cur.fetchone()
+        if not source:
+            raise ValueError(f"job {args.job_id} does not exist")
+        machine_config = resolve_machine(registry, str(source["machine"]))
+        from rlab.docker_host import DockerRunnerHost
+
+        host = DockerRunnerHost(machine_config)
+
+        def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
+            return host.validate_runtime_train_config(
+                runtime_image_ref=release.runtime_image_ref,
+                train_config=train_config,
+                expected_source_sha=release.source_sha,
+                expected_contract_sha256=release.train_config_contract_sha256,
+            )
+
+        row = retry_train_job(
+            conn,
+            job_id=args.job_id,
+            submission_key=args.submission_key,
+            runtime_image_ref=release.runtime_image_ref,
+            repo_git_commit=release.source_sha,
+            runtime_config_validator=validate_runtime_config,
+        )
         dispatch = dispatch_fleet_service()
         wait_result = (
             wait_for_job_ids(

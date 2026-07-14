@@ -12,7 +12,12 @@ from rlab.dotenv import load_env_file
 from rlab.job_queue import connect, database_url
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
-from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
+from rlab.modal_eval_storage import (
+    ObjectStore,
+    object_store_base_uri,
+    preview_public_base_url,
+    preview_storage_base_uri,
+)
 from rlab.runtime_refs import normalize_runtime_image_ref
 
 
@@ -108,6 +113,8 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
 
 def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+    from rlab.runtime_contract import train_config_contract_sha256
+
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     config = load_modal_eval_config()
     app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
@@ -121,6 +128,17 @@ def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
         config.hard_max_active == config.max_containers and config.initial_effective_capacity == 1,
         f"enabled={str(config.enabled).lower()} hard_cap={config.hard_max_active} max_containers={config.max_containers}",
     )
+    if config.preview_enabled:
+        try:
+            preview_store = ObjectStore(preview_storage_base_uri())
+            public_base = preview_public_base_url()
+            add(
+                "preview_storage",
+                preview_store.scheme == "s3",
+                f"storage={preview_store.base_uri} public={public_base}",
+            )
+        except Exception as exc:
+            add("preview_storage", False, type(exc).__name__)
 
     conn = None
     try:
@@ -170,6 +188,27 @@ def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
         add("modal_deployment", True, f"app={app_name} function={config.function_name}")
     except Exception as exc:
         add("modal_deployment", False, f"app={app_name} error={type(exc).__name__}")
+    else:
+        try:
+            probe = modal.Function.from_name(app_name, "startup_probe").remote()
+            expected_contract = train_config_contract_sha256()
+            probe_ok = (
+                isinstance(probe, dict)
+                and probe.get("app_name") == app_name
+                and probe.get("runtime_image_ref") == runtime_image_ref
+                and probe.get("train_config_contract_sha256") == expected_contract
+            )
+            add(
+                "modal_startup_probe",
+                probe_ok,
+                (
+                    f"app={app_name} contract={expected_contract[:12]}"
+                    if probe_ok
+                    else f"app={app_name} incompatible startup receipt"
+                ),
+            )
+        except Exception as exc:
+            add("modal_startup_probe", False, f"app={app_name} error={type(exc).__name__}")
 
     return {
         "ready": all(bool(check["ok"]) for check in checks),

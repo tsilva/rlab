@@ -70,12 +70,14 @@ class FakeHost:
         *,
         container_snapshots: list[list[JobContainer]] | None = None,
         result: ResultObservation | None = None,
+        readiness: ResultObservation | None = None,
         image_ready: bool = True,
         create_error: Exception | None = None,
     ) -> None:
         self.machine = target
         self.container_snapshots = list(container_snapshots or [[]])
         self.result = result or ResultObservation("absent")
+        self.readiness = readiness or ResultObservation("absent")
         self.image_ready = image_ready
         self.create_error = create_error
         self.sync_calls: list[dict[str, str]] = []
@@ -122,6 +124,9 @@ class FakeHost:
 
     def observe_result(self, _output_uri: str) -> ResultObservation:
         return self.result
+
+    def observe_readiness(self, _output_uri: str) -> ResultObservation:
+        return self.readiness
 
     def sync_shared_env(self, values) -> None:
         self.sync_calls.append(dict(values))
@@ -178,6 +183,32 @@ class StableLaunchTests(unittest.TestCase):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_running_container_becomes_job_running_only_after_readiness(self) -> None:
+        target = machine()
+        host = FakeHost(
+            target,
+            container_snapshots=[[container(state="running")]],
+            readiness=ResultObservation(
+                "present",
+                payload={
+                    "schema_version": 1,
+                    "ready": True,
+                    "wandb_run_id": "abc123",
+                    "wandb_url": "https://wandb.ai/entity/project/runs/abc123",
+                },
+            ),
+        )
+        with (
+            mock.patch.object(fleet, "active_job_launches", return_value=[launch()]),
+            mock.patch.object(fleet, "mark_job_launch_running") as mark_starting,
+            mock.patch.object(fleet, "mark_train_job_ready", return_value={"id": 12}) as mark_ready,
+        ):
+            changed = fleet.reconcile_machine_launches(FakeConnection(), host)
+
+        self.assertEqual(changed, 2)
+        mark_starting.assert_called_once()
+        mark_ready.assert_called_once()
+
     def test_unreachable_never_proves_absence_or_relaunches(self) -> None:
         target = machine()
         host = FakeHost(target, result=ResultObservation("error", error="ssh unreachable"))

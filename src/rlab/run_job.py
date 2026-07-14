@@ -24,6 +24,7 @@ from rlab.metric_store import MetricStore, metric_store_path
 
 
 RESULT_SCHEMA_VERSION = 1
+TRAIN_STARTUP_TIMEOUT_SECONDS = 300.0
 
 
 def load_payload(path: Path) -> dict[str, Any]:
@@ -37,14 +38,13 @@ def load_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
-def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "result.json"
+def write_atomic_json(path: Path, result: Mapping[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(json_safe(dict(result)), indent=2, sort_keys=True) + "\n"
     fd, temporary_name = tempfile.mkstemp(
-        prefix=".result-",
+        prefix=f".{path.stem}-",
         suffix=".json.tmp",
-        dir=output_dir,
+        dir=path.parent,
         text=True,
     )
     temporary_path = Path(temporary_name)
@@ -60,11 +60,19 @@ def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
     return path
 
 
+def write_result(output_dir: Path, result: Mapping[str, Any]) -> Path:
+    return write_atomic_json(output_dir / "result.json", result)
+
+
 def run_training_process(
     command: list[str],
     *,
     log_file,
     env: Mapping[str, str],
+    output_dir: Path,
+    run_dir: Path,
+    readiness_workers: list[subprocess.Popen],
+    startup_timeout: float = TRAIN_STARTUP_TIMEOUT_SECONDS,
 ) -> int:
     """Run training while forwarding container termination as a graceful stop."""
 
@@ -83,7 +91,70 @@ def run_training_process(
             process.send_signal(graceful_signal)
 
     signal.signal(signal.SIGTERM, request_graceful_stop)
+
+    def worker_log_tail(workers: list[subprocess.Popen]) -> str:
+        excerpts = []
+        for worker in workers:
+            path = Path(str(getattr(worker, "_rlab_log_path", "")))
+            if not path.is_file():
+                continue
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if lines:
+                excerpts.append(f"{path.name}: {' | '.join(lines[-5:])}")
+        return "; ".join(excerpts)
+
     try:
+        deadline = time.monotonic() + startup_timeout
+        while True:
+            learner_ready = run_dir / "learner_ready.json"
+            wandb_run_id_path = run_dir / "wandb_run_id.txt"
+            wandb_url_path = run_dir / "wandb_url.txt"
+            if learner_ready.is_file() and wandb_run_id_path.is_file() and wandb_url_path.is_file():
+                wandb_run_id = wandb_run_id_path.read_text(encoding="utf-8").strip()
+                wandb_url = wandb_url_path.read_text(encoding="utf-8").strip()
+                if wandb_run_id and wandb_url.startswith("https://wandb.ai/"):
+                    write_atomic_json(
+                        output_dir / "readiness.json",
+                        {
+                            "schema_version": 1,
+                            "ready": True,
+                            "wandb_run_id": wandb_run_id,
+                            "wandb_url": wandb_url,
+                        },
+                    )
+                    break
+            returncode = process.poll()
+            if returncode is not None:
+                return int(returncode)
+            failed_worker = next(
+                (worker for worker in readiness_workers if worker.poll() is not None),
+                None,
+            )
+            if failed_worker is not None:
+                process.terminate()
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                raise RuntimeError(
+                    "training worker exited before learner/W&B readiness: "
+                    f"{getattr(failed_worker, '_rlab_log_path', '')} "
+                    f"returncode={failed_worker.returncode}; "
+                    f"{worker_log_tail([failed_worker])}"
+                )
+            if time.monotonic() >= deadline:
+                process.terminate()
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                raise RuntimeError(
+                    f"training did not reach learner/W&B readiness within {startup_timeout:g}s; "
+                    f"{worker_log_tail(readiness_workers)}"
+                )
+            time.sleep(0.25)
         return int(process.wait())
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
@@ -234,6 +305,9 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 command,
                 log_file=log_file,
                 env=train_env,
+                output_dir=output_dir,
+                run_dir=run_dir,
+                readiness_workers=[*producer_workers, *publisher_workers],
             )
     finally:
         worker_results = stop_workers(

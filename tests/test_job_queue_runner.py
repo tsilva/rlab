@@ -275,9 +275,69 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("ADD COLUMN IF NOT EXISTS campaign_id", job_queue.SCHEMA_SQL)
         self.assertIn("retry_of_job_id BIGINT", job_queue.SCHEMA_SQL)
         self.assertIn("ADD COLUMN IF NOT EXISTS retry_of_job_id", job_queue.SCHEMA_SQL)
+        self.assertIn("ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
+        self.assertIn("wandb_run_id TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("'starting'", job_queue.SCHEMA_SQL)
         self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
         self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
+
+    def test_runtime_validator_receives_execution_complete_config_before_insert(self) -> None:
+        validated = []
+        conn = FakeConnection(row={"id": 9})
+
+        job_queue.enqueue_train_job(
+            conn,
+            goal_slug="Level1-1",
+            recipe_slug="candidate",
+            recipe_path="experiments/goals/mario/recipes/candidate.yaml",
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            machine="beast-3",
+            train_config=explicit_train_config(),
+            runtime_config_validator=lambda config: validated.append(dict(config)),
+        )
+
+        self.assertEqual(len(validated), 1)
+        self.assertEqual(validated[0]["machine"], "beast-3")
+        self.assertIn("batch_id", validated[0])
+        self.assertIn("queue_train_job_id", validated[0])
+        self.assertIn("wandb_run_id", validated[0])
+
+    def test_failed_runtime_validator_inserts_no_job(self) -> None:
+        conn = FakeConnection(row={"id": 9})
+
+        def reject(_config):
+            raise RuntimeError("old runtime rejected batch_id")
+
+        with self.assertRaisesRegex(RuntimeError, "old runtime rejected batch_id"):
+            job_queue.enqueue_train_job(
+                conn,
+                goal_slug="Level1-1",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                train_config=explicit_train_config(),
+                runtime_config_validator=reject,
+            )
+
+        self.assertEqual(conn.cursor_obj.executed_sqls, [])
+
+    def test_wait_running_rejects_terminal_job_that_had_started(self) -> None:
+        conn = FakeConnection(
+            rows=[
+                {
+                    "id": 15,
+                    "status": "failed",
+                    "started_at": "2026-07-14T15:17:27Z",
+                    "finished_at": "2026-07-14T15:18:19Z",
+                    "error": "train process exited 1",
+                }
+            ]
+        )
+
+        result = job_queue.wait_for_job_ids(conn, [15], until="running", timeout=0)
+
+        self.assertFalse(result["reached"])
+        self.assertTrue(result["terminal_before_target"])
 
     def test_wandb_run_leaders_rank_by_recipe_slug(self) -> None:
         runs = [

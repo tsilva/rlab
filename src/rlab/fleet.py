@@ -29,6 +29,7 @@ from rlab.job_queue import (
     job_payload_for_launch,
     machine_control,
     mark_job_launch_running,
+    mark_train_job_ready,
     new_train_launch_id,
     next_pending_train_job,
     queue_demands,
@@ -492,6 +493,20 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                     provider_run_id=container.name,
                 )
                 reconciled += 1
+            readiness = host.observe_readiness(str(launch["output_uri"]))
+            if readiness.state == "present":
+                if mark_train_job_ready(
+                    conn,
+                    launch_id=launch_id,
+                    readiness=readiness.payload or {},
+                ):
+                    reconciled += 1
+            elif readiness.state == "error":
+                _record_launch_error(
+                    conn,
+                    launch_id,
+                    readiness.error or "readiness observation failed",
+                )
             continue
         observation = host.observe_result(str(launch["output_uri"]))
         if observation.state == "present":

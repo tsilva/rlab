@@ -546,7 +546,13 @@ class DockerRunnerHost:
         return _operation_result(result)
 
     def observe_result(self, output_uri: str) -> ResultObservation:
-        result_path = f"{str(output_uri).rstrip('/')}/result.json"
+        return self._observe_json_file(output_uri, "result.json")
+
+    def observe_readiness(self, output_uri: str) -> ResultObservation:
+        return self._observe_json_file(output_uri, "readiness.json")
+
+    def _observe_json_file(self, output_uri: str, filename: str) -> ResultObservation:
+        result_path = f"{str(output_uri).rstrip('/')}/{filename}"
         script = (
             f"if [ -s {shlex.quote(result_path)} ]; then cat {shlex.quote(result_path)}; "
             f"elif [ -e {shlex.quote(result_path)} ]; then exit 3; else exit 4; fi"
@@ -571,9 +577,9 @@ class DockerRunnerHost:
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            return ResultObservation("error", error=f"invalid result JSON: {exc}")
+            return ResultObservation("error", error=f"invalid {filename} JSON: {exc}")
         if not isinstance(payload, dict):
-            return ResultObservation("error", error="result JSON must be an object")
+            return ResultObservation("error", error=f"{filename} JSON must be an object")
         return ResultObservation("present", payload=payload)
 
     def stream_logs(self, output_uri: str, *, tail: int = 100, follow: bool = False) -> int:

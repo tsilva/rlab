@@ -624,7 +624,7 @@ def _default_discover_machines(repo_root: Path) -> Sequence[str]:
                     SELECT DISTINCT machine
                     FROM train_jobs
                     WHERE machine IS NOT NULL
-                      AND (status IN ('pending', 'launching', 'running') OR cancel_requested = TRUE)
+                      AND (status IN ('pending', 'launching', 'starting', 'running') OR cancel_requested = TRUE)
                     ORDER BY machine
                     """
                 )
