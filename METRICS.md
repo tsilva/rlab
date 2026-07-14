@@ -6,7 +6,8 @@ exact registry entry or a bounded template.
 
 ## Surfaces and dimensions
 
-- W&B history contains searchable scalar time series and one `eval/full/by_start` table.
+- W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
+  R2-backed `eval/screen/preview` media series.
 - W&B config contains run-defining dimensions: `metrics_schema_version: 2`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
@@ -130,6 +131,7 @@ are intentionally computed offline rather than added to W&B history.
 | `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
+| `eval/screen/preview` | R2-backed HTML preview of screen-evaluation policy observations. | html | evaluation | media |
 | `eval/screen/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
 | `eval/confirm/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
 | `eval/screen/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |

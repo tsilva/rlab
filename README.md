@@ -153,9 +153,8 @@ runtime-observed evidence, and hidden reset invariants backed by the pinned prov
 it does not claim that emulator or RNG internals are black-box observable. Pass `--json` for one
 versioned report on stdout; provider diagnostics are routed to stderr.
 
-Specialized and maintenance commands are intentionally outside the normal research loop:
+Maintenance commands are intentionally outside the normal research loop:
 
-- `rlab distill` contains Mario-specific behavior-cloning and sequence-evaluation experiments.
 - `rlab jobs reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
 
 ## Research Loop
@@ -228,6 +227,10 @@ and beast host recommendations.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.
+- Lightweight screen-eval previews are disabled by default in `experiments/modal_eval.yaml`.
+  Before enabling them, set `MODAL_EVAL_PREVIEW_STORAGE_URI` to the public R2 bucket/prefix and
+  `MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL` to the matching HTTPS base URL. Configure that bucket to
+  serve `video/mp4` with byte ranges and allow the W&B application domain through CORS.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
 - Local eval outputs are written under `runs/local_evals/<run-name>/`.
 

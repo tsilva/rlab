@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from rlab.artifact_worker import process_upload
 from rlab.artifacts import init_wandb, write_wandb_url
@@ -14,6 +16,7 @@ from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.metric_names import validate_metric_payload
+from rlab.metric_names import EVAL_SCREEN_PREVIEW
 from rlab.train_config import materialized_train_args
 
 
@@ -48,6 +51,40 @@ def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
             config=config,
         )
         return
+    if kind == "checkpoint_preview":
+        import wandb
+
+        url = str(payload.get("url") or "")
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("checkpoint preview URL must be absolute HTTPS")
+        checkpoint_step = int(payload.get("checkpoint_step") or payload.get("global_step") or 0)
+        passed = "passed" if bool(payload.get("passed")) else "did not pass"
+        lanes = int(payload.get("lane_count") or 0)
+        duration = float(payload.get("duration_seconds") or 0.0)
+        caption = (
+            f"checkpoint {checkpoint_step:,} · screen {passed} · {lanes} lanes · "
+            f"{duration:.1f}s · preprocessed observations"
+        )
+        markup = (
+            '<div style="font-family:system-ui,sans-serif">'
+            '<video controls muted loop playsinline preload="metadata" '
+            'style="display:block;width:100%;max-width:720px;image-rendering:pixelated" '
+            f'src="{html.escape(url, quote=True)}"></video>'
+            f'<div style="margin-top:6px;font-size:12px">{html.escape(caption)}</div>'
+            "</div>"
+        )
+        run.log(
+            {
+                "global_step": checkpoint_step,
+                EVAL_SCREEN_PREVIEW: wandb.Html(
+                    markup,
+                    inject=False,
+                    data_is_not_path=True,
+                ),
+            }
+        )
+        return
     raise ValueError(f"unsupported telemetry frame kind: {kind}")
 
 
@@ -67,9 +104,15 @@ def publish_pending_frames(
         try:
             _publish_frame(run, row, args=args, config=config)
         except Exception as exc:
-            store.mark_metric_frame_failed(frame_id, repr(exc))
+            attempts = int(row.get("attempts") or 0) + 1
+            if str(row.get("kind")) == "checkpoint_preview" and attempts >= 2:
+                store.mark_metric_frame_terminal_failure(frame_id, repr(exc))
+            else:
+                store.mark_metric_frame_failed(frame_id, repr(exc))
             print(f"W&B frame publish failed id={frame_id}: {exc}", flush=True)
-            break
+            if str(row.get("kind")) != "checkpoint_preview":
+                break
+            continue
         store.mark_metric_frame_published(
             frame_id,
             step=int(row["step"]) if row.get("step") is not None else None,

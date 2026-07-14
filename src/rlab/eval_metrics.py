@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -432,6 +432,7 @@ def run_eval_episode(
     capture_actions: bool = False,
     default_start_state: str | None = None,
     semantics: EvalSemantics | None = None,
+    observation_callback: Callable[[object], object] | None = None,
 ) -> dict[str, Any]:
     semantics = semantics or default_eval_semantics()
     reset_episode = getattr(model, "reset_episode", None)
@@ -447,6 +448,8 @@ def run_eval_episode(
         if capture_actions:
             actions.append(action_value)
         obs, _rewards, dones, infos = env.step(action)
+        if observation_callback is not None:
+            observation_callback(obs)
         info = dict(infos[0])
         records = drain_episode_records(env)
         if records:

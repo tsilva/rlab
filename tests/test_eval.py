@@ -30,6 +30,7 @@ from rlab.checkpoint_eval_worker import (
     log_checkpoint_eval_metrics,
 )
 from rlab.task_kernels import default_task_document
+from rlab.video import PolicyObservationPreview
 
 
 MARIO_RANK = [
@@ -49,6 +50,88 @@ class FakeWandbRun:
     def log(self, payload: dict[str, object], **kwargs: object) -> None:
         self.payload = payload
         self.kwargs = kwargs
+
+
+class EvalPreviewEquivalenceTests(unittest.TestCase):
+    def test_policy_observation_capture_does_not_change_actions_or_results(self) -> None:
+        class FakeModel:
+            def __init__(self) -> None:
+                self.actions: list[list[int]] = []
+
+            def predict(self, obs, deterministic):
+                actions = [int(obs[lane, -1, 0, 0]) % 2 for lane in range(obs.shape[0])]
+                self.actions.append(actions)
+                return np.asarray(actions, dtype=np.int64), None
+
+        class FakeVecEnv:
+            def __init__(self) -> None:
+                self.step_count = 0
+                self.records = []
+
+            def reset(self):
+                return np.zeros((2, 4, 84, 84), dtype=np.uint8)
+
+            def step(self, _actions):
+                self.step_count += 1
+                obs = np.full((2, 4, 84, 84), self.step_count, dtype=np.uint8)
+                if self.step_count == 2:
+                    self.records = [
+                        EpisodeRecord(
+                            lane=lane,
+                            episode_index=0,
+                            start_id="Level1-1",
+                            episode_return=float(lane + 1),
+                            episode_length=2,
+                            terminated=False,
+                            truncated=True,
+                            outcome=Outcome.TIMEOUT,
+                            events=(),
+                            metrics={"max_x_pos": 10 + lane},
+                        )
+                        for lane in range(2)
+                    ]
+                dones = np.asarray([self.step_count == 2] * 2, dtype=bool)
+                return obs, np.zeros(2), dones, [{}, {}]
+
+            def drain_records(self):
+                records, self.records = self.records, []
+                return records
+
+            def close(self) -> None:
+                pass
+
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            task=default_task_document("mario"),
+        )
+        models = [FakeModel(), FakeModel()]
+        with patch("rlab.eval_runner.make_eval_vec_env", side_effect=[FakeVecEnv(), FakeVecEnv()]):
+            baseline, _ = evaluate_model_episodes(
+                model=models[0],
+                config=config,
+                episodes=2,
+                seed=7,
+                max_steps=10,
+                deterministic=False,
+                n_envs=2,
+            )
+            capture = PolicyObservationPreview(max_frames=10, max_lanes=2)
+            recorded, _ = evaluate_model_episodes(
+                model=models[1],
+                config=config,
+                episodes=2,
+                seed=7,
+                max_steps=10,
+                deterministic=False,
+                n_envs=2,
+                preview_capture=capture,
+            )
+
+        baseline.pop(EVAL_FULL_DURATION_SECONDS)
+        recorded.pop(EVAL_FULL_DURATION_SECONDS)
+        self.assertEqual(models[0].actions, models[1].actions)
+        self.assertEqual(baseline, recorded)
+        self.assertEqual(len(capture.frames), 2)
 
 
 class EvalByStartTableTests(unittest.TestCase):

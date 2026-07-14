@@ -269,6 +269,31 @@ def import_decisions(store: MetricStore, object_store: ObjectStore, args) -> int
                 passed=bool(decision.get("passed")),
                 candidate_stop=bool(descriptor["candidate_stop"]),
             )
+            preview = decision.get("preview")
+            if (
+                str(descriptor["purpose"]) == "screen"
+                and isinstance(preview, dict)
+                and str(preview.get("status")) == "succeeded"
+            ):
+                try:
+                    store.enqueue_event(
+                        kind="checkpoint_preview",
+                        payload={
+                            "url": str(preview.get("public_url") or ""),
+                            "checkpoint_step": int(row.get("step") or 0),
+                            "passed": bool(decision.get("passed")),
+                            "lane_count": int(preview.get("lane_count") or 0),
+                            "duration_seconds": float(preview.get("duration_seconds") or 0.0),
+                            "width": int(preview.get("width") or 0),
+                            "height": int(preview.get("height") or 0),
+                            "observation_source": "preprocessed_policy_observation",
+                        },
+                        step=int(row.get("step") or 0),
+                        source="modal_checkpoint_eval",
+                        event_id=f"checkpoint-preview:{decision['job_key']}",
+                    )
+                except Exception as exc:
+                    print(f"checkpoint preview enqueue failed: {exc}", flush=True)
             imported += 1
             if not bool(decision.get("passed")):
                 break

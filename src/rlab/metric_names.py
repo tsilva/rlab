@@ -70,6 +70,7 @@ EVAL_FULL_CHECKPOINT_STEP = f"{EVAL_FULL_ROOT}/checkpoint/step"
 EVAL_FULL_CHECKPOINT_ARTIFACT = f"{EVAL_FULL_ROOT}/checkpoint/artifact"
 EVAL_FULL_DURATION_SECONDS = f"{EVAL_FULL_ROOT}/duration/seconds"
 EVAL_FULL_SOURCE = f"{EVAL_FULL_ROOT}/source"
+EVAL_SCREEN_PREVIEW = "eval/screen/preview"
 
 CHECKPOINT_EVAL_CANDIDATE_PASS = "eval/confirm/candidate/pass"
 CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "eval/confirm/candidate/stage_index"
@@ -340,6 +341,13 @@ METRIC_DEFINITIONS = (
         "eval/{protocol}/duration/seconds", "Evaluation wall duration.", "seconds", "evaluation"
     ),
     _definition("eval/{protocol}/source", "Evaluation execution source.", "text", "evaluation"),
+    _definition(
+        EVAL_SCREEN_PREVIEW,
+        "R2-backed HTML preview of screen-evaluation policy observations.",
+        "html",
+        "evaluation",
+        "media",
+    ),
     *(
         _definition(
             f"eval/{protocol}/candidate/pass",

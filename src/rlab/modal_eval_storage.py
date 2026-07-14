@@ -250,19 +250,29 @@ class ObjectStore:
             ExpiresIn=max(1, int(expires_seconds)),
         )
 
-    def presign_put(self, key_or_uri: str, *, expires_seconds: int) -> str:
+    def presign_put(
+        self,
+        key_or_uri: str,
+        *,
+        expires_seconds: int,
+        content_type: str = "application/json",
+        cache_control: str | None = None,
+    ) -> str:
         uri = key_or_uri if "://" in key_or_uri else self.uri(key_or_uri)
         if self.scheme == "file":
             return uri
         bucket, key = self._s3_parts(uri)
+        params = {
+            "Bucket": bucket,
+            "Key": key,
+            "ContentType": content_type,
+            "IfNoneMatch": "*",
+        }
+        if cache_control:
+            params["CacheControl"] = cache_control
         return self._s3_client().generate_presigned_url(
             "put_object",
-            Params={
-                "Bucket": bucket,
-                "Key": key,
-                "ContentType": "application/json",
-                "IfNoneMatch": "*",
-            },
+            Params=params,
             ExpiresIn=max(1, int(expires_seconds)),
         )
 

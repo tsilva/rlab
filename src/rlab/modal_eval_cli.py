@@ -132,6 +132,12 @@ def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
         try:
             preview_store = ObjectStore(preview_storage_base_uri())
             public_base = preview_public_base_url()
+            preview_store.presign_put(
+                "eval-previews/preflight.mp4",
+                expires_seconds=60,
+                content_type="video/mp4",
+                cache_control="public, max-age=31536000, immutable",
+            )
             add(
                 "preview_storage",
                 preview_store.scheme == "s3",

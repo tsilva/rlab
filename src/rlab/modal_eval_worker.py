@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 
 from rlab.modal_eval_protocol import execution_key
 from rlab.modal_eval_storage import file_sha256, write_downloaded_file
+from rlab.video import PolicyObservationPreview, write_preview_video
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -72,6 +73,43 @@ def _upload_json(url: str, value: Mapping[str, Any]) -> str:
     return digest
 
 
+def _upload_preview(url: str, path: Path, request: Mapping[str, Any]) -> None:
+    payload = path.read_bytes()
+    parsed = urlparse(url)
+    if parsed.scheme == "file":
+        destination = Path(unquote(parsed.path))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            if destination.read_bytes() != payload:
+                raise RuntimeError("immutable preview already exists with different content")
+        else:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        return
+    import urllib.request
+
+    upload = urllib.request.Request(
+        url,
+        data=payload,
+        method="PUT",
+        headers={
+            "Content-Type": str(request["content_type"]),
+            "Cache-Control": str(request["cache_control"]),
+            "If-None-Match": "*",
+        },
+    )
+    with urllib.request.urlopen(
+        upload,
+        timeout=float(request["upload_timeout_seconds"]),
+    ) as response:
+        if int(response.status) >= 300:
+            raise RuntimeError(f"preview upload failed with HTTP {response.status}")
+
+
 def run_child(input_path: Path, output_path: Path) -> int:
     request = json.loads(input_path.read_text(encoding="utf-8"))
     contract = request["contract"]
@@ -96,6 +134,15 @@ def run_child(input_path: Path, output_path: Path) -> int:
         raise ValueError("remote eval environment contract is invalid")
     config = resolve_env_config(config)
     model = PPO.load(model_path, device="cpu")
+    preview_request = request.get("preview")
+    preview_capture = (
+        PolicyObservationPreview(
+            max_frames=int(preview_request["max_frames"]),
+            max_lanes=int(preview_request["max_lanes"]),
+        )
+        if isinstance(preview_request, Mapping)
+        else None
+    )
     metrics, _video = evaluate_model_episodes(
         model=model,
         config=config,
@@ -106,9 +153,40 @@ def run_child(input_path: Path, output_path: Path) -> int:
         n_envs=int(contract["n_envs"]),
         progress=True,
         progress_description="modal checkpoint eval",
+        preview_capture=preview_capture,
     )
     episode_results = metrics.pop("episode_results")
-    _write_json(output_path, {"metrics": metrics, "episode_results": episode_results})
+    preview: dict[str, Any] | None = None
+    if preview_capture is not None:
+        preview = {
+            "status": "skipped",
+            "error": preview_capture.error or "evaluation produced no preview frames",
+        }
+        if preview_capture.frames:
+            preview_path = output_path.with_suffix(".mp4")
+            try:
+                encoded = write_preview_video(
+                    preview_capture.frames,
+                    preview_path,
+                    fps=int(preview_request["fps"]),
+                    scale=int(preview_request["scale"]),
+                    timeout_seconds=int(preview_request["encode_timeout_seconds"]),
+                    max_bytes=int(preview_request["max_bytes"]),
+                )
+            except Exception as exc:
+                preview = {"status": "failed", "error": repr(exc)[:1000]}
+            else:
+                preview = {
+                    "status": "ready",
+                    "path": str(preview_path),
+                    "lane_count": preview_capture.lane_count,
+                    "observation_source": "preprocessed_policy_observation",
+                    **encoded,
+                }
+    _write_json(
+        output_path,
+        {"metrics": metrics, "episode_results": episode_results, "preview": preview},
+    )
     return 0
 
 
@@ -179,6 +257,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                     "contract": contract,
                     "model_path": str(model_path),
                     "rom_path": str(rom_path),
+                    "preview": payload.get("preview"),
                 },
             )
             completed = subprocess.run(
@@ -201,11 +280,34 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                 error = (completed.stderr or completed.stdout or "see Modal logs")[-4000:]
                 raise RuntimeError(f"eval child exited {completed.returncode}: {error}")
             child_result = json.loads(child_output.read_text(encoding="utf-8"))
+            preview: dict[str, Any] | None = None
+            child_preview = child_result.get("preview")
+            preview_request = payload.get("preview")
+            if isinstance(child_preview, Mapping) and isinstance(preview_request, Mapping):
+                preview = {str(key): value for key, value in child_preview.items() if key != "path"}
+                if str(child_preview.get("status")) == "ready":
+                    preview_path = Path(str(child_preview.get("path") or "")).resolve()
+                    if not preview_path.is_relative_to(root.resolve()) or not preview_path.is_file():
+                        preview = {"status": "failed", "error": "preview output path is invalid"}
+                    else:
+                        try:
+                            _upload_preview(str(preview_request["put_url"]), preview_path, preview_request)
+                        except Exception as exc:
+                            preview = {"status": "failed", "error": repr(exc)[:1000]}
+                        else:
+                            preview = {
+                                **preview,
+                                "status": "succeeded",
+                                "public_url": str(preview_request["public_url"]),
+                                "object_uri": str(preview_request["object_uri"]),
+                                "sha256": file_sha256(preview_path),
+                            }
             result.update(
                 status="succeeded",
                 duration_seconds=time.monotonic() - started,
                 metrics=child_result["metrics"],
                 episode_results=child_result["episode_results"],
+                preview=preview,
             )
     except subprocess.TimeoutExpired:
         result.update(status="failed", error="eval child timeout")

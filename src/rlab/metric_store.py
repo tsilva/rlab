@@ -280,7 +280,7 @@ class MetricStore:
                 """
                 SELECT * FROM metric_frames
                 WHERE status IN ('pending', 'failed_retryable')
-                ORDER BY id
+                ORDER BY CASE WHEN kind = 'checkpoint_preview' THEN 1 ELSE 0 END, id
                 LIMIT ?
                 """,
                 (limit,),
@@ -351,6 +351,18 @@ class MetricStore:
                 (now, message, now),
             )
 
+    def mark_metric_frame_terminal_failure(self, frame_id: int, error: str) -> None:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE metric_frames
+                SET status = 'failed_terminal', last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (error[:4000], now, frame_id),
+            )
+
     def reset_interrupted_metric_frames(self) -> int:
         now = time.time()
         with self.connection() as conn:
@@ -370,7 +382,8 @@ class MetricStore:
             backlog = conn.execute(
                 """
                 SELECT count(*) AS pending_frames, min(created_at) AS oldest_created_at
-                FROM metric_frames WHERE status != 'published'
+                FROM metric_frames
+                WHERE status IN ('pending', 'failed_retryable', 'publishing')
                 """
             ).fetchone()
         result = dict(state) if state is not None else {}

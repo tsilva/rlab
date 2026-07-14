@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from rlab.job_queue import connect, database_url, json_arg
 from rlab.checkpoint_eval_worker import eval_score, evaluation_metric_payload
@@ -26,7 +27,13 @@ from rlab.modal_eval_protocol import (
     validate_attempt_result,
     validate_announcement,
 )
-from rlab.modal_eval_storage import ObjectNotFound, ObjectStore, object_store_base_uri
+from rlab.modal_eval_storage import (
+    ObjectNotFound,
+    ObjectStore,
+    object_store_base_uri,
+    preview_public_base_url,
+    preview_storage_base_uri,
+)
 
 
 EVAL_RECONCILE_LOCK = "rlab-fleet-reconciler:eval:modal-cpu"
@@ -485,6 +492,9 @@ def accept_attempt_result(
         "raw_metrics": raw_metrics,
         "result_uri": str(attempt["result_uri"]),
     }
+    preview = validated.get("preview")
+    if str(attempt["purpose"]) == "screen" and isinstance(preview, Mapping):
+        decision["preview"] = dict(preview)
     store.put_json(
         f"eval-decisions/{int(attempt['train_job_id'])}/{attempt['job_key']}.json",
         decision,
@@ -877,6 +887,38 @@ def dispatch_pending(
             "result_uri": result_uri,
             "result_put_url": store.presign_put(result_uri, expires_seconds=seconds_to_expiry),
         }
+        if config.preview_enabled and str(job["purpose"]) == "screen":
+            try:
+                preview_store = ObjectStore(preview_storage_base_uri())
+                preview_key = (
+                    f"eval-previews/{int(job['train_job_id'])}/"
+                    f"{job['checkpoint_sha256']}/{attempt_id}.mp4"
+                )
+                cache_control = "public, max-age=31536000, immutable"
+                payload["preview"] = {
+                    "object_uri": preview_store.uri(preview_key),
+                    "put_url": preview_store.presign_put(
+                        preview_key,
+                        expires_seconds=seconds_to_expiry,
+                        content_type="video/mp4",
+                        cache_control=cache_control,
+                    ),
+                    "public_url": (
+                        f"{preview_public_base_url()}/"
+                        f"{quote(preview_key, safe='/._-')}"
+                    ),
+                    "content_type": "video/mp4",
+                    "cache_control": cache_control,
+                    "max_frames": config.preview_max_frames,
+                    "fps": config.preview_fps,
+                    "max_lanes": config.preview_max_lanes,
+                    "scale": config.preview_scale,
+                    "max_bytes": config.preview_max_bytes,
+                    "encode_timeout_seconds": config.preview_encode_timeout_seconds,
+                    "upload_timeout_seconds": config.preview_upload_timeout_seconds,
+                }
+            except Exception as exc:
+                print(f"Modal eval preview disabled for attempt {attempt_id}: {exc}", flush=True)
         try:
             call_id = invoker.spawn(app_name, config.function_name, payload)
         except Exception as exc:

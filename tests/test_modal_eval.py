@@ -14,6 +14,7 @@ from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_orchestrator import (
     DefaultModalInvoker,
     _stage_metrics,
+    accept_attempt_result,
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
@@ -183,6 +184,10 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.initial_effective_capacity, 1)
         self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
+        self.assertFalse(config.preview_enabled)
+        self.assertEqual(config.preview_max_frames, 450)
+        self.assertEqual(config.preview_fps, 15)
+        self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
 
     def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
         dockerfile = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
@@ -204,6 +209,10 @@ class ModalEvalContractTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "exceeds the hard cap"):
                 load_modal_eval_config(excessive)
+            oversized_preview = Path(temporary) / "oversized-preview.yaml"
+            oversized_preview.write_text(source.replace("  max_lanes: 4", "  max_lanes: 5"))
+            with self.assertRaisesRegex(ValueError, "must not exceed 4"):
+                load_modal_eval_config(oversized_preview)
 
     def test_execution_identity_excludes_job_purpose_and_job_identity_includes_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -256,6 +265,62 @@ class ModalEvalContractTests(unittest.TestCase):
             result["rom_sha256"] = "e" * 64
             with self.assertRaisesRegex(ValueError, "ROM hash"):
                 validate_attempt_result(result, contract=value, attempt_id="attempt")
+
+    def test_result_validation_preserves_optional_preview_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            value = contract(Path(temporary))
+            result = successful_result(value)
+            result["preview"] = {
+                "status": "succeeded",
+                "public_url": "https://preview.example/eval.mp4",
+                "lane_count": 2,
+            }
+
+            validated = validate_attempt_result(result, contract=value, attempt_id="attempt")
+
+        self.assertEqual(validated["preview"], result["preview"])
+
+    def test_accepted_screen_decision_propagates_preview_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = contract(root)
+            result = successful_result(value)
+            result["preview"] = {
+                "status": "succeeded",
+                "public_url": "https://preview.example/eval.mp4",
+                "lane_count": 2,
+            }
+            attempt = {
+                "id": 1,
+                "eval_job_id": 2,
+                "attempt_id": "attempt",
+                "contract_json": value,
+                "decision_rules_json": [
+                    {
+                        "metric": "eval/full/episode/return/mean",
+                        "operator": ">=",
+                        "threshold": 2.0,
+                    }
+                ],
+                "purpose": "screen",
+                "checkpoint_step": 500000,
+                "checkpoint_uri": "s3://bucket/model.zip",
+                "job_key": "job-key",
+                "execution_key": execution_key(value),
+                "train_job_id": 9,
+                "ledger_id": 3,
+                "stage_name": "screen",
+                "stage_index": 0,
+                "candidate_stop": False,
+                "result_uri": "s3://bucket/result.json",
+            }
+            store = ObjectStore((root / "objects").resolve().as_uri())
+
+            accept_attempt_result(FakeConnection(), store, attempt=attempt, result=result)
+            decision = store.get_json("eval-decisions/9/job-key.json")
+
+        self.assertEqual(decision["preview"], result["preview"])
+        self.assertFalse(decision["passed"])
 
     def test_modal_app_name_requires_immutable_digest(self) -> None:
         self.assertEqual(
@@ -762,6 +827,64 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 execute_attempt(payload)
             download.assert_not_called()
             self.assertEqual(json.loads(result_path.read_text())["status"], "expired")
+
+    def test_successful_eval_uploads_preview_without_changing_eval_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, result_path = self._worker_payload(root)
+            uploaded_path = root / "public" / "preview.mp4"
+            payload["preview"] = {
+                "put_url": uploaded_path.resolve().as_uri(),
+                "public_url": "https://preview.example/preview.mp4",
+                "object_uri": "s3://preview-bucket/preview.mp4",
+                "content_type": "video/mp4",
+                "cache_control": "public, max-age=31536000, immutable",
+                "max_frames": 450,
+                "fps": 15,
+                "max_lanes": 4,
+                "scale": 2,
+                "max_bytes": 2 * 1024 * 1024,
+                "encode_timeout_seconds": 2,
+                "upload_timeout_seconds": 3,
+            }
+
+            def complete_child(command, **_kwargs):
+                output = Path(command[command.index("--output") + 1])
+                preview = output.with_suffix(".mp4")
+                preview.write_bytes(b"mp4")
+                output.write_text(
+                    json.dumps(
+                        {
+                            "metrics": {"eval/full/episode/return/mean": 1.0},
+                            "episode_results": [{"seed": 10_000}],
+                            "preview": {
+                                "status": "ready",
+                                "path": str(preview),
+                                "lane_count": 2,
+                                "frames": 450,
+                                "fps": 15,
+                                "width": 336,
+                                "height": 168,
+                                "duration_seconds": 30.0,
+                                "size_bytes": 3,
+                                "observation_source": "preprocessed_policy_observation",
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch("rlab.modal_eval_worker.subprocess.run", side_effect=complete_child):
+                execute_attempt(payload)
+
+            evidence = json.loads(result_path.read_text(encoding="utf-8"))
+            uploaded = uploaded_path.read_bytes()
+
+        self.assertEqual(evidence["status"], "succeeded")
+        self.assertEqual(evidence["preview"]["status"], "succeeded")
+        self.assertEqual(evidence["preview"]["public_url"], payload["preview"]["public_url"])
+        self.assertEqual(uploaded, b"mp4")
 
 
 if __name__ == "__main__":

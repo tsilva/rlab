@@ -18,7 +18,7 @@ from rlab.eval_metrics import (
 )
 from rlab.metric_names import EVAL_FULL_DURATION_SECONDS
 from rlab.targets import EvalSemantics, target_for_game
-from rlab.video import write_video
+from rlab.video import PolicyObservationPreview, write_video
 
 
 def _eval_runtime_config(
@@ -57,6 +57,7 @@ def _evaluate_model_episodes_vector(
     deterministic: bool,
     semantics: EvalSemantics,
     progress_bar: Any | None = None,
+    preview_capture: PolicyObservationPreview | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     vec_config = _eval_runtime_config(
         config,
@@ -74,6 +75,8 @@ def _evaluate_model_episodes_vector(
         while len(episode_results) < episodes:
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, _step_rewards, dones, infos = eval_env.step(action)
+            if preview_capture is not None:
+                preview_capture.capture(obs)
             terminal_infos = {
                 index: dict(infos[index]) for index in np.flatnonzero(np.asarray(dones, dtype=bool))
             }
@@ -125,6 +128,7 @@ def evaluate_model_episodes(
     extra: dict[str, Any] | None = None,
     progress: bool = False,
     progress_description: str = "eval episodes",
+    preview_capture: PolicyObservationPreview | None = None,
 ) -> tuple[dict[str, Any], Path | None]:
     if deterministic:
         raise ValueError("deterministic policy evaluation is unsupported; use stochastic sampling")
@@ -168,6 +172,9 @@ def evaluate_model_episodes(
                         capture_actions=capture_best_video,
                         default_start_state=eval_config.state,
                         semantics=semantics,
+                        observation_callback=(
+                            preview_capture.capture if preview_capture is not None else None
+                        ),
                     )
                     actions = result.pop("actions")
                     result = {
@@ -203,6 +210,7 @@ def evaluate_model_episodes(
                 deterministic=deterministic,
                 progress_bar=progress_bar,
                 semantics=semantics,
+                preview_capture=preview_capture,
             )
 
     metrics = summarize_episode_results(

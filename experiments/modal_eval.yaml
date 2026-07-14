@@ -28,3 +28,13 @@ protocol:
   schema_version: 1
   seed_protocol: vector-lane-v1
   max_attempts: 2
+preview:
+  # Enable only after paired eval-speed and real W&B/R2 dashboard smoke tests pass.
+  enabled: false
+  max_frames: 450
+  fps: 15
+  max_lanes: 4
+  scale: 2
+  max_bytes: 2097152
+  encode_timeout_seconds: 2
+  upload_timeout_seconds: 3
