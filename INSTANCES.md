@@ -213,8 +213,12 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 Before dependency-image rebasing, six source-only GitHub Actions builds had a median runtime
 image step of about 83 seconds. In run `29314888343`, BuildKit spent 38.2 seconds downloading and
 26.3 seconds extracting the cached 3.12 GB Python dependency layer, while building the `rlab`
-package itself took 1.3 seconds. A source-only runtime build should avoid transferring that layer
-and complete its image step in under 25 seconds; record the first verified result here.
+package itself took 1.3 seconds.
+
+The first rebased canary, run `29321462616`, created the new dependency-keyed image once in 114
+seconds and then built the runtime image in 9 seconds, an approximately 89% reduction from the
+source-only median. Its runtime manifest used all nine dependency platform layers as an exact
+prefix, transferred no 3.12 GB dependency blob, and exported no redundant runtime cache.
 
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 
