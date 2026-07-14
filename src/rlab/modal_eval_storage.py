@@ -34,6 +34,25 @@ def object_store_base_uri(environment: Mapping[str, str] | None = None) -> str:
     return uri.rstrip("/")
 
 
+def preview_storage_base_uri(environment: Mapping[str, str] | None = None) -> str:
+    values = os.environ if environment is None else environment
+    uri = strip_env_file_quotes(values.get("MODAL_EVAL_PREVIEW_STORAGE_URI", ""))
+    if not uri:
+        raise RuntimeError("MODAL_EVAL_PREVIEW_STORAGE_URI must be set when previews are enabled")
+    return uri.rstrip("/")
+
+
+def preview_public_base_url(environment: Mapping[str, str] | None = None) -> str:
+    values = os.environ if environment is None else environment
+    url = strip_env_file_quotes(values.get("MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL", ""))
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError(
+            "MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL must be an absolute HTTPS URL when previews are enabled"
+        )
+    return url.rstrip("/")
+
+
 class ObjectStore:
     def __init__(self, base_uri: str):
         self.base_uri = str(base_uri).rstrip("/")
