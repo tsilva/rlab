@@ -72,6 +72,7 @@ def run_command(command: BenchmarkCommand) -> dict[str, Any]:
         check=False,
         cwd=command.cwd,
         env=env,
+        input=command.stdin,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

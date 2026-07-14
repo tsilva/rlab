@@ -41,6 +41,17 @@ class PublicCliHelpTests(unittest.TestCase):
         self.assertIn("never falls back to an older image", normalized_help)
         self.assertNotIn("defaults to latest", normalized_help)
 
+    def test_eval_and_play_help_are_sb3_backend_neutral(self) -> None:
+        for command in ("eval", "play"):
+            with self.subTest(command=command):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
+                    main([command, "--help"])
+                self.assertEqual(raised.exception.code, 0)
+                help_text = stdout.getvalue()
+                self.assertIn("SB3", help_text)
+                self.assertNotIn("PPO", help_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,8 +43,8 @@ class BenchmarkProfileTests(unittest.TestCase):
                 "eval-contract-mario-l11",
                 "fleet-capacity-rtx4090",
                 "local-smoke-mario-l11",
-                "ppo-loop-throughput-mario-l11",
                 "retro-env-throughput-mario-l11",
+                "train-loop-throughput-mario-l11",
             ],
         )
         self.assertTrue(all(profile.path.suffix == ".yaml" for profile in profiles))
@@ -54,8 +54,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         json_profiles = [
             path
             for path in benchmark_files
-            if path.suffix == ".json"
-            and path.parent.name in {"benchmarks", "profiles"}
+            if path.suffix == ".json" and path.parent.name in {"benchmarks", "profiles"}
         ]
         self.assertEqual(json_profiles, [])
 
@@ -203,7 +202,8 @@ name: bad
 kind: fleet_capacity
 machine: local-macbook
 requested_workers: 2
-recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
+recipe_file: experiments/recipes/mario/single/ppo.yaml
 runtime_image_ref_file: rlab-train-image.json
 expectations: {}
 """,
@@ -220,8 +220,9 @@ expectations: {}
                 """
 schema_version: 1
 name: bad
-kind: ppo_loop_throughput
-recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+kind: train_loop_throughput
+goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
+recipe_file: experiments/recipes/mario/single/ppo.yaml
 recipe_overrides:
 - train.backend.config.timstepz=512
 expectations: {}
@@ -234,21 +235,32 @@ expectations: {}
 
     def test_train_benchmarks_derive_environment_contract_from_recipe(self) -> None:
         for name in (
-            "ppo-loop-throughput-mario-l11",
+            "train-loop-throughput-mario-l11",
             "artifact-storage-smoke-mario-l11",
         ):
             with self.subTest(name=name):
                 profile = find_benchmark_profile(name)
+                self.assertIn("goal_file", profile.payload)
                 self.assertIn("recipe_file", profile.payload)
                 self.assertNotIn("train_config", profile.payload)
                 command = build_benchmark_commands(profile)[0]
-                self.assertIn("--task-json", command.argv)
-                self.assertIn("--timesteps", command.argv)
-                self.assertIn("--training-backend", command.argv)
-                backend = json.loads(
-                    command.argv[command.argv.index("--training-backend") + 1]
+                self.assertEqual(
+                    command.argv[-2:],
+                    ("--train-config-json", "/dev/stdin"),
                 )
+                self.assertIsNotNone(command.stdin)
+                train_config = json.loads(command.stdin)
+                self.assertIn("task", train_config)
+                self.assertIn("timesteps", train_config)
+                backend = train_config["training_backend"]
                 self.assertEqual(backend["id"], "sb3.ppo")
+
+    def test_queue_backed_benchmark_commands_include_goal_and_recipe(self) -> None:
+        for name in ("local-smoke-mario-l11", "fleet-capacity-rtx4090"):
+            with self.subTest(name=name):
+                command = build_benchmark_commands(find_benchmark_profile(name))[0]
+                self.assertIn("--goal-file", command.argv)
+                self.assertIn("--recipe-file", command.argv)
 
     def test_benchmark_is_registered_on_unified_cli(self) -> None:
         self.assertIn("benchmark", COMMANDS)

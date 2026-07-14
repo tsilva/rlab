@@ -25,11 +25,12 @@ needs a smaller operating shape.
 
 ## Standard Workflow
 
-Queue work from checked-in goal recipe files:
+Queue work by composing one checked-in goal contract with one reusable recipe:
 
 ```bash
 rlab train \
-  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
+  --goal-file experiments/goals/<goal-slug>/_goal.yaml \
+  --recipe-file experiments/recipes/<family>/<recipe>.yaml \
   --machine beast-3
 ```
 
@@ -117,6 +118,14 @@ unbounded-reuse containers. V1 uses warm-container reuse with a 60-second scale-
 single-use containers impose the full cold-start cost on every evaluation; the global call cap and
 dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
 Modal supports `max_inputs > 1`.
+
+The fleet service inventories owned `rlab-eval-<12-hex>` deployments hourly and stops at most ten
+zero-task apps per pass after a 24-hour grace period. It protects the latest runtime and every app
+referenced by nonterminal training, evaluation, recovery, queued, or active-attempt work; unrelated
+Modal apps are never eligible. Cleanup fails closed and reports separately from evaluation health.
+If a reused runtime's app was stopped, CI treats only Modal `NotFoundError` as a redeployment signal,
+redeploys that digest-specific app, and repeats the startup probe; authentication and network errors
+remain failures rather than being reinterpreted as absence.
 
 The 2026-07-13 Breakout cap-1 canary used runtime
 `sha256:ed1d6342ba2ba90c9832fb6e088a93c680dad09fcbda0ec71b8021f94a484498` and train job 8.

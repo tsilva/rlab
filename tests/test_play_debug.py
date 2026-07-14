@@ -12,7 +12,6 @@ from rlab.play_debug import (
     format_policy_detail,
     format_raw,
     format_model_input,
-    format_policy_compact,
     inspect_policy,
     sample_policy_decision,
 )
@@ -77,15 +76,6 @@ def test_policy_inspection_does_not_sample_or_change_rng() -> None:
     assert not decision.sampled
     assert torch.equal(before, torch.random.get_rng_state())
     assert decision.selected_discrete_action == int(decision.mode)
-
-
-def test_continuous_compact_output_calls_log_probability_a_density() -> None:
-    model, observation = make_model(gym.spaces.Box(-0.1, 0.1, shape=(2,), dtype=np.float32))
-
-    text = format_policy_compact(sample_policy_decision(model, observation))
-
-    assert "log_density=" in text
-    assert " p=" not in text
 
 
 def test_large_model_input_is_summarized_with_content_hash() -> None:

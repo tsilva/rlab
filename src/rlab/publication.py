@@ -362,20 +362,6 @@ def assert_unique_repo_ids(identities: Sequence[PublicationIdentity]) -> None:
         seen[repo_id] = identity
 
 
-def assert_unique_goal_slugs(goal_ids: Sequence[object]) -> None:
-    seen: dict[str, str] = {}
-    for value in goal_ids:
-        raw = str(value or "").strip()
-        slug = normalize_publication_component(raw, label="goal id")
-        previous = seen.get(slug)
-        if previous is not None and previous != raw:
-            raise ValueError(
-                f"goal ids {previous!r} and {raw!r} normalize to the same publication "
-                f"component {slug!r}"
-            )
-        seen[slug] = raw
-
-
 def publication_model_metadata(
     model_metadata: Mapping[str, Any],
     identity: PublicationIdentity,

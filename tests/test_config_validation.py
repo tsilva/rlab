@@ -17,13 +17,17 @@ from rlab.config_validation import (
     validate_goal_contract_document,
 )
 from rlab.env_registry import resolve_env_provider
-from rlab.job_queue import load_recipe_document
+from rlab.env_providers import _stable_retro_packaged_data_path
 from rlab.main import COMMANDS
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
+from rlab.recipe_documents import compose_train_document
 from rlab.recipe_schema import validate_materialized_train_recipe
 
 
 class ConfigValidationTests(unittest.TestCase):
+    MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
+    MARIO_SINGLE_RECIPES = Path("experiments/recipes/mario/single")
+
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
         from ale_py.vector_env import AtariVectorEnv
         from rlab.bandit_env import BanditVectorEnv
@@ -71,8 +75,9 @@ class ConfigValidationTests(unittest.TestCase):
             )
 
     def test_materialized_recipe_rejects_missing_provider_constructor_arg(self) -> None:
-        document = load_recipe_document(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml")
+        document = compose_train_document(
+            self.MARIO_L11_GOAL,
+            self.MARIO_SINGLE_RECIPES / "ppo.yaml",
         )
         document["train_config"]["env_args"].pop("frame_stack")
 
@@ -80,8 +85,9 @@ class ConfigValidationTests(unittest.TestCase):
             validate_materialized_train_recipe(document, label="recipe")
 
     def test_level1_1_a2c_recipe_is_native_and_preserves_goal_contract(self) -> None:
-        document = load_recipe_document(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/a2c.yaml")
+        document = compose_train_document(
+            self.MARIO_L11_GOAL,
+            self.MARIO_SINGLE_RECIPES / "a2c.yaml",
         )
 
         train_config = document["train_config"]
@@ -107,17 +113,11 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
 
     def test_level1_1_on_policy_recipes_share_common_config(self) -> None:
-        recipe_dir = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes")
-        ppo = load_recipe_document(recipe_dir / "ppo.yaml")
-        a2c = load_recipe_document(recipe_dir / "a2c.yaml")
-        base = load_recipe_document(recipe_dir / "base.yaml")
+        ppo = compose_train_document(self.MARIO_L11_GOAL, self.MARIO_SINGLE_RECIPES / "ppo.yaml")
+        a2c = compose_train_document(self.MARIO_L11_GOAL, self.MARIO_SINGLE_RECIPES / "a2c.yaml")
 
         self.assertEqual(ppo["recipe_id"], "ppo")
         self.assertEqual(ppo["train_config"]["training_backend"]["id"], "sb3.ppo")
-        self.assertEqual(
-            base["train_config"]["training_backend"],
-            ppo["train_config"]["training_backend"],
-        )
         for field in (
             "learning_rate_final",
             "learning_rate_schedule_timesteps",
@@ -187,7 +187,10 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["benchmark_profiles"], 6)
 
     def test_breakout_recipe_loads_with_stable_retro_start_state(self) -> None:
-        document = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
+        document = compose_train_document(
+            Path("experiments/goals/alepy__breakout/_goal.yaml"),
+            Path("experiments/recipes/atari/ppo.yaml"),
+        )
 
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
@@ -205,7 +208,7 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["env_args"],
             {
                 "scenario": "scenario",
-                "info": "src/rlab/data/Breakout-Atari2600-v0.json",
+                "info": "data",
                 "use_restricted_actions": "filtered",
                 "record": False,
                 "players": 1,
@@ -237,7 +240,7 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["checkpoint_eval_environment"]["env_args"],
             {
                 "scenario": "scenario",
-                "info": "src/rlab/data/Breakout-Atari2600-v0.json",
+                "info": "data",
                 "use_restricted_actions": "filtered",
                 "record": False,
                 "players": 1,
@@ -280,7 +283,10 @@ class ConfigValidationTests(unittest.TestCase):
             },
         )
         self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
-        info_path = Path(train_config["env_args"]["info"])
+        info_path = _stable_retro_packaged_data_path(
+            train_config["game"],
+            "data.json",
+        )
         self.assertEqual(
             json.loads(info_path.read_text(encoding="utf-8"))["info"]["ball_y"],
             {"address": 229, "type": "|u1"},
@@ -321,12 +327,13 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
 
     def test_breakout_stable_updates_recipe_adds_late_update_guards(self) -> None:
-        document = load_recipe_document(
-            Path("experiments/goals/alepy__breakout/recipes/stable-updates.yaml")
+        document = compose_train_document(
+            Path("experiments/goals/alepy__breakout/_goal.yaml"),
+            Path("experiments/recipes/atari/ppo-stable-updates.yaml"),
         )
 
         train_config = document["train_config"]
-        self.assertEqual(document["recipe_id"], "stable-updates")
+        self.assertEqual(document["recipe_id"], "ppo-stable-updates")
         backend_config = train_config["training_backend"]["config"]
         self.assertEqual(backend_config["learning_rate"], 2.5e-4)
         self.assertEqual(backend_config["learning_rate_final"], 2.5e-5)
@@ -339,8 +346,14 @@ class ConfigValidationTests(unittest.TestCase):
         )
 
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
-        breakout = load_recipe_document(Path("experiments/goals/alepy__breakout/recipes/base.yaml"))
-        document = load_recipe_document(Path("experiments/goals/alepy__mspacman/recipes/base.yaml"))
+        breakout = compose_train_document(
+            Path("experiments/goals/alepy__breakout/_goal.yaml"),
+            Path("experiments/recipes/atari/ppo.yaml"),
+        )
+        document = compose_train_document(
+            Path("experiments/goals/alepy__mspacman/_goal.yaml"),
+            Path("experiments/recipes/atari/ppo.yaml"),
+        )
 
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "stable-retro-turbo")

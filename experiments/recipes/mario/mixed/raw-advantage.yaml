@@ -1,0 +1,13 @@
+defaults:
+- ../../_presets/mario-mixed-ppo@_global_
+- _self_
+recipe_id: raw-advantage
+description: >-
+  Seed {seed} trains the task-conditioned {goal_id} PPO policy with raw advantages instead
+  of per-task advantage normalization while leaving the goal contract unchanged.
+train:
+  backend:
+    id: sb3.ppo
+    config:
+      advantage_normalization: none
+      normalize_advantage: false

@@ -16,10 +16,7 @@ from rlab.runtime_contract import train_config_contract_payload, train_config_co
 from rlab.task_kernels import IdentityTaskDefinition
 from rlab.train import main as train_main
 from rlab.train_config import materialized_train_args, validate_and_normalize_train_config
-from rlab.training_backend import (
-    BackendUnavailableError,
-    partition_global_lane_ids,
-)
+from rlab.training_backend import BackendUnavailableError
 
 
 def backend_config(backend_id: str = "sb3.ppo", **config) -> dict[str, object]:
@@ -136,27 +133,6 @@ def test_backend_schemas_participate_in_runtime_contract_hash(monkeypatch) -> No
     after = train_config_contract_sha256()
     assert before != after
     assert "training_backends" in train_config_contract_payload()
-
-
-def test_single_host_actor_lane_partitions_are_unique_and_complete() -> None:
-    partitions = partition_global_lane_ids(11, 3)
-    flattened = [lane for partition in partitions for lane in partition]
-    assert sorted(flattened) == list(range(11))
-    assert len(flattened) == len(set(flattened))
-
-
-def test_actor_workers_receive_backend_private_data_not_coordinator_services() -> None:
-    class Actor:
-        def __init__(self, lane_ids, fragment_queue) -> None:
-            self.lane_ids = lane_ids
-            self.fragment_queue = fragment_queue
-
-    coordinator_context = {"metric_store": object(), "wandb_run": object()}
-    fragment_queue: deque[object] = deque(maxlen=2)
-    actors = [Actor(lanes, fragment_queue) for lanes in partition_global_lane_ids(4, 2)]
-    assert all(not hasattr(actor, "context") for actor in actors)
-    assert all(not hasattr(actor, "metric_store") for actor in actors)
-    assert coordinator_context["metric_store"] is not None
 
 
 def test_on_policy_backends_can_reuse_one_backend_owned_collector() -> None:

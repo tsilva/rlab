@@ -25,10 +25,18 @@ from rlab.goal_schema import validate_goal_document_shape
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
-from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
+from rlab.recipe_documents import (
+    load_goal_contract_document,
+    load_recipe_source_document,
+    materialize_train_recipe_document,
+)
 from rlab.ranking import parse_objective_rank
 from rlab.seeds import validate_eval_seed
-from rlab.train_config import env_config_allowed_keys, validate_train_config_fields
+from rlab.train_config import (
+    env_config_allowed_keys,
+    validate_and_normalize_train_config,
+    validate_train_config_fields,
+)
 from rlab.validation import (
     is_int as _is_int,
     label_path as _label_path,
@@ -56,6 +64,8 @@ GOAL_REQUIRED_ENV_CONFIG_KEYS = frozenset(
         "sticky_action_prob",
     }
 )
+
+
 @dataclass(frozen=True)
 class ValidationIssue:
     path: str
@@ -652,14 +662,37 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
             issues, path, repo_root, lambda path=path: validate_goal_contract(path, repo_root)
         )
 
-    recipes = sorted(
+    legacy_goal_recipes = sorted(
         path
         for path in (experiments_dir / "goals").rglob("recipes/*.yaml")
         if _active_experiment_path(path)
     )
+    for path in legacy_goal_recipes:
+        issues.append(
+            ValidationIssue(
+                path=_display_path(path, repo_root),
+                message="active goal-local recipes are unsupported; use experiments/recipes",
+            )
+        )
+    recipes_root = experiments_dir / "recipes"
+    recipes = sorted(
+        path
+        for path in recipes_root.rglob("*.yaml")
+        if _active_experiment_path(path) and (not path.is_relative_to(recipes_root / "_presets"))
+    )
     counts["train_recipes"] = len(recipes)
     for path in recipes:
-        _capture_issue(issues, path, repo_root, lambda path=path: load_recipe_document(path))
+
+        def validate_recipe(path: Path = path) -> None:
+            composition = load_recipe_source_document(path)
+            source = materialize_train_recipe_document(composition.document)
+            validate_and_normalize_train_config(
+                source.get("train_config") or {},
+                label=f"recipe file {path} train_config",
+                required_keys=("timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
+            )
+
+        _capture_issue(issues, path, repo_root, validate_recipe)
 
     env_configs = sorted(
         path for path in goals_dir.glob("*/_env-*.yaml") if _active_experiment_path(path)

@@ -13,25 +13,18 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 from rlab.artifacts import init_wandb, write_run_description, write_wandb_url
-from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.env import (
-    EnvConfig,
     assert_provider_runtime_available,
     default_run_dir,
     resolve_env_config,
     resolve_mixed_state_config,
 )
-from rlab.env_config import env_config_from_args, parse_obs_crop
+from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.provider_config import provider_num_envs
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
-    TRAIN_CONFIG_FIELDS,
-    add_train_config_args,
-    apply_training_backend_arg_view,
-    load_materialized_train_config,
     materialized_train_args,
-    validate_and_normalize_train_config,
 )
 from rlab.training_backend import (
     BackendContext,
@@ -54,13 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--train-config-json",
         type=Path,
+        required=True,
         help="Authoritative materialized train configuration JSON.",
-    )
-    add_train_config_args(
-        parser,
-        env_defaults=EnvConfig(),
-        parse_json_value=parse_json_value,
-        parse_obs_crop=parse_obs_crop,
     )
     return parser
 
@@ -76,46 +64,10 @@ def effective_n_envs(args: argparse.Namespace) -> int:
     return provider_num_envs(args, explicit_n_envs=explicit_n_envs(args))
 
 
-def _direct_train_config(args: argparse.Namespace) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    for field in TRAIN_CONFIG_FIELDS:
-        value = getattr(args, field.dest, None)
-        if value is None or value == "" or (field.sequence_items and value in ((), [])):
-            continue
-        if field.sequence_items and isinstance(value, str):
-            items = [item.strip() for item in value.split(",") if item.strip()]
-            value = [float(item) for item in items] if field.sequence_items == "number" else items
-        payload[field.dest] = value
-    return validate_and_normalize_train_config(
-        payload,
-        label="train arguments",
-        required_keys=("training_backend",),
-    )
-
-
 def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
-    argv_list = list(sys.argv[1:] if argv is None else argv)
-    explicit_dests = explicit_arg_dests(parser, argv_list)
-    parsed = parser.parse_args(argv_list)
-    if parsed.train_config_json is None:
-        parsed._train_config_json_fields = set()
-        parsed._explicit_train_arg_dests = set(explicit_dests)
-        parsed._materialized_train_config = _direct_train_config(parsed)
-        apply_training_backend_arg_view(parsed, parsed._materialized_train_config)
-        args = parsed
-    else:
-        path = Path(parsed.train_config_json)
-        payload = load_materialized_train_config(path)
-        args = materialized_train_args(path)
-        for key in explicit_dests:
-            if key != "train_config_json":
-                value = getattr(parsed, key)
-                setattr(args, key, value)
-                if key in payload:
-                    payload[key] = value
-        args._explicit_train_arg_dests = set(explicit_dests)
-        args._materialized_train_config = payload
+    parsed = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    args = materialized_train_args(Path(parsed.train_config_json))
     validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
     return args
 

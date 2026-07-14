@@ -78,14 +78,6 @@ def registered_training_backend_ids() -> tuple[str, ...]:
     return tuple(sorted(_BACKEND_MODULES))
 
 
-def partition_global_lane_ids(n_envs: int, actor_count: int) -> tuple[tuple[int, ...], ...]:
-    if n_envs <= 0:
-        raise ValueError("n_envs must be positive")
-    if actor_count <= 0 or actor_count > n_envs:
-        raise ValueError("actor_count must be between one and n_envs")
-    return tuple(tuple(range(actor, n_envs, actor_count)) for actor in range(actor_count))
-
-
 def _backend_module(backend_id: str):
     module_name = _BACKEND_MODULES.get(backend_id)
     if module_name is None:

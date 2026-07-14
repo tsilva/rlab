@@ -1,0 +1,14 @@
+defaults:
+- mario-single-on-policy@_global_
+- _self_
+train:
+  backend:
+    id: sb3.ppo
+    config:
+      n_steps: 512
+      batch_size: 512
+      n_epochs: 10
+      learning_rate: 1.5e-4
+      clip_range: 0.15
+      target_kl: 0.16
+      adam_eps: 1.0e-08

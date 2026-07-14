@@ -30,6 +30,7 @@ from rlab.metric_names import (
     TRAIN_ARTIFACT_SAVE_SECONDS,
     TRAIN_ARTIFACT_UPLOAD_SECONDS,
 )
+from rlab.wandb_artifacts import artifact_collection_name, model_metadata_path, safe_artifact_stem
 from rlab.wandb_utils import (
     configure_wandb_metrics,
     game_family_for_environment,
@@ -59,10 +60,6 @@ def stable_json_hash(value: Any) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def model_metadata_path(model_path: Path) -> Path:
-    return model_path.with_suffix(".metadata.json")
-
-
 def build_model_metadata(
     args: argparse.Namespace,
     config: EnvConfig,
@@ -87,21 +84,20 @@ def build_model_metadata(
         "game_family": getattr(args, "game_family", ""),
         "retry_of_job_id": getattr(args, "retry_of_job_id", 0),
         "goal_slug": getattr(args, "goal_slug", ""),
+        "goal_path": getattr(args, "goal_path", ""),
+        "goal_sha256": getattr(args, "goal_sha256", ""),
         "recipe_slug": getattr(args, "recipe_slug", ""),
         "recipe_path": getattr(args, "recipe_path", ""),
+        "recipe_sha256": getattr(args, "recipe_sha256", ""),
         "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "machine": getattr(args, "machine", ""),
         "seed": getattr(args, "seed", None),
         "repo_git_commit": str(
-            getattr(args, "source_sha", "")
-            or getattr(args, "repo_git_commit", "")
-            or ""
+            getattr(args, "source_sha", "") or getattr(args, "repo_git_commit", "") or ""
         ).strip(),
         "checkpoint_step": step,
-        "training_backend_id": str(
-            getattr(args, "training_backend_id", "") or ""
-        ).strip(),
+        "training_backend_id": str(getattr(args, "training_backend_id", "") or "").strip(),
         "training_backend_config_hash": str(
             getattr(args, "training_backend_config_hash", "") or ""
         ).strip(),
@@ -304,23 +300,6 @@ def wandb_artifacts_enabled(wandb_run, args: argparse.Namespace) -> bool:
     return wandb_run is not None and not args.no_wandb_artifacts
 
 
-def sanitize_artifact_name(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "rlab"
-
-
-def wandb_artifact_collection_name(
-    kind: str,
-    *,
-    run_id: object,
-) -> str:
-    """Return a collection name owned by one immutable rlab/W&B run id."""
-
-    owner = str(run_id or "").strip()
-    if not owner:
-        raise ValueError("new artifact writes require an immutable W&B run id")
-    return f"{sanitize_artifact_name(owner)}-{sanitize_artifact_name(kind)}"
-
-
 def checkpoint_step(path: Path) -> int | None:
     match = re.search(r"_(\d+)_steps$", path.stem)
     if match is None:
@@ -377,7 +356,7 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def artifact_rom_prefix(game: str) -> str:
-    return sanitize_artifact_name(game)
+    return safe_artifact_stem(game, "rlab")
 
 
 def artifact_storage_prefix(base_prefix: str, game: str) -> str:
@@ -400,7 +379,7 @@ def build_s3_artifact_uri(
 ) -> str:
     bucket, prefix = parse_s3_uri(base_uri)
     prefix = artifact_storage_prefix(prefix, args.game)
-    collection_name = wandb_artifact_collection_name(
+    collection_name = artifact_collection_name(
         kind,
         run_id=run_id or getattr(args, "wandb_run_id", ""),
     )
@@ -442,8 +421,7 @@ def upload_s3_artifact(model_path: Path, destination_uri: str) -> None:
 
 def artifact_timing_payload(timing: ArtifactLogTiming) -> dict[str, float]:
     payload = {
-        TRAIN_ARTIFACT_UPLOAD_SECONDS: timing.storage_upload_seconds
-        + timing.wandb_log_seconds,
+        TRAIN_ARTIFACT_UPLOAD_SECONDS: timing.storage_upload_seconds + timing.wandb_log_seconds,
     }
     if timing.local_save_seconds is not None:
         payload[TRAIN_ARTIFACT_SAVE_SECONDS] = timing.local_save_seconds
@@ -498,7 +476,7 @@ def log_wandb_model_artifact(
     started_at = timer()
     run_id = getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None)
     artifact_name = (
-        wandb_artifact_collection_name(kind, run_id=run_id) if str(run_id or "").strip() else ""
+        artifact_collection_name(kind, run_id=run_id) if str(run_id or "").strip() else ""
     )
     step = checkpoint_step(model_path)
     artifact_step = step if step is not None else metric_step
@@ -516,9 +494,7 @@ def log_wandb_model_artifact(
 
     wandb_output_enabled = wandb_artifacts_enabled(wandb_run, args)
     storage_base_uri = (
-        wandb_artifact_storage_uri(args)
-        if not getattr(args, "no_wandb_artifacts", False)
-        else ""
+        wandb_artifact_storage_uri(args) if not getattr(args, "no_wandb_artifacts", False) else ""
     )
     if not wandb_output_enabled and not storage_base_uri:
         finished_at = timer()

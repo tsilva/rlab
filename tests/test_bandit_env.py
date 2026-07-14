@@ -14,10 +14,18 @@ from rlab.bandit_env import BanditVectorEnv
 from rlab.env import EnvConfig, make_vec_envs
 from rlab.env_registry import resolve_env_id, resolve_env_provider
 from rlab.metric_store import MetricStore
-from rlab.recipe_documents import load_recipe_document
+from rlab.recipe_documents import compose_train_document
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.sb3_models import load_sb3_model
 from rlab.train import main as train_main
+
+
+BANDIT_GOAL = Path("experiments/goals/rlab__bandit/_goal.yaml")
+BANDIT_RECIPE = Path("experiments/recipes/bandit/ppo.yaml")
+
+
+def _bandit_recipe_document():
+    return compose_train_document(BANDIT_GOAL, BANDIT_RECIPE)
 
 
 def _native_env(num_envs: int = 3) -> BanditVectorEnv:
@@ -168,7 +176,7 @@ def test_rlab_facade_same_step_resets_bandit_lanes() -> None:
 
 
 def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
-    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
+    document = _bandit_recipe_document()
     validate_materialized_train_recipe(document)
 
     train_config = document["train_config"]
@@ -184,7 +192,7 @@ def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
 
 
 def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: Path) -> None:
-    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
+    document = _bandit_recipe_document()
     config = dict(document["train_config"])
     config.update(
         {
@@ -221,7 +229,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: 
 
 
 def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(tmp_path: Path) -> None:
-    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
+    document = _bandit_recipe_document()
     config = dict(document["train_config"])
     config.update(
         {

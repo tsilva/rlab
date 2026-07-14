@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from rlab.artifacts import wandb_artifact_collection_name
+from rlab.wandb_artifacts import artifact_write_ref
 from rlab.checkpoint_eval_config import (
     normalize_checkpoint_eval_stages,
 )
@@ -73,11 +73,12 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
         env_provider=getattr(args, "env_provider", None),
     )
     if entity and project:
-        name = wandb_artifact_collection_name(
-            "checkpoint",
+        return artifact_write_ref(
+            namespace=f"{entity}/{project}",
+            kind="checkpoint",
             run_id=getattr(args, "wandb_run_id", None),
+            alias=f"step-{step}",
         )
-        return f"{entity}/{project}/{name}:step-{step}"
     return str(checkpoint_path)
 
 

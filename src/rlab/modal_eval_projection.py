@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from rlab.artifacts import wandb_artifact_collection_name
+from rlab.wandb_artifacts import artifact_collection_name, artifact_write_aliases
 from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
 from rlab.env import resolve_env_config
 from rlab.env_metadata import env_config_from_config_dict
@@ -62,7 +62,7 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 "artifact_storage_uri": checkpoint_uri,
             }
             artifact = wandb.Artifact(
-                wandb_artifact_collection_name(
+                artifact_collection_name(
                     kind,
                     run_id=run_id,
                 ),
@@ -70,9 +70,7 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 metadata=artifact_metadata,
             )
             artifact.add_reference(checkpoint_uri)
-            aliases = [kind, "latest"]
-            if kind == "checkpoint":
-                aliases = ["latest", f"step-{checkpoint_step}"]
+            aliases = artifact_write_aliases(kind, checkpoint_step)
             run.log_artifact(artifact, aliases=aliases)
             return
         decision = dict(payload["decision"])

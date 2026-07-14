@@ -2,7 +2,8 @@ schema_version: 1
 name: local-smoke-mario-l11
 kind: local_smoke
 description: Tiny local train/save/load/eval smoke on the imported Mario Level1-1 state.
-recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
+goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
+recipe_file: experiments/recipes/mario/single/ppo.yaml
 machine: local-macbook
 recipe_overrides:
 - recipe_id=benchmark-local-smoke

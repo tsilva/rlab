@@ -17,10 +17,11 @@ from rlab.batch_runtime import ProviderDescriptor
 from rlab.env import bind_native_provider, make_native_provider, resolve_mixed_state_config
 from rlab.env_cli import _finish_report, main as env_main
 from rlab.env_config import env_config_from_mapping
-from rlab.recipe_documents import load_recipe_document
+from rlab.recipe_documents import compose_train_document
 
 
-MARIO_RECIPE = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml")
+MARIO_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
+MARIO_RECIPE = Path("experiments/recipes/mario/single/ppo.yaml")
 
 
 class FakeNativeProvider:
@@ -191,7 +192,14 @@ def _run_fake_check(
         patch("sys.stderr", stderr),
         patch("importlib.import_module", side_effect=import_module),
     ):
-        argv = ["check", "--recipe-file", str(MARIO_RECIPE), "--json"]
+        argv = [
+            "check",
+            "--goal-file",
+            str(MARIO_GOAL),
+            "--recipe-file",
+            str(MARIO_RECIPE),
+            "--json",
+        ]
         for override in recipe_overrides or []:
             argv.extend(("--set", override))
         exit_code = env_main(argv)
@@ -224,6 +232,11 @@ assert 'supermariobrosnes_turbo' not in sys.modules
         "stable-retro-turbo",
         "supermariobrosnes-turbo",
     }
+
+
+def test_env_check_requires_goal_file() -> None:
+    with pytest.raises(SystemExit):
+        env_main(["check", "--recipe-file", str(MARIO_RECIPE)])
 
 
 def test_inspect_reports_dynamic_gymnasium_contract() -> None:
@@ -348,7 +361,7 @@ def test_required_inconclusive_dynamic_evidence_blocks_success() -> None:
 
 
 def test_native_construction_closes_provider_when_description_fails() -> None:
-    document = load_recipe_document(MARIO_RECIPE)
+    document = compose_train_document(MARIO_GOAL, MARIO_RECIPE)
     config = resolve_mixed_state_config(
         env_config_from_mapping(document["train_config"]),
         n_envs=16,
@@ -367,7 +380,7 @@ def test_native_construction_closes_provider_when_description_fails() -> None:
 
 
 def test_task_binding_failure_closes_unowned_native_provider() -> None:
-    document = load_recipe_document(MARIO_RECIPE)
+    document = compose_train_document(MARIO_GOAL, MARIO_RECIPE)
     config = resolve_mixed_state_config(
         env_config_from_mapping(document["train_config"]),
         n_envs=16,

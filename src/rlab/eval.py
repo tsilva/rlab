@@ -13,6 +13,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import numpy as np
 
+from rlab.artifacts import load_model_metadata
 from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
@@ -28,7 +29,7 @@ from rlab.model_sources import (
     model_source_ref,
     resolve_single_model_source,
 )
-from rlab.sb3_models import load_sb3_model
+from rlab.sb3_models import load_sb3_model, resolve_sb3_algorithm
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.targets import target_for_game
 from rlab.train_config import add_env_config_args
@@ -89,15 +90,22 @@ class ScriptedPolicy:
         return np.asarray([action]), None
 
 
+def load_eval_sb3_model(model_path: str | Path, *, device: str) -> tuple[object, str]:
+    metadata = load_model_metadata(Path(model_path))
+    algorithm_id = resolve_sb3_algorithm(metadata)
+    model = load_sb3_model(model_path, device=device, metadata=metadata)
+    return model, algorithm_id
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab eval",
-        description="Evaluate PPO or scripted provider baselines",
+        description="Evaluate an SB3 model or scripted provider baseline",
     )
     add_model_source_args(
         parser,
         positional_artifact=True,
-        model_help="Path to PPO .zip model",
+        model_help="Path to an SB3 .zip model",
         default_kind="checkpoint",
         include_wandb_artifacts=False,
     )
@@ -173,9 +181,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     assert_provider_runtime_available(config)
-    model = (
-        load_sb3_model(args.model, device=resolve_sb3_device(args.device)) if args.model else None
-    )
+    if args.model:
+        model, model_policy = load_eval_sb3_model(
+            args.model,
+            device=resolve_sb3_device(args.device),
+        )
+    else:
+        model = None
+        model_policy = None
 
     if model is not None:
         summary, _ = evaluate_model_episodes(
@@ -190,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             progress_description="eval model",
             extra={
                 "model": args.model,
-                "policy": "ppo",
+                "policy": model_policy,
                 "hud_crop_top": args.hud_crop_top,
             },
         )

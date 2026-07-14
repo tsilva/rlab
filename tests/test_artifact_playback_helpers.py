@@ -59,8 +59,6 @@ from rlab.eval import build_parser as build_eval_parser
 from rlab.eval import main as eval_main
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.task_advantage import normalize_advantages_by_task
-from rlab.train import build_parser as build_train_parser
-from rlab.train_config import build_train_command_from_fields as build_train_command
 from rlab.wandb_artifacts import (
     artifact_download_dir,
     download_model_artifact,
@@ -69,6 +67,7 @@ from rlab.wandb_artifacts import (
 )
 from rlab.wandb_artifacts import metadata_from_wandb_artifact
 from rlab.wandb_utils import default_wandb_project_path
+from tests.wandb_fakes import FakeApi, FakeArtifact, FakeLoggedArtifact, FakeRun, FakeWandb
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -113,79 +112,6 @@ def mario_task(*, conditioning: bool = False) -> dict:
 
 
 class CommandAndArtifactTests(unittest.TestCase):
-    def test_build_train_command_omits_backend_fields_from_common_cli(self) -> None:
-        cmd = build_train_command(
-            {
-                "run_name": "candidate",
-                "states": "Level1-1,Level1-2",
-                "state_probs": "1,3",
-                "target_kl": 0.0,
-                "clip_range_vf": 0.2,
-                "task": mario_task(conditioning=True),
-                "policy_net_arch": "128",
-                "value_net_arch": "512,512",
-                "advantage_normalization": "per-task",
-                "wandb": True,
-                "normalize_advantage": False,
-            }
-        )
-        self.assertIn("--run-name", cmd)
-        self.assertIn("--states", cmd)
-        self.assertIn("--state-probs", cmd)
-        self.assertIn("--task-json", cmd)
-        self.assertNotIn("True", cmd)
-        self.assertNotIn("--target-kl", cmd)
-        self.assertNotIn("--clip-range-vf", cmd)
-        self.assertNotIn("--policy-net-arch", cmd)
-        self.assertNotIn("--value-net-arch", cmd)
-        self.assertNotIn("--advantage-normalization", cmd)
-        self.assertIn("--wandb", cmd)
-        self.assertNotIn("--no-normalize-advantage", cmd)
-
-    def test_build_train_command_ignores_removed_training_loop_eval_toggles(self) -> None:
-        cmd = build_train_command(
-            {
-                "eval_freq": 0,
-                "eval_episodes": 0,
-                "eval_stochastic": False,
-                "no_eval_videos": True,
-                "eval_video_fps": 60,
-                "eval_video_scale": 2,
-            }
-        )
-
-        self.assertNotIn("--eval-freq", cmd)
-        self.assertNotIn("--eval-episodes", cmd)
-        self.assertNotIn("--no-eval-stochastic", cmd)
-        self.assertNotIn("--no-eval-videos", cmd)
-        self.assertNotIn("--eval-video-fps", cmd)
-        self.assertNotIn("--eval-video-scale", cmd)
-
-    def test_train_parser_accepts_canonical_task(self) -> None:
-        task = mario_task(conditioning=True)
-        args = build_train_parser().parse_args(
-            [
-                "--game",
-                "SuperMarioBros-Nes-v0",
-                "--states",
-                "Level1-1,Level1-2",
-                "--task-json",
-                json.dumps(task),
-            ]
-        )
-
-        config = env_config_from_args(args, include_states=True)
-        self.assertEqual(config.task, task)
-
-    def test_train_parser_deletes_completion_stop_flags(self) -> None:
-        args = build_train_parser().parse_args([])
-
-        self.assertFalse(hasattr(args, "stop_completion_episode_window"))
-        self.assertFalse(hasattr(args, "stop_completion_rate_threshold"))
-        self.assertFalse(hasattr(args, "stop_state_min_completion_rate_threshold"))
-        self.assertFalse(hasattr(args, "stop_completion_rolling_window"))
-        self.assertFalse(hasattr(args, "stop_completion_rolling_threshold"))
-
     def test_normalize_advantages_by_task_updates_rollout_in_place(self) -> None:
         advantages = np.asarray(
             [
@@ -244,29 +170,23 @@ class CommandAndArtifactTests(unittest.TestCase):
         ]
         download_roots: list[Path] = []
 
-        class FakeArtifact:
-            def __init__(self, version: str, filename: str) -> None:
-                self.version = version
-                self.metadata = {"filename": filename}
-                self.filename = filename
+        def resolve_artifact(ref: str, artifact_type: str | None) -> FakeArtifact:
+            self.assertEqual(ref, requested_ref)
+            self.assertEqual(artifact_type, "model")
+            version, filename = versions.pop(0)
 
-            def download(self, root: str) -> str:
-                path = Path(root)
+            def download(path: Path, _artifact: FakeArtifact) -> None:
                 download_roots.append(path)
-                path.mkdir(parents=True, exist_ok=True)
-                (path / self.filename).write_bytes(b"model")
-                return str(path)
+                (path / filename).write_bytes(b"model")
 
-        class FakeApi:
-            def artifact(self, ref: str, type: str | None = None):
-                self.assertEqual(ref, requested_ref)
-                self.assertEqual(type, "model")
-                version, filename = versions.pop(0)
-                return FakeArtifact(version, filename)
+            return FakeArtifact(
+                version=version,
+                filename=filename,
+                metadata={"filename": filename},
+                download=download,
+            )
 
-        fake_api = FakeApi()
-        fake_api.assertEqual = self.assertEqual
-        fake_wandb = types.SimpleNamespace(Api=lambda: fake_api)
+        fake_wandb = FakeWandb(api=FakeApi(artifact=resolve_artifact))
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             with (
@@ -313,40 +233,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
 
     def test_wandb_artifact_logging_reports_stall_timing_metrics(self) -> None:
-        class FakeArtifact:
-            def __init__(self, name: str, type: str, metadata: dict[str, object]) -> None:
-                self.name = name
-                self.type = type
-                self.metadata = metadata
-                self.references: list[tuple[str, str]] = []
-                self.files: list[tuple[str, str]] = []
-
-            def add_reference(self, uri: str, name: str) -> None:
-                self.references.append((uri, name))
-
-            def add_file(self, path: str, name: str) -> None:
-                self.files.append((path, name))
-
-        class FakeRun:
-            id = "run-id"
-            path = ("entity", "project", "runs", "run-id")
-
-            def __init__(self) -> None:
-                self.artifact_logs: list[tuple[FakeArtifact, list[str] | None]] = []
-                self.metric_logs: list[tuple[dict[str, object], int | None]] = []
-
-            def log_artifact(
-                self, artifact: FakeArtifact, aliases: list[str] | None = None
-            ) -> None:
-                self.artifact_logs.append((artifact, aliases))
-
-            def log(self, payload: dict[str, object], step: int | None = None) -> None:
-                self.metric_logs.append((payload, step))
-
-        class FakeWandb:
-            def Artifact(self, name: str, type: str, metadata: dict[str, object]) -> FakeArtifact:
-                return FakeArtifact(name, type, metadata)
-
         clock_values = iter([10.0, 10.0, 10.2, 10.2, 11.2, 11.2, 11.5, 11.5])
         uploads: list[tuple[Path, str]] = []
         args = argparse.Namespace(
@@ -361,9 +247,10 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
             model_path.write_bytes(b"zip")
             fake_run = FakeRun()
+            fake_wandb = FakeWandb()
 
             with (
-                patch.dict(sys.modules, {"wandb": FakeWandb()}),
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
                 patch(
                     "rlab.artifacts.upload_s3_artifact",
                     side_effect=lambda path, uri: uploads.append((path, uri)),
@@ -401,39 +288,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(payload[metric_names.GLOBAL_STEP], 100)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_UPLOAD_SECONDS], 1.3)
         self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_SAVE_SECONDS], 2.0)
-        self.assertEqual(set(payload), {"global_step", "train/artifact/upload/seconds", "train/artifact/save/seconds"})
+        self.assertEqual(
+            set(payload),
+            {"global_step", "train/artifact/upload/seconds", "train/artifact/save/seconds"},
+        )
 
     def test_wandb_final_artifact_records_metric_step(self) -> None:
-        class FakeArtifact:
-            def __init__(self, name: str, type: str, metadata: dict[str, object]) -> None:
-                self.name = name
-                self.type = type
-                self.metadata = metadata
-                self.files: list[tuple[str, str]] = []
-
-            def add_file(self, path: str, name: str) -> None:
-                self.files.append((path, name))
-
-        class FakeRun:
-            id = "run-id"
-            path = ("entity", "project", "runs", "run-id")
-
-            def __init__(self) -> None:
-                self.artifact_logs: list[tuple[FakeArtifact, list[str] | None]] = []
-                self.metric_logs: list[tuple[dict[str, object], int | None]] = []
-
-            def log_artifact(
-                self, artifact: FakeArtifact, aliases: list[str] | None = None
-            ) -> None:
-                self.artifact_logs.append((artifact, aliases))
-
-            def log(self, payload: dict[str, object], step: int | None = None) -> None:
-                self.metric_logs.append((payload, step))
-
-        class FakeWandb:
-            def Artifact(self, name: str, type: str, metadata: dict[str, object]) -> FakeArtifact:
-                return FakeArtifact(name, type, metadata)
-
         args = argparse.Namespace(
             game="SuperMarioBros-Nes-v0",
             run_name="candidate-run",
@@ -447,9 +307,10 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path = Path(tmp_dir) / "final_model.zip"
             model_path.write_bytes(b"zip")
             fake_run = FakeRun()
+            fake_wandb = FakeWandb()
 
             with (
-                patch.dict(sys.modules, {"wandb": FakeWandb()}),
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
                 patch("rlab.artifacts.wandb_artifact_storage_uri", return_value=""),
             ):
                 timing = log_wandb_model_artifact(
@@ -470,42 +331,6 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(timing.checkpoint_step, 2500000)
 
     def test_wandb_artifact_logging_can_purge_uploaded_local_files(self) -> None:
-        class FakeArtifact:
-            def __init__(self, name: str, type: str, metadata: dict[str, object]) -> None:
-                self.name = name
-                self.type = type
-                self.metadata = metadata
-                self.files: list[tuple[str, str]] = []
-
-            def add_file(self, path: str, name: str) -> None:
-                self.files.append((path, name))
-
-        class FakeLoggedArtifact:
-            def __init__(self) -> None:
-                self.wait_called = False
-
-            def wait(self) -> None:
-                self.wait_called = True
-
-        class FakeRun:
-            id = "run-id"
-            path = ("entity", "project", "runs", "run-id")
-
-            def __init__(self) -> None:
-                self.logged = FakeLoggedArtifact()
-
-            def log_artifact(
-                self, artifact: FakeArtifact, aliases: list[str] | None = None
-            ) -> FakeLoggedArtifact:
-                return self.logged
-
-            def log(self, payload: dict[str, object], step: int | None = None) -> None:
-                pass
-
-        class FakeWandb:
-            def Artifact(self, name: str, type: str, metadata: dict[str, object]) -> FakeArtifact:
-                return FakeArtifact(name, type, metadata)
-
         args = argparse.Namespace(
             game="SuperMarioBros-Nes-v0",
             run_name="candidate-run",
@@ -519,10 +344,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
             model_path.write_bytes(b"zip")
-            fake_run = FakeRun()
+            logged = FakeLoggedArtifact()
+            fake_run = FakeRun(logged_artifact_result=logged)
+            fake_wandb = FakeWandb()
 
             with (
-                patch.dict(sys.modules, {"wandb": FakeWandb()}),
+                patch.dict(sys.modules, {"wandb": fake_wandb}),
                 patch("rlab.artifacts.wandb_artifact_storage_uri", return_value=""),
             ):
                 log_wandb_model_artifact(
@@ -535,7 +362,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                     clock=lambda: next(clock_values),
                 )
 
-            self.assertTrue(fake_run.logged.wait_called)
+            self.assertTrue(logged.wait_called)
             self.assertFalse(model_path.exists())
             self.assertFalse(model_metadata_path(model_path).exists())
 
@@ -1246,14 +1073,13 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
         calls = []
 
-        class FakeApi:
-            def artifact(self, ref, type=None):
-                calls.append((ref, type))
-                if ref == found_ref:
-                    return object()
-                raise RuntimeError("not found")
+        def find_artifact(ref: str, artifact_type: str | None):
+            calls.append((ref, artifact_type))
+            if ref == found_ref:
+                return object()
+            raise RuntimeError("not found")
 
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        fake_wandb = FakeWandb(api=FakeApi(artifact=find_artifact))
         parser = build_play_parser()
         args = parser.parse_args(["alepy__mspacman_episodic-life_s126_20260709T102223Z"])
 
@@ -1278,13 +1104,12 @@ class CommandAndArtifactTests(unittest.TestCase):
             "tsilva/breakout/shared-run-checkpoint:latest",
         }
 
-        class FakeApi:
-            def artifact(self, ref, type=None):
-                if ref in matches:
-                    return object()
-                raise RuntimeError("not found")
+        def find_artifact(ref: str, _artifact_type: str | None):
+            if ref in matches:
+                return object()
+            raise RuntimeError("not found")
 
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        fake_wandb = FakeWandb(api=FakeApi(artifact=find_artifact))
         parser = build_play_parser()
         args = parser.parse_args(["shared-run"])
 
@@ -1312,18 +1137,17 @@ class CommandAndArtifactTests(unittest.TestCase):
 
     def test_model_source_ref_uses_wandb_run_url_latest_checkpoint(self) -> None:
         calls = []
+        run = FakeRun(
+            id="7gjw67kl",
+            name="renamed-in-wandb-ui",
+            config={"run_name": "b82-b55reval-s6-20260702T150934Z"},
+        )
 
-        class FakeRun:
-            id = "7gjw67kl"
-            name = "renamed-in-wandb-ui"
-            config = {"run_name": "b82-b55reval-s6-20260702T150934Z"}
+        def find_run(path: str) -> FakeRun:
+            calls.append(path)
+            return run
 
-        class FakeApi:
-            def run(self, path):
-                calls.append(path)
-                return FakeRun()
-
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        fake_wandb = FakeWandb(api=FakeApi(run=find_run))
         parser = build_play_parser()
         args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
@@ -1336,22 +1160,18 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(calls, ["tsilva/SuperMarioBros-Nes-v0/7gjw67kl"])
 
     def test_model_source_ref_uses_checkpoint_logged_by_wandb_run(self) -> None:
-        class FakeArtifact:
-            type = "model"
-            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"
-            aliases = ["step-4500000", "latest"]
-
-        class FakeRun:
-            id = "rlab-run-id"
-            name = "level1-1-base-s1"
-            config = {"run_name": "level1-1-base-s1"}
-
-            def logged_artifacts(self):
-                return [FakeArtifact()]
-
-        fake_wandb = types.SimpleNamespace(
-            Api=lambda: types.SimpleNamespace(run=lambda _path: FakeRun())
+        run = FakeRun(
+            id="rlab-run-id",
+            name="level1-1-base-s1",
+            config={"run_name": "level1-1-base-s1"},
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"),
+                    aliases=["step-4500000", "latest"],
+                )
+            ],
         )
+        fake_wandb = FakeWandb(api=FakeApi(run=lambda _path: run))
         parser = build_play_parser()
         args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"])
 
@@ -1362,27 +1182,17 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
 
     def test_model_source_ref_resolves_bare_run_to_logged_run_artifact(self) -> None:
-        class FakeArtifact:
-            type = "model"
-            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"
-            aliases = ["latest"]
-
-        class FakeRun:
-            name = "level1-1-base-s1"
-            config = {"run_name": "level1-1-base-s1"}
-
-            def logged_artifacts(self):
-                return [FakeArtifact()]
-
-        class FakeApi:
-            def artifact(self, _ref, type=None):
-                raise RuntimeError("not found")
-
-            def runs(self, _project, filters=None):
-                self.filters = filters
-                return [FakeRun()]
-
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        run = FakeRun(
+            name="level1-1-base-s1",
+            config={"run_name": "level1-1-base-s1"},
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"),
+                    aliases=["latest"],
+                )
+            ],
+        )
+        fake_wandb = FakeWandb(api=FakeApi(runs=lambda _project, _filters: [run]))
         parser = build_play_parser()
         args = parser.parse_args(["level1-1-base-s1"])
 
@@ -1399,28 +1209,24 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
 
     def test_bare_run_resolves_promoted_checkpoint_before_moving_latest(self) -> None:
-        class FakeArtifact:
-            type = "model"
-            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v13"
-            aliases = ["step-6500000"]
-            metadata = {"checkpoint_step": 6500000}
-
-        class FakeRun:
-            name = "level1-1-base-s1"
-            config = {"run_name": "level1-1-base-s1"}
-            summary = {"leader/checkpoint/step": 6500000}
-
-            def logged_artifacts(self):
-                return [FakeArtifact()]
-
-        class FakeApi:
-            def artifact(self, _ref, type=None):
-                return object()
-
-            def runs(self, _project, filters=None):
-                return [FakeRun()]
-
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        run = FakeRun(
+            name="level1-1-base-s1",
+            config={"run_name": "level1-1-base-s1"},
+            summary={"leader/checkpoint/step": 6500000},
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v13"),
+                    aliases=["step-6500000"],
+                    metadata={"checkpoint_step": 6500000},
+                )
+            ],
+        )
+        fake_wandb = FakeWandb(
+            api=FakeApi(
+                artifact=lambda _ref, _type: object(),
+                runs=lambda _project, _filters: [run],
+            )
+        )
         parser = build_play_parser()
         args = parser.parse_args(["level1-1-base-s1"])
 
@@ -1437,28 +1243,24 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
 
     def test_bare_run_blocks_while_promoted_artifact_is_pending(self) -> None:
-        class FakeArtifact:
-            type = "model"
-            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v6"
-            aliases = ["latest", "step-3000000"]
-            metadata = {"checkpoint_step": 3000000}
-
-        class FakeRun:
-            name = "level1-1-base-s1"
-            config = {"run_name": "level1-1-base-s1"}
-            summary = {"leader/checkpoint/step": 6500000}
-
-            def logged_artifacts(self):
-                return [FakeArtifact()]
-
-        class FakeApi:
-            def artifact(self, _ref, type=None):
-                return object()
-
-            def runs(self, _project, filters=None):
-                return [FakeRun()]
-
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        run = FakeRun(
+            name="level1-1-base-s1",
+            config={"run_name": "level1-1-base-s1"},
+            summary={"leader/checkpoint/step": 6500000},
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v6"),
+                    aliases=["latest", "step-3000000"],
+                    metadata={"checkpoint_step": 3000000},
+                )
+            ],
+        )
+        fake_wandb = FakeWandb(
+            api=FakeApi(
+                artifact=lambda _ref, _type: object(),
+                runs=lambda _project, _filters: [run],
+            )
+        )
         parser = build_play_parser()
         args = parser.parse_args(["level1-1-base-s1"])
 
@@ -1474,18 +1276,17 @@ class CommandAndArtifactTests(unittest.TestCase):
 
     def test_model_source_ref_uses_wandb_run_url_with_query_latest_checkpoint(self) -> None:
         calls = []
+        run = FakeRun(
+            id="qxhbhcms",
+            name="renamed-in-wandb-ui",
+            config={"run_name": "alepy__mspacman_episodic-life_s126_20260709T102223Z"},
+        )
 
-        class FakeRun:
-            id = "qxhbhcms"
-            name = "renamed-in-wandb-ui"
-            config = {"run_name": "alepy__mspacman_episodic-life_s126_20260709T102223Z"}
+        def find_run(path: str) -> FakeRun:
+            calls.append(path)
+            return run
 
-        class FakeApi:
-            def run(self, path):
-                calls.append(path)
-                return FakeRun()
-
-        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        fake_wandb = FakeWandb(api=FakeApi(run=find_run))
         parser = build_play_parser()
         args = parser.parse_args(
             ["https://wandb.ai/tsilva/ms_pacman/runs/qxhbhcms?nw=nwusertsilva"]
@@ -1501,14 +1302,11 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(calls, ["tsilva/ms_pacman/qxhbhcms"])
 
     def test_model_source_ref_uses_wandb_run_url_display_name_fallback(self) -> None:
-        class FakeRun:
-            id = "7gjw67kl"
-            name = "Run With Spaces"
-            config = {}
-
-        fake_wandb = types.SimpleNamespace(
-            Api=lambda: types.SimpleNamespace(run=lambda _path: FakeRun())
+        run = FakeRun(
+            id="7gjw67kl",
+            name="Run With Spaces",
         )
+        fake_wandb = FakeWandb(api=FakeApi(run=lambda _path: run))
         parser = build_play_parser()
         args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
@@ -1711,12 +1509,12 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
 
     def test_wandb_artifact_metadata_requires_artifact_training_metadata(self) -> None:
-        class FakeRun:
-            id = "abc123"
-            name = "run-name"
-            path = ["entity", "project", "abc123"]
-            notes = "run notes"
-            config = {
+        run = FakeRun(
+            id="abc123",
+            name="run-name",
+            path=["entity", "project", "abc123"],
+            notes="run notes",
+            config={
                 "run_name": "train-run",
                 "run_description": "description",
                 "game": "SuperMarioBros-Nes-v0",
@@ -1725,16 +1523,11 @@ class CommandAndArtifactTests(unittest.TestCase):
                 "max_episode_steps": 1234,
                 "observation_size": 96,
                 "action_set": "simple",
-            }
-
-        class FakeArtifact:
-            metadata = {"kind": "checkpoint"}
-
-            def logged_by(self):
-                return FakeRun()
+            },
+        )
 
         metadata = metadata_from_wandb_artifact(
-            FakeArtifact(),
+            FakeArtifact(metadata={"kind": "checkpoint"}, logged_by=run),
             Path("ppo_test_100_steps.zip"),
         )
 

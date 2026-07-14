@@ -117,13 +117,6 @@ def _connect_from_args(args: argparse.Namespace):
     return connect(database_url(getattr(args, "direct", False)))
 
 
-def repo_root_from_args(args: argparse.Namespace) -> Path:
-    repo_root = getattr(args, "repo_root", None)
-    if repo_root:
-        return Path(repo_root).expanduser().resolve()
-    return default_repo_root()
-
-
 def load_shared_runner_env(path: Path) -> dict[str, str]:
     if not path.is_file():
         raise RuntimeError(f"shared runner env file is missing: {path}")

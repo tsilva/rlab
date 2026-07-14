@@ -57,6 +57,10 @@ class ModalEvalConfig:
     enabled: bool
     app_name_prefix: str
     function_name: str
+    cleanup_enabled: bool
+    cleanup_interval_seconds: int
+    cleanup_grace_seconds: int
+    cleanup_max_stops_per_pass: int
     hard_max_active: int
     initial_effective_capacity: int
     per_run_budget_usd: float
@@ -101,6 +105,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     allowed = {
         "enabled",
         "deployment",
+        "cleanup",
         "limits",
         "resources",
         "timeouts",
@@ -112,6 +117,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     if unknown:
         raise ValueError(f"{path} has unknown field(s): {', '.join(unknown)}")
     deployment = _mapping(document.get("deployment"), label="deployment")
+    cleanup = _mapping(document.get("cleanup"), label="cleanup")
     limits = _mapping(document.get("limits"), label="limits")
     resources = _mapping(document.get("resources"), label="resources")
     timeouts = _mapping(document.get("timeouts"), label="timeouts")
@@ -120,6 +126,10 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     preview = _mapping(document.get("preview"), label="preview")
     sections = {
         "deployment": (deployment, {"app_name_prefix", "function_name"}),
+        "cleanup": (
+            cleanup,
+            {"enabled", "interval_seconds", "grace_seconds", "max_stops_per_pass"},
+        ),
         "limits": (
             limits,
             {
@@ -194,6 +204,16 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         enabled=_bool(document.get("enabled", False), label="enabled"),
         app_name_prefix=prefix,
         function_name=function_name,
+        cleanup_enabled=_bool(cleanup.get("enabled", False), label="cleanup.enabled"),
+        cleanup_interval_seconds=_positive_int(
+            cleanup.get("interval_seconds"), label="cleanup.interval_seconds"
+        ),
+        cleanup_grace_seconds=_positive_int(
+            cleanup.get("grace_seconds"), label="cleanup.grace_seconds"
+        ),
+        cleanup_max_stops_per_pass=_positive_int(
+            cleanup.get("max_stops_per_pass"), label="cleanup.max_stops_per_pass"
+        ),
         hard_max_active=hard_cap,
         initial_effective_capacity=effective,
         per_run_budget_usd=_positive_float(

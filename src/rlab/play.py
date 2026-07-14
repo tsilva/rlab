@@ -421,7 +421,7 @@ def attribution_opacity_arg(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab play",
-        description="Show a PPO checkpoint playing a provider environment in a GUI window",
+        description="Show an SB3 checkpoint playing a provider environment in a GUI window",
     )
     add_play_source_args(parser)
     parser.add_argument(

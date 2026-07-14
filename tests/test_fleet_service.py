@@ -285,7 +285,13 @@ class FleetServiceTests(unittest.TestCase):
                 json.dumps(
                     {
                         "finished_at": fleet_service._iso_utc(),
-                        "eval": {"status": "ok", "detail": {"status": "ok"}},
+                        "eval": {
+                            "status": "ok",
+                            "detail": {
+                                "status": "ok",
+                                "app_cleanup": {"status": "partial", "stopped": 1},
+                            },
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -294,6 +300,10 @@ class FleetServiceTests(unittest.TestCase):
                 health = fleet_service.eval_service_health(paths)
 
         self.assertTrue(health["ready"])
+        self.assertEqual(
+            health["app_cleanup"],
+            {"status": "partial", "stopped": 1},
+        )
 
     def test_idle_pass_does_not_reconcile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

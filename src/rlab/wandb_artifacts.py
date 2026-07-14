@@ -6,12 +6,47 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from rlab.artifacts import model_metadata_path
 from rlab.wandb_utils import load_wandb_env
 
 
 def safe_artifact_stem(value: str, fallback: str = "artifact") -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or fallback
+
+
+def model_metadata_path(model_path: Path) -> Path:
+    return model_path.with_suffix(".metadata.json")
+
+
+def artifact_collection_name(kind: str, *, run_id: object) -> str:
+    """Return the canonical collection name for a new run-owned artifact."""
+
+    owner = str(run_id or "").strip()
+    if not owner:
+        raise ValueError("new artifact writes require an immutable W&B run id")
+    return f"{safe_artifact_stem(owner, 'rlab')}-{safe_artifact_stem(kind, 'rlab')}"
+
+
+def artifact_write_aliases(kind: str, step: int | None) -> list[str]:
+    if kind == "checkpoint":
+        aliases = ["latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    if kind == "interrupted":
+        aliases = ["interrupted", "latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    return [kind, "latest"]
+
+
+def artifact_write_ref(
+    *, namespace: str, kind: str, run_id: object, alias: str = "latest"
+) -> str:
+    namespace = str(namespace).strip().strip("/")
+    if not namespace:
+        raise ValueError("artifact namespace is required")
+    return f"{namespace}/{artifact_collection_name(kind, run_id=run_id)}:{alias}"
 
 
 def artifact_aliases(artifact: Any) -> list[str]:

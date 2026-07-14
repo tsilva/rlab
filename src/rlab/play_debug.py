@@ -296,31 +296,6 @@ def action_display_name(action: int, names: Sequence[str]) -> str:
     return humanize_name(action_name(action, names))
 
 
-def format_policy_compact(decision: PolicyDecision, action_names: Sequence[str] = ()) -> str:
-    selected = decision.selected_discrete_action
-    entropy = "unavailable" if decision.entropy is None else f"{decision.entropy:.4g} nats"
-    if selected is not None and decision.probabilities is not None:
-        ranked = np.argsort(-decision.probabilities)[:3]
-        alternatives = ", ".join(
-            f"{action_name(int(index), action_names)}={decision.probabilities[index]:.3f}"
-            for index in ranked
-        )
-        return (
-            f"action={action_name(selected, action_names)} "
-            f"p={decision.selected_probability:.3f} rank={decision.selected_rank} "
-            f"top=[{alternatives}] entropy={entropy} V(s_t)={decision.value:.4g}"
-        )
-    log_label = "log_density" if decision.distribution_kind == "gaussian" else "log_probability"
-    raw = ""
-    if not np.allclose(decision.raw_action, decision.executed_action):
-        raw = f"raw={format_action(decision.raw_action)} "
-    return (
-        f"{raw}action={format_action(decision.executed_action)} "
-        f"{log_label}={decision.log_probability:.4g} "
-        f"entropy={entropy} V(s_t)={decision.value:.4g}"
-    )
-
-
 def policy_summary_lines(
     decision: PolicyDecision,
     action_names: Sequence[str] = (),

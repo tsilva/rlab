@@ -146,6 +146,15 @@ def ale_py_atari_vector_env_type():
     return AtariVectorEnv
 
 
+def _stable_retro_packaged_data_path(game: str, filename: str) -> Path:
+    path = Path(retro.__file__).resolve().parent / "data" / "stable" / game / filename
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"stable-retro-turbo does not provide packaged data for {game}: {filename}"
+        )
+    return path
+
+
 def provider_native_vec_kwargs(
     config: Any,
     *,
@@ -182,6 +191,13 @@ def provider_native_vec_kwargs(
             except KeyError as exc:
                 choices = ", ".join(member.name.lower() for member in enum_type)
                 raise ValueError(f"env_args.{key} must be one of {choices}") from exc
+        if (
+            provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id
+            and native_kwargs.get("info") == "data"
+        ):
+            native_kwargs["info"] = str(
+                _stable_retro_packaged_data_path(config.game, "data.json")
+            )
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
             raise ValueError(

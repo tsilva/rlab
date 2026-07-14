@@ -768,14 +768,6 @@ def runtime_release_from_args(
             timeout=timeout,
             repo_root=repo_root,
         )
-    explicit_ref = getattr(args, "runtime_image_ref", None)
-    if explicit_ref:
-        normalized = normalize_runtime_image_ref(explicit_ref)
-        if normalized != release.runtime_image_ref:
-            raise ValueError(
-                "explicit runtime image does not match the exact-source image receipt for "
-                f"source {source_sha}: expected {release.runtime_image_ref}, got {normalized}"
-            )
     if wait_for_modal and str(checkpoint_eval_backend or "") == "modal":
         remaining = max(timeout - (time.monotonic() - readiness_started), 0.0)
         release = wait_for_modal_readiness(

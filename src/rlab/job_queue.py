@@ -35,8 +35,8 @@ from rlab.runtime_refs import (
 )
 from rlab.recipe_documents import (
     assert_no_secrets,
+    compose_train_document,
     compiled_recipe_payload,
-    load_recipe_document,
     recipe_goal_slug,
     recipe_metadata,
     recipe_slug,
@@ -60,6 +60,8 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS train_jobs (
   id BIGSERIAL PRIMARY KEY,
   goal_slug TEXT NOT NULL,
+  goal_path TEXT,
+  goal_sha256 TEXT,
   recipe_slug TEXT,
   recipe_path TEXT,
   recipe_sha256 TEXT,
@@ -78,7 +80,6 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   submission_ordinal INTEGER NOT NULL CHECK (submission_ordinal >= 0),
   request_hash TEXT NOT NULL,
   retry_of_job_id BIGINT REFERENCES train_jobs(id),
-  retried_from_job_id BIGINT REFERENCES train_jobs(id),
   run_name TEXT,
   run_description TEXT,
   seed INTEGER,
@@ -234,7 +235,24 @@ DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS campaign_id TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS goal_path TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS goal_sha256 TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id BIGINT REFERENCES train_jobs(id);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'train_jobs'
+      AND column_name = 'retried_from_job_id'
+  ) THEN
+    UPDATE train_jobs
+    SET retry_of_job_id = COALESCE(retry_of_job_id, retried_from_job_id)
+    WHERE retried_from_job_id IS NOT NULL;
+    ALTER TABLE train_jobs DROP COLUMN retried_from_job_id;
+  END IF;
+END $$;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS learner_ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
@@ -605,11 +623,19 @@ def _submission_request_hash(
     machine: str,
     runtime_image_ref: str,
     seeds: Sequence[int],
+    goal_path: str | None = None,
+    goal_sha256: str | None = None,
+    recipe_path: str | None = None,
+    recipe_sha256: str | None = None,
 ) -> str:
     return _hash_json(
         {
             "document": document,
+            "goal_path": str(goal_path or ""),
+            "goal_sha256": str(goal_sha256 or ""),
             "machine": machine,
+            "recipe_path": str(recipe_path or ""),
+            "recipe_sha256": str(recipe_sha256 or ""),
             "runtime_image_ref": runtime_image_ref,
             "seeds": list(seeds),
         }
@@ -722,6 +748,8 @@ def enqueue_train_jobs_from_recipe_document(
     runtime_input_sha256: str = "",
     runtime_build_source_sha: str = "",
     submission_key: str | None = None,
+    goal_path: str | None = None,
+    goal_sha256: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
     repo_git_commit: str | None = None,
@@ -772,6 +800,10 @@ def enqueue_train_jobs_from_recipe_document(
         machine=machine,
         runtime_image_ref=runtime_image_ref,
         seeds=document_seeds,
+        goal_path=goal_path,
+        goal_sha256=goal_sha256,
+        recipe_path=recipe_path,
+        recipe_sha256=recipe_sha256,
     )
     if explicit_submission_key:
         with conn:
@@ -835,6 +867,8 @@ def enqueue_train_jobs_from_recipe_document(
             row = enqueue_train_job(
                 conn,
                 goal_slug=goal_slug,
+                goal_path=goal_path,
+                goal_sha256=goal_sha256,
                 recipe_slug=document_slug,
                 recipe_path=recipe_path,
                 recipe_sha256=recipe_sha256,
@@ -884,6 +918,8 @@ def enqueue_train_job(
     train_config: Mapping[str, Any],
     runtime_input_sha256: str = "",
     runtime_build_source_sha: str = "",
+    goal_path: str | None = None,
+    goal_sha256: str | None = None,
     recipe_slug: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
@@ -917,6 +953,9 @@ def enqueue_train_job(
     requested_config["runtime_input_sha256"] = str(runtime_input_sha256).strip()
     requested_config["runtime_build_source_sha"] = str(runtime_build_source_sha).strip()
     requested_config["source_sha"] = str(repo_git_commit or "").strip()
+    requested_config["goal_path"] = str(goal_path or "")
+    requested_config["goal_sha256"] = str(goal_sha256 or "").strip()
+    requested_config["recipe_path"] = str(recipe_path or "")
     requested_config["recipe_sha256"] = str(recipe_sha256 or "").strip()
     composition = (recipe_payload or {}).get("_composition")
     requested_config["recipe_composition"] = (
@@ -989,6 +1028,7 @@ def enqueue_train_job(
                 config.get("env_provider"), config.get("game")
             ),
             "goal_slug": goal_slug,
+            "goal_path": str(goal_path or ""),
             "machine": machine,
             "queue_train_job_id": 1,
             "recipe_path": str(recipe_path or ""),
@@ -1020,25 +1060,29 @@ def enqueue_train_job(
             cur.execute(
                 """
                 INSERT INTO train_jobs (
-                  goal_slug, recipe_slug, recipe_path, recipe_sha256, repo_git_commit,
+                  goal_slug, goal_path, goal_sha256, recipe_slug, recipe_path, recipe_sha256,
+                  repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
                   batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
-                  retry_of_job_id, retried_from_job_id, run_name, run_description, seed,
+                  retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
                 )
                 VALUES (
-                  %(goal_slug)s, %(recipe_slug)s, %(recipe_path)s, %(recipe_sha256)s,
+                  %(goal_slug)s, %(goal_path)s, %(goal_sha256)s, %(recipe_slug)s,
+                  %(recipe_path)s, %(recipe_sha256)s,
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
-                  %(retry_of_job_id)s, %(retried_from_job_id)s, %(run_name)s,
+                  %(retry_of_job_id)s, %(run_name)s,
                   %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
                 )
                 RETURNING *
                 """,
                 {
                     "goal_slug": goal_slug,
+                    "goal_path": goal_path,
+                    "goal_sha256": goal_sha256,
                     "recipe_slug": recipe_slug,
                     "recipe_path": recipe_path,
                     "recipe_sha256": recipe_sha256,
@@ -1054,8 +1098,6 @@ def enqueue_train_job(
                     "submission_ordinal": submission_ordinal,
                     "request_hash": request_hash,
                     "retry_of_job_id": retry_of_job_id,
-                    # Retain the legacy column for compatibility with older queue readers.
-                    "retried_from_job_id": retry_of_job_id,
                     "run_name": run_name,
                     "run_description": run_description,
                     "seed": seed,
@@ -1562,31 +1604,6 @@ def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) ->
     return json_safe(payload)
 
 
-def request_cancel_train_job(conn, *, job_id: int) -> int:
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE train_jobs
-                SET cancel_requested = TRUE,
-                    status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
-                    finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
-                WHERE id = %(job_id)s
-                  AND status IN ('pending', 'launching', 'starting', 'running')
-                """,
-                {"job_id": job_id},
-            )
-            changed = int(cur.rowcount)
-        if changed:
-            record_job_event(
-                conn,
-                job_id=job_id,
-                event_type="cancel_requested",
-                message="operator requested cancellation",
-            )
-        return changed
-
-
 def request_cancel_train_jobs(
     conn,
     *,
@@ -1662,9 +1679,7 @@ def retry_train_job(
     with conn:
         existing = _existing_submission(conn, submission_key=submission_key)
         if existing:
-            retry_source = existing[0].get("retry_of_job_id") or existing[0].get(
-                "retried_from_job_id"
-            )
+            retry_source = existing[0].get("retry_of_job_id")
             if len(existing) != 1 or retry_source != int(job_id):
                 raise ValueError(
                     f"submission_key {submission_key!r} was reused for a different retry"
@@ -1707,9 +1722,7 @@ def retry_train_job(
             )
             existing = [dict(row) for row in cur.fetchall()]
             if existing:
-                retry_source = existing[0].get("retry_of_job_id") or existing[0].get(
-                    "retried_from_job_id"
-                )
+                retry_source = existing[0].get("retry_of_job_id")
                 if len(existing) != 1 or retry_source != int(job_id):
                     raise ValueError(
                         f"submission_key {submission_key!r} was reused for a different retry"
@@ -1732,6 +1745,8 @@ def retry_train_job(
         result = enqueue_train_job(
             conn,
             goal_slug=source["goal_slug"],
+            goal_path=source.get("goal_path"),
+            goal_sha256=source.get("goal_sha256"),
             recipe_slug=source.get("recipe_slug"),
             recipe_path=source.get("recipe_path"),
             recipe_sha256=source.get("recipe_sha256"),
@@ -2086,20 +2101,17 @@ def print_status(report: Mapping[str, Any]) -> None:
 def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab train",
-        description="Create queue-backed train jobs from a checked-in recipe file.",
+        description=(
+            "Create queue-backed train jobs from one checked-in goal contract and recipe."
+        ),
+        allow_abbrev=False,
     )
     add_direct_database_arg(parser)
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
+    parser.add_argument("--goal-file", dest="goal_file", type=Path, required=True)
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--machine", required=True, help="Exact registered machine name.")
     parser.add_argument("--request-id", dest="submission_key")
-    parser.add_argument(
-        "--runtime-image-ref",
-        help=(
-            "Optional immutable runtime image ref; it must match the image receipt for the "
-            "current clean source revision."
-        ),
-    )
     parser.add_argument(
         "--runtime-image-ref-file",
         type=Path,
@@ -2199,7 +2211,6 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("--job", dest="job_id", type=int, required=True)
     retry.add_argument("--request-id", dest="submission_key")
     retry.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
-    retry.add_argument("--runtime-image-ref")
     retry.add_argument("--runtime-image-ref-file", type=Path)
     retry.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
     retry.add_argument("--image-branch")
@@ -2303,7 +2314,8 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
 
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
-    document = load_recipe_document(
+    document = compose_train_document(
+        args.goal_file,
         args.recipe_file,
         recipe_overrides=args.recipe_overrides,
     )
@@ -2326,7 +2338,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "Git source changed while waiting for runtime readiness; rerun rlab train"
         )
-    metadata = recipe_metadata(args.recipe_file, document)
+    metadata = recipe_metadata(args.goal_file, args.recipe_file, document)
     from rlab.docker_host import DockerRunnerHost
 
     host = DockerRunnerHost(machine_config)
@@ -2339,8 +2351,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         def validate_modal_readiness() -> Any:
             modal_started = time.perf_counter()
             remaining = max(
-                float(args.runtime_readiness_timeout)
-                - (time.perf_counter() - readiness_started),
+                float(args.runtime_readiness_timeout) - (time.perf_counter() - readiness_started),
                 0.0,
             )
             ready_release = wait_for_modal_readiness(
@@ -2400,6 +2411,8 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             runtime_input_sha256=release.runtime_input_sha256,
             runtime_build_source_sha=release.runtime_build_source_sha,
             submission_key=args.submission_key,
+            goal_path=metadata["goal_path"],
+            goal_sha256=metadata["goal_sha256"],
             recipe_path=metadata["recipe_path"],
             recipe_sha256=metadata["recipe_sha256"],
             repo_git_commit=metadata["repo_git_commit"],
@@ -2452,9 +2465,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         wandb_ready_at = timestamp(job.get("wandb_ready_at"))
         ready_at = timestamp(job.get("ready_at"))
         if created_at and started_at:
-            timings["queue_to_container_start_seconds"] = (
-                started_at - created_at
-            ).total_seconds()
+            timings["queue_to_container_start_seconds"] = (started_at - created_at).total_seconds()
         if started_at and ready_at:
             timings["container_to_learner_wandb_ready_seconds"] = (
                 ready_at - started_at

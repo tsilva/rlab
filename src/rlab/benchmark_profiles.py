@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -9,7 +10,7 @@ from typing import Any
 
 from rlab.config_loader import load_mapping_document
 from rlab.machines import load_machine_registry, resolve_machine
-from rlab.recipe_documents import load_recipe_document
+from rlab.recipe_documents import compose_train_document
 from rlab.runtime_refs import docker_image_ref, runtime_image_ref_from_file
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.validation import int_list
@@ -30,14 +31,14 @@ ALLOWED_KINDS = {
     "eval_contract",
     "fleet_capacity",
     "local_smoke",
-    "ppo_loop_throughput",
+    "train_loop_throughput",
 }
 COMMON_PROFILE_FIELDS = frozenset(
     {"schema_version", "name", "kind", "description", "expectations", "artifacts"}
 )
 PROFILE_FIELDS_BY_KIND = {
     "artifact_storage_smoke": frozenset(
-        {"recipe_file", "recipe_overrides", "run_name", "run_description"}
+        {"goal_file", "recipe_file", "recipe_overrides", "run_name", "run_description"}
     ),
     "container_smoke": frozenset({"runtime_image_ref", "runtime_image_ref_file"}),
     "env_throughput": frozenset(
@@ -56,23 +57,21 @@ PROFILE_FIELDS_BY_KIND = {
             "warmup",
         }
     ),
-    "eval_contract": frozenset(
-        {"artifact_ref", "episodes", "game", "max_steps", "model_path"}
-    ),
+    "eval_contract": frozenset({"artifact_ref", "episodes", "game", "max_steps", "model_path"}),
     "fleet_capacity": frozenset(
-        {"machine", "recipe_file", "requested_workers", "runtime_image_ref_file"}
+        {"goal_file", "machine", "recipe_file", "requested_workers", "runtime_image_ref_file"}
     ),
     "local_smoke": frozenset(
         {
             "machine",
+            "goal_file",
             "recipe_file",
             "recipe_overrides",
-            "runtime_image_ref",
             "runtime_image_ref_file",
         }
     ),
-    "ppo_loop_throughput": frozenset(
-        {"recipe_file", "recipe_overrides", "run_description", "run_name"}
+    "train_loop_throughput": frozenset(
+        {"goal_file", "recipe_file", "recipe_overrides", "run_description", "run_name"}
     ),
 }
 STATE_NONE_VALUES = {"", "none", "state.none"}
@@ -84,6 +83,7 @@ class BenchmarkCommand:
     argv: tuple[str, ...]
     cwd: Path | None = None
     env: Mapping[str, str] | None = None
+    stdin: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -94,6 +94,8 @@ class BenchmarkCommand:
             payload["cwd"] = str(self.cwd)
         if self.env:
             payload["env"] = dict(self.env)
+        if self.stdin is not None:
+            payload["stdin_json"] = json.loads(self.stdin)
         return payload
 
 
@@ -166,10 +168,12 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         if "repeats" in payload:
             require_int(payload, "repeats", label=label, minimum=1)
 
-    if kind in {"ppo_loop_throughput", "artifact_storage_smoke"}:
+    if kind in {"train_loop_throughput", "artifact_storage_smoke"}:
+        require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
         string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
-        document = load_recipe_document(
+        document = compose_train_document(
+            Path(str(payload["goal_file"])),
             Path(str(payload["recipe_file"])),
             recipe_overrides=payload.get("recipe_overrides", ()),
         )
@@ -186,6 +190,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
     if kind == "local_smoke":
         if "workers" in payload:
             raise ValueError(f"{label} does not support invocation-local workers")
+        require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
         require_non_empty_string(payload, "machine", label=label, require_present=False)
         string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
@@ -198,6 +203,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             )
         if not payload.get("recipe_file"):
             raise ValueError(f"{label}.recipe_file must be a non-empty string")
+        require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
         require_non_empty_string(
             payload,
@@ -229,9 +235,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
     allowed_fields = COMMON_PROFILE_FIELDS | PROFILE_FIELDS_BY_KIND[kind]
     unknown_fields = sorted(set(payload) - allowed_fields)
     if unknown_fields:
-        raise ValueError(
-            f"{label} has unknown field(s) for {kind}: {', '.join(unknown_fields)}"
-        )
+        raise ValueError(f"{label} has unknown field(s) for {kind}: {', '.join(unknown_fields)}")
 
 
 def load_benchmark_profile(path: Path) -> BenchmarkProfile:
@@ -247,7 +251,9 @@ def load_benchmark_profiles(profile_dir: Path = DEFAULT_PROFILE_DIR) -> list[Ben
     return [load_benchmark_profile(path) for path in paths]
 
 
-def find_benchmark_profile(name_or_path: str, *, profile_dir: Path = DEFAULT_PROFILE_DIR) -> BenchmarkProfile:
+def find_benchmark_profile(
+    name_or_path: str, *, profile_dir: Path = DEFAULT_PROFILE_DIR
+) -> BenchmarkProfile:
     candidate = Path(name_or_path)
     if candidate.is_file():
         return load_benchmark_profile(candidate)
@@ -257,8 +263,21 @@ def find_benchmark_profile(name_or_path: str, *, profile_dir: Path = DEFAULT_PRO
     raise ValueError(f"unknown benchmark profile {name_or_path!r}")
 
 
-def _command(label: str, argv: Sequence[str], *, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> BenchmarkCommand:
-    return BenchmarkCommand(label=label, argv=tuple(str(part) for part in argv), cwd=cwd, env=env)
+def _command(
+    label: str,
+    argv: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stdin: str | None = None,
+) -> BenchmarkCommand:
+    return BenchmarkCommand(
+        label=label,
+        argv=tuple(str(part) for part in argv),
+        cwd=cwd,
+        env=env,
+        stdin=stdin,
+    )
 
 
 def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
@@ -271,11 +290,14 @@ def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
 
 
 def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+    goal_file = str(profile["goal_file"])
     recipe_file = str(profile["recipe_file"])
     machine = str(profile.get("machine") or "local-macbook")
     enqueue = [
         "rlab",
         "train",
+        "--goal-file",
+        goal_file,
         "--recipe-file",
         recipe_file,
         "--machine",
@@ -285,8 +307,6 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     ]
     if profile.get("runtime_image_ref_file"):
         enqueue.extend(["--runtime-image-ref-file", str(profile["runtime_image_ref_file"])])
-    if profile.get("runtime_image_ref"):
-        enqueue.extend(["--runtime-image-ref", str(profile["runtime_image_ref"])])
     for override in string_list(profile.get("recipe_overrides", ()), label="recipe_overrides"):
         enqueue.extend(["--set", override])
     return [
@@ -344,23 +364,26 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
 
 
 def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    document = load_recipe_document(
+    document = compose_train_document(
+        Path(str(profile["goal_file"])),
         Path(str(profile["recipe_file"])),
         recipe_overrides=profile.get("recipe_overrides", ()),
     )
     config = dict(require_mapping(document["train_config"], label="train_config"))
     config.pop("early_stop", None)
     config.pop("checkpoint_eval_stages", None)
-    config["run_name"] = str(
-        profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}"
-    )
+    config["run_name"] = str(profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}")
     config["run_description"] = str(
         profile.get("run_description")
-        or f"Benchmark profile {profile['name']} PPO loop probe."
+        or f"Benchmark profile {profile['name']} training-loop probe."
     )
-    from rlab.train_config import build_train_command_from_fields
-
-    return [_command("train", build_train_command_from_fields(config))]
+    return [
+        _command(
+            "train",
+            [sys.executable, "-m", "rlab.train", "--train-config-json", "/dev/stdin"],
+            stdin=json.dumps(config, sort_keys=True),
+        )
+    ]
 
 
 def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
@@ -378,6 +401,7 @@ def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkComma
 
 
 def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+    goal_file = str(profile["goal_file"])
     recipe_file = str(profile["recipe_file"])
     machine = str(profile["machine"])
     commands = [
@@ -386,6 +410,8 @@ def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
             [
                 "rlab",
                 "train",
+                "--goal-file",
+                goal_file,
                 "--recipe-file",
                 recipe_file,
                 "--machine",
@@ -438,7 +464,7 @@ def build_benchmark_commands(profile: BenchmarkProfile) -> list[BenchmarkCommand
         return _container_smoke_commands(payload)
     if kind == "env_throughput":
         return _env_throughput_commands(payload)
-    if kind in {"artifact_storage_smoke", "ppo_loop_throughput"}:
+    if kind in {"artifact_storage_smoke", "train_loop_throughput"}:
         return _train_profile_commands(payload)
     if kind == "fleet_capacity":
         return _fleet_capacity_commands(payload)

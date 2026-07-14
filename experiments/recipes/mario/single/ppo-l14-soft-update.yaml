@@ -1,0 +1,15 @@
+defaults:
+- ../../_presets/mario-single-ppo@_global_
+- _self_
+recipe_id: ppo-l14-soft-update
+description: >-
+  Seed {seed} trains the {goal_id} B257 soft-update PPO recipe, preserving the common
+  single-level reward contract while lowering update pressure for stable World 1-4 clears.
+train:
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.2e-4
+      learning_rate_final: 8.0e-5
+      clip_range: 0.12
+      target_kl: 0.10

@@ -2,6 +2,11 @@ enabled: true
 deployment:
   app_name_prefix: rlab-eval
   function_name: evaluate_checkpoint
+cleanup:
+  enabled: true
+  interval_seconds: 3600
+  grace_seconds: 86400
+  max_stops_per_pass: 10
 limits:
   hard_max_active: 20
   initial_effective_capacity: 1

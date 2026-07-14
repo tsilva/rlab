@@ -435,6 +435,44 @@ class MetricStore:
             ).fetchone()
         return None if row is None else float(row["value"])
 
+    def result_projection(self) -> dict[str, Any]:
+        """Project durable run-result evidence from the structured ledger."""
+
+        with self.connection() as conn:
+            metric_rows = conn.execute(
+                "SELECT name, value FROM metric_latest ORDER BY name"
+            ).fetchall()
+            artifact_rows = conn.execute(
+                """
+                SELECT c.kind, c.path, u.artifact_ref, u.storage_uri
+                FROM artifact_uploads AS u
+                JOIN checkpoints AS c ON c.id = u.checkpoint_id
+                WHERE u.status = 'uploaded'
+                ORDER BY c.id
+                """
+            ).fetchall()
+        metrics: dict[str, int | float] = {}
+        for row in metric_rows:
+            value = float(row["value"])
+            metrics[str(row["name"])] = int(value) if value.is_integer() else value
+        artifact_refs = []
+        for row in artifact_rows:
+            artifact_ref = str(row["artifact_ref"] or "").strip()
+            collection = artifact_ref.rsplit("/", 1)[-1].rsplit(":", 1)[0]
+            artifact_refs.append(
+                {
+                    "name": collection or str(row["kind"]),
+                    "location": str(row["storage_uri"] or row["path"]),
+                    "artifact_ref": artifact_ref or None,
+                }
+            )
+        return {
+            "artifact_refs": artifact_refs,
+            "metrics_json": metrics,
+            "phase_counts": self.phase_counts(),
+            "telemetry_health": self.telemetry_health(),
+        }
+
     def reset_interrupted_artifact_uploads(self) -> int:
         now = time.time()
         with self.connection() as conn:

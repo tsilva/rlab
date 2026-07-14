@@ -176,7 +176,9 @@ class TrainImageTests(unittest.TestCase):
         self.assertIn("name: rlab-modal-eval-readiness", modal_workflow)
         self.assertIn("--only-group modal-deploy --no-install-project", modal_workflow)
         self.assertIn("uv run --no-sync modal deploy", modal_workflow)
-        self.assertIn("if: inputs.deploy_required", modal_workflow)
+        self.assertIn("Resolve Modal deployment requirement", modal_workflow)
+        self.assertIn("except modal.exception.NotFoundError", modal_workflow)
+        self.assertIn("if: steps.modal_deployment.outputs.required == 'true'", modal_workflow)
         self.assertIn('"schema_version": 2', modal_workflow)
         self.assertIn(
             "from rlab.contract_versions import TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION",
@@ -201,9 +203,11 @@ class TrainImageTests(unittest.TestCase):
             workflow,
         )
         self.assertIn('echo "deploy_required=false"', workflow)
-        self.assertIn("if: inputs.deploy_required", Path(
-            ".github/workflows/rlab-modal-eval.yml"
-        ).read_text(encoding="utf-8"))
+        modal_workflow = Path(".github/workflows/rlab-modal-eval.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("except modal.exception.NotFoundError", modal_workflow)
+        self.assertIn("if: steps.modal_deployment.outputs.required == 'true'", modal_workflow)
 
 
 if __name__ == "__main__":

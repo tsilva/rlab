@@ -465,6 +465,7 @@ def eval_service_health(
         "eval_status": eval_status,
         "eval_detail_status": detail_status,
         "error": eval_lane.get("error") or eval_detail.get("error"),
+        "app_cleanup": eval_detail.get("app_cleanup"),
     }
 
 

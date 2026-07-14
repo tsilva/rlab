@@ -357,7 +357,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         **dict(job.get("train_config") or {}),
         "runs_dir": str(output_dir / "runs"),
     }
-    metadata = collect_result_metadata(metadata_job, log_path)
+    metadata = collect_result_metadata(metadata_job)
     status = "succeeded" if returncode == 0 else "failed"
     result = {
         **base_result(payload),

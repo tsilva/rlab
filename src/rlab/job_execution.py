@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,11 +18,6 @@ from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import validate_training_seed
 from rlab.wandb_utils import game_family_for_environment
-
-
-ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
-METRIC_ROW_RE = re.compile(r"\|\s+(?P<key>[A-Za-z0-9_./-]+)\s+\|\s+(?P<value>[^|]+?)\s+\|")
-WANDB_RUN_URL_RE = re.compile(r"https://wandb\.ai/\S+/runs/[A-Za-z0-9_-]+")
 
 
 def normalize_train_config(
@@ -53,11 +47,7 @@ def normalize_train_config(
     if campaign_id:
         config["campaign_id"] = campaign_id
         append_unique_wandb_tag(tags, f"campaign_id:{campaign_id}")
-    retry_of_job_id = (
-        job.get("retry_of_job_id")
-        or job.get("retried_from_job_id")
-        or config.get("retry_of_job_id")
-    )
+    retry_of_job_id = job.get("retry_of_job_id") or config.get("retry_of_job_id")
     if retry_of_job_id:
         config["retry_of_job_id"] = int(retry_of_job_id)
         append_unique_wandb_tag(tags, f"retry_of_job_id:{int(retry_of_job_id)}")
@@ -71,6 +61,12 @@ def normalize_train_config(
     if goal_slug:
         config["goal_slug"] = goal_slug
         append_unique_wandb_tag(tags, f"goal_id:{goal_slug}")
+    goal_path = str(job.get("goal_path") or config.get("goal_path") or "").strip()
+    if goal_path:
+        config["goal_path"] = goal_path
+    goal_sha256 = str(job.get("goal_sha256") or config.get("goal_sha256") or "").strip()
+    if goal_sha256:
+        config["goal_sha256"] = goal_sha256
     recipe_slug = str(job.get("recipe_slug") or "").strip()
     if recipe_slug:
         config["recipe_slug"] = recipe_slug
@@ -151,43 +147,7 @@ def parse_key_value_file(path: Path) -> dict[str, str]:
     return values
 
 
-def parse_metric_value(value: str) -> int | float | str:
-    text = value.strip().replace(",", "")
-    try:
-        number = float(text)
-    except ValueError:
-        return value.strip()
-    if number.is_integer() and not any(marker in text.lower() for marker in (".", "e")):
-        return int(number)
-    return number
-
-
-def parse_log_metrics(log_text: str) -> dict[str, int | float | str]:
-    metrics: dict[str, int | float | str] = {}
-    section = ""
-    for line in log_text.splitlines():
-        match = METRIC_ROW_RE.search(line)
-        if not match:
-            continue
-        key = match.group("key").strip()
-        value = match.group("value").strip()
-        if key.endswith("/") and not value:
-            section = key.rstrip("/")
-            continue
-        metric_key = key if key == "total_timesteps" or "/" in key or not section else f"{section}/{key}"
-        parsed = parse_metric_value(value)
-        metrics[metric_key] = parsed
-        if metric_key in {"total_timesteps", "time/total_timesteps"}:
-            metrics[key] = parsed
-    return metrics
-
-
-def parse_wandb_run_url(log_text: str) -> str | None:
-    matches = WANDB_RUN_URL_RE.findall(log_text)
-    return matches[-1] if matches else None
-
-
-def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, Any]:
+def collect_result_metadata(job: dict[str, Any]) -> dict[str, Any]:
     config = normalize_train_config(
         job,
         require_explicit_train_fields=False,
@@ -195,13 +155,12 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
     run_name = str(config["run_name"])
     runs_dir = str(config.get("runs_dir") or "runs")
     run_dir = Path(runs_dir) / run_name
-    log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
-    artifact_refs = [
-        {"name": match.group("name"), "location": match.group("location")}
-        for match in ARTIFACT_RE.finditer(log_text)
-    ]
-    metrics = parse_log_metrics(log_text)
-    metrics.update(parse_key_value_file(run_dir / "early_stop.txt"))
+    projection: dict[str, Any] = {
+        "artifact_refs": [],
+        "metrics_json": {},
+        "phase_counts": {},
+        "telemetry_health": {},
+    }
     checkpoint_eval_summary_path = run_dir / "checkpoint_eval_summary.json"
     checkpoint_eval_summary = []
     if checkpoint_eval_summary_path.is_file():
@@ -211,17 +170,14 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
                 checkpoint_eval_summary = loaded_summary
         except json.JSONDecodeError:
             checkpoint_eval_summary = []
-    phase_counts = {}
-    telemetry_health = {}
     store_path = metric_store_path(run_dir)
     if store_path.is_file():
         try:
-            store = MetricStore(store_path, timeout=0.05)
-            phase_counts = store.phase_counts()
-            telemetry_health = store.telemetry_health()
+            projection = MetricStore(store_path, timeout=0.05).result_projection()
         except Exception:
-            phase_counts = {}
-            telemetry_health = {}
+            pass
+    metrics = dict(projection["metrics_json"])
+    metrics.update(parse_key_value_file(run_dir / "early_stop.txt"))
     return {
         "run_name": run_name,
         "run_dir": str(run_dir),
@@ -229,10 +185,10 @@ def collect_result_metadata(job: dict[str, Any], log_path: Path) -> dict[str, An
         if (run_dir / "final_model.zip").is_file()
         else None,
         "wandb_run_id": read_text_file(run_dir / "wandb_run_id.txt"),
-        "wandb_url": read_text_file(run_dir / "wandb_url.txt") or parse_wandb_run_url(log_text),
-        "artifact_refs": artifact_refs,
+        "wandb_url": read_text_file(run_dir / "wandb_url.txt"),
+        "artifact_refs": projection["artifact_refs"],
         "checkpoint_eval_summary": checkpoint_eval_summary,
         "metrics_json": metrics,
-        "phase_counts": phase_counts,
-        "telemetry_health": telemetry_health,
+        "phase_counts": projection["phase_counts"],
+        "telemetry_health": projection["telemetry_health"],
     }

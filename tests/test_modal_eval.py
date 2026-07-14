@@ -201,6 +201,10 @@ class ModalEvalContractTests(unittest.TestCase):
     def test_checked_in_config_has_independent_twenty_call_guards(self) -> None:
         config = load_modal_eval_config(Path("experiments/modal_eval.yaml"))
         self.assertTrue(config.enabled)
+        self.assertTrue(config.cleanup_enabled)
+        self.assertEqual(config.cleanup_interval_seconds, 3600)
+        self.assertEqual(config.cleanup_grace_seconds, 86400)
+        self.assertEqual(config.cleanup_max_stops_per_pass, 10)
         self.assertEqual(config.hard_max_active, 20)
         self.assertEqual(config.max_containers, 20)
         self.assertEqual(config.initial_effective_capacity, 1)
@@ -244,6 +248,12 @@ class ModalEvalContractTests(unittest.TestCase):
                 "preview.enabled must be true when Modal evaluation is enabled",
             ):
                 load_modal_eval_config(disabled_preview)
+            invalid_cleanup = Path(temporary) / "invalid-cleanup.yaml"
+            invalid_cleanup.write_text(
+                source.replace("  grace_seconds: 86400", "  grace_seconds: 0")
+            )
+            with self.assertRaisesRegex(ValueError, "cleanup.grace_seconds must be at least 1"):
+                load_modal_eval_config(invalid_cleanup)
 
     def test_execution_identity_excludes_job_purpose_and_job_identity_includes_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,0 +1,7 @@
+defaults:
+- ../../_presets/mario-mixed-ppo@_global_
+- _self_
+recipe_id: ppo
+description: >-
+  Seed {seed} trains a task-conditioned {goal_id} PPO policy with per-task advantage
+  normalization and the goal contract's checkpoint-evaluation and ranking protocol.

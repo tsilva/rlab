@@ -92,8 +92,34 @@ jobs:
             docker:*@sha256:*) ;;
             *) echo "runtime_image_ref must be an immutable docker digest ref" >&2; exit 2 ;;
           esac
+      - name: Resolve Modal deployment requirement
+        id: modal_deployment
+        env:
+          DEPLOY_REQUIRED: ${{ inputs.deploy_required }}
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+
+          import modal
+
+          from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
+
+          required = os.environ["DEPLOY_REQUIRED"].lower() == "true"
+          if not required:
+              config = load_modal_eval_config()
+              app_name = modal_app_name(
+                  config.app_name_prefix,
+                  os.environ["RLAB_MODAL_EVAL_RUNTIME_IMAGE"],
+              )
+              try:
+                  modal.Function.from_name(app_name, config.function_name).hydrate()
+              except modal.exception.NotFoundError:
+                  required = True
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"required={str(required).lower()}\n")
+          PY
       - name: Deploy immutable Modal evaluator
-        if: inputs.deploy_required
+        if: steps.modal_deployment.outputs.required == 'true'
         run: uv run --no-sync modal deploy -m rlab.modal_app
       - name: Prove deployed worker image startup
         id: probe

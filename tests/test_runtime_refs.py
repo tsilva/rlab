@@ -220,7 +220,6 @@ class RuntimeRefsTests(unittest.TestCase):
             image_artifact=runtime_refs.DEFAULT_IMAGE_ARTIFACT,
             runtime_readiness_timeout=60,
             runtime_image_ref_file=None,
-            runtime_image_ref=None,
         )
         release = image_info()
         with (

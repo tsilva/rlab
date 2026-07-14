@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +11,7 @@ import numpy as np
 
 from rlab.batch_runtime import EpisodeRecord
 from rlab.env import EnvConfig
-from rlab.eval import ScriptedPolicy
+from rlab.eval import ScriptedPolicy, load_eval_sb3_model
 from rlab.eval_metrics import (
     eval_by_start_rows,
     episode_rank,
@@ -299,6 +301,29 @@ def log_checkpoint_eval(
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_eval_model_identity_uses_a2c_checkpoint_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "model.zip"
+            model_path.write_bytes(b"model")
+            model_path.with_suffix(".metadata.json").write_text(
+                json.dumps(
+                    {
+                        "training_backend_id": "sb3.a2c",
+                        "algorithm_id": "a2c",
+                        "model_class": "stable_baselines3.a2c.a2c.A2C",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = object()
+            with patch("rlab.eval.load_sb3_model", return_value=loaded) as load_model:
+                model, policy = load_eval_sb3_model(model_path, device="cpu")
+
+            self.assertIs(model, loaded)
+            self.assertEqual(policy, "a2c")
+            self.assertEqual(load_model.call_args.kwargs["metadata"]["algorithm_id"], "a2c")
+
     def test_training_and_eval_share_terminal_reason_suffixes(self) -> None:
         record = EpisodeRecord(
             lane=0,

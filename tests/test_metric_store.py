@@ -30,6 +30,44 @@ STAGES = [
 
 
 class MetricStoreTests(unittest.TestCase):
+    def test_result_projection_uses_structured_metrics_and_artifact_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            checkpoint_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=128,
+                path=Path(tmp) / "model_128_steps.zip",
+                metadata_path=None,
+            )
+            store.append_metrics(
+                {"global_step": 128, "train/throughput/loop_fps": 1.25},
+                step=128,
+                source="learner",
+                publish=False,
+            )
+            store.mark_artifact_uploaded(
+                checkpoint_id,
+                artifact_ref="entity/project/rlab-run-checkpoint:step-128",
+                storage_uri="s3://bucket/rlab-run-checkpoint/model.zip",
+            )
+
+            result = store.result_projection()
+
+        self.assertEqual(result["metrics_json"]["global_step"], 128)
+        self.assertEqual(result["metrics_json"]["train/throughput/loop_fps"], 1.25)
+        self.assertEqual(
+            result["artifact_refs"],
+            [
+                {
+                    "name": "rlab-run-checkpoint",
+                    "location": "s3://bucket/rlab-run-checkpoint/model.zip",
+                    "artifact_ref": "entity/project/rlab-run-checkpoint:step-128",
+                }
+            ],
+        )
+
     def test_rejects_unknown_scalar_metric_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")

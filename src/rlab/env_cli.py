@@ -21,7 +21,7 @@ from rlab.env_registry import (
 def _editable_source_root(distribution: Any) -> Path | None:
     try:
         payload = json.loads(distribution.read_text("direct_url.json") or "")
-    except (AttributeError, json.JSONDecodeError, TypeError):
+    except AttributeError, json.JSONDecodeError, TypeError:
         return None
     if not isinstance(payload, Mapping):
         return None
@@ -337,9 +337,10 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
         )
         from rlab.env_config import env_config_from_mapping
         from rlab.provider_config import provider_num_envs
-        from rlab.recipe_documents import load_recipe_document
+        from rlab.recipe_documents import compose_train_document
 
-        document = load_recipe_document(
+        document = compose_train_document(
+            args.goal_file,
             args.recipe_file,
             recipe_overrides=args.recipe_overrides,
         )
@@ -353,6 +354,7 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
         config = resolve_mixed_state_config(config, n_envs=n_envs)
         report["declared"] = _provider_payload(provider, provider_env_id=config.game)
         report["resolved"] = {
+            "goal_file": str(args.goal_file),
             "recipe_file": str(args.recipe_file),
             "recipe_overrides": list(args.recipe_overrides),
             "qualified_env_id": f"{provider.provider_id}:{config.game}",
@@ -377,8 +379,7 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
             else None
         )
         if not module_path.is_relative_to(distribution_root) and not (
-            editable_source_root is not None
-            and module_path.is_relative_to(editable_source_root)
+            editable_source_root is not None and module_path.is_relative_to(editable_source_root)
         ):
             raise RuntimeError(
                 f"provider module resolves outside its installed distribution: {module_path}"
@@ -629,6 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.set_defaults(handler=_cmd_inspect)
 
     check_parser = commands.add_parser("check", help="Run a recipe-backed environment preflight.")
+    check_parser.add_argument("--goal-file", type=Path, required=True)
     check_parser.add_argument("--recipe-file", type=Path, required=True)
     check_parser.add_argument("--set", dest="recipe_overrides", action="append", default=[])
     check_parser.add_argument("--seed", type=int, default=0)

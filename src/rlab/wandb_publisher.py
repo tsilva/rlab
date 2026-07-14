@@ -13,7 +13,6 @@ from rlab.artifacts import (
     build_s3_artifact_uri,
     init_wandb,
     log_wandb_model_artifact,
-    wandb_artifact_collection_name,
     wandb_artifact_storage_uri,
     write_wandb_url,
 )
@@ -25,20 +24,7 @@ from rlab.metric_names import validate_metric_payload
 from rlab.metric_names import EVAL_SCREEN_PREVIEW
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
-
-
-def artifact_aliases(kind: str, step: int | None) -> list[str]:
-    if kind == "checkpoint":
-        aliases = ["latest"]
-        if step is not None:
-            aliases.append(f"step-{step}")
-        return aliases
-    if kind == "interrupted":
-        aliases = ["interrupted", "latest"]
-        if step is not None:
-            aliases.append(f"step-{step}")
-        return aliases
-    return [kind, "latest"]
+from rlab.wandb_artifacts import artifact_write_aliases, artifact_write_ref
 
 
 def artifact_ref(
@@ -60,8 +46,12 @@ def artifact_ref(
         return None
     alias = aliases[-1] if aliases else "latest"
     run_id = getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None)
-    name = wandb_artifact_collection_name(kind, run_id=run_id)
-    return f"{entity}/{project}/{name}:{alias}"
+    return artifact_write_ref(
+        namespace=f"{entity}/{project}",
+        kind=kind,
+        run_id=run_id,
+        alias=alias,
+    )
 
 
 def process_upload(
@@ -79,7 +69,7 @@ def process_upload(
     kind = str(row["kind"])
     step = row.get("step")
     step_value = int(step) if step is not None else None
-    aliases = artifact_aliases(kind, step_value)
+    aliases = artifact_write_aliases(kind, step_value)
     try:
         log_wandb_model_artifact(
             wandb_run,

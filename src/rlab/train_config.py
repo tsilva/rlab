@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +22,7 @@ SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
 FieldOwner = Literal["runtime", "goal_environment", "goal_objective"]
 SourceSection = Literal["runtime", "train", "goal_train"]
+
 
 @dataclass(frozen=True)
 class TrainConfigField:
@@ -154,48 +154,6 @@ def add_env_config_args(
     parser.add_argument("--max-steps", type=int, default=max_steps_default)
 
 
-def _serialize_value(field: TrainConfigField, value: Any) -> str | None:
-    if value is None or value == "":
-        return None
-    if field.serialize == "skip_nonpositive_float" and float(value) <= 0:
-        return None
-    if field.serialize == "json" and isinstance(value, Mapping | list | tuple):
-        return json.dumps(value, separators=(",", ":"))
-    if field.serialize == "rows" and isinstance(value, list | tuple):
-        return ";".join(
-            ",".join(str(item) for item in row) if isinstance(row, list | tuple) else str(row)
-            for row in value
-        )
-    if field.serialize == "csv" and isinstance(value, list | tuple):
-        return ",".join(str(item) for item in value)
-    return str(value)
-
-
-def build_train_command_from_fields(options: Mapping[str, Any]) -> list[str]:
-    cmd = [sys.executable, "-m", "rlab.train"]
-    for field in TRAIN_CONFIG_FIELDS:
-        if not field.cli_exposed:
-            continue
-        if field.dest not in options:
-            continue
-        value = options[field.dest]
-        if field.kind == "store_true":
-            if value:
-                cmd.append(field.command_flag)
-            continue
-        if field.kind == "bool_optional":
-            if value is True:
-                cmd.append(field.command_flag)
-            elif value is False:
-                cmd.append(f"--no-{field.command_flag.removeprefix('--')}")
-            continue
-        serialized = _serialize_value(field, value)
-        if serialized is None:
-            continue
-        cmd.extend([field.command_flag, serialized])
-    return cmd
-
-
 def load_materialized_train_config(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -211,10 +169,7 @@ def materialized_train_args(path: Path) -> argparse.Namespace:
     """Load queue/runtime JSON without routing an internal payload through CLI parsing."""
 
     payload = load_materialized_train_config(path)
-    defaults = {
-        field.dest: _env_default(EnvConfig(), field)
-        for field in TRAIN_CONFIG_FIELDS
-    }
+    defaults = {field.dest: _env_default(EnvConfig(), field) for field in TRAIN_CONFIG_FIELDS}
     defaults.update(payload)
     args = argparse.Namespace(**defaults)
     apply_training_backend_arg_view(args, payload)
@@ -223,6 +178,7 @@ def materialized_train_args(path: Path) -> argparse.Namespace:
     args.train_config_json = path
     args._train_config_json_fields = set(payload)
     args._explicit_train_arg_dests = set()
+    args._materialized_train_config = payload
     validate_training_seed(
         args.seed,
         label="train_config.seed",
@@ -245,8 +201,7 @@ def apply_training_backend_arg_view(
     collisions = sorted(set(vars(args)) & set(backend_config))
     if collisions:
         raise ValueError(
-            "training_backend.config collides with common train fields: "
-            + ", ".join(collisions)
+            "training_backend.config collides with common train fields: " + ", ".join(collisions)
         )
     for key, value in backend_config.items():
         setattr(args, key, value)
@@ -275,10 +230,7 @@ def env_config_allowed_keys() -> frozenset[str]:
 
 
 def playback_env_arg_keys() -> dict[str, tuple[str, ...]]:
-    return {
-        field.dest: (field.dest,)
-        for field in env_config_arg_fields()
-    }
+    return {field.dest: (field.dest,) for field in env_config_arg_fields()}
 
 
 def train_config_keys_owned_by(owner: FieldOwner) -> frozenset[str]:
@@ -726,7 +678,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--post-train-eval-episodes",
         type_name="int",
         default=100,
-        source_section="train",
+        owner="goal_objective",
+        source_section="goal_train",
         help="Episodes per checkpoint for post-training checkpoint eval.",
     ),
     TrainConfigField(
@@ -746,6 +699,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         default=20,
         validation_min=1,
+        owner="goal_objective",
+        source_section="goal_train",
         help="Vector env count for checkpoint eval.",
     ),
     TrainConfigField(
@@ -803,6 +758,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--post-train-eval-max-steps",
         type_name="int",
         default=0,
+        owner="goal_objective",
+        source_section="goal_train",
         help="Max steps per post-training eval episode; <=0 uses --max-episode-steps.",
     ),
     TrainConfigField(
@@ -810,6 +767,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--post-train-eval-stochastic",
         kind="bool_optional",
         default=True,
+        owner="goal_objective",
+        source_section="goal_train",
         help="Fixed true: post-training checkpoint eval uses stochastic policy sampling.",
         cli_exposed=False,
     ),
@@ -917,6 +876,19 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     ),
     TrainConfigField(
         "goal_slug", "--goal-slug", default="", help="Research goal slug recorded in W&B config."
+    ),
+    TrainConfigField(
+        "goal_path",
+        "--goal-path",
+        default="",
+        help="Research goal path recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "goal_sha256",
+        "--goal-sha256",
+        default="",
+        cli_exposed=False,
+        help="Exact checked-in goal file hash recorded in W&B config.",
     ),
     TrainConfigField(
         "recipe_slug",

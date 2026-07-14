@@ -14,7 +14,12 @@ from rlab.job_execution import (
     train_command_for_job,
     write_train_config_file,
 )
-from rlab.recipe_documents import materialize_train_recipe_document, validate_source_recipe_shape
+from rlab.recipe_documents import (
+    compose_train_document,
+    load_recipe_source_document,
+    materialize_train_recipe_document,
+    validate_source_recipe_shape,
+)
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.seeds import DEFAULT_EVAL_SEED, DEFAULT_TRAIN_SEED
 from tests.db_fakes import FakeConnection
@@ -23,6 +28,50 @@ from tests.db_fakes import FakeConnection
 RUNTIME_IMAGE_REF = (
     "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
+MARIO_SINGLE_PPO = Path("experiments/recipes/mario/single/ppo.yaml")
+MARIO_SINGLE_GOALS = tuple(
+    Path(f"experiments/goals/SuperMarioBros-Nes-v0/Level{world}-{level}/_goal.yaml")
+    for world in range(1, 5)
+    for level in range(1, 5)
+)
+SUPPORTED_RECIPE_PAIRS = tuple(
+    (
+        goal_path,
+        (
+            Path("experiments/recipes/mario/single/ppo-l14-soft-update.yaml")
+            if goal_path.parent.name == "Level1-4"
+            else MARIO_SINGLE_PPO
+        ),
+    )
+    for goal_path in MARIO_SINGLE_GOALS
+) + (
+    (MARIO_L11_GOAL, Path("experiments/recipes/mario/single/a2c.yaml")),
+    (
+        Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/_goal.yaml"),
+        Path("experiments/recipes/mario/mixed/ppo.yaml"),
+    ),
+    (
+        Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/_goal.yaml"),
+        Path("experiments/recipes/mario/mixed/raw-advantage.yaml"),
+    ),
+    (
+        Path("experiments/goals/alepy__breakout/_goal.yaml"),
+        Path("experiments/recipes/atari/ppo.yaml"),
+    ),
+    (
+        Path("experiments/goals/alepy__breakout/_goal.yaml"),
+        Path("experiments/recipes/atari/ppo-stable-updates.yaml"),
+    ),
+    (
+        Path("experiments/goals/alepy__mspacman/_goal.yaml"),
+        Path("experiments/recipes/atari/ppo.yaml"),
+    ),
+    (
+        Path("experiments/goals/rlab__bandit/_goal.yaml"),
+        Path("experiments/recipes/bandit/ppo.yaml"),
+    ),
 )
 
 
@@ -126,7 +175,9 @@ class JobQueueTests(unittest.TestCase):
             )
 
         self.assertIsInstance(conn.transaction_error, RuntimeError)
-        self.assertTrue(any("INSERT INTO train_jobs" in sql for sql in conn.cursor_obj.executed_sqls))
+        self.assertTrue(
+            any("INSERT INTO train_jobs" in sql for sql in conn.cursor_obj.executed_sqls)
+        )
 
     def test_schema_upgrade_preserves_retired_eval_queue(self) -> None:
         conn = FakeConnection(
@@ -149,15 +200,41 @@ class JobQueueTests(unittest.TestCase):
             conn.cursor_obj.executed_sqls[-1],
         )
 
+    def test_train_enqueue_parser_rejects_direct_runtime_ref(self) -> None:
+        with self.assertRaises(SystemExit):
+            job_queue.build_train_enqueue_parser().parse_args(
+                [
+                    "--goal-file",
+                    "goal.yaml",
+                    "--recipe-file",
+                    "recipe.yaml",
+                    "--machine",
+                    "beast-3",
+                    "--runtime-image-ref",
+                    RUNTIME_IMAGE_REF,
+                ]
+            )
+
+    def test_train_enqueue_parser_requires_goal_file(self) -> None:
+        with self.assertRaises(SystemExit):
+            job_queue.build_train_enqueue_parser().parse_args(
+                [
+                    "--recipe-file",
+                    "recipe.yaml",
+                    "--machine",
+                    "beast-3",
+                ]
+            )
+
     def test_train_enqueue_parser_accepts_explicit_modal_backend(self) -> None:
         args = job_queue.build_train_enqueue_parser().parse_args(
             [
+                "--goal-file",
+                "goal.yaml",
                 "--recipe-file",
                 "recipe.yaml",
                 "--machine",
                 "beast-3",
-                "--runtime-image-ref",
-                RUNTIME_IMAGE_REF,
                 "--checkpoint-eval-backend",
                 "modal",
             ]
@@ -168,6 +245,8 @@ class JobQueueTests(unittest.TestCase):
     def test_train_enqueue_parser_accepts_explicit_no_eval_backend(self) -> None:
         args = job_queue.build_train_enqueue_parser().parse_args(
             [
+                "--goal-file",
+                "goal.yaml",
                 "--recipe-file",
                 "recipe.yaml",
                 "--machine",
@@ -215,14 +294,26 @@ class JobQueueTests(unittest.TestCase):
             game="SuperMarioBros-Nes-v0",
         )
 
-    def test_all_checked_in_recipes_materialize_modal_backend(self) -> None:
-        recipe_paths = sorted(Path("experiments/goals").glob("**/recipes/*.yaml"))
-
-        self.assertTrue(recipe_paths)
-        for path in recipe_paths:
-            with self.subTest(path=path):
-                document = job_queue.load_recipe_document(path)
-                self.assertEqual(document["train_config"]["checkpoint_eval_backend"], "modal")
+    def test_all_supported_goal_recipe_pairs_materialize_complete_contracts(self) -> None:
+        self.assertTrue(SUPPORTED_RECIPE_PAIRS)
+        for goal_path, recipe_path in SUPPORTED_RECIPE_PAIRS:
+            with self.subTest(goal_path=goal_path, recipe_path=recipe_path):
+                document = compose_train_document(goal_path, recipe_path)
+                train_config = document["train_config"]
+                self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
+                expected_backend = "sb3.a2c" if recipe_path.name == "a2c.yaml" else "sb3.ppo"
+                self.assertEqual(train_config["training_backend"]["id"], expected_backend)
+                self.assertEqual(
+                    f"{train_config['env_provider']}:{train_config['game']}",
+                    document["environment"]["env_id"],
+                )
+                composition = document["_composition"]
+                self.assertEqual(composition["goal_root_path"], str(goal_path.resolve()))
+                self.assertEqual(composition["recipe_root_path"], str(recipe_path.resolve()))
+                self.assertTrue(composition["source_files"])
+                self.assertTrue(
+                    all(len(source["sha256"]) == 64 for source in composition["source_files"])
+                )
 
     def test_submission_backend_override_is_materialized_before_enqueue(self) -> None:
         calls = []
@@ -415,12 +506,17 @@ class JobQueueTests(unittest.TestCase):
 
     def test_schema_uses_recipe_columns_without_profile_or_spec_aliases(self) -> None:
         self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", job_queue.SCHEMA_SQL)
+        self.assertIn("goal_path TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("goal_sha256 TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("ADD COLUMN IF NOT EXISTS goal_path", job_queue.SCHEMA_SQL)
+        self.assertIn("ADD COLUMN IF NOT EXISTS goal_sha256", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_slug TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_payload_json JSONB", job_queue.SCHEMA_SQL)
         self.assertIn("campaign_id TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("ADD COLUMN IF NOT EXISTS campaign_id", job_queue.SCHEMA_SQL)
         self.assertIn("retry_of_job_id BIGINT", job_queue.SCHEMA_SQL)
         self.assertIn("ADD COLUMN IF NOT EXISTS retry_of_job_id", job_queue.SCHEMA_SQL)
+        self.assertIn("DROP COLUMN retried_from_job_id", job_queue.SCHEMA_SQL)
         self.assertIn("ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("learner_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("wandb_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
@@ -438,7 +534,7 @@ class JobQueueTests(unittest.TestCase):
             conn,
             goal_slug="Level1-1",
             recipe_slug="candidate",
-            recipe_path="experiments/goals/mario/recipes/candidate.yaml",
+            recipe_path="experiments/recipes/mario/single/candidate.yaml",
             runtime_image_ref=RUNTIME_IMAGE_REF,
             machine="beast-3",
             train_config=explicit_train_config(),
@@ -556,8 +652,10 @@ class JobQueueTests(unittest.TestCase):
         row = job_queue.enqueue_train_job(
             conn,
             goal_slug="Level1-1",
+            goal_path="experiments/goals/mario/Level1-1/_goal.yaml",
+            goal_sha256="def456",
             recipe_slug="candidate",
-            recipe_path="experiments/goals/mario/recipes/candidate.yaml",
+            recipe_path="experiments/recipes/mario/single/candidate.yaml",
             recipe_sha256="abc123",
             recipe_payload={
                 "recipe_id": "candidate",
@@ -574,6 +672,9 @@ class JobQueueTests(unittest.TestCase):
         insert_sql = conn.cursor_obj.executed_sqls[0]
         insert_params = conn.cursor_obj.executed_params_list[0]
         self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        self.assertIn("goal_path", insert_sql)
+        self.assertEqual(insert_params["goal_path"], "experiments/goals/mario/Level1-1/_goal.yaml")
+        self.assertEqual(insert_params["goal_sha256"], "def456")
         self.assertIn("recipe_slug", insert_sql)
         self.assertEqual(insert_params["recipe_slug"], "candidate")
         self.assertEqual(insert_params["machine"], "beast-3")
@@ -582,6 +683,11 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(persisted_config["runtime_input_sha256"], "b" * 64)
         self.assertEqual(persisted_config["runtime_build_source_sha"], "c" * 40)
         self.assertEqual(persisted_config["source_sha"], "d" * 40)
+        self.assertEqual(
+            persisted_config["goal_path"],
+            "experiments/goals/mario/Level1-1/_goal.yaml",
+        )
+        self.assertEqual(persisted_config["goal_sha256"], "def456")
         self.assertEqual(persisted_config["recipe_sha256"], "abc123")
         self.assertEqual(
             persisted_config["recipe_composition"]["source_files"][0]["path"],
@@ -715,6 +821,61 @@ class JobQueueTests(unittest.TestCase):
                 label="recipe",
             )
 
+    def test_source_recipe_shape_rejects_goal_owned_fields_and_base_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "goal-owned or unsupported.*eval"):
+            validate_source_recipe_shape(
+                {
+                    "recipe_id": "ppo",
+                    "description": "PPO",
+                    "eval": {"episodes": 10},
+                },
+                label="recipe",
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported flat field.*environment"):
+            validate_source_recipe_shape(
+                {
+                    "recipe_id": "ppo",
+                    "description": "PPO",
+                    "train": {"environment": {"env_provider": "rlab"}},
+                },
+                label="recipe",
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "unsupported flat field.*post_train_eval_episodes",
+        ):
+            validate_source_recipe_shape(
+                {
+                    "recipe_id": "ppo",
+                    "description": "PPO",
+                    "train": {"post_train_eval_episodes": 10},
+                },
+                label="recipe",
+            )
+        with self.assertRaisesRegex(ValueError, "recipe_id=base is unsupported"):
+            validate_source_recipe_shape(
+                {"recipe_id": "base", "description": "Legacy base"},
+                label="recipe",
+            )
+
+    def test_active_recipe_leaf_cannot_inherit_another_leaf(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path("experiments/recipes")) as tmp:
+            root = Path(tmp)
+            parent = root / "parent.yaml"
+            leaf = root / "leaf.yaml"
+            parent.write_text(
+                "recipe_id: parent\ndescription: Parent recipe\n",
+                encoding="utf-8",
+            )
+            leaf.write_text(
+                "defaults:\n- parent@_global_\n- _self_\n"
+                "recipe_id: leaf\ndescription: Leaf recipe\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "may compose only presets"):
+                load_recipe_source_document(leaf)
+
     def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
         document = valid_train_recipe()
         document["train_config"]["learnnig_rate"] = 1e-4
@@ -769,7 +930,7 @@ class JobQueueTests(unittest.TestCase):
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
                 submission_key="naming-test",
-                recipe_path="experiments/goals/mario/recipes/candidate.yaml",
+                recipe_path="experiments/recipes/mario/single/candidate.yaml",
                 recipe_sha256="abc123",
                 repo_git_commit="deadbeef",
                 repo_dirty=True,
@@ -790,7 +951,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual([call["seed"] for call in calls], [23, 24])
         self.assertTrue(all("seed" not in call["train_config"] for call in calls))
         self.assertEqual(calls[0]["recipe_slug"], "candidate")
-        self.assertEqual(calls[0]["recipe_path"], "experiments/goals/mario/recipes/candidate.yaml")
+        self.assertEqual(calls[0]["recipe_path"], "experiments/recipes/mario/single/candidate.yaml")
         self.assertEqual(calls[0]["recipe_sha256"], "abc123")
 
     def test_enqueue_uses_effective_default_seed_in_row_and_run_name(self) -> None:
@@ -853,7 +1014,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(calls[0]["train_config"]["recipe_overrides"], overrides)
         self.assertEqual(calls[0]["recipe_payload"]["recipe_overrides"], overrides)
 
-    def test_load_recipe_document_applies_hydra_dotlist_overrides(self) -> None:
+    def test_compose_train_document_applies_hydra_dotlist_overrides(self) -> None:
         overrides = [
             "recipe_id=lr2e4",
             "campaign_id=Level1-1-lr2e4",
@@ -862,8 +1023,9 @@ class JobQueueTests(unittest.TestCase):
             "train.environment.task.termination.failure=[]",
         ]
 
-        document = job_queue.load_recipe_document(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml"),
+        document = compose_train_document(
+            MARIO_L11_GOAL,
+            MARIO_SINGLE_PPO,
             recipe_overrides=overrides,
         )
 
@@ -882,7 +1044,7 @@ class JobQueueTests(unittest.TestCase):
             1,
         )
 
-    def test_load_recipe_document_rejects_ale_only_arg_for_stable_retro(self) -> None:
+    def test_compose_train_document_rejects_ale_only_arg_for_stable_retro(self) -> None:
         overrides = [
             "recipe_id=episodic-life",
             "train.environment.env_config.env_args.episodic_life=true",
@@ -892,8 +1054,9 @@ class JobQueueTests(unittest.TestCase):
             ValueError,
             "unexpected or canonically-owned stable-retro-turbo constructor argument",
         ):
-            job_queue.load_recipe_document(
-                Path("experiments/goals/alepy__mspacman/recipes/base.yaml"),
+            compose_train_document(
+                Path("experiments/goals/alepy__mspacman/_goal.yaml"),
+                Path("experiments/recipes/atari/ppo.yaml"),
                 recipe_overrides=overrides,
             )
 
@@ -909,9 +1072,9 @@ class JobQueueTests(unittest.TestCase):
                 machine="beast-3",
             )
 
-    def test_load_recipe_document_rejects_active_specs_path(self) -> None:
+    def test_recipe_source_loader_rejects_active_specs_path(self) -> None:
         with self.assertRaisesRegex(ValueError, "removed active specs/ layout"):
-            job_queue.load_recipe_document(Path("experiments/goals/demo/specs/base.yaml"))
+            load_recipe_source_document(Path("experiments/goals/demo/specs/base.yaml"))
 
     def test_queue_status_selects_recipe_without_profile(self) -> None:
         conn = FakeConnection(rows=[])
@@ -982,11 +1145,11 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(conn.cursor_obj.executed_params_list[1]["launch_id"], "train-7")
 
     def test_cancel_only_terminalizes_pending_jobs(self) -> None:
-        conn = FakeConnection(results=[{"rowcount": 1}])
+        conn = FakeConnection(results=[{"rows": [{"id": 9}]}])
 
-        changed = job_queue.request_cancel_train_job(conn, job_id=9)
+        changed = job_queue.request_cancel_train_jobs(conn, job_id=9)
 
-        self.assertEqual(changed, 1)
+        self.assertEqual(changed, [9])
         sql = conn.cursor_obj.executed_sqls[0]
         self.assertIn("CASE WHEN status = 'pending' THEN 'canceled'", sql)
         self.assertNotIn("status IN ('pending', 'launching') THEN 'canceled'", sql)
@@ -1093,6 +1256,8 @@ class JobQueueTests(unittest.TestCase):
             "id": 7,
             "status": "succeeded",
             "goal_slug": "Level1-1",
+            "goal_path": "experiments/goals/mario/Level1-1/_goal.yaml",
+            "goal_sha256": "def456",
             "recipe_slug": "candidate",
             "recipe_path": "recipe.yaml",
             "recipe_sha256": "abc123",
@@ -1110,7 +1275,7 @@ class JobQueueTests(unittest.TestCase):
             "wandb_group": "b-test",
             "wandb_tags": [],
         }
-        inserted = {**source, "id": 8, "retry_of_job_id": 7, "retried_from_job_id": 7}
+        inserted = {**source, "id": 8, "retry_of_job_id": 7}
         conn = FakeConnection(
             results=[
                 {"rows": []},
@@ -1158,6 +1323,8 @@ class JobQueueTests(unittest.TestCase):
             if params.get("retry_of_job_id") == 7
         )
         self.assertEqual(insert_params["batch_id"], "b-test")
+        self.assertEqual(insert_params["goal_path"], source["goal_path"])
+        self.assertEqual(insert_params["goal_sha256"], source["goal_sha256"])
         self.assertEqual(insert_params["campaign_id"], "b93")
         self.assertEqual(insert_params["wandb_group"], "b-test")
         self.assertIn("campaign_id:b93", insert_params["wandb_tags"])
@@ -1202,6 +1369,23 @@ class JobExecutionTests(unittest.TestCase):
             config = normalize_train_config(job, require_explicit_train_fields=False)
 
         self.assertEqual(config["wandb_artifact_storage_uri"], "")
+
+    def test_worker_config_uses_queue_owned_goal_provenance(self) -> None:
+        job = {
+            "id": 12,
+            "goal_slug": "Level1-1",
+            "goal_path": "experiments/goals/mario/Level1-1/_goal.yaml",
+            "goal_sha256": "a" * 64,
+            "train_config": explicit_train_config(
+                goal_path="stale-goal.yaml",
+                goal_sha256="b" * 64,
+            ),
+        }
+
+        config = normalize_train_config(job)
+
+        self.assertEqual(config["goal_path"], job["goal_path"])
+        self.assertEqual(config["goal_sha256"], job["goal_sha256"])
 
     def test_train_command_uses_recipe_metadata_without_secrets(self) -> None:
         job = {

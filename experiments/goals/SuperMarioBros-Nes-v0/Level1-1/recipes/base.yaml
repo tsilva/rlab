@@ -1,8 +1,0 @@
-defaults:
-- ppo@_global_
-- _self_
-recipe_id: base
-description: >-
-  Seed {seed} trains the stable low-KL late-decay {goal_id} policy-search baseline, created
-  to validate the recipe across seeds with the goal contract's clear-rate gate first and
-  async checkpoint eval ranking for checkpoint promotion.

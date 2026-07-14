@@ -11,7 +11,6 @@ from rlab.env_metadata import PLAYBACK_ENV_ARG_KEYS
 from rlab.train_config import (
     add_env_config_args,
     add_train_config_args,
-    build_train_command_from_fields,
     env_config_arg_fields,
     materialized_train_args,
     train_config_field_for_key,
@@ -19,27 +18,21 @@ from rlab.train_config import (
     validate_train_config_fields,
     validate_train_config_value,
 )
-from rlab.train import parse_train_args
+from rlab.train import build_parser as build_train_parser, parse_train_args
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):
-    def test_direct_backend_cli_builds_the_same_temporary_argument_view(self) -> None:
-        args = parse_train_args(
-            [
-                "--training-backend",
-                '{"id":"sb3.ppo","config":{"n_steps":17}}',
-                "--game",
-                "SuperMarioBros-Nes-v0",
-                "--states",
-                "Level1-1,Level1-2",
-                "--state-probs",
-                "1,3",
-            ]
-        )
+    def test_internal_train_cli_requires_one_materialized_json_input(self) -> None:
+        parser = build_train_parser()
+        options = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
 
-        self.assertEqual(args.n_steps, 17)
-        self.assertEqual(args._materialized_train_config["states"], ["Level1-1", "Level1-2"])
-        self.assertEqual(args._materialized_train_config["state_probs"], [1.0, 3.0])
+        self.assertEqual(options, {"-h", "--help", "--train-config-json"})
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--training-backend", '{"id":"sb3.ppo"}'])
 
     def test_playback_argument_registry_is_derived_from_environment_fields(self) -> None:
         self.assertEqual(
@@ -202,42 +195,6 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
     def test_train_config_rejects_deterministic_checkpoint_eval(self) -> None:
         with self.assertRaisesRegex(ValueError, "post_train_eval_stochastic must be true"):
             validate_and_normalize_train_config({"post_train_eval_stochastic": False})
-
-        command = build_train_command_from_fields({"post_train_eval_stochastic": True})
-        self.assertNotIn("--post-train-eval-stochastic", command)
-
-    def test_build_train_command_accepts_canonical_task(self) -> None:
-        task = {"id": "identity"}
-        command = build_train_command_from_fields(
-            {"task": task}
-        )
-
-        self.assertEqual(command[1:3], ["-m", "rlab.train"])
-        self.assertIn("--task-json", command)
-        self.assertIn('{"id":"identity"}', command)
-
-    def test_build_train_command_emits_checkpoint_eval_stages_json(self) -> None:
-        stages = [
-            {
-                "name": "screen",
-                "episodes": 10,
-                "n_envs": 2,
-                "pass": [
-                    {
-                        "metric": "eval/full/outcome/success/rate/min",
-                        "operator": ">=",
-                        "threshold": 1.0,
-                    }
-                ],
-            }
-        ]
-        command = build_train_command_from_fields({"checkpoint_eval_stages": stages})
-
-        self.assertIn("--checkpoint-eval-stages", command)
-        rendered = command[command.index("--checkpoint-eval-stages") + 1]
-        self.assertIn('"name":"screen"', rendered)
-        self.assertIn('"episodes":10', rendered)
-        self.assertIn('"metric":"eval/full/outcome/success/rate/min"', rendered)
 
     def test_field_validation_uses_choices_and_numeric_bounds(self) -> None:
         validate_train_config_fields(

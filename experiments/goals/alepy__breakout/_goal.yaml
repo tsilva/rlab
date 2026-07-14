@@ -25,7 +25,7 @@ train:
         n_envs: 16
         env_args: &atari_breakout_provider_args
           scenario: scenario
-          info: src/rlab/data/Breakout-Atari2600-v0.json
+          info: data
           use_restricted_actions: filtered
           record: false
           players: 1

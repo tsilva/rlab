@@ -13,7 +13,6 @@ from rlab.publication import (
     HUGGINGFACE_RELEASE_FILES,
     MIT_LICENSE_TEXT,
     PublicationIdentity,
-    assert_unique_goal_slugs,
     build_model_repo_id,
     build_release_manifest,
     normalize_publication_evaluation,
@@ -197,9 +196,7 @@ def test_publication_rejects_unknown_family_and_algorithm_mismatch() -> None:
         )
 
 
-def test_goal_normalization_collisions_and_long_repo_names_are_rejected() -> None:
-    with pytest.raises(ValueError, match="normalize to the same"):
-        assert_unique_goal_slugs(["Levels_1-1", "Levels-1-1"])
+def test_long_repo_names_are_rejected() -> None:
     with pytest.raises(ValueError, match="96"):
         build_model_repo_id(
             PublicationIdentity(

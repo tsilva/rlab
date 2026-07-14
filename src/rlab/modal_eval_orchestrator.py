@@ -21,6 +21,7 @@ from rlab.eval_metrics import eval_by_start_rows
 from rlab.metric_names import checkpoint_eval_stage_metric, validate_metric_payload
 from rlab.ranking import parse_persisted_objective_rank, rank_score
 from rlab.modal_eval_config import ModalEvalConfig, load_modal_eval_config, modal_app_name
+from rlab.modal_app_cleanup import ModalAppClient, run_modal_app_cleanup
 from rlab.modal_eval_protocol import (
     PROTOCOL_SCHEMA_VERSION,
     apply_decision_rules,
@@ -1349,6 +1350,7 @@ def run_service_eval_pass(
     deadline_monotonic: float,
     invoker: ModalInvoker | None = None,
     store: ObjectStore | None = None,
+    app_client: ModalAppClient | None = None,
 ) -> dict[str, Any]:
     config = load_modal_eval_config(repo_root / "experiments" / "modal_eval.yaml")
     if not config.enabled:
@@ -1388,6 +1390,24 @@ def run_service_eval_pass(
             deadline_monotonic=deadline_monotonic,
         )
         finalized = finalize_runs(conn)
+        try:
+            app_cleanup = run_modal_app_cleanup(
+                conn,
+                config,
+                repo_root=repo_root,
+                deadline_monotonic=deadline_monotonic,
+                client=app_client,
+            )
+        except Exception as exc:
+            app_cleanup = {
+                "status": "error",
+                "owned_deployed": 0,
+                "protected": 0,
+                "candidates": 0,
+                "stopped": 0,
+                "stopped_apps": [],
+                "errors": [type(exc).__name__],
+            }
         return {
             "status": "ok",
             "created_runs": created_runs,
@@ -1400,6 +1420,7 @@ def run_service_eval_pass(
             "projected": projected,
             "projected_artifacts": projected_artifacts,
             "finalized": finalized,
+            "app_cleanup": app_cleanup,
         }
     finally:
         try:

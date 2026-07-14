@@ -4,7 +4,7 @@
   **Reinforcement-learning workbench for training game agents**
 </div>
 
-rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 PPO, W&B artifacts, and queue-backed one-job GPU containers, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
+rlab is a Python CLI for training, evaluating, replaying, and operating reinforcement-learning game agents. It is built around Stable Retro environments, Stable-Baselines3 actor-critic models, W&B artifacts, and queue-backed one-job GPU containers, so a researcher can move from a checked-in experiment recipe to a replayable checkpoint without hand-wiring each step.
 
 The normal workflow is to install the CLI once with `./install.sh`, then use `rlab` commands directly from the repo root. Do not wrap the examples below in `uv run`; the installed tool owns its runtime environment.
 
@@ -56,14 +56,17 @@ Start with the built-in ROM-free native-vector smoke environment:
 
 ```bash
 rlab env inspect rlab:Bandit-v0
-rlab env check --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml
+rlab env check \
+  --goal-file experiments/goals/rlab__bandit/_goal.yaml \
+  --recipe-file experiments/recipes/bandit/ppo.yaml
 ```
 
 Run its complete queue-backed local training and checkpoint-evaluation path:
 
 ```bash
 rlab train \
-  --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml \
+  --goal-file experiments/goals/rlab__bandit/_goal.yaml \
+  --recipe-file experiments/recipes/bandit/ppo.yaml \
   --machine local-macbook \
   --checkpoint-eval-backend local \
   --wait terminal \
@@ -83,7 +86,8 @@ For a ROM-backed Mario smoke run, use the same queue path with explicit smoke ov
 
 ```bash
 rlab train \
-  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
+  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
+  --recipe-file experiments/recipes/mario/single/ppo.yaml \
   --machine local-macbook \
   --checkpoint-eval-backend none \
   --wait terminal \
@@ -107,17 +111,19 @@ Queue comparable experiments from checked-in recipe files:
 
 ```bash
 rlab train \
-  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
+  --goal-file experiments/goals/<goal-slug>/_goal.yaml \
+  --recipe-file experiments/recipes/<family>/<recipe>.yaml \
   --machine beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 ```
 
-For short-lived queue-backed ablations, keep the checked-in recipe as the base and
+For short-lived queue-backed ablations, compose the checked-in goal and recipe and
 apply repeatable Hydra/OmegaConf dotlist overrides from the CLI:
 
 ```bash
 rlab train \
-  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
+  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
+  --recipe-file experiments/recipes/mario/single/ppo.yaml \
   --machine beast-3 \
   --set recipe_id=lr2e4 \
   --set campaign_id=Level1-1-lr2e4 \
@@ -139,10 +145,10 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab tra
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
 rlab env list                                      # list declared providers and environments without importing them
 rlab env inspect rlab:Bandit-v0
-rlab env check --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml
+rlab env check --goal-file experiments/goals/rlab__bandit/_goal.yaml --recipe-file experiments/recipes/bandit/ppo.yaml
 rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
-rlab env check --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
-rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
+rlab env check --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml --recipe-file experiments/recipes/mario/single/ppo.yaml
+rlab train --goal-file experiments/goals/<goal-slug>/_goal.yaml --recipe-file experiments/recipes/<family>/<recipe>.yaml --machine beast-3
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest

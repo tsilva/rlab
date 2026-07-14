@@ -12,10 +12,12 @@ from rlab.config_loader import (
     ComposedDocument,
     QUEUE_TEMPLATE_FIELDS,
     TEMPLATE_VARS_KEY,
+    apply_dotlist_overrides,
     deep_merge,
-    load_mapping_document,
     load_composed_mapping,
+    load_mapping_document,
     render_template_vars,
+    template_context_from_path,
 )
 from rlab.env_identity import (
     attach_environment_identity,
@@ -42,10 +44,26 @@ SECRET_KEY_FRAGMENTS = (
     "database_url",
 )
 TRAIN_CONFIG_SECTION_KEYS = ("train", "logging")
-TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "backend"})
+TRAIN_NESTED_SECTION_KEYS = frozenset({"backend"})
 COMMON_TRAIN_CONFIG_KEYS = train_config_keys_in_source_section("train")
 GOAL_TRAIN_CONFIG_KEYS = train_config_keys_in_source_section("goal_train")
-GOAL_GAME_DIR_NAME = "SuperMarioBros-Nes-v0"
+SOURCE_RECIPE_FIELDS = frozenset(
+    {
+        "campaign_id",
+        "defaults",
+        "description",
+        "logging",
+        "max_attempts",
+        "metadata",
+        "notes",
+        "recipe_id",
+        "schema_version",
+        "seeds",
+        TEMPLATE_VARS_KEY,
+        "train",
+    }
+)
+SOURCE_PRESET_FIELDS = frozenset({"defaults", "logging", TEMPLATE_VARS_KEY, "train"})
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
@@ -178,9 +196,7 @@ def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, An
         if key in GOAL_TRAIN_CONFIG_KEYS | COMMON_TRAIN_CONFIG_KEYS
     }
     nested_backend = section.get("backend")
-    backend = (
-        copy.deepcopy(dict(nested_backend)) if isinstance(nested_backend, Mapping) else {}
-    )
+    backend = copy.deepcopy(dict(nested_backend)) if isinstance(nested_backend, Mapping) else {}
     normalized: dict[str, Any] = {}
     if environment:
         normalized["environment"] = environment
@@ -237,49 +253,10 @@ def _merge_train_config_sections(
     return train_config
 
 
-def _infer_goal_slug_from_path(path: Path) -> str:
-    parts = path.parts
-    for index, part in enumerate(parts):
-        if part == "recipes" and index > 0:
-            return parts[index - 1]
-    for index, part in enumerate(parts):
-        if part == "goals" and index + 1 < len(parts):
-            next_part = parts[index + 1]
-            if index + 2 < len(parts) and next_part == GOAL_GAME_DIR_NAME:
-                return parts[index + 2]
-            return next_part
-    return ""
-
-
 def _goal_slug_from_value(value: Any) -> str:
     if isinstance(value, Mapping):
         return str(value.get("goal_id") or "").strip()
     return ""
-
-
-def _goal_slug_for_recipe(path: Path, document: Mapping[str, Any]) -> str:
-    explicit = _goal_slug_from_value(document.get("goal"))
-    return explicit or _infer_goal_slug_from_path(path)
-
-
-def _goal_composition_for_recipe(
-    path: Path, document: Mapping[str, Any]
-) -> ComposedDocument | None:
-    goal_slug = _goal_slug_for_recipe(path, document)
-    if not goal_slug:
-        return None
-    inferred_path = path.resolve()
-    if inferred_path.parent.name == "recipes":
-        goal_dir = inferred_path.parent.parent
-        candidate = goal_dir / "_goal.yaml"
-        if candidate.is_file():
-            return _load_rendered_goal_composition(candidate)
-    for parent in inferred_path.parents:
-        if parent.name == goal_slug:
-            candidate = parent / "_goal.yaml"
-            if candidate.is_file():
-                return _load_rendered_goal_composition(candidate)
-    return None
 
 
 def _load_rendered_goal_composition(path: Path, *, label: str | None = None) -> ComposedDocument:
@@ -306,8 +283,6 @@ def _materialize_goal_owned_fields(
     path: Path | None = None,
     goal_composition: ComposedDocument | None = None,
 ) -> Mapping[str, Any] | None:
-    if goal_composition is None and path is not None:
-        goal_composition = _goal_composition_for_recipe(path, materialized)
     if goal_composition is None:
         return None
     goal_document = goal_composition.document
@@ -416,100 +391,145 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
 
 
 def validate_source_recipe_shape(
-    document: Mapping[str, Any], *, label: str, allow_goal_train_fields: bool = False
+    document: Mapping[str, Any],
+    *,
+    label: str,
+    preset: bool = False,
 ) -> None:
+    allowed_fields = SOURCE_PRESET_FIELDS if preset else SOURCE_RECIPE_FIELDS
     retired = sorted(
         set(document) & {"environment", "reward", "train_config", "group_id", "batch_id"}
     )
     if retired:
         raise ValueError(
             f"{label} uses compiled or retired source field(s): {', '.join(retired)}; "
-            "author recipes with train.environment, train.backend, and logging"
+            "author recipes with train.backend and logging"
+        )
+    unknown = sorted(str(key) for key in set(document) - allowed_fields)
+    if unknown:
+        kind = "recipe preset" if preset else "recipe"
+        raise ValueError(
+            f"{label} uses goal-owned or unsupported {kind} field(s): {', '.join(unknown)}"
         )
     train = document.get("train")
-    if train is None:
-        return
-    if not isinstance(train, Mapping):
-        raise ValueError(f"{label}.train must be an object")
-    if "policy" in train:
-        raise ValueError(
-            f"{label}.train.policy is retired; use train.backend with an explicit id and config"
-        )
-    allowed = (
-        TRAIN_NESTED_SECTION_KEYS
-        | COMMON_TRAIN_CONFIG_KEYS
-        | (GOAL_TRAIN_CONFIG_KEYS if allow_goal_train_fields else set())
-    )
-    unexpected = sorted(set(train) - allowed)
-    if unexpected:
-        raise ValueError(
-            f"{label}.train uses unsupported flat field(s): {', '.join(unexpected)}; "
-            "put common fields directly under train and backend options under "
-            "train.backend.config"
-        )
+    if train is not None:
+        if not isinstance(train, Mapping):
+            raise ValueError(f"{label}.train must be an object")
+        if "policy" in train:
+            raise ValueError(
+                f"{label}.train.policy is retired; use train.backend with an explicit id and config"
+            )
+        allowed = TRAIN_NESTED_SECTION_KEYS | COMMON_TRAIN_CONFIG_KEYS
+        unexpected = sorted(set(train) - allowed)
+        if unexpected:
+            raise ValueError(
+                f"{label}.train uses unsupported flat field(s): {', '.join(unexpected)}; "
+                "put common fields directly under train and backend options under "
+                "train.backend.config"
+            )
+    if not preset:
+        recipe_id = train_recipe_id(document)
+        if not recipe_id:
+            raise ValueError(f"{label}.recipe_id is required")
+        if recipe_id == "base":
+            raise ValueError(f"{label}.recipe_id=base is unsupported; use an explicit recipe id")
+        description = document.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(f"{label}.description is required")
 
 
-def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) -> dict[str, Any]:
+def load_recipe_source_document(path: Path) -> ComposedDocument:
     _reject_active_specs_path(path)
     validate_source_recipe_shape(
         load_mapping_document(path, label=f"recipe file {path}"),
         label=f"recipe file {path}",
     )
-    recipe_override_list = [str(item).strip() for item in recipe_overrides if str(item).strip()]
     composed = load_composed_mapping(
         path,
         cycle_label="recipe",
-        overrides=recipe_override_list,
-    )
-    document = render_template_vars(
-        composed.document,
-        path=path,
-        label=f"recipe file {path}",
-        deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
     )
     validate_source_recipe_shape(
-        document,
+        composed.document,
         label=f"composed recipe file {path}",
-        allow_goal_train_fields=True,
     )
-    sources = list(composed.sources)
-    embedded_goal = document.get("goal")
-    goal_composition = (
-        ComposedDocument(document=dict(embedded_goal), sources=())
-        if isinstance(embedded_goal, Mapping)
-        else _goal_composition_for_recipe(path, document)
-    )
-    if goal_composition is not None:
-        if goal_composition.sources:
-            from rlab.config_validation import validate_goal_contract_document
+    active_root = (Path("experiments") / "recipes").resolve()
+    resolved_path = path.resolve()
+    if resolved_path.is_relative_to(active_root):
+        for source in composed.sources[:-1]:
+            relative = source.relative_to(active_root)
+            if not relative.parts or relative.parts[0] != "_presets":
+                raise ValueError(
+                    f"recipe leaf {path} may compose only presets under "
+                    f"experiments/recipes/_presets, got {source}"
+                )
+    for source in composed.sources[:-1]:
+        validate_source_recipe_shape(
+            load_mapping_document(source, label=f"recipe preset {source}"),
+            label=f"recipe preset {source}",
+            preset=True,
+        )
+    return composed
 
-            goal_path = goal_composition.sources[-1]
-            validate_goal_contract_document(
-                goal_composition.document,
-                goal_path,
-                Path(".").resolve(),
-            )
-        sources = [*goal_composition.sources, *sources]
+
+def compose_train_document(
+    goal_path: Path,
+    recipe_path: Path,
+    *,
+    recipe_overrides: Sequence[str] = (),
+) -> dict[str, Any]:
+    goal_composition = _load_rendered_goal_composition(goal_path)
+    if goal_composition.sources:
+        from rlab.config_validation import validate_goal_contract_document
+
+        validate_goal_contract_document(
+            goal_composition.document,
+            goal_composition.sources[-1],
+            Path(".").resolve(),
+        )
+    recipe_composition = load_recipe_source_document(recipe_path)
+    recipe_override_list = [str(item).strip() for item in recipe_overrides if str(item).strip()]
+    source_document = apply_dotlist_overrides(
+        recipe_composition.document,
+        recipe_override_list,
+        label=f"recipe overrides for {recipe_path}",
+    )
+    recipe_id = train_recipe_id(source_document)
+    goal_context = template_context_from_path(goal_path, goal_composition.document)
+    document = render_template_vars(
+        source_document,
+        path=goal_path,
+        label=f"recipe file {recipe_path} for goal file {goal_path}",
+        extra_context={
+            **goal_context,
+            "recipe_id": recipe_id,
+            "recipe_slug": recipe_id,
+            "slug": recipe_id,
+        },
+        deferred_fields_by_path=RECIPE_DEFERRED_TEMPLATE_FIELDS,
+    )
+    sources = [*goal_composition.sources, *recipe_composition.sources]
     sources = list(dict.fromkeys(sources))
     document = materialize_train_recipe_document(
         document,
-        path=path,
+        path=goal_path,
         goal_composition=goal_composition,
     )
     document = attach_environment_identity(document)
     if recipe_override_list:
         document["recipe_overrides"] = recipe_override_list
-    if path.suffix.lower() in YAML_EXTENSIONS or len(sources) > 1:
+    if recipe_path.suffix.lower() in YAML_EXTENSIONS or len(sources) > 1:
         document["_composition"] = {
-            "root_path": str(path.resolve()),
+            "goal_root_path": str(goal_path.resolve()),
+            "recipe_root_path": str(recipe_path.resolve()),
             "source_files": _recipe_source_metadata(sources),
         }
-    validate_materialized_train_recipe(document, label=f"recipe file {path}")
-    assert_no_template_vars(document, label=f"recipe file {path}")
-    assert_no_secrets(document, label=f"recipe file {path}")
+    label = f"goal file {goal_path} with recipe file {recipe_path}"
+    validate_materialized_train_recipe(document, label=label)
+    assert_no_template_vars(document, label=label)
+    assert_no_secrets(document, label=label)
     validate_launch_event_config(
         document["train_config"],
-        label=f"recipe file {path} train_config",
+        label=f"{label} train_config",
     )
     return document
 
@@ -570,14 +590,19 @@ def compiled_recipe_payload(document: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def recipe_metadata(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
+def recipe_metadata(
+    goal_path: Path,
+    recipe_path: Path,
+    document: Mapping[str, Any],
+) -> dict[str, Any]:
     slug = recipe_slug(document)
-    digest = file_sha256(path)
     return {
         "goal_slug": recipe_goal_slug(document),
+        "goal_path": str(goal_path),
+        "goal_sha256": file_sha256(goal_path),
         "recipe_slug": slug,
-        "recipe_path": str(path),
-        "recipe_sha256": digest,
+        "recipe_path": str(recipe_path),
+        "recipe_sha256": file_sha256(recipe_path),
         "recipe_payload": compiled_recipe_payload(document),
         "repo_git_commit": repo_git_commit(),
         "repo_dirty": repo_is_dirty(),

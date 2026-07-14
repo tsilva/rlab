@@ -39,7 +39,7 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertEqual(rendered, {"label": "prefix-value"})
 
     def test_template_context_does_not_infer_state_from_goal_path(self) -> None:
-        path = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/recipes/base.yaml")
+        path = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-2/_goal.yaml")
 
         context = template_context_from_path(path)
 
