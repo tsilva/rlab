@@ -106,6 +106,39 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
 
+    def test_level1_1_on_policy_recipes_share_common_config(self) -> None:
+        recipe_dir = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes")
+        ppo = load_recipe_document(recipe_dir / "ppo.yaml")
+        a2c = load_recipe_document(recipe_dir / "a2c.yaml")
+        base = load_recipe_document(recipe_dir / "base.yaml")
+
+        self.assertEqual(ppo["recipe_id"], "ppo")
+        self.assertEqual(ppo["train_config"]["training_backend"]["id"], "sb3.ppo")
+        self.assertEqual(
+            base["train_config"]["training_backend"],
+            ppo["train_config"]["training_backend"],
+        )
+        for field in (
+            "learning_rate_final",
+            "learning_rate_schedule_timesteps",
+            "ent_coef",
+            "ent_coef_final",
+            "ent_coef_schedule_timesteps",
+            "gamma",
+            "gae_lambda",
+            "vf_coef",
+            "normalize_advantage",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    ppo["train_config"]["training_backend"]["config"][field],
+                    a2c["train_config"]["training_backend"]["config"][field],
+                )
+        self.assertEqual(ppo["train_config"]["timesteps"], 50000000)
+        self.assertEqual(a2c["train_config"]["timesteps"], 50000000)
+        self.assertTrue(ppo["train_config"]["wandb"])
+        self.assertTrue(a2c["train_config"]["wandb"])
+
     def test_removed_provider_lifecycle_args_are_rejected(self) -> None:
         for provider_id in ("stable-retro-turbo", "supermariobrosnes-turbo"):
             contract = resolve_env_provider(provider_id).constructor_contract
