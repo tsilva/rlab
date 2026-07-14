@@ -16,6 +16,12 @@ from rlab.train_config import playback_env_arg_keys
 
 PLAYBACK_ENV_ARG_KEYS = playback_env_arg_keys()
 
+RUNTIME_VERSION_PACKAGES = {
+    "stable_retro_turbo": "stable-retro-turbo",
+    "supermariobrosnes_turbo": "supermariobrosnes-turbo",
+    "stable_baselines3": "stable-baselines3",
+}
+
 ENV_CONFIG_METADATA_KEYS = frozenset(
     {
         *EnvConfig.__dataclass_fields__,
@@ -71,6 +77,29 @@ def training_metadata(config: EnvConfig) -> dict[str, Any]:
             "stable_baselines3": _package_version("stable-baselines3"),
         },
     }
+
+
+def assert_metadata_runtime_versions(metadata: dict[str, Any]) -> None:
+    """Fail closed when an artifact's recorded runtime differs from playback."""
+    training = metadata.get("training_metadata")
+    versions = training.get("versions") if isinstance(training, dict) else None
+    if not isinstance(versions, dict):
+        return
+    mismatches: list[str] = []
+    for metadata_key, package in RUNTIME_VERSION_PACKAGES.items():
+        expected = versions.get(metadata_key)
+        if not isinstance(expected, str) or not expected:
+            continue
+        actual = _package_version(package)
+        if actual != expected:
+            mismatches.append(f"{package} expected {expected}, installed {actual or 'missing'}")
+    if mismatches:
+        raise SystemExit(
+            "Artifact runtime version mismatch: "
+            + "; ".join(mismatches)
+            + ". Sync the checked-in environment with `uv sync --frozen` or reinstall the "
+            "rlab uv tool before playback."
+        )
 
 
 def env_config_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

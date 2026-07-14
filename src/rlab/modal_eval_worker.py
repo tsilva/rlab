@@ -104,7 +104,8 @@ def run_child(input_path: Path, output_path: Path) -> int:
         max_steps=int(contract["max_steps"]),
         deterministic=False,
         n_envs=int(contract["n_envs"]),
-        progress=False,
+        progress=True,
+        progress_description="modal checkpoint eval",
     )
     episode_results = metrics.pop("episode_results")
     _write_json(output_path, {"metrics": metrics, "episode_results": episode_results})
@@ -191,12 +192,13 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                     "--output",
                     str(child_output),
                 ],
-                capture_output=True,
+                stdout=None,
+                stderr=None,
                 text=True,
                 timeout=float(payload["child_timeout_seconds"]),
             )
             if completed.returncode != 0:
-                error = (completed.stderr or completed.stdout or "child failed")[-4000:]
+                error = (completed.stderr or completed.stdout or "see Modal logs")[-4000:]
                 raise RuntimeError(f"eval child exited {completed.returncode}: {error}")
             child_result = json.loads(child_output.read_text(encoding="utf-8"))
             result.update(

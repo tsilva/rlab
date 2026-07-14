@@ -219,6 +219,26 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(installed, Version("0.2.25"))
         self.assertEqual(Version(retro.__version__), Version("1.0.1.post29"))
 
+    def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
+        config = self.config(
+            env_args={
+                "use_restricted_actions": "filtered",
+                "inttype": "stable",
+                "obs_type": "image",
+            }
+        )
+
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=1,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda _config: {},
+        )
+
+        self.assertIs(kwargs["use_restricted_actions"], retro.Actions.FILTERED)
+        self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
+        self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
+
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:
             metadata = {
@@ -270,7 +290,7 @@ class MarioNativeProviderTests(unittest.TestCase):
             def active_states(self):
                 return tuple(self._states)
 
-        config = self.config()
+        config = self.config(env_args={"rom_path": None})
         kwargs = provider_native_vec_kwargs(
             config,
             n_envs=2,
@@ -289,7 +309,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
 
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
-        self.assertNotIn("done_on", env.kwargs)
+        self.assertIsNone(env.kwargs["done_on"])
         self.assertEqual(env.kwargs["info_filter"]["mode"], "all")
         self.assertEqual(descriptor.start_catalog, ("Level1-1",))
         self.assertEqual(descriptor.lane_start_ids, ("Level1-1", "Level1-1"))
@@ -313,7 +333,7 @@ class MarioNativeProviderTests(unittest.TestCase):
                 self.autoreset_mode = autoreset_mode
                 self.kwargs = kwargs
 
-        config = self.config()
+        config = self.config(env_args={"rom_path": None})
         kwargs = provider_native_vec_kwargs(
             config,
             n_envs=2,
@@ -455,7 +475,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
         self.assertEqual(env.kwargs["obs_crop_mode"], "remove")
         self.assertEqual(env.kwargs["obs_crop_fill"], 0)
-        self.assertNotIn("done_on", env.kwargs)
+        self.assertIsNone(env.kwargs["done_on"])
 
     def test_stable_retro_atari_uses_retro_vec_env_contract(self) -> None:
         class ManualRetroVectorEnv:

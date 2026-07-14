@@ -537,12 +537,15 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             with mock.patch(
                 "rlab.modal_eval_worker.subprocess.run",
                 return_value=subprocess.CompletedProcess([], -11, "", "segmentation fault"),
-            ):
+            ) as run:
                 receipt = execute_attempt(payload)
             evidence = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(evidence["status"], "failed")
             self.assertIn("-11", evidence["error"])
             self.assertEqual(receipt["result_uri"], payload["result_uri"])
+            self.assertIsNone(run.call_args.kwargs["stdout"])
+            self.assertIsNone(run.call_args.kwargs["stderr"])
+            self.assertNotIn("capture_output", run.call_args.kwargs)
 
     def test_child_timeout_becomes_structured_failure_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

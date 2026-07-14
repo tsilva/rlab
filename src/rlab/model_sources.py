@@ -13,7 +13,11 @@ from urllib.parse import unquote, urlparse
 from rlab.artifacts import apply_config_defaults, load_model_metadata, write_model_metadata
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
-from rlab.env_metadata import env_config_from_metadata, sanitize_env_config_metadata
+from rlab.env_metadata import (
+    assert_metadata_runtime_versions,
+    env_config_from_metadata,
+    sanitize_env_config_metadata,
+)
 from rlab.recipe_documents import load_goal_contract_document
 from rlab.wandb_artifacts import (
     checkpoint_step_from_artifact,
@@ -187,7 +191,9 @@ def add_model_source_args(
     }
     if allow_multiple_artifacts:
         artifact_kwargs["action"] = "append"
-        artifact_kwargs["help"] = "Full W&B model artifact ref to evaluate. May be passed more than once."
+        artifact_kwargs["help"] = (
+            "Full W&B model artifact ref to evaluate. May be passed more than once."
+        )
     parser.add_argument("--artifact", **artifact_kwargs)
     parser.add_argument(
         "--artifact-run",
@@ -206,6 +212,7 @@ def add_model_source_args(
     )
     parser.add_argument("--hf-revision", help="Hugging Face model revision. Defaults to main.")
     parser.add_argument("--hf-model-root", default="runs/hf_models")
+
 
 def artifact_values(args: argparse.Namespace) -> tuple[str, ...]:
     value = getattr(args, "artifact", None)
@@ -282,7 +289,9 @@ def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[s
         if prefix and (run_name == prefix or run_name.startswith(f"{prefix}_")):
             inferred.append(_project_path(entity, project))
             break
-    for goal_id, project in sorted(local_projects.items(), key=lambda item: len(item[0]), reverse=True):
+    for goal_id, project in sorted(
+        local_projects.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         if run_name == goal_id or run_name.startswith(f"{goal_id}_"):
             inferred.append(_project_path(entity, project))
             break
@@ -290,7 +299,11 @@ def artifact_lookup_project_paths(default_project: str, run_name: str) -> list[s
         *inferred,
         default_project,
         *(_project_path(entity, project) for project in local_projects.values()),
-        *(_project_path(entity, project) for prefix, project in ARTIFACT_PROJECT_COMPATIBILITY if not prefix),
+        *(
+            _project_path(entity, project)
+            for prefix, project in ARTIFACT_PROJECT_COMPATIBILITY
+            if not prefix
+        ),
     ]
     return _dedupe(projects)
 
@@ -328,6 +341,86 @@ def _logged_run_artifact_ref(run: Any, *, kind: str, version: str) -> str | None
             continue
         return f"{qualified_name.rsplit(':', 1)[0]}:{version}"
     return None
+
+
+def _promoted_run_artifact_ref(
+    run: Any,
+    *,
+    kind: str,
+    version: str,
+) -> tuple[str | None, int | None]:
+    """Resolve the promoted checkpoint instead of a moving latest alias.
+
+    The terminal projector publishes checkpoint memberships in ledger order, so
+    ``checkpoint:latest`` temporarily points at progressively newer historical
+    checkpoints. A run-level playback request must bind to the promoted leader
+    step or report that its membership is still pending.
+    """
+    if kind != "checkpoint" or version != "latest":
+        return None, None
+    try:
+        summary = getattr(run, "summary", {}) or {}
+        raw_step = summary.get("leader/checkpoint/step")
+    except Exception:
+        return None, None
+    if isinstance(raw_step, bool) or not isinstance(raw_step, int | float):
+        return None, None
+    step = int(raw_step)
+    try:
+        artifacts = run.logged_artifacts()
+    except Exception:
+        return None, step
+    suffix = f"-{kind}:"
+    for artifact in artifacts:
+        if str(getattr(artifact, "type", "")) != "model":
+            continue
+        qualified_name = str(getattr(artifact, "qualified_name", "") or "")
+        if suffix not in qualified_name:
+            continue
+        if checkpoint_step_from_artifact(artifact) != step:
+            continue
+        return f"{qualified_name.rsplit(':', 1)[0]}:step-{step}", step
+    return None, step
+
+
+def _promoted_run_artifact_ref_by_name(
+    run_name: str,
+    *,
+    project: str,
+    kind: str,
+    version: str,
+) -> tuple[str | None, int | None]:
+    """Return a unique named run's promoted artifact and pending step, if any."""
+    import wandb
+
+    try:
+        runs = wandb.Api().runs(project, filters={"display_name": run_name})
+        matches = [
+            run
+            for run in runs
+            if getattr(run, "name", None) == run_name
+            or _wandb_run_config_value(run, "run_name") == run_name
+        ]
+    except Exception:
+        return None, None
+    promoted = [_promoted_run_artifact_ref(run, kind=kind, version=version) for run in matches]
+    refs = sorted({ref for ref, _step in promoted if ref is not None})
+    if len(refs) == 1:
+        return refs[0], next(step for ref, step in promoted if ref == refs[0])
+    if len(refs) > 1:
+        choices = ", ".join(refs)
+        raise SystemExit(
+            f"Run name {run_name!r} is ambiguous within W&B project {project}; "
+            f"pass a run URL. Matches: {choices}"
+        )
+    pending_steps = sorted({step for _ref, step in promoted if step is not None})
+    if len(pending_steps) == 1:
+        return None, pending_steps[0]
+    if len(pending_steps) > 1:
+        raise SystemExit(
+            f"Run name {run_name!r} is ambiguous within W&B project {project}; pass a run URL."
+        )
+    return None, None
 
 
 def _run_artifact_ref_by_name(
@@ -382,12 +475,45 @@ def resolve_unique_bare_run_artifact_ref(
 
     load_wandb_env()
 
+    promoted_matches: list[str] = []
+    promoted_pending: list[tuple[str, int]] = []
+    if kind == "checkpoint" and version == "latest":
+        for project in artifact_lookup_project_paths(default_project, run_name):
+            ref, step = _promoted_run_artifact_ref_by_name(
+                run_name,
+                project=project,
+                kind=kind,
+                version=version,
+            )
+            if ref is not None:
+                promoted_matches.append(ref)
+            elif step is not None:
+                promoted_pending.append((project, step))
+        unique_promoted = sorted(set(promoted_matches))
+        if len(unique_promoted) == 1:
+            return unique_promoted[0]
+        if len(unique_promoted) > 1:
+            choices = ", ".join(unique_promoted)
+            raise SystemExit(
+                f"Run name {run_name!r} is ambiguous across W&B projects; pass a run URL. "
+                f"Matches: {choices}"
+            )
+        unique_pending = sorted(set(promoted_pending))
+        if unique_pending:
+            choices = ", ".join(f"{project} step-{step}" for project, step in unique_pending)
+            raise SystemExit(
+                f"Promoted checkpoint for run {run_name!r} is not available as a W&B "
+                f"artifact yet; retry after artifact projection completes. Pending: {choices}"
+            )
+
     matches: list[str] = []
     if _artifact_exists(candidates[0]):
         matches.append(candidates[0])
     remaining = candidates[1:]
     if remaining:
-        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_ARTIFACT_LOOKUPS, len(remaining))) as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(MAX_PARALLEL_ARTIFACT_LOOKUPS, len(remaining))
+        ) as pool:
             futures = {pool.submit(_artifact_exists, ref): ref for ref in remaining}
             for future in as_completed(futures):
                 if future.result():
@@ -404,9 +530,8 @@ def resolve_unique_bare_run_artifact_ref(
     logged_matches = [
         ref
         for project in artifact_lookup_project_paths(default_project, run_name)
-        if (ref := _run_artifact_ref_by_name(
-            run_name, project=project, kind=kind, version=version
-        )) is not None
+        if (ref := _run_artifact_ref_by_name(run_name, project=project, kind=kind, version=version))
+        is not None
     ]
     if len(logged_matches) == 1:
         return logged_matches[0]
@@ -502,6 +627,18 @@ def wandb_run_artifact_ref(
         run = wandb.Api().run(run_path)
     except Exception as exc:
         raise SystemExit(f"Could not resolve W&B run {run_path}: {exc}") from exc
+    promoted_ref, promoted_step = _promoted_run_artifact_ref(
+        run,
+        kind=kind,
+        version=version,
+    )
+    if promoted_ref is not None:
+        return promoted_ref
+    if promoted_step is not None:
+        raise SystemExit(
+            f"Promoted checkpoint step-{promoted_step} for W&B run {run_path} is not "
+            "available as an artifact yet; retry after artifact projection completes."
+        )
     logged_ref = _logged_run_artifact_ref(run, kind=kind, version=version)
     if logged_ref is not None:
         return logged_ref
@@ -581,7 +718,7 @@ def _optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -721,7 +858,10 @@ def download_huggingface_model_source(
             )
         )
     except Exception as exc:
-        print(f"warning: could not download model_metadata.json from {repo_id}: {exc}", file=sys.stderr)
+        print(
+            f"warning: could not download model_metadata.json from {repo_id}: {exc}",
+            file=sys.stderr,
+        )
     else:
         sidecar_path = checkpoint_path.with_suffix(".metadata.json")
         if metadata_path != sidecar_path:
@@ -778,11 +918,16 @@ def apply_model_source_defaults(
     metadata_kind: str | None = None,
     print_loaded_metadata: bool = False,
 ) -> bool:
-    saved_config = env_config_from_metadata(load_model_metadata(source.model_path))
+    metadata = load_model_metadata(source.model_path)
+    assert_metadata_runtime_versions(metadata)
+    saved_config = env_config_from_metadata(metadata)
     if saved_config:
         apply_config_defaults(args, saved_config, parser_defaults, explicit_dests)
         if print_loaded_metadata:
-            print(f"loaded playback metadata: {source.model_path.with_suffix('.metadata.json')}", flush=True)
+            print(
+                f"loaded playback metadata: {source.model_path.with_suffix('.metadata.json')}",
+                flush=True,
+            )
         return True
     if not infer_artifact_config or source.artifact_ref is None:
         return False
@@ -795,9 +940,7 @@ def apply_model_source_defaults(
 
     metadata_args = parser.parse_args([])
     apply_config_defaults(metadata_args, inferred_config, parser_defaults, set())
-    metadata_config = resolve_env_config(
-        env_config_from_args(metadata_args)
-    )
+    metadata_config = resolve_env_config(env_config_from_args(metadata_args))
     kind = metadata_kind or getattr(args, "artifact_kind", "checkpoint")
     metadata_path = write_model_metadata(source.model_path, args, metadata_config, kind=kind)
     if metadata_path is not None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import tempfile
 import unittest
@@ -19,11 +20,79 @@ from rlab.main import COMMANDS
 
 
 class ConfigValidationTests(unittest.TestCase):
+    def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
+        from ale_py.vector_env import AtariVectorEnv
+        from stable_retro import RetroVecEnv
+        from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
+
+        constructors = {
+            "ale-py": AtariVectorEnv,
+            "stable-retro-turbo": RetroVecEnv,
+            "supermariobrosnes-turbo": SuperMarioBrosNesTurboVecEnv,
+        }
+        for provider_id, constructor in constructors.items():
+            with self.subTest(provider_id=provider_id):
+                signature_args = set(inspect.signature(constructor).parameters)
+                covered_args = set(
+                    config_validation.GOAL_PROVIDER_ARGS_FROM_ENV_CONFIG[provider_id]
+                ) | set(config_validation.GOAL_REQUIRED_PROVIDER_ENV_ARGS[provider_id])
+                self.assertEqual(covered_args, signature_args)
+
+    def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
+        environment = {
+            "env_provider": "supermariobrosnes-turbo",
+            "env_config": {
+                "game": "SuperMarioBros-Nes-v0",
+                "state": "Level1-1",
+                "n_envs": 1,
+                "frame_skip": 4,
+                "max_pool_frames": False,
+                "sticky_action_prob": 0.0,
+                "observation_size": 84,
+                "obs_crop": [32, 0, 0, 0],
+                "obs_crop_mode": "mask",
+                "obs_crop_fill": 0,
+                "obs_resize_algorithm": "area",
+                "env_args": {"autoreset_mode": "disabled", "done_on": None},
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "missing explicit.*constructor argument"):
+            config_validation._validate_explicit_goal_environment_args(
+                environment,
+                environment["env_config"],
+                label="goal.train.environment",
+            )
+
     def test_goal_validator_rejects_deterministic_policy_eval(self) -> None:
         with self.assertRaisesRegex(ValueError, "eval.policy.stochastic must be true"):
             config_validation._validate_goal_eval(
                 {"eval": {"episodes": 1, "policy": {"stochastic": False}}},
                 label="goal",
+            )
+
+    def test_goal_validator_requires_playback_equivalent_promotion_lane(self) -> None:
+        document = load_goal_contract(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml"),
+            validate=False,
+        )
+        document["eval"]["environment"]["env_config"]["n_envs"] = 2
+
+        with self.assertRaisesRegex(ValueError, "promotion-quality eval.*one-lane"):
+            config_validation._validate_goal_eval(document, label="goal")
+
+    def test_candidate_stop_stage_requires_playback_equivalent_lane(self) -> None:
+        with self.assertRaisesRegex(ValueError, "candidate-stop evidence.*one-lane"):
+            config_validation.normalize_checkpoint_eval_stages(
+                [
+                    {
+                        "name": "confirm",
+                        "episodes": 30,
+                        "n_envs": 4,
+                        "pass": [{"metric": "metric", "operator": ">=", "threshold": 1}],
+                        "candidate_stop": True,
+                    }
+                ]
             )
 
     def test_checked_in_experiment_tree_validates(self) -> None:
@@ -55,17 +124,32 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["env_args"],
             {
+                "scenario": "scenario",
                 "info": "src/rlab/data/Breakout-Atari2600-v0.json",
+                "use_restricted_actions": "filtered",
+                "record": False,
+                "players": 1,
+                "inttype": "stable",
+                "obs_type": "image",
+                "render_mode": "rgb_array",
                 "info_filter": "all",
                 "num_threads": 6,
+                "rom_path": None,
+                "obs_copy": "safe_view",
+                "obs_grayscale": True,
+                "obs_layout": "chw",
+                "frame_stack": 4,
+                "noop_reset_max": 0,
                 "reward_clip": True,
                 "use_fire_reset": False,
+                "done_on": None,
+                "autoreset_mode": "disabled",
             },
         )
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 16)
-        self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
+        self.assertEqual(train_config["checkpoint_eval_n_envs"], 1)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["game"],
             "Breakout-Atari2600-v0",
@@ -74,11 +158,26 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["env_args"],
             {
+                "scenario": "scenario",
                 "info": "src/rlab/data/Breakout-Atari2600-v0.json",
+                "use_restricted_actions": "filtered",
+                "record": False,
+                "players": 1,
+                "inttype": "stable",
+                "obs_type": "image",
+                "render_mode": "rgb_array",
                 "info_filter": "all",
                 "num_threads": 6,
+                "rom_path": None,
+                "obs_copy": "safe_view",
+                "obs_grayscale": True,
+                "obs_layout": "chw",
+                "frame_stack": 4,
+                "noop_reset_max": 0,
                 "reward_clip": False,
                 "use_fire_reset": False,
+                "done_on": None,
+                "autoreset_mode": "disabled",
             },
         )
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
@@ -133,14 +232,12 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
-        self.assertEqual(
-            document["environment"]["preprocessing"]["obs_crop"], [17, 0, 0, 0]
-        )
+        self.assertEqual(document["environment"]["preprocessing"]["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(
             document["goal"]["eval"]["environment"]["preprocessing"]["obs_crop"],
             [17, 0, 0, 0],
         )
-        self.assertNotIn("obs_resize_algorithm", train_config)
+        self.assertEqual(train_config["obs_resize_algorithm"], "area")
         self.assertEqual(
             document["environment"]["env_id"],
             "stable-retro-turbo:Breakout-Atari2600-v0",
@@ -187,9 +284,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertNotEqual(
             train_config["task"]["action"], breakout["train_config"]["task"]["action"]
         )
-        self.assertEqual(
-            train_config["task"]["reward"], breakout["train_config"]["task"]["reward"]
-        )
+        self.assertEqual(train_config["task"]["reward"], breakout["train_config"]["task"]["reward"])
         for key in ("env_threads",):
             self.assertNotIn(key, train_config)
         self.assertEqual(train_config["frame_skip"], 4)
@@ -197,7 +292,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["sticky_action_prob"], 0.25)
         self.assertEqual(train_config["observation_size"], 84)
         self.assertEqual(train_config["task"]["termination"]["max_episode_steps"], 54000)
-        self.assertNotIn("obs_resize_algorithm", train_config)
+        self.assertEqual(train_config["obs_resize_algorithm"], "area")
         self.assertEqual(
             document["environment"]["env_id"],
             "stable-retro-turbo:MsPacman-Atari2600-v0",
@@ -228,11 +323,35 @@ train:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
       state: Level1-1
+      n_envs: 1
+      env_args:
+        scenario: scenario
+        info: data
+        use_restricted_actions: filtered
+        record: false
+        players: 1
+        inttype: stable
+        obs_type: image
+        render_mode: rgb_array
+        num_threads: 1
+        rom_path: null
+        obs_copy: safe_view
+        obs_grayscale: true
+        obs_layout: chw
+        frame_stack: 4
+        noop_reset_max: 0
+        reward_clip: false
+        info_filter: all
+        use_fire_reset: false
+        done_on: null
+        autoreset_mode: disabled
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
-      hud_crop_top: 32
+      obs_crop: [32, 0, 0, 0]
+      obs_crop_mode: mask
+      obs_crop_fill: 0
       obs_resize_algorithm: area
     task:
       id: mario
@@ -254,11 +373,36 @@ eval:
     env_config:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
+      state: Level1-1
+      n_envs: 1
+      env_args:
+        scenario: scenario
+        info: data
+        use_restricted_actions: filtered
+        record: false
+        players: 1
+        inttype: stable
+        obs_type: image
+        render_mode: rgb_array
+        num_threads: 1
+        rom_path: null
+        obs_copy: safe_view
+        obs_grayscale: true
+        obs_layout: chw
+        frame_stack: 4
+        noop_reset_max: 0
+        reward_clip: false
+        info_filter: all
+        use_fire_reset: false
+        done_on: null
+        autoreset_mode: disabled
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
-      hud_crop_top: 32
+      obs_crop: [32, 0, 0, 0]
+      obs_crop_mode: mask
+      obs_crop_fill: 0
       obs_resize_algorithm: area
     task:
       id: mario
@@ -449,6 +593,7 @@ environment_hash: sha256:deadbeef
         )
         self.assertEqual(document["train"]["checkpoint_eval_stages"][0]["episodes"], 10)
         self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["episodes"], 30)
+        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["n_envs"], 1)
         self.assertTrue(document["train"]["checkpoint_eval_stages"][1]["candidate_stop"])
         self.assertEqual(
             document["objective"]["rank"],
@@ -487,7 +632,7 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0"
         )
-        self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 16)
+        self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 1)
         self.assertNotIn("env_threads", document["eval"]["environment"]["env_config"])
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])

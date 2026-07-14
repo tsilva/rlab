@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import gymnasium as gym
+import stable_retro as retro
 
 from gymnasium.vector import AutoresetMode
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
@@ -144,12 +145,38 @@ def provider_native_vec_kwargs(
 ) -> dict[str, Any]:
     """Compile provider mechanics without task events or termination rules."""
     native_kwargs = dict(config.env_args or {})
+    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id in {
+        STABLE_RETRO_TURBO_PROVIDER.provider_id,
+        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
+    }:
+        enum_args = {
+            "use_restricted_actions": ("Actions",),
+            "inttype": ("data", "Integrations"),
+            "obs_type": ("Observations",),
+        }
+        for key, attribute_path in enum_args.items():
+            value = native_kwargs.get(key)
+            if not isinstance(value, str):
+                continue
+            enum_type: Any = retro
+            for attribute in attribute_path:
+                enum_type = getattr(enum_type, attribute)
+            try:
+                native_kwargs[key] = enum_type[value.strip().upper()]
+            except KeyError as exc:
+                choices = ", ".join(member.name.lower() for member in enum_type)
+                raise ValueError(f"env_args.{key} must be one of {choices}") from exc
     done_on = native_kwargs.pop("done_on", None)
     if done_on not in (None, (), [], {}):
         raise ValueError(
             "provider task detectors are unsupported; configure task events and termination"
         )
-    provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id in {
+        STABLE_RETRO_TURBO_PROVIDER.provider_id,
+        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
+    }:
+        native_kwargs["done_on"] = None
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
             raise ValueError(
@@ -508,7 +535,7 @@ def _super_mario_bros_nes_turbo_make_vec_env(
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     env_type = super_mario_vec_env_type()
     kwargs = _disabled_autoreset_kwargs(native_kwargs)
-    if "rom_path" not in kwargs:
+    if kwargs.get("rom_path") is None:
         try:
             import stable_retro.data
 

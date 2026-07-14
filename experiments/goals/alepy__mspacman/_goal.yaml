@@ -22,10 +22,27 @@ train:
         state: Start
         n_envs: 16
         env_args:
+          scenario: scenario
+          info: data
+          use_restricted_actions: filtered
+          record: false
+          players: 1
+          inttype: stable
+          obs_type: image
+          render_mode: rgb_array
           num_threads: 4
+          rom_path: null
+          obs_copy: safe_view
+          obs_grayscale: true
+          obs_layout: chw
+          frame_stack: 4
+          noop_reset_max: 0
+          info_filter: all
           reward_clip: true
           use_fire_reset: false
-    preprocessing:
+          done_on: null
+          autoreset_mode: disabled
+    preprocessing: &atari_mspacman_preprocessing
       frame_skip: 4
       max_pool_frames: true
       sticky_action_prob: 0.25
@@ -39,6 +56,7 @@ train:
       - 0
       obs_crop_mode: mask
       obs_crop_fill: 0
+      obs_resize_algorithm: area
     task: &identity_task
       id: identity
       action:
@@ -56,7 +74,10 @@ eval:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_mspacman_env_config
+      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
+      n_envs: 1
     preprocessing:
+      <<: *atari_mspacman_preprocessing
       # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.
       # The raw-coordinate bottom mask below scales to 15 policy rows.
       obs_crop:

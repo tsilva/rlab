@@ -109,7 +109,7 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
-rlab play <run-name>                                  # installed CLI; works outside this checkout
+rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
 rlab play <entity>/<project>/<run-name>-checkpoint:latest
 rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
 rlab play <checkpoint> --step-over
@@ -169,7 +169,6 @@ To regenerate the W&B checkpoint leaderboard report with one section per goal, r
 UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06-25T00:00:00Z python scripts/create_wandb_checkpoint_leaderboard_report.py
 ```
 
-Learning-oriented standalone examples live under `examples/learning/`; production training should use checked-in recipes through `rlab train`.
 
 ## Fleet
 

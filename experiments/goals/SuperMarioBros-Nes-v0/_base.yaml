@@ -41,7 +41,8 @@ train:
       threshold: 1.0
   - name: confirm
     episodes: 30
-    n_envs: 4
+    # Candidate-stop evidence must use the same one-lane stochastic schedule as playback.
+    n_envs: 1
     pass:
     - metric: eval/full/info/level_complete/rate/min
       operator: '>='
@@ -55,6 +56,27 @@ train:
         # Stable Retro-compatible game id passed to SuperMarioBrosNesTurboVecEnv.
         game: SuperMarioBros-Nes-v0
         n_envs: 16
+        # Every provider-native constructor option is explicit; do not inherit package defaults.
+        env_args:
+          scenario: scenario
+          info: data
+          use_restricted_actions: filtered
+          record: false
+          players: 1
+          inttype: stable
+          obs_type: image
+          render_mode: rgb_array
+          num_threads: 16
+          rom_path: null
+          obs_copy: safe_view
+          obs_grayscale: true
+          obs_layout: chw
+          frame_stack: 4
+          noop_reset_max: 0
+          reward_clip: false
+          info_filter: all
+          done_on: null
+          autoreset_mode: disabled
         # Emulator frame skip; fixes action repeat and observation cadence.
         frame_skip: 4
         # Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.
@@ -112,6 +134,10 @@ eval:
     env_provider: *mario_env_provider
     env_config:
       <<: *mario_env_config
+      # Eval must name the same start explicitly; it cannot inherit a provider default.
+      state: "{state}"
+      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
+      n_envs: 1
     task:
       <<: *mario_task
       # Eval episodes stop on observed level changes, not life loss.

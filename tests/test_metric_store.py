@@ -15,18 +15,14 @@ STAGES = [
         "name": "screen",
         "episodes": 10,
         "n_envs": 2,
-        "pass": [
-            {"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}
-        ],
+        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": False,
     },
     {
         "name": "confirm",
         "episodes": 30,
-        "n_envs": 4,
-        "pass": [
-            {"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}
-        ],
+        "n_envs": 1,
+        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": True,
     },
 ]

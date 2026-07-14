@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from rlab.env import EnvConfig, resolve_env_config, with_task_termination
 from rlab.env_metadata import (
     PLAYBACK_ENV_ARG_KEYS,
+    assert_metadata_runtime_versions,
     env_config_from_config_dict,
     env_config_from_metadata,
     env_config_metadata,
@@ -165,6 +166,7 @@ def load_playback_env_config(
     respect_task_termination: bool = False,
 ) -> EnvConfig:
     metadata = load_model_metadata(model_path)
+    assert_metadata_runtime_versions(metadata)
     saved_config = env_config_from_metadata(metadata)
     if not saved_config:
         raise SystemExit(
@@ -542,8 +544,7 @@ def purge_model_artifact_files(model_path: Path) -> tuple[Path, ...]:
             print(f"warning: could not purge uploaded artifact file {path}: {exc}", file=sys.stderr)
     if purged:
         print(
-            "purged uploaded artifact files: "
-            + ", ".join(str(path) for path in purged),
+            "purged uploaded artifact files: " + ", ".join(str(path) for path in purged),
             flush=True,
         )
     return tuple(purged)

@@ -583,9 +583,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             )
             self.assertEqual(environment["preprocessing"]["obs_crop_mode"], "mask")
             self.assertEqual(environment["preprocessing"]["obs_crop_fill"], 7)
-            self.assertEqual(
-                environment["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0"
-            )
+            self.assertEqual(environment["env_id"], "stable-retro-turbo:SuperMarioBros-Nes-v0")
             self.assertEqual(environment["preprocessing"]["frame_stack"], 4)
             self.assertEqual(
                 metadata["training_metadata"]["preprocessing"]["max_pool_frames"],
@@ -626,7 +624,9 @@ class CommandAndArtifactTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(
-                load_model_metadata(model_path)["training_metadata"]["env_config"]["observation_size"],
+                load_model_metadata(model_path)["training_metadata"]["env_config"][
+                    "observation_size"
+                ],
                 96,
             )
 
@@ -694,6 +694,27 @@ class CommandAndArtifactTests(unittest.TestCase):
             model_path.write_bytes(b"zip")
 
             with self.assertRaisesRegex(SystemExit, "missing playback metadata"):
+                load_playback_env_config(model_path)
+
+    def test_playback_rejects_artifact_runtime_version_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                ),
+                kind="checkpoint",
+            )
+            metadata = load_model_metadata(model_path)
+            metadata["training_metadata"]["versions"]["supermariobrosnes_turbo"] = "0.0.0"
+            model_metadata_path(model_path).write_text(json.dumps(metadata), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "Artifact runtime version mismatch"):
                 load_playback_env_config(model_path)
 
     def test_eval_model_metadata_defaults_apply_env_provider(self) -> None:
@@ -959,9 +980,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertFalse(parser.parse_args([]).step_over)
         self.assertTrue(parser.parse_args(["--step-over"]).step_over)
         self.assertFalse(parser.parse_args([]).respect_task_termination)
-        self.assertTrue(
-            parser.parse_args(["--respect-task-termination"]).respect_task_termination
-        )
+        self.assertTrue(parser.parse_args(["--respect-task-termination"]).respect_task_termination)
         self.assertEqual(parser.parse_args([]).episodes, 0)
         self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
@@ -1321,9 +1340,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             Api=lambda: types.SimpleNamespace(run=lambda _path: FakeRun())
         )
         parser = build_play_parser()
-        args = parser.parse_args(
-            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"]
-        )
+        args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"])
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
             self.assertEqual(
@@ -1367,6 +1384,80 @@ class CommandAndArtifactTests(unittest.TestCase):
                 single_model_artifact_ref(args),
                 "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:latest",
             )
+
+    def test_bare_run_resolves_promoted_checkpoint_before_moving_latest(self) -> None:
+        class FakeArtifact:
+            type = "model"
+            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v13"
+            aliases = ["step-6500000"]
+            metadata = {"checkpoint_step": 6500000}
+
+        class FakeRun:
+            name = "level1-1-base-s1"
+            config = {"run_name": "level1-1-base-s1"}
+            summary = {"leader/checkpoint/step": 6500000}
+
+            def logged_artifacts(self):
+                return [FakeArtifact()]
+
+        class FakeApi:
+            def artifact(self, _ref, type=None):
+                return object()
+
+            def runs(self, _project, filters=None):
+                return [FakeRun()]
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(["level1-1-base-s1"])
+
+        with (
+            patch.dict(sys.modules, {"wandb": fake_wandb}),
+            patch(
+                "rlab.model_sources.artifact_lookup_project_paths",
+                return_value=["tsilva/SuperMarioBros-Nes-v0"],
+            ),
+        ):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:step-6500000",
+            )
+
+    def test_bare_run_blocks_while_promoted_artifact_is_pending(self) -> None:
+        class FakeArtifact:
+            type = "model"
+            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v6"
+            aliases = ["latest", "step-3000000"]
+            metadata = {"checkpoint_step": 3000000}
+
+        class FakeRun:
+            name = "level1-1-base-s1"
+            config = {"run_name": "level1-1-base-s1"}
+            summary = {"leader/checkpoint/step": 6500000}
+
+            def logged_artifacts(self):
+                return [FakeArtifact()]
+
+        class FakeApi:
+            def artifact(self, _ref, type=None):
+                return object()
+
+            def runs(self, _project, filters=None):
+                return [FakeRun()]
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(["level1-1-base-s1"])
+
+        with (
+            patch.dict(sys.modules, {"wandb": fake_wandb}),
+            patch(
+                "rlab.model_sources.artifact_lookup_project_paths",
+                return_value=["tsilva/SuperMarioBros-Nes-v0"],
+            ),
+        ):
+            with self.assertRaisesRegex(SystemExit, "retry after artifact projection"):
+                single_model_artifact_ref(args)
 
     def test_model_source_ref_uses_wandb_run_url_with_query_latest_checkpoint(self) -> None:
         calls = []

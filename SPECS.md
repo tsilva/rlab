@@ -15,6 +15,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 
 - The project must support coherent workflows for defining goals, training policies, evaluating and ranking checkpoints, replaying behavior, publishing models, operating queued work, and running comparable benchmarks.
 - Goal definitions must independently specify the environment, acceptance criteria, ranking order, evaluation protocol, and release expectations.
+- Goal environment definitions must explicitly cover every provider constructor argument through canonical environment fields or provider-native `env_args`; inheriting environment-provider defaults is unsupported.
 - Training configurations must declare a finite resource cap, a meaningful description, and every value required for validation and execution.
 - Invalid or internally inconsistent goals, training configurations, benchmarks, capacity rules, and machine settings must be rejected before execution.
 - Every run must be traceable to its goal, training configuration, overrides, seed, launch time, source state, resolved settings, and runtime identity.

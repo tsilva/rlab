@@ -75,6 +75,12 @@ decisions into SQLite and the run's single W&B publisher emits those `eval/scree
 promotion-quality `eval/full/*` evidence after training, avoiding concurrent W&B writers and
 duplicate staged rows.
 
+Promotion-quality `eval/full/*` and any `candidate_stop` stage use exactly one environment lane.
+They reseed the stochastic policy for episode `i` with `base_seed + i`, matching `rlab play`.
+Cheap non-candidate screens may remain vectorized, but their results cannot establish early-stop,
+promotion, or release reliability because batched stochastic action draws do not reproduce the
+one-lane playback trace.
+
 | Metric | Meaning |
 | --- | --- |
 | `train/done/all` | Cumulative count of non-`global_reset` training `done=True` env-slot episode boundaries. This is exhaustive. |
@@ -532,8 +538,8 @@ stored in stdout JSON or post-train eval outputs; only the `eval/full/*` subset 
 | `unclassified_rate` | `unclassified_count / episodes`. Same rate as `eval/full/done/unclassified/rate`. |
 | `death_x_histogram` | Local JSON histogram of death X positions. This structured value is not emitted as a W&B scalar. |
 | `episode_results` | Per-episode records used to build the summary. Removed from stdout when `--summary-only` is set. |
-| `episode_results[].seed_protocol` | Versioned stochastic RNG trace contract. Remote checkpoint eval currently requires `vector-lane-v1`. |
-| `episode_results[].seed` | Scalar eval uses `base_seed + episode_ordinal`; vector eval records the shared base seed because lane/reset order is traced separately. |
+| `episode_results[].seed_protocol` | Versioned stochastic RNG trace contract. Remote checkpoint eval currently requires `vector-lane-v1`; promotion and candidate-stop evidence additionally require one lane so its seed schedule matches playback. |
+| `episode_results[].seed` | One-lane promotion, candidate-stop, and playback use `base_seed + episode_ordinal`; vector-only screens record the shared base seed because lane/reset order is traced separately. |
 | `episode_results[].seed_lane` | Vector lane that produced the episode; scalar eval uses lane `0`. |
 | `episode_results[].seed_episode_ordinal` | Zero-based reset/episode ordinal within that lane. The `(seed_lane, seed_episode_ordinal)` pair is unique within one evaluation. |
 | `episode_results[].start_state` | Provider start identity used to validate per-start episode counts before remote evidence can be accepted. |

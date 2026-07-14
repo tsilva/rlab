@@ -25,10 +25,7 @@ def normalize_checkpoint_eval_stages(
         stage_label = f"{label}[{index}]"
         if not isinstance(raw_stage, Mapping):
             raise ValueError(f"{stage_label} must be an object")
-        extra = sorted(
-            set(raw_stage)
-            - {"name", "episodes", "n_envs", "pass", "candidate_stop"}
-        )
+        extra = sorted(set(raw_stage) - {"name", "episodes", "n_envs", "pass", "candidate_stop"})
         if extra:
             raise ValueError(f"{stage_label} has unexpected keys: {extra}")
         name = raw_stage.get("name")
@@ -51,6 +48,11 @@ def normalize_checkpoint_eval_stages(
         candidate_stop = raw_stage.get("candidate_stop", False)
         if not isinstance(candidate_stop, bool):
             raise ValueError(f"{stage_label}.candidate_stop must be a boolean")
+        if candidate_stop and n_envs != 1:
+            raise ValueError(
+                f"{stage_label}.n_envs must be 1 when candidate_stop is true; "
+                "candidate-stop evidence must reproduce playback's one-lane stochastic schedule"
+            )
         stages.append(
             {
                 "name": name,

@@ -22,13 +22,28 @@ train:
         game: Breakout-Atari2600-v0
         state: Start
         n_envs: 16
-        env_args:
+        env_args: &atari_breakout_provider_args
+          scenario: scenario
           info: src/rlab/data/Breakout-Atari2600-v0.json
+          use_restricted_actions: filtered
+          record: false
+          players: 1
+          inttype: stable
+          obs_type: image
+          render_mode: rgb_array
           info_filter: all
           num_threads: 6
+          rom_path: null
+          obs_copy: safe_view
+          obs_grayscale: true
+          obs_layout: chw
+          frame_stack: 4
+          noop_reset_max: 0
           reward_clip: true
           use_fire_reset: false
-    preprocessing:
+          done_on: null
+          autoreset_mode: disabled
+    preprocessing: &atari_breakout_preprocessing
       frame_skip: 4
       max_pool_frames: true
       sticky_action_prob: 0.0
@@ -42,6 +57,7 @@ train:
       - 0
       obs_crop_mode: mask
       obs_crop_fill: 0
+      obs_resize_algorithm: area
     task: &identity_task
       id: identity
       action:
@@ -79,14 +95,14 @@ eval:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_breakout_env_config
+      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
+      n_envs: 1
       # Train on clipped rewards, but rank checkpoints by the real game score.
       env_args:
-        info: src/rlab/data/Breakout-Atari2600-v0.json
-        info_filter: all
-        num_threads: 6
+        <<: *atari_breakout_provider_args
         reward_clip: false
-        use_fire_reset: false
     preprocessing:
+      <<: *atari_breakout_preprocessing
       # Keep the top wall (it begins at source row 17) while removing the score.
       obs_crop:
       - 17

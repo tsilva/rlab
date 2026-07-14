@@ -137,7 +137,7 @@ queue service and do not schedule experiments.
 - Enforced host capacity: `max_parallel_containers=6` in
   `experiments/machines.yaml`.
 - Default operating shape: 6 train containers.
-- Default runtime shape: provider and PyTorch thread defaults.
+- Default runtime shape: goal-declared provider arguments and PyTorch thread defaults.
 - Lower-contention shape: 3-4 workers.
 - Current five-container benchmark expectation: about 6200 aggregate wall FPS
   for the current Mario PPO shape. Re-measure aggregate wall FPS after the
@@ -160,7 +160,7 @@ intentionally testing small-GPU behavior.
 - Enforced host capacity: `max_parallel_containers=4` in
   `experiments/machines.yaml`.
 - Default operating shape: 4 train containers.
-- Default runtime shape: provider and PyTorch thread defaults.
+- Default runtime shape: goal-declared provider arguments and PyTorch thread defaults.
 - Fast-turnaround shape: 2 workers.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
