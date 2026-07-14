@@ -62,6 +62,8 @@ def valid_train_recipe() -> dict:
         "tags": ["b55", "confirm"],
         "train_config": explicit_train_config(),
     }
+
+
 class JobQueueTests(unittest.TestCase):
     def test_schema_upgrade_preserves_retired_eval_queue(self) -> None:
         conn = FakeConnection(
@@ -99,6 +101,50 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(args.checkpoint_eval_backend, "modal")
+
+    def test_implicit_submission_defaults_to_modal_backend(self) -> None:
+        calls = []
+        document = valid_train_recipe()
+        document["train_config"].pop("checkpoint_eval_backend")
+        old_enqueue = job_queue.enqueue_train_job
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"id": 100 + len(calls), "run_name": kwargs["run_name"]}
+
+        job_queue.enqueue_train_job = fake_enqueue
+        try:
+            with patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                return_value={"ready": True, "checks": []},
+            ) as preflight:
+                job_queue.enqueue_train_jobs_from_recipe_document(
+                    FakeConnection(),
+                    document=document,
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    machine="beast-3",
+                )
+        finally:
+            job_queue.enqueue_train_job = old_enqueue
+
+        self.assertTrue(calls)
+        self.assertTrue(
+            all(call["train_config"]["checkpoint_eval_backend"] == "modal" for call in calls)
+        )
+        preflight.assert_called_once_with(
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            game="SuperMarioBros-Nes-v0",
+        )
+
+    def test_all_checked_in_recipes_materialize_modal_backend(self) -> None:
+        recipe_paths = sorted(Path("experiments/goals").glob("**/recipes/*.yaml"))
+
+        self.assertTrue(recipe_paths)
+        for path in recipe_paths:
+            with self.subTest(path=path):
+                document = job_queue.load_recipe_document(path)
+                self.assertEqual(document["train_config"]["checkpoint_eval_backend"], "modal")
 
     def test_submission_backend_override_is_materialized_before_enqueue(self) -> None:
         calls = []
@@ -581,23 +627,20 @@ class JobQueueTests(unittest.TestCase):
             1,
         )
 
-    def test_load_recipe_document_allows_ale_episodic_life_override(self) -> None:
+    def test_load_recipe_document_rejects_ale_only_arg_for_stable_retro(self) -> None:
         overrides = [
             "recipe_id=episodic-life",
             "train.environment.env_config.env_args.episodic_life=true",
         ]
 
-        document = job_queue.load_recipe_document(
-            Path("experiments/goals/alepy__mspacman/recipes/base.yaml"),
-            recipe_overrides=overrides,
-        )
-
-        self.assertEqual(document["recipe_id"], "episodic-life")
-        self.assertEqual(document["train_config"]["timesteps"], 100000000)
-        self.assertIs(document["train_config"]["env_args"]["episodic_life"], True)
-        self.assertNotIn("episodic_life", document["train_config"])
-        self.assertEqual(document["train_config"]["obs_crop"], [0, 0, 37, 0])
-        self.assertEqual(document["recipe_overrides"], overrides)
+        with self.assertRaisesRegex(
+            ValueError,
+            "unexpected or canonically-owned stable-retro-turbo constructor argument",
+        ):
+            job_queue.load_recipe_document(
+                Path("experiments/goals/alepy__mspacman/recipes/base.yaml"),
+                recipe_overrides=overrides,
+            )
 
     def test_recipe_schema_rejects_removed_template_alias(self) -> None:
         document = valid_train_recipe()

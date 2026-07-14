@@ -20,6 +20,8 @@ objective:
   - min(leader/checkpoint/steps_to_goal)
   - max(eval/full/episode/return/mean)
 train:
+  # Run queue-backed checkpoint evaluation outside the training machine on Modal.
+  checkpoint_eval_backend: modal
   checkpoint_freq: 500000
   early_stop:
   - metric: eval/confirm/candidate/pass

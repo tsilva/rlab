@@ -19,6 +19,7 @@ from rlab.env_registry import resolve_env_provider
 from rlab.job_queue import load_recipe_document
 from rlab.main import COMMANDS
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
+from rlab.recipe_schema import validate_materialized_train_recipe
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -65,6 +66,15 @@ class ConfigValidationTests(unittest.TestCase):
                 environment["env_config"],
                 label="goal.train.environment",
             )
+
+    def test_materialized_recipe_rejects_missing_provider_constructor_arg(self) -> None:
+        document = load_recipe_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml")
+        )
+        document["train_config"]["env_args"].pop("done_on")
+
+        with self.assertRaisesRegex(ValueError, "missing explicit.*done_on"):
+            validate_materialized_train_recipe(document, label="recipe")
 
     def test_goal_validator_rejects_deterministic_policy_eval(self) -> None:
         with self.assertRaisesRegex(ValueError, "eval.policy.stochastic must be true"):
@@ -649,6 +659,7 @@ environment_hash: sha256:deadbeef
 
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)
+        self.assertIn("env", COMMANDS)
 
     def test_retired_commands_are_not_registered_on_unified_cli(self) -> None:
         self.assertTrue({"monitor", "promote", "release"}.isdisjoint(COMMANDS))

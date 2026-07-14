@@ -112,6 +112,21 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertNotIn("--no-post-train-eval-stochastic", options)
         self.assertTrue(parser.parse_args([]).post_train_eval_stochastic)
 
+    def test_checkpoint_eval_backend_defaults_to_modal_with_explicit_local_fallback(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_train_config_args(
+            parser,
+            env_defaults=EnvConfig(),
+            parse_json_value=json.loads,
+            parse_obs_crop=lambda value: tuple(int(item) for item in value.split(",")),
+        )
+
+        self.assertEqual(parser.parse_args([]).checkpoint_eval_backend, "modal")
+        self.assertEqual(
+            parser.parse_args(["--checkpoint-eval-backend", "local"]).checkpoint_eval_backend,
+            "local",
+        )
+
     def test_train_config_rejects_deterministic_checkpoint_eval(self) -> None:
         with self.assertRaisesRegex(ValueError, "post_train_eval_stochastic must be true"):
             validate_and_normalize_train_config({"post_train_eval_stochastic": False})

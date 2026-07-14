@@ -318,13 +318,13 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                         }
                     ),
                 ),
-                mock.patch("rlab.fleet.run_machine_docker") as docker,
-                mock.patch("rlab.fleet.run_machine_shell") as shell,
+                mock.patch(
+                    "rlab.docker_host.run_checkpoint_coordinator_container"
+                ) as recover,
             ):
                 with self.assertRaisesRegex(ValueError, error):
                     modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
-                docker.assert_not_called()
-                shell.assert_not_called()
+                recover.assert_not_called()
 
     def test_recover_uses_drain_mode_without_host_writes(self) -> None:
         runtime_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
@@ -357,20 +357,16 @@ class ModalEvalRecoveryTests(unittest.TestCase):
             mock.patch("rlab.machines.load_machine_registry", return_value=object()),
             mock.patch("rlab.machines.resolve_machine", return_value=machine),
             mock.patch(
-                "rlab.fleet.run_machine_docker",
-                return_value=subprocess.CompletedProcess([], 0, "", ""),
-            ) as docker,
-            mock.patch("rlab.fleet.run_machine_shell") as shell,
+                "rlab.docker_host.run_checkpoint_coordinator_container"
+            ) as recover,
             mock.patch.object(modal_eval_cli, "_kick"),
         ):
             result = modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
 
         self.assertEqual(result, 0)
-        docker_args = docker.call_args.args[1]
-        self.assertIn("--drain-and-exit", docker_args)
-        self.assertNotIn("--stop-file", docker_args)
-        self.assertFalse(any("recover.stop" in str(value) for value in docker_args))
-        shell.assert_not_called()
+        self.assertEqual(recover.call_args.kwargs["launch_id"], "train-13")
+        self.assertEqual(recover.call_args.kwargs["run_name"], "run-13")
+        self.assertEqual(recover.call_args.kwargs["runtime_image_ref"], runtime_ref)
         self.assertTrue(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
 
     def test_failed_recovery_preserves_awaiting_state(self) -> None:
@@ -398,8 +394,8 @@ class ModalEvalRecoveryTests(unittest.TestCase):
             mock.patch("rlab.machines.load_machine_registry", return_value=object()),
             mock.patch("rlab.machines.resolve_machine", return_value=machine),
             mock.patch(
-                "rlab.fleet.run_machine_docker",
-                return_value=subprocess.CompletedProcess([], 1, "", "recovery failed"),
+                "rlab.docker_host.run_checkpoint_coordinator_container",
+                side_effect=RuntimeError("recovery failed"),
             ),
         ):
             with self.assertRaisesRegex(RuntimeError, "recovery failed"):

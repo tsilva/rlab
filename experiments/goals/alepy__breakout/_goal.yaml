@@ -13,6 +13,8 @@ objective:
   - max(eval/full/episode/return/best)
   - min(leader/checkpoint/step)
 train:
+  # Run queue-backed checkpoint evaluation outside the training machine on Modal.
+  checkpoint_eval_backend: modal
   checkpoint_freq: 500000
   environment:
     env_provider: &atari_env_provider stable-retro-turbo

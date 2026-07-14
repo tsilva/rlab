@@ -109,6 +109,9 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab 
 
 ```bash
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
+rlab env list                                      # list declared providers and environments without importing them
+rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
+rlab env check --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
@@ -136,9 +139,19 @@ The command surface is intentionally one binary:
 - `rlab train` enqueues queue-backed train jobs from checked-in recipes.
 - `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate saved checkpoints asynchronously; jobs materialized for Modal use bounded remote CPU workers, while direct training and explicit `rlab eval` stay local.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
+- `rlab env` lists static provider contracts, inspects one qualified environment, or explicitly
+  preflights a materialized recipe against the installed native runtime.
 - `rlab jobs` and `rlab fleet` operate and inspect the queue and one-job container fleet.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
+
+`rlab env list` and `rlab env inspect` are static and do not import provider modules or access
+ROMs. `rlab env check` is an explicit, recipe-backed behavioral probe: it constructs the same
+native provider used by training, checks vector reset/step and visible masked-reset preservation,
+then binds and steps the normal rlab runtime. Its report separates declared configuration,
+runtime-observed evidence, and hidden reset invariants backed by the pinned provider contract;
+it does not claim that emulator or RNG internals are black-box observable. Pass `--json` for one
+versioned report on stdout; provider diagnostics are routed to stderr.
 
 Specialized and maintenance commands are intentionally outside the normal research loop:
 

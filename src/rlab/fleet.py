@@ -743,16 +743,21 @@ def cmd_capacity(args: argparse.Namespace) -> int:
 def cmd_setup_host(args: argparse.Namespace) -> int:
     machine = resolve_machine(load_registry_from_args(args), args.host)
     runtime_image_ref = runtime_image_ref_from_args(args)
-    script, returncode = setup_docker_host(
+    script, _ = setup_docker_host(
         machine,
         runtime_image_ref,
-        execute=bool(args.execute),
+        execute=False,
     )
     print(f"host: {machine.name}")
     print(script.rstrip())
     if not args.execute:
         print("dry_run: rerun without --dry-run to run setup over SSH")
         return 0
+    _, returncode = setup_docker_host(
+        machine,
+        runtime_image_ref,
+        execute=True,
+    )
     return int(returncode or 0)
 
 

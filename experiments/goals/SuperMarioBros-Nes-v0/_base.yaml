@@ -22,6 +22,8 @@ objective:
   - max(eval/full/episode/return/mean)
 # Training contract for this goal.
 train:
+  # Run queue-backed checkpoint evaluation outside the training machine on Modal.
+  checkpoint_eval_backend: modal
   # Shared checkpoint cadence for Mario training jobs.
   checkpoint_freq: 500000
   # The metric itself owns the 100-attempt FIFO semantics.

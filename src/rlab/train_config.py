@@ -696,10 +696,14 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField(
         "checkpoint_eval_backend",
         "--checkpoint-eval-backend",
-        default="local",
+        default="modal",
         choices=("local", "modal"),
         non_empty=True,
-        help="Checkpoint evaluation backend. Modal is supported only for queue-backed jobs.",
+        source_section="goal_train",
+        help=(
+            "Checkpoint evaluation backend. Queue-backed jobs default to Modal; "
+            "local is an explicit fallback."
+        ),
     ),
     TrainConfigField(
         "checkpoint_eval_asset_manifest",

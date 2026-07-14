@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from collections.abc import Mapping, Sequence
 from typing import Any
+from unittest.mock import patch
 
 import gymnasium as gym
 import numpy as np
@@ -332,6 +333,16 @@ class BatchRuntimeTests(unittest.TestCase):
         descriptor = descriptor_for(provider)
         kernel = IdentityTaskDefinition().bind(descriptor, provider.num_envs)
         return provider, BatchRuntime(provider, descriptor, kernel, run_seed=17)
+
+    def test_bound_runtime_step_does_not_consult_provider_registry(self):
+        _provider, runtime = self.make_identity_runtime()
+        runtime.reset()
+
+        with patch(
+            "rlab.env_registry.resolve_env_provider",
+            side_effect=AssertionError("hot path consulted provider registry"),
+        ):
+            runtime.step(np.zeros((runtime.num_envs, 3), dtype=np.int8))
 
     def test_provider_done_snapshots_terminal_observation_and_masked_resets_once(self):
         provider, runtime = self.make_identity_runtime()
