@@ -80,8 +80,8 @@ def checkpoint_metrics(**overrides: object) -> dict[str, object]:
         "eval/done/all": 10,
         "eval/done/level_change": 9,
         "eval/done/level_change/rate": 0.9,
-        "eval/done/level_change/from_rate/min": 0.8,
-        "eval/done/level_change/from_rate/mean": 0.9,
+        "eval/info/level_complete/rate/min": 0.8,
+        "eval/info/level_complete/rate/mean": 0.9,
         "eval/reward/mean": 10.0,
         EVAL_DURATION_SECONDS: 12.5,
     }
@@ -175,14 +175,70 @@ class EvalMetricTests(unittest.TestCase):
     def test_checkpoint_score_prefers_min_completion_rate_when_available(self) -> None:
         metrics = {
             "completion_rate": 0.95,
-            "eval/done/level_change/from_rate/min": 0.80,
-            "eval/done/level_change/from_rate/mean": 0.90,
+            "eval/info/level_complete/rate/min": 0.80,
+            "eval/info/level_complete/rate/mean": 0.90,
             "checkpoint_step": 5000000,
             "max_x_max": 3200,
             "reward_mean": 1200.0,
         }
 
         self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, float("-inf"), 1200.0))
+
+    def test_checkpoint_score_reads_legacy_eval_completion_names(self) -> None:
+        metrics = {
+            "eval/done/level_change/from_rate/min": 0.8,
+            "eval/done/level_change/from_rate/mean": 0.9,
+            "reward_mean": 1200.0,
+        }
+
+        self.assertEqual(eval_checkpoint_score(metrics), (0.8, 0.9, float("-inf"), 1200.0))
+        self.assertEqual(
+            eval_checkpoint_score(
+                {"eval/info/level_complete/rate/min": 0.8},
+                ["max(eval/done/level_change/from_rate/min)"],
+            ),
+            (0.8,),
+        )
+
+    def test_eval_separates_terminal_level_change_from_clean_completion(self) -> None:
+        success = episode_result_from_record(
+            EpisodeRecord(
+                lane=0,
+                episode_index=0,
+                start_id="Level1-1",
+                episode_return=1.0,
+                episode_length=10,
+                terminated=True,
+                truncated=False,
+                outcome=Outcome.SUCCESS,
+                events=("level_change",),
+                metrics={"completion_event": True, "died": False},
+            )
+        )
+        simultaneous_failure = episode_result_from_record(
+            EpisodeRecord(
+                lane=1,
+                episode_index=1,
+                start_id="Level1-1",
+                episode_return=-1.0,
+                episode_length=10,
+                terminated=True,
+                truncated=False,
+                outcome=Outcome.FAILURE,
+                events=("level_change", "life_loss"),
+                metrics={"completion_event": False, "died": True},
+            )
+        )
+
+        metrics = summarize_episode_results(
+            [success, simultaneous_failure],
+            deterministic=False,
+            event_names=("level_change", "life_loss"),
+        )
+
+        self.assertEqual(metrics["eval/done/level_change/rate"], 1.0)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-1/rate"], 0.5)
+        self.assertEqual(metrics["eval/info/level_complete/rate/min"], 0.5)
 
     def test_checkpoint_score_uses_reward_when_completion_is_absent(self) -> None:
         metrics = {
@@ -299,15 +355,15 @@ class EvalMetricTests(unittest.TestCase):
     def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
         slower_higher_reward = {
             "completion_rate": 1.0,
-            "eval/done/level_change/from_rate/min": 1.0,
-            "eval/done/level_change/from_rate/mean": 1.0,
+            "eval/info/level_complete/rate/min": 1.0,
+            "eval/info/level_complete/rate/mean": 1.0,
             "checkpoint_step": 5000000,
             "reward_mean": 1200.0,
         }
         faster_lower_reward = {
             "completion_rate": 1.0,
-            "eval/done/level_change/from_rate/min": 1.0,
-            "eval/done/level_change/from_rate/mean": 1.0,
+            "eval/info/level_complete/rate/min": 1.0,
+            "eval/info/level_complete/rate/mean": 1.0,
             "checkpoint_step": 3500000,
             "reward_mean": 900.0,
         }
@@ -349,8 +405,8 @@ class EvalMetricTests(unittest.TestCase):
                 "checkpoint_artifact": "entity/project/run-checkpoint:step-3500000",
                 "eval/done/level_change": 10,
                 "eval/done/level_change/rate": 1.0,
-                "eval/done/level_change/from_rate/min": 1.0,
-                "eval/done/level_change/from_rate/mean": 1.0,
+                "eval/info/level_complete/rate/min": 1.0,
+                "eval/info/level_complete/rate/mean": 1.0,
             }
         )
 
@@ -666,10 +722,16 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["eval/done/level_change/from/Level1-2/rate"], 0.0)
         self.assertEqual(metrics["eval/done/max_steps/from/Level1-2"], 1)
         self.assertEqual(metrics["eval/done/max_steps/from/Level1-2/rate"], 1.0)
-        self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
-        self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
-        self.assertEqual(metrics["eval/done/level_change/from_rate/min"], 0.0)
-        self.assertEqual(metrics["eval/done/level_change/from_rate/mean"], 0.5)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-1/count"], 1)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-1/attempts"], 1)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-1/rate"], 1.0)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-2/count"], 0)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-2/attempts"], 1)
+        self.assertEqual(metrics["eval/info/level_complete/from/Level1-2/rate"], 0.0)
+        self.assertEqual(metrics["eval/info/level_complete/rate/min"], 0.0)
+        self.assertEqual(metrics["eval/info/level_complete/rate/mean"], 0.5)
+        self.assertNotIn("eval/done/level_change/from_rate/min", metrics)
+        self.assertNotIn("eval/done/level_change/from_rate/mean", metrics)
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
         self.assertEqual(metrics["episode_results"][0]["seed"], 7)
         self.assertEqual(metrics["episode_results"][0]["seed_protocol"], "vector-lane-v1")

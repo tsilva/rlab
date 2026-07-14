@@ -7,9 +7,6 @@ import numpy as np
 
 from rlab.metric_names import (
     EVAL_DONE_ALL,
-    EVAL_DONE_LEVEL_CHANGE,
-    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
-    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     EVAL_DONE_LEVEL_CHANGE_RATE,
     EVAL_DONE_MAX_STEPS,
     EVAL_DONE_MAX_STEPS_RATE,
@@ -17,8 +14,15 @@ from rlab.metric_names import (
     EVAL_DONE_TERMINATED_RATE,
     EVAL_DONE_UNCLASSIFIED,
     EVAL_DONE_UNCLASSIFIED_RATE,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     eval_done_reason_metric,
     eval_done_value_metric,
+    eval_info_level_complete_attempts_metric,
+    eval_info_level_complete_count_metric,
+    eval_info_level_complete_rate_metric,
 )
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.task_kernels import Outcome
@@ -241,22 +245,18 @@ def eval_done_from_metrics(
         if semantics.completion_reason:
             completion_rate = completion_count / denominator
             completion_rates.append(completion_rate)
-            completion_metric = eval_done_value_metric(
-                semantics.completion_reason,
-                "from",
-                state,
-            )
             metrics.update(
                 {
-                    completion_metric: completion_count,
-                    f"{completion_metric}/rate": completion_rate,
+                    eval_info_level_complete_count_metric(state): completion_count,
+                    eval_info_level_complete_attempts_metric(state): denominator,
+                    eval_info_level_complete_rate_metric(state): completion_rate,
                 }
             )
     if completion_rates and semantics.completion_reason == "level_change":
         completion_rate_min = min(completion_rates)
         completion_rate_mean = float(np.mean(completion_rates))
-        metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN] = completion_rate_min
-        metrics[EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN] = completion_rate_mean
+        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN] = completion_rate_min
+        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN] = completion_rate_mean
     return metrics
 
 
@@ -398,8 +398,6 @@ def summarize_episode_results(
             {
                 "completion_count": completion_count,
                 "completion_rate": completion_count / episode_count,
-                EVAL_DONE_LEVEL_CHANGE: completion_count,
-                EVAL_DONE_LEVEL_CHANGE_RATE: completion_count / episode_count,
             }
         )
     if semantics.death_flag_key:
@@ -433,18 +431,24 @@ def metric_float(metrics: dict[str, Any] | Any, key: str, default: float = float
 
 
 def completion_score(metrics: dict[str, Any]) -> tuple[float, float] | None:
-    completion_min = metric_float(metrics, EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN)
+    completion_min = metric_float(metrics, EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
+    if completion_min == float("-inf"):
+        completion_min = metric_float(metrics, LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN)
     if completion_min == float("-inf"):
         completion_min = metric_float(metrics, EVAL_DONE_LEVEL_CHANGE_RATE)
     if completion_min == float("-inf"):
         completion_min = metric_float(metrics, "completion_rate")
     completion_mean = metric_float(
         metrics,
-        EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+        EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
         metric_float(
             metrics,
-            EVAL_DONE_LEVEL_CHANGE_RATE,
-            metric_float(metrics, "completion_rate"),
+            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+            metric_float(
+                metrics,
+                EVAL_DONE_LEVEL_CHANGE_RATE,
+                metric_float(metrics, "completion_rate"),
+            ),
         ),
     )
     if completion_min == float("-inf"):

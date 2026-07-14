@@ -45,17 +45,27 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 return
             kind = str(payload["artifact_kind"])
             checkpoint_step = int(payload["checkpoint_step"])
+            model_metadata = dict(payload["model_metadata"])
+            if not isinstance(model_metadata.get("training_metadata"), dict):
+                raise ValueError("artifact projection requires checkpoint training_metadata")
+            checkpoint_uri = str(payload["checkpoint_uri"])
+            artifact_filename = checkpoint_uri.rsplit("/", 1)[-1] or "model.zip"
+            artifact_metadata = {
+                **model_metadata,
+                "source_filename": model_metadata.get("filename", ""),
+                "filename": artifact_filename,
+                "checkpoint_sha256": payload["checkpoint_sha256"],
+                "metadata_sha256": payload["metadata_sha256"],
+                "checkpoint_step": checkpoint_step,
+                "metadata_uri": payload["metadata_uri"],
+                "artifact_storage_uri": checkpoint_uri,
+            }
             artifact = wandb.Artifact(
                 f"{sanitize_artifact_name(str(train_config.get('run_name') or run_id))}-{kind}",
                 type="model",
-                metadata={
-                    "checkpoint_sha256": payload["checkpoint_sha256"],
-                    "metadata_sha256": payload["metadata_sha256"],
-                    "checkpoint_step": checkpoint_step,
-                    "metadata_uri": payload["metadata_uri"],
-                },
+                metadata=artifact_metadata,
             )
-            artifact.add_reference(str(payload["checkpoint_uri"]))
+            artifact.add_reference(checkpoint_uri)
             aliases = [kind, "latest"]
             if kind == "checkpoint":
                 aliases = ["latest", f"step-{checkpoint_step}"]

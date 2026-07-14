@@ -31,8 +31,8 @@ from rlab.callbacks import (
 from rlab.env import EnvConfig
 from rlab.metric_store import MetricStore
 from rlab.metric_names import (
-    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
-    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN,
 )
 
 
@@ -296,7 +296,7 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
             0.99,
         )
         self.assertEqual(
-            logger.records["train/info/level_complete/rate/min/last"],
+            logger.records["train/info/level_complete/rate/min"],
             0.99,
         )
 
@@ -315,7 +315,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
         callback = MetricThresholdStopHelper(
             detector=[
                 {
-                    "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                    "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN,
                     "operator": ">",
                     "threshold": 0.99,
                 }
@@ -334,17 +334,17 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
 
-            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 0.99
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN] = 0.99
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
 
-            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 1.0
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN] = 1.0
             callback.num_timesteps = 200
             self.assertFalse(callback._on_step())
 
             marker = marker_path.read_text(encoding="utf-8")
             self.assertIn("early_stop=metric_threshold", marker)
-            self.assertIn(f"early_stop_metric={TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST}", marker)
+            self.assertIn(f"early_stop_metric={TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN}", marker)
             self.assertIn("early_stop_operator=>", marker)
             self.assertIn("early_stop_threshold=0.99", marker)
             self.assertIn("early_stop_value=1", marker)
@@ -357,7 +357,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback = MetricThresholdStopHelper(
                 detector=[
                     {
-                        "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
+                        "metric": TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN,
                         "operator": ">",
                         "threshold": 0.99,
                     },
@@ -372,7 +372,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback.model = model  # type: ignore[assignment]
             callback.num_timesteps = 100
 
-            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST] = 1.0
+            model.logger.records[TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN] = 1.0
             model.logger.records["rollout/ep_rew_mean"] = 999
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
@@ -392,7 +392,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             store = MetricStore(store_path)
             store.init()
             store.append_metrics(
-                {EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: 1.0},
+                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0},
                 step=120000,
                 source="eval",
                 checkpoint_step=120000,
@@ -402,7 +402,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback = MetricThresholdStopHelper(
                 detector=[
                     {
-                        "metric": EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+                        "metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
                         "operator": ">=",
                         "threshold": 1.0,
                     }
@@ -420,7 +420,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertFalse(callback._on_step())
 
             marker = marker_path.read_text(encoding="utf-8")
-            self.assertIn(f"early_stop_metric={EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN}", marker)
+            self.assertIn(f"early_stop_metric={EVAL_INFO_LEVEL_COMPLETE_RATE_MIN}", marker)
             self.assertIn("early_stop_value=1", marker)
             self.assertIn("timesteps=130000", marker)
 
@@ -430,7 +430,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             output_format = MetricStoreOutputFormat(store_path)
             output_format.write(
                 {
-                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST: 0.5,
+                    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN: 0.5,
                     "rollout/ep_rew_mean": np.float32(4.25),
                     "time/iterations": 3,
                     "ignored/text": "nope",
@@ -443,7 +443,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             )
 
             store = MetricStore(store_path)
-            self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST), 0.5)
+            self.assertEqual(store.latest_metric(TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN), 0.5)
             self.assertEqual(store.latest_metric("rollout/ep_rew_mean"), 4.25)
             self.assertEqual(store.latest_metric("time/iterations"), 3.0)
             self.assertIsNone(store.latest_metric("ignored/text"))

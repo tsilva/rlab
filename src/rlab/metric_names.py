@@ -39,15 +39,21 @@ TRAIN_DONE_UNCLASSIFIED = "train/done/unclassified"
 TRAIN_INFO_LEVEL_COMPLETE_ROOT = "train/info/level_complete"
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_CURRENT = "train/info/level_complete/rate/min/current"
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT = "train/info/level_complete/rate/mean/current"
-TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate/min/last"
-TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "train/info/level_complete/rate/mean/last"
+TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN = "train/info/level_complete/rate/min"
+TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN = "train/info/level_complete/rate/mean"
+
+EVAL_INFO_LEVEL_COMPLETE_ROOT = "eval/info/level_complete"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MIN = "eval/info/level_complete/rate/min"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN = "eval/info/level_complete/rate/mean"
 
 EVAL_DONE_ALL = "eval/done/all"
 EVAL_DONE_ROOT = "eval/done/"
 EVAL_DONE_LEVEL_CHANGE = "eval/done/level_change"
 EVAL_DONE_LEVEL_CHANGE_RATE = "eval/done/level_change/rate"
-EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "eval/done/level_change/from_rate/min"
-EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN = "eval/done/level_change/from_rate/mean"
+LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "eval/done/level_change/from_rate/min"
+LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN = "eval/done/level_change/from_rate/mean"
+LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate/min/last"
+LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "train/info/level_complete/rate/mean/last"
 EVAL_DONE_MAX_STEPS = "eval/done/max_steps"
 EVAL_DONE_MAX_STEPS_RATE = "eval/done/max_steps/rate"
 EVAL_DONE_TERMINATED = "eval/done/terminated"
@@ -155,6 +161,22 @@ def train_info_level_complete_current_rate_metric(value: object) -> str:
 
 def train_info_level_complete_rate_metric(value: object) -> str:
     return f"{train_info_level_complete_from_metric(value)}/rate"
+
+
+def eval_info_level_complete_from_metric(value: object) -> str:
+    return f"{EVAL_INFO_LEVEL_COMPLETE_ROOT}/from/{metric_value_segment(value)}"
+
+
+def eval_info_level_complete_count_metric(value: object) -> str:
+    return f"{eval_info_level_complete_from_metric(value)}/count"
+
+
+def eval_info_level_complete_attempts_metric(value: object) -> str:
+    return f"{eval_info_level_complete_from_metric(value)}/attempts"
+
+
+def eval_info_level_complete_rate_metric(value: object) -> str:
+    return f"{eval_info_level_complete_from_metric(value)}/rate"
 
 
 def eval_done_reason_metric(reason: object) -> str:

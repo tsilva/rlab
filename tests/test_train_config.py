@@ -137,7 +137,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
                 "n_envs": 2,
                 "pass": [
                     {
-                        "metric": "eval/done/level_change/from_rate/min",
+                        "metric": "eval/info/level_complete/rate/min",
                         "operator": ">=",
                         "threshold": 1.0,
                     }
@@ -150,7 +150,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         rendered = command[command.index("--checkpoint-eval-stages") + 1]
         self.assertIn('"name":"screen"', rendered)
         self.assertIn('"episodes":10', rendered)
-        self.assertIn('"metric":"eval/done/level_change/from_rate/min"', rendered)
+        self.assertIn('"metric":"eval/info/level_complete/rate/min"', rendered)
 
     def test_field_validation_uses_choices_and_numeric_bounds(self) -> None:
         validate_train_config_fields(

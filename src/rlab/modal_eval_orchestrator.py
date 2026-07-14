@@ -1135,22 +1135,30 @@ def project_artifact_references(
         return 0
     error = None
     if str(announcement.get("kind")) != "tombstone":
-        payload = {
-            "projection_kind": "artifact_reference",
-            "train_config": run["train_config"],
-            "artifact_kind": announcement["kind"],
-            "checkpoint_uri": announcement["model_uri"],
-            "metadata_uri": announcement["metadata_uri"],
-            "checkpoint_sha256": announcement["sha256"],
-            "metadata_sha256": announcement["metadata_sha256"],
-            "checkpoint_step": announcement["step"],
-        }
-        error = _execute_projection(
-            payload,
-            repo_root=repo_root,
-            deadline_monotonic=deadline_monotonic,
-            label=f"artifact-{train_job_id}-{ordinal}",
-        )
+        try:
+            model_metadata = store.get_json(str(announcement["metadata_uri"]))
+            if not isinstance(model_metadata.get("training_metadata"), dict):
+                raise ValueError("checkpoint metadata is missing training_metadata")
+        except Exception as exc:
+            error = repr(exc)
+        else:
+            payload = {
+                "projection_kind": "artifact_reference",
+                "train_config": run["train_config"],
+                "artifact_kind": announcement["kind"],
+                "checkpoint_uri": announcement["model_uri"],
+                "metadata_uri": announcement["metadata_uri"],
+                "checkpoint_sha256": announcement["sha256"],
+                "metadata_sha256": announcement["metadata_sha256"],
+                "checkpoint_step": announcement["step"],
+                "model_metadata": model_metadata,
+            }
+            error = _execute_projection(
+                payload,
+                repo_root=repo_root,
+                deadline_monotonic=deadline_monotonic,
+                label=f"artifact-{train_job_id}-{ordinal}",
+            )
     with conn:
         with conn.cursor() as cur:
             if error is None:

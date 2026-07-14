@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -506,9 +507,19 @@ def _super_mario_bros_nes_turbo_make_vec_env(
 ):
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     env_type = super_mario_vec_env_type()
+    kwargs = _disabled_autoreset_kwargs(native_kwargs)
+    if "rom_path" not in kwargs:
+        try:
+            import stable_retro.data
+
+            imported_rom = Path(stable_retro.data.get_romfile_path(config.game))
+        except (FileNotFoundError, ImportError):
+            imported_rom = None
+        if imported_rom is not None and imported_rom.is_file():
+            kwargs["rom_path"] = str(imported_rom)
     env = env_type(
         config.game,
-        **_disabled_autoreset_kwargs(native_kwargs),
+        **kwargs,
     )
     env = _require_disabled_autoreset_mode(env, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     return _StartInfoAdapter(env)

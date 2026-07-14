@@ -7,17 +7,19 @@ from typing import Any
 
 from rlab.metric_names import (
     EVAL_BEST_REWARD,
-    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
-    EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     EVAL_DONE_LEVEL_CHANGE_RATE,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
     EVAL_REWARD_MEAN,
+    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
 )
 
 
 DEFAULT_COMPLETION_RANK = (
-    f"max({EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN})",
-    f"max({EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN})",
+    f"max({EVAL_INFO_LEVEL_COMPLETE_RATE_MIN})",
+    f"max({EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN})",
     f"min({LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL})",
     f"max({EVAL_REWARD_MEAN})",
 )
@@ -55,7 +57,7 @@ def default_objective_rank(metrics: Mapping[str, Any]) -> tuple[RankCriterion, .
     has_completion = any(
         _metric_value(metrics, metric) is not None
         for metric in (
-            EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+            EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
             EVAL_DONE_LEVEL_CHANGE_RATE,
             "completion_rate",
         )
@@ -76,11 +78,31 @@ def _metric_value(metrics: Mapping[str, Any], metric: str) -> Any:
     value = metrics.get(metric)
     if value is not None:
         return value
+    alternate_keys = {
+        EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: (
+            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+            "completion_rate",
+        ),
+        EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN: (
+            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+            "completion_rate",
+        ),
+        LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: (
+            EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+            "completion_rate",
+        ),
+        LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN: (
+            EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+            "completion_rate",
+        ),
+    }
+    for key in alternate_keys.get(metric, ()):
+        value = metrics.get(key)
+        if value is not None:
+            return value
     aliases = {
         EVAL_REWARD_MEAN: "reward_mean",
         EVAL_BEST_REWARD: "best_episode.reward",
-        EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN: "completion_rate",
-        EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN: "completion_rate",
         LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL: "checkpoint_step",
     }
     alias = aliases.get(metric)
@@ -97,7 +119,7 @@ def rank_metric_values(
     for criterion in criteria:
         value = _metric_value(metrics, criterion.metric)
         if criterion.metric == LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL:
-            completion = _metric_value(metrics, EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN)
+            completion = _metric_value(metrics, EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
             if completion is not None and float(completion) < 0.99:
                 value = None
         try:

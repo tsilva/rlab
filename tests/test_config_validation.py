@@ -217,10 +217,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/info/level_complete/rate/min/last)
+  - max(train/info/level_complete/rate/min)
 train:
   early_stop:
-  - metric: train/info/level_complete/rate/min/last
+  - metric: train/info/level_complete/rate/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -319,11 +319,11 @@ goal_id: bad
 title: Bad Goal
 objective:
   success:
-    metric: train/info/level_complete/rate/min/last
+    metric: train/info/level_complete/rate/min
     operator: '>'
     threshold: 0.99
   rank:
-  - max(train/info/level_complete/rate/min/last)
+  - max(train/info/level_complete/rate/min)
 train:
   environment:
     env_config:
@@ -384,10 +384,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/info/level_complete/rate/min/last)
+  - max(train/info/level_complete/rate/min)
 train:
   early_stop:
-  - metric: train/info/level_complete/rate/min/last
+  - metric: train/info/level_complete/rate/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -453,8 +453,8 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["objective"]["rank"],
             [
-                "max(eval/done/level_change/from_rate/min)",
-                "max(eval/done/level_change/from_rate/mean)",
+                "max(eval/info/level_complete/rate/min)",
+                "max(eval/info/level_complete/rate/mean)",
                 "min(leader/checkpoint/steps_to_completion_goal)",
                 "max(eval/reward/mean)",
             ],

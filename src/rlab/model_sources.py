@@ -305,6 +305,65 @@ def _artifact_exists(ref: str) -> bool:
     return True
 
 
+def _logged_run_artifact_ref(run: Any, *, kind: str, version: str) -> str | None:
+    """Return the requested model collection actually logged by a W&B run.
+
+    Queue-backed runs use the immutable W&B run id for artifact collection names,
+    whereas older local runs used the human-readable run name.  Reading the run's
+    logged artifacts supports both naming schemes without guessing either one.
+    """
+    try:
+        artifacts = run.logged_artifacts()
+    except Exception:
+        return None
+    suffix = f"-{kind}:"
+    for artifact in artifacts:
+        if str(getattr(artifact, "type", "")) != "model":
+            continue
+        qualified_name = str(getattr(artifact, "qualified_name", "") or "")
+        if suffix not in qualified_name:
+            continue
+        aliases = {str(alias) for alias in getattr(artifact, "aliases", []) or []}
+        if version == "latest" and "latest" not in aliases:
+            continue
+        return f"{qualified_name.rsplit(':', 1)[0]}:{version}"
+    return None
+
+
+def _run_artifact_ref_by_name(
+    run_name: str,
+    *,
+    project: str,
+    kind: str,
+    version: str,
+) -> str | None:
+    """Find a uniquely named W&B run and return its logged model artifact."""
+    import wandb
+
+    try:
+        runs = wandb.Api().runs(project, filters={"display_name": run_name})
+    except Exception:
+        return None
+    try:
+        matches = [
+            run
+            for run in runs
+            if getattr(run, "name", None) == run_name
+            or _wandb_run_config_value(run, "run_name") == run_name
+        ]
+    except Exception:
+        return None
+    refs = [
+        ref
+        for run in matches
+        if (ref := _logged_run_artifact_ref(run, kind=kind, version=version)) is not None
+    ]
+    unique_refs = sorted(set(refs))
+    if len(unique_refs) == 1:
+        return unique_refs[0]
+    return None
+
+
 def resolve_unique_bare_run_artifact_ref(
     run_name: str,
     *,
@@ -327,14 +386,12 @@ def resolve_unique_bare_run_artifact_ref(
     if _artifact_exists(candidates[0]):
         matches.append(candidates[0])
     remaining = candidates[1:]
-    if not remaining:
-        return matches[0] if matches else None
-
-    with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_ARTIFACT_LOOKUPS, len(remaining))) as pool:
-        futures = {pool.submit(_artifact_exists, ref): ref for ref in remaining}
-        for future in as_completed(futures):
-            if future.result():
-                matches.append(futures[future])
+    if remaining:
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_ARTIFACT_LOOKUPS, len(remaining))) as pool:
+            futures = {pool.submit(_artifact_exists, ref): ref for ref in remaining}
+            for future in as_completed(futures):
+                if future.result():
+                    matches.append(futures[future])
 
     if len(matches) == 1:
         return matches[0]
@@ -342,6 +399,21 @@ def resolve_unique_bare_run_artifact_ref(
         choices = ", ".join(sorted(matches))
         raise SystemExit(
             f"Run name {run_name!r} is ambiguous across W&B projects; pass project/run. "
+            f"Matches: {choices}"
+        )
+    logged_matches = [
+        ref
+        for project in artifact_lookup_project_paths(default_project, run_name)
+        if (ref := _run_artifact_ref_by_name(
+            run_name, project=project, kind=kind, version=version
+        )) is not None
+    ]
+    if len(logged_matches) == 1:
+        return logged_matches[0]
+    if len(logged_matches) > 1:
+        choices = ", ".join(sorted(logged_matches))
+        raise SystemExit(
+            f"Run name {run_name!r} is ambiguous across W&B projects; pass a run URL. "
             f"Matches: {choices}"
         )
     return None
@@ -430,6 +502,9 @@ def wandb_run_artifact_ref(
         run = wandb.Api().run(run_path)
     except Exception as exc:
         raise SystemExit(f"Could not resolve W&B run {run_path}: {exc}") from exc
+    logged_ref = _logged_run_artifact_ref(run, kind=kind, version=version)
+    if logged_ref is not None:
+        return logged_ref
     run_name = (
         _wandb_run_config_value(run, "run_name")
         or getattr(run, "name", None)

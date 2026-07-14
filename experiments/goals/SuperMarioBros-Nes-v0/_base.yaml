@@ -18,8 +18,8 @@ title: Sample-efficient SuperMarioBros-NES {goal_id} completion
 objective:
   # Ordered ranking signals; compare each metric in sequence until a candidate wins.
   rank:
-  - max(eval/done/level_change/from_rate/min)
-  - max(eval/done/level_change/from_rate/mean)
+  - max(eval/info/level_complete/rate/min)
+  - max(eval/info/level_complete/rate/mean)
   - min(leader/checkpoint/steps_to_completion_goal)
   - max(eval/reward/mean)
 # Training contract for this goal.
@@ -36,14 +36,14 @@ train:
     episodes: 10
     n_envs: 2
     pass:
-    - metric: eval/done/level_change/from_rate/min
+    - metric: eval/info/level_complete/rate/min
       operator: '>='
       threshold: 1.0
   - name: confirm
     episodes: 30
     n_envs: 4
     pass:
-    - metric: eval/done/level_change/from_rate/min
+    - metric: eval/info/level_complete/rate/min
       operator: '>='
       threshold: 1.0
     candidate_stop: true

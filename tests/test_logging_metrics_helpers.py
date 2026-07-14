@@ -94,11 +94,24 @@ class MetricsDocumentationTests(unittest.TestCase):
             "train/info/level_complete/from/<prev>/rate",
             "train/info/level_complete/rate/min/current",
             "train/info/level_complete/rate/mean/current",
-            "train/info/level_complete/rate/min/last",
-            "train/info/level_complete/rate/mean/last",
+            "train/info/level_complete/rate/min",
+            "train/info/level_complete/rate/mean",
             "train/reward/<component>/<stat>",
             "train/reward_share/<component>",
             "eval/done/<reason>/from/<start>",
+            "eval/info/level_complete/from/<start>/count",
+            "eval/info/level_complete/from/<start>/attempts",
+            "eval/info/level_complete/from/<start>/rate",
         ]
         missing_templates = [template for template in required_templates if template not in content]
         self.assertEqual(missing_templates, [])
+
+    def test_clean_completion_metric_suffixes_match_across_phases(self) -> None:
+        self.assertEqual(
+            metric_names.TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN.removeprefix("train/"),
+            metric_names.EVAL_INFO_LEVEL_COMPLETE_RATE_MIN.removeprefix("eval/"),
+        )
+        self.assertEqual(
+            metric_names.TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN.removeprefix("train/"),
+            metric_names.EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN.removeprefix("eval/"),
+        )

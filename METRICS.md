@@ -33,9 +33,20 @@ but explicit enough to search by phase, info-value, reward, or progress.
 Use `train` and `eval` as the first path segment. Keep aggregate metrics at the phase level, for example
 `train/done/all` and `eval/reward/mean`.
 
+When training and evaluation measure the same semantic quantity, everything after the phase prefix
+must match. Clean Mario completion therefore uses `train/info/level_complete/rate/min` and
+`eval/info/level_complete/rate/min`. Phase-specific aggregation horizons may add explicit suffixes;
+they must not rename the underlying quantity. Terminal reasons remain under `done/*` because
+termination and clean completion are distinct concepts even when their values happen to coincide.
+
 Use `rate` for fractions in `[0, 1]`, `count` for point-in-time counts, and standard stat suffixes such as
 `mean`, `std`, `min`, `max`, `abs_mean`, and `nonzero_rate` only where a metric family explicitly logs
 distribution statistics. Avoid aliases and alternate names for the same value.
+
+New writers do not emit the retired `train/info/level_complete/rate/min/last`,
+`train/info/level_complete/rate/mean/last`, `eval/done/level_change/from_rate/min`, or
+`eval/done/level_change/from_rate/mean` completion aliases. Leader and ranking readers still accept
+those keys when loading historical W&B runs.
 
 `global_step` is the W&B step axis for training and evaluation frames. Post-training checkpoint eval logs `global_step` and
 `eval/checkpoint/step` as the checkpoint timestep on the same W&B run that produced the checkpoint.
@@ -70,12 +81,15 @@ database stores train-job state, not result metric projections.
 | `train/info/level_complete/from/<prev>/rate` | Fraction of the last 100 attempts from `<prev>` that produced a clean `level_complete`. Attempts can end at a clean completion, life loss, truncation, or episode done; death/life-loss attempts contribute `0`. Emits only after that source has a full 100-attempt window. |
 | `train/info/level_complete/rate/min/current` | Minimum across the latest available `train/info/level_complete/from/<prev>/rate/current` values. Emits from the first observed attempt and is intended for live charts while strict windows are still filling. |
 | `train/info/level_complete/rate/mean/current` | Mean across the latest available `train/info/level_complete/from/<prev>/rate/current` values. Emits alongside `rate/min/current`. |
-| `train/info/level_complete/rate/min/last` | Minimum across the latest available `train/info/level_complete/from/<prev>/rate` values. Emits after at least one per-source rate is available and updates whenever any per-source rate updates. |
-| `train/info/level_complete/rate/mean/last` | Mean across the latest available `train/info/level_complete/from/<prev>/rate` values. Emits alongside `rate/min/last` and updates whenever any per-source rate updates. |
-| `eval/done/level_change/rate` | Pooled eval episode completion fraction. |
-| `eval/done/level_change/from/<start>/rate` | Eval completion fraction for episodes that started from `<start>`. |
-| `eval/done/level_change/from_rate/min` | Minimum per-start eval completion fraction. Use this first when comparing multi-start-state policies. |
-| `eval/done/level_change/from_rate/mean` | Mean per-start eval completion fraction. |
+| `train/info/level_complete/rate/min` | Minimum across the latest full-window `train/info/level_complete/from/<prev>/rate` values. Emits after at least one per-source strict rate is available and updates whenever any per-source rate updates. |
+| `train/info/level_complete/rate/mean` | Mean across the latest full-window `train/info/level_complete/from/<prev>/rate` values. Emits alongside `rate/min` and updates whenever any per-source rate updates. |
+| `eval/done/level_change/rate` | Pooled fraction of eval episodes whose terminal record contained a level-change event, whether or not it qualified as a clean completion. |
+| `eval/done/level_change/from/<start>/rate` | Level-change terminal-event fraction for eval episodes that started from `<start>`. |
+| `eval/info/level_complete/from/<start>/count` | Clean eval completions from `<start>`. |
+| `eval/info/level_complete/from/<start>/attempts` | Eval episodes from `<start>` represented in the completion rate. |
+| `eval/info/level_complete/from/<start>/rate` | Clean completion fraction for eval episodes from `<start>`. |
+| `eval/info/level_complete/rate/min` | Minimum per-start clean completion fraction. Use this first when comparing multi-start-state policies. |
+| `eval/info/level_complete/rate/mean` | Mean per-start clean completion fraction. |
 | `eval/done/<reason>/rate` | Fraction of eval episodes whose terminal task record contained configured event `<reason>`, including generic identity-task reasons such as `serve_stall`. |
 
 Current training does not log per-rollout done-count distribution stats such as `train/done/min`,
@@ -89,7 +103,7 @@ inside one episode. They are emitted only for tasks that declare the `level_chan
 tasks such as Breakout do not run this Mario-specific reducer. Use `train/done/*` only to understand
 what is ending training episodes.
 
-`eval/done/level_change/from_rate/min` is the eval selection metric for Mario-style multi-start-state
+`eval/info/level_complete/rate/min` is the eval selection metric for Mario-style multi-start-state
 policies that define a clean completion event. Environments without a target-level completion
 contract, such as Breakout, normally use `eval/reward/mean` as their reward objective. The current
 Breakout goal first minimizes `eval/done/serve_stall/rate`, then ranks reward, so a checkpoint that
@@ -118,21 +132,21 @@ available per-level partial-window rates, so it appears much earlier than the st
 metric. Use `train/info/level_complete/from/<prev>/attempts` next to it to see the current
 denominator.
 
-Use `train/info/level_complete/rate/min/last` as the strict training gate and comparable
+Use `train/info/level_complete/rate/min` as the strict training gate and comparable
 full-window bottleneck. It is the minimum of the most recent full-window per-level rates that have
-emitted so far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate/min/last` is
+emitted so far. For example, if Level1-1 is `0.50` and Level1-2 is `0.30`, `rate/min` is
 `0.30`. If Level1-1 later drops from `1.00` to `0.50` while Level1-2 drops from `0.60` to `0.55`,
-`rate/min/last` is `0.50`. Use `train/info/level_complete/rate/mean/last` as the companion average
+`rate/min` is `0.50`. Use `train/info/level_complete/rate/mean` as the companion average
 over those same latest per-level rates, mainly to distinguish policies with the same bottleneck. Training
 intentionally no longer logs generic `train/event/*` or `train/outcome/*` metrics. Once post-train
 checkpoint eval has logged per-start metrics,
-use `eval/done/level_change/from_rate/min` as the balanced eval selection metric.
+use `eval/info/level_complete/rate/min` as the balanced eval selection metric.
 
-`rate/min/last` and `rate/mean/last` are intentionally available-source live metrics. If only one
+`rate/min` and `rate/mean` are intentionally available-source live metrics. If only one
 source has a full attempt window so far, both report that source's rate; as more source windows emit,
 the minimum automatically tightens to include them and the mean averages across them. Use the companion
 `train/info/level_complete/from/<prev>/attempts`, `/rate/current`, `/rate`, and `/count` metrics to
-see which sources currently have coverage. On fast-solved single-level runs, `/rate/min/last` can
+see which sources currently have coverage. On fast-solved single-level runs, `/rate/min` can
 have only one W&B history point because the first full 100-attempt window immediately satisfies the
 early-stop gate; use `/rate/min/current` for the live trace in that case.
 
@@ -141,7 +155,7 @@ episode-window diagnostics. Keep them as done-reason diagnostics; for clear coun
 `train/info/level_complete/from/<prev>/count` and `train/info/level_complete/from/<prev>/rate`
 because they also count non-terminal clears and exclude death or life-loss transitions. For a
 single training selection scalar across source levels, prefer
-`train/info/level_complete/rate/min/last`; use `train/info/level_complete/rate/mean/last` as a
+`train/info/level_complete/rate/min`; use `train/info/level_complete/rate/mean` as a
 tiebreaker/secondary signal when bottleneck rates match.
 
 Goal contracts should not restate the `train/info/level_complete/from/<prev>/rate` 100-attempt FIFO
@@ -174,9 +188,9 @@ counters because those multiply metric cardinality quickly.
 Evaluation, including post-training checkpoint eval, uses the same provider, bound task kernel, and
 batch runtime. Its task contract keeps `level_change` as success termination while removing life-loss
 failure termination. This stops successful single-level Mario eval episodes at the vector step that
-observes the transition, so `eval/done/level_change` and
-`eval/done/level_change/from/<start>` track clean task outcomes. Eval `from` values remain configured
-episode start identities.
+observes the transition. `eval/done/level_change*` describes the terminal reason, while
+`eval/info/level_complete*` describes clean completion using the same suffixes as training. Eval
+`from` values remain configured episode start identities.
 
 `train/done/*` windows remain terminal-episode metrics. Natural clean clears observed while the
 training env keeps running set `level_complete` / `completion_event`, increment
@@ -408,7 +422,7 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `eval/progress/level_x/mean` | Mean max level-local X position reached per eval episode. |
 | `eval/progress/level_x/max` | Maximum level-local X position reached by any eval episode. |
 | `eval/done/all` | Number of eval episodes summarized. This is exhaustive. |
-| `eval/done/level_change` | Eval episodes where a clean natural level transition was observed. For current single-level Mario checkpoint evals, this event normally ends the episode. |
+| `eval/done/level_change` | Eval episodes whose terminal record contains a level-change event. For current single-level Mario checkpoint evals, this event normally ends the episode, but clean completion is reported separately under `eval/info/level_complete/*`. |
 | `eval/done/level_change/rate` | `eval/done/level_change / eval/done/all`. |
 | `eval/done/max_steps` | Eval episodes that hit the max-step limit. Should not overlap with `eval/done/level_change` for current single-level Mario checkpoint evals because level change is terminal there. |
 | `eval/done/max_steps/rate` | `eval/done/max_steps / eval/done/all`. |
@@ -429,7 +443,7 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `eval/source` | Producer of this eval payload, such as `async_worker`, a staged async worker name, or `modal` for accepted remote evidence. |
 | `eval/episodes` | Number of episodes summarized in this eval payload. |
 | `eval/duration/seconds` | Wall-clock seconds spent inside `evaluate_model_episodes(...)`, including episode rollout and any requested best-episode video rendering. Logged to W&B for checkpoint eval when present. |
-| `checkpoint_eval/<stage>/<eval_metric_suffix>` | Training-time staged checkpoint eval metric. These mirror canonical `eval/*` metrics under a stage prefix, for example `checkpoint_eval/screen/done/level_change/from_rate/min`. They are for cheap async screening and are not promotion-quality full eval metrics. |
+| `checkpoint_eval/<stage>/<eval_metric_suffix>` | Training-time staged checkpoint eval metric. These mirror canonical `eval/*` metrics under a stage prefix, for example `checkpoint_eval/screen/info/level_complete/rate/min`. They are for cheap async screening and are not promotion-quality full eval metrics. |
 | `checkpoint_eval/<stage>/pass` | `1` when the stage pass rules matched for that checkpoint, otherwise `0`. The default Mario `screen` and `confirm` stages require perfect per-start completion. |
 | `checkpoint_eval/<stage>/stage_index` | Numeric order of the staged checkpoint eval step. Lower stages are cheaper screens; later stages are stronger confirmation gates. |
 | `checkpoint_eval/<stage>/source` | Non-numeric evidence producer label. Modal decisions use `modal`; it is retained in decision/W&B payloads but is not inserted into SQLite's numeric latest-metric table. |
@@ -438,11 +452,11 @@ provider, preprocessing, task termination, and reset semantics. The current Mari
 | `checkpoint_eval/candidate/stage_index` | Stage index that produced the current candidate early-stop signal. |
 | `checkpoint_eval/candidate/episodes` | Number of episodes used by the candidate-stop stage. |
 | `leader/checkpoint/objective` | Raw value of the first `objective.rank` metric for the best evaluated checkpoint on a source run. Used by `rlab leaders checkpoints` as a query prefilter; final ordering replays the full saved rank. |
-| `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/done/level_change/from_rate/min` or `eval/reward/mean`. |
+| `leader/checkpoint/objective_name` | Metric name represented by `leader/checkpoint/objective`, such as `eval/info/level_complete/rate/min` or `eval/reward/mean`. |
 | `leader/checkpoint/rank` | Ordered `objective.rank` expressions used to select this checkpoint. |
 | `leader/checkpoint/rank_values` | Raw metric values for `leader/checkpoint/rank`, retained so leader queries reproduce the goal contract rather than a hardcoded order. |
-| `leader/checkpoint/completion_rate` | W&B summary field for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/min` when available. Omitted for generic targets without a completion event. |
-| `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for Mario-style completion-aware runs, using `eval/done/level_change/from_rate/mean` when available. Omitted for generic targets without a completion event. |
+| `leader/checkpoint/completion_rate` | W&B summary field for Mario-style completion-aware runs, using `eval/info/level_complete/rate/min` when available. Omitted for generic targets without a completion event. |
+| `leader/checkpoint/completion_rate_mean` | W&B summary tiebreaker for Mario-style completion-aware runs, using `eval/info/level_complete/rate/mean` when available. Omitted for generic targets without a completion event. |
 | `leader/checkpoint/best_reward` | Best episode return for the selected checkpoint. |
 | `leader/checkpoint/steps_to_completion_goal` | Checkpoint timestep used by the corresponding `objective.rank` criterion. Completion-aware ranks omit it until bottleneck completion reaches `0.99`; reward-only ranks use it directly as the sample-efficiency tiebreaker. |
 | `leader/checkpoint/reward_mean` | Mean eval reward for the selected checkpoint. Its position in selection is determined only by `objective.rank`. |
@@ -462,10 +476,13 @@ previous-value tuple such as `0-0`.
 | Metric template | Meaning |
 | --- | --- |
 | `eval/done/all/from/<start>` | Number of eval episodes that started from `<start>`. This is the denominator for that start state. |
-| `eval/done/level_change/from/<start>` | Eval episodes from `<start>` where a clean natural level transition was observed at least once during the eval horizon. |
+| `eval/done/level_change/from/<start>` | Eval episodes from `<start>` whose terminal record contained a level-change event. |
 | `eval/done/level_change/from/<start>/rate` | `eval/done/level_change/from/<start> / eval/done/all/from/<start>`. |
-| `eval/done/level_change/from_rate/min` | Minimum per-start-state level-change rate. Use this for balanced multi-state eval ranking. |
-| `eval/done/level_change/from_rate/mean` | Mean per-start-state level-change rate. |
+| `eval/info/level_complete/from/<start>/count` | Clean level completions from `<start>`. |
+| `eval/info/level_complete/from/<start>/attempts` | Eval episodes from `<start>` used as the completion denominator. |
+| `eval/info/level_complete/from/<start>/rate` | Clean level completion fraction for `<start>`. |
+| `eval/info/level_complete/rate/min` | Minimum per-start-state clean completion rate. Use this for balanced multi-state eval ranking. |
+| `eval/info/level_complete/rate/mean` | Mean per-start-state clean completion rate. |
 | `eval/done/<reason>/from/<start>` | Eval episodes from `<start>` whose terminal task record contained configured event `<reason>`. |
 | `eval/done/<reason>/from/<start>/rate` | `eval/done/<reason>/from/<start> / eval/done/all/from/<start>`. |
 | `eval/done/max_steps/from/<start>` | Eval episodes from `<start>` that hit the max-step limit. Can overlap with level-change counts. |

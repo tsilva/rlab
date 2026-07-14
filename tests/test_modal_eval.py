@@ -16,9 +16,11 @@ from rlab.modal_eval_orchestrator import (
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
+    project_artifact_references,
     promotion_candidate_key,
     round_robin_jobs,
 )
+from rlab.modal_eval_projection import project_payload
 from rlab.modal_eval_protocol import (
     build_execution_contract,
     execution_key,
@@ -281,14 +283,14 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(rotated[0]["train_job_id"], 3)
 
     def test_promotion_ranking_uses_accepted_evidence_not_wandb(self) -> None:
-        rank = ["max(eval/done/level_change/from_rate/min)", "max(eval/reward/mean)"]
+        rank = ["max(eval/info/level_complete/rate/min)", "max(eval/reward/mean)"]
         weaker = {
             "id": 1,
             "checkpoint_step": 100,
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/done/level_change/from_rate/min": 0.9,
+                    "eval/info/level_complete/rate/min": 0.9,
                     "eval/reward/mean": 100.0,
                 }
             },
@@ -299,7 +301,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/done/level_change/from_rate/min": 1.0,
+                    "eval/info/level_complete/rate/min": 1.0,
                     "eval/reward/mean": 1.0,
                 }
             },
@@ -308,6 +310,124 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
+    def test_artifact_projection_embeds_checkpoint_playback_metadata(self) -> None:
+        class FakeArtifact:
+            def __init__(self, name, type, metadata):
+                self.name = name
+                self.type = type
+                self.metadata = metadata
+                self.references = []
+
+            def add_reference(self, uri):
+                self.references.append(uri)
+
+        class FakeRun:
+            def __init__(self):
+                self.logged = []
+                self.finished = False
+
+            def log_artifact(self, artifact, aliases):
+                self.logged.append((artifact, aliases))
+
+            def finish(self):
+                self.finished = True
+
+        run = FakeRun()
+        fake_wandb = SimpleNamespace(
+            init=lambda **_kwargs: run,
+            Artifact=FakeArtifact,
+        )
+        model_metadata = {
+            "metadata_version": 3,
+            "filename": "ppo_game_500_steps.zip",
+            "training_metadata": {"env_config": {"game": "Game-Nes-v0"}},
+            "training_metadata_hash": "metadata-hash",
+        }
+        payload = {
+            "projection_kind": "artifact_reference",
+            "train_config": {
+                "wandb": True,
+                "wandb_run_id": "run-id",
+                "wandb_entity": "entity",
+                "wandb_project": "project",
+                "run_name": "display-name",
+            },
+            "artifact_kind": "checkpoint",
+            "checkpoint_uri": "s3://bucket/checkpoint/model.zip",
+            "metadata_uri": "s3://bucket/checkpoint/metadata.json",
+            "checkpoint_sha256": "a" * 64,
+            "metadata_sha256": "b" * 64,
+            "checkpoint_step": 500,
+            "model_metadata": model_metadata,
+        }
+
+        with (
+            mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
+            mock.patch("rlab.modal_eval_projection.load_wandb_env"),
+            mock.patch(
+                "rlab.modal_eval_projection.resolve_wandb_namespace",
+                return_value=("entity", "project"),
+            ),
+            mock.patch(
+                "rlab.modal_eval_projection.configure_wandb_metrics",
+                side_effect=lambda value: value,
+            ),
+        ):
+            project_payload(payload)
+
+        artifact, aliases = run.logged[0]
+        self.assertEqual(artifact.metadata["training_metadata"], model_metadata["training_metadata"])
+        self.assertEqual(artifact.metadata["filename"], "model.zip")
+        self.assertEqual(artifact.metadata["source_filename"], "ppo_game_500_steps.zip")
+        self.assertEqual(artifact.metadata["artifact_storage_uri"], payload["checkpoint_uri"])
+        self.assertEqual(artifact.references, [payload["checkpoint_uri"]])
+        self.assertEqual(aliases, ["latest", "step-500"])
+        self.assertTrue(run.finished)
+
+    def test_artifact_reference_payload_loads_complete_checkpoint_metadata(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            "train_job_id": 10,
+            "train_config": {"wandb": True},
+            "next_artifact_projection_id": 1,
+        }
+        complete = {"last_ledger_id": 1}
+        announcement = {
+            "kind": "checkpoint",
+            "model_uri": "s3://bucket/checkpoint/model.zip",
+            "metadata_uri": "s3://bucket/checkpoint/metadata.json",
+            "sha256": "a" * 64,
+            "metadata_sha256": "b" * 64,
+            "step": 500,
+        }
+        model_metadata = {
+            "training_metadata": {"env_config": {"game": "Game-Nes-v0"}}
+        }
+        store = mock.MagicMock()
+        store.get_json_optional.side_effect = [complete, announcement]
+        store.get_json.return_value = model_metadata
+        captured = {}
+
+        def fake_execute(payload, **_kwargs):
+            captured.update(payload)
+            return None
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator._execute_projection",
+            side_effect=fake_execute,
+        ):
+            projected = project_artifact_references(
+                conn,
+                store,
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+            )
+
+        self.assertEqual(projected, 1)
+        self.assertEqual(captured["model_metadata"], model_metadata)
+        store.get_json.assert_called_once_with(announcement["metadata_uri"])
+
     def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
         store = ObjectStore("s3://bucket/prefix")
         with (

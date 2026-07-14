@@ -1303,6 +1303,71 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(calls, ["tsilva/SuperMarioBros-Nes-v0/7gjw67kl"])
 
+    def test_model_source_ref_uses_checkpoint_logged_by_wandb_run(self) -> None:
+        class FakeArtifact:
+            type = "model"
+            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"
+            aliases = ["step-4500000", "latest"]
+
+        class FakeRun:
+            id = "rlab-run-id"
+            name = "level1-1-base-s1"
+            config = {"run_name": "level1-1-base-s1"}
+
+            def logged_artifacts(self):
+                return [FakeArtifact()]
+
+        fake_wandb = types.SimpleNamespace(
+            Api=lambda: types.SimpleNamespace(run=lambda _path: FakeRun())
+        )
+        parser = build_play_parser()
+        args = parser.parse_args(
+            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"]
+        )
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:latest",
+            )
+
+    def test_model_source_ref_resolves_bare_run_to_logged_run_artifact(self) -> None:
+        class FakeArtifact:
+            type = "model"
+            qualified_name = "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"
+            aliases = ["latest"]
+
+        class FakeRun:
+            name = "level1-1-base-s1"
+            config = {"run_name": "level1-1-base-s1"}
+
+            def logged_artifacts(self):
+                return [FakeArtifact()]
+
+        class FakeApi:
+            def artifact(self, _ref, type=None):
+                raise RuntimeError("not found")
+
+            def runs(self, _project, filters=None):
+                self.filters = filters
+                return [FakeRun()]
+
+        fake_wandb = types.SimpleNamespace(Api=lambda: FakeApi())
+        parser = build_play_parser()
+        args = parser.parse_args(["level1-1-base-s1"])
+
+        with (
+            patch.dict(sys.modules, {"wandb": fake_wandb}),
+            patch(
+                "rlab.model_sources.artifact_lookup_project_paths",
+                return_value=["tsilva/SuperMarioBros-Nes-v0"],
+            ),
+        ):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:latest",
+            )
+
     def test_model_source_ref_uses_wandb_run_url_with_query_latest_checkpoint(self) -> None:
         calls = []
 

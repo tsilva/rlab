@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.metadata
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -299,6 +302,38 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(reset_infos["_start_id"], [True, False])
         self.assertEqual(reset_infos["start_id"].tolist(), ["Level1-1", "Level1-1"])
+
+    def test_mario_provider_prefers_the_imported_stable_retro_rom(self) -> None:
+        class FakeMarioVectorEnv:
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
+
+            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
+                self.game = game
+                self.num_envs = num_envs
+                self.autoreset_mode = autoreset_mode
+                self.kwargs = kwargs
+
+        config = self.config()
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=2,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda _config: {},
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch("stable_retro.data.get_romfile_path") as get_romfile_path,
+        ):
+            rom_path = Path(temporary) / "rom.nes"
+            rom_path.write_bytes(b"rom")
+            get_romfile_path.return_value = str(rom_path)
+            env = make_provider_vec_env(
+                config,
+                native_kwargs=kwargs,
+                super_mario_vec_env_type=lambda: FakeMarioVectorEnv,
+            )
+
+        self.assertEqual(env.kwargs["rom_path"], str(rom_path))
 
     def test_rejects_native_task_detectors(self) -> None:
         config = self.config(env_args={"done_on": {"life_loss": ("lives", "decrease")}})
