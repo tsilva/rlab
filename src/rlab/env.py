@@ -23,7 +23,6 @@ from rlab.env_registry import (
     env_supports_states,
     qualify_env_id,
     resolve_env_provider,
-    validate_provider_constructor_args,
 )
 from rlab.env_identity import task_config_from_train_config, validate_task_config
 from rlab.targets import target_for_game
@@ -289,11 +288,6 @@ def make_native_provider(
 ) -> tuple[Any, ProviderDescriptor]:
     """Construct and describe one provider, closing it if description fails."""
 
-    validate_provider_constructor_args(
-        config.env_provider,
-        config.env_args,
-        label="env_config.env_args",
-    )
     native_kwargs = provider_native_vec_kwargs(
         config,
         n_envs=n_envs,

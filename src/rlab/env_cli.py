@@ -156,23 +156,60 @@ def _reset_options(mask: Any, start_ids: Sequence[str] | None) -> dict[str, Any]
     return options
 
 
-def _validate_native_step(result: Any, n_envs: int) -> tuple[Any, Mapping[str, Any]]:
+def _validate_observation_batch(space: Any, observations: Any, *, label: str) -> None:
+    try:
+        contained = bool(space.contains(observations))
+    except Exception as exc:
+        raise ValueError(f"{label} could not be validated against the observation space") from exc
+    if not contained:
+        raise ValueError(f"{label} is outside the declared batched observation space")
+
+
+def _validate_columnar_infos(infos: Any, n_envs: int, *, label: str) -> Mapping[str, Any]:
+    import numpy as np
+
+    if not isinstance(infos, Mapping):
+        raise TypeError(f"{label} must be a columnar mapping")
+
+    def validate_column(value: Any, *, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                validate_column(item, path=f"{path}.{key}")
+            return
+        array = np.asarray(value)
+        if array.shape[:1] != (n_envs,):
+            raise ValueError(f"{path} must contain one value per lane")
+
+    for key, value in infos.items():
+        validate_column(value, path=f"{label}.{key}")
+    return infos
+
+
+def _validate_native_step(
+    result: Any,
+    n_envs: int,
+    *,
+    observation_space: Any,
+) -> tuple[Any, Mapping[str, Any]]:
     import numpy as np
 
     if not isinstance(result, tuple) or len(result) != 5:
         raise TypeError("native provider step must return five values")
     observations, rewards, terminated, truncated, infos = result
-    for name, value, dtype in (
-        ("rewards", rewards, None),
-        ("terminated", terminated, np.bool_),
-        ("truncated", truncated, np.bool_),
-    ):
-        array = np.asarray(value, dtype=dtype)
+    _validate_observation_batch(
+        observation_space,
+        observations,
+        label="provider step observations",
+    )
+    for name, value in (("rewards", rewards), ("terminated", terminated), ("truncated", truncated)):
+        array = np.asarray(value)
         if array.shape != (n_envs,):
             raise ValueError(f"provider {name} must have shape ({n_envs},), got {array.shape}")
-    if not isinstance(infos, Mapping):
-        raise TypeError("native provider step infos must be a columnar mapping")
-    return observations, infos
+        if name == "rewards" and not np.issubdtype(array.dtype, np.number):
+            raise TypeError("provider rewards must have a numeric dtype")
+        if name != "rewards" and array.dtype != np.dtype(np.bool_):
+            raise TypeError(f"provider {name} must have boolean dtype")
+    return observations, _validate_columnar_infos(infos, n_envs, label="provider step infos")
 
 
 def _assert_reset_start_info(
@@ -180,6 +217,7 @@ def _assert_reset_start_info(
     selected: Any,
     *,
     n_envs: int,
+    expected_starts: Sequence[str | None] | None,
 ) -> None:
     import numpy as np
 
@@ -196,6 +234,14 @@ def _assert_reset_start_info(
                 raise ValueError(f"reset {key} does not identify the selected lane")
         if any(values[index] is None for index in np.flatnonzero(selected)):
             raise ValueError(f"reset {key} omits the selected lane start")
+        if expected_starts is not None:
+            for index in np.flatnonzero(selected):
+                expected = expected_starts[index]
+                if expected is not None and str(values[index]) != str(expected):
+                    raise ValueError(
+                        f"reset {key} reported {values[index]!r} for lane {index}; "
+                        f"expected {expected!r}"
+                    )
         return
     raise ValueError("masked reset did not report start_id, start_state, or state")
 
@@ -313,7 +359,9 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "module_path": str(module_path),
             }
         )
-        _record(report, stage, "passed", f"loaded {provider.distribution_name} {distribution.version}")
+        _record(
+            report, stage, "passed", f"loaded {provider.distribution_name} {distribution.version}"
+        )
 
         stage = "runtime_availability"
         assert_provider_runtime_available(config)
@@ -352,20 +400,25 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
             seed=[args.seed + lane for lane in range(n_envs)],
             options=_reset_options(full_mask, start_ids),
         )
-        if not isinstance(reset_infos, Mapping):
-            raise TypeError("native provider reset infos must be a columnar mapping")
+        _validate_observation_batch(
+            native_env.observation_space,
+            observations,
+            label="provider reset observations",
+        )
+        _validate_columnar_infos(reset_infos, n_envs, label="provider reset infos")
         native_env.action_space.seed(args.seed)
         stepped_observations, _step_infos = _validate_native_step(
             native_env.step(native_env.action_space.sample()),
             n_envs,
+            observation_space=native_env.observation_space,
         )
-        _record(report, stage, "passed", "native reset and seeded vector step satisfy the batch shape")
+        _record(
+            report, stage, "passed", "native reset and seeded vector step satisfy the batch shape"
+        )
 
         stage = "visible_masked_reset"
         contract_evidence = (
-            "pinned_provider_contract"
-            if provider.constructor_contract is not None
-            else "runtime"
+            "pinned_provider_contract" if provider.constructor_contract is not None else "runtime"
         )
         if n_envs < 2:
             _record(
@@ -386,11 +439,20 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
                 seed=[args.seed + n_envs, *([None] * (n_envs - 1))],
                 options=_reset_options(selected, selected_starts),
             )
-            if not isinstance(masked_infos, Mapping):
-                raise TypeError("native provider masked-reset infos must be a columnar mapping")
+            _validate_observation_batch(
+                native_env.observation_space,
+                reset_observations,
+                label="provider masked-reset observations",
+            )
+            _validate_columnar_infos(masked_infos, n_envs, label="provider masked-reset infos")
             _assert_unselected_equal(before_reset, reset_observations, selected)
             if descriptor.start_catalog:
-                _assert_reset_start_info(masked_infos, selected, n_envs=n_envs)
+                _assert_reset_start_info(
+                    masked_infos,
+                    selected,
+                    n_envs=n_envs,
+                    expected_starts=selected_starts,
+                )
                 _record(
                     report,
                     "masked_reset_start_info",

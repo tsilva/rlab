@@ -11,7 +11,7 @@ import re
 import shlex
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ from rlab.runtime_refs import (
     DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
     normalize_runtime_image_ref,
-    runtime_image_ref_from_args,
+    runtime_release_from_args,
 )
 from rlab.recipe_documents import (
     assert_no_secrets,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   machine TEXT NOT NULL,
   train_config JSONB NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'launching', 'running', 'succeeded', 'failed', 'canceled')),
+    CHECK (status IN ('pending', 'launching', 'starting', 'running', 'succeeded', 'failed', 'canceled')),
   cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
   batch_id TEXT NOT NULL,
   campaign_id TEXT,
@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   wandb_tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
+  ready_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
+  wandb_run_id TEXT,
+  wandb_url TEXT,
   error TEXT,
   UNIQUE (submission_key, submission_ordinal)
 );
@@ -220,6 +223,12 @@ DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS campaign_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id BIGINT REFERENCES train_jobs(id);
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_url TEXT;
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_status_check;
+ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_status_check
+  CHECK (status IN ('pending', 'launching', 'starting', 'running', 'succeeded', 'failed', 'canceled'));
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (machine, status, id)
@@ -227,7 +236,7 @@ CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
 
 CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
   ON train_jobs (machine, runtime_image_ref, status, id)
-  WHERE status IN ('pending', 'launching', 'running');
+  WHERE status IN ('pending', 'launching', 'starting', 'running');
 
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
@@ -669,6 +678,7 @@ def enqueue_train_jobs_from_recipe_document(
     repo_dirty: bool = False,
     seeds: Sequence[int] = (),
     checkpoint_eval_backend: str | None = None,
+    runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
@@ -795,6 +805,7 @@ def enqueue_train_jobs_from_recipe_document(
                 wandb_tags=recipe_tags(document),
                 manage_transaction=False,
                 _modal_readiness_validated=modal_readiness_validated,
+                runtime_config_validator=runtime_config_validator,
             )
             rows.append(row)
     return rows
@@ -810,6 +821,7 @@ def enqueue_train_jobs_from_recipe_file(
     seeds: Sequence[int] = (),
     recipe_overrides: Sequence[str] = (),
     checkpoint_eval_backend: str | None = None,
+    runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> list[dict[str, Any]]:
     document = load_recipe_document(path, recipe_overrides=recipe_overrides)
     metadata = recipe_metadata(path, document)
@@ -825,6 +837,7 @@ def enqueue_train_jobs_from_recipe_file(
         repo_dirty=metadata["repo_dirty"],
         seeds=seeds,
         checkpoint_eval_backend=checkpoint_eval_backend,
+        runtime_config_validator=runtime_config_validator,
     )
 
 
@@ -854,6 +867,7 @@ def enqueue_train_job(
     wandb_tags: Sequence[str] = (),
     manage_transaction: bool = True,
     _modal_readiness_validated: bool = False,
+    runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     goal_slug = str(goal_slug).strip()
     if not goal_slug:
@@ -924,6 +938,27 @@ def enqueue_train_job(
         retry_tag = f"retry_of_job_id:{int(retry_of_job_id)}"
         if retry_tag not in normalized_tags:
             normalized_tags.append(retry_tag)
+    if runtime_config_validator is not None:
+        from rlab.wandb_utils import game_family_for_environment
+
+        preflight_config = {
+            **config,
+            "game_family": game_family_for_environment(
+                config.get("env_provider"), config.get("game")
+            ),
+            "goal_slug": goal_slug,
+            "machine": machine,
+            "queue_train_job_id": 1,
+            "recipe_path": str(recipe_path or ""),
+            "recipe_slug": str(recipe_slug or ""),
+            "run_description": str(run_description or ""),
+            "run_name": run_name,
+            "runtime_image_ref": runtime_image_ref,
+            "seed": seed,
+            "wandb_group": wandb_group,
+            "wandb_tags": ",".join(normalized_tags),
+        }
+        runtime_config_validator(preflight_config)
     request_hash = str(
         request_hash
         or _hash_json(
@@ -2061,12 +2096,21 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
     registry = load_machine_registry(args.machines)
-    resolve_machine(registry, args.machine)
-    runtime_image_ref = runtime_image_ref_from_args(args, default_latest=True)
-    if not runtime_image_ref:
-        raise SystemExit(
-            "--runtime-image-ref, --runtime-image-ref-file, or latest image resolution is required"
+    machine_config = resolve_machine(registry, args.machine)
+    release = runtime_release_from_args(args)
+    runtime_image_ref = release.runtime_image_ref
+    from rlab.docker_host import DockerRunnerHost
+
+    host = DockerRunnerHost(machine_config)
+
+    def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
+        return host.validate_runtime_train_config(
+            runtime_image_ref=runtime_image_ref,
+            train_config=train_config,
+            expected_source_sha=release.source_sha,
+            expected_contract_sha256=release.train_config_contract_sha256,
         )
+
     conn = _connect_from_args(args)
     try:
         rows = enqueue_train_jobs_from_recipe_file(
@@ -2078,6 +2122,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             seeds=args.seed,
             recipe_overrides=args.recipe_overrides,
             checkpoint_eval_backend=args.checkpoint_eval_backend,
+            runtime_config_validator=validate_runtime_config,
         )
         dispatch = dispatch_fleet_service()
         wait_result = None

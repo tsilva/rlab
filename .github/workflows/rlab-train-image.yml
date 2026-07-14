@@ -53,6 +53,7 @@ jobs:
       digest: ${{ steps.published_image.outputs.digest }}
       python_image: ${{ steps.build_meta.outputs.python_image }}
       runtime_image_ref: ${{ steps.published_image.outputs.runtime_image_ref }}
+      train_config_contract_sha256: ${{ steps.runtime_contract.outputs.train_config_contract_sha256 }}
       uv_image: ${{ steps.build_meta.outputs.uv_image }}
       uv_lock_sha256: ${{ steps.build_meta.outputs.uv_lock_sha256 }}
     steps:
@@ -198,12 +199,73 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "runtime_image_ref=docker:${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
 
+      - name: Prove runtime source and train-config contract
+        id: runtime_contract
+        if: github.event_name != 'pull_request'
+        env:
+          RUNTIME_IMAGE_REF: ${{ steps.published_image.outputs.runtime_image_ref }}
+        run: |
+          set -euo pipefail
+          image="${RUNTIME_IMAGE_REF#docker:}"
+          docker pull "$image"
+          docker run --rm "$image" python -m rlab.runtime_contract > runtime-contract.json
+          python - <<'PY'
+          import json
+          import os
+
+          path = "runtime-contract.json"
+          contract = json.load(open(path, encoding="utf-8"))
+          if contract.get("source_sha") != os.environ["GITHUB_SHA"]:
+              raise SystemExit(f"runtime source mismatch: {contract!r}")
+          digest = str(contract.get("train_config_contract_sha256") or "")
+          if len(digest) != 64:
+              raise SystemExit(f"invalid train-config contract: {contract!r}")
+          with open("runtime-preflight.json", "w", encoding="utf-8") as output:
+              json.dump(
+                  {
+                      "batch_id": "bx0123456789abcdef",
+                      "campaign_id": "release-smoke",
+                      "game_family": "SuperMarioBros-Nes",
+                      "goal_slug": "Level1-1",
+                      "machine": "beast-3",
+                      "queue_train_job_id": 1,
+                      "recipe_path": "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml",
+                      "recipe_slug": "base",
+                      "retry_of_job_id": 0,
+                      "run_description": "Release-time queue payload compatibility smoke.",
+                      "run_name": "bx0123456789abcdef-base-s123-20000101T000000Z",
+                      "runtime_image_ref": os.environ["RUNTIME_IMAGE_REF"],
+                      "seed": 123,
+                      "wandb_group": "bx0123456789abcdef",
+                      "wandb_run_id": "rlab-release-smoke",
+                      "wandb_tags": "goal_id:Level1-1,recipe_id:base",
+                  },
+                  output,
+                  sort_keys=True,
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"train_config_contract_sha256={digest}\n")
+          PY
+          docker run --rm -i "$image" \
+            python -m rlab.runtime_contract --validate-config-stdin \
+            < runtime-preflight.json > runtime-preflight-receipt.json
+          python - <<'PY'
+          import json
+          import os
+
+          receipt = json.load(open("runtime-preflight-receipt.json", encoding="utf-8"))
+          if receipt.get("source_sha") != os.environ["GITHUB_SHA"] or not receipt.get("validated"):
+              raise SystemExit(f"runtime payload smoke failed: {receipt!r}")
+          PY
+
   deploy-modal-evaluator:
     if: github.event_name != 'pull_request'
     needs: build
     uses: ./.github/workflows/rlab-modal-eval.yml
     with:
       runtime_image_ref: ${{ needs.build.outputs.runtime_image_ref }}
+      source_sha: ${{ github.sha }}
+      train_config_contract_sha256: ${{ needs.build.outputs.train_config_contract_sha256 }}
     secrets: inherit
 
   publish-runtime:
@@ -212,26 +274,48 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Write image digest artifact
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          RUNTIME_IMAGE_REF: ${{ needs.build.outputs.runtime_image_ref }}
+          SOURCE_SHA: ${{ github.sha }}
+          TRAIN_CONFIG_CONTRACT_SHA256: ${{ needs.build.outputs.train_config_contract_sha256 }}
+          MODAL_APP_NAME: ${{ needs.deploy-modal-evaluator.outputs.app_name }}
+          MODAL_STARTUP_PROBE: ${{ needs.deploy-modal-evaluator.outputs.startup_probe }}
+          UV_LOCK_SHA256: ${{ needs.build.outputs.uv_lock_sha256 }}
+          PYTHON_IMAGE: ${{ needs.build.outputs.python_image }}
+          UV_IMAGE: ${{ needs.build.outputs.uv_image }}
+          DEPENDENCY_DIGEST: ${{ needs.build.outputs.dependency_digest }}
         run: |
-          cat > rlab-train-image.json <<'JSON'
-          {
-            "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
-            "digest": "${{ needs.build.outputs.digest }}",
-            "runtime_image_ref": "${{ needs.build.outputs.runtime_image_ref }}",
-            "source_sha": "${{ github.sha }}",
-            "tags": [
-              "git-${{ github.sha }}"
-            ],
-            "uv_lock_sha256": "${{ needs.build.outputs.uv_lock_sha256 }}",
-            "base_images": {
-              "python": "${{ needs.build.outputs.python_image }}",
-              "uv": "${{ needs.build.outputs.uv_image }}",
-              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ needs.build.outputs.dependency_digest }}"
-            },
-            "workflow_run_id": "${{ github.run_id }}",
-            "workflow_run_attempt": "${{ github.run_attempt }}"
+          python - <<'PY'
+          import json
+          import os
+
+          payload = {
+              "schema_version": 2,
+              "image": f"{os.environ['REGISTRY']}/{os.environ['IMAGE_NAME']}",
+              "digest": os.environ["DIGEST"],
+              "runtime_image_ref": os.environ["RUNTIME_IMAGE_REF"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "train_config_contract_sha256": os.environ["TRAIN_CONFIG_CONTRACT_SHA256"],
+              "modal_app_name": os.environ["MODAL_APP_NAME"],
+              "startup_probe": json.loads(os.environ["MODAL_STARTUP_PROBE"]),
+              "tags": [f"git-{os.environ['SOURCE_SHA']}"],
+              "uv_lock_sha256": os.environ["UV_LOCK_SHA256"],
+              "base_images": {
+                  "python": os.environ["PYTHON_IMAGE"],
+                  "uv": os.environ["UV_IMAGE"],
+                  "dependencies": (
+                      f"docker:{os.environ['REGISTRY']}/{os.environ['DEPENDENCY_IMAGE_NAME']}"
+                      f"@{os.environ['DEPENDENCY_DIGEST']}"
+                  ),
+              },
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
           }
-          JSON
+          with open("rlab-train-image.json", "w", encoding="utf-8") as output:
+              json.dump(payload, output, indent=2, sort_keys=True)
+              output.write("\n")
+          PY
           python -m json.tool rlab-train-image.json
 
       - name: Upload image digest artifact

@@ -6,6 +6,7 @@ from pathlib import Path
 import modal
 
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
+from rlab.runtime_contract import runtime_contract
 
 
 repo_root = Path(__file__).resolve().parents[2]
@@ -60,6 +61,6 @@ def evaluate_checkpoint(payload: dict) -> dict:
 def startup_probe() -> dict[str, str]:
     """Prove the deployed image can import its packaged evaluator contract."""
     return {
+        **runtime_contract(runtime_image_ref=runtime_image_ref),
         "app_name": app_name,
-        "runtime_image_ref": runtime_image_ref,
     }

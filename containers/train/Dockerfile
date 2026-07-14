@@ -89,6 +89,8 @@ ARG VCS_REF=unknown
 ARG DEPENDENCY_IMAGE=unknown
 ARG DEPENDENCY_IMAGE_DIGEST=unknown
 
+ENV RLAB_SOURCE_SHA="${VCS_REF}"
+
 LABEL org.opencontainers.image.title="rlab train runtime"
 LABEL org.opencontainers.image.description="Locked rlab training and evaluation runtime"
 LABEL org.opencontainers.image.source="https://github.com/tsilva/rlab"

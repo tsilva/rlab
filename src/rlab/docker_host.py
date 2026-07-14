@@ -144,6 +144,7 @@ def _run_machine_docker(
     machine: MachineConfig,
     docker_args: Sequence[str],
     *,
+    input_text: str | None = None,
     capture: bool = False,
     timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
     deadline_monotonic: float | None = None,
@@ -151,6 +152,7 @@ def _run_machine_docker(
     return _run_machine_shell(
         machine,
         _shell_join(_machine_docker_command(machine, docker_args)),
+        input_text=input_text,
         capture=capture,
         timeout=timeout,
         deadline_monotonic=deadline_monotonic,
@@ -400,6 +402,58 @@ class DockerRunnerHost:
             deadline_monotonic=self.deadline_monotonic,
         )
         return inspected.returncode == 0
+
+    def validate_runtime_train_config(
+        self,
+        *,
+        runtime_image_ref: str,
+        train_config: Mapping[str, Any],
+        expected_source_sha: str,
+        expected_contract_sha256: str,
+    ) -> dict[str, Any]:
+        if not self.ensure_runtime_image(runtime_image_ref):
+            raise RuntimeError(
+                f"runtime preflight could not pull {runtime_image_ref} on {self.machine.name}"
+            )
+        result = _run_machine_docker(
+            self.machine,
+            [
+                "run",
+                "--rm",
+                "-i",
+                docker_image_ref(runtime_image_ref),
+                "python",
+                "-m",
+                "rlab.runtime_contract",
+                "--validate-config-stdin",
+            ],
+            input_text=json.dumps(dict(train_config), sort_keys=True),
+            capture=True,
+            timeout=DOCKER_PULL_TIMEOUT_SECONDS,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "runtime config validation failed").strip()
+            raise RuntimeError(
+                f"runtime preflight rejected the materialized train config on "
+                f"{self.machine.name}: {detail}"
+            )
+        try:
+            receipt = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"runtime preflight returned invalid JSON: {exc}") from exc
+        expected = {
+            "source_sha": expected_source_sha,
+            "train_config_contract_sha256": expected_contract_sha256,
+            "validated": True,
+        }
+        for key, value in expected.items():
+            if receipt.get(key) != value:
+                raise RuntimeError(
+                    f"runtime preflight receipt mismatch for {key}: "
+                    f"expected {value!r}, got {receipt.get(key)!r}"
+                )
+        return dict(receipt)
 
     def create_train_container(
         self,

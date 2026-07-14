@@ -7,17 +7,40 @@ on:
         description: Immutable docker:ghcr.io/...@sha256:... train/eval runtime
         required: true
         type: string
+      source_sha:
+        description: Git source revision embedded in the runtime
+        required: true
+        type: string
+      train_config_contract_sha256:
+        description: Expected train-config contract fingerprint
+        required: true
+        type: string
     secrets:
       MODAL_TOKEN_ID:
         required: true
       MODAL_TOKEN_SECRET:
         required: true
       RLAB_MODAL_REGISTRY_SECRET_NAME:
-        required: true
+        required: false
+    outputs:
+      app_name:
+        description: Digest-specific Modal application name
+        value: ${{ jobs.deploy.outputs.app_name }}
+      startup_probe:
+        description: JSON startup-probe receipt from the deployed runtime
+        value: ${{ jobs.deploy.outputs.startup_probe }}
   workflow_dispatch:
     inputs:
       runtime_image_ref:
         description: Immutable docker:ghcr.io/...@sha256:... train/eval runtime
+        required: true
+        type: string
+      source_sha:
+        description: Git source revision embedded in the runtime
+        required: true
+        type: string
+      train_config_contract_sha256:
+        description: Expected train-config contract fingerprint
         required: true
         type: string
 
@@ -32,11 +55,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      app_name: ${{ steps.probe.outputs.app_name }}
+      startup_probe: ${{ steps.probe.outputs.startup_probe }}
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       RLAB_MODAL_REGISTRY_SECRET: ${{ secrets.RLAB_MODAL_REGISTRY_SECRET_NAME }}
       RLAB_MODAL_EVAL_RUNTIME_IMAGE: ${{ inputs.runtime_image_ref }}
+      RLAB_EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+      RLAB_EXPECTED_TRAIN_CONFIG_CONTRACT_SHA256: ${{ inputs.train_config_contract_sha256 }}
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -53,8 +81,10 @@ jobs:
       - name: Deploy immutable Modal evaluator
         run: uv run modal deploy -m rlab.modal_app
       - name: Prove deployed worker image startup
+        id: probe
         run: |
           uv run python - <<'PY'
+          import json
           import os
 
           import modal
@@ -68,8 +98,21 @@ jobs:
           expected = {
               "app_name": app_name,
               "runtime_image_ref": runtime_image_ref,
+              "source_sha": os.environ["RLAB_EXPECTED_SOURCE_SHA"],
+              "train_config_contract_sha256": os.environ[
+                  "RLAB_EXPECTED_TRAIN_CONFIG_CONTRACT_SHA256"
+              ],
           }
-          if result != expected:
+          if any(result.get(key) != value for key, value in expected.items()):
               raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
+          if int(result.get("schema_version") or 0) != 1:
+              raise SystemExit(f"unexpected Modal startup probe schema: {result!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"app_name={app_name}\n")
+              output.write(
+                  "startup_probe="
+                  + json.dumps(result, sort_keys=True, separators=(",", ":"))
+                  + "\n"
+              )
           print(f"Modal startup probe passed for {app_name}")
           PY

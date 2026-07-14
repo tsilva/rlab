@@ -100,6 +100,37 @@ class FakeRlabVecEnv:
         self.native.close()
 
 
+class MalformedStepProvider(FakeNativeProvider):
+    def __init__(self, field: str):
+        super().__init__()
+        self.field = field
+
+    def step(self, actions):
+        result = list(super().step(actions))
+        replacements = {
+            "observations": np.zeros((self.num_envs, 3), dtype=np.uint8),
+            "rewards": np.asarray(["bad"] * self.num_envs, dtype=object),
+            "terminated": np.zeros(self.num_envs, dtype=np.int8),
+            "truncated": np.zeros((self.num_envs, 1), dtype=np.bool_),
+            "infos": {"bad": 1},
+        }
+        result[
+            {"observations": 0, "rewards": 1, "terminated": 2, "truncated": 3, "infos": 4}[
+                self.field
+            ]
+        ] = replacements[self.field]
+        return tuple(result)
+
+
+class WrongStartProvider(FakeNativeProvider):
+    def reset(self, *, seed=None, options=None):
+        observations, infos = super().reset(seed=seed, options=options)
+        mask = np.asarray((options or {}).get("reset_mask"), dtype=np.bool_)
+        if mask.any() and not mask.all():
+            infos["start_id"][mask] = "wrong-start"
+        return observations, infos
+
+
 def _descriptor(native: FakeNativeProvider) -> ProviderDescriptor:
     return ProviderDescriptor(
         provider_id="supermariobrosnes-turbo",
@@ -115,7 +146,14 @@ def _distribution(root: Path):
     return SimpleNamespace(version="0.2.25", locate_file=lambda _value: root)
 
 
-def _run_fake_check(tmp_path: Path, native: FakeNativeProvider):
+def _run_fake_check(
+    tmp_path: Path,
+    native: FakeNativeProvider,
+    *,
+    distribution_error: Exception | None = None,
+    runtime_error: Exception | None = None,
+    recipe_overrides: list[str] | None = None,
+):
     package_root = tmp_path / "site-packages"
     module_path = package_root / "supermariobrosnes_turbo" / "__init__.py"
     module_path.parent.mkdir(parents=True)
@@ -133,8 +171,13 @@ def _run_fake_check(tmp_path: Path, native: FakeNativeProvider):
 
     stdout = io.StringIO()
     stderr = io.StringIO()
+    distribution_kwargs = (
+        {"side_effect": distribution_error}
+        if distribution_error is not None
+        else {"return_value": _distribution(package_root)}
+    )
     with (
-        patch("rlab.env.assert_provider_runtime_available"),
+        patch("rlab.env.assert_provider_runtime_available", side_effect=runtime_error),
         patch(
             "rlab.env.make_native_provider",
             side_effect=lambda *_args, **_kwargs: (
@@ -143,12 +186,15 @@ def _run_fake_check(tmp_path: Path, native: FakeNativeProvider):
             )[1],
         ),
         patch("rlab.env.bind_native_provider", side_effect=bind_provider),
-        patch("importlib.metadata.distribution", return_value=_distribution(package_root)),
+        patch("importlib.metadata.distribution", **distribution_kwargs),
         patch("sys.stdout", stdout),
         patch("sys.stderr", stderr),
         patch("importlib.import_module", side_effect=import_module),
     ):
-        exit_code = env_main(["check", "--recipe-file", str(MARIO_RECIPE), "--json"])
+        argv = ["check", "--recipe-file", str(MARIO_RECIPE), "--json"]
+        for override in recipe_overrides or []:
+            argv.extend(("--set", override))
+        exit_code = env_main(argv)
     return exit_code, json.loads(stdout.getvalue()), stderr.getvalue()
 
 
@@ -186,9 +232,7 @@ def test_inspect_reports_dynamic_gymnasium_contract() -> None:
 
     payload = json.loads(stdout.getvalue())
     assert exit_code == 0
-    assert payload["environment"]["qualified_env_id"] == (
-        "gymnasium:CustomNativeVector-v0"
-    )
+    assert payload["environment"]["qualified_env_id"] == ("gymnasium:CustomNativeVector-v0")
     assert payload["environment"]["constructor_contract"] == {"kind": "dynamic"}
 
 
@@ -216,6 +260,74 @@ def test_check_rejects_visible_masked_reset_corruption(tmp_path: Path) -> None:
     assert report["summary"]["ok"] is False
     assert "visible_masked_reset" in report["summary"]["blocking_checks"]
     assert native.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("observations", "rewards", "terminated", "truncated", "infos"),
+)
+def test_check_rejects_malformed_native_step_outputs(tmp_path: Path, field: str) -> None:
+    native = MalformedStepProvider(field)
+
+    exit_code, report, _stderr = _run_fake_check(tmp_path, native)
+
+    assert exit_code == 1
+    assert report["summary"]["blocking_checks"] == ["native_step"]
+    assert native.close_calls == 1
+
+
+def test_check_rejects_masked_reset_reporting_the_wrong_start(tmp_path: Path) -> None:
+    native = WrongStartProvider()
+
+    exit_code, report, _stderr = _run_fake_check(tmp_path, native)
+
+    assert exit_code == 1
+    assert report["summary"]["blocking_checks"] == ["visible_masked_reset"]
+    assert native.close_calls == 1
+
+
+def test_check_accepts_one_lane_with_fixed_contract_evidence(tmp_path: Path) -> None:
+    native = FakeNativeProvider(n_envs=1)
+
+    exit_code, report, _stderr = _run_fake_check(
+        tmp_path,
+        native,
+        recipe_overrides=["train.environment.env_config.n_envs=1"],
+    )
+
+    assert exit_code == 0
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["visible_masked_reset"]["status"] == "not_observable"
+    assert checks["visible_masked_reset"]["evidence"] == "pinned_provider_contract"
+    assert native.close_calls == 1
+
+
+def test_check_reports_missing_provider_package_without_constructing(tmp_path: Path) -> None:
+    native = FakeNativeProvider()
+
+    exit_code, report, _stderr = _run_fake_check(
+        tmp_path,
+        native,
+        distribution_error=importlib.metadata.PackageNotFoundError("missing provider"),
+    )
+
+    assert exit_code == 1
+    assert report["summary"]["blocking_checks"] == ["provider_import"]
+    assert native.close_calls == 0
+
+
+def test_check_reports_missing_runtime_assets_without_constructing(tmp_path: Path) -> None:
+    native = FakeNativeProvider()
+
+    exit_code, report, _stderr = _run_fake_check(
+        tmp_path,
+        native,
+        runtime_error=FileNotFoundError("missing ROM"),
+    )
+
+    assert exit_code == 1
+    assert report["summary"]["blocking_checks"] == ["runtime_availability"]
+    assert native.close_calls == 0
 
 
 def test_required_inconclusive_dynamic_evidence_blocks_success() -> None:

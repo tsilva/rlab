@@ -243,3 +243,12 @@ revision `5f732c1d` in a detached worktree, using the same installed Turbo provi
   slower than the fused path.
 - Provider/runtime stepping overhead separately passed the `5%` gate for both
   `supermariobrosnes-turbo==0.2.20` and `stable-retro-turbo==1.0.1.post13`.
+
+## Provider Contract Preflight Acceptance (2026-07-14)
+
+The `retro-env-throughput-mario-l11` profile was run sequentially on the same idle Mac against
+revision `51f981d4` and the provider-contract working tree based on `60c4f352`, using the installed
+`stable-retro-turbo==1.0.1.post29`. Provider/runtime overhead before and after was `2.61%`/`3.41%`
+at one env, `-0.17%`/`1.36%` at 16 envs, and `0.66%`/`0.60%` at 32 envs. Every case passed the
+profile's `5%` runtime-overhead gate; after-change median runtime SPS was also higher at all three
+env counts.
