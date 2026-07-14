@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   last_scheduled_at TIMESTAMPTZ,
   promoted_eval_job_id BIGINT,
   promotion_json JSONB,
+  promoted_artifact_projected_at TIMESTAMPTZ,
   artifacts_projected_at TIMESTAMPTZ,
   artifact_projection_attempts INTEGER NOT NULL DEFAULT 0
     CHECK (artifact_projection_attempts >= 0),
@@ -260,6 +261,7 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_url TEXT;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projected_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_status_check;
@@ -2002,6 +2004,7 @@ def queue_status(
               eval_run.status AS eval_status,
               eval_run.error AS eval_error,
               eval_run.artifacts_projected_at AS published_at,
+              eval_run.promoted_artifact_projected_at AS playable_at,
               eval_run.artifact_projection_attempts,
               eval_run.artifact_projection_next_retry_at,
               promoted.checkpoint_step AS promoted_step,
@@ -2060,6 +2063,8 @@ def queue_status(
             artifact_status = "not_applicable"
         elif row.get("published_at") is not None:
             artifact_status = "published"
+        elif row.get("playable_at") is not None:
+            artifact_status = "playable"
         elif row.get("eval_status") == "failed":
             artifact_status = "failed"
         else:
@@ -2068,7 +2073,7 @@ def queue_status(
         row["artifact_ref"] = None
         wandb_url = str(row.get("wandb_url") or "")
         wandb_run_id = str(row.get("wandb_run_id") or "")
-        if artifact_status == "published" and wandb_url and wandb_run_id:
+        if artifact_status in {"playable", "published"} and wandb_url and wandb_run_id:
             parts = [part for part in urlparse(wandb_url).path.split("/") if part]
             if len(parts) >= 2:
                 alias = (

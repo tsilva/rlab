@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
@@ -34,6 +36,10 @@ DiscoverMachines = Callable[[Path], Sequence[str]]
 ReconcileMachine = Callable[[Path, str, float], Mapping[str, Any] | None]
 ReconcileEval = Callable[[Path, float], Mapping[str, Any] | None]
 CountNonterminalJobs = Callable[[Path], int]
+ServiceNotifier = Callable[[str, str], None]
+
+SERVICE_ALERT_AFTER_FAILURES = 2
+SERVICE_ALERT_REPEAT_SECONDS = 3600
 
 
 def _utc_now() -> datetime:
@@ -76,6 +82,10 @@ class ServicePaths:
     def last_pass(self) -> Path:
         return self.state_dir / "last-pass.json"
 
+    @property
+    def health(self) -> Path:
+        return self.state_dir / "health.json"
+
 
 def default_service_paths(
     *,
@@ -111,7 +121,7 @@ def launch_agent_payload(paths: ServicePaths) -> dict[str, Any]:
         "ProgramArguments": [
             str(paths.python),
             "-m",
-            "rlab.fleet_service",
+            "rlab.fleet_service_entrypoint",
             "run-once",
             "--repo-root",
             str(paths.repo_root),
@@ -315,7 +325,7 @@ def _validate_service_entrypoint(paths: ServicePaths, *, runner: CommandRunner) 
         "TMPDIR": tempfile.gettempdir(),
     }
     result = runner(
-        [str(paths.python), "-m", "rlab.fleet_service", "--help"],
+        [str(paths.python), "-m", "rlab.fleet_service_entrypoint", "--help"],
         check=False,
         capture_output=True,
         text=True,
@@ -424,6 +434,11 @@ def service_status(
     loaded = service_is_loaded(paths.label, runner=runner)
     last_pass = _load_last_pass(paths.last_pass)
     last_pass_age = _last_pass_age_seconds(last_pass)
+    last_pass_stale = (
+        last_pass_age is None or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2
+    )
+    last_pass_status = str((last_pass or {}).get("status") or "missing")
+    health = _load_last_pass(paths.health)
     return {
         "label": paths.label,
         "installed": paths.plist.is_file(),
@@ -434,9 +449,107 @@ def service_status(
         "interval_seconds": SERVICE_INTERVAL_SECONDS,
         "last_pass": last_pass,
         "last_pass_age_seconds": last_pass_age,
-        "last_pass_stale": last_pass_age is None
-        or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2,
+        "last_pass_stale": last_pass_stale,
+        "last_pass_status": last_pass_status,
+        "healthy": bool(
+            loaded
+            and not last_pass_stale
+            and last_pass_status in {"idle", "ok"}
+        ),
+        "health": health,
     }
+
+
+def _default_service_notifier(title: str, message: str) -> None:
+    script = (
+        f"display notification {json.dumps(message)} "
+        f"with title {json.dumps(title)}"
+    )
+    subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def _service_failure_summary(summary: Mapping[str, Any]) -> str:
+    details: list[str] = []
+    if summary.get("error"):
+        details.append(str(summary["error"]))
+    eval_lane = summary.get("eval") or {}
+    if isinstance(eval_lane, Mapping) and eval_lane.get("status") not in {None, "ok"}:
+        details.append(f"eval: {eval_lane.get('error') or eval_lane.get('status')}")
+    for row in summary.get("machines") or []:
+        if isinstance(row, Mapping) and row.get("status") != "ok":
+            details.append(f"{row.get('machine')}: {row.get('error') or row.get('status')}")
+    return "; ".join(details)[:500] or str(summary.get("status") or "unknown failure")
+
+
+def record_service_health(
+    paths: ServicePaths,
+    summary: Mapping[str, Any],
+    *,
+    notifier: ServiceNotifier = _default_service_notifier,
+) -> dict[str, Any]:
+    previous = _load_last_pass(paths.health) or {}
+    status = str(summary.get("status") or "error")
+    healthy = status in {"idle", "ok"}
+    now = _utc_now()
+    prior_failures = int(previous.get("consecutive_failures") or 0)
+    prior_alert_active = bool(previous.get("alert_active"))
+    detail = "" if healthy else _service_failure_summary(summary)
+    fingerprint = hashlib.sha256(detail.encode("utf-8")).hexdigest() if detail else ""
+    last_notified_at = previous.get("last_notified_at")
+    last_notified_age = None
+    if last_notified_at:
+        try:
+            last_notified = datetime.fromisoformat(
+                str(last_notified_at).replace("Z", "+00:00")
+            )
+            last_notified_age = (now - last_notified.astimezone(UTC)).total_seconds()
+        except ValueError:
+            last_notified_age = None
+
+    notified_at = last_notified_at
+    if healthy:
+        if prior_alert_active:
+            notifier("rlab fleet service recovered", "The fleet reconciler is healthy again.")
+            notified_at = _iso_utc(now)
+        state = {
+            "healthy": True,
+            "status": status,
+            "consecutive_failures": 0,
+            "alert_active": False,
+            "failure_fingerprint": "",
+            "last_failure": None,
+            "last_notified_at": notified_at,
+            "updated_at": _iso_utc(now),
+        }
+    else:
+        consecutive = prior_failures + 1
+        should_notify = consecutive >= SERVICE_ALERT_AFTER_FAILURES and (
+            not prior_alert_active
+            or fingerprint != str(previous.get("failure_fingerprint") or "")
+            or last_notified_age is None
+            or last_notified_age >= SERVICE_ALERT_REPEAT_SECONDS
+        )
+        if should_notify:
+            notifier("rlab fleet service failure", detail)
+            notified_at = _iso_utc(now)
+        state = {
+            "healthy": False,
+            "status": status,
+            "consecutive_failures": consecutive,
+            "alert_active": prior_alert_active or should_notify,
+            "failure_fingerprint": fingerprint,
+            "last_failure": detail,
+            "last_notified_at": notified_at,
+            "updated_at": _iso_utc(now),
+        }
+    _atomic_write_json(paths.health, state)
+    return state
 
 
 def eval_service_health(
@@ -502,6 +615,11 @@ def service_doctor(
         "last_pass",
         last_pass_age is not None and last_pass_age <= DEFAULT_PASS_TIMEOUT_SECONDS * 2,
         str(paths.last_pass),
+    )
+    add(
+        "last_pass_status",
+        str((last_pass or {}).get("status") or "missing") in {"idle", "ok"},
+        str((last_pass or {}).get("status") or "missing"),
     )
     eval_health = eval_service_health(paths, runner=runner)
     add(
@@ -644,13 +762,15 @@ def _default_discover_machines(repo_root: Path) -> Sequence[str]:
     for machine_name, machine in registry.machines.items():
         if machine.prewarm_latest_runtime:
             work.add(machine_name)
-        marker = repo_root / "logs" / "fleet" / f"maintenance-{machine_name}.stamp"
+        marker = repo_root / "logs" / "fleet" / f"maintenance-attempt-{machine_name}.stamp"
         try:
             maintenance_due = now - marker.stat().st_mtime >= 3600
         except FileNotFoundError:
             maintenance_due = True
         if maintenance_due:
             work.add(machine_name)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
     return tuple(sorted(work))
 
 
@@ -850,11 +970,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print(
             f"fleet service installed={status['installed']} loaded={status['loaded']} "
-            f"interval={status['interval_seconds']}s"
+            f"healthy={status['healthy']} interval={status['interval_seconds']}s"
         )
         if status["last_pass"]:
             print(json.dumps(status["last_pass"], sort_keys=True))
-    return 0 if status["installed"] and status["loaded"] else 1
+    return 0 if status["installed"] and status["loaded"] and status["healthy"] else 1
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -883,14 +1003,30 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
 def cmd_run_once(args: argparse.Namespace) -> int:
     paths = _paths_from_args(args)
-    with schema_read_lock(paths.repo_root):
-        summary = run_service_pass(
-            repo_root=paths.repo_root,
-            state_dir=paths.state_dir,
-            max_machine_lanes=int(args.max_machine_lanes),
-            lane_timeout_seconds=float(args.lane_timeout),
-            pass_timeout_seconds=float(args.pass_timeout),
-        )
+    try:
+        with schema_read_lock(paths.repo_root):
+            summary = run_service_pass(
+                repo_root=paths.repo_root,
+                state_dir=paths.state_dir,
+                max_machine_lanes=int(args.max_machine_lanes),
+                lane_timeout_seconds=float(args.lane_timeout),
+                pass_timeout_seconds=float(args.pass_timeout),
+            )
+    except Exception as exc:
+        traceback.print_exc()
+        now = _iso_utc()
+        summary = {
+            "schema_version": 1,
+            "started_at": now,
+            "finished_at": now,
+            "repo_root": str(paths.repo_root),
+            "status": "error",
+            "machines": [],
+            "eval": {"status": "error"},
+            "error": redact(f"{type(exc).__name__}: {exc}"),
+        }
+        _atomic_write_json(paths.last_pass, summary)
+    record_service_health(paths, summary)
     return 0 if summary["status"] in {"idle", "ok"} else 1
 
 

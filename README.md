@@ -202,8 +202,14 @@ Train recipes are validated against the queue-backed schema before enqueue. Extr
 
 Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
 
+After promotion evaluation succeeds, the promoted checkpoint takes a dedicated W&B projection fast
+path and becomes playable without waiting for historical checkpoint backfill. It receives immutable
+`step-<n>` plus `promoted` and `latest` aliases; later historical projection uses only immutable step
+aliases and cannot move `latest` away from the promoted checkpoint.
+
 `rlab jobs status --job <id> --json` reports `eval_status`, `promoted_step`,
-`artifact_status`, `artifact_ref`, and `published_at`. Modal-backed enqueue fails closed when the
+`artifact_status`, `artifact_ref`, `playable_at`, and `published_at`; `artifact_status=playable`
+means the promoted checkpoint is ready while historical backfill continues. Modal-backed enqueue fails closed when the
 fleet evaluator's latest pass is stale or unsuccessful. Projection failures retry with backoff and
 are isolated to their producing run; after correcting a persistent failure, reset only that run
 with `rlab eval modal retry-projection <train-job-id>`.

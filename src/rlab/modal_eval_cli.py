@@ -27,6 +27,7 @@ MODAL_SCHEMA_COLUMNS = {
         "contract_json",
         "artifact_projection_attempts",
         "artifact_projection_next_retry_at",
+        "promoted_artifact_projected_at",
     },
     "eval_jobs": {
         "train_job_id",

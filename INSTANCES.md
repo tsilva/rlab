@@ -47,6 +47,15 @@ is the recovery path for missed wake-ups and remote completion. Each invocation
 loads current source, performs one bounded pass, and exits. launchd does not
 overlap invocations of the same service label.
 
+`rlab fleet service status --json` exits nonzero when the last pass is stale or degraded, and
+`rlab fleet service doctor` includes the last-pass result rather than treating a merely loaded
+LaunchAgent as healthy. Two consecutive degraded or failed passes trigger a macOS notification;
+recovery triggers a second notification, and repeated identical failures are rate-limited to once
+per hour. A minimal standard-library launchd entrypoint records and immediately notifies failures
+that prevent the main reconciler from importing. Idle-host maintenance attempts are also limited to once per hour so an offline unused
+host cannot stretch every reconciliation pass; queued work still wakes that exact host lane on
+every pass.
+
 For a lower-contention machine shape:
 
 ```bash

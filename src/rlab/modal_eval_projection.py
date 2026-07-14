@@ -70,7 +70,12 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 metadata=artifact_metadata,
             )
             artifact.add_reference(checkpoint_uri)
-            aliases = artifact_write_aliases(kind, checkpoint_step)
+            raw_aliases = payload.get("artifact_aliases")
+            aliases = (
+                [str(alias) for alias in raw_aliases]
+                if isinstance(raw_aliases, list) and raw_aliases
+                else artifact_write_aliases(kind, checkpoint_step)
+            )
             run.log_artifact(artifact, aliases=aliases)
             return
         decision = dict(payload["decision"])

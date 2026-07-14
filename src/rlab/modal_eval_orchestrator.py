@@ -1233,8 +1233,11 @@ def project_artifact_references(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT r.*, t.train_config
+            SELECT r.*, t.train_config,
+              promoted.ledger_id AS promoted_ledger_id,
+              promoted.source_announcement_json AS promoted_announcement
             FROM eval_runs r JOIN train_jobs t ON t.id = r.train_job_id
+            LEFT JOIN eval_jobs promoted ON promoted.id = r.promoted_eval_job_id
             WHERE r.complete_announcement_seen = TRUE AND r.artifacts_projected_at IS NULL
               AND t.status IN ('succeeded', 'failed', 'canceled')
               AND r.status = 'finalizing'
@@ -1258,6 +1261,98 @@ def project_artifact_references(
         return 0
     ordinal = int(run["next_artifact_projection_id"])
     last_ordinal = int(complete.get("last_ledger_id") or 0)
+    promoted_ledger_id = (
+        int(run["promoted_ledger_id"])
+        if run.get("promoted_ledger_id") is not None
+        else None
+    )
+    if (
+        promoted_ledger_id is not None
+        and run.get("promoted_artifact_projected_at") is None
+    ):
+        if ordinal > promoted_ledger_id:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET promoted_artifact_projected_at = now(),
+                          updated_at = now() WHERE train_job_id = %(id)s
+                        """,
+                        {"id": train_job_id},
+                    )
+            return 0
+        promoted_announcement = dict(run.get("promoted_announcement") or {})
+        error = None
+        try:
+            model_metadata = store.get_json(str(promoted_announcement["metadata_uri"]))
+            if not isinstance(model_metadata.get("training_metadata"), dict):
+                raise ValueError("checkpoint metadata is missing training_metadata")
+        except Exception as exc:
+            error = repr(exc)
+        else:
+            checkpoint_step = int(promoted_announcement["step"])
+            payload = {
+                "projection_kind": "artifact_reference",
+                "train_config": run["train_config"],
+                "artifact_kind": promoted_announcement["kind"],
+                "checkpoint_uri": promoted_announcement["model_uri"],
+                "metadata_uri": promoted_announcement["metadata_uri"],
+                "checkpoint_sha256": promoted_announcement["sha256"],
+                "metadata_sha256": promoted_announcement["metadata_sha256"],
+                "checkpoint_step": checkpoint_step,
+                "model_metadata": model_metadata,
+                "artifact_aliases": [
+                    "latest",
+                    "promoted",
+                    f"step-{checkpoint_step}",
+                ],
+            }
+            error = _execute_projection(
+                payload,
+                repo_root=repo_root,
+                deadline_monotonic=deadline_monotonic,
+                label=f"promoted-artifact-{train_job_id}-{promoted_ledger_id}",
+            )
+        with conn:
+            with conn.cursor() as cur:
+                if error is None:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET promoted_artifact_projected_at = now(),
+                          artifact_projection_attempts = 0,
+                          artifact_projection_next_retry_at = NULL,
+                          error = NULL, updated_at = now() WHERE train_job_id = %(id)s
+                        """,
+                        {"id": train_job_id},
+                    )
+                else:
+                    attempts = int(run.get("artifact_projection_attempts") or 0) + 1
+                    retry_delay = PROJECTION_RETRY_DELAYS_SECONDS[
+                        min(attempts - 1, len(PROJECTION_RETRY_DELAYS_SECONDS) - 1)
+                    ]
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET error = %(error)s,
+                          artifact_projection_attempts = %(attempts)s,
+                          artifact_projection_next_retry_at =
+                            now() + (%(retry_delay)s * interval '1 second'),
+                          status = CASE WHEN %(attempts)s >= %(max_attempts)s
+                            THEN 'failed' ELSE status END,
+                          updated_at = now() WHERE train_job_id = %(id)s
+                        """,
+                        {
+                            "error": (
+                                f"promoted artifact projection exhausted retries: {error}"
+                                if attempts >= MAX_PROJECTION_ATTEMPTS
+                                else error
+                            )[:4000],
+                            "attempts": attempts,
+                            "max_attempts": MAX_PROJECTION_ATTEMPTS,
+                            "retry_delay": retry_delay,
+                            "id": train_job_id,
+                        },
+                    )
+        return int(error is None)
     if ordinal > last_ordinal:
         with conn:
             with conn.cursor() as cur:
@@ -1275,6 +1370,22 @@ def project_artifact_references(
         f"artifact-announcements/{train_job_id}/{ordinal:08d}.json"
     )
     if announcement is None:
+        return 0
+    if (
+        promoted_ledger_id is not None
+        and ordinal == promoted_ledger_id
+        and run.get("promoted_artifact_projected_at") is not None
+    ):
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_runs SET next_artifact_projection_id =
+                      next_artifact_projection_id + 1, updated_at = now()
+                    WHERE train_job_id = %(id)s
+                    """,
+                    {"id": train_job_id},
+                )
         return 0
     error = None
     if str(announcement.get("kind")) != "tombstone":
@@ -1296,6 +1407,8 @@ def project_artifact_references(
                 "checkpoint_step": announcement["step"],
                 "model_metadata": model_metadata,
             }
+            if promoted_ledger_id is not None and str(announcement["kind"]) == "checkpoint":
+                payload["artifact_aliases"] = [f"step-{int(announcement['step'])}"]
             error = _execute_projection(
                 payload,
                 repo_root=repo_root,

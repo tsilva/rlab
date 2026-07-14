@@ -770,6 +770,57 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         self.assertEqual(aliases, ["latest", "step-500"])
         self.assertTrue(run.finished)
 
+    def test_artifact_projection_honors_promoted_fast_path_aliases(self) -> None:
+        class FakeArtifact:
+            def __init__(self, _name, type, metadata):
+                self.type = type
+                self.metadata = metadata
+
+            def add_reference(self, _uri):
+                return None
+
+        run = mock.MagicMock()
+        fake_wandb = SimpleNamespace(
+            init=lambda **_kwargs: run,
+            Artifact=FakeArtifact,
+        )
+        payload = {
+            "projection_kind": "artifact_reference",
+            "train_config": {
+                "wandb": True,
+                "wandb_run_id": "run-id",
+                "wandb_entity": "entity",
+                "wandb_project": "project",
+            },
+            "artifact_kind": "checkpoint",
+            "checkpoint_uri": "s3://bucket/checkpoint/model.zip",
+            "metadata_uri": "s3://bucket/checkpoint/metadata.json",
+            "checkpoint_sha256": "a" * 64,
+            "metadata_sha256": "b" * 64,
+            "checkpoint_step": 500,
+            "model_metadata": {"training_metadata": {}},
+            "artifact_aliases": ["latest", "promoted", "step-500"],
+        }
+
+        with (
+            mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
+            mock.patch("rlab.modal_eval_projection.load_wandb_env"),
+            mock.patch(
+                "rlab.modal_eval_projection.resolve_wandb_namespace",
+                return_value=("entity", "project"),
+            ),
+            mock.patch(
+                "rlab.modal_eval_projection.configure_wandb_metrics",
+                side_effect=lambda value: value,
+            ),
+        ):
+            project_payload(payload)
+
+        self.assertEqual(
+            run.log_artifact.call_args.kwargs["aliases"],
+            ["latest", "promoted", "step-500"],
+        )
+
     def test_artifact_reference_payload_loads_complete_checkpoint_metadata(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -811,6 +862,54 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         self.assertEqual(projected, 1)
         self.assertEqual(captured["model_metadata"], model_metadata)
         store.get_json.assert_called_once_with(announcement["metadata_uri"])
+
+    def test_promoted_artifact_projects_before_historical_backlog(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        promoted_announcement = {
+            "kind": "checkpoint",
+            "model_uri": "s3://bucket/promoted/model.zip",
+            "metadata_uri": "s3://bucket/promoted/metadata.json",
+            "sha256": "a" * 64,
+            "metadata_sha256": "b" * 64,
+            "step": 13500000,
+        }
+        cursor.fetchone.return_value = {
+            "train_job_id": 26,
+            "train_config": {"wandb": True},
+            "next_artifact_projection_id": 4,
+            "promoted_ledger_id": 27,
+            "promoted_announcement": promoted_announcement,
+            "promoted_artifact_projected_at": None,
+        }
+        store = mock.MagicMock()
+        store.get_json_optional.return_value = {"last_ledger_id": 35}
+        store.get_json.return_value = {"training_metadata": {"env_config": {}}}
+        captured = {}
+
+        def fake_execute(payload, **_kwargs):
+            captured.update(payload)
+            return None
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator._execute_projection",
+            side_effect=fake_execute,
+        ):
+            projected = project_artifact_references(
+                conn,
+                store,
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+            )
+
+        self.assertEqual(projected, 1)
+        self.assertEqual(captured["checkpoint_step"], 13500000)
+        self.assertEqual(
+            captured["artifact_aliases"],
+            ["latest", "promoted", "step-13500000"],
+        )
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("promoted_artifact_projected_at = now()" in sql for sql in statements))
 
     def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
         store = ObjectStore("s3://bucket/prefix")

@@ -43,7 +43,10 @@ class FleetServiceTests(unittest.TestCase):
         self.assertNotIn("EnvironmentVariables", payload)
         self.assertEqual(payload["ProgramArguments"][0], str(paths.python))
         self.assertTrue(Path(payload["WorkingDirectory"]).is_absolute())
-        self.assertEqual(payload["ProgramArguments"][1:4], ["-m", "rlab.fleet_service", "run-once"])
+        self.assertEqual(
+            payload["ProgramArguments"][1:4],
+            ["-m", "rlab.fleet_service_entrypoint", "run-once"],
+        )
         self.assertNotIn("DATABASE_URL", json.dumps(payload))
 
     def test_kick_never_uses_kill_flag(self) -> None:
@@ -190,6 +193,23 @@ class FleetServiceTests(unittest.TestCase):
         machines_with_service_work.assert_called_once_with(connection)
         connection.close.assert_called_once_with()
 
+    def test_idle_machine_maintenance_failure_is_not_retried_every_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            connection = mock.Mock()
+            machine = mock.Mock(prewarm_latest_runtime=False)
+            registry = mock.Mock(machines={"beast-2": machine})
+            with (
+                mock.patch.object(fleet_service, "_connect_queue", return_value=connection),
+                mock.patch("rlab.job_queue.machines_with_service_work", return_value=()),
+                mock.patch("rlab.machines.load_machine_registry", return_value=registry),
+            ):
+                first = fleet_service._default_discover_machines(repo)
+                second = fleet_service._default_discover_machines(repo)
+
+        self.assertEqual(first, ("beast-2",))
+        self.assertEqual(second, ())
+
     def test_default_reconcile_machine_delegates_to_fleet_api(self) -> None:
         expected = {"reconciled": 1}
         with mock.patch(
@@ -303,6 +323,37 @@ class FleetServiceTests(unittest.TestCase):
         self.assertEqual(
             health["app_cleanup"],
             {"status": "partial", "stopped": 1},
+        )
+
+    def test_service_health_alerts_after_two_failures_and_on_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            notifications = []
+            notifier = lambda title, message: notifications.append((title, message))
+            failed = {
+                "status": "degraded",
+                "eval": {"status": "ok"},
+                "machines": [
+                    {"machine": "beast-2", "status": "error", "error": "unreachable"}
+                ],
+            }
+
+            first = fleet_service.record_service_health(paths, failed, notifier=notifier)
+            second = fleet_service.record_service_health(paths, failed, notifier=notifier)
+            recovered = fleet_service.record_service_health(
+                paths,
+                {"status": "ok", "eval": {"status": "ok"}, "machines": []},
+                notifier=notifier,
+            )
+
+        self.assertEqual(first["consecutive_failures"], 1)
+        self.assertFalse(first["alert_active"])
+        self.assertEqual(second["consecutive_failures"], 2)
+        self.assertTrue(second["alert_active"])
+        self.assertTrue(recovered["healthy"])
+        self.assertEqual(
+            [title for title, _message in notifications],
+            ["rlab fleet service failure", "rlab fleet service recovered"],
         )
 
     def test_idle_pass_does_not_reconcile(self) -> None:

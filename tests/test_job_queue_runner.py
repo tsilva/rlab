@@ -1115,6 +1115,34 @@ class JobQueueTests(unittest.TestCase):
             "entity/project/rlab-run-id-checkpoint:step-500",
         )
 
+    def test_queue_status_exposes_promoted_artifact_before_backfill_finishes(self) -> None:
+        conn = FakeConnection(
+            rows=[
+                {
+                    "id": 17,
+                    "machine": "beast-3",
+                    "status": "succeeded",
+                    "eval_status": "finalizing",
+                    "published_at": None,
+                    "playable_at": "2026-07-14T16:00:00Z",
+                    "promoted_step": 500,
+                    "wandb_run_id": "rlab-run-id",
+                    "wandb_url": "https://wandb.ai/entity/project/runs/rlab-run-id",
+                    "cancel_requested": False,
+                    "machine_drained": False,
+                    "active_reservations": 0,
+                }
+            ]
+        )
+
+        job = job_queue.queue_status(conn, job_id=17)["jobs"][0]
+
+        self.assertEqual(job["artifact_status"], "playable")
+        self.assertEqual(
+            job["artifact_ref"],
+            "entity/project/rlab-run-id-checkpoint:step-500",
+        )
+
     def test_claim_uses_exact_machine_and_one_stable_launch(self) -> None:
         conn = FakeConnection(
             row={
