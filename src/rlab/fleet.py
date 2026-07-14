@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import json
+import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -45,6 +46,7 @@ from rlab.machines import (
 )
 from rlab.runtime_refs import (
     docker_image_ref,
+    recent_runtime_images,
     runtime_image_ref_from_args,
     normalize_runtime_image_ref,
 )
@@ -219,6 +221,8 @@ def repositories_for_runtime_images(protected_refs: set[str]) -> tuple[str, ...]
 def prune_stale_runtime_images(
     conn,
     host: DockerRunnerHost,
+    *,
+    extra_protected_refs: Sequence[str] = (),
 ) -> int:
     machine = host.machine
     demands = queue_demands(conn)
@@ -228,6 +232,8 @@ def prune_stale_runtime_images(
         demands=demands,
         containers=containers,
     )
+    for runtime_image_ref in extra_protected_refs:
+        protected.add(normalize_runtime_image_ref(runtime_image_ref))
     images = host.list_runtime_images(
         repositories_for_runtime_images(protected),
     )
@@ -253,6 +259,54 @@ def prune_inactive_job_containers(conn, host: DockerRunnerHost) -> int:
         if host.remove_container(container.name).ok:
             removed += 1
     return removed
+
+
+def prewarm_latest_runtime(
+    host: DockerRunnerHost,
+    *,
+    state_path: Path,
+    release: Any | None = None,
+) -> tuple[dict[str, Any], str]:
+    release = release or recent_runtime_images(limit=1)[0]
+    runtime_image_ref = release.runtime_image_ref
+    expected_state = {
+        "runtime_image_ref": runtime_image_ref,
+        "runtime_input_sha256": release.runtime_input_sha256,
+        "runtime_build_source_sha": release.runtime_build_source_sha or release.source_sha,
+    }
+    try:
+        current_state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        current_state = {}
+    present = host.runtime_image_present(runtime_image_ref)
+    pulled = False
+    if not present:
+        if not host.ensure_runtime_image(runtime_image_ref):
+            raise RuntimeError(f"failed to pull {runtime_image_ref}")
+        pulled = True
+    probed = current_state != expected_state or pulled
+    if probed:
+        host.probe_runtime_image(
+            runtime_image_ref=runtime_image_ref,
+            expected_source_sha=release.runtime_build_source_sha or release.source_sha,
+            expected_runtime_input_sha256=release.runtime_input_sha256,
+        )
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = state_path.with_name(f".{state_path.name}.tmp")
+        temporary.write_text(
+            json.dumps(expected_state, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, state_path)
+    return (
+        {
+            "status": "ready",
+            "runtime_image_ref": runtime_image_ref,
+            "pulled": pulled,
+            "probed": probed,
+        },
+        runtime_image_ref,
+    )
 
 
 def _load_train_job(conn, job_id: int) -> dict[str, Any]:
@@ -665,14 +719,43 @@ def run_service_machine_pass(
                 host=host,
                 shared_env_file=repo_root / DEFAULT_SHARED_RUNNER_ENV_FILE,
             )
+            prewarm: dict[str, Any] = {"status": "disabled"}
+            prewarmed_ref = ""
+            if machine.prewarm_latest_runtime:
+                try:
+                    release = recent_runtime_images(limit=1)[0]
+                    prewarmed_ref = release.runtime_image_ref
+                    prewarm, prewarmed_ref = prewarm_latest_runtime(
+                        host,
+                        state_path=(
+                            repo_root
+                            / "logs"
+                            / "fleet"
+                            / f"prewarm-{machine.name}.json"
+                        ),
+                        release=release,
+                    )
+                except Exception as exc:
+                    prewarm = {"status": "error", "error": str(exc)}
             if time.monotonic() >= deadline_monotonic:
-                raise TimeoutError(f"machine lane deadline expired: {machine_name}")
+                return {
+                    "reconciled": reconciled,
+                    "launched": launched,
+                    "removed_containers": 0,
+                    "pruned_images": 0,
+                    "prewarm": prewarm,
+                    "maintenance_skipped": "machine lane deadline expired after reconciliation",
+                }
             maintenance_marker = repo_root / "logs" / "fleet" / f"maintenance-{machine.name}.stamp"
             pruned = 0
             removed_containers = 0
             if reconciled or launched or _maintenance_due(maintenance_marker):
                 removed_containers = prune_inactive_job_containers(conn, host)
-                pruned = prune_stale_runtime_images(conn, host)
+                pruned = prune_stale_runtime_images(
+                    conn,
+                    host,
+                    extra_protected_refs=(prewarmed_ref,) if prewarmed_ref else (),
+                )
                 maintenance_marker.parent.mkdir(parents=True, exist_ok=True)
                 maintenance_marker.touch()
             return {
@@ -680,6 +763,7 @@ def run_service_machine_pass(
                 "launched": launched,
                 "removed_containers": removed_containers,
                 "pruned_images": pruned,
+                "prewarm": prewarm,
             }
     finally:
         if conn is not None:

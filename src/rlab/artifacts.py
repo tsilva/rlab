@@ -38,7 +38,7 @@ from rlab.wandb_utils import (
 )
 
 
-MODEL_METADATA_VERSION = 5
+MODEL_METADATA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,12 @@ def build_model_metadata(
         "queue_train_job_id": getattr(args, "queue_train_job_id", 0),
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "machine": getattr(args, "machine", ""),
+        "seed": getattr(args, "seed", None),
+        "repo_git_commit": str(
+            getattr(args, "source_sha", "")
+            or getattr(args, "repo_git_commit", "")
+            or ""
+        ).strip(),
         "checkpoint_step": step,
         "training_backend_id": str(
             getattr(args, "training_backend_id", "") or ""

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,6 +68,66 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_host_validation_and_readiness_barrier_overlap(self) -> None:
+        document = valid_train_recipe()
+        document["seeds"] = [23]
+        completed: list[str] = []
+
+        def validate(_config) -> None:
+            time.sleep(0.2)
+            completed.append("host")
+
+        def wait_backend() -> None:
+            time.sleep(0.2)
+            completed.append("backend")
+
+        def fake_enqueue(_conn, **kwargs):
+            kwargs["runtime_config_validator"](kwargs["train_config"])
+            return {"id": 1, "run_name": kwargs["run_name"]}
+
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            backend_future = executor.submit(wait_backend)
+            with patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue):
+                job_queue.enqueue_train_jobs_from_recipe_document(
+                    FakeConnection(),
+                    document=document,
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    machine="beast-3",
+                    runtime_config_validator=validate,
+                    readiness_barrier=backend_future.result,
+                )
+        elapsed = time.perf_counter() - started
+
+        self.assertCountEqual(completed, ["host", "backend"])
+        self.assertLess(elapsed, 0.35)
+
+    def test_failing_readiness_barrier_exits_insert_transaction_with_error(self) -> None:
+        class RecordingConnection(FakeConnection):
+            transaction_error = None
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                self.transaction_error = exc
+                return False
+
+        document = valid_train_recipe()
+        document["seeds"] = [23]
+        conn = RecordingConnection(row={"id": 1})
+
+        with self.assertRaisesRegex(RuntimeError, "backend unavailable"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                conn,
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                readiness_barrier=lambda: (_ for _ in ()).throw(
+                    RuntimeError("backend unavailable")
+                ),
+            )
+
+        self.assertIsInstance(conn.transaction_error, RuntimeError)
+        self.assertTrue(any("INSERT INTO train_jobs" in sql for sql in conn.cursor_obj.executed_sqls))
+
     def test_schema_upgrade_preserves_retired_eval_queue(self) -> None:
         conn = FakeConnection(
             results=[
@@ -360,6 +422,8 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("retry_of_job_id BIGINT", job_queue.SCHEMA_SQL)
         self.assertIn("ADD COLUMN IF NOT EXISTS retry_of_job_id", job_queue.SCHEMA_SQL)
         self.assertIn("ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
+        self.assertIn("learner_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
+        self.assertIn("wandb_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("wandb_run_id TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("'starting'", job_queue.SCHEMA_SQL)
         self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
@@ -386,6 +450,20 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("batch_id", validated[0])
         self.assertIn("queue_train_job_id", validated[0])
         self.assertIn("wandb_run_id", validated[0])
+
+    def test_runtime_validator_runs_for_every_materialized_seed_payload(self) -> None:
+        validated = []
+        conn = FakeConnection(row={"id": 9})
+
+        job_queue.enqueue_train_jobs_from_recipe_document(
+            conn,
+            document=valid_train_recipe(),
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            machine="beast-3",
+            runtime_config_validator=lambda config: validated.append(dict(config)),
+        )
+
+        self.assertEqual([config["seed"] for config in validated], [23, 24])
 
     def test_failed_runtime_validator_inserts_no_job(self) -> None:
         conn = FakeConnection(row={"id": 9})
@@ -481,8 +559,14 @@ class JobQueueTests(unittest.TestCase):
             recipe_slug="candidate",
             recipe_path="experiments/goals/mario/recipes/candidate.yaml",
             recipe_sha256="abc123",
-            recipe_payload={"recipe_id": "candidate"},
+            recipe_payload={
+                "recipe_id": "candidate",
+                "_composition": {"source_files": [{"path": "recipe.yaml", "sha256": "e" * 64}]},
+            },
             runtime_image_ref=RUNTIME_IMAGE_REF,
+            runtime_input_sha256="b" * 64,
+            runtime_build_source_sha="c" * 40,
+            repo_git_commit="d" * 40,
             machine="beast-3",
             train_config=explicit_train_config(),
         )
@@ -494,6 +578,15 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(insert_params["recipe_slug"], "candidate")
         self.assertEqual(insert_params["machine"], "beast-3")
         self.assertEqual(insert_params["runtime_image_ref"], RUNTIME_IMAGE_REF)
+        persisted_config = insert_params["train_config"].adapted
+        self.assertEqual(persisted_config["runtime_input_sha256"], "b" * 64)
+        self.assertEqual(persisted_config["runtime_build_source_sha"], "c" * 40)
+        self.assertEqual(persisted_config["source_sha"], "d" * 40)
+        self.assertEqual(persisted_config["recipe_sha256"], "abc123")
+        self.assertEqual(
+            persisted_config["recipe_composition"]["source_files"][0]["path"],
+            "recipe.yaml",
+        )
 
     def test_enqueue_train_jobs_keeps_machine_in_queue_column(self) -> None:
         conn = FakeConnection(

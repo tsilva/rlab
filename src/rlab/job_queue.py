@@ -12,6 +12,7 @@ import shlex
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -30,6 +31,7 @@ from rlab.runtime_refs import (
     clean_git_source_sha,
     normalize_runtime_image_ref,
     runtime_release_from_args,
+    wait_for_modal_readiness,
 )
 from rlab.recipe_documents import (
     assert_no_secrets,
@@ -84,6 +86,8 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   wandb_tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
+  learner_ready_at TIMESTAMPTZ,
+  wandb_ready_at TIMESTAMPTZ,
   ready_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
   wandb_run_id TEXT,
@@ -231,6 +235,8 @@ DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS campaign_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id BIGINT REFERENCES train_jobs(id);
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS learner_ready_at TIMESTAMPTZ;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_url TEXT;
@@ -623,17 +629,42 @@ def _existing_submission(conn, *, submission_key: str) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
-def modal_eval_readiness_report(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+def modal_eval_readiness_report(
+    *,
+    runtime_image_ref: str,
+    game: str,
+    runtime_input_sha256: str = "",
+    runtime_build_source_sha: str = "",
+) -> dict[str, Any]:
     # Keep this import local: modal_eval_cli uses the queue connection helpers.
     from rlab.modal_eval_cli import modal_preflight
 
-    return modal_preflight(runtime_image_ref=runtime_image_ref, game=game)
+    return modal_preflight(
+        runtime_image_ref=runtime_image_ref,
+        game=game,
+        runtime_input_sha256=runtime_input_sha256,
+        runtime_build_source_sha=runtime_build_source_sha,
+    )
 
 
-def require_modal_eval_ready(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+def require_modal_eval_ready(
+    *,
+    runtime_image_ref: str,
+    game: str,
+    runtime_input_sha256: str = "",
+    runtime_build_source_sha: str = "",
+) -> dict[str, Any]:
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     game = str(game or "").strip()
-    report = modal_eval_readiness_report(runtime_image_ref=runtime_image_ref, game=game)
+    readiness_options: dict[str, Any] = {
+        "runtime_image_ref": runtime_image_ref,
+        "game": game,
+    }
+    if runtime_input_sha256:
+        readiness_options["runtime_input_sha256"] = runtime_input_sha256
+    if runtime_build_source_sha:
+        readiness_options["runtime_build_source_sha"] = runtime_build_source_sha
+    report = modal_eval_readiness_report(**readiness_options)
     if bool(report.get("ready")):
         return report
     failed = [check for check in report.get("checks", []) if not bool(check.get("ok"))]
@@ -688,6 +719,8 @@ def enqueue_train_jobs_from_recipe_document(
     document: Mapping[str, Any],
     runtime_image_ref: str,
     machine: str,
+    runtime_input_sha256: str = "",
+    runtime_build_source_sha: str = "",
     submission_key: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
@@ -696,6 +729,8 @@ def enqueue_train_jobs_from_recipe_document(
     seeds: Sequence[int] = (),
     checkpoint_eval_backend: str | None = None,
     runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
+    _modal_readiness_validated: bool = False,
+    readiness_barrier: Callable[[], Any] | None = None,
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
@@ -704,6 +739,9 @@ def enqueue_train_jobs_from_recipe_document(
         checkpoint_eval_backend=checkpoint_eval_backend,
     )
     train_config["checkpoint_eval_backend"] = backend
+    train_config["runtime_input_sha256"] = str(runtime_input_sha256).strip()
+    train_config["runtime_build_source_sha"] = str(runtime_build_source_sha).strip()
+    train_config["source_sha"] = str(repo_git_commit or "").strip()
     if backend == "none":
         train_config["early_stop"] = None
         train_config["checkpoint_eval_stages"] = []
@@ -749,7 +787,7 @@ def enqueue_train_jobs_from_recipe_document(
                     f"expected {len(document_seeds)} jobs, found {len(existing)}"
                 )
             return existing
-    modal_readiness_validated = backend != "modal"
+    modal_readiness_validated = backend != "modal" or _modal_readiness_validated
     if not modal_readiness_validated:
         require_modal_eval_ready(
             runtime_image_ref=runtime_image_ref,
@@ -804,6 +842,8 @@ def enqueue_train_jobs_from_recipe_document(
                 repo_dirty=repo_dirty,
                 recipe_payload=compiled_recipe_payload(document),
                 runtime_image_ref=runtime_image_ref,
+                runtime_input_sha256=runtime_input_sha256,
+                runtime_build_source_sha=runtime_build_source_sha,
                 machine=machine,
                 train_config=train_config,
                 batch_id=batch_id,
@@ -830,6 +870,8 @@ def enqueue_train_jobs_from_recipe_document(
                 runtime_config_validator=runtime_config_validator,
             )
             rows.append(row)
+        if readiness_barrier is not None:
+            readiness_barrier()
     return rows
 
 
@@ -840,6 +882,8 @@ def enqueue_train_job(
     runtime_image_ref: str,
     machine: str,
     train_config: Mapping[str, Any],
+    runtime_input_sha256: str = "",
+    runtime_build_source_sha: str = "",
     recipe_slug: str | None = None,
     recipe_path: str | None = None,
     recipe_sha256: str | None = None,
@@ -870,6 +914,14 @@ def enqueue_train_job(
     if submission_ordinal < 0:
         raise ValueError("submission_ordinal must be at least zero")
     requested_config = dict(train_config)
+    requested_config["runtime_input_sha256"] = str(runtime_input_sha256).strip()
+    requested_config["runtime_build_source_sha"] = str(runtime_build_source_sha).strip()
+    requested_config["source_sha"] = str(repo_git_commit or "").strip()
+    requested_config["recipe_sha256"] = str(recipe_sha256 or "").strip()
+    composition = (recipe_payload or {}).get("_composition")
+    requested_config["recipe_composition"] = (
+        copy.deepcopy(dict(composition)) if isinstance(composition, Mapping) else {}
+    )
     seed = int(seed if seed is not None else requested_config.get("seed", DEFAULT_TRAIN_SEED))
     if "checkpoint_eval_backend" not in requested_config:
         modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
@@ -1218,12 +1270,29 @@ def mark_train_job_ready(
     wandb_url = str(readiness.get("wandb_url") or "").strip()
     if not wandb_run_id or not wandb_url.startswith("https://wandb.ai/"):
         raise ValueError("training readiness requires a W&B run id and URL")
+    learner_ready_at = str(readiness.get("learner_ready_at") or "").strip() or None
+    wandb_ready_at = str(readiness.get("wandb_ready_at") or "").strip() or None
+    for label, value in (
+        ("learner_ready_at", learner_ready_at),
+        ("wandb_ready_at", wandb_ready_at),
+    ):
+        if value is not None:
+            try:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(f"training readiness {label} must be ISO-8601") from exc
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE train_jobs AS job
                 SET status = 'running',
+                    learner_ready_at = COALESCE(
+                        learner_ready_at, %(learner_ready_at)s::timestamptz, now()
+                    ),
+                    wandb_ready_at = COALESCE(
+                        wandb_ready_at, %(wandb_ready_at)s::timestamptz, now()
+                    ),
                     ready_at = COALESCE(ready_at, now()),
                     wandb_run_id = %(wandb_run_id)s,
                     wandb_url = %(wandb_url)s,
@@ -1239,6 +1308,8 @@ def mark_train_job_ready(
                     "launch_id": launch_id,
                     "wandb_run_id": wandb_run_id,
                     "wandb_url": wandb_url,
+                    "learner_ready_at": learner_ready_at,
+                    "wandb_ready_at": wandb_ready_at,
                 },
             )
             row = cur.fetchone()
@@ -1254,6 +1325,8 @@ def mark_train_job_ready(
                     "launch_id": launch_id,
                     "wandb_run_id": wandb_run_id,
                     "wandb_url": wandb_url,
+                    "learner_ready_at": learner_ready_at,
+                    "wandb_ready_at": wandb_ready_at,
                 },
             )
             return job
@@ -1579,6 +1652,8 @@ def retry_train_job(
     job_id: int,
     submission_key: str | None = None,
     runtime_image_ref: str | None = None,
+    runtime_input_sha256: str | None = None,
+    runtime_build_source_sha: str | None = None,
     repo_git_commit: str | None = None,
     runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
@@ -1664,6 +1739,16 @@ def retry_train_job(
             repo_dirty=False if repo_git_commit else bool(source.get("repo_dirty")),
             recipe_payload=source.get("recipe_payload_json") or {},
             runtime_image_ref=runtime_image_ref or source["runtime_image_ref"],
+            runtime_input_sha256=(
+                runtime_input_sha256
+                if runtime_input_sha256 is not None
+                else str(source.get("train_config", {}).get("runtime_input_sha256") or "")
+            ),
+            runtime_build_source_sha=(
+                runtime_build_source_sha
+                if runtime_build_source_sha is not None
+                else str(source.get("train_config", {}).get("runtime_build_source_sha") or "")
+            ),
             machine=source["machine"],
             train_config=source["train_config"],
             batch_id=source["batch_id"],
@@ -2230,8 +2315,12 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     machine_config = resolve_machine(registry, args.machine)
     timings: dict[str, float] = {}
     readiness_started = time.perf_counter()
-    release = runtime_release_from_args(args, checkpoint_eval_backend=backend)
-    timings["runtime_readiness_seconds"] = time.perf_counter() - readiness_started
+    release = runtime_release_from_args(
+        args,
+        checkpoint_eval_backend=backend,
+        wait_for_modal=False,
+    )
+    timings["image_resolution_seconds"] = time.perf_counter() - readiness_started
     runtime_image_ref = release.runtime_image_ref
     if clean_git_source_sha() != release.source_sha:
         raise RuntimeError(
@@ -2241,6 +2330,41 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     from rlab.docker_host import DockerRunnerHost
 
     host = DockerRunnerHost(machine_config)
+    executor: ThreadPoolExecutor | None = None
+    modal_future: Future[Any] | None = None
+
+    if backend == "modal":
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rlab-modal-ready")
+
+        def validate_modal_readiness() -> Any:
+            modal_started = time.perf_counter()
+            remaining = max(
+                float(args.runtime_readiness_timeout)
+                - (time.perf_counter() - readiness_started),
+                0.0,
+            )
+            ready_release = wait_for_modal_readiness(
+                release,
+                timeout=remaining,
+                image_workflow=args.image_workflow,
+            )
+            timings["modal_readiness_seconds"] = time.perf_counter() - modal_started
+            live_started = time.perf_counter()
+            report = require_modal_eval_ready(
+                runtime_image_ref=runtime_image_ref,
+                game=str(document.get("train_config", {}).get("game") or ""),
+                runtime_input_sha256=release.runtime_input_sha256,
+                runtime_build_source_sha=release.runtime_build_source_sha,
+            )
+            timings["modal_live_preflight_seconds"] = time.perf_counter() - live_started
+            return ready_release, report
+
+        modal_future = executor.submit(validate_modal_readiness)
+
+    def readiness_barrier() -> None:
+        if modal_future is not None:
+            modal_future.result()
+        timings["runtime_readiness_seconds"] = time.perf_counter() - readiness_started
 
     def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
         if clean_git_source_sha() != release.source_sha:
@@ -2249,25 +2373,32 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             )
         started = time.perf_counter()
         try:
-            return host.validate_runtime_train_config(
+            receipt = host.validate_runtime_train_config(
                 runtime_image_ref=runtime_image_ref,
                 train_config=train_config,
-                expected_source_sha=release.source_sha,
+                expected_source_sha=release.runtime_build_source_sha or release.source_sha,
                 expected_contract_sha256=release.train_config_contract_sha256,
+                expected_runtime_input_sha256=release.runtime_input_sha256,
             )
+            for key, value in dict(receipt.get("preflight_timings") or {}).items():
+                timings[key] = timings.get(key, 0.0) + float(value)
+            return receipt
         finally:
             timings["target_preflight_seconds"] = (
                 timings.get("target_preflight_seconds", 0.0) + time.perf_counter() - started
             )
 
-    conn = _connect_from_args(args)
+    conn = None
     try:
+        conn = _connect_from_args(args)
         enqueue_started = time.perf_counter()
         rows = enqueue_train_jobs_from_recipe_document(
             conn,
             document=document,
             runtime_image_ref=runtime_image_ref,
             machine=args.machine,
+            runtime_input_sha256=release.runtime_input_sha256,
+            runtime_build_source_sha=release.runtime_build_source_sha,
             submission_key=args.submission_key,
             recipe_path=metadata["recipe_path"],
             recipe_sha256=metadata["recipe_sha256"],
@@ -2276,17 +2407,23 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             seeds=args.seed,
             checkpoint_eval_backend=args.checkpoint_eval_backend,
             runtime_config_validator=validate_runtime_config,
+            _modal_readiness_validated=backend == "modal",
+            readiness_barrier=readiness_barrier,
         )
         timings["enqueue_preflight_seconds"] = time.perf_counter() - enqueue_started
+        dispatch_started = time.perf_counter()
         dispatch = dispatch_fleet_service()
+        timings["dispatch_seconds"] = time.perf_counter() - dispatch_started
         wait_result = None
         if args.wait:
+            wait_started = time.perf_counter()
             wait_result = wait_for_job_ids(
                 conn,
                 [int(row["id"]) for row in rows],
                 until=args.wait,
                 timeout=float(args.timeout),
             )
+            timings["job_readiness_wait_seconds"] = time.perf_counter() - wait_started
         report = queue_status(
             conn,
             batch_id=str(rows[0]["batch_id"]),
@@ -2296,12 +2433,48 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             },
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+    if "runtime_readiness_seconds" not in timings:
+        timings["runtime_readiness_seconds"] = time.perf_counter() - readiness_started
+    if report.get("jobs"):
+        job = report["jobs"][0]
+
+        def timestamp(value: object) -> datetime | None:
+            text = str(value or "").strip()
+            return datetime.fromisoformat(text) if text else None
+
+        created_at = timestamp(job.get("created_at"))
+        started_at = timestamp(job.get("started_at"))
+        learner_ready_at = timestamp(job.get("learner_ready_at"))
+        wandb_ready_at = timestamp(job.get("wandb_ready_at"))
+        ready_at = timestamp(job.get("ready_at"))
+        if created_at and started_at:
+            timings["queue_to_container_start_seconds"] = (
+                started_at - created_at
+            ).total_seconds()
+        if started_at and ready_at:
+            timings["container_to_learner_wandb_ready_seconds"] = (
+                ready_at - started_at
+            ).total_seconds()
+        if started_at and learner_ready_at:
+            timings["container_to_learner_ready_seconds"] = (
+                learner_ready_at - started_at
+            ).total_seconds()
+        if started_at and wandb_ready_at:
+            timings["container_to_wandb_ready_seconds"] = (
+                wandb_ready_at - started_at
+            ).total_seconds()
     payload = {
         "batch_id": rows[0]["batch_id"] if rows else None,
         "job_ids": [int(row["id"]) for row in rows],
         "machine": args.machine,
         "runtime_image_ref": runtime_image_ref,
+        "runtime_input_sha256": release.runtime_input_sha256,
+        "runtime_build_source_sha": release.runtime_build_source_sha,
+        "source_sha": release.source_sha,
         "dispatch": dispatch,
         "jobs": report["jobs"],
         "wait": wait_result,
@@ -2504,8 +2677,9 @@ def cmd_retry(args: argparse.Namespace) -> int:
             return host.validate_runtime_train_config(
                 runtime_image_ref=release.runtime_image_ref,
                 train_config=train_config,
-                expected_source_sha=release.source_sha,
+                expected_source_sha=release.runtime_build_source_sha or release.source_sha,
                 expected_contract_sha256=release.train_config_contract_sha256,
+                expected_runtime_input_sha256=release.runtime_input_sha256,
             )
 
         row = retry_train_job(
@@ -2513,6 +2687,8 @@ def cmd_retry(args: argparse.Namespace) -> int:
             job_id=args.job_id,
             submission_key=args.submission_key,
             runtime_image_ref=release.runtime_image_ref,
+            runtime_input_sha256=release.runtime_input_sha256,
+            runtime_build_source_sha=release.runtime_build_source_sha,
             repo_git_commit=release.source_sha,
             runtime_config_validator=validate_runtime_config,
         )

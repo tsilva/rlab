@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -38,6 +39,38 @@ def machine(*, backend: str = "local_docker", host_root: str = "/tmp/rlab"):
 
 
 class DockerHostTests(unittest.TestCase):
+    def test_ensure_runtime_image_skips_pull_when_digest_is_present(self) -> None:
+        present = subprocess.CompletedProcess([], 0, "{}", "")
+        with mock.patch.object(docker_host, "_run_machine_docker", return_value=present) as run:
+            timings: dict[str, float] = {}
+            ready = DockerRunnerHost(machine()).ensure_runtime_image(
+                RUNTIME_IMAGE_REF,
+                timings=timings,
+            )
+
+        self.assertTrue(ready)
+        self.assertEqual(run.call_args.args[1][:2], ["image", "inspect"])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(timings["host_image_pull_seconds"], 0.0)
+
+    def test_ensure_runtime_image_pulls_only_after_missing_digest(self) -> None:
+        missing = subprocess.CompletedProcess([], 1, "", "missing")
+        pulled = subprocess.CompletedProcess([], 0, "", "")
+        present = subprocess.CompletedProcess([], 0, "{}", "")
+        with mock.patch.object(
+            docker_host,
+            "_run_machine_docker",
+            side_effect=[missing, pulled, present],
+        ) as run:
+            ready = DockerRunnerHost(
+                replace(machine(backend="docker_ssh"), pull_policy="always")
+            ).ensure_runtime_image(RUNTIME_IMAGE_REF)
+
+        self.assertTrue(ready)
+        self.assertEqual(run.call_args_list[0].args[1][:2], ["image", "inspect"])
+        self.assertEqual(run.call_args_list[1].args[1][0], "pull")
+        self.assertEqual(run.call_args_list[2].args[1][:2], ["image", "inspect"])
+
     def test_setup_host_uses_configured_sudo_docker_command(self) -> None:
         script, returncode = docker_host.setup_docker_host(
             machine(backend="docker_ssh", host_root="/home/tsilva/rlab"),

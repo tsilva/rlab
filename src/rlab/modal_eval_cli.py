@@ -128,7 +128,13 @@ def cmd_status(_args: argparse.Namespace) -> int:
         conn.close()
 
 
-def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+def modal_preflight(
+    *,
+    runtime_image_ref: str,
+    game: str,
+    runtime_input_sha256: str = "",
+    runtime_build_source_sha: str = "",
+) -> dict[str, Any]:
     from rlab.runtime_contract import train_config_contract_sha256
 
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
@@ -231,6 +237,14 @@ def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
                 and probe.get("runtime_image_ref") == runtime_image_ref
                 and probe.get("train_config_contract_sha256") == expected_contract
             )
+            if runtime_input_sha256:
+                probe_ok = probe_ok and (
+                    probe.get("runtime_input_sha256") == runtime_input_sha256
+                )
+            if runtime_build_source_sha:
+                probe_ok = probe_ok and (
+                    probe.get("runtime_build_source_sha") == runtime_build_source_sha
+                )
             add(
                 "modal_startup_probe",
                 probe_ok,

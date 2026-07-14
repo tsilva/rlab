@@ -91,8 +91,13 @@ ROM object, preview R2/public-URL path, local Modal credentials, and exact runti
 deployment are all present. Every normal screen evaluation captures a bounded policy-observation
 MP4 in R2 and projects it as `eval/screen/preview` in the producing W&B run.
 
-The train-image workflow publishes `rlab-train-image.json` as soon as the exact immutable image
-exists. It then deploys and startup-probes the digest-specific Modal app and publishes
+The train-image workflow runs on every push to `main` and publishes an exact-source version-4
+`rlab-train-image.json` as soon as the immutable image exists. Runtime images are keyed by a
+fingerprint of their complete runtime inputs rather than by commit: goal, recipe, test, and
+unrelated documentation changes therefore reuse a proven digest. A reused runtime preserves its
+original `runtime_build_source_sha`; the new receipt still records the exact pushed `source_sha`.
+New fingerprints build an image and deploy the digest-specific Modal app. Reused fingerprints skip
+both operations but still startup-probe the existing app and publish an exact-source
 `rlab-modal-eval-readiness.json`. Local and `none` submissions may proceed from the early image
 receipt; Modal submissions wait for matching readiness and repeat the full live preflight before
 writing queue rows. Image workflow failure during the later Modal stage does not invalidate an
@@ -159,6 +164,10 @@ queue service and do not schedule experiments.
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
 - ROM mount root: `/home/tsilva/roms`.
+- Prewarming: enabled. The Mac fleet service pulls and probes the latest successful main-runtime
+  receipt without reserving a training slot. Exactly that latest digest is temporary cleanup
+  demand; a superseded digest is pruned once no queued or active job requires it. Prewarm failures
+  appear in fleet-service health and do not stop running jobs.
 
 Use beast-3 for the run that decides the main research loop unless you are
 intentionally testing small-GPU behavior.
@@ -179,6 +188,7 @@ intentionally testing small-GPU behavior.
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
 - ROM mount root: `/home/tsilva/roms`.
+- Prewarming: disabled initially.
 
 The old `local-8332822-dirty` image tag was a k3s/containerd artifact. Use
 pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
@@ -193,6 +203,7 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - Docker command: configured in `experiments/machines.yaml`; currently `docker`
   without `--gpus all`.
 - Do not use local training throughput as evidence for beast concurrency.
+- Prewarming: disabled initially.
 
 ## Operational Rules
 
@@ -242,6 +253,16 @@ Modal deployment/probe completed; the full workflow took 5 minutes 40 seconds. T
 makes the early image receipt, named-machine image ensure, named-machine config validation, and
 optional Modal wait separate timed phases. The named-machine validation remains mandatory because it
 tests the real materialized payload inside the exact image on the actual selected runner.
+
+Launch readiness now overlaps two fail-closed branches after the image receipt appears: Modal
+readiness plus live backend/ROM/storage/database/startup checks, and selected-host image
+inspection/pull plus validation of every materialized train payload. Queue rows commit only after
+both branches succeed. Host image inspection precedes pulling, so a present digest is not fetched
+again. Train JSON output reports image resolution, Modal readiness, live Modal preflight, host
+inspection, pull, config validation, dispatch, queue-to-container startup, learner readiness, and
+W&B readiness while retaining the aggregate readiness fields. Operational rollout targets are 90
+seconds for prepared or reused runtimes and no more than 6 minutes for an immediate launch after a
+genuine runtime change; measured acceptance belongs in canary evidence rather than this runbook.
 
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 

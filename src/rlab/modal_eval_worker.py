@@ -115,6 +115,7 @@ def run_child(input_path: Path, output_path: Path) -> int:
     contract = request["contract"]
     rom_path = Path(request["rom_path"])
     model_path = Path(request["model_path"])
+    model_metadata = request.get("model_metadata")
     rom_dir = rom_path.parent
     subprocess.run(
         [sys.executable, "-m", "stable_retro.import", str(rom_dir)],
@@ -123,17 +124,16 @@ def run_child(input_path: Path, output_path: Path) -> int:
         stderr=subprocess.PIPE,
         text=True,
     )
-    from stable_baselines3 import PPO
-
     from rlab.env import resolve_env_config
     from rlab.env_metadata import env_config_from_config_dict
     from rlab.eval_runner import evaluate_model_episodes
+    from rlab.sb3_models import load_sb3_model
 
     config = env_config_from_config_dict(dict(contract["environment"]))
     if config is None:
         raise ValueError("remote eval environment contract is invalid")
     config = resolve_env_config(config)
-    model = PPO.load(model_path, device="cpu")
+    model = load_sb3_model(model_path, device="cpu", metadata=model_metadata)
     preview_request = request.get("preview")
     preview_capture = (
         PolicyObservationPreview(
@@ -222,7 +222,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             )
             if file_sha256(metadata_path) != str(payload["metadata_sha256"]):
                 raise ValueError("downloaded checkpoint metadata hash mismatch")
-            json.loads(metadata_path.read_text(encoding="utf-8"))
+            model_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             asset = contract["asset"]
             cache_dir = Path("/tmp/rlab-modal-assets") / str(asset["sha256"])
             cached_rom = cache_dir / str(asset["filename"])
@@ -256,6 +256,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                 {
                     "contract": contract,
                     "model_path": str(model_path),
+                    "model_metadata": model_metadata,
                     "rom_path": str(rom_path),
                     "preview": payload.get("preview"),
                 },
@@ -287,11 +288,16 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                 preview = {str(key): value for key, value in child_preview.items() if key != "path"}
                 if str(child_preview.get("status")) == "ready":
                     preview_path = Path(str(child_preview.get("path") or "")).resolve()
-                    if not preview_path.is_relative_to(root.resolve()) or not preview_path.is_file():
+                    if (
+                        not preview_path.is_relative_to(root.resolve())
+                        or not preview_path.is_file()
+                    ):
                         preview = {"status": "failed", "error": "preview output path is invalid"}
                     else:
                         try:
-                            _upload_preview(str(preview_request["put_url"]), preview_path, preview_request)
+                            _upload_preview(
+                                str(preview_request["put_url"]), preview_path, preview_request
+                            )
                         except Exception as exc:
                             preview = {"status": "failed", "error": repr(exc)[:1000]}
                         else:

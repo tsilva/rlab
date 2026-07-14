@@ -12,7 +12,6 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import numpy as np
-from stable_baselines3 import PPO
 
 from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.device import resolve_sb3_device
@@ -29,6 +28,7 @@ from rlab.model_sources import (
     model_source_ref,
     resolve_single_model_source,
 )
+from rlab.sb3_models import load_sb3_model
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.targets import target_for_game
 from rlab.train_config import add_env_config_args
@@ -173,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     assert_provider_runtime_available(config)
-    model = PPO.load(args.model, device=resolve_sb3_device(args.device)) if args.model else None
+    model = (
+        load_sb3_model(args.model, device=resolve_sb3_device(args.device)) if args.model else None
+    )
 
     if model is not None:
         summary, _ = evaluate_model_episodes(

@@ -215,7 +215,7 @@ class AsyncWorkerTests(unittest.TestCase):
             }
 
             with (
-                patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
+                patch("rlab.checkpoint_eval_worker.load_sb3_model", return_value=object()),
                 patch(
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(metrics, None),
@@ -264,7 +264,7 @@ class AsyncWorkerTests(unittest.TestCase):
             store.ensure_checkpoint_eval_stages(stages)
             row = store.pending_checkpoint_eval_stages()[0]
             with (
-                patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
+                patch("rlab.checkpoint_eval_worker.load_sb3_model", return_value=object()),
                 patch(
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=10, completion=0.9), None),
@@ -316,7 +316,7 @@ class AsyncWorkerTests(unittest.TestCase):
             screen_row = store.pending_checkpoint_eval_stages()[0]
 
             with (
-                patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
+                patch("rlab.checkpoint_eval_worker.load_sb3_model", return_value=object()),
                 patch(
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=10, completion=1.0), None),
@@ -335,7 +335,7 @@ class AsyncWorkerTests(unittest.TestCase):
             self.assertEqual(confirm_row["stage_name"], "confirm")
 
             with (
-                patch("rlab.checkpoint_eval_worker.PPO.load", return_value=object()),
+                patch("rlab.checkpoint_eval_worker.load_sb3_model", return_value=object()),
                 patch(
                     "rlab.checkpoint_eval_worker.evaluate_model_episodes",
                     return_value=(eval_metrics(episodes=30, completion=1.0), None),

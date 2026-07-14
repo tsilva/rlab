@@ -1,0 +1,36 @@
+recipe_id: a2c
+description: >-
+  Seed {seed} trains an SB3 A2C {goal_id} baseline while preserving the goal's
+  environment, reward, termination, stochastic evaluation, and checkpoint-promotion
+  contracts, using an A2C-native rollout and optimizer configuration.
+train:
+  # Queue-backed training caps are explicit recipe inputs.
+  timesteps: 50000000
+  backend:
+    id: sb3.a2c
+    config:
+      # A2C performs one update per rollout, so collect a smaller batch than the PPO baseline.
+      n_steps: 64
+      # Start from SB3's A2C-scale learning rate, then consolidate at the PPO baseline's late rate.
+      learning_rate: 7.0e-4
+      learning_rate_final: 1.0e-4
+      learning_rate_schedule_timesteps: 4000000
+      # Preserve the Level1-1 discount and GAE horizon used by the PPO baseline.
+      gamma: 0.9
+      gae_lambda: 1.0
+      # Explore early and taper entropy pressure over the same horizon as the learning rate.
+      ent_coef: 0.01
+      ent_coef_final: 1.0e-4
+      ent_coef_schedule_timesteps: 4000000
+      # Keep the critic weighting aligned with the shaped-reward contract.
+      vf_coef: 1.0
+      # Use the standard A2C gradient guard and RMSprop optimizer settings.
+      max_grad_norm: 0.5
+      use_rms_prop: true
+      rms_prop_eps: 1.0e-5
+      # Preserve raw advantage magnitude as in the PPO Level1-1 baseline.
+      normalize_advantage: false
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: CHECKPOINT_BUCKET_URI

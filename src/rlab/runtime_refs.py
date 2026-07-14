@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -26,7 +27,9 @@ DEFAULT_IMAGE_ARTIFACT_FILE = "rlab-train-image.json"
 DEFAULT_MODAL_WORKFLOW = "rlab Modal eval deployment"
 DEFAULT_MODAL_ARTIFACT = "rlab-modal-eval-readiness"
 DEFAULT_MODAL_ARTIFACT_FILE = "rlab-modal-eval-readiness.json"
-MODAL_READINESS_SCHEMA_VERSION = 1
+MODAL_READINESS_SCHEMA_VERSION = 2
+LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
+LEGACY_MODAL_READINESS_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS = 20 * 60
 
 DIGEST_IMAGE_REF_RE = re.compile(
@@ -45,6 +48,8 @@ class RuntimeImageInfo:
     published_at: str
     workflow_run_id: str
     schema_version: int = 0
+    runtime_input_sha256: str = ""
+    runtime_build_source_sha: str = ""
     train_config_contract_sha256: str = ""
     modal_app_name: str = ""
     startup_probe: dict[str, Any] | None = None
@@ -58,6 +63,8 @@ class ModalReadinessInfo:
     startup_probe: dict[str, Any]
     workflow_run_id: str
     schema_version: int = MODAL_READINESS_SCHEMA_VERSION
+    runtime_input_sha256: str = ""
+    runtime_build_source_sha: str = ""
 
 
 def normalize_runtime_image_ref(value: str | None) -> str:
@@ -111,11 +118,14 @@ def runtime_release_from_payload(
     expected_source_sha: str,
 ) -> RuntimeImageInfo:
     schema_version = int(payload.get("schema_version") or 0)
-    if schema_version != RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
+    if schema_version not in {
+        LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+        RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+    }:
         raise ValueError(
-            f"{label} schema_version must be {RUNTIME_DESCRIPTOR_SCHEMA_VERSION}; "
-            "legacy combined runtime artifacts cannot launch new training jobs; "
-            "rebuild the exact source revision"
+            f"{label} schema_version must be "
+            f"{LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION} or "
+            f"{RUNTIME_DESCRIPTOR_SCHEMA_VERSION}"
         )
     runtime_image_ref = runtime_image_ref_from_payload(payload, label=label)
     source_sha = str(payload.get("source_sha") or "").strip()
@@ -127,6 +137,36 @@ def runtime_release_from_payload(
     digest = str(payload.get("digest") or "").strip().removeprefix("sha256:")
     if digest and digest.lower() != runtime_image_digest(runtime_image_ref):
         raise ValueError(f"{label} digest does not match runtime_image_ref")
+    runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
+    runtime_build_source_sha = str(
+        payload.get("runtime_build_source_sha") or source_sha
+    ).strip()
+    if schema_version == RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
+        if not re.fullmatch(r"[0-9a-f]{64}", runtime_input_sha256):
+            raise ValueError(f"{label} must include a valid runtime_input_sha256")
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", runtime_build_source_sha):
+            raise ValueError(f"{label} must include a valid runtime_build_source_sha")
+        tags = payload.get("tags")
+        expected_tag = f"runtime-{runtime_input_sha256}"
+        if not isinstance(tags, Sequence) or isinstance(tags, str) or expected_tag not in tags:
+            raise ValueError(f"{label} must include its content-addressed runtime tag")
+        uv_lock_sha256 = str(payload.get("uv_lock_sha256") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", uv_lock_sha256):
+            raise ValueError(f"{label} must include a valid uv_lock_sha256")
+        base_images = payload.get("base_images")
+        dependency_image = (
+            str(base_images.get("dependencies") or "").strip()
+            if isinstance(base_images, Mapping)
+            else ""
+        )
+        try:
+            normalize_runtime_image_ref(dependency_image)
+        except ValueError as exc:
+            raise ValueError(
+                f"{label} must include an immutable dependency image identity"
+            ) from exc
+        if not str(payload.get("workflow_run_id") or "").strip():
+            raise ValueError(f"{label} must include workflow_run_id")
     return RuntimeImageInfo(
         runtime_image_ref=runtime_image_ref,
         source_sha=source_sha,
@@ -139,6 +179,8 @@ def runtime_release_from_payload(
         ).strip(),
         workflow_run_id=str(payload.get("workflow_run_id") or "").strip(),
         schema_version=schema_version,
+        runtime_input_sha256=runtime_input_sha256,
+        runtime_build_source_sha=runtime_build_source_sha,
         train_config_contract_sha256=train_config_contract_sha256(),
     )
 
@@ -149,11 +191,18 @@ def modal_readiness_from_payload(
     label: str,
     expected_source_sha: str,
     expected_runtime_image_ref: str,
+    expected_runtime_input_sha256: str = "",
+    expected_runtime_build_source_sha: str = "",
 ) -> ModalReadinessInfo:
     schema_version = int(payload.get("schema_version") or 0)
-    if schema_version != MODAL_READINESS_SCHEMA_VERSION:
+    if schema_version not in {
+        LEGACY_MODAL_READINESS_SCHEMA_VERSION,
+        MODAL_READINESS_SCHEMA_VERSION,
+    }:
         raise ValueError(
-            f"{label} schema_version must be {MODAL_READINESS_SCHEMA_VERSION}"
+            f"{label} schema_version must be "
+            f"{LEGACY_MODAL_READINESS_SCHEMA_VERSION} or "
+            f"{MODAL_READINESS_SCHEMA_VERSION}"
         )
     source_sha = str(payload.get("source_sha") or "").strip()
     if source_sha != expected_source_sha:
@@ -169,12 +218,35 @@ def modal_readiness_from_payload(
     startup_probe = payload.get("startup_probe")
     if not modal_app_name or not isinstance(startup_probe, Mapping):
         raise ValueError(f"{label} must include Modal app and startup-probe evidence")
+    runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
+    runtime_build_source_sha = str(
+        payload.get("runtime_build_source_sha") or source_sha
+    ).strip()
+    if schema_version == MODAL_READINESS_SCHEMA_VERSION:
+        expected_runtime_input_sha256 = str(expected_runtime_input_sha256).strip().lower()
+        expected_runtime_build_source_sha = str(expected_runtime_build_source_sha).strip()
+        if not expected_runtime_input_sha256 or runtime_input_sha256 != expected_runtime_input_sha256:
+            raise ValueError(f"{label} runtime_input_sha256 does not match image receipt")
+        if (
+            not expected_runtime_build_source_sha
+            or runtime_build_source_sha != expected_runtime_build_source_sha
+        ):
+            raise ValueError(f"{label} runtime_build_source_sha does not match image receipt")
     expected_probe = {
         "runtime_image_ref": runtime_image_ref,
-        "source_sha": source_sha,
         "train_config_contract_sha256": train_config_contract_sha256(),
         "app_name": modal_app_name,
     }
+    if schema_version == LEGACY_MODAL_READINESS_SCHEMA_VERSION:
+        expected_probe["source_sha"] = source_sha
+    else:
+        expected_probe.update(
+            {
+                "source_sha": runtime_build_source_sha,
+                "runtime_build_source_sha": runtime_build_source_sha,
+                "runtime_input_sha256": runtime_input_sha256,
+            }
+        )
     for key, expected in expected_probe.items():
         if startup_probe.get(key) != expected:
             raise ValueError(f"{label} startup_probe.{key} does not match readiness")
@@ -185,6 +257,8 @@ def modal_readiness_from_payload(
         startup_probe=dict(startup_probe),
         workflow_run_id=str(payload.get("workflow_run_id") or "").strip(),
         schema_version=schema_version,
+        runtime_input_sha256=runtime_input_sha256,
+        runtime_build_source_sha=runtime_build_source_sha,
     )
 
 
@@ -254,10 +328,29 @@ def require_remote_source(
         )
 
 
+@lru_cache(maxsize=1)
+def _gh_executable() -> str:
+    discovered = shutil.which("gh")
+    if discovered:
+        return discovered
+    for candidate in (Path("/opt/homebrew/bin/gh"), Path("/usr/local/bin/gh")):
+        if candidate.is_file():
+            return str(candidate)
+    raise RuntimeError("gh CLI is required to resolve runtime artifacts")
+
+
+def _resolved_gh_command(command: Sequence[str]) -> list[str]:
+    parts = [str(part) for part in command]
+    if not parts or parts[0] != "gh":
+        raise ValueError("GitHub command must begin with gh")
+    parts[0] = _gh_executable()
+    return parts
+
+
 def _run_gh_json(command: Sequence[str]) -> Any:
     try:
         result = subprocess.run(
-            command,
+            _resolved_gh_command(command),
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -274,7 +367,7 @@ def _run_gh_json(command: Sequence[str]) -> Any:
 def _run_gh_bytes(command: Sequence[str]) -> bytes:
     try:
         result = subprocess.run(
-            command,
+            _resolved_gh_command(command),
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -290,7 +383,7 @@ def _run_gh_bytes(command: Sequence[str]) -> bytes:
 def _run_gh(command: Sequence[str]) -> None:
     try:
         result = subprocess.run(
-            command,
+            _resolved_gh_command(command),
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -587,6 +680,8 @@ def modal_readiness_for_release(
                 label=f"Modal readiness receipt {run_id}",
                 expected_source_sha=release.source_sha,
                 expected_runtime_image_ref=release.runtime_image_ref,
+                expected_runtime_input_sha256=release.runtime_input_sha256,
+                expected_runtime_build_source_sha=release.runtime_build_source_sha,
             )
         except Exception as exc:
             errors.append(f"run {run_id}: {exc}")
@@ -642,6 +737,7 @@ def runtime_release_from_args(
     *,
     repo_root: Path | str = ".",
     checkpoint_eval_backend: str | None = None,
+    wait_for_modal: bool = True,
 ) -> RuntimeImageInfo:
     source_sha = clean_git_source_sha(repo_root)
     workflow = getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW)
@@ -680,7 +776,7 @@ def runtime_release_from_args(
                 "explicit runtime image does not match the exact-source image receipt for "
                 f"source {source_sha}: expected {release.runtime_image_ref}, got {normalized}"
             )
-    if str(checkpoint_eval_backend or "") == "modal":
+    if wait_for_modal and str(checkpoint_eval_backend or "") == "modal":
         remaining = max(timeout - (time.monotonic() - readiness_started), 0.0)
         release = wait_for_modal_readiness(
             release,

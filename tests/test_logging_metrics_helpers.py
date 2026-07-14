@@ -96,6 +96,28 @@ class MetricsDocumentationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "logger boundary"):
             metric_names.canonical_training_scalars({"train/outcome/succes/current/rate/min": 0.5})
 
+    def test_a2c_training_scalars_use_the_a2c_metric_namespace(self) -> None:
+        payload = metric_names.canonical_training_scalars(
+            {
+                "train/policy_loss": -0.25,
+                "train/value_loss": 1.5,
+                "train/entropy_loss": -0.75,
+                "train/learning_rate": 0.0007,
+            },
+            algorithm_id="a2c",
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "train/algorithm/a2c/update/policy_gradient_loss": -0.25,
+                "train/algorithm/a2c/update/value_loss": 1.5,
+                "train/algorithm/a2c/policy/entropy": 0.75,
+                "train/algorithm/a2c/update/learning_rate": 0.0007,
+            },
+        )
+        self.assertFalse(any("/ppo/" in name for name in payload))
+
     def test_cardinality_has_no_start_by_reason_scalar_product(self) -> None:
         starts = [f"Start-{index}" for index in range(32)]
         reasons = [f"reason-{index}" for index in range(5)]
@@ -130,11 +152,12 @@ class MetricsDocumentationTests(unittest.TestCase):
         self.assertLessEqual(len(names), 150)
         self.assertFalse(any("/reason/" in name and "/from/" in name for name in names))
 
-    def test_schema_v2_cardinality_margins_and_single_start_lifecycle(self) -> None:
+    def test_schema_v4_cardinality_margins_and_single_start_lifecycle(self) -> None:
         protocols = list(metric_names.EVAL_PROTOCOLS)
         starts = ["Start"]
         reasons = [f"reason-{index}" for index in range(5)]
         values = {
+            "algorithm": list(metric_names.TRAIN_ACTOR_CRITIC_ALGORITHMS),
             "protocol": protocols,
             "reason": reasons,
             "start": starts,
@@ -153,7 +176,7 @@ class MetricsDocumentationTests(unittest.TestCase):
                     name = name.replace(f"{{{placeholder}}}", replacement, 1)
                 scalar_names.add(name)
 
-        self.assertLessEqual(len(scalar_names), 150)
+        self.assertLessEqual(len(scalar_names), 175)
         self.assertEqual(
             len(
                 {

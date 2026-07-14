@@ -60,6 +60,7 @@ class RunJobResultTests(unittest.TestCase):
             self.assertEqual(returncode, 0)
             readiness = json.loads((output_dir / "readiness.json").read_text(encoding="utf-8"))
             self.assertEqual(readiness["wandb_run_id"], "abc123")
+            self.assertLessEqual(readiness["learner_ready_at"], readiness["wandb_ready_at"])
 
     def test_training_readiness_timeout_fails_without_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

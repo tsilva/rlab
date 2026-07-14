@@ -67,6 +67,7 @@ class TrainingBackend(Protocol):
 
 
 _BACKEND_MODULES = {
+    "sb3.a2c": "rlab.training.sb3_a2c",
     "sb3.ppo": "rlab.training.sb3_ppo",
     "rlab.ppo": "rlab.training.planned",
     "rlab.a2c": "rlab.training.planned",

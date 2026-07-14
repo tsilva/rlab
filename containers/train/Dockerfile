@@ -60,17 +60,17 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 
 WORKDIR /src
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 COPY src ./src
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --target /opt/rlab --no-deps .
+    printf '# rlab runtime package\n' > README.md \
+    && uv pip install --target /opt/rlab --no-deps .
 
 FROM scratch AS runtime-overlay
 
 COPY --from=app-package /opt/rlab /opt/rlab
 COPY src /root/rlab/src
-COPY METRICS.md INSTANCES.md /root/rlab/
 COPY scripts /root/rlab/scripts
 COPY experiments/machines.yaml /root/rlab/experiments/machines.yaml
 COPY experiments/modal_eval.yaml /root/rlab/experiments/modal_eval.yaml
@@ -86,16 +86,19 @@ COPY --link --from=runtime-overlay / /
 
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
+ARG RUNTIME_INPUT_SHA256=unknown
 ARG DEPENDENCY_IMAGE=unknown
 ARG DEPENDENCY_IMAGE_DIGEST=unknown
 
 ENV RLAB_SOURCE_SHA="${VCS_REF}"
+ENV RLAB_RUNTIME_INPUT_SHA256="${RUNTIME_INPUT_SHA256}"
 
 LABEL org.opencontainers.image.title="rlab train runtime"
 LABEL org.opencontainers.image.description="Locked rlab training and evaluation runtime"
 LABEL org.opencontainers.image.source="https://github.com/tsilva/rlab"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${VCS_REF}"
+LABEL io.rlab.runtime-input.sha256="${RUNTIME_INPUT_SHA256}"
 LABEL org.opencontainers.image.base.name="${DEPENDENCY_IMAGE}"
 LABEL org.opencontainers.image.base.digest="${DEPENDENCY_IMAGE_DIGEST}"
 

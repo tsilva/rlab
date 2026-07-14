@@ -16,9 +16,12 @@ from rlab.publication import (
     assert_unique_goal_slugs,
     build_model_repo_id,
     build_release_manifest,
+    normalize_publication_evaluation,
     publication_identity_from_model_metadata,
     publication_model_metadata,
+    publication_source_from_model_metadata,
     release_artifact_records,
+    render_model_card,
     upgrade_legacy_model_metadata_for_publication,
     validate_release_bundle,
 )
@@ -41,9 +44,16 @@ def model_metadata(
     if crop is None and game == "SuperMarioBros-Nes-v0":
         crop = [32, 0, 0, 0]
     return {
-        "metadata_version": 4,
+        "metadata_version": 6,
         "algorithm_id": algorithm,
         "model_class": model_class,
+        "seed": 7,
+        "repo_git_commit": "a" * 40,
+        "run_name": "bx0000000000000000-release-s7-20260714T120000Z",
+        "wandb_run_id": "run123",
+        "wandb_project": "SuperMarioBros-Nes-v0",
+        "recipe_slug": "base",
+        "checkpoint_step": 4_000_000,
         "training_metadata": {
             "environment_hash": "sha256:environment",
             "environment": {
@@ -59,6 +69,36 @@ def model_metadata(
                 "policy_observation_layout": layout,
             },
         },
+    }
+
+
+def evaluation_payload() -> dict:
+    return {
+        "action_sampling": "stochastic",
+        "protocol": "full",
+        "eval/full/checkpoint/step": 4_000_000,
+        "eval/full/checkpoint/artifact": "tsilva/project/run-checkpoint:v3",
+        "eval/full/episode/count": 30,
+        "eval/full/outcome/success/rate/min": 0.8,
+        "eval/full/outcome/success/rate/mean": 0.9,
+        "eval/full/episode/return/mean": 123.5,
+        "eval/full/progress/x/max": 6256,
+        "eval/full/by_start": [
+            {
+                "start_id": "Level1-1",
+                "episodes": 15,
+                "success_count": 12,
+                "success_rate": 0.8,
+                "return_mean": 100.0,
+            },
+            {
+                "start_id": "Level1-2",
+                "episodes": 15,
+                "success_count": 15,
+                "success_rate": 1.0,
+                "return_mean": 147.0,
+            },
+        ],
     }
 
 
@@ -207,15 +247,41 @@ def test_legacy_metadata_upgrade_requires_explicit_missing_facts() -> None:
     assert identity.algorithm == "ppo"
 
 
+def test_publication_evaluation_requires_stochastic_consistent_by_start() -> None:
+    deterministic = evaluation_payload()
+    deterministic["action_sampling"] = "deterministic"
+    with pytest.raises(ValueError, match="action_sampling"):
+        normalize_publication_evaluation(deterministic)
+
+    inconsistent = evaluation_payload()
+    inconsistent["eval/full/outcome/success/rate/min"] = 0.7
+    with pytest.raises(ValueError, match="success_rate_min"):
+        normalize_publication_evaluation(inconsistent)
+
+
+def test_publication_source_requires_explicit_seed_commit_and_matching_step() -> None:
+    evaluation = normalize_publication_evaluation(evaluation_payload())
+    metadata = model_metadata()
+    metadata["repo_git_commit"] = ""
+    with pytest.raises(ValueError, match="repo_git_commit"):
+        publication_source_from_model_metadata(metadata, evaluation)
+
+    metadata = model_metadata()
+    metadata["checkpoint_step"] = 1
+    with pytest.raises(ValueError, match="checkpoint_step disagrees"):
+        publication_source_from_model_metadata(metadata, evaluation)
+
+
 def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         raw_metadata = model_metadata()
         identity = publication_identity_from_model_metadata("Level1-1", raw_metadata)
         metadata = publication_model_metadata(raw_metadata, identity)
+        evaluation = normalize_publication_evaluation(evaluation_payload())
+        source = publication_source_from_model_metadata(metadata, evaluation)
         contents = {
             ".gitattributes": GITATTRIBUTES_TEXT,
-            "README.md": "# Super Mario Bros NES Level 1-1\n",
             "LICENSE": MIT_LICENSE_TEXT,
             "model.zip": "checkpoint",
             "model_metadata.json": json.dumps(metadata, indent=2, sort_keys=True) + "\n",
@@ -223,14 +289,27 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
         }
         for filename, content in contents.items():
             (root / filename).write_text(content, encoding="utf-8")
+        provisional = build_release_manifest(
+            identity,
+            metadata,
+            release_version="v1",
+            published_at="2026-07-14T12:00:00Z",
+            source=source,
+            evaluation=evaluation.as_manifest_value(),
+            artifacts={},
+            youtube_url="https://www.youtube.com/watch?v=example",
+        )
+        (root / "README.md").write_text(
+            render_model_card(provisional, metadata), encoding="utf-8"
+        )
         records = release_artifact_records(root)
         manifest = build_release_manifest(
             identity,
             metadata,
             release_version="v1",
             published_at="2026-07-14T12:00:00Z",
-            source={"run_id": "rlab-example", "checkpoint": "model.zip"},
-            evaluation={"protocol": "stochastic", "episodes": 30},
+            source=source,
+            evaluation=evaluation.as_manifest_value(),
             artifacts=records,
             youtube_url="https://www.youtube.com/watch?v=example",
         )

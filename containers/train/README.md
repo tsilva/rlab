@@ -7,7 +7,9 @@ needed by Stable Retro, the `rlab` CLI, and the container-only
 not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
 The Dockerfile keeps locked dependencies in a heavyweight cacheable stage and
-assembles the small application filesystem in a scratch stage. For
+assembles the small application filesystem in a scratch stage. Repository
+documentation, tests, goals, and recipes are not embedded in the runtime; goals and
+fully composed recipes travel in each queue payload. For
 published builds, the workflow selects the immutable dependency-image digest as
 the actual runtime base, then attaches the application filesystem with one
 `COPY --link`. No command executes after that overlay is attached, so BuildKit
@@ -69,16 +71,17 @@ The `.github/workflows/rlab-train-image.yml` workflow builds `linux/amd64` and
 pushes to GitHub Container Registry:
 
 ```text
-ghcr.io/tsilva/rlab/rlab-train:git-<full-sha>
+ghcr.io/tsilva/rlab/rlab-train:runtime-<runtime-input-sha256>
 ghcr.io/tsilva/rlab/rlab-train@sha256:<digest>
 ```
 
-Use the Git tag for humans and digests for runs. Re-running the workflow for an
-already published commit reuses that immutable image rather than mutating its
-tag. The workflow uploads
-`rlab-train-image.json` with the full `docker:...@sha256:...` runtime ref. Feed
-that file into queue creation with `--runtime-image-ref-file` so jobs do not
-depend on mutable tags.
+The runtime fingerprint hashes normalized indexed paths, executable modes, and file
+contents for every runtime input. An exact-source version-4 receipt maps each pushed
+commit to that fingerprint, the original runtime build commit, dependency identity,
+and immutable image digest. Equivalent source commits reuse the existing tag and
+digest; runs still record their exact source commit and composed recipe. Feed the
+receipt's full `docker:...@sha256:...` ref into queue creation with
+`--runtime-image-ref-file` so jobs do not depend on tags.
 
 Dependency builds export their BuildKit cache to the mutable dependency
 `buildcache` tag in GHCR. That tag is build infrastructure only and must never
@@ -86,9 +89,9 @@ be used as a runtime image selector. Runtime images do not export a second
 cache because their linked application layers are cheap to rebuild.
 
 The workflow publishes a dependency-input-keyed `rlab-train-dependencies` image with a full
-SBOM and provenance when dependency inputs change. Per-commit runtime images
-use its immutable digest as their base, add only linked application layers, and retain their own
-source provenance plus the exact dependency-image digest in both OCI labels and
+SBOM and provenance when dependency inputs change. Content-addressed runtime images
+use its immutable digest as their base, add only linked application layers, and retain the
+runtime build source plus the exact dependency-image digest in both OCI labels and
 `rlab-train-image.json`.
 
 ## Fleet Integration

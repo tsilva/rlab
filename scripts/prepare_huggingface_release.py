@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import subprocess
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,10 +13,14 @@ from rlab.publication import (
     MIT_LICENSE_TEXT,
     build_model_repo_id,
     build_release_manifest,
+    normalize_publication_evaluation,
     publication_identity_from_model_metadata,
     publication_model_metadata,
+    publication_source_from_model_metadata,
     release_artifact_records,
+    render_model_card,
     validate_release_bundle,
+    verify_replay,
 )
 
 
@@ -26,48 +29,6 @@ def _load_object(path: Path, *, label: str) -> dict:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must contain a JSON object")
     return dict(value)
-
-
-def _verify_replay(path: Path) -> dict[str, object]:
-    if shutil.which("ffprobe") is None:
-        raise RuntimeError("ffprobe is required to validate replay.mp4")
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-count_frames",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,codec_tag_string,pix_fmt,nb_read_frames:format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    probe = json.loads(completed.stdout)
-    streams = probe.get("streams")
-    if not isinstance(streams, list) or not streams:
-        raise ValueError("replay video does not contain a video stream")
-    stream = streams[0]
-    expected = {"codec_name": "h264", "codec_tag_string": "avc1", "pix_fmt": "yuv420p"}
-    for key, value in expected.items():
-        if stream.get(key) != value:
-            raise ValueError(f"replay video {key} must be {value!r}, got {stream.get(key)!r}")
-    duration = float(probe.get("format", {}).get("duration") or 0.0)
-    frames = int(stream.get("nb_read_frames") or 0)
-    if duration <= 0 or frames <= 0:
-        raise ValueError("replay video must have a positive duration and frame count")
-    data = path.read_bytes()
-    moov = data.find(b"moov")
-    mdat = data.find(b"mdat")
-    if moov < 0 or mdat < 0 or moov > mdat:
-        raise ValueError("replay video must use faststart with moov before mdat")
-    return {"duration_seconds": duration, "frames": frames, **expected}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,9 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--identity-only", action="store_true")
     parser.add_argument("--model", type=Path)
     parser.add_argument("--replay", type=Path)
-    parser.add_argument("--readme", type=Path)
     parser.add_argument("--evaluation-json", type=Path)
-    parser.add_argument("--source-json", type=Path)
     parser.add_argument("--release-version")
     parser.add_argument("--published-at")
     parser.add_argument("--youtube-url")
@@ -103,9 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     required = {
         "--model": args.model,
         "--replay": args.replay,
-        "--readme": args.readme,
         "--evaluation-json": args.evaluation_json,
-        "--source-json": args.source_json,
         "--release-version": args.release_version,
         "--youtube-url": args.youtube_url,
         "--output-dir": args.output_dir,
@@ -115,34 +72,29 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("full bundle preparation requires " + ", ".join(missing))
     assert args.model is not None
     assert args.replay is not None
-    assert args.readme is not None
     assert args.evaluation_json is not None
-    assert args.source_json is not None
     assert args.release_version is not None
     assert args.youtube_url is not None
     assert args.output_dir is not None
     for path in (
         args.model,
         args.replay,
-        args.readme,
         args.evaluation_json,
-        args.source_json,
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise FileExistsError(f"release output directory is not empty: {args.output_dir}")
 
-    replay = _verify_replay(args.replay)
-    evaluation = _load_object(args.evaluation_json, label="evaluation")
-    if evaluation.get("action_sampling") != "stochastic":
-        raise ValueError("release evaluation must declare action_sampling='stochastic'")
-    source = _load_object(args.source_json, label="source")
+    replay = verify_replay(args.replay)
+    evaluation = normalize_publication_evaluation(
+        _load_object(args.evaluation_json, label="evaluation")
+    )
+    source = publication_source_from_model_metadata(metadata, evaluation)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.model, args.output_dir / "model.zip")
     shutil.copy2(args.replay, args.output_dir / "replay.mp4")
-    shutil.copy2(args.readme, args.output_dir / "README.md")
     (args.output_dir / ".gitattributes").write_text(GITATTRIBUTES_TEXT, encoding="utf-8")
     (args.output_dir / "LICENSE").write_text(MIT_LICENSE_TEXT, encoding="utf-8")
     publication_metadata = publication_model_metadata(metadata, identity)
@@ -150,16 +102,32 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(publication_metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    evaluation_value = evaluation.as_manifest_value()
+    evaluation_value["replay"] = replay
+    published_at = args.published_at or datetime.now(UTC).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+    provisional_manifest = build_release_manifest(
+        identity,
+        publication_metadata,
+        release_version=args.release_version,
+        published_at=published_at,
+        source=source,
+        evaluation=evaluation_value,
+        artifacts={},
+        youtube_url=args.youtube_url,
+    )
+    (args.output_dir / "README.md").write_text(
+        render_model_card(provisional_manifest, publication_metadata), encoding="utf-8"
+    )
     artifact_records = release_artifact_records(args.output_dir)
-    evaluation.setdefault("replay", replay)
     manifest = build_release_manifest(
         identity,
         publication_metadata,
         release_version=args.release_version,
-        published_at=args.published_at
-        or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        published_at=published_at,
         source=source,
-        evaluation=evaluation,
+        evaluation=evaluation_value,
         artifacts=artifact_records,
         youtube_url=args.youtube_url,
     )

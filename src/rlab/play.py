@@ -1392,10 +1392,10 @@ def main(argv: list[str] | None = None) -> int:
         assert_provider_runtime_available(config)
 
     with startup_progress("Loading policy runtime", disabled=args.no_progress):
-        from stable_baselines3 import PPO
+        from rlab.sb3_models import load_sb3_model
 
     with startup_progress("Loading model checkpoint", disabled=args.no_progress):
-        model = PPO.load(args.model, device=resolve_sb3_device(args.device))
+        model = load_sb3_model(args.model, device=resolve_sb3_device(args.device))
     if args.attribution != "none":
         with startup_progress("Preparing policy attribution", disabled=args.no_progress):
             attributor = PolicyActionAttributor(model)

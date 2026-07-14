@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,14 @@ def normalize_train_config(
     recipe_path = str(job.get("recipe_path") or "").strip()
     if recipe_path:
         config["recipe_path"] = recipe_path
+    recipe_sha256 = str(job.get("recipe_sha256") or config.get("recipe_sha256") or "").strip()
+    if recipe_sha256:
+        config["recipe_sha256"] = recipe_sha256
+    recipe_payload = job.get("recipe_payload_json")
+    if isinstance(recipe_payload, Mapping):
+        composition = recipe_payload.get("_composition")
+        if isinstance(composition, Mapping):
+            config["recipe_composition"] = dict(composition)
     if job.get("seed") is not None:
         config["seed"] = int(job["seed"])
     if job.get("id") is not None:
@@ -93,6 +102,8 @@ def normalize_train_config(
         )
     if job.get("runtime_image_ref"):
         config["runtime_image_ref"] = job["runtime_image_ref"]
+    if job.get("repo_git_commit"):
+        config["source_sha"] = str(job["repo_git_commit"])
     if job.get("machine"):
         config["machine"] = job["machine"]
     if require_explicit_train_fields:

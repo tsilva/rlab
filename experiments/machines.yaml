@@ -1,6 +1,7 @@
 machines:
   beast-3:
     backend: docker_ssh
+    prewarm_latest_runtime: true
     ssh_target: tsilva@beast-3
     docker:
       command:

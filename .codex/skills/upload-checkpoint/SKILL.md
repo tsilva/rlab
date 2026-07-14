@@ -36,7 +36,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
    - Keep generated staging artifacts under ignored locations such as `runs/`.
 
 2. Resolve the deterministic publication identity.
-   - Run `.codex/skills/upload-checkpoint/scripts/prepare_release.py` with
+   - Run the repository-owned `scripts/prepare_huggingface_release.py` with
      `--identity-only` before creating or moving any repository.
    - The only supported namespace is `tsilva`.
    - The generated name is
@@ -44,31 +44,22 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
    - Provider, run, seed, recipe, environment hash, and runtime versions belong in metadata,
      not in the repository name.
 
-3. Prepare the model card and preview with `$model-card-author`.
-   - Build or update the model card using that skill's structure and writing rules.
+3. Prepare the generated model card and preview with `$model-card-author` as the quality standard.
+   - Do not hand-author `README.md`. The repository-owned release helper renders it from the
+     release manifest, model metadata, and verified evaluation evidence.
    - For RL checkpoints with visual behavior, include a browser-safe `replay.mp4` in the model repo root.
    - Encode/verify `replay.mp4` as H.264/AVC, `yuv420p`, faststart, with valid duration and frames.
    - Let Hugging Face's reinforcement-learning widget render the root `replay.mp4` as the model page preview; do not also embed the same video in the README body unless the widget is unavailable.
 
 4. Upload the same preview video to YouTube with `$upload-youtube-video`.
    - Use the exact same representative video uploaded to Hugging Face unless it must be re-encoded for YouTube compatibility.
-   - Default playlist: `rlab`.
-   - Default privacy: `public`.
-   - Use the title shape from `$upload-youtube-video`:
-     `<env>, <level>, <algorithm>, <win-rate> win rate`
-   - Use the description shape from `$upload-youtube-video`:
-
-```text
-PPO policy checkpoint completing <env> <level>, trained with `rlab`.
-
-Model: https://huggingface.co/<owner>/<repo>
-rlab: https://github.com/tsilva/rlab
-```
+   - Defer title, description, tags, thumbnail, playlist, and privacy details to that skill so
+     this composite workflow cannot drift from the YouTube publication contract.
 
 5. Build and publish the immutable release bundle.
    - Supply the YouTube URL and stochastic evaluation evidence to
-     `prepare_release.py`; it fails closed on deterministic evaluation, invalid video, non-portable
-     paths, inconsistent identity, or a nonstandard file set.
+     `scripts/prepare_huggingface_release.py`; it fails closed on deterministic evaluation,
+     invalid video, non-portable paths, inconsistent identity, or a nonstandard file set.
    - The bundle must contain exactly `.gitattributes`, `README.md`, `LICENSE`, `model.zip`,
      `model_metadata.json`, `release_manifest.json`, and `replay.mp4`.
    - Upload the bundle in one Hugging Face commit, then create the next sequential immutable
@@ -78,13 +69,16 @@ rlab: https://github.com/tsilva/rlab
 6. Cross-link and verify.
    - Ensure the YouTube description links to the direct generated Hugging Face model URL.
    - The model card does not duplicate the YouTube video; the release manifest records its URL.
-   - Verify the live card, exact remote file set, manifest hashes, checkpoint, and raw video.
+   - Run `scripts/audit_huggingface_release.py <repo-id> --revision <vN>` after publication. It
+     verifies the live generated card, exact remote file set, manifest hashes, main/tag commit,
+     replay encoding, and Collection membership through the Hugging Face API.
    - Save upload results under the staging directory, for example `runs/hf_upload/<repo>/youtube_upload_result.json`.
    - Report the Hugging Face model URL, Hugging Face commit URL when available, YouTube URL, playlist URL when available, and exact local staging paths.
 
 ## One-time Legacy Migration
 
-- Generate the complete old-to-new mapping with `scripts/migrate_legacy_repos.py` before
+- Generate the complete old-to-new mapping with
+  `scripts/migrate_huggingface_legacy_repos.py` before
   changing the Hub. The legacy algorithm and crop behavior must be supplied explicitly from
   repository and source-history evidence.
 - Review the collision-free mapping and retain its printed SHA-256. Applying it requires that
@@ -94,18 +88,19 @@ rlab: https://github.com/tsilva/rlab
 - Do not create `v1` until the checkpoint has new stochastic evaluation evidence, a validated
   representative replay, and the exact seven-file release bundle.
 - Create or update the game-family Collection only after all repository moves succeed.
+- For the already-moved Mario repositories, use
+  `scripts/repair_huggingface_legacy_cards.py` to generate the canonical legacy cards and fill
+  Collection membership. Review the dry-run digest before applying it; the repair changes only
+  `README.md` and Collection membership and never creates a `v1` tag.
 
-## Defaults
+## Contract Ownership
 
-- Hugging Face namespace: `tsilva`.
-- Repository naming schema: `1`.
-- License: MIT for original publication material, with third-party obligations documented.
-- Hugging Face checkpoint filename: `model.zip`.
-- Hugging Face preview filename: `replay.mp4`.
-- YouTube playlist: `rlab`.
-- YouTube privacy: `public`.
-- YouTube links order: `Model:` first, then `rlab:`.
-- Model-card preview video is required for visual/interactive checkpoints unless the user explicitly opts out.
+- Repository code owns the namespace, naming schema, license, exact release file set, generated
+  card structure, evidence validation, and Hub audit.
+- `$upload-youtube-video` owns YouTube metadata and upload defaults.
+- `$model-card-author` owns general model-card quality guidance.
+- This skill owns orchestration: gather evidence, invoke those contracts in order, and report the
+  verified publication result.
 
 ## Safety
 

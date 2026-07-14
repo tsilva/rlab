@@ -908,14 +908,35 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
     def test_child_native_crash_becomes_structured_failure_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             payload, result_path = self._worker_payload(Path(temporary))
+            metadata_path = Path(temporary) / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "training_backend_id": "sb3.a2c",
+                        "algorithm_id": "a2c",
+                        "model_class": "stable_baselines3.a2c.a2c.A2C",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            payload["metadata_sha256"] = file_sha256(metadata_path)
+            child_request = {}
+
+            def crash_child(command, **_kwargs):
+                child_input = Path(command[command.index("--input") + 1])
+                child_request.update(json.loads(child_input.read_text(encoding="utf-8")))
+                return subprocess.CompletedProcess(command, -11, "", "segmentation fault")
+
             with mock.patch(
                 "rlab.modal_eval_worker.subprocess.run",
-                return_value=subprocess.CompletedProcess([], -11, "", "segmentation fault"),
+                side_effect=crash_child,
             ) as run:
                 receipt = execute_attempt(payload)
             evidence = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(evidence["status"], "failed")
             self.assertIn("-11", evidence["error"])
+            self.assertEqual(child_request["model_metadata"]["algorithm_id"], "a2c")
             self.assertEqual(receipt["result_uri"], payload["result_uri"])
             self.assertIsNone(run.call_args.kwargs["stdout"])
             self.assertIsNone(run.call_args.kwargs["stderr"])

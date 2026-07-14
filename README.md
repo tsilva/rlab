@@ -131,7 +131,7 @@ leaderboards do not mix sweep arms. Each submission receives one generated
 `bx<16 hex>` `batch_id`, shared by all of its seeds and used as the W&B group.
 Use optional `campaign_id` to connect related submissions over time.
 
-If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab train` pins the clean local commit, reuses or dispatches its exact-source train-image workflow, and waits up to 20 minutes by default for the early image receipt. The commit must already be pushed. It never falls back to an older image.
+If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab train` pins the clean pushed commit and waits for its exact-source receipt. The receipt may reuse an immutable image when the content-addressed runtime inputs match a prior source state; it never falls back without that proof. The exact source, recipe composition, runtime fingerprint, runtime build source, and digest remain recorded.
 
 ## Commands
 
@@ -146,7 +146,7 @@ rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --m
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
-rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
+rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-simple_ppo
 rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
@@ -240,10 +240,10 @@ run, recipe, seed, runtime, and environment hash remain in `model_metadata.json`
 `release_manifest.json`; they are not manually encoded in the repository name.
 
 Use the project `$upload-checkpoint` skill for releases. Before any Hub mutation, preview the exact
-identity with its bundled helper:
+identity with the repository-owned release helper:
 
 ```bash
-uv run python .codex/skills/upload-checkpoint/scripts/prepare_release.py \
+uv run python scripts/prepare_huggingface_release.py \
   --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
   --model-metadata runs/<run>/checkpoints/<checkpoint>.metadata.json \
   --identity-only
@@ -253,6 +253,16 @@ The complete workflow requires stochastic evaluation evidence, a browser-safe `r
 matching public YouTube preview, and the exact seven-file Hugging Face release bundle. The helper
 rejects unknown families, inconsistent model classes, manual names, non-portable paths, extra
 files, and invalid hashes before upload.
+
+`README.md` is generated from the same manifest, metadata, and evaluation evidence as the release;
+it is not a separate hand-maintained input. After publishing and tagging a release, audit the live
+Hub state through the API:
+
+```bash
+uv run python scripts/audit_huggingface_release.py \
+  tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo \
+  --revision v1
+```
 
 
 ## Fleet

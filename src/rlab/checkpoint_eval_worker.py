@@ -8,8 +8,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from stable_baselines3 import PPO
-
 from rlab.artifacts import wandb_artifact_collection_name
 from rlab.checkpoint_eval_config import (
     normalize_checkpoint_eval_stages,
@@ -59,6 +57,7 @@ from rlab.ranking import (
     rank_score,
     require_objective_rank,
 )
+from rlab.sb3_models import load_sb3_model
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
@@ -372,7 +371,10 @@ def process_staged_eval(
     stage_index = int(row["stage_index"])
     stage_name = str(stage["name"])
     try:
-        eval_model = PPO.load(checkpoint_path, device=resolve_sb3_device(args.device))
+        eval_model = load_sb3_model(
+            checkpoint_path,
+            device=resolve_sb3_device(args.device),
+        )
         episodes = int(stage["episodes"])
         max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
         n_envs = int(stage.get("n_envs") or getattr(args, "checkpoint_eval_n_envs", 20))
@@ -517,7 +519,10 @@ def process_eval(
     checkpoint_path = Path(str(row["path"]))
     step = int(row["step"])
     try:
-        eval_model = PPO.load(checkpoint_path, device=resolve_sb3_device(args.device))
+        eval_model = load_sb3_model(
+            checkpoint_path,
+            device=resolve_sb3_device(args.device),
+        )
         episodes = int(args.post_train_eval_episodes)
         max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
         n_envs = int(args.checkpoint_eval_n_envs)

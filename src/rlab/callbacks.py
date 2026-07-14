@@ -32,12 +32,6 @@ from rlab.metric_names import (
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
     TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE,
     TRAIN_OUTCOME_TERMINAL_COUNT,
-    TRAIN_PPO_ADVANTAGE_HIST,
-    TRAIN_PPO_ADVANTAGE_ROOT,
-    TRAIN_PPO_POLICY_ACTION_HIST,
-    TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE,
-    TRAIN_PPO_VALUE_PREDICTION_HIST,
-    TRAIN_PPO_VALUE_PREDICTION_ROOT,
     TRAIN_REWARD_ROOT,
     TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS,
     TRAIN_THROUGHPUT_ENV_STEP_FPS,
@@ -48,6 +42,7 @@ from rlab.metric_names import (
     TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
     TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
     stat_metric,
+    train_algorithm_metric,
     train_outcome_reason_count_metric,
     train_outcome_reason_window_rate_metric,
     train_reward_component_metric,
@@ -413,6 +408,7 @@ class MetricStoreOutputFormat(KVWriter):
         self,
         metric_store_path: Path | str,
         *,
+        algorithm_id: str = "ppo",
         source: str = "train",
         wandb_run=None,
         clock: Callable[[], float] | None = None,
@@ -421,6 +417,7 @@ class MetricStoreOutputFormat(KVWriter):
         # handler absorb brief publisher/coordinator transactions instead of
         # terminating a multi-hour run after 50 ms of contention.
         self.metric_store = MetricStore(metric_store_path)
+        self.algorithm_id = algorithm_id
         self.source = source
         self.wandb_run = wandb_run
         self.clock = clock or time.perf_counter
@@ -436,7 +433,10 @@ class MetricStoreOutputFormat(KVWriter):
         del key_excluded
         payload = {
             key: value
-            for key, value in canonical_training_scalars(key_values).items()
+            for key, value in canonical_training_scalars(
+                key_values,
+                algorithm_id=self.algorithm_id,
+            ).items()
             if math.isfinite(value)
         }
         if not payload:
@@ -468,6 +468,7 @@ class MetricStoreLoggerHelper(CallbackHelper):
         self,
         metric_store_path: Path | str,
         *,
+        algorithm_id: str = "ppo",
         source: str = "train",
         wandb_run=None,
         clock: Callable[[], float] | None = None,
@@ -475,6 +476,7 @@ class MetricStoreLoggerHelper(CallbackHelper):
         super().__init__()
         self.output_format = MetricStoreOutputFormat(
             metric_store_path,
+            algorithm_id=algorithm_id,
             source=source,
             wandb_run=wandb_run,
             clock=clock,
@@ -499,6 +501,7 @@ class RolloutDiagnosticsHelper(CallbackHelper):
 
     def __init__(
         self,
+        algorithm_id: str = "ppo",
         wandb_run=None,
         log_histograms: bool = True,
         *,
@@ -506,6 +509,7 @@ class RolloutDiagnosticsHelper(CallbackHelper):
         histogram_interval: int = 64,
     ):
         super().__init__()
+        self.algorithm_id = algorithm_id
         self.wandb_run = wandb_run
         self.log_histograms = log_histograms
         self.metric_store = MetricStore(metric_store_path) if metric_store_path else None
@@ -524,12 +528,18 @@ class RolloutDiagnosticsHelper(CallbackHelper):
             getattr(rollout_buffer, "actions", None),
             getattr(self.model, "action_space", None),
         )
-        self._record_stats(TRAIN_PPO_VALUE_PREDICTION_ROOT, value_predictions)
-        self._record_stats(TRAIN_PPO_ADVANTAGE_ROOT, advantages)
+        self._record_stats(
+            train_algorithm_metric(self.algorithm_id, "rollout/value_prediction"),
+            value_predictions,
+        )
+        self._record_stats(
+            train_algorithm_metric(self.algorithm_id, "rollout/advantage"),
+            advantages,
+        )
         if discrete_actions.size > 0:
             _actions, counts = np.unique(discrete_actions, return_counts=True)
             self.logger.record(
-                TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE,
+                train_algorithm_metric(self.algorithm_id, "policy/dominant_action_rate"),
                 float(np.max(counts) / discrete_actions.size),
             )
         if self.rollout_count % self.histogram_interval == 0:
@@ -579,11 +589,17 @@ class RolloutDiagnosticsHelper(CallbackHelper):
             return
         values: dict[str, list[float]] = {}
         if value_predictions.size > 0:
-            values[TRAIN_PPO_VALUE_PREDICTION_HIST] = value_predictions.tolist()
+            values[train_algorithm_metric(self.algorithm_id, "rollout/value_prediction/hist")] = (
+                value_predictions.tolist()
+            )
         if advantages.size > 0:
-            values[TRAIN_PPO_ADVANTAGE_HIST] = advantages.tolist()
+            values[train_algorithm_metric(self.algorithm_id, "rollout/advantage/hist")] = (
+                advantages.tolist()
+            )
         if discrete_actions.size > 0:
-            values[TRAIN_PPO_POLICY_ACTION_HIST] = discrete_actions.astype(float).tolist()
+            values[train_algorithm_metric(self.algorithm_id, "policy/action_hist")] = (
+                discrete_actions.astype(float).tolist()
+            )
         if not values:
             return
         validate_metric_payload(values)

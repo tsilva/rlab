@@ -8,13 +8,15 @@ import gymnasium as gym
 import numpy as np
 import pytest
 import torch
-from stable_baselines3 import PPO
+from stable_baselines3 import A2C, PPO
 
 from rlab.bandit_env import BanditVectorEnv
 from rlab.env import EnvConfig, make_vec_envs
 from rlab.env_registry import resolve_env_id, resolve_env_provider
+from rlab.metric_store import MetricStore
 from rlab.recipe_documents import load_recipe_document
 from rlab.recipe_schema import validate_materialized_train_recipe
+from rlab.sb3_models import load_sb3_model
 from rlab.train import main as train_main
 
 
@@ -54,9 +56,7 @@ def _config() -> EnvConfig:
 
 def test_bandit_spaces_rewards_and_manual_reset() -> None:
     env = _native_env()
-    assert env.single_observation_space == gym.spaces.Box(
-        0.0, 0.0, shape=(1,), dtype=np.float32
-    )
+    assert env.single_observation_space == gym.spaces.Box(0.0, 0.0, shape=(1,), dtype=np.float32)
     assert env.single_action_space == gym.spaces.Discrete(2)
     assert env.metadata["autoreset_mode"] is gym.vector.AutoresetMode.DISABLED
 
@@ -154,17 +154,13 @@ def test_rlab_facade_same_step_resets_bandit_lanes() -> None:
         observations = env.reset()
         np.testing.assert_array_equal(observations, np.zeros((3, 1), dtype=np.float32))
 
-        next_observations, rewards, dones, infos = env.step(
-            np.asarray([0, 1, 1], dtype=np.int64)
-        )
+        next_observations, rewards, dones, infos = env.step(np.asarray([0, 1, 1], dtype=np.int64))
         np.testing.assert_array_equal(next_observations, np.zeros((3, 1), dtype=np.float32))
         np.testing.assert_array_equal(rewards, [0.0, 1.0, 1.0])
         assert dones.all()
         assert all("terminal_observation" in info for info in infos)
 
-        _next_observations, rewards, dones, _infos = env.step(
-            np.asarray([1, 1, 1], dtype=np.int64)
-        )
+        _next_observations, rewards, dones, _infos = env.step(np.asarray([1, 1, 1], dtype=np.int64))
         np.testing.assert_array_equal(rewards, np.ones(3, dtype=np.float32))
         assert dones.all()
     finally:
@@ -172,9 +168,7 @@ def test_rlab_facade_same_step_resets_bandit_lanes() -> None:
 
 
 def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
-    document = load_recipe_document(
-        Path("experiments/goals/rlab__bandit/recipes/base.yaml")
-    )
+    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
     validate_materialized_train_recipe(document)
 
     train_config = document["train_config"]
@@ -190,9 +184,7 @@ def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
 
 
 def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: Path) -> None:
-    document = load_recipe_document(
-        Path("experiments/goals/rlab__bandit/recipes/base.yaml")
-    )
+    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
     config = dict(document["train_config"])
     config.update(
         {
@@ -223,9 +215,53 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: 
     assert (run_dir / "learner_ready.json").is_file()
     assert (run_dir / "final_model.zip").is_file()
     metadata = json.loads((run_dir / "final_model.metadata.json").read_text())
-    assert metadata["metadata_version"] == 5
+    assert metadata["metadata_version"] == 6
     assert metadata["training_backend_id"] == "sb3.ppo"
     assert len(metadata["training_backend_config_hash"]) == 64
+
+
+def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(tmp_path: Path) -> None:
+    document = load_recipe_document(Path("experiments/goals/rlab__bandit/recipes/base.yaml"))
+    config = dict(document["train_config"])
+    config.update(
+        {
+            "run_name": "a2c-backend-smoke",
+            "run_description": "ROM-free A2C backend boundary smoke.",
+            "runs_dir": str(tmp_path),
+            "timesteps": 64,
+            "checkpoint_freq": 0,
+            "checkpoint_eval_backend": "none",
+            "checkpoint_eval_stages": [],
+            "early_stop": None,
+            "post_train_eval_episodes": 0,
+            "wandb": False,
+            "wandb_mode": "disabled",
+            "training_backend": {
+                "id": "sb3.a2c",
+                "config": {
+                    "device": "cpu",
+                    "n_steps": 8,
+                    "learning_rate": 0.01,
+                    "gamma": 1.0,
+                },
+            },
+        }
+    )
+    path = tmp_path / "a2c-train.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    assert train_main(["--train-config-json", str(path)]) == 0
+
+    run_dir = tmp_path / "a2c-backend-smoke"
+    model_path = run_dir / "final_model.zip"
+    metadata = json.loads((run_dir / "final_model.metadata.json").read_text())
+    assert metadata["training_backend_id"] == "sb3.a2c"
+    assert metadata["algorithm_id"] == "a2c"
+    assert metadata["model_class"] == "stable_baselines3.a2c.a2c.A2C"
+    metric_store = MetricStore(run_dir / "rlab.sqlite")
+    assert metric_store.latest_metric("train/algorithm/a2c/update/value_loss") is not None
+    assert metric_store.latest_metric("train/algorithm/ppo/update/value_loss") is None
+    assert isinstance(load_sb3_model(model_path, device="cpu"), A2C)
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])

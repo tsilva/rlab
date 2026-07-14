@@ -1,4 +1,4 @@
-# Metrics schema v3
+# Metrics schema v4
 
 This file is the human contract for rlab telemetry. The Python registry in
 `src/rlab/metric_names.py` is the executable source of truth. Every emitted metric must match an
@@ -8,7 +8,7 @@ exact registry entry or a bounded template.
 
 - W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
   R2-backed `eval/screen/preview` media series.
-- W&B config contains run-defining dimensions: `metrics_schema_version: 3`, `training_backend_id`,
+- W&B config contains run-defining dimensions: `metrics_schema_version: 4`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
@@ -21,6 +21,11 @@ readable ID in training and evaluation. Provider `info` fields never become metr
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
+W&B's built-in `_step` is only the zero-based sequence of committed history rows. Some media
+panels label that value `Step`; it is not an environment-transition or checkpoint count. Use
+`global_step` for the training timeline and `eval/{protocol}/checkpoint/step` for the evaluated
+checkpoint. Asynchronous evaluation rows may be appended after later training rows, so `_step` and
+`global_step` are not expected to match or remain ordered together.
 
 ## Research interpretation
 
@@ -87,25 +92,25 @@ are intentionally computed offline rather than added to W&B history.
 | `train/reward/signal/{signal}/nonzero_rate` | Configured reward-source signal. | scalar | rollout | history |
 | `train/algorithm/ppo/update/approx_kl` | Approximate KL divergence for the PPO update. | scalar | rollout | history |
 | `train/algorithm/ppo/update/clip_fraction` | Fraction of policy ratios clipped by PPO. | scalar | rollout | history |
-| `train/algorithm/ppo/value/explained_variance` | Value-function explained variance. | scalar | rollout | history |
-| `train/algorithm/ppo/update/policy_gradient_loss` | PPO policy-gradient loss. | scalar | rollout | history |
-| `train/algorithm/ppo/update/value_loss` | PPO value loss. | scalar | rollout | history |
-| `train/algorithm/ppo/update/learning_rate` | Current PPO learning rate. | scalar | rollout | history |
-| `train/algorithm/ppo/policy/entropy` | Positive policy entropy. | scalar | rollout | history |
-| `train/algorithm/ppo/policy/distribution_std` | Continuous-action distribution standard deviation. | scalar | rollout | history |
-| `train/algorithm/ppo/policy/dominant_action_rate` | Fraction assigned to the most frequent sampled discrete action. | scalar | rollout | history |
-| `train/algorithm/ppo/policy/action_hist` | Sampled discrete-action histogram. | histogram | every 64 rollouts | history |
-| `train/algorithm/ppo/rollout/value_prediction/mean` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/value_prediction/std` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/value_prediction/min` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/value_prediction/max` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/value_prediction/hist` | Rollout value-prediction histogram. | histogram | every 64 rollouts | history |
-| `train/algorithm/ppo/rollout/advantage/mean` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/advantage/std` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/advantage/min` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/advantage/max` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/ppo/rollout/advantage/hist` | Rollout advantage histogram. | histogram | every 64 rollouts | history |
-| `train/algorithm/ppo/hyperparameter/entropy_coefficient` | Current scheduled entropy coefficient. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/value/explained_variance` | Actor-critic value-function explained variance. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/update/policy_gradient_loss` | Actor-critic policy-gradient loss. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/update/value_loss` | Actor-critic value loss. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/update/learning_rate` | Current actor-critic learning rate. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/policy/entropy` | Positive actor-critic policy entropy. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/policy/distribution_std` | Continuous-action distribution standard deviation. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/policy/dominant_action_rate` | Fraction assigned to the most frequent sampled discrete action. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/policy/action_hist` | Sampled discrete-action histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/{algorithm}/rollout/value_prediction/mean` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/value_prediction/std` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/value_prediction/min` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/value_prediction/max` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/value_prediction/hist` | Rollout value-prediction histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/{algorithm}/rollout/advantage/mean` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/advantage/std` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/advantage/min` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/advantage/max` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/{algorithm}/rollout/advantage/hist` | Rollout advantage histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/{algorithm}/hyperparameter/entropy_coefficient` | Current scheduled entropy coefficient. | scalar | rollout | history |
 | `train/throughput/loop_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
 | `train/throughput/rollout_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
 | `train/throughput/env_step_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |

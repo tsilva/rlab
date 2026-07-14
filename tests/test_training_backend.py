@@ -61,6 +61,20 @@ def test_sb3_backend_schema_is_strict_and_materializes_backend_defaults() -> Non
         validate_and_normalize_train_config(backend_config("unknown.algo"))
 
 
+def test_sb3_a2c_schema_is_strict_and_rejects_ppo_only_fields() -> None:
+    normalized = validate_and_normalize_train_config(
+        {"timesteps": 10, **backend_config("sb3.a2c", n_steps=8)},
+        required_keys=("training_backend",),
+    )
+    config = normalized["training_backend"]["config"]
+    assert config["n_steps"] == 8
+    assert config["learning_rate"] == 7e-4
+    assert config["use_rms_prop"] is True
+
+    with pytest.raises(ValueError, match="unexpected fields.*clip_range"):
+        validate_and_normalize_train_config(backend_config("sb3.a2c", clip_range=0.2))
+
+
 @pytest.mark.parametrize("backend_id", ["rlab.ppo", "rlab.a2c"])
 def test_planned_backends_and_optional_components_fail_preflight(
     backend_id: str,
@@ -139,10 +153,7 @@ def test_actor_workers_receive_backend_private_data_not_coordinator_services() -
 
     coordinator_context = {"metric_store": object(), "wandb_run": object()}
     fragment_queue: deque[object] = deque(maxlen=2)
-    actors = [
-        Actor(lanes, fragment_queue)
-        for lanes in partition_global_lane_ids(4, 2)
-    ]
+    actors = [Actor(lanes, fragment_queue) for lanes in partition_global_lane_ids(4, 2)]
     assert all(not hasattr(actor, "context") for actor in actors)
     assert all(not hasattr(actor, "metric_store") for actor in actors)
     assert coordinator_context["metric_store"] is not None
@@ -168,9 +179,7 @@ class TextVectorProvider:
             "state": gym.spaces.Box(0, 10, shape=(2,), dtype=np.int32),
         }
     )
-    single_action_space = gym.spaces.Dict(
-        {"answer": gym.spaces.Text(max_length=16)}
-    )
+    single_action_space = gym.spaces.Dict({"answer": gym.spaces.Text(max_length=16)})
 
     def __init__(self) -> None:
         self.last_actions = None

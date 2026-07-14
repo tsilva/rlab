@@ -79,6 +79,33 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing explicit.*frame_stack"):
             validate_materialized_train_recipe(document, label="recipe")
 
+    def test_level1_1_a2c_recipe_is_native_and_preserves_goal_contract(self) -> None:
+        document = load_recipe_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/a2c.yaml")
+        )
+
+        train_config = document["train_config"]
+        backend = train_config["training_backend"]
+        self.assertEqual(backend["id"], "sb3.a2c")
+        self.assertEqual(backend["config"]["n_steps"], 64)
+        self.assertTrue(backend["config"]["use_rms_prop"])
+        self.assertFalse(backend["config"]["normalize_advantage"])
+        self.assertTrue(
+            {
+                "batch_size",
+                "n_epochs",
+                "clip_range",
+                "clip_range_vf",
+                "target_kl",
+                "adam_eps",
+            }.isdisjoint(backend["config"])
+        )
+        self.assertEqual(
+            train_config["task"]["termination"]["failure"],
+            ["life_loss", "stalled"],
+        )
+        self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
+
     def test_removed_provider_lifecycle_args_are_rejected(self) -> None:
         for provider_id in ("stable-retro-turbo", "supermariobrosnes-turbo"):
             contract = resolve_env_provider(provider_id).constructor_contract

@@ -640,7 +640,9 @@ def _default_discover_machines(repo_root: Path) -> Sequence[str]:
         conn.close()
     registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
     now = time.time()
-    for machine_name in registry.machines:
+    for machine_name, machine in registry.machines.items():
+        if machine.prewarm_latest_runtime:
+            work.add(machine_name)
         marker = repo_root / "logs" / "fleet" / f"maintenance-{machine_name}.stamp"
         try:
             maintenance_due = now - marker.stat().st_mtime >= 3600

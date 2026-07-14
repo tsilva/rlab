@@ -6,7 +6,7 @@ from numbers import Real
 from typing import Any, Mapping
 
 
-METRICS_SCHEMA_VERSION = 3
+METRICS_SCHEMA_VERSION = 4
 GLOBAL_STEP = "global_step"
 
 TRAIN_EPISODE_RETURN_SHAPED_MEAN = "train/episode/return/shaped/mean"
@@ -26,7 +26,22 @@ TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/start
 
 TRAIN_REWARD_ROOT = "train/reward"
 
-TRAIN_ALGORITHM_PPO_ROOT = "train/algorithm/ppo"
+TRAIN_ALGORITHM_ROOT = "train/algorithm"
+TRAIN_ACTOR_CRITIC_ALGORITHMS = ("ppo", "a2c")
+
+
+def train_algorithm_root(algorithm_id: str) -> str:
+    if algorithm_id not in TRAIN_ACTOR_CRITIC_ALGORITHMS:
+        raise ValueError(f"unsupported actor-critic algorithm id: {algorithm_id}")
+    return f"{TRAIN_ALGORITHM_ROOT}/{algorithm_id}"
+
+
+def train_algorithm_metric(algorithm_id: str, suffix: str) -> str:
+    return f"{train_algorithm_root(algorithm_id)}/{suffix}"
+
+
+TRAIN_ALGORITHM_PPO_ROOT = train_algorithm_root("ppo")
+TRAIN_ALGORITHM_A2C_ROOT = train_algorithm_root("a2c")
 TRAIN_PPO_APPROX_KL = f"{TRAIN_ALGORITHM_PPO_ROOT}/update/approx_kl"
 TRAIN_PPO_CLIP_FRACTION = f"{TRAIN_ALGORITHM_PPO_ROOT}/update/clip_fraction"
 TRAIN_PPO_EXPLAINED_VARIANCE = f"{TRAIN_ALGORITHM_PPO_ROOT}/value/explained_variance"
@@ -42,6 +57,20 @@ TRAIN_PPO_VALUE_PREDICTION_HIST = f"{TRAIN_PPO_VALUE_PREDICTION_ROOT}/hist"
 TRAIN_PPO_ADVANTAGE_ROOT = f"{TRAIN_ALGORITHM_PPO_ROOT}/rollout/advantage"
 TRAIN_PPO_ADVANTAGE_HIST = f"{TRAIN_PPO_ADVANTAGE_ROOT}/hist"
 TRAIN_PPO_ENTROPY_COEFFICIENT = f"{TRAIN_ALGORITHM_PPO_ROOT}/hyperparameter/entropy_coefficient"
+
+TRAIN_A2C_EXPLAINED_VARIANCE = f"{TRAIN_ALGORITHM_A2C_ROOT}/value/explained_variance"
+TRAIN_A2C_POLICY_GRADIENT_LOSS = f"{TRAIN_ALGORITHM_A2C_ROOT}/update/policy_gradient_loss"
+TRAIN_A2C_VALUE_LOSS = f"{TRAIN_ALGORITHM_A2C_ROOT}/update/value_loss"
+TRAIN_A2C_LEARNING_RATE = f"{TRAIN_ALGORITHM_A2C_ROOT}/update/learning_rate"
+TRAIN_A2C_POLICY_ENTROPY = f"{TRAIN_ALGORITHM_A2C_ROOT}/policy/entropy"
+TRAIN_A2C_POLICY_DISTRIBUTION_STD = f"{TRAIN_ALGORITHM_A2C_ROOT}/policy/distribution_std"
+TRAIN_A2C_POLICY_DOMINANT_ACTION_RATE = f"{TRAIN_ALGORITHM_A2C_ROOT}/policy/dominant_action_rate"
+TRAIN_A2C_POLICY_ACTION_HIST = f"{TRAIN_ALGORITHM_A2C_ROOT}/policy/action_hist"
+TRAIN_A2C_VALUE_PREDICTION_ROOT = f"{TRAIN_ALGORITHM_A2C_ROOT}/rollout/value_prediction"
+TRAIN_A2C_VALUE_PREDICTION_HIST = f"{TRAIN_A2C_VALUE_PREDICTION_ROOT}/hist"
+TRAIN_A2C_ADVANTAGE_ROOT = f"{TRAIN_ALGORITHM_A2C_ROOT}/rollout/advantage"
+TRAIN_A2C_ADVANTAGE_HIST = f"{TRAIN_A2C_ADVANTAGE_ROOT}/hist"
+TRAIN_A2C_ENTROPY_COEFFICIENT = f"{TRAIN_ALGORITHM_A2C_ROOT}/hyperparameter/entropy_coefficient"
 
 TRAIN_THROUGHPUT_ROOT = "train/throughput"
 TRAIN_THROUGHPUT_LOOP_FPS = f"{TRAIN_THROUGHPUT_ROOT}/loop_fps"
@@ -206,47 +235,70 @@ METRIC_DEFINITIONS = (
     ),
     _definition(TRAIN_PPO_APPROX_KL, "Approximate KL divergence for the PPO update."),
     _definition(TRAIN_PPO_CLIP_FRACTION, "Fraction of policy ratios clipped by PPO."),
-    _definition(TRAIN_PPO_EXPLAINED_VARIANCE, "Value-function explained variance."),
-    _definition(TRAIN_PPO_POLICY_GRADIENT_LOSS, "PPO policy-gradient loss."),
-    _definition(TRAIN_PPO_VALUE_LOSS, "PPO value loss."),
-    _definition(TRAIN_PPO_LEARNING_RATE, "Current PPO learning rate."),
-    _definition(TRAIN_PPO_POLICY_ENTROPY, "Positive policy entropy."),
     _definition(
-        TRAIN_PPO_POLICY_DISTRIBUTION_STD, "Continuous-action distribution standard deviation."
+        "train/algorithm/{algorithm}/value/explained_variance",
+        "Actor-critic value-function explained variance.",
     ),
     _definition(
-        TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE,
+        "train/algorithm/{algorithm}/update/policy_gradient_loss",
+        "Actor-critic policy-gradient loss.",
+    ),
+    _definition(
+        "train/algorithm/{algorithm}/update/value_loss",
+        "Actor-critic value loss.",
+    ),
+    _definition(
+        "train/algorithm/{algorithm}/update/learning_rate",
+        "Current actor-critic learning rate.",
+    ),
+    _definition(
+        "train/algorithm/{algorithm}/policy/entropy",
+        "Positive actor-critic policy entropy.",
+    ),
+    _definition(
+        "train/algorithm/{algorithm}/policy/distribution_std",
+        "Continuous-action distribution standard deviation.",
+    ),
+    _definition(
+        "train/algorithm/{algorithm}/policy/dominant_action_rate",
         "Fraction assigned to the most frequent sampled discrete action.",
     ),
     _definition(
-        TRAIN_PPO_POLICY_ACTION_HIST,
+        "train/algorithm/{algorithm}/policy/action_hist",
         "Sampled discrete-action histogram.",
         "histogram",
         "every 64 rollouts",
     ),
     *(
         _definition(
-            f"{TRAIN_PPO_VALUE_PREDICTION_ROOT}/{stat}",
+            f"train/algorithm/{{algorithm}}/rollout/value_prediction/{stat}",
             "Rollout value-prediction distribution diagnostic.",
         )
         for stat in ("mean", "std", "min", "max")
     ),
     _definition(
-        TRAIN_PPO_VALUE_PREDICTION_HIST,
+        "train/algorithm/{algorithm}/rollout/value_prediction/hist",
         "Rollout value-prediction histogram.",
         "histogram",
         "every 64 rollouts",
     ),
     *(
         _definition(
-            f"{TRAIN_PPO_ADVANTAGE_ROOT}/{stat}", "Rollout advantage distribution diagnostic."
+            f"train/algorithm/{{algorithm}}/rollout/advantage/{stat}",
+            "Rollout advantage distribution diagnostic.",
         )
         for stat in ("mean", "std", "min", "max")
     ),
     _definition(
-        TRAIN_PPO_ADVANTAGE_HIST, "Rollout advantage histogram.", "histogram", "every 64 rollouts"
+        "train/algorithm/{algorithm}/rollout/advantage/hist",
+        "Rollout advantage histogram.",
+        "histogram",
+        "every 64 rollouts",
     ),
-    _definition(TRAIN_PPO_ENTROPY_COEFFICIENT, "Current scheduled entropy coefficient."),
+    _definition(
+        "train/algorithm/{algorithm}/hyperparameter/entropy_coefficient",
+        "Current scheduled entropy coefficient.",
+    ),
     *(
         _definition(
             name,
@@ -415,6 +467,7 @@ METRIC_DEFINITIONS = (
 
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PLACEHOLDER_PATTERNS = {
+    "algorithm": "(?:ppo|a2c)",
     "protocol": "(?:screen|confirm|full)",
     "reason": "[A-Za-z0-9_.-]+",
     "start": "[A-Za-z0-9_.-]+",
@@ -564,17 +617,21 @@ def eval_progress_metric(protocol: str, progress: object, stat: str) -> str:
     )
 
 
-SB3_SCALAR_MAP = {
+SB3_SHARED_ACTOR_CRITIC_SCALAR_MAP = {
     "rollout/ep_rew_mean": (TRAIN_EPISODE_RETURN_SHAPED_MEAN, 1.0),
     "rollout/ep_len_mean": (TRAIN_EPISODE_LENGTH_MEAN, 1.0),
+    "train/entropy_loss": ("policy/entropy", -1.0),
+    "train/explained_variance": ("value/explained_variance", 1.0),
+    "train/policy_gradient_loss": ("update/policy_gradient_loss", 1.0),
+    "train/policy_loss": ("update/policy_gradient_loss", 1.0),
+    "train/value_loss": ("update/value_loss", 1.0),
+    "train/learning_rate": ("update/learning_rate", 1.0),
+    "train/std": ("policy/distribution_std", 1.0),
+}
+
+SB3_PPO_SCALAR_MAP = {
     "train/approx_kl": (TRAIN_PPO_APPROX_KL, 1.0),
     "train/clip_fraction": (TRAIN_PPO_CLIP_FRACTION, 1.0),
-    "train/entropy_loss": (TRAIN_PPO_POLICY_ENTROPY, -1.0),
-    "train/explained_variance": (TRAIN_PPO_EXPLAINED_VARIANCE, 1.0),
-    "train/policy_gradient_loss": (TRAIN_PPO_POLICY_GRADIENT_LOSS, 1.0),
-    "train/value_loss": (TRAIN_PPO_VALUE_LOSS, 1.0),
-    "train/learning_rate": (TRAIN_PPO_LEARNING_RATE, 1.0),
-    "train/std": (TRAIN_PPO_POLICY_DISTRIBUTION_STD, 1.0),
 }
 
 SB3_IGNORED_SCALARS = {
@@ -601,21 +658,33 @@ _RLAB_OWNED_PREFIXES = (
 )
 
 
-def canonical_training_scalars(key_values: Mapping[str, Any]) -> dict[str, float]:
+def canonical_training_scalars(
+    key_values: Mapping[str, Any],
+    *,
+    algorithm_id: str = "ppo",
+) -> dict[str, float]:
+    train_algorithm_root(algorithm_id)
     payload: dict[str, float] = {}
     for key, value in key_values.items():
         if isinstance(value, bool) or not isinstance(value, Real):
             continue
         numeric = float(value)
-        mapped = SB3_SCALAR_MAP.get(str(key))
+        raw_name = str(key)
+        mapped = SB3_SHARED_ACTOR_CRITIC_SCALAR_MAP.get(raw_name)
         if mapped is not None:
             name, multiplier = mapped
+            if name.startswith(("train/", "eval/", "leader/")):
+                payload[name] = numeric * multiplier
+            else:
+                payload[train_algorithm_metric(algorithm_id, name)] = numeric * multiplier
+        elif algorithm_id == "ppo" and (mapped := SB3_PPO_SCALAR_MAP.get(raw_name)) is not None:
+            name, multiplier = mapped
             payload[name] = numeric * multiplier
-        elif metric_definition(str(key)) is not None and str(key) != GLOBAL_STEP:
-            payload[str(key)] = numeric
-        elif str(key) in SB3_IGNORED_SCALARS:
+        elif metric_definition(raw_name) is not None and raw_name != GLOBAL_STEP:
+            payload[raw_name] = numeric
+        elif raw_name in SB3_IGNORED_SCALARS:
             continue
-        elif str(key).startswith(_RLAB_OWNED_PREFIXES):
+        elif raw_name.startswith(_RLAB_OWNED_PREFIXES):
             raise ValueError(f"unknown rlab metric at logger boundary: {key}")
     validate_metric_payload(payload)
     return payload

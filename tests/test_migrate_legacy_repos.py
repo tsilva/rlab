@@ -6,7 +6,7 @@ from pathlib import Path
 
 SCRIPT = (
     Path(__file__).parents[1]
-    / ".codex/skills/upload-checkpoint/scripts/migrate_legacy_repos.py"
+    / "scripts/migrate_huggingface_legacy_repos.py"
 )
 SPEC = importlib.util.spec_from_file_location("migrate_legacy_repos", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

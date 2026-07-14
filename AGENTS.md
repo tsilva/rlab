@@ -1,8 +1,9 @@
 # Project Rules
 
-## Specifications
+## Product Specifications
 
-- Before starting any task, read the repository-root `SPECS.md` in full and treat it as the durable acceptance contract for the work.
+Before any task in this repository, use the `$specs-author` skill to read the root `SPECS.md`. Use `$specs-author` whenever reading or writing `SPECS.md`.
+
 - Do not knowingly make or recommend a change that violates an applicable requirement in `SPECS.md`.
 - If an existing spec violation is found, the requested work would infringe a requirement, `SPECS.md` is missing when one should exist, or a requirement is missing or unclear, report the issue and propose a scoped rectification or clarification task.
 - Ask for explicit user permission before editing `SPECS.md` or starting any rectification or clarification task that is not already explicitly requested. Continue the original task only when it can be completed without violating the current spec; otherwise stop and request direction.

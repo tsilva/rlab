@@ -53,6 +53,7 @@ class MachineConfig:
     docker_command: tuple[str, ...]
     docker_gpu_args: tuple[str, ...]
     pull_policy: str
+    prewarm_latest_runtime: bool
     limits: MachineLimits
     paths: MachinePaths
 
@@ -81,6 +82,12 @@ def _positive_int(value: Any, *, label: str) -> int:
     return result
 
 
+def _bool(value: Any, *, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
 def load_config_file(path: Path) -> dict[str, Any]:
     return load_mapping_document(path, label=str(path))
 
@@ -94,6 +101,7 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
         "limits",
         "paths",
         "pull_policy",
+        "prewarm_latest_runtime",
     }
     unknown_keys = sorted(set(raw) - allowed_keys)
     if unknown_keys:
@@ -142,6 +150,10 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
         docker_command=_tuple(docker.get("command") or ("docker",)),
         docker_gpu_args=_tuple(docker.get("gpu_args", default_gpu_args)),
         pull_policy=str(docker.get("pull_policy") or raw.get("pull_policy") or "always"),
+        prewarm_latest_runtime=_bool(
+            raw.get("prewarm_latest_runtime", False),
+            label=f"machine {name} prewarm_latest_runtime",
+        ),
         limits=MachineLimits(
             max_parallel_containers=_positive_int(
                 limits_raw.get("max_parallel_containers"),

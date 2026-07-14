@@ -3,11 +3,10 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 
-from stable_baselines3 import PPO
 from stable_baselines3.common.utils import get_schedule_fn
 
 from rlab.callbacks import CallbackHelper
-from rlab.metric_names import TRAIN_PPO_ENTROPY_COEFFICIENT
+from rlab.metric_names import train_algorithm_metric
 
 
 def linear_decay_schedule(
@@ -47,6 +46,7 @@ class EntropyCoefficientScheduleHelper(CallbackHelper):
         initial_value: float,
         final_value: float,
         schedule_timesteps: int,
+        algorithm_id: str = "ppo",
     ):
         super().__init__()
         if schedule_timesteps <= 0:
@@ -54,6 +54,7 @@ class EntropyCoefficientScheduleHelper(CallbackHelper):
         self.initial_value = initial_value
         self.final_value = final_value
         self.schedule_timesteps = schedule_timesteps
+        self.algorithm_id = algorithm_id
 
     def _current_value(self) -> float:
         progress = min(max(self.num_timesteps / self.schedule_timesteps, 0.0), 1.0)
@@ -65,11 +66,14 @@ class EntropyCoefficientScheduleHelper(CallbackHelper):
     def _on_step(self) -> bool:
         ent_coef = self._current_value()
         self.model.ent_coef = ent_coef
-        self.logger.record(TRAIN_PPO_ENTROPY_COEFFICIENT, ent_coef)
+        self.logger.record(
+            train_algorithm_metric(self.algorithm_id, "hyperparameter/entropy_coefficient"),
+            ent_coef,
+        )
         return True
 
 
-def apply_resume_hyperparameters(model: PPO, args: argparse.Namespace) -> None:
+def apply_resume_hyperparameters(model, args: argparse.Namespace) -> None:
     lr_schedule = learning_rate_schedule(args)
     model.learning_rate = lr_schedule
     model.lr_schedule = get_schedule_fn(lr_schedule)
@@ -83,3 +87,13 @@ def apply_resume_hyperparameters(model: PPO, args: argparse.Namespace) -> None:
     model.policy.optimizer.defaults["eps"] = args.adam_eps
     for param_group in model.policy.optimizer.param_groups:
         param_group["eps"] = args.adam_eps
+
+
+def apply_a2c_resume_hyperparameters(model, args: argparse.Namespace) -> None:
+    lr_schedule = learning_rate_schedule(args)
+    model.learning_rate = lr_schedule
+    model.lr_schedule = get_schedule_fn(lr_schedule)
+    model.ent_coef = args.ent_coef
+    model.vf_coef = args.vf_coef
+    model.max_grad_norm = args.max_grad_norm
+    model.normalize_advantage = args.normalize_advantage

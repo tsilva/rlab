@@ -8,9 +8,21 @@ on:
         required: true
         type: string
       source_sha:
-        description: Git source revision embedded in the runtime
+        description: Exact pushed source revision mapped to the runtime
         required: true
         type: string
+      runtime_input_sha256:
+        description: Content-addressed train/eval runtime input identity
+        required: true
+        type: string
+      runtime_build_source_sha:
+        description: Source revision that originally built this runtime image
+        required: true
+        type: string
+      deploy_required:
+        description: Deploy a new digest-specific app before probing it
+        required: true
+        type: boolean
     secrets:
       MODAL_TOKEN_ID:
         required: true
@@ -25,9 +37,22 @@ on:
         required: true
         type: string
       source_sha:
-        description: Git source revision embedded in the runtime
+        description: Exact pushed source revision mapped to the runtime
         required: true
         type: string
+      runtime_input_sha256:
+        description: Content-addressed train/eval runtime input identity
+        required: true
+        type: string
+      runtime_build_source_sha:
+        description: Source revision that originally built this runtime image
+        required: true
+        type: string
+      deploy_required:
+        description: Deploy a new digest-specific app before probing it
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -49,6 +74,8 @@ jobs:
       RLAB_MODAL_REGISTRY_SECRET: ${{ secrets.RLAB_MODAL_REGISTRY_SECRET_NAME }}
       RLAB_MODAL_EVAL_RUNTIME_IMAGE: ${{ inputs.runtime_image_ref }}
       RLAB_EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+      RLAB_RUNTIME_INPUT_SHA256: ${{ inputs.runtime_input_sha256 }}
+      RLAB_RUNTIME_BUILD_SOURCE_SHA: ${{ inputs.runtime_build_source_sha }}
       PYTHONPATH: src
     steps:
       - uses: actions/checkout@v6
@@ -66,6 +93,7 @@ jobs:
             *) echo "runtime_image_ref must be an immutable docker digest ref" >&2; exit 2 ;;
           esac
       - name: Deploy immutable Modal evaluator
+        if: inputs.deploy_required
         run: uv run --no-sync modal deploy -m rlab.modal_app
       - name: Prove deployed worker image startup
         id: probe
@@ -86,7 +114,9 @@ jobs:
           expected = {
               "app_name": app_name,
               "runtime_image_ref": runtime_image_ref,
-              "source_sha": os.environ["RLAB_EXPECTED_SOURCE_SHA"],
+              "source_sha": os.environ["RLAB_RUNTIME_BUILD_SOURCE_SHA"],
+              "runtime_build_source_sha": os.environ["RLAB_RUNTIME_BUILD_SOURCE_SHA"],
+              "runtime_input_sha256": os.environ["RLAB_RUNTIME_INPUT_SHA256"],
           }
           if any(result.get(key) != value for key, value in expected.items()):
               raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
@@ -96,8 +126,10 @@ jobs:
           if len(contract_sha) != 64:
               raise SystemExit(f"unexpected Modal train-config contract: {result!r}")
           receipt = {
-              "schema_version": 1,
+              "schema_version": 2,
               "source_sha": os.environ["RLAB_EXPECTED_SOURCE_SHA"],
+              "runtime_build_source_sha": os.environ["RLAB_RUNTIME_BUILD_SOURCE_SHA"],
+              "runtime_input_sha256": os.environ["RLAB_RUNTIME_INPUT_SHA256"],
               "runtime_image_ref": runtime_image_ref,
               "modal_app_name": app_name,
               "startup_probe": result,

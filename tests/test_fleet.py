@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab import fleet
+from rlab.docker_host import RuntimeHostImage
 from rlab.job_queue import QueueDemand
 from rlab.machines import load_machine_registry, resolve_machine
 from rlab.runtime_refs import runtime_image_ref_from_file, runtime_image_ref_from_payload
@@ -123,8 +124,87 @@ class FleetHostTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must include runtime_image_ref"):
             runtime_image_ref_from_payload({"image_ref": RUNTIME_IMAGE_REF})
 
+    def test_beast_three_enables_latest_runtime_prewarming(self) -> None:
+        registry = load_machine_registry(Path("experiments/machines.yaml"))
+
+        self.assertTrue(registry.machines["beast-3"].prewarm_latest_runtime)
+        self.assertFalse(registry.machines["beast-2"].prewarm_latest_runtime)
+
 
 class ContainerContractTests(unittest.TestCase):
+    def test_prewarmed_runtime_is_protected_from_cleanup(self) -> None:
+        target = local_machine()
+        keep = RuntimeHostImage(
+            machine=target.name,
+            repository="ghcr.io/tsilva/rlab/rlab-train",
+            digest="sha256:" + "c" * 64,
+            image_id="sha256:keep",
+        )
+        remove = RuntimeHostImage(
+            machine=target.name,
+            repository="ghcr.io/tsilva/rlab/rlab-train",
+            digest="sha256:" + "d" * 64,
+            image_id="sha256:remove",
+        )
+        host = SimpleNamespace(
+            machine=target,
+            list_runtime_image_containers=lambda: [],
+            list_runtime_images=lambda _repos: [keep, remove],
+            remove_runtime_image=mock.Mock(return_value=SimpleNamespace(ok=True)),
+        )
+        with mock.patch.object(fleet, "queue_demands", return_value=[]):
+            pruned = fleet.prune_stale_runtime_images(
+                FakeConnection(),
+                host,
+                extra_protected_refs=(RUNTIME_IMAGE_REF,),
+            )
+
+        self.assertEqual(pruned, 1)
+        host.remove_runtime_image.assert_called_once_with(remove.image_ref)
+
+    def test_prewarm_pulls_and_probes_only_the_latest_new_runtime(self) -> None:
+        target = local_machine()
+        release = SimpleNamespace(
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            source_sha="source",
+            runtime_build_source_sha="build-source",
+            runtime_input_sha256="a" * 64,
+        )
+        host = SimpleNamespace(
+            machine=target,
+            runtime_image_present=mock.Mock(return_value=False),
+            ensure_runtime_image=mock.Mock(return_value=True),
+            probe_runtime_image=mock.Mock(return_value={}),
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(fleet, "recent_runtime_images", return_value=(release,)) as recent,
+        ):
+            state_path = Path(temporary) / "prewarm.json"
+            detail, protected_ref = fleet.prewarm_latest_runtime(
+                host,
+                state_path=state_path,
+            )
+            host.runtime_image_present.return_value = True
+            second_detail, second_ref = fleet.prewarm_latest_runtime(
+                host,
+                state_path=state_path,
+            )
+
+        self.assertEqual(recent.call_args_list[0].kwargs, {"limit": 1})
+        self.assertEqual(protected_ref, RUNTIME_IMAGE_REF)
+        self.assertEqual(second_ref, RUNTIME_IMAGE_REF)
+        self.assertTrue(detail["pulled"])
+        self.assertTrue(detail["probed"])
+        self.assertFalse(second_detail["pulled"])
+        self.assertFalse(second_detail["probed"])
+        host.ensure_runtime_image.assert_called_once_with(RUNTIME_IMAGE_REF)
+        host.probe_runtime_image.assert_called_once_with(
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            expected_source_sha="build-source",
+            expected_runtime_input_sha256="a" * 64,
+        )
+
     def test_exact_machine_demand_protects_only_that_hosts_image(self) -> None:
         demands = [
             QueueDemand("beast-3", RUNTIME_IMAGE_REF, 1, 0, 1),

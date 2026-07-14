@@ -10,6 +10,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,16 @@ def run_training_process(
                         {
                             "schema_version": 1,
                             "ready": True,
+                            "learner_ready_at": datetime.fromtimestamp(
+                                learner_ready.stat().st_mtime, UTC
+                            ).isoformat(),
+                            "wandb_ready_at": datetime.fromtimestamp(
+                                max(
+                                    wandb_run_id_path.stat().st_mtime,
+                                    wandb_url_path.stat().st_mtime,
+                                ),
+                                UTC,
+                            ).isoformat(),
                             "wandb_run_id": wandb_run_id,
                             "wandb_url": wandb_url,
                         },

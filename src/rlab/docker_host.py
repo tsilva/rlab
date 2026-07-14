@@ -383,8 +383,32 @@ class DockerRunnerHost:
             repositories=repositories,
         )
 
-    def ensure_runtime_image(self, runtime_image_ref: str) -> bool:
+    def runtime_image_present(self, runtime_image_ref: str) -> bool:
         image = docker_image_ref(runtime_image_ref)
+        inspected = _run_machine_docker(
+            self.machine,
+            ["image", "inspect", image],
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        return inspected.returncode == 0
+
+    def ensure_runtime_image(
+        self,
+        runtime_image_ref: str,
+        *,
+        timings: dict[str, float] | None = None,
+    ) -> bool:
+        inspect_started = time.perf_counter()
+        if self.runtime_image_present(runtime_image_ref):
+            if timings is not None:
+                timings["host_image_inspect_seconds"] = time.perf_counter() - inspect_started
+                timings["host_image_pull_seconds"] = 0.0
+            return True
+        if timings is not None:
+            timings["host_image_inspect_seconds"] = time.perf_counter() - inspect_started
+        image = docker_image_ref(runtime_image_ref)
+        pull_started = time.perf_counter()
         if self.machine.pull_policy != "never":
             pulled = _run_machine_docker(
                 self.machine,
@@ -394,14 +418,12 @@ class DockerRunnerHost:
                 deadline_monotonic=self.deadline_monotonic,
             )
             if pulled.returncode != 0:
+                if timings is not None:
+                    timings["host_image_pull_seconds"] = time.perf_counter() - pull_started
                 return False
-        inspected = _run_machine_docker(
-            self.machine,
-            ["image", "inspect", image],
-            capture=True,
-            deadline_monotonic=self.deadline_monotonic,
-        )
-        return inspected.returncode == 0
+        if timings is not None:
+            timings["host_image_pull_seconds"] = time.perf_counter() - pull_started
+        return self.runtime_image_present(runtime_image_ref)
 
     def validate_runtime_train_config(
         self,
@@ -410,11 +432,14 @@ class DockerRunnerHost:
         train_config: Mapping[str, Any],
         expected_source_sha: str,
         expected_contract_sha256: str,
+        expected_runtime_input_sha256: str = "",
     ) -> dict[str, Any]:
-        if not self.ensure_runtime_image(runtime_image_ref):
+        timings: dict[str, float] = {}
+        if not self.ensure_runtime_image(runtime_image_ref, timings=timings):
             raise RuntimeError(
                 f"runtime preflight could not pull {runtime_image_ref} on {self.machine.name}"
             )
+        validation_started = time.perf_counter()
         result = _run_machine_docker(
             self.machine,
             [
@@ -432,6 +457,7 @@ class DockerRunnerHost:
             timeout=DOCKER_PULL_TIMEOUT_SECONDS,
             deadline_monotonic=self.deadline_monotonic,
         )
+        timings["host_config_validation_seconds"] = time.perf_counter() - validation_started
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "runtime config validation failed").strip()
             raise RuntimeError(
@@ -447,10 +473,63 @@ class DockerRunnerHost:
             "train_config_contract_sha256": expected_contract_sha256,
             "validated": True,
         }
+        if expected_runtime_input_sha256:
+            expected.update(
+                {
+                    "runtime_build_source_sha": expected_source_sha,
+                    "runtime_input_sha256": expected_runtime_input_sha256,
+                }
+            )
         for key, value in expected.items():
             if receipt.get(key) != value:
                 raise RuntimeError(
                     f"runtime preflight receipt mismatch for {key}: "
+                    f"expected {value!r}, got {receipt.get(key)!r}"
+                )
+        receipt = dict(receipt)
+        receipt["preflight_timings"] = timings
+        return receipt
+
+    def probe_runtime_image(
+        self,
+        *,
+        runtime_image_ref: str,
+        expected_source_sha: str,
+        expected_runtime_input_sha256: str = "",
+    ) -> dict[str, Any]:
+        result = _run_machine_docker(
+            self.machine,
+            [
+                "run",
+                "--rm",
+                docker_image_ref(runtime_image_ref),
+                "python",
+                "-m",
+                "rlab.runtime_contract",
+            ],
+            capture=True,
+            timeout=DOCKER_PULL_TIMEOUT_SECONDS,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "runtime probe failed").strip()
+            raise RuntimeError(f"runtime probe failed on {self.machine.name}: {detail}")
+        try:
+            receipt = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"runtime probe returned invalid JSON: {exc}") from exc
+        expected = {"source_sha": expected_source_sha}
+        if expected_runtime_input_sha256:
+            expected.update(
+                {
+                    "runtime_build_source_sha": expected_source_sha,
+                    "runtime_input_sha256": expected_runtime_input_sha256,
+                }
+            )
+        for key, value in expected.items():
+            if receipt.get(key) != value:
+                raise RuntimeError(
+                    f"runtime probe receipt mismatch for {key}: "
                     f"expected {value!r}, got {receipt.get(key)!r}"
                 )
         return dict(receipt)

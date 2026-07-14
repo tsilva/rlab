@@ -14,7 +14,7 @@ from rlab.train_config import TRAIN_CONFIG_FIELDS, validate_and_normalize_train_
 from rlab.training_backend import training_backend_contract_payload
 
 
-RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
+RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 4
 
 
 def train_config_contract_payload() -> dict[str, Any]:
@@ -35,9 +35,13 @@ def train_config_contract_sha256() -> str:
 
 
 def runtime_contract(*, runtime_image_ref: str | None = None) -> dict[str, Any]:
+    runtime_build_source_sha = os.environ.get("RLAB_SOURCE_SHA", "").strip()
     return {
         "schema_version": TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION,
-        "source_sha": os.environ.get("RLAB_SOURCE_SHA", "").strip(),
+        # Preserve source_sha for legacy runtime probes while naming its role explicitly.
+        "source_sha": runtime_build_source_sha,
+        "runtime_build_source_sha": runtime_build_source_sha,
+        "runtime_input_sha256": os.environ.get("RLAB_RUNTIME_INPUT_SHA256", "").strip(),
         "runtime_image_ref": str(
             runtime_image_ref
             or os.environ.get("RLAB_MODAL_EVAL_RUNTIME_IMAGE", "")

@@ -23,7 +23,7 @@ class WandbOfflineMetricIntegrationTests(unittest.TestCase):
                 dir=tmp,
                 mode="offline",
                 reinit="finish_previous",
-                config={"metrics_schema_version": 3, "algorithm_id": "ppo"},
+                config={"metrics_schema_version": 4, "algorithm_id": "ppo"},
                 settings=wandb.Settings(silent=True, disable_git=True),
             )
             assert run is not None
@@ -63,7 +63,7 @@ class WandbOfflineMetricIntegrationTests(unittest.TestCase):
                 config=EnvConfig(game="Generic-v0"),
             )
 
-            self.assertEqual(run.config["metrics_schema_version"], 3)
+            self.assertEqual(run.config["metrics_schema_version"], 4)
             self.assertEqual(run.summary[LEADER_CHECKPOINT_BEST_RETURN], 5.0)
             run.finish()
 
