@@ -29,7 +29,12 @@ from rlab.metric_names import (
     TRAIN_ARTIFACT_SAVE_SECONDS,
     TRAIN_ARTIFACT_UPLOAD_SECONDS,
 )
-from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_namespace
+from rlab.wandb_utils import (
+    configure_wandb_metrics,
+    game_family_for_environment,
+    load_wandb_env,
+    resolve_wandb_namespace,
+)
 
 
 MODEL_METADATA_VERSION = 3
@@ -74,6 +79,12 @@ def build_model_metadata(
         "filename": model_path.name,
         "run_name": getattr(args, "run_name", ""),
         "run_description": getattr(args, "run_description", ""),
+        "wandb_run_id": getattr(args, "wandb_run_id", ""),
+        "wandb_project": getattr(args, "wandb_project", ""),
+        "batch_id": getattr(args, "batch_id", ""),
+        "campaign_id": getattr(args, "campaign_id", ""),
+        "game_family": getattr(args, "game_family", ""),
+        "retry_of_job_id": getattr(args, "retry_of_job_id", 0),
         "goal_slug": getattr(args, "goal_slug", ""),
         "recipe_slug": getattr(args, "recipe_slug", ""),
         "recipe_path": getattr(args, "recipe_path", ""),
@@ -221,20 +232,26 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
 
     import wandb
 
+    entity, project = resolve_wandb_namespace(
+        getattr(args, "wandb_entity", None),
+        getattr(args, "wandb_project", None),
+        config.game,
+        env_provider=config.env_provider,
+    )
+    args.wandb_entity = entity
+    args.wandb_project = project
+    args.game_family = game_family_for_environment(config.env_provider, config.game)
     tags = [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()]
+    family_tag = f"game_family:{args.game_family}"
+    if family_tag not in tags:
+        tags.append(family_tag)
+    args.wandb_tags = ",".join(tags)
     wandb_config: dict[str, Any] = {**vars(args), **env_config_metadata(config)}
     wandb_config["metrics_schema_version"] = METRICS_SCHEMA_VERSION
     wandb_config["algorithm_id"] = "ppo"
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]
-    entity, project = resolve_wandb_namespace(
-        getattr(args, "wandb_entity", None),
-        getattr(args, "wandb_project", None),
-        config.game,
-    )
-    args.wandb_entity = entity
-    args.wandb_project = project
     wandb_run = wandb.init(
         project=project,
         entity=entity,
@@ -259,6 +276,18 @@ def wandb_artifacts_enabled(wandb_run, args: argparse.Namespace) -> bool:
 
 def sanitize_artifact_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "rlab"
+
+
+def wandb_artifact_collection_name(
+    kind: str,
+    *,
+    run_id: object = None,
+    run_name: object = None,
+) -> str:
+    """Return an immutable collection name, with a legacy display-name fallback."""
+
+    owner = str(run_id or "").strip() or str(run_name or "").strip()
+    return f"{sanitize_artifact_name(owner)}-{sanitize_artifact_name(kind)}"
 
 
 def checkpoint_step(path: Path) -> int | None:
@@ -331,14 +360,23 @@ def artifact_storage_prefix(base_prefix: str, game: str) -> str:
 
 
 def build_s3_artifact_uri(
-    base_uri: str, args: argparse.Namespace, model_path: Path, kind: str
+    base_uri: str,
+    args: argparse.Namespace,
+    model_path: Path,
+    kind: str,
+    *,
+    run_id: object = None,
 ) -> str:
     bucket, prefix = parse_s3_uri(base_uri)
     prefix = artifact_storage_prefix(prefix, args.game)
+    collection_name = wandb_artifact_collection_name(
+        kind,
+        run_id=run_id or getattr(args, "wandb_run_id", ""),
+        run_name=args.run_name,
+    )
     key_parts = [
         prefix,
-        sanitize_artifact_name(args.run_name),
-        kind,
+        collection_name,
         model_path.name,
     ]
     key = "/".join(part for part in key_parts if part)
@@ -428,7 +466,12 @@ def log_wandb_model_artifact(
         return None
     timer = clock or time.perf_counter
     started_at = timer()
-    artifact_name = f"{sanitize_artifact_name(args.run_name)}-{kind}"
+    run_id = getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None)
+    artifact_name = wandb_artifact_collection_name(
+        kind,
+        run_id=run_id,
+        run_name=args.run_name,
+    )
     step = checkpoint_step(model_path)
     artifact_step = step if step is not None else metric_step
 
@@ -464,7 +507,6 @@ def log_wandb_model_artifact(
 
     import wandb
 
-    run_id = getattr(wandb_run, "id", None)
     if run_id:
         metadata["wandb_run_id"] = run_id
     run_path = getattr(wandb_run, "path", None)
@@ -475,7 +517,13 @@ def log_wandb_model_artifact(
     reference_uri = None
     storage_upload_seconds = 0.0
     if storage_base_uri:
-        reference_uri = build_s3_artifact_uri(storage_base_uri, args, model_path, kind)
+        reference_uri = build_s3_artifact_uri(
+            storage_base_uri,
+            args,
+            model_path,
+            kind,
+            run_id=run_id,
+        )
         upload_started_at = timer()
         upload_s3_artifact(model_path, reference_uri)
         storage_upload_seconds = timer() - upload_started_at

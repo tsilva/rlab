@@ -19,9 +19,7 @@ TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/cur
 TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/current/mean"
 TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/window_100/min"
 TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/window_100/mean"
-TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE = (
-    f"{TRAIN_OUTCOME_SUCCESS_ROOT}/start_coverage/rate"
-)
+TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/start_coverage/rate"
 
 TRAIN_REWARD_ROOT = "train/reward"
 
@@ -34,20 +32,13 @@ TRAIN_PPO_VALUE_LOSS = f"{TRAIN_ALGORITHM_PPO_ROOT}/update/value_loss"
 TRAIN_PPO_LEARNING_RATE = f"{TRAIN_ALGORITHM_PPO_ROOT}/update/learning_rate"
 TRAIN_PPO_POLICY_ENTROPY = f"{TRAIN_ALGORITHM_PPO_ROOT}/policy/entropy"
 TRAIN_PPO_POLICY_DISTRIBUTION_STD = f"{TRAIN_ALGORITHM_PPO_ROOT}/policy/distribution_std"
-TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE = (
-    f"{TRAIN_ALGORITHM_PPO_ROOT}/policy/dominant_action_rate"
-)
+TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE = f"{TRAIN_ALGORITHM_PPO_ROOT}/policy/dominant_action_rate"
 TRAIN_PPO_POLICY_ACTION_HIST = f"{TRAIN_ALGORITHM_PPO_ROOT}/policy/action_hist"
 TRAIN_PPO_VALUE_PREDICTION_ROOT = f"{TRAIN_ALGORITHM_PPO_ROOT}/rollout/value_prediction"
 TRAIN_PPO_VALUE_PREDICTION_HIST = f"{TRAIN_PPO_VALUE_PREDICTION_ROOT}/hist"
 TRAIN_PPO_ADVANTAGE_ROOT = f"{TRAIN_ALGORITHM_PPO_ROOT}/rollout/advantage"
 TRAIN_PPO_ADVANTAGE_HIST = f"{TRAIN_PPO_ADVANTAGE_ROOT}/hist"
-TRAIN_PPO_ENTROPY_COEFFICIENT = (
-    f"{TRAIN_ALGORITHM_PPO_ROOT}/hyperparameter/entropy_coefficient"
-)
-TRAIN_PPO_ADVANTAGE_NORMALIZATION_MODE = (
-    f"{TRAIN_ALGORITHM_PPO_ROOT}/advantage/normalization_mode"
-)
+TRAIN_PPO_ENTROPY_COEFFICIENT = f"{TRAIN_ALGORITHM_PPO_ROOT}/hyperparameter/entropy_coefficient"
 
 TRAIN_THROUGHPUT_ROOT = "train/throughput"
 TRAIN_THROUGHPUT_LOOP_FPS = f"{TRAIN_THROUGHPUT_ROOT}/loop_fps"
@@ -56,12 +47,8 @@ TRAIN_THROUGHPUT_ENV_STEP_FPS = f"{TRAIN_THROUGHPUT_ROOT}/env_step_fps"
 TRAIN_THROUGHPUT_LOOP_SECONDS = f"{TRAIN_THROUGHPUT_ROOT}/loop_seconds"
 TRAIN_THROUGHPUT_ROLLOUT_SECONDS = f"{TRAIN_THROUGHPUT_ROOT}/rollout_seconds"
 TRAIN_THROUGHPUT_ENV_STEP_SECONDS = f"{TRAIN_THROUGHPUT_ROOT}/env_step_seconds"
-TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS = (
-    f"{TRAIN_THROUGHPUT_ROOT}/rollout_overhead_seconds"
-)
-TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS = (
-    f"{TRAIN_THROUGHPUT_ROOT}/between_rollouts_seconds"
-)
+TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS = f"{TRAIN_THROUGHPUT_ROOT}/rollout_overhead_seconds"
+TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS = f"{TRAIN_THROUGHPUT_ROOT}/between_rollouts_seconds"
 
 TRAIN_ARTIFACT_SAVE_SECONDS = "train/artifact/save/seconds"
 TRAIN_ARTIFACT_UPLOAD_SECONDS = "train/artifact/upload/seconds"
@@ -131,62 +118,295 @@ METRIC_DEFINITIONS = (
     _definition(TRAIN_EPISODE_LENGTH_MEAN, "Mean episode length.", "steps"),
     _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
     _definition(TRAIN_OUTCOME_TERMINAL_COUNT, "Cumulative terminal episode records.", "episodes"),
-    _definition("train/outcome/reason/{reason}/count", "Cumulative episodes containing an outcome reason.", "episodes"),
-    _definition("train/outcome/reason/{reason}/rate/window_100", "Reason incidence over the latest 100 terminal episodes.", "fraction"),
-    _definition("train/outcome/success/from/{start}/count", "Cumulative successful episodes from a start.", "episodes"),
-    _definition("train/outcome/success/from/{start}/attempts", "Cumulative episode attempts from a start.", "episodes"),
-    _definition("train/outcome/success/from/{start}/rate/current", "Cumulative success rate from a start.", "fraction"),
-    _definition("train/outcome/success/from/{start}/rate/window_100", "Success rate over the latest 100 attempts from a start.", "fraction"),
-    _definition(TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN, "Minimum cumulative success rate across observed starts.", "fraction"),
-    _definition(TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN, "Mean cumulative success rate across observed starts.", "fraction"),
-    _definition(TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN, "Minimum window-100 success rate after every start has 100 attempts.", "fraction"),
-    _definition(TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN, "Mean window-100 success rate after every start has 100 attempts.", "fraction"),
-    _definition(TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE, "Configured starts with an attempt divided by configured starts.", "fraction"),
-    _definition("train/reward/shaped/{stat}", "Distribution of shaped per-step reward."),
-    _definition("train/reward/raw/{stat}", "Distribution of raw per-step reward when distinct from shaped reward."),
-    _definition("train/reward/component/{component}/{stat}", "Active reward-component attribution."),
-    _definition("train/reward/signal/{signal}/{stat}", "Configured reward-source signal."),
-    _definition("train/algorithm/{algorithm}/update/{metric}", "Algorithm update-health diagnostic."),
-    _definition("train/algorithm/{algorithm}/policy/{metric}", "Policy behavior or distribution diagnostic."),
-    _definition("train/algorithm/{algorithm}/value/{metric}", "Value-function diagnostic."),
-    _definition("train/algorithm/{algorithm}/rollout/{distribution}/{stat}", "Rollout-buffer distribution diagnostic."),
-    _definition("train/algorithm/{algorithm}/hyperparameter/{metric}", "Scheduled algorithm hyperparameter."),
-    _definition("train/algorithm/{algorithm}/advantage/{metric}", "Advantage normalization diagnostic."),
-    _definition("train/algorithm/{algorithm}/advantage/task/{task}/{stat}", "Per-task advantage normalization diagnostic."),
-    _definition("train/throughput/{metric}", "Training-loop rate or phase duration."),
+    _definition(
+        "train/outcome/reason/{reason}/count",
+        "Cumulative failed episodes containing a reason.",
+        "episodes",
+    ),
+    _definition(
+        "train/outcome/reason/{reason}/rate/window_100",
+        "Failure-reason incidence over the latest 100 terminal episodes.",
+        "fraction",
+    ),
+    _definition(
+        "train/outcome/success/from/{start}/count",
+        "Cumulative successful episodes from a start.",
+        "episodes",
+    ),
+    _definition(
+        "train/outcome/success/from/{start}/attempts",
+        "Cumulative episode attempts from a start.",
+        "episodes",
+    ),
+    _definition(
+        "train/outcome/success/from/{start}/rate/current",
+        "Cumulative success rate from a start.",
+        "fraction",
+    ),
+    _definition(
+        "train/outcome/success/from/{start}/rate/window_100",
+        "Success rate over the latest 100 attempts from a start.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN,
+        "Minimum cumulative success rate across observed starts.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN,
+        "Mean cumulative success rate across observed starts.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+        "Minimum window-100 success rate after every start has 100 attempts.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN,
+        "Mean window-100 success rate after every start has 100 attempts.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE,
+        "Configured starts with an attempt divided by configured starts.",
+        "fraction",
+    ),
+    *(
+        _definition(f"{TRAIN_REWARD_ROOT}/shaped/{stat}", "Distribution of shaped per-step reward.")
+        for stat in ("mean", "std", "min", "max", "nonzero_rate")
+    ),
+    *(
+        _definition(
+            f"{TRAIN_REWARD_ROOT}/raw/{stat}",
+            "Distribution of raw per-step reward when distinct from shaped reward.",
+        )
+        for stat in ("mean", "std")
+    ),
+    *(
+        _definition(
+            f"{TRAIN_REWARD_ROOT}/component/{{component}}/{stat}",
+            "Active reward-component attribution.",
+        )
+        for stat in ("mean", "nonzero_rate", "share")
+    ),
+    *(
+        _definition(
+            f"{TRAIN_REWARD_ROOT}/signal/{{signal}}/{stat}", "Configured reward-source signal."
+        )
+        for stat in ("mean", "max", "nonzero_rate")
+    ),
+    _definition(TRAIN_PPO_APPROX_KL, "Approximate KL divergence for the PPO update."),
+    _definition(TRAIN_PPO_CLIP_FRACTION, "Fraction of policy ratios clipped by PPO."),
+    _definition(TRAIN_PPO_EXPLAINED_VARIANCE, "Value-function explained variance."),
+    _definition(TRAIN_PPO_POLICY_GRADIENT_LOSS, "PPO policy-gradient loss."),
+    _definition(TRAIN_PPO_VALUE_LOSS, "PPO value loss."),
+    _definition(TRAIN_PPO_LEARNING_RATE, "Current PPO learning rate."),
+    _definition(TRAIN_PPO_POLICY_ENTROPY, "Positive policy entropy."),
+    _definition(
+        TRAIN_PPO_POLICY_DISTRIBUTION_STD, "Continuous-action distribution standard deviation."
+    ),
+    _definition(
+        TRAIN_PPO_POLICY_DOMINANT_ACTION_RATE,
+        "Fraction assigned to the most frequent sampled discrete action.",
+    ),
+    _definition(
+        TRAIN_PPO_POLICY_ACTION_HIST,
+        "Sampled discrete-action histogram.",
+        "histogram",
+        "every 64 rollouts",
+    ),
+    *(
+        _definition(
+            f"{TRAIN_PPO_VALUE_PREDICTION_ROOT}/{stat}",
+            "Rollout value-prediction distribution diagnostic.",
+        )
+        for stat in ("mean", "std", "min", "max")
+    ),
+    _definition(
+        TRAIN_PPO_VALUE_PREDICTION_HIST,
+        "Rollout value-prediction histogram.",
+        "histogram",
+        "every 64 rollouts",
+    ),
+    *(
+        _definition(
+            f"{TRAIN_PPO_ADVANTAGE_ROOT}/{stat}", "Rollout advantage distribution diagnostic."
+        )
+        for stat in ("mean", "std", "min", "max")
+    ),
+    _definition(
+        TRAIN_PPO_ADVANTAGE_HIST, "Rollout advantage histogram.", "histogram", "every 64 rollouts"
+    ),
+    _definition(TRAIN_PPO_ENTROPY_COEFFICIENT, "Current scheduled entropy coefficient."),
+    *(
+        _definition(
+            name,
+            "Training-loop rate or phase duration.",
+            "steps/second" if name.endswith("_fps") else "seconds",
+        )
+        for name in (
+            TRAIN_THROUGHPUT_LOOP_FPS,
+            TRAIN_THROUGHPUT_ROLLOUT_FPS,
+            TRAIN_THROUGHPUT_ENV_STEP_FPS,
+            TRAIN_THROUGHPUT_LOOP_SECONDS,
+            TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
+            TRAIN_THROUGHPUT_ENV_STEP_SECONDS,
+            TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
+            TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS,
+        )
+    ),
     _definition(TRAIN_ARTIFACT_SAVE_SECONDS, "Local model save duration.", "seconds", "artifact"),
-    _definition(TRAIN_ARTIFACT_UPLOAD_SECONDS, "External storage and W&B artifact publication duration.", "seconds", "artifact"),
-    _definition("eval/{protocol}/episode/return/{stat}", "Evaluation episode-return distribution.", "return", "evaluation"),
-    _definition("eval/{protocol}/episode/length/mean", "Mean evaluation episode length.", "steps", "evaluation"),
-    _definition("eval/{protocol}/episode/count", "Evaluation episodes represented.", "episodes", "evaluation"),
-    _definition("eval/{protocol}/outcome/success/from/{start}/rate", "Evaluation success rate from a start.", "fraction", "evaluation"),
-    _definition("eval/{protocol}/outcome/success/rate/{stat}", "Aggregate per-start evaluation success rate.", "fraction", "evaluation"),
-    _definition("eval/{protocol}/outcome/reason/{reason}/count", "Evaluation episodes containing a reason.", "episodes", "evaluation"),
-    _definition("eval/{protocol}/outcome/reason/{reason}/rate", "Evaluation reason incidence.", "fraction", "evaluation"),
-    _definition("eval/{protocol}/progress/{progress}/{stat}", "Goal-configured evaluation progress summary.", "value", "evaluation"),
-    _definition("eval/{protocol}/checkpoint/{field}", "Evaluated checkpoint identity.", "metadata", "evaluation"),
-    _definition("eval/{protocol}/duration/seconds", "Evaluation wall duration.", "seconds", "evaluation"),
+    _definition(
+        TRAIN_ARTIFACT_UPLOAD_SECONDS,
+        "External storage and W&B artifact publication duration.",
+        "seconds",
+        "artifact",
+    ),
+    *(
+        _definition(
+            f"eval/{{protocol}}/episode/return/{stat}",
+            "Evaluation episode-return distribution.",
+            "return",
+            "evaluation",
+        )
+        for stat in ("mean", "std", "median")
+    ),
+    _definition(
+        EVAL_FULL_EPISODE_RETURN_BEST,
+        "Best full-evaluation episode return.",
+        "return",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/episode/length/mean",
+        "Mean evaluation episode length.",
+        "steps",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/episode/count",
+        "Evaluation episodes represented.",
+        "episodes",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/outcome/success/from/{start}/rate",
+        "Evaluation success rate from a start.",
+        "fraction",
+        "evaluation",
+    ),
+    *(
+        _definition(
+            f"eval/{{protocol}}/outcome/success/rate/{stat}",
+            "Aggregate per-start evaluation success rate.",
+            "fraction",
+            "evaluation",
+        )
+        for stat in ("min", "mean")
+    ),
+    _definition(
+        "eval/{protocol}/outcome/reason/{reason}/count",
+        "Failed evaluation episodes containing a reason.",
+        "episodes",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/outcome/reason/{reason}/rate",
+        "Evaluation failure-reason incidence.",
+        "fraction",
+        "evaluation",
+    ),
+    *(
+        _definition(
+            f"eval/full/progress/{{progress}}/{stat}",
+            "Goal-configured full-evaluation progress summary.",
+            "value",
+            "evaluation",
+        )
+        for stat in ("mean", "max")
+    ),
+    _definition(
+        "eval/{protocol}/checkpoint/step", "Evaluated checkpoint step.", "steps", "evaluation"
+    ),
+    _definition(
+        "eval/{protocol}/checkpoint/artifact",
+        "Evaluated checkpoint artifact reference.",
+        "metadata",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/duration/seconds", "Evaluation wall duration.", "seconds", "evaluation"
+    ),
     _definition("eval/{protocol}/source", "Evaluation execution source.", "text", "evaluation"),
-    _definition("eval/{protocol}/candidate/{field}", "Staged checkpoint decision signal.", "scalar", "evaluation"),
-    _definition(EVAL_FULL_BY_START, "Structured full-evaluation evidence by start and reason.", "table", "evaluation"),
-    _definition("leader/checkpoint/{field}", "Selected checkpoint summary field.", "summary", "selection", "summary"),
+    *(
+        _definition(
+            f"eval/{protocol}/candidate/pass",
+            "Staged checkpoint pass signal.",
+            "boolean",
+            "evaluation",
+        )
+        for protocol in ("screen", "confirm")
+    ),
+    *(
+        _definition(
+            f"eval/{protocol}/candidate/stage_index",
+            "Staged checkpoint protocol index.",
+            "index",
+            "evaluation",
+        )
+        for protocol in ("screen", "confirm")
+    ),
+    _definition(
+        CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
+        "Confirmed candidate checkpoint step.",
+        "steps",
+        "evaluation",
+    ),
+    _definition(
+        CHECKPOINT_EVAL_CANDIDATE_EPISODES,
+        "Confirmed candidate evaluation episodes.",
+        "episodes",
+        "evaluation",
+    ),
+    _definition(
+        EVAL_FULL_BY_START,
+        "Structured full-evaluation evidence by start and reason.",
+        "table",
+        "evaluation",
+    ),
+    *(
+        _definition(name, "Selected checkpoint summary field.", "summary", "selection", "summary")
+        for name in (
+            LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+            LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+            LEADER_CHECKPOINT_OBJECTIVE,
+            LEADER_CHECKPOINT_OBJECTIVE_NAME,
+            LEADER_CHECKPOINT_RETURN_MEAN,
+            LEADER_CHECKPOINT_BEST_RETURN,
+            LEADER_CHECKPOINT_RANK,
+            LEADER_CHECKPOINT_RANK_VALUES,
+            LEADER_CHECKPOINT_PROGRESS_MAX,
+            LEADER_CHECKPOINT_STEP,
+            LEADER_CHECKPOINT_STEPS_TO_GOAL,
+            LEADER_CHECKPOINT_ARTIFACT_REF,
+            LEADER_CHECKPOINT_LOCAL_PATH,
+            LEADER_CHECKPOINT_EVAL_SOURCE,
+            LEADER_CHECKPOINT_UPDATED_AT,
+        )
+    ),
 )
 
 
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PLACEHOLDER_PATTERNS = {
     "protocol": "(?:screen|confirm|full)",
-    "stat": "[A-Za-z0-9_.-]+",
-    "algorithm": "[A-Za-z0-9_.-]+",
     "reason": "[A-Za-z0-9_.-]+",
     "start": "[A-Za-z0-9_.-]+",
     "component": "[A-Za-z0-9_.-]+",
     "signal": "[A-Za-z0-9_.-]+",
-    "metric": "[A-Za-z0-9_.-]+",
-    "distribution": "[A-Za-z0-9_.-]+",
-    "task": "[A-Za-z0-9_.-]+",
     "progress": "[A-Za-z0-9_.-]+",
-    "field": "[A-Za-z0-9_.-]+",
 }
 
 
@@ -227,9 +447,7 @@ def validate_metric_payload(payload: Mapping[str, Any]) -> None:
 def metric_path_segment(value: object) -> str:
     segment = str(value).strip()
     if not segment or _SAFE_SEGMENT_RE.fullmatch(segment) is None:
-        raise ValueError(
-            f"metric dimension must match {_SAFE_SEGMENT_RE.pattern}: {value!r}"
-        )
+        raise ValueError(f"metric dimension must match {_SAFE_SEGMENT_RE.pattern}: {value!r}")
     return segment
 
 
@@ -242,14 +460,14 @@ def metric_value_segment(value: object) -> str:
 
 
 def stat_metric(prefix: str, stat: str) -> str:
-    return f"{prefix}/{metric_path_segment(stat)}"
+    return validate_metric_name(f"{prefix}/{metric_path_segment(stat)}")
 
 
 def eval_metric(protocol: str, suffix: str) -> str:
     protocol = metric_path_segment(protocol)
     if protocol not in EVAL_PROTOCOLS:
         raise ValueError(f"unknown evaluation protocol: {protocol}")
-    return f"{EVAL_ROOT}/{protocol}/{suffix.strip('/')}"
+    return validate_metric_name(f"{EVAL_ROOT}/{protocol}/{suffix.strip('/')}")
 
 
 def checkpoint_eval_stage_metric(stage_name: str, name: str) -> str:
@@ -266,15 +484,19 @@ def staged_metric_name(stage_name: str, metric_name: str) -> str:
 
 
 def train_outcome_reason_count_metric(reason: object) -> str:
-    return f"train/outcome/reason/{metric_path_segment(reason)}/count"
+    return validate_metric_name(f"train/outcome/reason/{metric_path_segment(reason)}/count")
 
 
 def train_outcome_reason_window_rate_metric(reason: object) -> str:
-    return f"train/outcome/reason/{metric_path_segment(reason)}/rate/window_100"
+    return validate_metric_name(
+        f"train/outcome/reason/{metric_path_segment(reason)}/rate/window_100"
+    )
 
 
 def train_success_from_metric(start: object, suffix: str) -> str:
-    return f"{TRAIN_OUTCOME_SUCCESS_ROOT}/from/{metric_value_segment(start)}/{suffix}"
+    return validate_metric_name(
+        f"{TRAIN_OUTCOME_SUCCESS_ROOT}/from/{metric_value_segment(start)}/{suffix}"
+    )
 
 
 def train_success_count_metric(start: object) -> str:
@@ -294,17 +516,14 @@ def train_success_window_rate_metric(start: object) -> str:
 
 
 def train_reward_component_metric(component: object, stat: str) -> str:
-    return f"{TRAIN_REWARD_ROOT}/component/{metric_path_segment(component)}/{metric_path_segment(stat)}"
+    return validate_metric_name(
+        f"{TRAIN_REWARD_ROOT}/component/{metric_path_segment(component)}/{metric_path_segment(stat)}"
+    )
 
 
 def train_reward_signal_metric(signal: object, stat: str) -> str:
-    return f"{TRAIN_REWARD_ROOT}/signal/{metric_path_segment(signal)}/{metric_path_segment(stat)}"
-
-
-def train_adv_task_metric(task_id: object, stat: str) -> str:
-    return (
-        f"{TRAIN_ALGORITHM_PPO_ROOT}/advantage/task/{metric_path_segment(task_id)}/"
-        f"{metric_path_segment(stat)}"
+    return validate_metric_name(
+        f"{TRAIN_REWARD_ROOT}/signal/{metric_path_segment(signal)}/{metric_path_segment(stat)}"
     )
 
 
@@ -344,6 +563,29 @@ SB3_SCALAR_MAP = {
     "train/std": (TRAIN_PPO_POLICY_DISTRIBUTION_STD, 1.0),
 }
 
+SB3_IGNORED_SCALARS = {
+    "rollout/ep_rew_mean",  # mapped above; listed here only for documentation symmetry
+    "time/fps",
+    "time/iterations",
+    "time/time_elapsed",
+    "time/total_timesteps",
+    "train/clip_range",
+    "train/clip_range_vf",
+    "train/loss",
+    "train/n_updates",
+}
+
+_RLAB_OWNED_PREFIXES = (
+    "train/episode/",
+    "train/outcome/",
+    "train/reward/",
+    "train/algorithm/",
+    "train/throughput/",
+    "train/artifact/",
+    "eval/",
+    "leader/",
+)
+
 
 def canonical_training_scalars(key_values: Mapping[str, Any]) -> dict[str, float]:
     payload: dict[str, float] = {}
@@ -357,6 +599,10 @@ def canonical_training_scalars(key_values: Mapping[str, Any]) -> dict[str, float
             payload[name] = numeric * multiplier
         elif metric_definition(str(key)) is not None and str(key) != GLOBAL_STEP:
             payload[str(key)] = numeric
+        elif str(key) in SB3_IGNORED_SCALARS:
+            continue
+        elif str(key).startswith(_RLAB_OWNED_PREFIXES):
+            raise ValueError(f"unknown rlab metric at logger boundary: {key}")
     validate_metric_payload(payload)
     return payload
 

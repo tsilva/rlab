@@ -61,7 +61,7 @@ rlab train \
   --wait terminal \
   --json \
   --set recipe_id=local-smoke \
-  --set group_id=local-smoke \
+  --set campaign_id=local-smoke \
   --set train.policy.timesteps=512 \
   --set train.environment.env_config.n_envs=1 \
   --set logging.wandb=false \
@@ -92,14 +92,16 @@ rlab train \
   --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
   --machine beast-3 \
   --set recipe_id=lr2e4 \
-  --set group_id=Level1-1-lr2e4 \
+  --set campaign_id=Level1-1-lr2e4 \
   --set train.policy.learning_rate=2e-4 \
   --seed 1
 ```
 
 Overrides are recorded in the queued recipe payload and W&B config as
 `recipe_overrides`. Give each comparable variant a distinct `recipe_id` so
-leaderboards do not mix sweep arms.
+leaderboards do not mix sweep arms. Each submission receives one generated
+`bx<16 hex>` `batch_id`, shared by all of its seeds and used as the W&B group.
+Use optional `campaign_id` to connect related submissions over time.
 
 If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab train` will resolve the latest successful train-image artifact by default.
 
@@ -110,7 +112,7 @@ rlab validate                                      # validate goals, recipes, be
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
 rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
-rlab play <entity>/<project>/<run-name>-checkpoint:latest
+rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
 rlab play <checkpoint> --step-over
 rlab play <checkpoint> --attribution gradcam
@@ -195,16 +197,21 @@ and beast host recommendations.
 - Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
 - Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
 - Every queue-backed training recipe must include a non-empty `description`; `rlab train` records it as the run description.
+- Queue-backed W&B run names are `<batch_id>-<recipe_id>-s<effective_seed>-<utc>` and use an opaque `rlab-...` run id. Projects identify canonical game families, while config/tags identify the goal, recipe, provider, campaign, and exact environment hash.
+- Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.
+- New W&B model artifact collections and R2/S3 object paths use the immutable run id. Playback continues to resolve historical display-name artifacts and the legacy `breakout` and `ms_pacman` projects.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
 - Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
   its only wait queue, and is the default for newly enqueued queue-backed jobs at effective
   capacity 1. Use `rlab eval modal smoke-local` for the credential-free integration path.
-- Before using a new runtime digest or game, provision its private asset, deploy the exact
-  immutable runtime, then run `rlab eval modal preflight --runtime-image-ref <digest-ref>
-  --game <game-id>`. Pass `--checkpoint-eval-backend local` to opt a submission into the explicit
-  local fallback.
+- The train-image release workflow deploys and startup-probes the digest-specific Modal evaluator
+  before publishing that digest as the latest usable runtime. Modal-backed submissions also run the
+  full schema, capacity, asset, and deployment preflight before inserting queue rows, including for
+  explicitly supplied digests and retries. Use `rlab eval modal preflight --runtime-image-ref
+  <digest-ref> --game <game-id>` for operator diagnosis, and pass `--checkpoint-eval-backend local`
+  to opt a submission into the explicit local fallback.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.

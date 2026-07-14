@@ -14,10 +14,12 @@ from rlab.eval_metrics import (
     eval_by_start_rows,
     episode_rank,
     episode_result_from_record,
+    episode_reasons,
     is_level_complete,
     run_eval_episode,
     summarize_episode_results,
 )
+from rlab.callbacks import _DoneMetricsReducer
 from rlab.eval_runner import _eval_runtime_config, evaluate_model_episodes
 from rlab.metric_names import EVAL_FULL_DURATION_SECONDS, metric_path_segment
 from rlab.targets import target_for_game
@@ -82,7 +84,7 @@ class EvalByStartTableTests(unittest.TestCase):
 
         indexed = {(row[0], row[7]): row for row in rows}
         self.assertEqual(indexed[("A", "level_change")][1:7], [2, 1, 0.5, 5.0, 4.0, 5.0])
-        self.assertEqual(indexed[("A", "level_change")][8:], [2, 1.0])
+        self.assertEqual(indexed[("A", "level_change")][8:], [1, 0.5])
         self.assertEqual(indexed[("A", "life_loss")][8:], [1, 0.5])
         self.assertEqual(indexed[("B", "max_steps")][1:7], [1, 0, 0.0, 100.0, 0.0, 100.0])
 
@@ -109,13 +111,19 @@ class EvalByStartTableTests(unittest.TestCase):
             log_checkpoint_eval(run, metrics)
 
         table = run.payload["eval/full/by_start"]
-        self.assertEqual(table.columns[0:4], [
-            "checkpoint_step",
-            "start_id",
-            "episodes",
-            "success_count",
-        ])
-        self.assertEqual(table.data, [[120000, "A", 1, 1, 1.0, 4.0, 0.0, 4.0, "level_change", 1, 1.0]])
+        self.assertEqual(
+            table.columns[0:4],
+            [
+                "checkpoint_step",
+                "start_id",
+                "episodes",
+                "success_count",
+            ],
+        )
+        self.assertEqual(
+            table.data,
+            [[120000, "A", 1, 1, 1.0, 4.0, 0.0, 4.0, "", 0, 0.0]],
+        )
 
     def test_full_eval_accepts_preaggregated_modal_table_rows(self) -> None:
         class FakeTable:
@@ -164,7 +172,6 @@ def checkpoint_metrics(**overrides: object) -> dict[str, object]:
         "return_mean": 10.0,
         "return_std": 1.0,
         "return_median": 10.0,
-        "return_max": 12.0,
         "episode_length_mean": 100.0,
         "max_x_mean": 300.0,
         "max_x_max": 400.0,
@@ -176,6 +183,7 @@ def checkpoint_metrics(**overrides: object) -> dict[str, object]:
         "eval/full/episode/return/mean": 10.0,
         "eval/full/episode/return/std": 1.0,
         "eval/full/episode/return/median": 10.0,
+        "eval/full/episode/return/best": 12.0,
         "eval/full/episode/length/mean": 100.0,
         "eval/full/episode/count": 10,
         "eval/full/outcome/reason/level_change/count": 9,
@@ -197,9 +205,7 @@ def log_checkpoint_eval(
 ) -> None:
     log_checkpoint_eval_metrics(
         wandb_run=run,
-        args=argparse.Namespace(
-            selection_rank=MARIO_RANK
-        ),
+        args=argparse.Namespace(selection_rank=MARIO_RANK),
         metrics=checkpoint_metrics() if metrics is None else metrics,
         checkpoint_path=Path(f"/tmp/model_{step}_steps.zip"),
         checkpoint_step_value=step,
@@ -209,6 +215,28 @@ def log_checkpoint_eval(
 
 
 class EvalMetricTests(unittest.TestCase):
+    def test_training_and_eval_share_terminal_reason_suffixes(self) -> None:
+        record = EpisodeRecord(
+            lane=0,
+            episode_index=0,
+            start_id="Start",
+            episode_return=-1.0,
+            episode_length=10,
+            terminated=True,
+            truncated=False,
+            outcome=Outcome.FAILURE,
+            events=(),
+            metrics={},
+        )
+        training = _DoneMetricsReducer().consume(record)
+        result = episode_result_from_record(
+            record,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertIn("train/outcome/reason/terminated/count", training)
+        self.assertEqual(episode_reasons(result), {"terminated"})
+
     def test_model_eval_rejects_deterministic_sampling(self) -> None:
         with self.assertRaisesRegex(ValueError, "deterministic policy evaluation is unsupported"):
             evaluate_model_episodes(
@@ -326,9 +354,10 @@ class EvalMetricTests(unittest.TestCase):
             [success, simultaneous_failure],
             deterministic=False,
             event_names=("level_change", "life_loss"),
+            track_success=True,
         )
 
-        self.assertEqual(metrics["eval/full/outcome/reason/level_change/rate"], 1.0)
+        self.assertEqual(metrics["eval/full/outcome/reason/level_change/rate"], 0.5)
         self.assertEqual(metrics["eval/full/outcome/success/from/Level1-1/rate"], 0.5)
         self.assertEqual(metrics["eval/full/outcome/success/rate/min"], 0.5)
 
@@ -396,6 +425,86 @@ class EvalMetricTests(unittest.TestCase):
         self.assertNotIn("eval/full/outcome/reason/level_change/count", summary)
         self.assertNotIn("max_x_mean", summary)
         self.assertNotIn("death_count", summary)
+
+    def test_generic_success_contract_emits_zero_rates_when_every_episode_fails(self) -> None:
+        summary = summarize_episode_results(
+            [
+                {
+                    "start_state": "Start",
+                    "return": -1.0,
+                    "steps": 10,
+                    "terminated": True,
+                    "truncated": False,
+                    "outcome": "failure",
+                    "events": ["goal_reached"],
+                }
+            ],
+            deterministic=False,
+            event_names=("goal_reached",),
+            track_success=True,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertEqual(
+            summary["eval/full/outcome/success/from/Start/rate"],
+            0.0,
+        )
+        self.assertEqual(summary["eval/full/outcome/success/rate/min"], 0.0)
+        self.assertEqual(summary["eval/full/outcome/success/rate/mean"], 0.0)
+
+    def test_non_mario_goal_reached_uses_generic_success_outcome(self) -> None:
+        summary = summarize_episode_results(
+            [
+                {
+                    "start_state": "Start",
+                    "return": 1.0,
+                    "steps": 10,
+                    "terminated": True,
+                    "truncated": False,
+                    "outcome": "success",
+                    "events": ["goal_reached"],
+                }
+            ],
+            deterministic=False,
+            event_names=("goal_reached",),
+            track_success=True,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        self.assertEqual(summary["eval/full/outcome/success/from/Start/rate"], 1.0)
+        self.assertEqual(summary["eval/full/outcome/reason/goal_reached/count"], 0)
+
+    def test_canonical_summary_contains_best_return_before_ranking(self) -> None:
+        summary = summarize_episode_results(
+            [
+                {
+                    "start_state": "Start",
+                    "return": 5.0,
+                    "steps": 10,
+                    "terminated": True,
+                    "truncated": False,
+                    "events": [],
+                },
+                {
+                    "start_state": "Start",
+                    "return": 9.0,
+                    "steps": 10,
+                    "terminated": True,
+                    "truncated": False,
+                    "events": [],
+                },
+            ],
+            deterministic=False,
+            semantics=target_for_game("breakout").eval_semantics,
+        )
+
+        rank = [
+            "max(eval/full/episode/return/mean)",
+            "max(eval/full/episode/return/best)",
+            "min(leader/checkpoint/step)",
+        ]
+        summary["checkpoint_step"] = 123
+        self.assertEqual(eval_checkpoint_score(summary, rank), (7.0, 9.0, -123.0))
 
     def test_generic_eval_summary_counts_configured_terminal_events(self) -> None:
         summary = summarize_episode_results(
@@ -773,7 +882,10 @@ class EvalMetricTests(unittest.TestCase):
             def close(self) -> None:
                 pass
 
-        config = EnvConfig(game="SuperMarioBros-Nes-v0")
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            task=default_task_document("mario"),
+        )
         with (
             patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeVecEnv()),
             patch("rlab.eval_runner.time.perf_counter", side_effect=[10.0, 12.5]),
@@ -795,17 +907,14 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["return_mean"], 3.0)
         self.assertEqual(metrics["success_count"], 1)
         self.assertEqual(metrics["death_count"], 1)
-        self.assertEqual(metrics["eval/full/outcome/reason/level_change/count"], 1)
-        self.assertEqual(metrics["eval/full/outcome/reason/level_change/rate"], 0.5)
+        self.assertNotIn("eval/full/outcome/reason/level_change/count", metrics)
         self.assertEqual(metrics["eval/full/outcome/reason/max_steps/count"], 1)
         self.assertEqual(metrics["eval/full/outcome/reason/max_steps/rate"], 0.5)
         self.assertEqual(metrics["eval/full/outcome/success/from/Level1-1/rate"], 1.0)
         self.assertEqual(metrics["eval/full/outcome/success/from/Level1-2/rate"], 0.0)
         self.assertEqual(metrics["eval/full/outcome/success/rate/min"], 0.0)
         self.assertEqual(metrics["eval/full/outcome/success/rate/mean"], 0.5)
-        self.assertFalse(
-            any("/outcome/reason/" in key and "/from/" in key for key in metrics)
-        )
+        self.assertFalse(any("/outcome/reason/" in key and "/from/" in key for key in metrics))
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
         self.assertEqual(metrics["episode_results"][0]["seed"], 7)
         self.assertEqual(metrics["episode_results"][0]["seed_protocol"], "vector-lane-v1")
@@ -877,7 +986,10 @@ class EvalMetricTests(unittest.TestCase):
         with patch("rlab.eval_runner.make_eval_vec_env", return_value=FakeRecordVecEnv()):
             metrics, video_path = evaluate_model_episodes(
                 model=FakeModel(),
-                config=EnvConfig(game="SuperMarioBros-Nes-v0"),
+                config=EnvConfig(
+                    game="SuperMarioBros-Nes-v0",
+                    task=default_task_document("mario"),
+                ),
                 episodes=2,
                 seed=7,
                 max_steps=10,
@@ -978,7 +1090,10 @@ class EvalMetricTests(unittest.TestCase):
                 pass
 
         fake_env = FakeVecEnv()
-        config = EnvConfig(game="SuperMarioBros-Nes-v0")
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            task=default_task_document("mario"),
+        )
         with patch("rlab.eval_runner.make_eval_vec_env", return_value=fake_env):
             metrics, video_path = evaluate_model_episodes(
                 model=FakeModel(),
@@ -994,8 +1109,8 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(fake_env.step_count, 2)
         self.assertEqual(metrics["episodes"], 1)
         self.assertEqual(metrics["success_count"], 1)
-        self.assertEqual(metrics["eval/full/outcome/reason/level_change/count"], 1)
-        self.assertEqual(metrics["eval/full/outcome/reason/max_steps/count"], 1)
+        self.assertNotIn("eval/full/outcome/reason/level_change/count", metrics)
+        self.assertNotIn("eval/full/outcome/reason/max_steps/count", metrics)
         self.assertEqual(metrics["episode_results"][0]["steps"], 2)
         self.assertEqual(metrics["episode_results"][0]["return"], 3.0)
         self.assertEqual(metrics["episode_results"][0]["max_x_pos"], 250)

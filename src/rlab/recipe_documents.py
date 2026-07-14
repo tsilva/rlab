@@ -342,7 +342,7 @@ def _materialize_goal_queue_defaults(
 ) -> None:
     if goal_document is None:
         return
-    for key in ("group_id", "batch_id"):
+    for key in ("campaign_id",):
         if key in materialized:
             continue
         value = goal_document.get(key)
@@ -420,7 +420,9 @@ def assert_no_template_vars(value: Any, *, label: str = "document") -> None:
 def validate_source_recipe_shape(
     document: Mapping[str, Any], *, label: str, allow_goal_train_fields: bool = False
 ) -> None:
-    retired = sorted(set(document) & {"environment", "reward", "train_config"})
+    retired = sorted(
+        set(document) & {"environment", "reward", "train_config", "group_id", "batch_id"}
+    )
     if retired:
         raise ValueError(
             f"{label} uses compiled or retired source field(s): {', '.join(retired)}; "
@@ -543,10 +545,9 @@ def compiled_recipe_payload(document: Mapping[str, Any]) -> dict[str, Any]:
         "goal_id": recipe_goal_slug(document),
         "recipe_id": recipe_slug(document),
         "description": document.get("description"),
-        "group_id": document.get("group_id"),
         "tags": recipe_tags(document),
     }
-    for key in ("batch_id", "recipe_overrides", "_composition"):
+    for key in ("campaign_id", "recipe_overrides", "_composition"):
         value = document.get(key)
         if value not in (None, "", (), [], {}):
             payload[key] = copy.deepcopy(value)

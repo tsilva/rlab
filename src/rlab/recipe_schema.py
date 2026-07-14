@@ -22,12 +22,11 @@ from rlab.validation import (
 )
 
 
-TRAIN_RECIPE_SCHEMA_VERSION = 1
+TRAIN_RECIPE_SCHEMA_VERSION = 2
 TRAIN_RECIPE_REQUIRED_FIELDS = (
     "goal",
     "recipe_id",
     "description",
-    "group_id",
     "tags",
     "train_config",
 )
@@ -37,7 +36,7 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     {
         "schema_version",
         "seeds",
-        "batch_id",
+        "campaign_id",
         "max_attempts",
         "metadata",
         "notes",
@@ -131,9 +130,8 @@ def validate_materialized_train_recipe(
         if "seeds" in document
         else []
     )
-    require_non_empty_string(document, "group_id", label=label)
-    if "batch_id" in document:
-        require_non_empty_string(document, "batch_id", label=label)
+    if "campaign_id" in document:
+        require_non_empty_string(document, "campaign_id", label=label)
     string_list(require_key(document, "tags", label=label), label=label_path(label, "tags"))
 
     train_config = require_mapping(

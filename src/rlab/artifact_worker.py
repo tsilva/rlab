@@ -9,7 +9,7 @@ from typing import Any
 from rlab.artifacts import (
     build_s3_artifact_uri,
     log_wandb_model_artifact,
-    sanitize_artifact_name,
+    wandb_artifact_collection_name,
     wandb_artifact_storage_uri,
 )
 from rlab.env import resolve_env_config
@@ -40,11 +40,17 @@ def artifact_ref(args: argparse.Namespace, kind: str, aliases: list[str]) -> str
         getattr(args, "wandb_entity", None),
         getattr(args, "wandb_project", None),
         str(args.game),
+        env_provider=getattr(args, "env_provider", None),
     )
     if not entity or not project:
         return None
     alias = aliases[-1] if aliases else "latest"
-    return f"{entity}/{project}/{sanitize_artifact_name(args.run_name)}-{kind}:{alias}"
+    name = wandb_artifact_collection_name(
+        kind,
+        run_id=getattr(args, "wandb_run_id", None),
+        run_name=args.run_name,
+    )
+    return f"{entity}/{project}/{name}:{alias}"
 
 
 def process_upload(
@@ -76,7 +82,13 @@ def process_upload(
         )
         storage_uri = None
         if wandb_artifact_storage_uri(args):
-            storage_uri = build_s3_artifact_uri(wandb_artifact_storage_uri(args), args, path, kind)
+            storage_uri = build_s3_artifact_uri(
+                wandb_artifact_storage_uri(args),
+                args,
+                path,
+                kind,
+                run_id=getattr(args, "wandb_run_id", None),
+            )
         store.mark_artifact_uploaded(
             checkpoint_id,
             artifact_ref=artifact_ref(args, kind, aliases),

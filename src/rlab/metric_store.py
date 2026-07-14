@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from rlab.metric_names import validate_metric_payload
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -187,6 +189,7 @@ class MetricStore:
             payload[str(name)] = numeric
         if not payload:
             return 0
+        validate_metric_payload(payload)
         payload.setdefault("global_step", float(step) if step is not None else 0.0)
         event_id = self._metric_event_id(source=source, step=step, payload=payload)
         with self.connection() as conn:

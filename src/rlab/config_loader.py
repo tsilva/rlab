@@ -16,7 +16,8 @@ import yaml
 YAML_EXTENSIONS = {".yaml", ".yml"}
 TEMPLATE_VARS_KEY = "template_vars"
 QUEUE_TEMPLATE_VALUES: dict[str, Any] = {
-    "group_id": "b-test",
+    "batch_id": "bx0123456789abcdef",
+    "campaign_id": "b-test",
     "seed": 123,
     "recipe_id": "candidate",
     "timestamp": "20260626T120000Z",

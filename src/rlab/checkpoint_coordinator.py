@@ -300,10 +300,14 @@ def write_complete_marker(store: MetricStore, object_store: ObjectStore, args) -
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Coordinate queue checkpoint storage and Modal decisions")
+    parser = argparse.ArgumentParser(
+        description="Coordinate queue checkpoint storage and Modal decisions"
+    )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--train-config-json", type=Path, required=True)
-    parser.add_argument("--stop-file", type=Path, required=True)
+    exit_mode = parser.add_mutually_exclusive_group(required=True)
+    exit_mode.add_argument("--stop-file", type=Path)
+    exit_mode.add_argument("--drain-and-exit", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--limit", type=int, default=4)
     return parser
@@ -324,7 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         for row in store.pending_artifact_uploads(limit=max(1, cli.limit)):
             activity += int(process_upload(store, object_store, args, row))
         activity += import_decisions(store, object_store, args)
-        if cli.stop_file.exists() and write_complete_marker(store, object_store, args):
+        drain_requested = cli.drain_and_exit or (
+            cli.stop_file is not None and cli.stop_file.exists()
+        )
+        if drain_requested and write_complete_marker(store, object_store, args):
             return 0
         if not activity:
             time.sleep(max(0.25, cli.poll_seconds))

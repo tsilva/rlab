@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -171,7 +172,7 @@ class RlabCallbackTests(unittest.TestCase):
 
         self.assertEqual(env.drain_calls, 1)
         self.assertEqual(model.logger.records["train/outcome/terminal/count"], 1)
-        self.assertEqual(model.logger.records["train/outcome/reason/level_change/count"], 1)
+        self.assertEqual(model.logger.records["train/outcome/reason/level_change/count"], 0)
         self.assertNotIn("train/outcome/reason/life_loss/count", model.logger.records)
         self.assertEqual(
             model.logger.records["train/outcome/success/from/Level1-1/count"],
@@ -239,7 +240,9 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
         self.assertEqual(logger.records["train/outcome/success/from/StartB/count"], 0)
         self.assertEqual(logger.records["train/outcome/success/start_coverage/rate"], 1.0)
 
-    def test_success_window_requires_every_configured_start_and_attempts_are_cumulative(self) -> None:
+    def test_success_window_requires_every_configured_start_and_attempts_are_cumulative(
+        self,
+    ) -> None:
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
         callback = RuntimeMetricsHelper(
@@ -324,9 +327,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
 
             marker = marker_path.read_text(encoding="utf-8")
             self.assertIn("early_stop=metric_threshold", marker)
-            self.assertIn(
-                f"early_stop_metric={TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN}", marker
-            )
+            self.assertIn(f"early_stop_metric={TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN}", marker)
             self.assertIn("early_stop_operator=>", marker)
             self.assertIn("early_stop_threshold=0.99", marker)
             self.assertIn("early_stop_value=1", marker)
@@ -460,9 +461,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback._on_training_end()
 
             store = MetricStore(store_path)
-            self.assertEqual(
-                store.latest_metric("train/algorithm/ppo/update/value_loss"), 1.25
-            )
+            self.assertEqual(store.latest_metric("train/algorithm/ppo/update/value_loss"), 1.25)
             with store.connection() as conn:
                 row = conn.execute(
                     "SELECT step, source FROM metric_frames ORDER BY id DESC LIMIT 1"
@@ -547,7 +546,7 @@ class LedgerCheckpointHelperTests(unittest.TestCase):
 
 
 class ThroughputHelperTests(unittest.TestCase):
-    def test_logs_rollout_fps_and_next_iteration_instant_fps(self) -> None:
+    def test_logs_one_complete_aligned_frame_at_the_next_rollout_start(self) -> None:
         class Logger:
             def __init__(self) -> None:
                 self.records: list[tuple[str, float]] = []
@@ -575,16 +574,14 @@ class ThroughputHelperTests(unittest.TestCase):
         callback._on_rollout_end()
 
         self.assertEqual(
-            model.logger.records,
-            [
-                ("train/throughput/rollout_fps", 50.0),
-                ("train/throughput/rollout_seconds", 2.0),
-                ("train/throughput/rollout_fps", 60.0),
-                ("train/throughput/rollout_seconds", 2.0),
-                ("train/throughput/loop_fps", 20.0),
-                ("train/throughput/loop_seconds", 5.0),
-                ("train/throughput/between_rollouts_seconds", 3.0),
-            ],
+            dict(model.logger.records),
+            {
+                "train/throughput/loop_fps": 20.0,
+                "train/throughput/rollout_fps": 50.0,
+                "train/throughput/loop_seconds": 5.0,
+                "train/throughput/rollout_seconds": 2.0,
+                "train/throughput/between_rollouts_seconds": 3.0,
+            },
         )
 
     def test_logs_native_env_step_throughput_when_available(self) -> None:
@@ -600,6 +597,7 @@ class ThroughputHelperTests(unittest.TestCase):
                 self.stats = [
                     {"seconds_total": 1.0, "calls_total": 10, "num_envs": 4},
                     {"seconds_total": 3.0, "calls_total": 35, "num_envs": 4},
+                    {"seconds_total": 3.0, "calls_total": 35, "num_envs": 4},
                 ]
 
             def native_step_stats(self):
@@ -614,7 +612,7 @@ class ThroughputHelperTests(unittest.TestCase):
                 self.logger = Logger()
                 self.env = Wrapper(NativeStatsEnv())
 
-        times = iter([0.0, 5.0])
+        times = iter([0.0, 5.0, 7.0])
         callback = ThroughputHelper(clock=lambda: next(times))
         model = Model()
         callback.model = model  # type: ignore[assignment]
@@ -623,17 +621,54 @@ class ThroughputHelperTests(unittest.TestCase):
         callback._on_rollout_start()
         callback.num_timesteps = 140
         callback._on_rollout_end()
+        callback._on_rollout_start()
 
+        frame = dict(model.logger.records)
+        self.assertEqual(frame["train/throughput/loop_seconds"], 7.0)
+        self.assertEqual(frame["train/throughput/rollout_seconds"], 5.0)
+        self.assertEqual(frame["train/throughput/between_rollouts_seconds"], 2.0)
+        self.assertEqual(frame["train/throughput/env_step_seconds"], 2.0)
+        self.assertEqual(frame["train/throughput/rollout_overhead_seconds"], 3.0)
+        self.assertEqual(frame["train/throughput/env_step_fps"], 50.0)
         self.assertEqual(
-            model.logger.records,
-            [
-                ("train/throughput/rollout_fps", 20.0),
-                ("train/throughput/rollout_seconds", 5.0),
-                ("train/throughput/env_step_seconds", 2.0),
-                ("train/throughput/env_step_fps", 50.0),
-                ("train/throughput/rollout_overhead_seconds", 3.0),
-            ],
+            frame["train/throughput/loop_seconds"],
+            frame["train/throughput/rollout_seconds"]
+            + frame["train/throughput/between_rollouts_seconds"],
         )
+        self.assertEqual(
+            frame["train/throughput/rollout_seconds"],
+            frame["train/throughput/env_step_seconds"]
+            + frame["train/throughput/rollout_overhead_seconds"],
+        )
+
+    def test_complete_frame_uses_the_completed_rollout_step(self) -> None:
+        class Run:
+            def __init__(self) -> None:
+                self.payloads = []
+
+            def log(self, payload) -> None:
+                self.payloads.append(payload)
+
+        run = Run()
+        times = iter([0.0, 2.0, 5.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            callback = ThroughputHelper(
+                clock=lambda: next(times),
+                metric_store_path=Path(tmp) / "rlab.sqlite",
+                wandb_run=run,
+            )
+            callback.model = SimpleNamespace(
+                logger=SimpleNamespace(record=lambda *_args: None),
+                env=None,
+            )
+            callback.num_timesteps = 0
+            callback._on_rollout_start()
+            callback.num_timesteps = 100
+            callback._on_rollout_end()
+            callback._on_rollout_start()
+
+        self.assertEqual(len(run.payloads), 1)
+        self.assertEqual(run.payloads[0]["global_step"], 100)
 
 
 class RolloutDiagnosticsHelperTests(unittest.TestCase):
@@ -695,8 +730,35 @@ class RolloutDiagnosticsHelperTests(unittest.TestCase):
 
         callback._on_rollout_end()
 
+        self.assertEqual(logger.records["train/algorithm/ppo/policy/dominant_action_rate"], 0.75)
+
+    def test_logs_action_histogram_on_the_configured_rollout_cadence(self) -> None:
+        run = SimpleNamespace(payload=None)
+        run.log = lambda payload: setattr(run, "payload", payload)
+        logger = SimpleNamespace(record=lambda *_args: None)
+        model = SimpleNamespace(
+            logger=logger,
+            rollout_buffer=SimpleNamespace(
+                values=np.asarray([1.0]),
+                advantages=np.asarray([0.0]),
+                actions=np.asarray([[0], [1], [1]]),
+            ),
+            action_space=gym.spaces.Discrete(2),
+        )
+        callback = RolloutDiagnosticsHelper(
+            wandb_run=run,
+            histogram_interval=1,
+        )
+        callback.model = model  # type: ignore[assignment]
+        callback.num_timesteps = 64
+
+        with mock.patch("wandb.Histogram", side_effect=lambda values: tuple(values)):
+            callback._on_rollout_end()
+
+        self.assertEqual(run.payload["global_step"], 64)
         self.assertEqual(
-            logger.records["train/algorithm/ppo/policy/dominant_action_rate"], 0.75
+            run.payload["train/algorithm/ppo/policy/action_hist"],
+            (0.0, 1.0, 1.0),
         )
 
 

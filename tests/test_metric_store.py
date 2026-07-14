@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
-from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
+from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN, TRAIN_REWARD_ROOT
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 
 STAGES = [
@@ -29,6 +29,17 @@ STAGES = [
 
 
 class MetricStoreTests(unittest.TestCase):
+    def test_rejects_unknown_scalar_metric_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            with self.assertRaisesRegex(ValueError, "unknown metric"):
+                store.append_metrics(
+                    {"train/reward/typo": 1.0},
+                    step=1,
+                    source="train",
+                )
+
     def test_writer_waits_for_bounded_concurrent_lock_instead_of_failing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rlab.sqlite"
@@ -40,7 +51,11 @@ class MetricStoreTests(unittest.TestCase):
 
             def write() -> None:
                 try:
-                    store.append_metrics({"train/reward": 1.0}, step=10, source="train")
+                    store.append_metrics(
+                        {f"{TRAIN_REWARD_ROOT}/shaped/mean": 1.0},
+                        step=10,
+                        source="train",
+                    )
                 except BaseException as exc:  # pragma: no cover - asserted below
                     errors.append(exc)
 
@@ -53,7 +68,7 @@ class MetricStoreTests(unittest.TestCase):
 
             self.assertFalse(writer.is_alive())
             self.assertEqual(errors, [])
-            self.assertEqual(store.latest_metric("train/reward"), 1.0)
+            self.assertEqual(store.latest_metric(f"{TRAIN_REWARD_ROOT}/shaped/mean"), 1.0)
 
     def test_init_persists_wal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,7 +88,7 @@ class MetricStoreTests(unittest.TestCase):
             self.assertEqual(
                 store.append_metrics(
                     {
-                        "train/reward": 1.0,
+                        f"{TRAIN_REWARD_ROOT}/shaped/mean": 1.0,
                         "ignored/text": "nope",
                         "ignored/bool": True,
                     },
@@ -83,9 +98,14 @@ class MetricStoreTests(unittest.TestCase):
                 ),
                 1,
             )
-            store.append_metrics({"train/reward": 2.5}, step=20, source="train", created_at=2.0)
+            store.append_metrics(
+                {f"{TRAIN_REWARD_ROOT}/shaped/mean": 2.5},
+                step=20,
+                source="train",
+                created_at=2.0,
+            )
 
-            self.assertEqual(store.latest_metric("train/reward"), 2.5)
+            self.assertEqual(store.latest_metric(f"{TRAIN_REWARD_ROOT}/shaped/mean"), 2.5)
             self.assertIsNone(store.latest_metric("missing"))
 
     def test_checkpoint_row_creates_pending_artifact_and_eval_rows(self) -> None:

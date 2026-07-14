@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from rlab.artifacts import sanitize_artifact_name
+from rlab.artifacts import wandb_artifact_collection_name
 from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
 from rlab.env import resolve_env_config
 from rlab.env_metadata import env_config_from_config_dict
@@ -28,6 +28,7 @@ def project_payload(payload: Mapping[str, Any]) -> None:
         train_config.get("wandb_entity"),
         train_config.get("wandb_project"),
         str(train_config.get("game") or ""),
+        env_provider=train_config.get("env_provider"),
     )
     run = configure_wandb_metrics(
         wandb.init(
@@ -61,7 +62,11 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 "artifact_storage_uri": checkpoint_uri,
             }
             artifact = wandb.Artifact(
-                f"{sanitize_artifact_name(str(train_config.get('run_name') or run_id))}-{kind}",
+                wandb_artifact_collection_name(
+                    kind,
+                    run_id=run_id,
+                    run_name=train_config.get("run_name"),
+                ),
                 type="model",
                 metadata=artifact_metadata,
             )

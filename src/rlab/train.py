@@ -46,6 +46,7 @@ from rlab.env import (
     resolve_env_config,
     resolve_mixed_state_config,
     task_conditioning,
+    task_termination,
 )
 from rlab.env_config import env_config_from_args
 from rlab.env_config import parse_obs_crop
@@ -77,15 +78,21 @@ def active_reward_components(task: Mapping[str, object]) -> tuple[str, ...]:
         components.append("progress")
     if reward_mode == "score":
         components.append("score")
-    if float(reward.get("terminal_reward") or 0.0) != 0.0 or float(
-        reward.get("completion_reward") or 0.0
-    ) != 0.0:
+    if (
+        float(reward.get("terminal_reward") or 0.0) != 0.0
+        or float(reward.get("completion_reward") or 0.0) != 0.0
+    ):
         components.append("completion")
     if float(reward.get("death_penalty") or 0.0) != 0.0:
         components.append("death")
     if float(reward.get("time_penalty") or 0.0) != 0.0:
         components.append("time")
     return tuple(components)
+
+
+def active_reward_signals(task: Mapping[str, object]) -> tuple[str, ...]:
+    components = set(active_reward_components(task))
+    return tuple(signal for signal in ("progress", "score") if signal in components)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -364,10 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     components = [
         GracefulStopHelper(graceful_stop_flag),
         Sb3HumanOutputFormatHelper(),
-        ThroughputHelper(),
+        ThroughputHelper(metric_store_path=store_path, wandb_run=wandb_run),
         RuntimeMetricsHelper(
-            event_names=tuple(config.task.get("events", {})),
+            event_names=tuple(task_termination(config).get("failure", ())),
             active_reward_components=active_reward_components(config.task),
+            active_reward_signals=active_reward_signals(config.task),
             configured_starts=tuple(config.states or ((config.state,) if config.state else ())),
             track_success=bool(
                 isinstance(config.task.get("termination"), Mapping)

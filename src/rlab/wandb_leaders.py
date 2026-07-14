@@ -42,7 +42,9 @@ CHECKPOINT_PROGRESS_KEYS = (LEADER_CHECKPOINT_PROGRESS_MAX,)
 CHECKPOINT_RETURN_KEYS = (LEADER_CHECKPOINT_RETURN_MEAN,)
 CHECKPOINT_STEPS_TO_GOAL_KEYS = (LEADER_CHECKPOINT_STEPS_TO_GOAL,)
 CHECKPOINT_STEP_KEYS = (LEADER_CHECKPOINT_STEP,)
-CHECKPOINT_PRIMARY_ORDER = f"-summary_metrics.{LEADER_CHECKPOINT_OBJECTIVE}"
+# API ordering is only a retrieval hint. Goal-specific ranking happens in Python,
+# because the primary objective may be either minimized or maximized.
+CHECKPOINT_PRIMARY_ORDER = "-created_at"
 WANDB_RUNS_PER_PAGE = 200
 
 
@@ -110,7 +112,7 @@ def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> float | Non
             continue
         try:
             return float(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return None
 
@@ -120,7 +122,7 @@ def _optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -273,8 +275,10 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         "checkpoint_step": checkpoint_step,
     }
     saved_rank_values = _mapping_value(summary, LEADER_CHECKPOINT_RANK_VALUES)
-    if rank and isinstance(saved_rank_values, Sequence) and not isinstance(
-        saved_rank_values, str | bytes
+    if (
+        rank
+        and isinstance(saved_rank_values, Sequence)
+        and not isinstance(saved_rank_values, str | bytes)
     ):
         rank_metrics.update(
             {
@@ -357,18 +361,10 @@ def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
         "success_mean\tsteps_to_goal\treturn\tprogress\tstep\trun\tartifact_ref"
     )
     for row in rows:
-        steps_to_goal = (
-            f"{row.steps_to_goal:.6g}"
-            if row.steps_to_goal is not None
-            else ""
-        )
-        success_rate = (
-            f"{row.success_rate_min:.6g}" if row.success_rate_min is not None else ""
-        )
+        steps_to_goal = f"{row.steps_to_goal:.6g}" if row.steps_to_goal is not None else ""
+        success_rate = f"{row.success_rate_min:.6g}" if row.success_rate_min is not None else ""
         success_rate_mean = (
-            f"{row.success_rate_mean:.6g}"
-            if row.success_rate_mean is not None
-            else ""
+            f"{row.success_rate_mean:.6g}" if row.success_rate_mean is not None else ""
         )
         progress = f"{row.progress_max:.6g}" if row.progress_max is not None else ""
         print(
@@ -449,7 +445,9 @@ def cmd_runs(args: argparse.Namespace) -> int:
         )
         if score is not None and (not args.goal or score.goal_slug == args.goal)
     ]
-    leaders = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[: max(0, int(args.limit))]
+    leaders = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[
+        : max(0, int(args.limit))
+    ]
     if args.json:
         print_json(leaders)
     else:

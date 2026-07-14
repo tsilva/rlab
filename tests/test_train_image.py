@@ -97,6 +97,27 @@ class TrainImageTests(unittest.TestCase):
         self.assertNotIn("type=gha", runtime_build)
         self.assertNotIn("cache-to:", runtime_build)
 
+    def test_runtime_artifact_is_published_only_after_modal_deployment(self) -> None:
+        workflow = Path(".github/workflows/rlab-train-image.yml").read_text(encoding="utf-8")
+        modal_workflow = Path(".github/workflows/rlab-modal-eval.yml").read_text(encoding="utf-8")
+
+        self.assertIn("workflow_call:", modal_workflow)
+        self.assertIn("workflow_dispatch:", modal_workflow)
+        self.assertIn("deploy-modal-evaluator:", workflow)
+        self.assertIn("uses: ./.github/workflows/rlab-modal-eval.yml", workflow)
+        publish = workflow.split("  publish-runtime:", maxsplit=1)[1]
+        self.assertIn("needs: [build, deploy-modal-evaluator]", publish)
+        self.assertIn("name: rlab-train-image", publish)
+        self.assertIn("if: github.event_name != 'pull_request'", publish)
+        build = workflow.split("  build:", maxsplit=1)[1].split(
+            "  deploy-modal-evaluator:", maxsplit=1
+        )[0]
+        self.assertNotIn("name: rlab-train-image", build)
+        deploy = workflow.split("  deploy-modal-evaluator:", maxsplit=1)[1].split(
+            "  publish-runtime:", maxsplit=1
+        )[0]
+        self.assertIn("if: github.event_name != 'pull_request'", deploy)
+
 
 if __name__ == "__main__":
     unittest.main()

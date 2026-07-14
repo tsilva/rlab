@@ -17,6 +17,7 @@ from rlab.config_validation import (
 from rlab import config_validation
 from rlab.job_queue import load_recipe_document
 from rlab.main import COMMANDS
+from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -78,7 +79,13 @@ class ConfigValidationTests(unittest.TestCase):
                     "name": "confirm",
                     "episodes": 30,
                     "n_envs": 4,
-                    "pass": [{"metric": "metric", "operator": ">=", "threshold": 1}],
+                    "pass": [
+                        {
+                            "metric": EVAL_FULL_SUCCESS_RATE_MIN,
+                            "operator": ">=",
+                            "threshold": 1,
+                        }
+                    ],
                     "candidate_stop": True,
                 }
             ]

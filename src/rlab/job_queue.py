@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -39,7 +40,7 @@ from rlab.recipe_documents import (
     validate_launch_event_config,
     validate_launch_seed_config,
 )
-from rlab.seeds import validate_training_seed
+from rlab.seeds import DEFAULT_TRAIN_SEED, validate_training_seed
 from rlab.recipe_schema import (
     require_explicit_queue_train_config,
     validate_materialized_train_recipe,
@@ -67,9 +68,11 @@ CREATE TABLE IF NOT EXISTS train_jobs (
     CHECK (status IN ('pending', 'launching', 'running', 'succeeded', 'failed', 'canceled')),
   cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
   batch_id TEXT NOT NULL,
+  campaign_id TEXT,
   submission_key TEXT NOT NULL,
   submission_ordinal INTEGER NOT NULL CHECK (submission_ordinal >= 0),
   request_hash TEXT NOT NULL,
+  retry_of_job_id BIGINT REFERENCES train_jobs(id),
   retried_from_job_id BIGINT REFERENCES train_jobs(id),
   run_name TEXT,
   run_description TEXT,
@@ -215,6 +218,8 @@ DROP INDEX IF EXISTS train_jobs_claim_idx;
 DROP INDEX IF EXISTS train_jobs_spec_status_idx;
 
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS priority;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS campaign_id TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id BIGINT REFERENCES train_jobs(id);
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (machine, status, id)
@@ -512,19 +517,21 @@ def _utc_stamp() -> str:
 def _format_queue_template(
     template: str | None,
     *,
-    seed: int | None,
+    seed: int,
     recipe_id: str,
     utc: str,
-    group_id: str = "",
+    batch_id: str,
+    campaign_id: str = "",
 ) -> str | None:
     if not template:
         return None
     return str(template).format(
-        seed="" if seed is None else seed,
+        seed=seed,
         recipe_id=recipe_id,
         timestamp=utc,
         utc=utc,
-        group_id=group_id,
+        batch_id=batch_id,
+        campaign_id=campaign_id,
     )
 
 
@@ -539,28 +546,30 @@ def _run_name_slug(value: str, *, limit: int = 32) -> str:
     return slug[:limit].strip("-") or "run"
 
 
-def _run_name_batch_id(group_id: str) -> str:
-    group = _run_name_slug(group_id)
-    match = re.match(r"^(b\d+)(?:-|$)", group)
-    return match.group(1) if match else group
-
-
 def _format_default_run_name(
-    group_id: str,
+    batch_id: str,
     *,
     label: str,
-    seed: int | None,
+    seed: int,
     utc: str,
 ) -> str:
-    batch_id = _run_name_batch_id(group_id)
+    batch_id = _run_name_slug(batch_id)
     description = _run_name_slug(label, limit=24)
-    seed_label = f"s{seed}" if seed is not None else "s"
-    return f"{batch_id}-{description}-{seed_label}-{utc}"
+    return f"{batch_id}-{description}-s{seed}-{utc}"
+
+
+def _validate_queue_run_name(value: str, *, batch_id: str, label: str, seed: int) -> str:
+    prefix = _format_default_run_name(batch_id, label=label, seed=seed, utc="")
+    if not re.fullmatch(rf"{re.escape(prefix)}\d{{8}}T\d{{6}}Z", value):
+        raise ValueError(
+            "queue run_name must use <batch_id>-<recipe>-s<seed>-<utc> with the effective seed"
+        )
+    return value
 
 
 def _document_seeds(
     document: Mapping[str, Any], override_seeds: Sequence[int] = ()
-) -> list[int | None]:
+) -> list[int]:
     if override_seeds:
         return [int(seed) for seed in override_seeds]
     seeds = document.get("seeds")
@@ -569,7 +578,7 @@ def _document_seeds(
     train_config = document.get("train_config")
     if isinstance(train_config, Mapping) and train_config.get("seed") is not None:
         return [int(train_config["seed"])]
-    return [None]
+    return [DEFAULT_TRAIN_SEED]
 
 
 def _hash_json(value: Any) -> str:
@@ -577,12 +586,16 @@ def _hash_json(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _submission_batch_id(submission_key: str) -> str:
+    return "bx" + _hash_json({"submission_key": submission_key})[:16]
+
+
 def _submission_request_hash(
     *,
     document: Mapping[str, Any],
     machine: str,
     runtime_image_ref: str,
-    seeds: Sequence[int | None],
+    seeds: Sequence[int],
 ) -> str:
     return _hash_json(
         {
@@ -605,6 +618,42 @@ def _existing_submission(conn, *, submission_key: str) -> list[dict[str, Any]]:
             {"submission_key": submission_key},
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+def modal_eval_readiness_report(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+    # Keep this import local: modal_eval_cli uses the queue connection helpers.
+    from rlab.modal_eval_cli import modal_preflight
+
+    return modal_preflight(runtime_image_ref=runtime_image_ref, game=game)
+
+
+def require_modal_eval_ready(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    game = str(game or "").strip()
+    report = modal_eval_readiness_report(runtime_image_ref=runtime_image_ref, game=game)
+    if bool(report.get("ready")):
+        return report
+    failed = [check for check in report.get("checks", []) if not bool(check.get("ok"))]
+    detail = (
+        ", ".join(
+            f"{check.get('name', 'unknown')} ({check.get('detail', 'failed')})"
+            for check in failed
+        )
+        or "unknown readiness failure"
+    )
+    remediation = shlex.join(
+        [
+            "rlab",
+            "eval",
+            "modal",
+            "preflight",
+            "--runtime-image-ref",
+            runtime_image_ref,
+            "--game",
+            game,
+        ]
+    )
+    raise RuntimeError(f"Modal eval preflight failed: {detail}. Remediation: run {remediation}")
 
 
 def enqueue_train_jobs_from_recipe_document(
@@ -641,12 +690,12 @@ def enqueue_train_jobs_from_recipe_document(
     machine = normalize_machine(machine)
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     utc = _utc_stamp()
-    group_id = str(document["group_id"])
-    batch_id = str(document.get("batch_id") or group_id).strip()
+    campaign_id = str(document.get("campaign_id") or "").strip() or None
     explicit_submission_key = submission_key is not None
     submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
     if not submission_key:
         raise ValueError("submission_key is required")
+    batch_id = _submission_batch_id(submission_key)
     document_seeds = _document_seeds(document, seeds)
     request_hash = _submission_request_hash(
         document=document,
@@ -655,7 +704,8 @@ def enqueue_train_jobs_from_recipe_document(
         seeds=document_seeds,
     )
     if explicit_submission_key:
-        existing = _existing_submission(conn, submission_key=submission_key)
+        with conn:
+            existing = _existing_submission(conn, submission_key=submission_key)
         if existing:
             if any(str(row["request_hash"]) != request_hash for row in existing):
                 raise ValueError(
@@ -667,6 +717,13 @@ def enqueue_train_jobs_from_recipe_document(
                     f"expected {len(document_seeds)} jobs, found {len(existing)}"
                 )
             return existing
+    modal_readiness_validated = backend != "modal"
+    if not modal_readiness_validated:
+        require_modal_eval_ready(
+            runtime_image_ref=runtime_image_ref,
+            game=str(train_config.get("game") or ""),
+        )
+        modal_readiness_validated = True
     rows = []
     with conn:
         if explicit_submission_key:
@@ -718,6 +775,7 @@ def enqueue_train_jobs_from_recipe_document(
                 machine=machine,
                 train_config=train_config,
                 batch_id=batch_id,
+                campaign_id=campaign_id,
                 submission_key=submission_key,
                 submission_ordinal=ordinal,
                 request_hash=request_hash,
@@ -729,12 +787,14 @@ def enqueue_train_jobs_from_recipe_document(
                     seed=seed,
                     recipe_id=document_slug,
                     utc=utc,
-                    group_id=group_id,
+                    batch_id=batch_id,
+                    campaign_id=campaign_id or "",
                 ),
                 seed=seed,
-                wandb_group=group_id,
+                wandb_group=batch_id,
                 wandb_tags=recipe_tags(document),
                 manage_transaction=False,
+                _modal_readiness_validated=modal_readiness_validated,
             )
             rows.append(row)
     return rows
@@ -782,37 +842,52 @@ def enqueue_train_job(
     repo_dirty: bool = False,
     recipe_payload: Mapping[str, Any] | None = None,
     batch_id: str | None = None,
+    campaign_id: str | None = None,
     submission_key: str | None = None,
     submission_ordinal: int = 0,
     request_hash: str | None = None,
-    retried_from_job_id: int | None = None,
+    retry_of_job_id: int | None = None,
     run_name: str | None = None,
     run_description: str | None = None,
     seed: int | None = None,
     wandb_group: str | None = None,
     wandb_tags: Sequence[str] = (),
     manage_transaction: bool = True,
+    _modal_readiness_validated: bool = False,
 ) -> dict[str, Any]:
     goal_slug = str(goal_slug).strip()
     if not goal_slug:
         raise ValueError("goal_slug is required")
-    batch_id = str(batch_id or wandb_group or f"b-{uuid.uuid4().hex[:10]}").strip()
     submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
+    batch_id = str(batch_id or _submission_batch_id(submission_key)).strip()
+    campaign_id = str(campaign_id or "").strip() or None
     if submission_ordinal < 0:
         raise ValueError("submission_ordinal must be at least zero")
     requested_config = dict(train_config)
+    seed = int(seed if seed is not None else requested_config.get("seed", DEFAULT_TRAIN_SEED))
     if "checkpoint_eval_backend" not in requested_config:
         modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
         if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled:
             requested_config["checkpoint_eval_backend"] = "modal"
     config = validate_and_normalize_train_config(requested_config)
+    config["batch_id"] = batch_id
+    if campaign_id:
+        config["campaign_id"] = campaign_id
+    if retry_of_job_id is not None:
+        config["retry_of_job_id"] = int(retry_of_job_id)
     config["wandb_run_id"] = (
         "rlab-"
         + _hash_json({"submission_key": submission_key, "submission_ordinal": submission_ordinal})[
             :24
         ]
     )
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     if str(config.get("checkpoint_eval_backend") or "local") == "modal":
+        if not _modal_readiness_validated:
+            require_modal_eval_ready(
+                runtime_image_ref=runtime_image_ref,
+                game=str(config.get("game") or ""),
+            )
         if not config.get("checkpoint_eval_asset_manifest"):
             config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
                 str(config.get("game") or "")
@@ -823,8 +898,32 @@ def enqueue_train_job(
     require_explicit_queue_train_config(config)
     validate_launch_seed_config(config, seed=seed)
     validate_launch_event_config(config)
-    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     machine = normalize_machine(machine)
+    run_name = _validate_queue_run_name(
+        str(
+            run_name
+            or _format_default_run_name(
+                batch_id,
+                label=str(recipe_slug or goal_slug),
+                seed=seed,
+                utc=_utc_stamp(),
+            )
+        ),
+        batch_id=batch_id,
+        label=str(recipe_slug or goal_slug),
+        seed=seed,
+    )
+    wandb_group = batch_id
+    normalized_tags = [str(tag).strip() for tag in wandb_tags if str(tag).strip()]
+    if campaign_id and f"campaign_id:{campaign_id}" not in normalized_tags:
+        normalized_tags.append(f"campaign_id:{campaign_id}")
+    if retry_of_job_id is not None:
+        normalized_tags = [
+            tag for tag in normalized_tags if not tag.startswith("retry_of_job_id:")
+        ]
+        retry_tag = f"retry_of_job_id:{int(retry_of_job_id)}"
+        if retry_tag not in normalized_tags:
+            normalized_tags.append(retry_tag)
     request_hash = str(
         request_hash
         or _hash_json(
@@ -846,16 +945,18 @@ def enqueue_train_job(
                 INSERT INTO train_jobs (
                   goal_slug, recipe_slug, recipe_path, recipe_sha256, repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
-                  batch_id, submission_key, submission_ordinal, request_hash,
-                  retried_from_job_id, run_name, run_description, seed, wandb_group, wandb_tags
+                  batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
+                  retry_of_job_id, retried_from_job_id, run_name, run_description, seed,
+                  wandb_group, wandb_tags
                 )
                 VALUES (
                   %(goal_slug)s, %(recipe_slug)s, %(recipe_path)s, %(recipe_sha256)s,
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
-                  %(batch_id)s, %(submission_key)s, %(submission_ordinal)s, %(request_hash)s,
-                  %(retried_from_job_id)s, %(run_name)s, %(run_description)s, %(seed)s,
-                  %(wandb_group)s, %(wandb_tags)s
+                  %(batch_id)s, %(campaign_id)s, %(submission_key)s,
+                  %(submission_ordinal)s, %(request_hash)s,
+                  %(retry_of_job_id)s, %(retried_from_job_id)s, %(run_name)s,
+                  %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
                 )
                 RETURNING *
                 """,
@@ -871,15 +972,18 @@ def enqueue_train_job(
                     "machine": machine,
                     "train_config": json_arg(config),
                     "batch_id": batch_id,
+                    "campaign_id": campaign_id,
                     "submission_key": submission_key,
                     "submission_ordinal": submission_ordinal,
                     "request_hash": request_hash,
-                    "retried_from_job_id": retried_from_job_id,
+                    "retry_of_job_id": retry_of_job_id,
+                    # Retain the legacy column for compatibility with older queue readers.
+                    "retried_from_job_id": retry_of_job_id,
                     "run_name": run_name,
                     "run_description": run_description,
                     "seed": seed,
                     "wandb_group": wandb_group,
-                    "wandb_tags": list(wandb_tags),
+                    "wandb_tags": normalized_tags,
                 },
             )
             row = dict(cur.fetchone())
@@ -893,6 +997,7 @@ def enqueue_train_job(
                     "recipe_slug": recipe_slug,
                     "machine": machine,
                     "batch_id": batch_id,
+                    "campaign_id": campaign_id,
                 },
             )
             return row
@@ -1396,6 +1501,41 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
     """Create a new pending job from a terminal job; execution is never retried in place."""
     submission_key = str(submission_key or f"retry-{job_id}-{uuid.uuid4().hex}")
     with conn:
+        existing = _existing_submission(conn, submission_key=submission_key)
+        if existing:
+            retry_source = existing[0].get("retry_of_job_id") or existing[0].get(
+                "retried_from_job_id"
+            )
+            if len(existing) != 1 or retry_source != int(job_id):
+                raise ValueError(
+                    f"submission_key {submission_key!r} was reused for a different retry"
+                )
+            return existing[0]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM train_jobs
+                WHERE id = %(job_id)s
+                  AND status IN ('succeeded', 'failed', 'canceled')
+                """,
+                {"job_id": int(job_id)},
+            )
+            preview = cur.fetchone()
+    if not preview:
+        raise ValueError(f"job {job_id} is not terminal or does not exist")
+    preview = dict(preview)
+    preview_config = dict(preview.get("train_config") or {})
+    modal_readiness_validated = (
+        str(preview_config.get("checkpoint_eval_backend") or "local") != "modal"
+    )
+    if not modal_readiness_validated:
+        require_modal_eval_ready(
+            runtime_image_ref=str(preview["runtime_image_ref"]),
+            game=str(preview_config.get("game") or ""),
+        )
+        modal_readiness_validated = True
+    with conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
@@ -1407,7 +1547,10 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             )
             existing = [dict(row) for row in cur.fetchall()]
             if existing:
-                if len(existing) != 1 or existing[0].get("retried_from_job_id") != int(job_id):
+                retry_source = existing[0].get("retry_of_job_id") or existing[0].get(
+                    "retried_from_job_id"
+                )
+                if len(existing) != 1 or retry_source != int(job_id):
                     raise ValueError(
                         f"submission_key {submission_key!r} was reused for a different retry"
                     )
@@ -1439,22 +1582,22 @@ def retry_train_job(conn, *, job_id: int, submission_key: str | None = None) -> 
             machine=source["machine"],
             train_config=source["train_config"],
             batch_id=source["batch_id"],
+            campaign_id=source.get("campaign_id"),
             submission_key=submission_key,
             request_hash=_hash_json({"retry_of": int(job_id), "submission_key": submission_key}),
-            retried_from_job_id=int(job_id),
-            run_name=(f"{source.get('run_name') or f'job-{job_id}'}-retry-{_utc_stamp()}"),
+            retry_of_job_id=int(job_id),
             run_description=source.get("run_description"),
             seed=source.get("seed"),
-            wandb_group=source.get("wandb_group"),
             wandb_tags=source.get("wandb_tags") or (),
             manage_transaction=False,
+            _modal_readiness_validated=modal_readiness_validated,
         )
         record_job_event(
             conn,
             job_id=int(result["id"]),
             event_type="retried",
             message=f"explicit retry of job {job_id}",
-            metadata={"retried_from_job_id": int(job_id)},
+            metadata={"retry_of_job_id": int(job_id)},
         )
         return result
 

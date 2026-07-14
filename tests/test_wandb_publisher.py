@@ -23,7 +23,7 @@ class WandbPublisherTests(unittest.TestCase):
             store = MetricStore(Path(tmp) / "rlab.sqlite")
             store.init()
             store.append_metrics(
-                {"rollout/ep_rew_mean": 12.5, "time/fps": 4000},
+                {"train/episode/return/shaped/mean": 12.5},
                 step=2048,
                 source="train",
             )
@@ -40,7 +40,7 @@ class WandbPublisherTests(unittest.TestCase):
             self.assertEqual(count, 1)
             self.assertEqual(len(run.logged), 1)
             self.assertEqual(run.logged[0]["global_step"], 2048.0)
-            self.assertEqual(run.logged[0]["rollout/ep_rew_mean"], 12.5)
+            self.assertEqual(run.logged[0]["train/episode/return/shaped/mean"], 12.5)
             self.assertEqual(store.phase_counts()["telemetry:published"], 1)
             self.assertEqual(store.telemetry_health()["published_step"], 2048)
 
@@ -48,7 +48,11 @@ class WandbPublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")
             store.init()
-            store.append_metrics({"time/fps": 1}, step=10, source="train")
+            store.append_metrics(
+                {"train/throughput/loop_fps": 1},
+                step=10,
+                source="train",
+            )
             frame = store.pending_metric_frames()[0]
             self.assertTrue(store.claim_metric_frame(int(frame["id"])))
 

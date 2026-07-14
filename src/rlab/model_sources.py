@@ -25,7 +25,11 @@ from rlab.wandb_artifacts import (
     model_artifact_ref,
     safe_artifact_stem,
 )
-from rlab.wandb_utils import default_wandb_project_path, load_wandb_env
+from rlab.wandb_utils import (
+    canonical_wandb_environment,
+    default_wandb_project_path,
+    load_wandb_env,
+)
 
 
 MODEL_KIND_CHOICES = ("final", "best", "checkpoint")
@@ -264,10 +268,14 @@ def _goal_project_from_document(goal_path: Path) -> str | None:
     if not isinstance(env_config, Mapping):
         return None
     env_args = _mapping_value(env_config, "env_args")
-    if isinstance(env_args, Mapping) and env_args.get("game"):
-        return str(env_args["game"])
-    if env_config.get("game"):
-        return str(env_config["game"])
+    game = (
+        str(env_args["game"])
+        if isinstance(env_args, Mapping) and env_args.get("game")
+        else str(env_config.get("game") or "")
+    )
+    if game:
+        provider = environment.get("env_provider") or env_config.get("env_provider")
+        return canonical_wandb_environment(provider, game)[0]
     return None
 
 

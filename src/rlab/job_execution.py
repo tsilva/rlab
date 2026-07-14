@@ -17,6 +17,7 @@ from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import validate_training_seed
+from rlab.wandb_utils import game_family_for_environment
 
 
 ARTIFACT_RE = re.compile(r"wandb artifact logged: (?P<name>[^ ]+) \((?P<location>[^)]+)\)")
@@ -44,6 +45,27 @@ def normalize_train_config(
     if job.get("wandb_group"):
         config["wandb_group"] = job["wandb_group"]
     tags = normalize_wandb_tags(config.get("wandb_tags") or job.get("wandb_tags"))
+    batch_id = str(job.get("batch_id") or config.get("batch_id") or "").strip()
+    if batch_id:
+        config["batch_id"] = batch_id
+    campaign_id = str(job.get("campaign_id") or config.get("campaign_id") or "").strip()
+    if campaign_id:
+        config["campaign_id"] = campaign_id
+        append_unique_wandb_tag(tags, f"campaign_id:{campaign_id}")
+    retry_of_job_id = (
+        job.get("retry_of_job_id")
+        or job.get("retried_from_job_id")
+        or config.get("retry_of_job_id")
+    )
+    if retry_of_job_id:
+        config["retry_of_job_id"] = int(retry_of_job_id)
+        append_unique_wandb_tag(tags, f"retry_of_job_id:{int(retry_of_job_id)}")
+    game_family = game_family_for_environment(
+        config.get("env_provider"),
+        config.get("game"),
+    )
+    config["game_family"] = game_family
+    append_unique_wandb_tag(tags, f"game_family:{game_family}")
     goal_slug = str(job.get("goal_slug") or "").strip()
     if goal_slug:
         config["goal_slug"] = goal_slug

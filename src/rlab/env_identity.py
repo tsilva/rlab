@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from rlab.metric_names import metric_path_segment
+
 from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
 from rlab.preprocessing import preprocessing_contract
@@ -144,6 +146,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         raise ValueError(f"{label}.id must be a non-empty string")
     if task_id not in {"identity", "mario"}:
         raise ValueError(f"{label}.id has no registered task kernel: {task_id!r}")
+    metric_path_segment(task_id)
     for section in ("action", "signals", "events", "termination", "reward"):
         if not isinstance(task.get(section), Mapping):
             raise ValueError(f"{label}.{section} must be an object")
@@ -162,13 +165,9 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
             raise ValueError(f"{label}.action.codec must be an object")
         extra_codec_keys = sorted(set(codec) - {"type", "values"})
         if extra_codec_keys:
-            raise ValueError(
-                f"{label}.action.codec has unexpected keys: {extra_codec_keys}"
-            )
+            raise ValueError(f"{label}.action.codec has unexpected keys: {extra_codec_keys}")
         if codec.get("type") != "discrete_lookup":
-            raise ValueError(
-                f"{label}.action.codec.type must be 'discrete_lookup'"
-            )
+            raise ValueError(f"{label}.action.codec.type must be 'discrete_lookup'")
         values = codec.get("values")
         if not isinstance(values, list | tuple) or not values:
             raise ValueError(f"{label}.action.codec.values must be a non-empty list")
@@ -176,6 +175,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
     for name, source in signals.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"{label}.signals keys must be non-empty strings")
+        metric_path_segment(name)
         if isinstance(source, str) and source.strip():
             continue
         if (
@@ -189,6 +189,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
     if len(events) > 64:
         raise ValueError(f"{label}.events supports at most 64 events")
     for name, raw_rule in events.items():
+        metric_path_segment(name)
         if not isinstance(raw_rule, Mapping):
             raise ValueError(f"{label}.events.{name} must be an object")
         signal = raw_rule.get("signal")
@@ -228,9 +229,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         }
         unknown_events = sorted(set(events) - set(expected_events))
         if unknown_events:
-            raise ValueError(
-                f"{label} has unsupported Mario events: {', '.join(unknown_events)}"
-            )
+            raise ValueError(f"{label} has unsupported Mario events: {', '.join(unknown_events)}")
         for name, rule in events.items():
             expected_signal, expected_operation = expected_events[name]
             if (rule.get("signal"), rule.get("operation")) != (
@@ -269,9 +268,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"{label}.termination.{key} must be a non-negative integer")
     reward = task["reward"]
-    allowed_reward_keys = (
-        IDENTITY_REWARD_KEYS if task_id == "identity" else MARIO_REWARD_KEYS
-    )
+    allowed_reward_keys = IDENTITY_REWARD_KEYS if task_id == "identity" else MARIO_REWARD_KEYS
     extra_reward_keys = sorted(set(reward) - allowed_reward_keys)
     if extra_reward_keys:
         raise ValueError(f"{label}.reward has unexpected keys: {extra_reward_keys}")
@@ -365,13 +362,9 @@ def train_config_from_source_environment(
 ) -> dict[str, Any]:
     if not isinstance(environment, Mapping):
         return {}
-    unexpected = sorted(
-        set(environment) - {"env_provider", "env_config", "preprocessing", "task"}
-    )
+    unexpected = sorted(set(environment) - {"env_provider", "env_config", "preprocessing", "task"})
     if unexpected:
-        raise ValueError(
-            "source environment has unexpected field(s): " + ", ".join(unexpected)
-        )
+        raise ValueError("source environment has unexpected field(s): " + ", ".join(unexpected))
     env_config = environment.get("env_config")
     if not isinstance(env_config, Mapping):
         raise ValueError("source environment.env_config must be an object")

@@ -3,16 +3,20 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 
 from rlab import wandb_leaders
 from rlab.metric_names import (
     EVAL_FULL_CHECKPOINT_ARTIFACT,
+    EVAL_FULL_EPISODE_RETURN_BEST,
     EVAL_FULL_EPISODE_RETURN_MEAN,
     EVAL_FULL_PROGRESS_X_MAX,
     EVAL_FULL_SUCCESS_RATE_MEAN,
     EVAL_FULL_SUCCESS_RATE_MIN,
     LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_BEST_RETURN,
     LEADER_CHECKPOINT_EVAL_SOURCE,
+    LEADER_CHECKPOINT_OBJECTIVE,
     LEADER_CHECKPOINT_PROGRESS_MAX,
     LEADER_CHECKPOINT_RETURN_MEAN,
     LEADER_CHECKPOINT_STEP,
@@ -21,6 +25,8 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
     LEADER_CHECKPOINT_UPDATED_AT,
 )
+from rlab.config_validation import load_goal_contract
+from rlab.ranking import RankCriterion, require_objective_rank
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH
 
 
@@ -97,7 +103,40 @@ def goal_filter(goal: str):
     )
 
 
-def goal_runset(*, entity: str, project: str, goal: str):
+def goal_rank(goal: str) -> tuple[RankCriterion, ...]:
+    repo_root = Path(__file__).resolve().parents[1]
+    matches = []
+    for path in (repo_root / "experiments" / "goals").glob("**/_goal.yaml"):
+        document = load_goal_contract(path, repo_root)
+        if str(document.get("goal_id")) == goal:
+            matches.append(document)
+    if len(matches) != 1:
+        raise ValueError(f"expected one local goal contract for {goal!r}, found {len(matches)}")
+    return require_objective_rank(matches[0]["objective"]["rank"])
+
+
+def leader_order_spec(criteria: Sequence[RankCriterion]) -> list[tuple[str, bool]]:
+    mapped = {
+        EVAL_FULL_SUCCESS_RATE_MIN: LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+        EVAL_FULL_SUCCESS_RATE_MEAN: LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+        EVAL_FULL_EPISODE_RETURN_MEAN: LEADER_CHECKPOINT_RETURN_MEAN,
+        EVAL_FULL_EPISODE_RETURN_BEST: LEADER_CHECKPOINT_BEST_RETURN,
+        LEADER_CHECKPOINT_STEPS_TO_GOAL: LEADER_CHECKPOINT_STEPS_TO_GOAL,
+        LEADER_CHECKPOINT_STEP: LEADER_CHECKPOINT_STEP,
+    }
+    result: list[tuple[str, bool]] = []
+    for index, criterion in enumerate(criteria):
+        summary_metric = LEADER_CHECKPOINT_OBJECTIVE if index == 0 else mapped.get(criterion.metric)
+        if summary_metric is None:
+            raise ValueError(
+                f"objective.rank criterion cannot be represented in the W&B leaderboard: "
+                f"{criterion.metric}"
+            )
+        result.append((summary_metric, criterion.direction == "min"))
+    return result
+
+
+def goal_runset(*, entity: str, project: str, goal: str, criteria: Sequence[RankCriterion]):
     from wandb.apis.reports import v2 as wr
 
     return wr.Runset(
@@ -106,16 +145,8 @@ def goal_runset(*, entity: str, project: str, goal: str):
         name=f"{goal} checkpoint leaders",
         filters=goal_filter(goal),
         order=[
-            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_SUCCESS_RATE_MIN), ascending=False),
-            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_SUCCESS_RATE_MEAN), ascending=False),
-            wr.OrderBy(
-                wr.SummaryMetric(LEADER_CHECKPOINT_STEPS_TO_GOAL),
-                ascending=True,
-            ),
-            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_RETURN_MEAN), ascending=False),
-            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_SUCCESS_RATE_MIN), ascending=False),
-            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_SUCCESS_RATE_MEAN), ascending=False),
-            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_EPISODE_RETURN_MEAN), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(metric), ascending=ascending)
+            for metric, ascending in leader_order_spec(criteria)
         ],
         pinned_columns=PINNED_COLUMNS,
         visible_columns=VISIBLE_COLUMNS,
@@ -125,14 +156,16 @@ def goal_runset(*, entity: str, project: str, goal: str):
     )
 
 
-def build_report(*, entity: str, project: str, goals: Sequence[str], goal_counts: Counter[str], title: str):
+def build_report(
+    *, entity: str, project: str, goals: Sequence[str], goal_counts: Counter[str], title: str
+):
     from wandb.apis.reports import v2 as wr
 
     blocks = [
         wr.MarkdownBlock(
             "Live checkpoint leaderboards grouped by goal. Each section is a W&B runset filtered "
-            "to runs with evaluated checkpoint summaries and sorted by completion minimum, "
-            "completion mean, least steps to completion goal, then reward."
+            "to runs with evaluated checkpoint summaries and sorted by that goal's explicit "
+            "objective.rank contract."
         )
     ]
     for goal in goals:
@@ -144,7 +177,14 @@ def build_report(*, entity: str, project: str, goals: Sequence[str], goal_counts
                     f"Discovered {count} evaluated checkpoint leader row(s) for `{goal}` at report creation time."
                 ),
                 wr.PanelGrid(
-                    runsets=[goal_runset(entity=entity, project=project, goal=goal)],
+                    runsets=[
+                        goal_runset(
+                            entity=entity,
+                            project=project,
+                            goal=goal,
+                            criteria=goal_rank(goal),
+                        )
+                    ],
                     hide_run_sets=False,
                     panels=[],
                 ),

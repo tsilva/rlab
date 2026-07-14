@@ -18,6 +18,7 @@ from rlab.env_identity import validate_task_config
 from rlab.env_registry import env_supports_states, qualify_env_id, resolve_env_id
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
+from rlab.metric_names import metric_path_segment
 from rlab.recipe_documents import load_goal_contract_document, load_recipe_document
 from rlab.ranking import parse_objective_rank
 from rlab.seeds import validate_eval_seed
@@ -407,6 +408,18 @@ def _validate_env_config(
             raise ValueError(f"{label}.env_provider is invalid: {exc}") from exc
     if "state" in env_config and "states" in env_config:
         raise ValueError(f"{label} must define only one of state or states")
+    state_values: list[str] = []
+    if isinstance(env_config.get("state"), str):
+        state_values = [str(env_config["state"]).strip()]
+    elif isinstance(env_config.get("states"), list | tuple):
+        state_values = [str(value).strip() for value in env_config["states"]]
+    if len(set(state_values)) != len(state_values):
+        raise ValueError(f"{label}.states must contain unique identifiers")
+    for state in state_values:
+        try:
+            metric_path_segment(state)
+        except ValueError as exc:
+            raise ValueError(f"{label} start identifiers must be safe metric dimensions") from exc
     if "task" in env_config:
         task = _require_mapping(env_config["task"], label=f"{label}.task")
         validate_task_config(task, label=f"{label}.task")
@@ -725,11 +738,20 @@ def _validate_goal_contract_document(
         objective_states = _require_string_list(objective, "states", label=f"{label}.objective")
     else:
         objective_states = environment_states
+    if len(set(environment_states)) != len(environment_states):
+        raise ValueError(f"{label}.train.environment start identifiers must be unique")
     if environment_states != objective_states:
         raise ValueError(
             f"{label}.objective.states must match environment.state when present: "
             f"{environment_states!r} != {objective_states!r}"
         )
+    for state in environment_states:
+        try:
+            metric_path_segment(state)
+        except ValueError as exc:
+            raise ValueError(
+                f"{label}.train.environment start identifiers must be safe metric dimensions"
+            ) from exc
 
     _validate_goal_eval(document, label=label)
 

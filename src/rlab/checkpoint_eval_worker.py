@@ -10,7 +10,7 @@ from typing import Any
 
 from stable_baselines3 import PPO
 
-from rlab.artifacts import sanitize_artifact_name
+from rlab.artifacts import wandb_artifact_collection_name
 from rlab.checkpoint_eval_config import (
     normalize_checkpoint_eval_stages,
 )
@@ -29,6 +29,8 @@ from rlab.metric_names import (
     EVAL_FULL_BY_START,
     EVAL_FULL_DURATION_SECONDS,
     EVAL_FULL_EPISODE_RETURN_BEST,
+    EVAL_FULL_EPISODE_RETURN_MEAN,
+    EVAL_FULL_PROGRESS_X_MAX,
     GLOBAL_STEP,
     LEADER_CHECKPOINT_ARTIFACT_REF,
     LEADER_CHECKPOINT_BEST_RETURN,
@@ -50,7 +52,13 @@ from rlab.metric_names import (
     validate_metric_payload,
 )
 from rlab.metric_store import MetricStore, metric_store_path
-from rlab.ranking import objective_rank_strings, parse_objective_rank, rank_metric_values, rank_score, require_objective_rank
+from rlab.ranking import (
+    objective_rank_strings,
+    parse_objective_rank,
+    rank_metric_values,
+    rank_score,
+    require_objective_rank,
+)
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
@@ -63,9 +71,14 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
         getattr(args, "wandb_entity", None),
         getattr(args, "wandb_project", None),
         str(getattr(args, "game", "") or ""),
+        env_provider=getattr(args, "env_provider", None),
     )
     if entity and project:
-        name = f"{sanitize_artifact_name(args.run_name)}-checkpoint"
+        name = wandb_artifact_collection_name(
+            "checkpoint",
+            run_id=getattr(args, "wandb_run_id", None),
+            run_name=args.run_name,
+        )
         return f"{entity}/{project}/{name}:step-{step}"
     return str(checkpoint_path)
 
@@ -126,12 +139,9 @@ def update_best_checkpoint_summary(
     else:
         remove_summary_key(LEADER_CHECKPOINT_SUCCESS_RATE_MIN)
         remove_summary_key(LEADER_CHECKPOINT_SUCCESS_RATE_MEAN)
-    wandb_run.summary[LEADER_CHECKPOINT_RETURN_MEAN] = metrics.get("return_mean")
-    best_episode = metrics.get("best_episode")
-    wandb_run.summary[LEADER_CHECKPOINT_BEST_RETURN] = (
-        best_episode.get("return") if isinstance(best_episode, dict) else metrics.get("return_max")
-    )
-    wandb_run.summary[LEADER_CHECKPOINT_PROGRESS_MAX] = metrics.get("max_x_max")
+    wandb_run.summary[LEADER_CHECKPOINT_RETURN_MEAN] = metrics.get(EVAL_FULL_EPISODE_RETURN_MEAN)
+    wandb_run.summary[LEADER_CHECKPOINT_BEST_RETURN] = metrics.get(EVAL_FULL_EPISODE_RETURN_BEST)
+    wandb_run.summary[LEADER_CHECKPOINT_PROGRESS_MAX] = metrics.get(EVAL_FULL_PROGRESS_X_MAX)
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
     if any(
         criterion.metric == LEADER_CHECKPOINT_STEPS_TO_GOAL and value is not None
@@ -162,13 +172,12 @@ def evaluation_metric_payload(
         if not name.startswith("eval/full/"):
             continue
         suffix = name.removeprefix("eval/full/")
+        if suffix == "episode/return/best" and protocol != "full":
+            continue
         if suffix.startswith(("episode/", "outcome/")) or (
             protocol == "full" and suffix.startswith("progress/")
         ):
             payload[eval_metric(protocol, suffix)] = value
-    best_episode = metrics.get("best_episode")
-    if protocol == "full" and isinstance(best_episode, Mapping):
-        payload[EVAL_FULL_EPISODE_RETURN_BEST] = best_episode["return"]
     payload[eval_metric(protocol, "checkpoint/step")] = checkpoint_step
     payload[eval_metric(protocol, "checkpoint/artifact")] = checkpoint_artifact
     payload[eval_metric(protocol, "source")] = eval_source
@@ -224,10 +233,7 @@ def log_checkpoint_eval_metrics(
         ]
         payload[EVAL_FULL_BY_START] = wandb.Table(
             columns=columns,
-            data=[
-                [checkpoint_step_value, *row]
-                for row in table_rows
-            ],
+            data=[[checkpoint_step_value, *row] for row in table_rows],
         )
     wandb_run.log(payload)
     if update_leader:
@@ -292,12 +298,8 @@ def staged_metric_payload(
         checkpoint_artifact=eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
         eval_source="async_worker",
     )
-    payload[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = (
-        1.0 if passed else 0.0
-    )
-    payload[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(
-        stage_index
-    )
+    payload[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = 1.0 if passed else 0.0
+    payload[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(stage_index)
     validate_metric_payload(payload)
     return payload
 

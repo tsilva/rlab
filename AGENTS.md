@@ -31,7 +31,8 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 - Log to W&B and upload checkpoint/final artifacts unless explicitly opted out.
 - Every training run needs a specific description via `--run-description`.
 - Queue-backed train jobs are profileless: do not pass or persist a `profile_id`. Lock train jobs to immutable runtime image digests instead, resolving to the latest successful train image by default when no digest is specified.
-- Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `b82-b55reval-s6-20260702T150934Z`. Keep target/scope, runtime versions, and long recipe context in W&B groups, tags, descriptions, and recipe metadata rather than the run name.
+- Use queue-backed run names shaped as `<batchid>-<shortdescription>-s<seed>-<utc>`, for example `bx0123456789abcdef-b55reval-s6-20260702T150934Z`. The queue generates one immutable `bx<16 hex>` batch per submission and uses it as the W&B group; checked-in `campaign_id` is optional cross-submission research lineage. Keep goal, provider, target/scope, runtime versions, and long recipe context in W&B config, tags, descriptions, and recipe metadata rather than the run name.
+- Route W&B projects by canonical game family, keep provider identity and `environment_hash` in config, and name new checkpoint/final artifact collections from the immutable `rlab-...` run id. Preserve legacy project and display-name lookup for playback.
 - Post-train checkpoint eval is the only supported checkpoint-promotion eval workflow for now. Keep it enabled for normal queue-backed training; promote by per-start completion minimum, then per-start completion mean, then least timesteps to the completion goal, then eval reward.
 
 ## Metrics

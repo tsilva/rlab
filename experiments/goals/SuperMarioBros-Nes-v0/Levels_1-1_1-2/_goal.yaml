@@ -1,7 +1,6 @@
 defaults:
 - _self_
 goal_id: "{goal_id}"
-group_id: Levels_1-1_1-2
 tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"

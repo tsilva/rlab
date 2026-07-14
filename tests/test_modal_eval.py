@@ -33,7 +33,8 @@ from rlab.modal_eval_storage import ObjectStore, file_sha256
 from rlab.modal_eval_worker import execute_attempt
 from rlab.checkpoint_coordinator import process_upload, reconcile_orphan_models
 from rlab.metric_store import MetricStore
-from rlab import modal_eval_cli
+from rlab import checkpoint_coordinator, modal_eval_cli
+from tests.db_fakes import FakeConnection
 
 
 def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
@@ -94,6 +95,8 @@ class ModalEvalContractTests(unittest.TestCase):
             "return_mean": 2.0,
             "eval/full/episode/return/mean": 2.0,
             "eval/full/episode/return/std": 0.5,
+            "eval/full/episode/return/median": 2.0,
+            "eval/full/episode/return/best": 3.0,
             "eval/full/episode/count": 10,
             "eval/full/outcome/success/rate/min": 0.8,
             "eval/full/progress/x/max": 400,
@@ -251,6 +254,158 @@ class ModalEvalContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "immutable"):
             modal_app_name("rlab-eval", "docker:repo/image:latest")
+
+
+class ModalEvalRecoveryTests(unittest.TestCase):
+    def test_drain_and_exit_polls_until_completion_marker_is_written(self) -> None:
+        store = mock.MagicMock()
+        store.pending_artifact_uploads.return_value = []
+        with (
+            mock.patch.object(
+                checkpoint_coordinator,
+                "materialized_train_args",
+                return_value=SimpleNamespace(
+                    checkpoint_bucket_uri="file:///objects",
+                    wandb_artifact_storage_uri="file:///objects",
+                ),
+            ),
+            mock.patch.object(checkpoint_coordinator, "MetricStore", return_value=store),
+            mock.patch.object(checkpoint_coordinator, "ObjectStore"),
+            mock.patch.object(checkpoint_coordinator, "reconcile_orphan_models", return_value=0),
+            mock.patch.object(checkpoint_coordinator, "import_decisions", return_value=0),
+            mock.patch.object(
+                checkpoint_coordinator,
+                "write_complete_marker",
+                side_effect=[False, True],
+            ) as marker,
+            mock.patch.object(checkpoint_coordinator.time, "sleep") as sleep,
+        ):
+            result = checkpoint_coordinator.main(
+                [
+                    "--run-dir",
+                    "/run",
+                    "--train-config-json",
+                    "/run/train.json",
+                    "--drain-and-exit",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(marker.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_recover_rejects_nonterminal_or_nonrecovery_state_without_remote_calls(self) -> None:
+        cases = (
+            (
+                {"status": "running", "eval_run_status": "awaiting_artifact_recovery"},
+                "not terminal",
+            ),
+            ({"status": "succeeded", "eval_run_status": "active"}, "not awaiting"),
+        )
+        for state, error in cases:
+            with (
+                self.subTest(state=state),
+                mock.patch.object(
+                    modal_eval_cli,
+                    "_conn",
+                    return_value=FakeConnection(
+                        row={
+                            **state,
+                            "id": 13,
+                            "launch_id": "train-13",
+                            "machine": "beast-3",
+                            "runtime_image_ref": "docker:example.invalid/rlab@sha256:" + "b" * 64,
+                        }
+                    ),
+                ),
+                mock.patch("rlab.fleet.run_machine_docker") as docker,
+                mock.patch("rlab.fleet.run_machine_shell") as shell,
+            ):
+                with self.assertRaisesRegex(ValueError, error):
+                    modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
+                docker.assert_not_called()
+                shell.assert_not_called()
+
+    def test_recover_uses_drain_mode_without_host_writes(self) -> None:
+        runtime_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
+        conn = FakeConnection(
+            results=[
+                {
+                    "row": {
+                        "id": 13,
+                        "status": "succeeded",
+                        "eval_run_status": "awaiting_artifact_recovery",
+                        "launch_id": "train-13",
+                        "output_uri": "/host/outputs/train-13",
+                        "machine": "beast-3",
+                        "runtime_image_ref": runtime_ref,
+                        "run_name": "run-13",
+                    }
+                },
+                {"row": {"train_job_id": 13}},
+            ]
+        )
+        machine = SimpleNamespace(
+            paths=SimpleNamespace(
+                container_outputs_dir="/output",
+                env_file="/host/.env.runner",
+                outputs_dir="/host/outputs",
+            )
+        )
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch("rlab.machines.load_machine_registry", return_value=object()),
+            mock.patch("rlab.machines.resolve_machine", return_value=machine),
+            mock.patch(
+                "rlab.fleet.run_machine_docker",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as docker,
+            mock.patch("rlab.fleet.run_machine_shell") as shell,
+            mock.patch.object(modal_eval_cli, "_kick"),
+        ):
+            result = modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
+
+        self.assertEqual(result, 0)
+        docker_args = docker.call_args.args[1]
+        self.assertIn("--drain-and-exit", docker_args)
+        self.assertNotIn("--stop-file", docker_args)
+        self.assertFalse(any("recover.stop" in str(value) for value in docker_args))
+        shell.assert_not_called()
+        self.assertTrue(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
+
+    def test_failed_recovery_preserves_awaiting_state(self) -> None:
+        conn = FakeConnection(
+            row={
+                "id": 13,
+                "status": "failed",
+                "eval_run_status": "awaiting_artifact_recovery",
+                "launch_id": "train-13",
+                "output_uri": "/host/outputs/train-13",
+                "machine": "beast-3",
+                "runtime_image_ref": "docker:example.invalid/rlab@sha256:" + "b" * 64,
+                "run_name": "run-13",
+            }
+        )
+        machine = SimpleNamespace(
+            paths=SimpleNamespace(
+                container_outputs_dir="/output",
+                env_file="/host/.env.runner",
+                outputs_dir="/host/outputs",
+            )
+        )
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch("rlab.machines.load_machine_registry", return_value=object()),
+            mock.patch("rlab.machines.resolve_machine", return_value=machine),
+            mock.patch(
+                "rlab.fleet.run_machine_docker",
+                return_value=subprocess.CompletedProcess([], 1, "", "recovery failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "recovery failed"):
+                modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
+
+        self.assertFalse(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
 
 
 class ModalEvalSchedulingTests(unittest.TestCase):

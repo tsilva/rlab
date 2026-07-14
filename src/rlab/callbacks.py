@@ -5,6 +5,7 @@ import math
 import time
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -20,6 +21,7 @@ from rlab.early_stop import (
     normalize_early_stop_config,
 )
 from rlab.env import EnvConfig
+from rlab.eval_metrics import episode_reason_names
 from rlab.metric_names import (
     canonical_training_scalars,
     GLOBAL_STEP,
@@ -55,6 +57,7 @@ from rlab.metric_names import (
     train_success_count_metric,
     train_success_current_rate_metric,
     train_success_window_rate_metric,
+    validate_metric_payload,
 )
 from rlab.metric_store import MetricStore
 
@@ -142,20 +145,35 @@ class LedgerCheckpointHelper(CallbackHelper):
         return final_path
 
 
-class ThroughputHelper(CallbackHelper):
-    """Log rollout-only and full-loop instantaneous throughput."""
+@dataclass(frozen=True)
+class _CompletedRollout:
+    step: int
+    steps: int
+    start_time: float
+    end_time: float
+    rollout_seconds: float
+    env_step_seconds: float | None
 
-    def __init__(self, clock: Callable[[], float] | None = None):
+
+class ThroughputHelper(CallbackHelper):
+    """Publish one temporally aligned frame for each completed training iteration."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] | None = None,
+        *,
+        metric_store_path: Path | str | None = None,
+        wandb_run=None,
+    ):
         super().__init__()
         self.clock = clock or time.perf_counter
+        self.metric_store = MetricStore(metric_store_path) if metric_store_path else None
+        if self.metric_store is not None:
+            self.metric_store.init()
+        self.wandb_run = wandb_run
         self.rollout_start_time: float | None = None
         self.rollout_start_timesteps: int | None = None
-        self.previous_rollout_start_time: float | None = None
-        self.previous_rollout_start_timesteps: int | None = None
-        self.previous_rollout_end_time: float | None = None
-        self.pending_loop_fps: float | None = None
-        self.pending_loop_seconds: float | None = None
-        self.pending_between_rollouts_seconds: float | None = None
+        self.completed_rollout: _CompletedRollout | None = None
         self.native_step_stats_start: Mapping[str, float | int] | None = None
 
     @staticmethod
@@ -180,25 +198,13 @@ class ThroughputHelper(CallbackHelper):
 
     def _on_rollout_start(self) -> None:
         now = self.clock()
-        if (
-            self.previous_rollout_start_time is not None
-            and self.previous_rollout_start_timesteps is not None
-        ):
-            elapsed = now - self.previous_rollout_start_time
-            steps = self.num_timesteps - self.previous_rollout_start_timesteps
-            if elapsed > 0 and steps > 0:
-                self.pending_loop_fps = steps / elapsed
-                self.pending_loop_seconds = elapsed
-        if self.previous_rollout_end_time is not None:
-            between_rollouts = now - self.previous_rollout_end_time
-            if between_rollouts >= 0:
-                self.pending_between_rollouts_seconds = between_rollouts
+        if self.completed_rollout is not None:
+            self._publish_completed_iteration(self.completed_rollout, next_start_time=now)
+            self.completed_rollout = None
 
         self.rollout_start_time = now
         self.rollout_start_timesteps = self.num_timesteps
         self.native_step_stats_start = self._native_step_stats(getattr(self.model, "env", None))
-        self.previous_rollout_start_time = now
-        self.previous_rollout_start_timesteps = self.num_timesteps
 
     def _on_rollout_end(self) -> None:
         now = self.clock()
@@ -206,48 +212,73 @@ class ThroughputHelper(CallbackHelper):
             elapsed = now - self.rollout_start_time
             steps = self.num_timesteps - self.rollout_start_timesteps
             if elapsed > 0 and steps > 0:
-                self.logger.record(TRAIN_THROUGHPUT_ROLLOUT_FPS, steps / elapsed)
-                self.logger.record(TRAIN_THROUGHPUT_ROLLOUT_SECONDS, elapsed)
-                self._record_native_step_throughput(
+                self.completed_rollout = _CompletedRollout(
+                    step=self.num_timesteps,
                     steps=steps,
-                    rollout_elapsed=elapsed,
+                    start_time=self.rollout_start_time,
+                    end_time=now,
+                    rollout_seconds=elapsed,
+                    env_step_seconds=self._native_step_seconds(),
                 )
-        self.previous_rollout_end_time = now
-
-        if self.pending_loop_fps is not None:
-            self.logger.record(TRAIN_THROUGHPUT_LOOP_FPS, self.pending_loop_fps)
-            self.pending_loop_fps = None
-        if self.pending_loop_seconds is not None:
-            self.logger.record(TRAIN_THROUGHPUT_LOOP_SECONDS, self.pending_loop_seconds)
-            self.pending_loop_seconds = None
-        if self.pending_between_rollouts_seconds is not None:
-            self.logger.record(
-                TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS,
-                self.pending_between_rollouts_seconds,
-            )
-            self.pending_between_rollouts_seconds = None
 
     def _on_step(self) -> bool:
         return True
 
-    def _record_native_step_throughput(self, *, steps: int, rollout_elapsed: float) -> None:
+    def _native_step_seconds(self) -> float | None:
         start = self.native_step_stats_start
         end = self._native_step_stats(getattr(self.model, "env", None))
         self.native_step_stats_start = None
         if start is None or end is None:
-            return
+            return None
         native_seconds = float(end.get("seconds_total", 0.0)) - float(
             start.get("seconds_total", 0.0)
         )
         native_calls = int(end.get("calls_total", 0)) - int(start.get("calls_total", 0))
         if native_seconds <= 0 or native_calls <= 0:
+            return None
+        return native_seconds
+
+    def _publish_completed_iteration(
+        self,
+        rollout: _CompletedRollout,
+        *,
+        next_start_time: float,
+    ) -> None:
+        between_seconds = next_start_time - rollout.end_time
+        loop_seconds = next_start_time - rollout.start_time
+        if between_seconds < 0 or loop_seconds <= 0:
             return
-        self.logger.record(TRAIN_THROUGHPUT_ENV_STEP_SECONDS, native_seconds)
-        self.logger.record(TRAIN_THROUGHPUT_ENV_STEP_FPS, steps / native_seconds)
-        self.logger.record(
-            TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
-            max(rollout_elapsed - native_seconds, 0.0),
-        )
+        payload: dict[str, float] = {
+            TRAIN_THROUGHPUT_LOOP_FPS: rollout.steps / loop_seconds,
+            TRAIN_THROUGHPUT_ROLLOUT_FPS: rollout.steps / rollout.rollout_seconds,
+            TRAIN_THROUGHPUT_LOOP_SECONDS: loop_seconds,
+            TRAIN_THROUGHPUT_ROLLOUT_SECONDS: rollout.rollout_seconds,
+            TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS: between_seconds,
+        }
+        if rollout.env_step_seconds is not None:
+            payload.update(
+                {
+                    TRAIN_THROUGHPUT_ENV_STEP_FPS: rollout.steps / rollout.env_step_seconds,
+                    TRAIN_THROUGHPUT_ENV_STEP_SECONDS: rollout.env_step_seconds,
+                    TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS: max(
+                        rollout.rollout_seconds - rollout.env_step_seconds,
+                        0.0,
+                    ),
+                }
+            )
+        validate_metric_payload(payload)
+        if self.metric_store is not None:
+            self.metric_store.append_metrics(
+                payload,
+                step=rollout.step,
+                source="train",
+                publish=self.wandb_run is None,
+            )
+            if self.wandb_run is not None:
+                self.wandb_run.log({GLOBAL_STEP: rollout.step, **payload})
+            return
+        for name, value in payload.items():
+            self.logger.record(name, value)
 
 
 class MetricThresholdStopHelper(CallbackHelper):
@@ -552,6 +583,7 @@ class RolloutDiagnosticsHelper(CallbackHelper):
             values[TRAIN_PPO_POLICY_ACTION_HIST] = discrete_actions.astype(float).tolist()
         if not values:
             return
+        validate_metric_payload(values)
         if self.metric_store is not None:
             self.metric_store.enqueue_event(
                 kind="histogram",
@@ -616,14 +648,21 @@ class _RewardStatsAccumulator:
         "score": "score_delta",
     }
 
-    def __init__(self, *, active_components: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        active_components: Sequence[str] = (),
+        active_signals: Sequence[str] = (),
+    ) -> None:
         self.shaped = _BufferedStats()
         self.raw = _BufferedStats()
         self.active_components = tuple(
             component for component in active_components if component in self.component_info_keys
         )
         self.components = {component: _BufferedStats() for component in self.active_components}
-        self.signals = {signal: _BufferedStats() for signal in self.signal_info_keys}
+        self.signals = {
+            signal: _BufferedStats() for signal in active_signals if signal in self.signal_info_keys
+        }
 
     def consume(self, metrics: Mapping[str, Any], *, reserve: int) -> None:
         if (value := metrics.get("shaped_reward")) is not None:
@@ -662,9 +701,7 @@ class _RewardStatsAccumulator:
             ("mean", "std", "min", "max", "nonzero_rate"),
         )
         if raw.size > 0 and (shaped.size != raw.size or not np.array_equal(shaped, raw)):
-            payload.update(
-                self._distribution(f"{TRAIN_REWARD_ROOT}/raw", raw, ("mean", "std"))
-            )
+            payload.update(self._distribution(f"{TRAIN_REWARD_ROOT}/raw", raw, ("mean", "std")))
         abs_sums: dict[str, float] = {}
         for component, accumulator in self.components.items():
             values = accumulator.flush()
@@ -713,12 +750,17 @@ class _DoneMetricsReducer:
     def consume(self, record: Any) -> dict[str, int | float] | None:
         if not hasattr(record, "episode_return"):
             return None
-        events = set(getattr(record, "events", ()))
-        reasons = set(events - {"timeout"})
-        if bool(getattr(record, "truncated", False)):
-            reasons.add("max_steps")
-        if not reasons:
-            reasons.add("unclassified")
+        outcome = getattr(record, "outcome", None)
+        outcome_name = str(getattr(outcome, "name", outcome)).lower()
+        reasons = (
+            set()
+            if outcome_name == "success"
+            else episode_reason_names(
+                getattr(record, "events", ()) or (),
+                terminated=bool(getattr(record, "terminated", False)),
+                truncated=bool(getattr(record, "truncated", False)),
+            )
+        )
         return self.record_done(reasons)
 
     def record_done(self, reasons: set[str] | Mapping[str, Any]) -> dict[str, int | float]:
@@ -752,6 +794,7 @@ class _DoneMetricsReducer:
 
 class _SuccessMetricsReducer:
     ep_window_size = 100
+
     def __init__(self, *, configured_starts: Sequence[str] = ()) -> None:
         self.configured_starts = tuple(dict.fromkeys(str(start) for start in configured_starts))
         self.success_counts: dict[str, int] = {}
@@ -766,7 +809,9 @@ class _SuccessMetricsReducer:
             return {}
         outcome = getattr(record, "outcome", None)
         outcome_name = str(getattr(outcome, "name", outcome)).lower()
-        return self.record_attempt(task_metric_source(start_id), completed=outcome_name == "success")
+        return self.record_attempt(
+            task_metric_source(start_id), completed=outcome_name == "success"
+        )
 
     def record_attempt(self, source: Any, *, completed: bool) -> dict[str, int | float]:
         source_key = metric_value_segment(source)
@@ -803,7 +848,9 @@ class _SuccessMetricsReducer:
             len(self.attempt_windows.get(start, ())) >= self.ep_window_size
             for start in expected_starts
         ):
-            rates = [sum(self.attempt_windows[start]) / self.ep_window_size for start in expected_starts]
+            rates = [
+                sum(self.attempt_windows[start]) / self.ep_window_size for start in expected_starts
+            ]
             payload[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN] = min(rates)
             payload[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN] = float(np.mean(rates))
         return payload
@@ -818,6 +865,7 @@ class RuntimeMetricsHelper(CallbackHelper):
         wandb_run=None,
         event_names: Sequence[str] = (),
         active_reward_components: Sequence[str] = (),
+        active_reward_signals: Sequence[str] = (),
         configured_starts: Sequence[str] = (),
         track_success: bool = False,
     ) -> None:
@@ -825,12 +873,11 @@ class RuntimeMetricsHelper(CallbackHelper):
         self.wandb_run = wandb_run
         self.reward_stats = _RewardStatsAccumulator(
             active_components=active_reward_components,
+            active_signals=active_reward_signals,
         )
         self.done_metrics = _DoneMetricsReducer(event_names=event_names)
         self.success_metrics = (
-            _SuccessMetricsReducer(configured_starts=configured_starts)
-            if track_success
-            else None
+            _SuccessMetricsReducer(configured_starts=configured_starts) if track_success else None
         )
         self.pending_metrics: dict[str, int | float] = {}
 

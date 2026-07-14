@@ -6,7 +6,7 @@ recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 machine: local-macbook
 recipe_overrides:
 - recipe_id=benchmark-local-smoke
-- group_id=benchmark-local-smoke
+- campaign_id=benchmark-local-smoke
 - description=Benchmark queue-backed localhost smoke run for Mario Level1-1.
 - train.policy.timesteps=512
 - train.environment.env_config.n_envs=1

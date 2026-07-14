@@ -14,7 +14,7 @@ from rlab.job_execution import (
 )
 from rlab.recipe_documents import materialize_train_recipe_document, validate_source_recipe_shape
 from rlab.recipe_schema import validate_materialized_train_recipe
-from rlab.seeds import DEFAULT_EVAL_SEED
+from rlab.seeds import DEFAULT_EVAL_SEED, DEFAULT_TRAIN_SEED
 from tests.db_fakes import FakeConnection
 
 
@@ -53,17 +53,15 @@ def explicit_train_config(**overrides) -> dict:
 
 def valid_train_recipe() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "goal": {"goal_id": "Level1-1"},
         "recipe_id": "candidate",
         "description": "Candidate seed {seed} for {recipe_id}.",
         "seeds": [23, 24],
-        "group_id": "b-test",
+        "campaign_id": "b-test",
         "tags": ["b55", "confirm"],
         "train_config": explicit_train_config(),
     }
-
-
 class JobQueueTests(unittest.TestCase):
     def test_schema_upgrade_preserves_retired_eval_queue(self) -> None:
         conn = FakeConnection(
@@ -112,20 +110,95 @@ class JobQueueTests(unittest.TestCase):
 
         job_queue.enqueue_train_job = fake_enqueue
         try:
-            job_queue.enqueue_train_jobs_from_recipe_document(
-                FakeConnection(),
-                document=valid_train_recipe(),
-                runtime_image_ref=RUNTIME_IMAGE_REF,
-                machine="beast-3",
-                checkpoint_eval_backend="modal",
-            )
+            with patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                return_value={"ready": True, "checks": []},
+            ) as preflight:
+                job_queue.enqueue_train_jobs_from_recipe_document(
+                    FakeConnection(),
+                    document=valid_train_recipe(),
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    machine="beast-3",
+                    checkpoint_eval_backend="modal",
+                )
         finally:
             job_queue.enqueue_train_job = old_enqueue
 
         self.assertTrue(calls)
+        preflight.assert_called_once_with(
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            game="SuperMarioBros-Nes-v0",
+        )
         self.assertTrue(
             all(call["train_config"]["checkpoint_eval_backend"] == "modal" for call in calls)
         )
+        self.assertTrue(all(call["_modal_readiness_validated"] for call in calls))
+
+    def test_modal_readiness_reports_each_failed_check_and_remediation(self) -> None:
+        check_names = (
+            "config_guards",
+            "postgres_schema",
+            "backend_state",
+            "rom_asset",
+            "modal_deployment",
+        )
+        for check_name in check_names:
+            with (
+                self.subTest(check_name=check_name),
+                patch.object(
+                    job_queue,
+                    "modal_eval_readiness_report",
+                    return_value={
+                        "ready": False,
+                        "checks": [{"name": check_name, "ok": False, "detail": "not ready"}],
+                    },
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    rf"{check_name}.*rlab eval modal preflight",
+                ):
+                    job_queue.require_modal_eval_ready(
+                        runtime_image_ref=RUNTIME_IMAGE_REF,
+                        game="SuperMarioBros-Nes-v0",
+                    )
+
+    def test_failed_modal_preflight_inserts_no_jobs(self) -> None:
+        conn = FakeConnection()
+        document = valid_train_recipe()
+        document["train_config"]["checkpoint_eval_backend"] = "modal"
+        with patch.object(
+            job_queue,
+            "modal_eval_readiness_report",
+            return_value={
+                "ready": False,
+                "checks": [{"name": "modal_deployment", "ok": False, "detail": "missing"}],
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "modal_deployment"):
+                job_queue.enqueue_train_jobs_from_recipe_document(
+                    conn,
+                    document=document,
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    machine="beast-3",
+                )
+
+        self.assertEqual(conn.cursor_obj.executed_sqls, [])
+
+    def test_local_submission_skips_modal_preflight(self) -> None:
+        with patch.object(
+            job_queue,
+            "modal_eval_readiness_report",
+            side_effect=AssertionError("preflight should not run"),
+        ):
+            job_queue.enqueue_train_job(
+                FakeConnection(row={"id": 10}),
+                goal_slug="Level1-1",
+                train_config=explicit_train_config(),
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
 
     def test_queue_demands_groups_by_machine_and_runtime_digest(self) -> None:
         conn = FakeConnection(
@@ -152,6 +225,10 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS train_jobs", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_slug TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("recipe_payload_json JSONB", job_queue.SCHEMA_SQL)
+        self.assertIn("campaign_id TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("ADD COLUMN IF NOT EXISTS campaign_id", job_queue.SCHEMA_SQL)
+        self.assertIn("retry_of_job_id BIGINT", job_queue.SCHEMA_SQL)
+        self.assertIn("ADD COLUMN IF NOT EXISTS retry_of_job_id", job_queue.SCHEMA_SQL)
         self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
         self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
@@ -326,6 +403,12 @@ class JobQueueTests(unittest.TestCase):
                 {"train_config": explicit_train_config()},
                 label="recipe",
             )
+        for field in ("group_id", "batch_id"):
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ValueError, rf"compiled or retired source field.*{field}"),
+            ):
+                validate_source_recipe_shape({field: "legacy"}, label="recipe")
         with self.assertRaisesRegex(ValueError, "unsupported flat field.*learning_rate"):
             validate_source_recipe_shape(
                 {"train": {"learning_rate": 2e-4}},
@@ -355,6 +438,19 @@ class JobQueueTests(unittest.TestCase):
                 train_config=explicit_train_config(seed=DEFAULT_EVAL_SEED),
             )
 
+    def test_enqueue_train_job_rejects_noncanonical_run_name(self) -> None:
+        with self.assertRaisesRegex(ValueError, "queue run_name must use"):
+            job_queue.enqueue_train_job(
+                FakeConnection(),
+                goal_slug="goal",
+                recipe_slug="candidate",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                train_config=explicit_train_config(seed=23),
+                submission_key="strict-name",
+                run_name="candidate-s23",
+            )
+
     def test_enqueue_train_jobs_from_recipe_document_derives_seeded_run_names(self) -> None:
         calls = []
         old_enqueue = job_queue.enqueue_train_job
@@ -372,6 +468,7 @@ class JobQueueTests(unittest.TestCase):
                 document=valid_train_recipe(),
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
+                submission_key="naming-test",
                 recipe_path="experiments/goals/mario/recipes/candidate.yaml",
                 recipe_sha256="abc123",
                 repo_git_commit="deadbeef",
@@ -383,13 +480,53 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(
             [row["run_name"] for row in rows],
-            ["b-test-candidate-s23-20260626T120000Z", "b-test-candidate-s24-20260626T120000Z"],
+            [
+                f"{job_queue._submission_batch_id('naming-test')}-candidate-s23-20260626T120000Z",
+                f"{job_queue._submission_batch_id('naming-test')}-candidate-s24-20260626T120000Z",
+            ],
         )
+        self.assertTrue(all(call["wandb_group"] == calls[0]["batch_id"] for call in calls))
+        self.assertTrue(all(call["campaign_id"] == "b-test" for call in calls))
         self.assertEqual([call["seed"] for call in calls], [23, 24])
         self.assertTrue(all("seed" not in call["train_config"] for call in calls))
         self.assertEqual(calls[0]["recipe_slug"], "candidate")
         self.assertEqual(calls[0]["recipe_path"], "experiments/goals/mario/recipes/candidate.yaml")
         self.assertEqual(calls[0]["recipe_sha256"], "abc123")
+
+    def test_enqueue_uses_effective_default_seed_in_row_and_run_name(self) -> None:
+        calls = []
+        document = valid_train_recipe()
+        document.pop("seeds")
+
+        with (
+            patch.object(
+                job_queue,
+                "enqueue_train_job",
+                side_effect=lambda _conn, **kwargs: calls.append(kwargs) or kwargs,
+            ),
+            patch.object(job_queue, "_utc_stamp", return_value="20260626T120000Z"),
+        ):
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                submission_key="default-seed",
+            )
+
+        batch_id = job_queue._submission_batch_id("default-seed")
+        self.assertEqual(rows[0]["seed"], DEFAULT_TRAIN_SEED)
+        self.assertEqual(
+            rows[0]["run_name"],
+            f"{batch_id}-candidate-s{DEFAULT_TRAIN_SEED}-20260626T120000Z",
+        )
+        self.assertNotIn("-s-", rows[0]["run_name"])
+
+    def test_submission_batch_is_stable_per_key_and_distinct_across_keys(self) -> None:
+        first = job_queue._submission_batch_id("submission-one")
+        self.assertEqual(first, job_queue._submission_batch_id("submission-one"))
+        self.assertNotEqual(first, job_queue._submission_batch_id("submission-two"))
+        self.assertRegex(first, r"^bx[0-9a-f]{16}$")
 
     def test_enqueue_train_jobs_records_recipe_overrides_in_worker_config(self) -> None:
         calls = []
@@ -419,7 +556,7 @@ class JobQueueTests(unittest.TestCase):
     def test_load_recipe_document_applies_hydra_dotlist_overrides(self) -> None:
         overrides = [
             "recipe_id=lr2e4",
-            "group_id=Level1-1-lr2e4",
+            "campaign_id=Level1-1-lr2e4",
             "train.policy.learning_rate=2e-4",
             "train.policy.normalize_advantage=true",
             "train.environment.task.termination.failure=[]",
@@ -431,7 +568,7 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(document["recipe_id"], "lr2e4")
-        self.assertEqual(document["group_id"], "Level1-1-lr2e4")
+        self.assertEqual(document["campaign_id"], "Level1-1-lr2e4")
         self.assertEqual(document["tags"][1], "recipe_id:lr2e4")
         self.assertEqual(document["train_config"]["learning_rate"], 2e-4)
         self.assertIs(document["train_config"]["normalize_advantage"], True)
@@ -603,10 +740,19 @@ class JobQueueTests(unittest.TestCase):
         ]
         conn = FakeConnection(rows=existing)
 
-        with patch.object(job_queue, "_submission_request_hash", return_value="same"):
+        document = valid_train_recipe()
+        document["train_config"]["checkpoint_eval_backend"] = "modal"
+        with (
+            patch.object(job_queue, "_submission_request_hash", return_value="same"),
+            patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                side_effect=AssertionError("existing submissions do not need preflight"),
+            ),
+        ):
             rows = job_queue.enqueue_train_jobs_from_recipe_document(
                 conn,
-                document=valid_train_recipe(),
+                document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
                 submission_key="request-123",
@@ -614,6 +760,68 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual([row["id"] for row in rows], [10, 11])
         self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+
+    def test_retry_preflights_modal_once_before_inserting(self) -> None:
+        source = {
+            "id": 7,
+            "status": "succeeded",
+            "goal_slug": "Level1-1",
+            "recipe_slug": "candidate",
+            "recipe_path": "recipe.yaml",
+            "recipe_sha256": "abc123",
+            "repo_git_commit": "deadbeef",
+            "repo_dirty": False,
+            "recipe_payload_json": {},
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "machine": "beast-3",
+            "train_config": explicit_train_config(checkpoint_eval_backend="modal"),
+            "batch_id": "b-test",
+            "campaign_id": "b93",
+            "run_name": "candidate-s23",
+            "run_description": "retry",
+            "seed": 23,
+            "wandb_group": "b-test",
+            "wandb_tags": [],
+        }
+        inserted = {**source, "id": 8, "retry_of_job_id": 7, "retried_from_job_id": 7}
+        conn = FakeConnection(
+            results=[
+                {"rows": []},
+                {"row": source},
+                {},
+                {"rows": []},
+                {"row": source},
+                {"row": inserted},
+                {},
+                {},
+            ]
+        )
+        with patch.object(
+            job_queue,
+            "modal_eval_readiness_report",
+            return_value={"ready": True, "checks": []},
+        ) as preflight:
+            result = job_queue.retry_train_job(
+                conn,
+                job_id=7,
+                submission_key="retry-7",
+            )
+
+        self.assertEqual(result["id"], 8)
+        preflight.assert_called_once_with(
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            game="SuperMarioBros-Nes-v0",
+        )
+        insert_params = next(
+            params
+            for params in conn.cursor_obj.executed_params_list
+            if params.get("retry_of_job_id") == 7
+        )
+        self.assertEqual(insert_params["batch_id"], "b-test")
+        self.assertEqual(insert_params["campaign_id"], "b93")
+        self.assertEqual(insert_params["wandb_group"], "b-test")
+        self.assertIn("campaign_id:b93", insert_params["wandb_tags"])
+        self.assertIn("retry_of_job_id:7", insert_params["wandb_tags"])
 
     def test_machine_controls_persist_drain_and_capacity(self) -> None:
         row = {
@@ -687,7 +895,8 @@ class JobExecutionTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,goal_id:Level1-1,recipe_id:base,level_id:Level1-1",
+            "screen,game_family:super-mario-bros-nes,goal_id:Level1-1,"
+            "recipe_id:base,level_id:Level1-1",
         )
         self.assertEqual(written_config["recipe_slug"], "base")
         self.assertEqual(written_config["seed"], 23)

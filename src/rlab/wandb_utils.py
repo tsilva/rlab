@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from rlab.dotenv import load_env_file
@@ -8,6 +9,37 @@ from rlab.dotenv import load_env_file
 DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-Nes-v0"
 DEFAULT_WANDB_PROJECT_PATH = f"{DEFAULT_WANDB_ENTITY}/{DEFAULT_WANDB_PROJECT}"
+
+CANONICAL_WANDB_ENVIRONMENTS: dict[tuple[str, str], tuple[str, str]] = {
+    ("supermariobrosnes-turbo", "SuperMarioBros-Nes-v0"): (
+        "SuperMarioBros-Nes-v0",
+        "super-mario-bros-nes",
+    ),
+    ("stable-retro-turbo", "SuperMarioBros-Nes-v0"): (
+        "SuperMarioBros-Nes-v0",
+        "super-mario-bros-nes",
+    ),
+    ("stable-retro-turbo", "SuperMarioBros3-Nes-v0"): (
+        "SuperMarioBros3-Nes-v0",
+        "super-mario-bros-3-nes",
+    ),
+    ("ale-py", "breakout"): ("Breakout-Atari2600-v0", "breakout-atari2600"),
+    ("stable-retro-turbo", "Breakout-Atari2600-v0"): (
+        "Breakout-Atari2600-v0",
+        "breakout-atari2600",
+    ),
+    ("ale-py", "ms_pacman"): ("MsPacman-Atari2600-v0", "ms-pacman-atari2600"),
+    ("stable-retro-turbo", "MsPacman-Atari2600-v0"): (
+        "MsPacman-Atari2600-v0",
+        "ms-pacman-atari2600",
+    ),
+}
+CANONICAL_WANDB_ENVIRONMENT_IDS: dict[str, tuple[str, str]] = {
+    "SuperMarioBros-Nes-v0": ("SuperMarioBros-Nes-v0", "super-mario-bros-nes"),
+    "SuperMarioBros3-Nes-v0": ("SuperMarioBros3-Nes-v0", "super-mario-bros-3-nes"),
+    "Breakout-Atari2600-v0": ("Breakout-Atari2600-v0", "breakout-atari2600"),
+    "MsPacman-Atari2600-v0": ("MsPacman-Atari2600-v0", "ms-pacman-atari2600"),
+}
 
 WANDB_ENV_PREFIXES = ("WANDB_", "AWS_")
 WANDB_ARTIFACT_ENV_KEYS = {
@@ -35,27 +67,83 @@ def default_wandb_project_path(project: str | None = None) -> str:
     return f"{wandb_entity_from_env()}/{project_name}"
 
 
-def wandb_project_for_env_id(env_id: str | None, *, fallback: str = DEFAULT_WANDB_PROJECT) -> str:
+def _environment_identity(env_provider: object, env_id: object) -> tuple[str, str]:
+    provider = str(env_provider or "").strip()
+    environment = str(env_id or "").strip()
+    if not provider and ":" in environment:
+        provider, environment = environment.split(":", 1)
+    return provider, environment
+
+
+def _fallback_game_family(env_id: str, *, fallback: str) -> str:
+    value = env_id or fallback
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", value)
+    return re.sub(r"[^a-z0-9]+", "-", words.lower()).strip("-") or "environment"
+
+
+def canonical_wandb_environment(
+    env_provider: object,
+    env_id: object,
+    *,
+    fallback: str = DEFAULT_WANDB_PROJECT,
+) -> tuple[str, str]:
+    """Return the canonical W&B project and provider-neutral game family."""
+
+    provider, environment = _environment_identity(env_provider, env_id)
+    mapped = CANONICAL_WANDB_ENVIRONMENTS.get((provider, environment))
+    if mapped is None:
+        mapped = CANONICAL_WANDB_ENVIRONMENT_IDS.get(environment)
+    if mapped is not None:
+        return mapped
+    project = environment or fallback
+    return project, _fallback_game_family(project, fallback=fallback)
+
+
+def game_family_for_environment(
+    env_provider: object,
+    env_id: object,
+    *,
+    fallback: str = DEFAULT_WANDB_PROJECT,
+) -> str:
+    return canonical_wandb_environment(env_provider, env_id, fallback=fallback)[1]
+
+
+def wandb_project_for_env_id(
+    env_id: str | None,
+    *,
+    env_provider: object = None,
+    fallback: str = DEFAULT_WANDB_PROJECT,
+) -> str:
     """Return the default W&B project name for a provider-local environment id."""
 
-    project = str(env_id or "").strip()
-    return project or fallback
+    return canonical_wandb_environment(env_provider, env_id, fallback=fallback)[0]
 
 
-def resolve_wandb_project(explicit_project: object, env_id: str | None) -> str:
+def resolve_wandb_project(
+    explicit_project: object,
+    env_id: str | None,
+    *,
+    env_provider: object = None,
+) -> str:
     """Use explicit W&B project when supplied, otherwise default to the env id."""
 
     project = str(explicit_project or "").strip()
-    return project or wandb_project_for_env_id(env_id)
+    return project or wandb_project_for_env_id(env_id, env_provider=env_provider)
 
 
 def resolve_wandb_namespace(
     explicit_entity: object,
     explicit_project: object,
     env_id: str | None,
+    *,
+    env_provider: object = None,
 ) -> tuple[str, str]:
     entity = str(explicit_entity or "").strip() or wandb_entity_from_env()
-    project = resolve_wandb_project(explicit_project, env_id)
+    project = resolve_wandb_project(
+        explicit_project,
+        env_id,
+        env_provider=env_provider,
+    )
     return entity, project
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import re
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
 
 class Sb3LoggerTests(unittest.TestCase):
     def test_human_output_truncation_is_disabled_for_long_level_complete_metrics(self) -> None:
@@ -70,6 +72,7 @@ class Sb3LoggerTests(unittest.TestCase):
 
         self.assertEqual(output_format.max_length, 256)
 
+
 class MetricsDocumentationTests(unittest.TestCase):
     def test_metrics_reference_registry_section_is_generated_from_code(self) -> None:
         metrics_doc = Path(__file__).resolve().parents[1] / "METRICS.md"
@@ -82,15 +85,21 @@ class MetricsDocumentationTests(unittest.TestCase):
     def test_registry_rejects_unknown_metrics_and_unsafe_dimensions(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown metric"):
             metric_names.validate_metric_name("train/mystery/value")
+        with self.assertRaisesRegex(ValueError, "unknown metric"):
+            metric_names.validate_metric_name("eval/full/episode/return/typo")
+        with self.assertRaisesRegex(ValueError, "unknown metric"):
+            metric_names.validate_metric_name("leader/checkpoint/typo")
         with self.assertRaisesRegex(ValueError, "metric dimension"):
             metric_names.train_success_count_metric("unsafe start")
+
+    def test_logger_boundary_rejects_misspelled_rlab_metrics(self) -> None:
+        with self.assertRaisesRegex(ValueError, "logger boundary"):
+            metric_names.canonical_training_scalars({"train/outcome/succes/rate/current/min": 0.5})
 
     def test_cardinality_has_no_start_by_reason_scalar_product(self) -> None:
         starts = [f"Start-{index}" for index in range(32)]
         reasons = [f"reason-{index}" for index in range(5)]
-        names = {
-            metric_names.train_success_count_metric(start) for start in starts
-        } | {
+        names = {metric_names.train_success_count_metric(start) for start in starts} | {
             metric_names.train_outcome_reason_count_metric(reason) for reason in reasons
         }
         self.assertEqual(len(names), len(starts) + len(reasons))
@@ -102,16 +111,13 @@ class MetricsDocumentationTests(unittest.TestCase):
         names = set()
         for protocol in metric_names.EVAL_PROTOCOLS:
             names.update(
-                metric_names.eval_success_from_rate_metric(protocol, start)
-                for start in starts
+                metric_names.eval_success_from_rate_metric(protocol, start) for start in starts
             )
             names.update(
-                metric_names.eval_reason_count_metric(protocol, reason)
-                for reason in reasons
+                metric_names.eval_reason_count_metric(protocol, reason) for reason in reasons
             )
             names.update(
-                metric_names.eval_reason_rate_metric(protocol, reason)
-                for reason in reasons
+                metric_names.eval_reason_rate_metric(protocol, reason) for reason in reasons
             )
             names.update(
                 {
@@ -123,3 +129,48 @@ class MetricsDocumentationTests(unittest.TestCase):
         self.assertEqual(len(names), 132)
         self.assertLessEqual(len(names), 150)
         self.assertFalse(any("/reason/" in name and "/from/" in name for name in names))
+
+    def test_schema_v2_cardinality_margins_and_single_start_lifecycle(self) -> None:
+        protocols = list(metric_names.EVAL_PROTOCOLS)
+        starts = ["Start"]
+        reasons = [f"reason-{index}" for index in range(5)]
+        values = {
+            "protocol": protocols,
+            "reason": reasons,
+            "start": starts,
+            "component": ["progress"],
+            "signal": ["progress"],
+            "progress": ["x"],
+        }
+        scalar_names: set[str] = set()
+        for definition in metric_names.METRIC_DEFINITIONS:
+            if definition.unit in {"histogram", "table"} or definition.storage == "summary":
+                continue
+            placeholders = re.findall(r"\{([^}]+)\}", definition.name)
+            for replacements in itertools.product(*(values[name] for name in placeholders)):
+                name = definition.name
+                for placeholder, replacement in zip(placeholders, replacements, strict=True):
+                    name = name.replace(f"{{{placeholder}}}", replacement, 1)
+                scalar_names.add(name)
+
+        self.assertLessEqual(len(scalar_names), 150)
+        self.assertEqual(
+            len(
+                {
+                    metric_names.train_success_count_metric("A"),
+                    metric_names.train_success_attempts_metric("A"),
+                    metric_names.train_success_current_rate_metric("A"),
+                    metric_names.train_success_window_rate_metric("A"),
+                }
+            ),
+            4,
+        )
+        self.assertEqual(
+            len(
+                {
+                    metric_names.train_reward_component_metric("active", stat)
+                    for stat in ("mean", "nonzero_rate", "share")
+                }
+            ),
+            3,
+        )

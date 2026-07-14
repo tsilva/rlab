@@ -88,6 +88,14 @@ The selected backend is materialized in the queue row and never changes for that
 closed unless the additive PostgreSQL schema, active capacity, private ROM object, local Modal
 credentials, and exact runtime-specific deployment are all present.
 
+The train-image release workflow deploys and startup-probes the exact digest-specific Modal app
+before publishing `rlab-train-image.json`; a failed deployment leaves the previous successful
+runtime as the default. Every new Modal-backed submission and explicit retry repeats the full
+preflight before writing queue rows, so an explicitly supplied undeployed digest also fails closed.
+Use `rlab eval modal recover <train-job-id>` only after a terminal train job reports
+`awaiting_artifact_recovery`. Recovery drains pending artifacts inside the runtime container and
+rejects active, finalizing, complete, or otherwise ineligible eval runs without changing their state.
+
 PostgreSQL is the only wait queue. The service never submits work beyond the effective capacity,
 reserves worst-case cost before dispatch, and leaves budget-blocked jobs pending for operator
 inspection. Draining stops new Modal calls without stopping training. Checkpoint models, metadata,

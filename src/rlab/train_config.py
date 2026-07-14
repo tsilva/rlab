@@ -882,6 +882,35 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Exact queue machine recorded as run metadata; does not affect training.",
     ),
     TrainConfigField(
+        "batch_id",
+        "--batch-id",
+        default="",
+        cli_exposed=False,
+        help="Immutable queue submission cohort recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "campaign_id",
+        "--campaign-id",
+        default="",
+        cli_exposed=False,
+        help="Optional checked-in research campaign recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "game_family",
+        "--game-family",
+        default="",
+        cli_exposed=False,
+        help="Provider-neutral game family recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "retry_of_job_id",
+        "--retry-of-job-id",
+        type_name="int",
+        default=0,
+        cli_exposed=False,
+        help="Source queue job id for an explicit retry; 0 means not a retry.",
+    ),
+    TrainConfigField(
         "goal_slug", "--goal-slug", default="", help="Research goal slug recorded in W&B config."
     ),
     TrainConfigField(

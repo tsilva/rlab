@@ -29,9 +29,7 @@ def _eval_runtime_config(
 ) -> EnvConfig:
     termination = task_termination(config)
     success = list(termination.get("success", ()))
-    failure = [
-        name for name in termination.get("failure", ()) if name != "life_loss"
-    ]
+    failure = [name for name in termination.get("failure", ()) if name != "life_loss"]
     if semantics.completion_reason == "level_change":
         success = list(dict.fromkeys((*success, "level_change")))
     return with_task_termination(
@@ -77,8 +75,7 @@ def _evaluate_model_episodes_vector(
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, _step_rewards, dones, infos = eval_env.step(action)
             terminal_infos = {
-                index: dict(infos[index])
-                for index in np.flatnonzero(np.asarray(dones, dtype=bool))
+                index: dict(infos[index]) for index in np.flatnonzero(np.asarray(dones, dtype=bool))
             }
             for record in drain_episode_records(eval_env):
                 lane = int(record.lane)
@@ -100,9 +97,9 @@ def _evaluate_model_episodes_vector(
                 episode_results.append(result)
                 if progress_bar is not None:
                     progress_bar.update(1)
-                if best_episode_result is None or episode_rank(
-                    result, semantics
-                ) > episode_rank(best_episode_result, semantics):
+                if best_episode_result is None or episode_rank(result, semantics) > episode_rank(
+                    best_episode_result, semantics
+                ):
                     best_episode_result = result
                 if len(episode_results) >= episodes:
                     break
@@ -130,9 +127,7 @@ def evaluate_model_episodes(
     progress_description: str = "eval episodes",
 ) -> tuple[dict[str, Any], Path | None]:
     if deterministic:
-        raise ValueError(
-            "deterministic policy evaluation is unsupported; use stochastic sampling"
-        )
+        raise ValueError("deterministic policy evaluation is unsupported; use stochastic sampling")
     started_at = time.perf_counter()
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
@@ -215,7 +210,8 @@ def evaluate_model_episodes(
         deterministic=deterministic,
         extra={"eval_n_envs": n_envs, **(extra or {})},
         semantics=semantics,
-        event_names=tuple(config.task.get("events", {})),
+        event_names=tuple(task_termination(config).get("failure", ())),
+        track_success=bool(task_termination(config).get("success")),
     )
     metrics["best_episode"] = best_episode_result
     written_video = None

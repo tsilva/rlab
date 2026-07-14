@@ -28,7 +28,8 @@ attribution. `global_step` counts policy environment transitions; frame skip rem
 - Training `rate/current` is cumulative. `rate/window_100` is the latest 100 attempts. Global
   window-100 min/mean appear only after every configured start has 100 attempts. Always pair early
   current aggregates with `start_coverage/rate`.
-- Outcome reasons may overlap, so reason counts and rates need not sum to the terminal count.
+- Failure reasons may overlap, so reason counts and rates need not sum to the terminal count.
+  Successful episodes contribute to success metrics, not the failure-reason families.
 - Positive PPO policy entropy, dominant-action rate, and the action histogram diagnose discrete
   policy collapse. Value prediction and advantage histograms are sampled every 64 rollouts.
 - `between_rollouts_seconds` includes PPO updates, callbacks, and logging. It is deliberately not
@@ -38,10 +39,11 @@ attribution. `global_step` counts policy environment transitions; frame skip rem
 
 ## Full-evaluation table
 
-`eval/full/by_start` has one row per start and observed reason with these columns:
+`eval/full/by_start` has one row per start and observed failure reason with these columns:
 
 `checkpoint_step`, `start_id`, `episodes`, `success_count`, `success_rate`, `return_mean`,
 `return_std`, `return_median`, `reason`, `reason_count`, `reason_rate`.
+The reason value is empty, with zero count and rate, when a start has no recorded failure reason.
 
 Episode-level evidence stays in R2/SQLite. Confidence intervals and start-by-reason scalar products
 are intentionally computed offline rather than added to W&B history.
@@ -56,8 +58,8 @@ are intentionally computed offline rather than added to W&B history.
 | `train/episode/length/mean` | Mean episode length. | steps | rollout | history |
 | `train/episode/count` | Cumulative completed training episodes. | episodes | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
-| `train/outcome/reason/{reason}/count` | Cumulative episodes containing an outcome reason. | episodes | rollout | history |
-| `train/outcome/reason/{reason}/rate/window_100` | Reason incidence over the latest 100 terminal episodes. | fraction | rollout | history |
+| `train/outcome/reason/{reason}/count` | Cumulative failed episodes containing a reason. | episodes | rollout | history |
+| `train/outcome/reason/{reason}/rate/window_100` | Failure-reason incidence over the latest 100 terminal episodes. | fraction | rollout | history |
 | `train/outcome/success/from/{start}/count` | Cumulative successful episodes from a start. | episodes | rollout | history |
 | `train/outcome/success/from/{start}/attempts` | Cumulative episode attempts from a start. | episodes | rollout | history |
 | `train/outcome/success/from/{start}/rate/current` | Cumulative success rate from a start. | fraction | rollout | history |
@@ -67,32 +69,87 @@ are intentionally computed offline rather than added to W&B history.
 | `train/outcome/success/rate/window_100/min` | Minimum window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
 | `train/outcome/success/rate/window_100/mean` | Mean window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
 | `train/outcome/success/start_coverage/rate` | Configured starts with an attempt divided by configured starts. | fraction | rollout | history |
-| `train/reward/shaped/{stat}` | Distribution of shaped per-step reward. | scalar | rollout | history |
-| `train/reward/raw/{stat}` | Distribution of raw per-step reward when distinct from shaped reward. | scalar | rollout | history |
-| `train/reward/component/{component}/{stat}` | Active reward-component attribution. | scalar | rollout | history |
-| `train/reward/signal/{signal}/{stat}` | Configured reward-source signal. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/update/{metric}` | Algorithm update-health diagnostic. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/policy/{metric}` | Policy behavior or distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/value/{metric}` | Value-function diagnostic. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/rollout/{distribution}/{stat}` | Rollout-buffer distribution diagnostic. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/hyperparameter/{metric}` | Scheduled algorithm hyperparameter. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/advantage/{metric}` | Advantage normalization diagnostic. | scalar | rollout | history |
-| `train/algorithm/{algorithm}/advantage/task/{task}/{stat}` | Per-task advantage normalization diagnostic. | scalar | rollout | history |
-| `train/throughput/{metric}` | Training-loop rate or phase duration. | scalar | rollout | history |
+| `train/reward/shaped/mean` | Distribution of shaped per-step reward. | scalar | rollout | history |
+| `train/reward/shaped/std` | Distribution of shaped per-step reward. | scalar | rollout | history |
+| `train/reward/shaped/min` | Distribution of shaped per-step reward. | scalar | rollout | history |
+| `train/reward/shaped/max` | Distribution of shaped per-step reward. | scalar | rollout | history |
+| `train/reward/shaped/nonzero_rate` | Distribution of shaped per-step reward. | scalar | rollout | history |
+| `train/reward/raw/mean` | Distribution of raw per-step reward when distinct from shaped reward. | scalar | rollout | history |
+| `train/reward/raw/std` | Distribution of raw per-step reward when distinct from shaped reward. | scalar | rollout | history |
+| `train/reward/component/{component}/mean` | Active reward-component attribution. | scalar | rollout | history |
+| `train/reward/component/{component}/nonzero_rate` | Active reward-component attribution. | scalar | rollout | history |
+| `train/reward/component/{component}/share` | Active reward-component attribution. | scalar | rollout | history |
+| `train/reward/signal/{signal}/mean` | Configured reward-source signal. | scalar | rollout | history |
+| `train/reward/signal/{signal}/max` | Configured reward-source signal. | scalar | rollout | history |
+| `train/reward/signal/{signal}/nonzero_rate` | Configured reward-source signal. | scalar | rollout | history |
+| `train/algorithm/ppo/update/approx_kl` | Approximate KL divergence for the PPO update. | scalar | rollout | history |
+| `train/algorithm/ppo/update/clip_fraction` | Fraction of policy ratios clipped by PPO. | scalar | rollout | history |
+| `train/algorithm/ppo/value/explained_variance` | Value-function explained variance. | scalar | rollout | history |
+| `train/algorithm/ppo/update/policy_gradient_loss` | PPO policy-gradient loss. | scalar | rollout | history |
+| `train/algorithm/ppo/update/value_loss` | PPO value loss. | scalar | rollout | history |
+| `train/algorithm/ppo/update/learning_rate` | Current PPO learning rate. | scalar | rollout | history |
+| `train/algorithm/ppo/policy/entropy` | Positive policy entropy. | scalar | rollout | history |
+| `train/algorithm/ppo/policy/distribution_std` | Continuous-action distribution standard deviation. | scalar | rollout | history |
+| `train/algorithm/ppo/policy/dominant_action_rate` | Fraction assigned to the most frequent sampled discrete action. | scalar | rollout | history |
+| `train/algorithm/ppo/policy/action_hist` | Sampled discrete-action histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/ppo/rollout/value_prediction/mean` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/value_prediction/std` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/value_prediction/min` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/value_prediction/max` | Rollout value-prediction distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/value_prediction/hist` | Rollout value-prediction histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/ppo/rollout/advantage/mean` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/advantage/std` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/advantage/min` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/advantage/max` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
+| `train/algorithm/ppo/rollout/advantage/hist` | Rollout advantage histogram. | histogram | every 64 rollouts | history |
+| `train/algorithm/ppo/hyperparameter/entropy_coefficient` | Current scheduled entropy coefficient. | scalar | rollout | history |
+| `train/throughput/loop_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
+| `train/throughput/rollout_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
+| `train/throughput/env_step_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
+| `train/throughput/loop_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
+| `train/throughput/rollout_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
+| `train/throughput/env_step_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
+| `train/throughput/rollout_overhead_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
+| `train/throughput/between_rollouts_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
 | `train/artifact/save/seconds` | Local model save duration. | seconds | artifact | history |
 | `train/artifact/upload/seconds` | External storage and W&B artifact publication duration. | seconds | artifact | history |
-| `eval/{protocol}/episode/return/{stat}` | Evaluation episode-return distribution. | return | evaluation | history |
+| `eval/{protocol}/episode/return/mean` | Evaluation episode-return distribution. | return | evaluation | history |
+| `eval/{protocol}/episode/return/std` | Evaluation episode-return distribution. | return | evaluation | history |
+| `eval/{protocol}/episode/return/median` | Evaluation episode-return distribution. | return | evaluation | history |
+| `eval/full/episode/return/best` | Best full-evaluation episode return. | return | evaluation | history |
 | `eval/{protocol}/episode/length/mean` | Mean evaluation episode length. | steps | evaluation | history |
 | `eval/{protocol}/episode/count` | Evaluation episodes represented. | episodes | evaluation | history |
 | `eval/{protocol}/outcome/success/from/{start}/rate` | Evaluation success rate from a start. | fraction | evaluation | history |
-| `eval/{protocol}/outcome/success/rate/{stat}` | Aggregate per-start evaluation success rate. | fraction | evaluation | history |
-| `eval/{protocol}/outcome/reason/{reason}/count` | Evaluation episodes containing a reason. | episodes | evaluation | history |
-| `eval/{protocol}/outcome/reason/{reason}/rate` | Evaluation reason incidence. | fraction | evaluation | history |
-| `eval/{protocol}/progress/{progress}/{stat}` | Goal-configured evaluation progress summary. | value | evaluation | history |
-| `eval/{protocol}/checkpoint/{field}` | Evaluated checkpoint identity. | metadata | evaluation | history |
+| `eval/{protocol}/outcome/success/rate/min` | Aggregate per-start evaluation success rate. | fraction | evaluation | history |
+| `eval/{protocol}/outcome/success/rate/mean` | Aggregate per-start evaluation success rate. | fraction | evaluation | history |
+| `eval/{protocol}/outcome/reason/{reason}/count` | Failed evaluation episodes containing a reason. | episodes | evaluation | history |
+| `eval/{protocol}/outcome/reason/{reason}/rate` | Evaluation failure-reason incidence. | fraction | evaluation | history |
+| `eval/full/progress/{progress}/mean` | Goal-configured full-evaluation progress summary. | value | evaluation | history |
+| `eval/full/progress/{progress}/max` | Goal-configured full-evaluation progress summary. | value | evaluation | history |
+| `eval/{protocol}/checkpoint/step` | Evaluated checkpoint step. | steps | evaluation | history |
+| `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
-| `eval/{protocol}/candidate/{field}` | Staged checkpoint decision signal. | scalar | evaluation | history |
+| `eval/screen/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
+| `eval/confirm/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
+| `eval/screen/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |
+| `eval/confirm/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |
+| `eval/confirm/candidate/checkpoint_step` | Confirmed candidate checkpoint step. | steps | evaluation | history |
+| `eval/confirm/candidate/episodes` | Confirmed candidate evaluation episodes. | episodes | evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
-| `leader/checkpoint/{field}` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/success_rate_min` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/success_rate_mean` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/objective` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/objective_name` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/return_mean` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/best_return` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/rank` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/rank_values` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/progress_max` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/step` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/steps_to_goal` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/artifact_ref` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/local_path` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/eval_source` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/updated_at` | Selected checkpoint summary field. | summary | selection | summary |
 <!-- METRIC_REGISTRY_END -->

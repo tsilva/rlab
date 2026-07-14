@@ -13,6 +13,7 @@ from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.metric_names import validate_metric_payload
 from rlab.train_config import materialized_train_args
 
 
@@ -22,6 +23,7 @@ def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
     payload = json.loads(str(row["payload_json"]))
     kind = str(row["kind"])
     if kind == "history":
+        validate_metric_payload(payload)
         run.log(payload)
         return
     if kind == "histogram":
@@ -31,6 +33,7 @@ def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
         for name, values in payload.get("histograms", {}).items():
             converted[str(name)] = wandb.Histogram(values)
         if len(converted) > 1:
+            validate_metric_payload(converted)
             run.log(converted)
         return
     if kind == "checkpoint_eval":

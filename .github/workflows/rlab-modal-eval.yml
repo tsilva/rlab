@@ -1,6 +1,19 @@
 name: rlab Modal eval deployment
 
 on:
+  workflow_call:
+    inputs:
+      runtime_image_ref:
+        description: Immutable docker:ghcr.io/...@sha256:... train/eval runtime
+        required: true
+        type: string
+    secrets:
+      MODAL_TOKEN_ID:
+        required: true
+      MODAL_TOKEN_SECRET:
+        required: true
+      RLAB_MODAL_REGISTRY_SECRET_NAME:
+        required: true
   workflow_dispatch:
     inputs:
       runtime_image_ref:

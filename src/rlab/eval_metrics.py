@@ -174,11 +174,27 @@ def serializable_info(info: dict[str, Any]) -> dict[str, Any]:
 
 
 def episode_reasons(episode: Mapping[str, Any]) -> set[str]:
-    reasons = {str(event) for event in (episode.get("events", ()) or ())}
-    if episode.get("truncated"):
+    if episode_is_complete(episode):
+        return set()
+    return episode_reason_names(
+        episode.get("events", ()) or (),
+        terminated=bool(episode.get("terminated")),
+        truncated=bool(episode.get("truncated")),
+    )
+
+
+def episode_reason_names(
+    events: Sequence[object],
+    *,
+    terminated: bool,
+    truncated: bool,
+) -> set[str]:
+    """Return the shared train/eval terminal-reason taxonomy."""
+    reasons = {str(event) for event in events if str(event) != "timeout"}
+    if truncated:
         reasons.add("max_steps")
     if not reasons:
-        reasons.add("terminated" if episode.get("terminated") else "unclassified")
+        reasons.add("terminated" if terminated else "unclassified")
     return reasons
 
 
@@ -186,20 +202,15 @@ def eval_outcome_metrics(
     episode_results: list[dict[str, Any]],
     *,
     protocol: str = "full",
-    semantics: EvalSemantics | None = None,
     event_names: Sequence[str] = (),
+    track_success: bool = False,
 ) -> dict[str, int | float]:
-    semantics = semantics or default_eval_semantics()
     metrics: dict[str, int | float] = {}
     success_rates: list[float] = []
     configured_reasons = set(str(name) for name in event_names)
     all_reasons = sorted(
         configured_reasons
-        | {
-            reason
-            for episode in episode_results
-            for reason in episode_reasons(episode)
-        }
+        | {reason for episode in episode_results for reason in episode_reasons(episode)}
     )
     episode_count = len(episode_results)
     for reason in all_reasons:
@@ -210,15 +221,12 @@ def eval_outcome_metrics(
     states = sorted(
         {state for episode in episode_results if (state := episode_start_state(episode))}
     )
-    has_success_contract = bool(semantics.completion_reason) or any(
-        episode_is_complete(episode) for episode in episode_results
-    )
     for state in states:
         state_episodes = [
             episode for episode in episode_results if episode_start_state(episode) == state
         ]
         denominator = len(state_episodes)
-        if has_success_contract:
+        if track_success:
             success_count = sum(episode_is_complete(episode) for episode in state_episodes)
             success_rate = success_count / denominator
             success_rates.append(success_rate)
@@ -324,6 +332,7 @@ def summarize_episode_results(
     extra: dict[str, Any] | None = None,
     semantics: EvalSemantics | None = None,
     event_names: Sequence[str] = (),
+    track_success: bool = False,
 ) -> dict[str, Any]:
     if not episode_results:
         raise ValueError("episode_results must not be empty")
@@ -347,9 +356,7 @@ def summarize_episode_results(
             if field.result_key == "max_level_x_pos"
             else field.result_key.removeprefix("max_").removesuffix("_pos")
         )
-        progress_metrics[eval_progress_metric("full", progress_name, "mean")] = float(
-            values.mean()
-        )
+        progress_metrics[eval_progress_metric("full", progress_name, "mean")] = float(values.mean())
         progress_metrics[eval_progress_metric("full", progress_name, "max")] = int(values.max())
     death_x_positions = [
         int(episode["death_x_pos"])
@@ -365,17 +372,17 @@ def summarize_episode_results(
         "return_mean": float(returns.mean()),
         "return_std": float(returns.std()),
         "return_median": float(np.median(returns)),
-        "return_max": float(returns.max()),
         "episode_length_mean": float(lengths.mean()),
         eval_metric("full", "episode/return/mean"): float(returns.mean()),
         eval_metric("full", "episode/return/std"): float(returns.std()),
         eval_metric("full", "episode/return/median"): float(np.median(returns)),
+        eval_metric("full", "episode/return/best"): float(returns.max()),
         eval_metric("full", "episode/length/mean"): float(lengths.mean()),
         eval_metric("full", "episode/count"): episode_count,
         "episode_results": episode_results,
     }
     metrics.update(progress_metrics)
-    if semantics.completion_reason:
+    if track_success:
         metrics["success_count"] = completion_count
         metrics["success_rate"] = completion_count / episode_count
     if semantics.death_flag_key:
@@ -389,8 +396,8 @@ def summarize_episode_results(
     metrics.update(
         eval_outcome_metrics(
             episode_results,
-            semantics=semantics,
             event_names=event_names,
+            track_success=track_success,
         )
     )
     if extra:

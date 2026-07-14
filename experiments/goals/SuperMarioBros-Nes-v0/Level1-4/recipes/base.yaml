@@ -2,7 +2,7 @@ defaults:
 - ../../Level1-1/recipes/base@_global_
 - _self_
 recipe_id: base
-batch_id: b257
+campaign_id: b257
 template_vars:
   recipe_label: B257 soft-update no-bonus
 description: >-

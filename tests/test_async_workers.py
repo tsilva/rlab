@@ -91,7 +91,7 @@ def eval_metrics(*, episodes: int, completion: float) -> dict[str, object]:
         "return_mean": 12.0,
         "return_std": 1.0,
         "return_median": 12.0,
-        "return_max": 15.0,
+        "eval/full/episode/return/best": 15.0,
         "episode_length_mean": 100.0,
         "best_episode": {"return": 15.0},
         "eval/full/episode/return/mean": 12.0,

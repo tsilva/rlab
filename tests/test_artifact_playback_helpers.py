@@ -300,7 +300,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         args = argparse.Namespace(game="TestGame-Platform", run_name="candidate/run")
         self.assertEqual(
             build_s3_artifact_uri("s3://wandb", args, Path("final_model.zip"), "final"),
-            "s3://wandb/TestGame-Platform/candidate-run/final/final_model.zip",
+            "s3://wandb/TestGame-Platform/candidate-run-final/final_model.zip",
         )
         self.assertEqual(
             build_s3_artifact_uri(
@@ -309,7 +309,12 @@ class CommandAndArtifactTests(unittest.TestCase):
                 Path("ppo_test_100_steps.zip"),
                 "checkpoint",
             ),
-            "s3://wandb/TestGame-Platform/candidate-run/checkpoint/ppo_test_100_steps.zip",
+            "s3://wandb/TestGame-Platform/candidate-run-checkpoint/ppo_test_100_steps.zip",
+        )
+        args.wandb_run_id = "rlab-immutable"
+        self.assertEqual(
+            build_s3_artifact_uri("s3://wandb", args, Path("final_model.zip"), "final"),
+            "s3://wandb/TestGame-Platform/rlab-immutable-final/final_model.zip",
         )
 
     def test_wandb_artifact_logging_reports_stall_timing_metrics(self) -> None:
@@ -388,11 +393,12 @@ class CommandAndArtifactTests(unittest.TestCase):
             [
                 (
                     model_path,
-                    "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/candidate-run/checkpoint/ppo_test_100_steps.zip",
+                    "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/run-id-checkpoint/ppo_test_100_steps.zip",
                 )
             ],
         )
         artifact, aliases = fake_run.artifact_logs[0]
+        self.assertEqual(artifact.name, "run-id-checkpoint")
         self.assertEqual(artifact.references[0][1], "ppo_test_100_steps.zip")
         self.assertEqual(aliases, ["latest", "step-100"])
         payload, step = fake_run.metric_logs[0]

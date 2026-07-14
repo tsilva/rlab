@@ -1,4 +1,4 @@
 defaults:
 - ../../_single-level-transfer@_global_
 - _self_
-batch_id: b275
+campaign_id: b275

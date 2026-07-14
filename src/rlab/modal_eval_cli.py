@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -262,7 +261,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
-    from rlab.fleet import container_output_path, run_machine_docker, run_machine_shell
+    from rlab.fleet import container_output_path, run_machine_docker
     from rlab.machines import load_machine_registry, resolve_machine
     from rlab.runtime_refs import docker_image_ref
 
@@ -271,8 +270,10 @@ def cmd_recover(args: argparse.Namespace) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT t.*, l.launch_id, l.output_uri
-                FROM train_jobs t JOIN job_launches l ON l.job_id = t.id
+                SELECT t.*, l.launch_id, l.output_uri, r.status AS eval_run_status
+                FROM train_jobs t
+                JOIN job_launches l ON l.job_id = t.id
+                LEFT JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = %(id)s
                 """,
                 {"id": int(args.train_job_id)},
@@ -281,17 +282,18 @@ def cmd_recover(args: argparse.Namespace) -> int:
         if not row:
             raise ValueError("train job or stable launch was not found")
         row = dict(row)
+        train_status = str(row.get("status") or "")
+        if train_status not in {"succeeded", "failed", "canceled"}:
+            raise ValueError(
+                f"train job {args.train_job_id} is {train_status or 'unknown'}, not terminal"
+            )
+        eval_run_status = str(row.get("eval_run_status") or "")
+        if eval_run_status != "awaiting_artifact_recovery":
+            raise ValueError(
+                f"eval run for train job {args.train_job_id} is "
+                f"{eval_run_status or 'missing'}, not awaiting_artifact_recovery"
+            )
         machine = resolve_machine(load_machine_registry(), str(row["machine"]))
-        host_output = str(row["output_uri"])
-        stop_path = f"{host_output}/recover.stop"
-        result = run_machine_shell(
-            machine,
-            f"mkdir -p {shlex.quote(stop_path.rsplit('/', 1)[0])} && "
-            f"printf 'stop\\n' > {shlex.quote(stop_path)}",
-            capture=True,
-        )
-        if result.returncode:
-            raise RuntimeError(result.stderr or result.stdout)
         container_output = container_output_path(machine, str(row["launch_id"]))
         run_name = str(row.get("run_name") or f"train_job_{row['id']}")
         docker_args = [
@@ -311,8 +313,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
             f"{container_output}/runs/{run_name}",
             "--train-config-json",
             f"{container_output}/train_config.json",
-            "--stop-file",
-            f"{container_output}/recover.stop",
+            "--drain-and-exit",
         ]
         recovered = run_machine_docker(machine, docker_args, capture=True, timeout=900)
         if recovered.returncode:
@@ -320,9 +321,17 @@ def cmd_recover(args: argparse.Namespace) -> int:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE eval_runs SET status = 'active', error = NULL, updated_at = now() WHERE train_job_id = %(id)s",
+                    """
+                    UPDATE eval_runs
+                    SET status = 'active', error = NULL, updated_at = now()
+                    WHERE train_job_id = %(id)s
+                      AND status = 'awaiting_artifact_recovery'
+                    RETURNING train_job_id
+                    """,
                     {"id": int(args.train_job_id)},
                 )
+                if not cur.fetchone():
+                    raise RuntimeError("eval run left awaiting_artifact_recovery during recovery")
         print(json.dumps({"train_job_id": int(args.train_job_id), "recovered": True}))
         _kick()
         return 0

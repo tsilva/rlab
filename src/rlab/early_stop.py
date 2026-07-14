@@ -5,6 +5,8 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
+from rlab.metric_names import validate_metric_name
+
 
 EARLY_STOP_OPERATORS = {
     ">": lambda value, threshold: value > threshold,
@@ -48,6 +50,12 @@ def normalize_early_stop_rule(value: Any, *, label: str) -> dict[str, Any]:
     if extra_keys:
         raise ValueError(f"{label} has unexpected keys: {extra_keys}")
     metric = _require_non_empty_string(node, "metric", label=label)
+    try:
+        validate_metric_name(metric)
+    except ValueError as exc:
+        raise ValueError(
+            f"{_label_path(label, 'metric')} is not a schema-v2 metric: {metric}"
+        ) from exc
     operator = _require_non_empty_string(node, "operator", label=label)
     if operator not in EARLY_STOP_OPERATORS:
         allowed = ", ".join(sorted(EARLY_STOP_OPERATORS))

@@ -48,6 +48,13 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      dependency_digest: ${{ steps.dependency_base.outputs.digest }}
+      digest: ${{ steps.published_image.outputs.digest }}
+      python_image: ${{ steps.build_meta.outputs.python_image }}
+      runtime_image_ref: ${{ steps.published_image.outputs.runtime_image_ref }}
+      uv_image: ${{ steps.build_meta.outputs.uv_image }}
+      uv_lock_sha256: ${{ steps.build_meta.outputs.uv_lock_sha256 }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -189,24 +196,37 @@ jobs:
           digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
           test -n "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "runtime_image_ref=docker:${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
 
+  deploy-modal-evaluator:
+    if: github.event_name != 'pull_request'
+    needs: build
+    uses: ./.github/workflows/rlab-modal-eval.yml
+    with:
+      runtime_image_ref: ${{ needs.build.outputs.runtime_image_ref }}
+    secrets: inherit
+
+  publish-runtime:
+    if: github.event_name != 'pull_request'
+    needs: [build, deploy-modal-evaluator]
+    runs-on: ubuntu-24.04
+    steps:
       - name: Write image digest artifact
-        if: github.event_name != 'pull_request'
         run: |
           cat > rlab-train-image.json <<'JSON'
           {
             "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
-            "digest": "${{ steps.published_image.outputs.digest }}",
-            "runtime_image_ref": "docker:${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.published_image.outputs.digest }}",
+            "digest": "${{ needs.build.outputs.digest }}",
+            "runtime_image_ref": "${{ needs.build.outputs.runtime_image_ref }}",
             "source_sha": "${{ github.sha }}",
             "tags": [
               "git-${{ github.sha }}"
             ],
-            "uv_lock_sha256": "${{ steps.build_meta.outputs.uv_lock_sha256 }}",
+            "uv_lock_sha256": "${{ needs.build.outputs.uv_lock_sha256 }}",
             "base_images": {
-              "python": "${{ steps.build_meta.outputs.python_image }}",
-              "uv": "${{ steps.build_meta.outputs.uv_image }}",
-              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ steps.dependency_base.outputs.digest }}"
+              "python": "${{ needs.build.outputs.python_image }}",
+              "uv": "${{ needs.build.outputs.uv_image }}",
+              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ needs.build.outputs.dependency_digest }}"
             },
             "workflow_run_id": "${{ github.run_id }}",
             "workflow_run_attempt": "${{ github.run_attempt }}"
@@ -215,7 +235,6 @@ jobs:
           python -m json.tool rlab-train-image.json
 
       - name: Upload image digest artifact
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: rlab-train-image
