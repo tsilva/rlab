@@ -175,16 +175,6 @@ def provider_native_vec_kwargs(
             except KeyError as exc:
                 choices = ", ".join(member.name.lower() for member in enum_type)
                 raise ValueError(f"env_args.{key} must be one of {choices}") from exc
-    done_on = native_kwargs.pop("done_on", None)
-    if done_on not in (None, (), [], {}):
-        raise ValueError(
-            "provider task detectors are unsupported; configure task events and termination"
-        )
-    if provider.provider_id in {
-        STABLE_RETRO_TURBO_PROVIDER.provider_id,
-        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
-    }:
-        native_kwargs["done_on"] = None
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
             raise ValueError(
@@ -527,9 +517,6 @@ def _stable_retro_turbo_make_vec_env(
     _require_provider(config, STABLE_RETRO_TURBO_PROVIDER.provider_id)
     env_type = retro_vec_env_type
     kwargs = dict(native_kwargs)
-    kwargs["autoreset_mode"] = _declared_autoreset_mode(
-        STABLE_RETRO_TURBO_PROVIDER.provider_id
-    )
     env = env_type(config.game, **kwargs)
     env = _require_disabled_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
     return _StartInfoAdapter(env)
@@ -544,9 +531,6 @@ def _super_mario_bros_nes_turbo_make_vec_env(
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     env_type = super_mario_vec_env_type()
     kwargs = dict(native_kwargs)
-    kwargs["autoreset_mode"] = _declared_autoreset_mode(
-        SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id
-    )
     if kwargs.get("rom_path") is None:
         try:
             import stable_retro.data

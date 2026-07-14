@@ -41,8 +41,6 @@ train:
           info_filter: all
           reward_clip: true
           use_fire_reset: false
-          done_on: null
-          autoreset_mode: disabled
     preprocessing: &atari_mspacman_preprocessing
       frame_skip: 4
       max_pool_frames: true

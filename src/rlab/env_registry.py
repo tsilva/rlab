@@ -74,8 +74,6 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
         ),
         explicit_env_args=frozenset(
             {
-                "autoreset_mode",
-                "done_on",
                 "frame_stack",
                 "info",
                 "info_filter",
@@ -96,7 +94,7 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
                 "use_restricted_actions",
             }
         ),
-        required_values={"autoreset_mode": "disabled", "done_on": None},
+        required_values={},
     ),
 )
 
@@ -123,8 +121,6 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
         ),
         explicit_env_args=frozenset(
             {
-                "autoreset_mode",
-                "done_on",
                 "frame_stack",
                 "info",
                 "info_filter",
@@ -144,7 +140,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
                 "use_restricted_actions",
             }
         ),
-        required_values={"autoreset_mode": "disabled", "done_on": None},
+        required_values={},
     ),
 )
 

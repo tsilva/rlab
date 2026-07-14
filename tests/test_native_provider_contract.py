@@ -216,8 +216,8 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
-        self.assertEqual(installed, Version("0.2.25"))
-        self.assertEqual(Version(retro.__version__), Version("1.0.1.post29"))
+        self.assertEqual(installed, Version("0.3.0"))
+        self.assertEqual(Version(retro.__version__), Version("1.0.1.post30"))
 
     def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
         config = self.config(
@@ -246,10 +246,10 @@ class MarioNativeProviderTests(unittest.TestCase):
                 "render_modes": ("rgb_array",),
             }
 
-            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
+            def __init__(self, game, *, num_envs, **kwargs):
                 self.game = game
                 self.num_envs = num_envs
-                self.autoreset_mode = autoreset_mode
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
                 self.kwargs = kwargs
                 self.single_observation_space = gym.spaces.Box(
                     0, 255, shape=(4, 84, 84), dtype=np.uint8
@@ -309,7 +309,8 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
 
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
-        self.assertIsNone(env.kwargs["done_on"])
+        self.assertNotIn("done_on", env.kwargs)
+        self.assertNotIn("autoreset_mode", env.kwargs)
         self.assertEqual(env.kwargs["info_filter"]["mode"], "all")
         self.assertEqual(descriptor.start_catalog, ("Level1-1",))
         self.assertEqual(descriptor.lane_start_ids, ("Level1-1", "Level1-1"))
@@ -327,10 +328,10 @@ class MarioNativeProviderTests(unittest.TestCase):
         class FakeMarioVectorEnv:
             metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
-            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
+            def __init__(self, game, *, num_envs, **kwargs):
                 self.game = game
                 self.num_envs = num_envs
-                self.autoreset_mode = autoreset_mode
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
                 self.kwargs = kwargs
 
         config = self.config(env_args={"rom_path": None})
@@ -354,16 +355,6 @@ class MarioNativeProviderTests(unittest.TestCase):
             )
 
         self.assertEqual(env.kwargs["rom_path"], str(rom_path))
-
-    def test_rejects_native_task_detectors(self) -> None:
-        config = self.config(env_args={"done_on": {"life_loss": ("lives", "decrease")}})
-        with self.assertRaisesRegex(ValueError, "provider task detectors are unsupported"):
-            provider_native_vec_kwargs(
-                config,
-                n_envs=2,
-                native_obs_crop=lambda _config: None,
-                state_weight_mapping=lambda _config: {},
-            )
 
     def test_descriptor_does_not_invent_requested_signals(self) -> None:
         class Native:
@@ -453,10 +444,10 @@ class MarioNativeProviderTests(unittest.TestCase):
                 "render_modes": ("rgb_array",),
             }
 
-            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
+            def __init__(self, game, *, num_envs, **kwargs):
                 self.game = game
                 self.num_envs = num_envs
-                self.autoreset_mode = autoreset_mode
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
                 self.kwargs = kwargs
 
         config = self.config(env_provider="stable-retro-turbo")
@@ -475,18 +466,17 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
         self.assertEqual(env.kwargs["obs_crop_mode"], "remove")
         self.assertEqual(env.kwargs["obs_crop_fill"], 0)
-        self.assertIsNone(env.kwargs["done_on"])
+        self.assertNotIn("done_on", env.kwargs)
+        self.assertNotIn("autoreset_mode", env.kwargs)
 
     def test_stable_retro_atari_uses_retro_vec_env_contract(self) -> None:
         class ManualRetroVectorEnv:
             metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
-            def __init__(self, game, *, num_envs, autoreset_mode, **kwargs):
-                if autoreset_mode is not gym.vector.AutoresetMode.DISABLED:
-                    raise ValueError("RetroVecEnv requires disabled autoreset")
+            def __init__(self, game, *, num_envs, **kwargs):
                 self.game = game
                 self.num_envs = num_envs
-                self.autoreset_mode = autoreset_mode
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
                 self.kwargs = kwargs
                 self.reset_calls = 0
                 self.reset_masks = []

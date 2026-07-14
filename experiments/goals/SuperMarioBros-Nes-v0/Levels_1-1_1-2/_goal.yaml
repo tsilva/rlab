@@ -67,8 +67,6 @@ train:
           noop_reset_max: 0
           reward_clip: false
           info_filter: all
-          done_on: null
-          autoreset_mode: disabled
         states:
         - Level1-1
         - Level1-2

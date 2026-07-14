@@ -74,8 +74,6 @@ train:
           noop_reset_max: 0
           reward_clip: false
           info_filter: all
-          done_on: null
-          autoreset_mode: disabled
         # Emulator frame skip; fixes action repeat and observation cadence.
         frame_skip: 4
         # Whether to max-pool adjacent frames; false matches the current native-vector Mario contract.
