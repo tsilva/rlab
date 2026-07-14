@@ -4,3 +4,21 @@ defaults:
 - ../_base@_global_
 # Apply this file after the base; goal-specific overrides can live here when needed.
 - _self_
+
+# End attempts that make no new horizontal progress for roughly 20 seconds.
+train:
+  environment:
+    task:
+      events:
+        stalled: {signal: x, operation: unchanged_for, steps: 300}
+      termination:
+        failure: [life_loss, stalled]
+
+# Keep checkpoint evaluation on the same no-progress boundary as training.
+eval:
+  environment:
+    task:
+      events:
+        stalled: {signal: x, operation: unchanged_for, steps: 300}
+      termination:
+        failure: [stalled]

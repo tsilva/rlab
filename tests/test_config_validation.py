@@ -643,6 +643,15 @@ environment_hash: sha256:deadbeef
         self.assertEqual(document["train"]["environment"]["env_config"]["observation_size"], 84)
         self.assertEqual(document["train"]["environment"]["env_config"]["max_pool_frames"], False)
         self.assertEqual(document["train"]["environment"]["env_config"]["sticky_action_prob"], 0.0)
+        stalled_event = {"signal": "x", "operation": "unchanged_for", "steps": 300}
+        self.assertEqual(
+            document["train"]["environment"]["task"]["events"]["stalled"],
+            stalled_event,
+        )
+        self.assertEqual(
+            document["train"]["environment"]["task"]["termination"]["failure"],
+            ["life_loss", "stalled"],
+        )
         self.assertNotIn("policy", document["eval"])
         self.assertNotIn("schema_version", document["eval"])
         self.assertEqual(
@@ -658,6 +667,14 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])
         self.assertEqual(document["eval"]["environment"]["env_config"]["observation_size"], 84)
+        self.assertEqual(
+            document["eval"]["environment"]["task"]["events"]["stalled"],
+            stalled_event,
+        )
+        self.assertEqual(
+            document["eval"]["environment"]["task"]["termination"]["failure"],
+            ["stalled"],
+        )
         self.assertEqual(document["eval"]["episodes"], 100)
         self.assertNotIn("max_episodes", document["eval"]["environment"]["env_config"])
         self.assertNotIn("seed", document["eval"]["environment"]["env_config"])
