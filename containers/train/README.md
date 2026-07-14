@@ -7,11 +7,13 @@ needed by Stable Retro, the `rlab` CLI, and the container-only
 not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
 The Dockerfile keeps locked dependencies in a heavyweight cacheable stage and
-installs the small `rlab` package in an independent `COPY --link` overlay. No
-command executes after that overlay is attached, so BuildKit can rebase normal
-source changes without materializing the multi-gigabyte dependency layer. Base
-images are digest-pinned so upstream tag movement cannot invalidate that stage
-unexpectedly.
+installs the small `rlab` package in an independent `COPY --link` overlay. For
+published builds, the workflow selects the immutable dependency-image digest as
+the actual runtime base. No command executes after the linked overlays are
+attached, so BuildKit can rebase normal source changes without downloading or
+extracting the multi-gigabyte dependency layer. Local builds and pull requests
+with unpublished dependency inputs use the same Dockerfile's internal
+`dependencies` stage instead.
 
 ## Build Locally
 
@@ -77,13 +79,14 @@ tag. The workflow uploads
 that file into queue creation with `--runtime-image-ref-file` so jobs do not
 depend on mutable tags.
 
-Published builds export their BuildKit cache to the mutable `buildcache` tag in
-GHCR. That tag is build infrastructure only and must never be used as a runtime
-image selector.
+Dependency builds export their BuildKit cache to the mutable dependency
+`buildcache` tag in GHCR. That tag is build infrastructure only and must never
+be used as a runtime image selector. Runtime images do not export a second
+cache because their linked application layers are cheap to rebuild.
 
 The workflow publishes a dependency-input-keyed `rlab-train-dependencies` image with a full
 SBOM and provenance when dependency inputs change. Per-commit runtime images
-reuse that cache, add only linked application layers, and retain their own
+use its immutable digest as their base, add only linked application layers, and retain their own
 source provenance plus the exact dependency-image digest in both OCI labels and
 `rlab-train-image.json`.
 

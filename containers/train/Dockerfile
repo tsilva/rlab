@@ -1,23 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
+ARG RUNTIME_BASE=dependencies
+
+# dependency-image-inputs-begin
 ARG PYTHON_IMAGE=python:3.14-slim-bookworm@sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.13@sha256:841c8e6fe30a8b07b4478d12d0c608cba6de66102d29d65d1cc423af86051563
 
 FROM ${UV_IMAGE} AS uv
-
-FROM ${PYTHON_IMAGE} AS app-package
-
-ENV UV_LINK_MODE=copy
-
-COPY --from=uv /uv /uvx /usr/local/bin/
-
-WORKDIR /src
-
-COPY pyproject.toml README.md ./
-COPY src ./src
-
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --target /opt/rlab --no-deps .
 
 FROM ${PYTHON_IMAGE} AS dependencies
 
@@ -61,7 +50,23 @@ LABEL org.opencontainers.image.description="Locked system and Python dependencie
 LABEL org.opencontainers.image.source="https://github.com/tsilva/rlab"
 LABEL io.rlab.uv-lock.sha256="${UV_LOCK_SHA256}"
 
-FROM dependencies AS runtime
+# dependency-image-inputs-end
+
+FROM ${PYTHON_IMAGE} AS app-package
+
+ENV UV_LINK_MODE=copy
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+WORKDIR /src
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --target /opt/rlab --no-deps .
+
+FROM ${RUNTIME_BASE} AS runtime
 
 ENV PYTHONPATH=/root/rlab/src:/opt/rlab
 

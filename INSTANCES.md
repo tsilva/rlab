@@ -208,6 +208,14 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
   artifacts. The Mac-side terminal projector owns promotion-quality `eval/full/*` evidence.
   Later service passes reconcile DB launch rows, Docker labels, and durable
   output directories without creating a replacement launch.
+## Train Image Build Baseline (2026-07-14)
+
+Before dependency-image rebasing, six source-only GitHub Actions builds had a median runtime
+image step of about 83 seconds. In run `29314888343`, BuildKit spent 38.2 seconds downloading and
+26.3 seconds extracting the cached 3.12 GB Python dependency layer, while building the `rlab`
+package itself took 1.3 seconds. A source-only runtime build should avoid transferring that layer
+and complete its image step in under 25 seconds; record the first verified result here.
+
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 
 The consolidated Mario runtime was compared against the deleted fused implementation from source

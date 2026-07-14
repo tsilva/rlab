@@ -69,14 +69,13 @@ jobs:
           {
             echo "created=$(git show -s --format=%cI HEAD)"
             echo "uv_lock_sha256=$(sha256sum uv.lock | awk '{print $1}')"
-            echo "dependency_key=$(sha256sum containers/train/Dockerfile pyproject.toml uv.lock | sha256sum | awk '{print $1}')"
+            echo "dependency_key=$(python containers/train/dependency_key.py)"
             echo "python_image=$(awk -F= '/^ARG PYTHON_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
             echo "uv_image=$(awk -F= '/^ARG UV_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Resolve immutable dependency image
         id: existing_dependencies
-        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}"
@@ -111,17 +110,26 @@ jobs:
             type=gha
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
-      - name: Resolve published dependency digest
-        id: published_dependencies
-        if: github.event_name != 'pull_request'
+      - name: Resolve dependency base
+        id: dependency_base
         env:
           BUILT_DIGEST: ${{ steps.build_dependencies.outputs.digest }}
           EXISTING_DIGEST: ${{ steps.existing_dependencies.outputs.digest }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
-          test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          if [[ -n "$digest" ]]; then
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "runtime_base=${REGISTRY}/${DEPENDENCY_IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "digest=unknown" >> "$GITHUB_OUTPUT"
+            echo "runtime_base=dependencies" >> "$GITHUB_OUTPUT"
+            echo "No published dependency image matches this pull request; using the internal stage"
+          else
+            echo "::error::No immutable dependency image is available"
+            exit 1
+          fi
 
       - name: Resolve immutable image
         id: existing_image
@@ -162,16 +170,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
+            RUNTIME_BASE=${{ steps.dependency_base.outputs.runtime_base }}
             BUILD_DATE=${{ steps.build_meta.outputs.created }}
             VCS_REF=${{ github.sha }}
             UV_LOCK_SHA256=${{ steps.build_meta.outputs.uv_lock_sha256 }}
             DEPENDENCY_IMAGE=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}
-            DEPENDENCY_IMAGE_DIGEST=${{ steps.published_dependencies.outputs.digest }}
-          cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-            type=gha
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}:buildcache,mode=min,image-manifest=true,oci-mediatypes=true', env.REGISTRY, env.IMAGE_NAME) || '' }}
+            DEPENDENCY_IMAGE_DIGEST=${{ steps.dependency_base.outputs.digest }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
 
       - name: Resolve published digest
         id: published_image
@@ -201,7 +206,7 @@ jobs:
             "base_images": {
               "python": "${{ steps.build_meta.outputs.python_image }}",
               "uv": "${{ steps.build_meta.outputs.uv_image }}",
-              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ steps.published_dependencies.outputs.digest }}"
+              "dependencies": "docker:${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}@${{ steps.dependency_base.outputs.digest }}"
             },
             "workflow_run_id": "${{ github.run_id }}",
             "workflow_run_attempt": "${{ github.run_attempt }}"
