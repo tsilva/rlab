@@ -7,10 +7,11 @@ needed by Stable Retro, the `rlab` CLI, and the container-only
 not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
 The Dockerfile keeps locked dependencies in a heavyweight cacheable stage and
-installs the small `rlab` package in an independent `COPY --link` overlay. For
+assembles the small application filesystem in a scratch stage. For
 published builds, the workflow selects the immutable dependency-image digest as
-the actual runtime base. No command executes after the linked overlays are
-attached, so BuildKit can rebase normal source changes without downloading or
+the actual runtime base, then attaches the application filesystem with one
+`COPY --link`. No command executes after that overlay is attached, so BuildKit
+can rebase normal source changes without downloading or
 extracting the multi-gigabyte dependency layer. Local builds and pull requests
 with unpublished dependency inputs use the same Dockerfile's internal
 `dependencies` stage instead.

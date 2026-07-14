@@ -143,7 +143,7 @@ class ModalEvalContractTests(unittest.TestCase):
     def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
         dockerfile = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
         self.assertIn(
-            "COPY --link experiments/modal_eval.yaml ./experiments/",
+            "COPY experiments/modal_eval.yaml /root/rlab/experiments/modal_eval.yaml",
             dockerfile,
         )
 

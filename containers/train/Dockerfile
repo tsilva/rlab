@@ -66,19 +66,23 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --target /opt/rlab --no-deps .
 
+FROM scratch AS runtime-overlay
+
+COPY --from=app-package /opt/rlab /opt/rlab
+COPY src /root/rlab/src
+COPY METRICS.md INSTANCES.md /root/rlab/
+COPY scripts /root/rlab/scripts
+COPY experiments/machines.yaml /root/rlab/experiments/machines.yaml
+COPY experiments/modal_eval.yaml /root/rlab/experiments/modal_eval.yaml
+COPY --chmod=755 containers/train/rlab /usr/local/bin/rlab
+COPY --chmod=755 containers/train/entrypoint.sh /usr/local/bin/rlab-container-entrypoint
+COPY --chmod=755 containers/train/smoke.py /usr/local/bin/rlab-container-smoke
+
 FROM ${RUNTIME_BASE} AS runtime
 
 ENV PYTHONPATH=/root/rlab/src:/opt/rlab
 
-COPY --link --from=app-package /opt/rlab /opt/rlab
-COPY --link src ./src
-COPY --link METRICS.md INSTANCES.md ./
-COPY --link scripts ./scripts
-COPY --link experiments/machines.yaml ./experiments/
-COPY --link experiments/modal_eval.yaml ./experiments/
-COPY --link --chmod=755 containers/train/rlab /usr/local/bin/rlab
-COPY --link --chmod=755 containers/train/entrypoint.sh /usr/local/bin/rlab-container-entrypoint
-COPY --link --chmod=755 containers/train/smoke.py /usr/local/bin/rlab-container-smoke
+COPY --link --from=runtime-overlay / /
 
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown

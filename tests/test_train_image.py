@@ -14,6 +14,7 @@ class TrainImageTests(unittest.TestCase):
         self.assertEqual(dockerfile.count("# dependency-image-inputs-begin"), 1)
         self.assertEqual(dockerfile.count("# dependency-image-inputs-end"), 1)
         self.assertIn("ARG RUNTIME_BASE=dependencies", dockerfile)
+        self.assertIn("FROM scratch AS runtime-overlay", dockerfile)
         self.assertIn("FROM ${RUNTIME_BASE} AS runtime", dockerfile)
 
         runtime = dockerfile.split("FROM ${RUNTIME_BASE} AS runtime", maxsplit=1)[1]
@@ -22,8 +23,7 @@ class TrainImageTests(unittest.TestCase):
         ]
         self.assertFalse(any(line.startswith("RUN ") for line in runtime_instructions))
         copies = [line for line in runtime_instructions if line.startswith("COPY ")]
-        self.assertTrue(copies)
-        self.assertTrue(all(line.startswith("COPY --link ") for line in copies))
+        self.assertEqual(copies, ["COPY --link --from=runtime-overlay / /"])
 
     def test_dependency_key_ignores_runtime_changes(self) -> None:
         source = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
