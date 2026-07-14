@@ -518,14 +518,10 @@ def validate_goal_contract_document(
         raise ValueError(f"{label}.training is not part of goal contracts")
     if "max_train_timesteps" in train:
         raise ValueError(f"{label}.train.max_train_timesteps is not part of goal contracts")
-    policy = train.get("policy")
-    if isinstance(policy, Mapping):
-        policy_early_stop_keys = {"early_stop"}
-        present = sorted(set(policy) & policy_early_stop_keys)
-        if present:
-            raise ValueError(
-                f"{label}.train.policy early-stop fields moved to train.early_stop: {present}"
-            )
+    if "policy" in train:
+        raise ValueError(
+            f"{label}.train.policy is retired; use train.backend with an explicit id and config"
+        )
     if "early_stop" in train:
         normalize_early_stop_config(train["early_stop"], label=f"{label}.train.early_stop")
     if "checkpoint_eval_stages" in train:

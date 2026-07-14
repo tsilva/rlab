@@ -3,106 +3,58 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import argparse
-import json
 import os
-import re
 import signal
 import sys
-import time
-import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
-from stable_baselines3 import PPO
-from stable_baselines3.common.logger import HumanOutputFormat
-from stable_baselines3.common.utils import set_random_seed
-from gymnasium import spaces
-
-from rlab.artifacts import (
-    init_wandb,
-    write_model_metadata,
-    write_run_description,
-    write_wandb_url,
-)
-from rlab.callbacks import (
-    CallbackHelper,
-    LedgerCheckpointHelper,
-    MetricStoreLoggerHelper,
-    MetricThresholdStopHelper,
-    RlabCallback,
-    RolloutDiagnosticsHelper,
-    RuntimeMetricsHelper,
-    ThroughputHelper,
-)
+from rlab.artifacts import init_wandb, write_run_description, write_wandb_url
 from rlab.cli_args import explicit_arg_dests, parse_json_value
-from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
-from rlab.device import resolve_sb3_device
 from rlab.env import (
     EnvConfig,
     assert_provider_runtime_available,
     default_run_dir,
-    make_training_vec_env,
     resolve_env_config,
     resolve_mixed_state_config,
-    task_conditioning,
-    task_termination,
 )
-from rlab.env_config import env_config_from_args
-from rlab.env_config import parse_obs_crop
-from rlab.early_stop import normalize_early_stop_config
+from rlab.env_config import env_config_from_args, parse_obs_crop
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.provider_config import provider_num_envs
 from rlab.seeds import validate_training_seed
-from rlab.schedules import (
-    EntropyCoefficientScheduleHelper,
-    apply_resume_hyperparameters,
-    learning_rate_schedule,
+from rlab.train_config import (
+    TRAIN_CONFIG_FIELDS,
+    add_train_config_args,
+    apply_training_backend_arg_view,
+    load_materialized_train_config,
+    materialized_train_args,
+    validate_and_normalize_train_config,
 )
-from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
-from rlab.train_config import add_train_config_args, load_materialized_train_config
+from rlab.training_backend import (
+    BackendContext,
+    GracefulStopFlag,
+    load_training_backend,
+    training_backend_config,
+    training_backend_config_hash,
+    training_backend_id,
+    training_backend_runtime_metadata,
+)
 
 
-SB3_HUMAN_OUTPUT_MAX_LENGTH = 512
-
-
-def active_reward_components(task: Mapping[str, object]) -> tuple[str, ...]:
-    reward = task.get("reward")
-    if not isinstance(reward, Mapping):
-        return ()
-    components: list[str] = []
-    reward_mode = str(reward.get("reward_mode") or "")
-    if reward_mode == "native" or bool(reward.get("use_native_reward")):
-        components.append("native")
-    if float(reward.get("progress_reward_scale") or 0.0) != 0.0:
-        components.append("progress")
-    if reward_mode == "score":
-        components.append("score")
-    if (
-        float(reward.get("terminal_reward") or 0.0) != 0.0
-        or float(reward.get("completion_reward") or 0.0) != 0.0
-    ):
-        components.append("completion")
-    if float(reward.get("death_penalty") or 0.0) != 0.0:
-        components.append("death")
-    if float(reward.get("time_penalty") or 0.0) != 0.0:
-        components.append("time")
-    return tuple(components)
-
-
-def active_reward_signals(task: Mapping[str, object]) -> tuple[str, ...]:
-    components = set(active_reward_components(task))
-    return tuple(signal for signal in ("progress", "score") if signal in components)
+GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train PPO on a registered provider environment")
+    parser = argparse.ArgumentParser(
+        description="Train a configured backend on a registered provider environment"
+    )
     parser.add_argument(
         "--train-config-json",
         type=Path,
-        help="JSON file containing train option values. Explicit CLI flags override file values.",
+        help="Authoritative materialized train configuration JSON.",
     )
     add_train_config_args(
         parser,
@@ -124,111 +76,48 @@ def effective_n_envs(args: argparse.Namespace) -> int:
     return provider_num_envs(args, explicit_n_envs=explicit_n_envs(args))
 
 
+def _direct_train_config(args: argparse.Namespace) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for field in TRAIN_CONFIG_FIELDS:
+        value = getattr(args, field.dest, None)
+        if value is None or value == "" or (field.sequence_items and value in ((), [])):
+            continue
+        if field.sequence_items and isinstance(value, str):
+            items = [item.strip() for item in value.split(",") if item.strip()]
+            value = [float(item) for item in items] if field.sequence_items == "number" else items
+        payload[field.dest] = value
+    return validate_and_normalize_train_config(
+        payload,
+        label="train arguments",
+        required_keys=("training_backend",),
+    )
+
+
 def parse_train_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     explicit_dests = explicit_arg_dests(parser, argv_list)
-    args = parser.parse_args(argv_list)
-    args._train_config_json_fields = set()
-    args._explicit_train_arg_dests = set(explicit_dests)
-    if args.train_config_json is not None:
-        payload = load_materialized_train_config(Path(args.train_config_json))
-        args._train_config_json_fields = set(payload)
-        for key, value in payload.items():
-            if key == "train_config_json" or key in explicit_dests:
-                continue
-            if key == "wandb_tags" and isinstance(value, list | tuple):
-                value = ",".join(str(tag) for tag in value)
-            setattr(args, key, value)
-    if args.early_stop is not None:
-        args.early_stop = normalize_early_stop_config(args.early_stop, label="--early-stop")
-    if args.checkpoint_eval_stages is not None:
-        args.checkpoint_eval_stages = normalize_checkpoint_eval_stages(
-            args.checkpoint_eval_stages,
-            label="--checkpoint-eval-stages",
-        )
+    parsed = parser.parse_args(argv_list)
+    if parsed.train_config_json is None:
+        parsed._train_config_json_fields = set()
+        parsed._explicit_train_arg_dests = set(explicit_dests)
+        parsed._materialized_train_config = _direct_train_config(parsed)
+        apply_training_backend_arg_view(parsed, parsed._materialized_train_config)
+        args = parsed
+    else:
+        path = Path(parsed.train_config_json)
+        payload = load_materialized_train_config(path)
+        args = materialized_train_args(path)
+        for key in explicit_dests:
+            if key != "train_config_json":
+                value = getattr(parsed, key)
+                setattr(args, key, value)
+                if key in payload:
+                    payload[key] = value
+        args._explicit_train_arg_dests = set(explicit_dests)
+        args._materialized_train_config = payload
     validate_training_seed(args.seed, label="--seed", seed_span=effective_n_envs(args))
     return args
-
-
-def policy_name_for_observation_space(observation_space) -> str:
-    if isinstance(observation_space, spaces.Dict):
-        return "MultiInputPolicy"
-    if isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 3:
-        return "CnnPolicy"
-    return "MlpPolicy"
-
-
-GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
-
-
-def checkpoint_prefix(game: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", game).strip("_").lower()
-    return f"ppo_{slug or 'retro'}"
-
-
-def parse_net_arch(value: str) -> list[int]:
-    if not str(value).strip():
-        return []
-    layers: list[int] = []
-    for part in str(value).split(","):
-        layer = part.strip()
-        if not layer:
-            continue
-        size = int(layer)
-        if size <= 0:
-            raise ValueError("--policy-net-arch/--value-net-arch sizes must be positive")
-        layers.append(size)
-    return layers
-
-
-def policy_kwargs_from_args(args) -> dict[str, object]:
-    policy_kwargs: dict[str, object] = {"optimizer_kwargs": {"eps": args.adam_eps}}
-    pi_arch = parse_net_arch(args.policy_net_arch)
-    vf_arch = parse_net_arch(args.value_net_arch)
-    if pi_arch or vf_arch:
-        policy_kwargs["net_arch"] = {"pi": pi_arch, "vf": vf_arch}
-    return policy_kwargs
-
-
-def checkpoint_save_frequency(checkpoint_freq: int, n_envs: int) -> int | None:
-    if checkpoint_freq <= 0:
-        return None
-    return max(checkpoint_freq // max(n_envs, 1), 1)
-
-
-def save_model_bundle(
-    *,
-    model,
-    args,
-    config,
-    model_path: Path,
-    kind: str,
-    step: int | None,
-    store: MetricStore,
-) -> Path:
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}.zip"
-    model.save(str(temp_path))
-    temp_path.replace(model_path)
-    metadata_path = write_model_metadata(
-        model_path,
-        args,
-        config,
-        kind,
-        checkpoint_step_value=step,
-    )
-    checkpoint_id = store.record_checkpoint(
-        run_name=str(getattr(args, "run_name", "")),
-        kind=kind,
-        step=step,
-        path=model_path,
-        metadata_path=metadata_path,
-        sha256=None,
-        eval_required=str(getattr(args, "checkpoint_eval_backend", "local")) != "none",
-    )
-    print(f"{kind} model ready: id={checkpoint_id} step={step} path={model_path}", flush=True)
-    return model_path
 
 
 def signal_name(signum: int) -> str:
@@ -236,16 +125,6 @@ def signal_name(signum: int) -> str:
         return signal.Signals(signum).name
     except ValueError:
         return f"signal-{signum}"
-
-
-class GracefulStopFlag:
-    def __init__(self) -> None:
-        self.requested = False
-        self.reason = ""
-
-    def request(self, reason: str) -> None:
-        self.requested = True
-        self.reason = reason
 
 
 def install_graceful_stop_handler(stop_flag: GracefulStopFlag) -> int | None:
@@ -259,236 +138,60 @@ def install_graceful_stop_handler(stop_flag: GracefulStopFlag) -> int | None:
     return int(GRACEFUL_STOP_SIGNAL)
 
 
-def disable_sb3_human_output_truncation(
-    model, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH
-) -> None:
-    logger = getattr(model, "_logger", None)
-    logger_attr = getattr(type(model), "logger", None)
-    if logger is None and not isinstance(logger_attr, property):
-        logger = getattr(model, "logger", None)
-    if logger is None:
-        return
-    for output_format in getattr(logger, "output_formats", ()):
-        if isinstance(output_format, HumanOutputFormat):
-            output_format.max_length = max_length
-
-
-class Sb3HumanOutputFormatHelper(CallbackHelper):
-    def __init__(self, *, max_length: int = SB3_HUMAN_OUTPUT_MAX_LENGTH) -> None:
-        super().__init__()
-        self.max_length = max_length
-
-    def _on_training_start(self) -> None:
-        disable_sb3_human_output_truncation(self.model, max_length=self.max_length)
-
-    def _on_step(self) -> bool:
-        return True
-
-
-class GracefulStopHelper(CallbackHelper):
-    def __init__(self, stop_flag: GracefulStopFlag) -> None:
-        super().__init__()
-        self.stop_flag = stop_flag
-        self.logged = False
-
-    def _on_step(self) -> bool:
-        if not self.stop_flag.requested:
-            return True
-        if not self.logged:
-            reason = self.stop_flag.reason or "graceful stop"
-            print(
-                f"graceful stop requested by {reason}; "
-                f"stopping at num_timesteps={self.num_timesteps}",
-                flush=True,
-            )
-            self.logged = True
-        return False
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_train_args(argv)
-    args.algorithm_id = "ppo"
-    args.model_class = (
-        "rlab.task_advantage.PerTaskAdvantagePPO"
-        if resolve_advantage_normalization_mode(args) == "per-task"
-        else "stable_baselines3.ppo.ppo.PPO"
-    )
-    set_random_seed(args.seed)
+    train_config = dict(args._materialized_train_config)
+    backend_id = training_backend_id(train_config)
+    backend_config = training_backend_config(train_config)
+    backend = load_training_backend(backend_id)
+    backend.validate(train_config, backend_config)
+    for key, value in training_backend_runtime_metadata(backend_id, backend_config).items():
+        setattr(args, key, value)
+    args.training_backend_config_hash = training_backend_config_hash(train_config)
 
-    run_dir = default_run_dir(args.run_name, args.runs_dir)
-    checkpoint_dir = os.path.join(run_dir, "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    store_path = metric_store_path(run_dir)
-    metric_store = MetricStore(store_path)
-    metric_store.init()
-    write_run_description(args, run_dir)
+    environment = resolve_env_config(env_config_from_args(args, include_states=True))
+    n_envs = effective_n_envs(args)
+    environment = resolve_mixed_state_config(environment, n_envs=n_envs)
+    assert_provider_runtime_available(environment)
+    args.resolved_n_envs = n_envs
+
+    run_dir = Path(default_run_dir(args.run_name, args.runs_dir))
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "learner_ready.json").unlink(missing_ok=True)
+    store = MetricStore(metric_store_path(run_dir))
+    store.init()
+    write_run_description(args, str(run_dir))
     if args.run_description.strip():
         print(f"run description: {args.run_description.strip()}", flush=True)
     else:
         print("warning: --run-description is empty", flush=True)
 
-    config = resolve_env_config(env_config_from_args(args, include_states=True))
-    n_envs = effective_n_envs(args)
-    config = resolve_mixed_state_config(config, n_envs=n_envs)
-    assert_provider_runtime_available(config)
-    external_wandb_publisher = os.environ.get("RLAB_EXTERNAL_WANDB_PUBLISHER") == "1"
-    wandb_run = None if external_wandb_publisher else init_wandb(args, run_dir, config)
-    write_wandb_url(wandb_run, run_dir)
-    graceful_stop_flag = GracefulStopFlag()
-    graceful_stop_signal = install_graceful_stop_handler(graceful_stop_flag)
+    external_publisher = os.environ.get("RLAB_EXTERNAL_WANDB_PUBLISHER") == "1"
+    wandb_run = None if external_publisher else init_wandb(args, str(run_dir), environment)
+    write_wandb_url(wandb_run, str(run_dir))
+    stop_flag = GracefulStopFlag()
+    graceful_stop_signal = install_graceful_stop_handler(stop_flag)
     if graceful_stop_signal is not None:
         print(f"graceful stop signal: {signal_name(graceful_stop_signal)}", flush=True)
 
-    env = make_training_vec_env(config=config, n_envs=n_envs, seed=args.seed)
-    device = resolve_sb3_device(args.device)
-    print(f"Using torch device: {device}", flush=True)
-
-    lr_schedule = learning_rate_schedule(args)
-    advantage_normalization = resolve_advantage_normalization_mode(args)
-    if advantage_normalization == "per-task" and not task_conditioning(config).get("enabled"):
-        raise ValueError("--advantage-normalization per-task requires --task-conditioning")
-    sb3_normalize_advantage = advantage_normalization == "global"
-    if args.resume:
-        model = PPO.load(args.resume, env=env, tensorboard_log=run_dir, device=device)
-        if advantage_normalization == "per-task":
-            raise ValueError("--advantage-normalization per-task is not supported with --resume")
-        apply_resume_hyperparameters(model, args)
-        model.normalize_advantage = sb3_normalize_advantage
-    else:
-        policy_name = policy_name_for_observation_space(env.observation_space)
-        model_cls = PerTaskAdvantagePPO if advantage_normalization == "per-task" else PPO
-        model = model_cls(
-            policy_name,
-            env,
-            learning_rate=lr_schedule,
-            n_steps=args.n_steps,
-            batch_size=args.batch_size,
-            n_epochs=args.n_epochs,
-            gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            ent_coef=args.ent_coef,
-            vf_coef=args.vf_coef,
-            clip_range=args.clip_range,
-            clip_range_vf=args.clip_range_vf,
-            normalize_advantage=sb3_normalize_advantage,
-            target_kl=args.target_kl,
-            policy_kwargs=policy_kwargs_from_args(args),
-            tensorboard_log=run_dir,
-            device=device,
-            verbose=1,
-        )
-    components = [
-        GracefulStopHelper(graceful_stop_flag),
-        Sb3HumanOutputFormatHelper(),
-        ThroughputHelper(metric_store_path=store_path, wandb_run=wandb_run),
-        RuntimeMetricsHelper(
-            event_names=tuple(task_termination(config).get("failure", ())),
-            active_reward_components=active_reward_components(config.task),
-            active_reward_signals=active_reward_signals(config.task),
-            configured_starts=tuple(config.states or ((config.state,) if config.state else ())),
-            track_success=bool(
-                isinstance(config.task.get("termination"), Mapping)
-                and config.task["termination"].get("success")
-            ),
-        ),
-        *(
-            [
-                MetricThresholdStopHelper(
-                    marker_path=Path(run_dir) / "early_stop.txt",
-                    detector=args.early_stop,
-                    metric_store_path=store_path,
-                )
-            ]
-            if args.early_stop
-            else []
-        ),
-        RolloutDiagnosticsHelper(
-            wandb_run=wandb_run,
-            metric_store_path=store_path if external_wandb_publisher else None,
-            histogram_interval=64,
-        ),
-        MetricStoreLoggerHelper(store_path, wandb_run=wandb_run),
-    ]
-    checkpoint_save_freq = checkpoint_save_frequency(args.checkpoint_freq, n_envs)
-    if checkpoint_save_freq is not None:
-        components.append(
-            LedgerCheckpointHelper(
-                args=args,
-                config=config,
-                save_freq=checkpoint_save_freq,
-                save_path=checkpoint_dir,
-                name_prefix=checkpoint_prefix(config.game),
-                metric_store_path=store_path,
-                eval_required=args.checkpoint_eval_backend != "none",
-            )
-        )
-    if args.ent_coef_final is not None:
-        components.append(
-            EntropyCoefficientScheduleHelper(
-                initial_value=args.ent_coef,
-                final_value=args.ent_coef_final,
-                schedule_timesteps=args.ent_coef_schedule_timesteps
-                if args.ent_coef_schedule_timesteps > 0
-                else args.timesteps,
-            ),
-        )
-    if args.checkpoint_eval_backend == "none":
-        print("checkpoint evaluation disabled; this run cannot establish promotion or acceptance")
-    else:
-        print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
-
-    callback = RlabCallback(components)
-
-    Path(run_dir, "learner_ready.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "pid": os.getpid(),
-                "ready_at_unix": time.time(),
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    context = BackendContext(
+        train_config=train_config,
+        args=args,
+        environment=environment,
+        run_dir=run_dir,
+        checkpoint_dir=checkpoint_dir,
+        metric_store=store,
+        wandb_run=wandb_run,
+        stop_flag=stop_flag,
+        external_wandb_publisher=external_publisher,
     )
-
-    final_model_path = Path(run_dir, "final_model.zip")
-    env_closed = False
     try:
-        model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
-        if graceful_stop_flag.requested and checkpoint_save_freq is not None:
-            interrupted_checkpoint_path = (
-                Path(checkpoint_dir)
-                / f"{checkpoint_prefix(config.game)}_interrupted_{model.num_timesteps}_steps.zip"
-            )
-            save_model_bundle(
-                model=model,
-                args=args,
-                config=config,
-                model_path=interrupted_checkpoint_path,
-                kind="interrupted",
-                step=model.num_timesteps,
-                store=metric_store,
-            )
-            print(f"saved interrupted checkpoint {interrupted_checkpoint_path}", flush=True)
-        save_model_bundle(
-            model=model,
-            args=args,
-            config=config,
-            model_path=final_model_path,
-            kind="final",
-            step=model.num_timesteps,
-            store=metric_store,
-        )
-        env.close()
-        env_closed = True
-        write_wandb_url(wandb_run, run_dir)
+        backend.run(context)
+        write_wandb_url(wandb_run, str(run_dir))
     finally:
-        if not env_closed:
-            env.close()
         if wandb_run is not None:
             wandb_run.finish()
-    print(f"saved {final_model_path}")
     return 0
 
 

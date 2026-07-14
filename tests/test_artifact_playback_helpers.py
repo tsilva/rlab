@@ -113,7 +113,7 @@ def mario_task(*, conditioning: bool = False) -> dict:
 
 
 class CommandAndArtifactTests(unittest.TestCase):
-    def test_build_train_command_skips_empty_target_kl(self) -> None:
+    def test_build_train_command_omits_backend_fields_from_common_cli(self) -> None:
         cmd = build_train_command(
             {
                 "run_name": "candidate",
@@ -135,16 +135,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--task-json", cmd)
         self.assertNotIn("True", cmd)
         self.assertNotIn("--target-kl", cmd)
-        self.assertIn("--clip-range-vf", cmd)
-        self.assertIn("0.2", cmd)
-        self.assertIn("--policy-net-arch", cmd)
-        self.assertIn("128", cmd)
-        self.assertIn("--value-net-arch", cmd)
-        self.assertIn("512,512", cmd)
-        self.assertIn("--advantage-normalization", cmd)
-        self.assertIn("per-task", cmd)
+        self.assertNotIn("--clip-range-vf", cmd)
+        self.assertNotIn("--policy-net-arch", cmd)
+        self.assertNotIn("--value-net-arch", cmd)
+        self.assertNotIn("--advantage-normalization", cmd)
         self.assertIn("--wandb", cmd)
-        self.assertIn("--no-normalize-advantage", cmd)
+        self.assertNotIn("--no-normalize-advantage", cmd)
 
     def test_build_train_command_ignores_removed_training_loop_eval_toggles(self) -> None:
         cmd = build_train_command(

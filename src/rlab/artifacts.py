@@ -38,7 +38,7 @@ from rlab.wandb_utils import (
 )
 
 
-MODEL_METADATA_VERSION = 4
+MODEL_METADATA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,12 @@ def build_model_metadata(
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "machine": getattr(args, "machine", ""),
         "checkpoint_step": step,
+        "training_backend_id": str(
+            getattr(args, "training_backend_id", "") or ""
+        ).strip(),
+        "training_backend_config_hash": str(
+            getattr(args, "training_backend_config_hash", "") or ""
+        ).strip(),
         "algorithm_id": str(getattr(args, "algorithm_id", "") or "").strip(),
         "model_class": str(getattr(args, "model_class", "") or "").strip(),
         "training_metadata": training,
@@ -261,6 +267,12 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     wandb_config["metrics_schema_version"] = METRICS_SCHEMA_VERSION
     wandb_config["algorithm_id"] = str(getattr(args, "algorithm_id", "") or "").strip()
     wandb_config["model_class"] = str(getattr(args, "model_class", "") or "").strip()
+    wandb_config["training_backend_id"] = str(
+        getattr(args, "training_backend_id", "") or ""
+    ).strip()
+    wandb_config["training_backend_config_hash"] = str(
+        getattr(args, "training_backend_config_hash", "") or ""
+    ).strip()
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]

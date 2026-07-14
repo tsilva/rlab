@@ -10,8 +10,10 @@ description: >-
   1.5e-4 updates are large enough to knock one rolling clear-rate window below
   the other before the shared policy reaches the 100/100 gate.
 train:
-  policy:
-    timesteps: 50000000
-    learning_rate: 1.5e-4
-    learning_rate_final: 7.5e-5
-    learning_rate_schedule_timesteps: 10000000
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.5e-4
+      learning_rate_final: 7.5e-5
+      learning_rate_schedule_timesteps: 10000000

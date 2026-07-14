@@ -10,5 +10,6 @@ description: >-
   100/100 bottleneck early-stop gate decide whether the shared policy fully
   solves both levels.
 train:
-  policy:
-    timesteps: 50000000
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo

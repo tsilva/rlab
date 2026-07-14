@@ -2057,7 +2057,8 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help=(
             "Hydra/OmegaConf dotlist recipe override. Repeat for sweeps, for example "
-            "--set recipe_id=lr2e4 --set train.policy.learning_rate=2e-4."
+            "--set recipe_id=lr2e4 "
+            "--set train.backend.config.learning_rate=2e-4."
         ),
     )
     return parser

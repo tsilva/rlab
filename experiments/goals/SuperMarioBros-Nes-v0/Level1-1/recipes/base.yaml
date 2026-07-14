@@ -4,41 +4,43 @@ description: >-
   to validate the recipe across seeds with the goal contract's clear-rate gate first and
   async checkpoint eval ranking for checkpoint promotion.
 train:
-  policy:
-    # Queue-backed training caps must be explicit in recipes; no runtime default is supplied.
-    timesteps: 50000000
-    # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
-    n_steps: 512
-    # Matches the rollout chunk size, giving full-batch PPO updates that reduce minibatch noise for this single-task recipe.
-    batch_size: 512
-    # Reuses each rollout enough to extract signal from sparse clears without pushing the policy as aggressively as a higher-KL setup.
-    n_epochs: 10
-    # Starts with a conservative PPO learning rate that can move quickly early without destabilizing the already-sensitive Mario policy.
-    learning_rate: 1.5e-4
-    # Decays to a smaller late learning rate so the policy can consolidate near-clear behavior instead of overshooting it.
-    learning_rate_final: 1.0e-4
-    # Spreads the learning-rate decay across the early part of the 50M cap, keeping exploration active while tapering before final promotion.
-    learning_rate_schedule_timesteps: 4000000
-    # Encourages early action diversity so the policy keeps trying jump/run timing variants before it has reliable clears.
-    ent_coef: 0.01
-    # Lowers entropy pressure late so successful trajectories can become repeatable rather than remaining overly stochastic.
-    ent_coef_final: 1.0e-4
-    # Decays exploration on the same long horizon as learning rate, matching the recipe's late-consolidation intent.
-    ent_coef_schedule_timesteps: 4000000
-    # Discounts fairly aggressively so PPO emphasizes near-term survival/progress signals in this short single-level task.
-    gamma: 0.9
-    # Uses undiscounted GAE accumulation on top of the lower gamma, preserving multi-step progress credit within each attempt.
-    gae_lambda: 1.0
-    # Tightens PPO clipping to limit destructive policy jumps while still allowing meaningful improvement from good rollouts.
-    clip_range: 0.15
-    # Stops overly large PPO updates before they erase useful behavior; this is the "low-KL" guardrail in the recipe.
-    target_kl: 0.16
-    # Gives the critic enough weight to stabilize advantage estimates when shaped progress and terminal penalties have different scales.
-    vf_coef: 1.0
-    # Keeps Adam's numerical stabilizer at the standard small value, avoiding extra damping unless gradients become pathological.
-    adam_eps: 1.0e-08
-    # Preserves raw advantage scale, which appears useful here because reward magnitude carries progress/terminal-signal strength.
-    normalize_advantage: false
+  # Queue-backed training caps must be explicit in recipes; no runtime default is supplied.
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo
+    config:
+      # Uses moderately long PPO rollouts so each update sees enough complete/death attempts to learn stable progress.
+      n_steps: 512
+      # Matches the rollout chunk size, giving full-batch PPO updates that reduce minibatch noise for this single-task recipe.
+      batch_size: 512
+      # Reuses each rollout enough to extract signal from sparse clears without pushing the policy as aggressively as a higher-KL setup.
+      n_epochs: 10
+      # Starts with a conservative PPO learning rate that can move quickly early without destabilizing the already-sensitive Mario policy.
+      learning_rate: 1.5e-4
+      # Decays to a smaller late learning rate so the policy can consolidate near-clear behavior instead of overshooting it.
+      learning_rate_final: 1.0e-4
+      # Spreads the learning-rate decay across the early part of the 50M cap, keeping exploration active while tapering before final promotion.
+      learning_rate_schedule_timesteps: 4000000
+      # Encourages early action diversity so the policy keeps trying jump/run timing variants before it has reliable clears.
+      ent_coef: 0.01
+      # Lowers entropy pressure late so successful trajectories can become repeatable rather than remaining overly stochastic.
+      ent_coef_final: 1.0e-4
+      # Decays exploration on the same long horizon as learning rate, matching the recipe's late-consolidation intent.
+      ent_coef_schedule_timesteps: 4000000
+      # Discounts fairly aggressively so PPO emphasizes near-term survival/progress signals in this short single-level task.
+      gamma: 0.9
+      # Uses undiscounted GAE accumulation on top of the lower gamma, preserving multi-step progress credit within each attempt.
+      gae_lambda: 1.0
+      # Tightens PPO clipping to limit destructive policy jumps while still allowing meaningful improvement from good rollouts.
+      clip_range: 0.15
+      # Stops overly large PPO updates before they erase useful behavior; this is the "low-KL" guardrail in the recipe.
+      target_kl: 0.16
+      # Gives the critic enough weight to stabilize advantage estimates when shaped progress and terminal penalties have different scales.
+      vf_coef: 1.0
+      # Keeps Adam's numerical stabilizer at the standard small value, avoiding extra damping unless gradients become pathological.
+      adam_eps: 1.0e-08
+      # Preserves raw advantage scale, which appears useful here because reward magnitude carries progress/terminal-signal strength.
+      normalize_advantage: false
 logging:
   # Queue-backed logging choices are explicit recipe inputs, not runtime defaults.
   wandb: true

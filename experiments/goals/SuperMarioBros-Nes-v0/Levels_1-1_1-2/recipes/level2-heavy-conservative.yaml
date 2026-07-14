@@ -8,8 +8,10 @@ description: >-
   lower learning rate, clip range, and target KL preserve the early Level1-2
   discovery while reducing late rolling-window regressions.
 train:
-  policy:
-    learning_rate: 1.0e-4
-    learning_rate_final: 7.0e-5
-    clip_range: 0.1
-    target_kl: 0.08
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.0e-4
+      learning_rate_final: 7.0e-5
+      clip_range: 0.1
+      target_kl: 0.08

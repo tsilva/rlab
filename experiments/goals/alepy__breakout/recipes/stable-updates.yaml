@@ -10,8 +10,10 @@ description: >-
   updates caused its jagged checkpoint regressions. Checkpoints are evaluated
   stochastically with unclipped game score.
 train:
-  policy:
-    learning_rate: 2.5e-4
-    learning_rate_final: 2.5e-5
-    learning_rate_schedule_timesteps: 100000000
-    target_kl: 0.03
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 2.5e-4
+      learning_rate_final: 2.5e-5
+      learning_rate_schedule_timesteps: 100000000
+      target_kl: 0.03

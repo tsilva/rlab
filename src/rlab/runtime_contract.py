@@ -10,16 +10,18 @@ from typing import Any
 
 from rlab.json_utils import json_safe
 from rlab.train_config import TRAIN_CONFIG_FIELDS, validate_and_normalize_train_config
+from rlab.training_backend import training_backend_contract_payload
 
 
 RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
-TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION = 1
+TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION = 2
 
 
 def train_config_contract_payload() -> dict[str, Any]:
     return {
         "schema_version": TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION,
         "fields": [json_safe(asdict(field)) for field in TRAIN_CONFIG_FIELDS],
+        "training_backends": json_safe(training_backend_contract_payload()),
     }
 
 
@@ -50,6 +52,7 @@ def validate_config_payload(payload: Any) -> dict[str, Any]:
     normalized = validate_and_normalize_train_config(
         payload,
         label="runtime preflight train config",
+        required_keys=("training_backend",),
     )
     receipt = runtime_contract()
     receipt.update(

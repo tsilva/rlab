@@ -10,7 +10,9 @@ description: >-
   stochasticity to retain near-perfect clears on both levels at once. Sampling,
   reward shaping, PPO clip/KL, and network shapes stay unchanged.
 train:
-  policy:
-    timesteps: 50000000
-    ent_coef_final: 1.0e-4
-    ent_coef_schedule_timesteps: 6000000
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo
+    config:
+      ent_coef_final: 1.0e-4
+      ent_coef_schedule_timesteps: 6000000

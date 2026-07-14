@@ -6,15 +6,15 @@ recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
 - train.environment.env_provider=stable-retro-turbo
 - train.environment.env_config.env_args.use_fire_reset=false
-- train.policy.timesteps=512
+- train.timesteps=512
 - train.environment.env_config.n_envs=1
-- train.policy.n_steps=128
-- train.policy.batch_size=128
-- train.policy.n_epochs=1
+- train.backend.config.n_steps=128
+- train.backend.config.batch_size=128
+- train.backend.config.n_epochs=1
 - train.environment.task.termination.max_episode_steps=600
 - train.environment.task.reward.reward_mode=baseline
 - train.checkpoint_freq=256
-- train.policy.post_train_eval_episodes=0
+- train.post_train_eval_episodes=0
 - logging.wandb=true
 - logging.wandb_mode=online
 - logging.wandb_artifact_storage_uri=CHECKPOINT_BUCKET_URI

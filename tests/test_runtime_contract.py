@@ -65,13 +65,14 @@ class RuntimeContractTests(unittest.TestCase):
                 "run_name": "bx0123456789abcdef-base-s123-20000101T000000Z",
                 "runtime_image_ref": RUNTIME_IMAGE_REF,
                 "seed": 123,
+                "training_backend": {"id": "sb3.ppo", "config": {}},
                 "wandb_group": "bx0123456789abcdef",
                 "wandb_run_id": "rlab-test",
             }
         )
 
         self.assertTrue(receipt["validated"])
-        self.assertEqual(receipt["validated_field_count"], 8)
+        self.assertEqual(receipt["validated_field_count"], 9)
 
     def test_image_receipt_rejects_legacy_and_digest_mismatch(self) -> None:
         with self.assertRaisesRegex(ValueError, "legacy combined runtime artifacts"):

@@ -10,7 +10,9 @@ description: >-
   b93-lowent-finish, this does not stretch entropy decay to 6M steps, so early
   exploration pressure stays aligned with the historical winner.
 train:
-  policy:
-    timesteps: 50000000
-    ent_coef_final: 3.0e-4
-    ent_coef_schedule_timesteps: 4000000
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo
+    config:
+      ent_coef_final: 3.0e-4
+      ent_coef_schedule_timesteps: 4000000

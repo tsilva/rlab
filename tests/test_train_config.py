@@ -23,6 +23,24 @@ from rlab.train import parse_train_args
 
 
 class TrainConfigFieldSchemaTests(unittest.TestCase):
+    def test_direct_backend_cli_builds_the_same_temporary_argument_view(self) -> None:
+        args = parse_train_args(
+            [
+                "--training-backend",
+                '{"id":"sb3.ppo","config":{"n_steps":17}}',
+                "--game",
+                "SuperMarioBros-Nes-v0",
+                "--states",
+                "Level1-1,Level1-2",
+                "--state-probs",
+                "1,3",
+            ]
+        )
+
+        self.assertEqual(args.n_steps, 17)
+        self.assertEqual(args._materialized_train_config["states"], ["Level1-1", "Level1-2"])
+        self.assertEqual(args._materialized_train_config["state_probs"], [1.0, 3.0])
+
     def test_playback_argument_registry_is_derived_from_environment_fields(self) -> None:
         self.assertEqual(
             PLAYBACK_ENV_ARG_KEYS,
@@ -35,7 +53,15 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
     def test_train_config_json_rejects_invalid_field_types_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train.json"
-            path.write_text(json.dumps({"timesteps": "many"}), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    {
+                        "timesteps": "many",
+                        "training_backend": {"id": "sb3.ppo", "config": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             with self.assertRaisesRegex(ValueError, "timesteps must be an integer"):
                 parse_train_args(["--train-config-json", str(path)])
@@ -44,7 +70,14 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "train.json"
             path.write_text(
-                json.dumps({"game": "SuperMarioBros-Nes-v0", "seed": 7, "wandb_tags": "one"}),
+                json.dumps(
+                    {
+                        "game": "SuperMarioBros-Nes-v0",
+                        "seed": 7,
+                        "wandb_tags": "one",
+                        "training_backend": {"id": "sb3.ppo", "config": {}},
+                    }
+                ),
                 encoding="utf-8",
             )
 

@@ -90,7 +90,7 @@ rlab train \
   --json \
   --set recipe_id=local-mario-smoke \
   --set campaign_id=local-mario-smoke \
-  --set train.policy.timesteps=512 \
+  --set train.timesteps=512 \
   --set train.environment.env_config.n_envs=1 \
   --set logging.wandb=false \
   --set logging.wandb_mode=disabled \
@@ -121,7 +121,7 @@ rlab train \
   --machine beast-3 \
   --set recipe_id=lr2e4 \
   --set campaign_id=Level1-1-lr2e4 \
-  --set train.policy.learning_rate=2e-4 \
+  --set train.backend.config.learning_rate=2e-4 \
   --seed 1
 ```
 

@@ -8,7 +8,8 @@ exact registry entry or a bounded template.
 
 - W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
   R2-backed `eval/screen/preview` media series.
-- W&B config contains run-defining dimensions: `metrics_schema_version: 3`, `algorithm_id`, goal,
+- W&B config contains run-defining dimensions: `metrics_schema_version: 3`, `training_backend_id`,
+  `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.

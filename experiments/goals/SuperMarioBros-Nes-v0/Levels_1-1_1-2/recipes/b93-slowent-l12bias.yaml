@@ -10,20 +10,22 @@ description: >-
   this discovery run by peak train/outcome/success/window_100/rate/min within
   the 5M-step historical cap before deciding whether to extend or confirm.
 train:
-  policy:
-    timesteps: 5000000
-    learning_rate: 1.5e-4
-    learning_rate_final: 1.5e-4
-    learning_rate_schedule_timesteps: 1
-    ent_coef: 0.01
-    ent_coef_final: 0.001
-    ent_coef_schedule_timesteps: 4000000
-    clip_range: 0.15
-    clip_range_vf: 0.2
-    target_kl: 0.2
-    vf_coef: 0.5
-    policy_net_arch: 64,64
-    value_net_arch: 512,512
+  timesteps: 5000000
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.5e-4
+      learning_rate_final: 1.5e-4
+      learning_rate_schedule_timesteps: 1
+      ent_coef: 0.01
+      ent_coef_final: 0.001
+      ent_coef_schedule_timesteps: 4000000
+      clip_range: 0.15
+      clip_range_vf: 0.2
+      target_kl: 0.2
+      vf_coef: 0.5
+      policy_net_arch: 64,64
+      value_net_arch: 512,512
   environment:
     task:
       action:

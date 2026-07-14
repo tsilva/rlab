@@ -223,13 +223,13 @@ name: bad
 kind: ppo_loop_throughput
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
-- train.policy.timstepz=512
+- train.backend.config.timstepz=512
 expectations: {}
 """,
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "timstepz.*known train config field"):
+            with self.assertRaisesRegex(ValueError, "unexpected fields.*timstepz"):
                 load_benchmark_profile(path)
 
     def test_train_benchmarks_derive_environment_contract_from_recipe(self) -> None:
@@ -244,6 +244,11 @@ expectations: {}
                 command = build_benchmark_commands(profile)[0]
                 self.assertIn("--task-json", command.argv)
                 self.assertIn("--timesteps", command.argv)
+                self.assertIn("--training-backend", command.argv)
+                backend = json.loads(
+                    command.argv[command.argv.index("--training-backend") + 1]
+                )
+                self.assertEqual(backend["id"], "sb3.ppo")
 
     def test_benchmark_is_registered_on_unified_cli(self) -> None:
         self.assertIn("benchmark", COMMANDS)

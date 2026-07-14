@@ -42,6 +42,7 @@ def explicit_train_config(**overrides) -> dict:
         "game": "SuperMarioBros-Nes-v0",
         "state": "Level1-1",
         "timesteps": 1024,
+        "training_backend": {"id": "sb3.ppo", "config": {}},
         "wandb": True,
         "wandb_mode": "online",
         "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
@@ -559,7 +560,7 @@ class JobQueueTests(unittest.TestCase):
             "states": ["Level9-8", "Level9-9"],
             "state_probs": [0.25, 0.75],
             "resume": "checkpoint.zip",
-            "overrides": {"train": {"policy": {"learning_rate": 9e-4}}},
+            "overrides": {"train": {"backend": {"config": {"learning_rate": 9e-4}}}},
         }
 
         for field, value in rejected_fields.items():
@@ -581,7 +582,7 @@ class JobQueueTests(unittest.TestCase):
         document = valid_train_recipe()
         document["train_config"].pop("wandb_mode")
         document["train"] = {
-            "policy": {"learning_rate": 2e-4},
+            "backend": {"id": "sb3.ppo", "config": {"learning_rate": 2e-4}},
             "environment": {
                 "task": {
                     "id": "identity",
@@ -613,6 +614,11 @@ class JobQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported flat field.*learning_rate"):
             validate_source_recipe_shape(
                 {"train": {"learning_rate": 2e-4}},
+                label="recipe",
+            )
+        with self.assertRaisesRegex(ValueError, "train.policy is retired"):
+            validate_source_recipe_shape(
+                {"train": {"policy": {"learning_rate": 2e-4}}},
                 label="recipe",
             )
 
@@ -732,7 +738,7 @@ class JobQueueTests(unittest.TestCase):
     def test_enqueue_train_jobs_records_recipe_overrides_in_worker_config(self) -> None:
         calls = []
         old_enqueue = job_queue.enqueue_train_job
-        overrides = ["train.policy.learning_rate=2e-4", "recipe_id=lr2e4"]
+        overrides = ["train.backend.config.learning_rate=2e-4", "recipe_id=lr2e4"]
         document = valid_train_recipe()
         document["recipe_overrides"] = overrides
 
@@ -758,8 +764,8 @@ class JobQueueTests(unittest.TestCase):
         overrides = [
             "recipe_id=lr2e4",
             "campaign_id=Level1-1-lr2e4",
-            "train.policy.learning_rate=2e-4",
-            "train.policy.normalize_advantage=true",
+            "train.backend.config.learning_rate=2e-4",
+            "train.backend.config.normalize_advantage=true",
             "train.environment.task.termination.failure=[]",
         ]
 
@@ -771,8 +777,9 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(document["recipe_id"], "lr2e4")
         self.assertEqual(document["campaign_id"], "Level1-1-lr2e4")
         self.assertEqual(document["tags"][1], "recipe_id:lr2e4")
-        self.assertEqual(document["train_config"]["learning_rate"], 2e-4)
-        self.assertIs(document["train_config"]["normalize_advantage"], True)
+        backend_config = document["train_config"]["training_backend"]["config"]
+        self.assertEqual(backend_config["learning_rate"], 2e-4)
+        self.assertIs(backend_config["normalize_advantage"], True)
         self.assertEqual(document["train_config"]["task"]["termination"]["failure"], [])
         self.assertEqual(document["recipe_overrides"], overrides)
         source_paths = [row["path"] for row in document["_composition"]["source_files"]]
@@ -1109,6 +1116,7 @@ class JobExecutionTests(unittest.TestCase):
             "train_config": {
                 "game": "SuperMarioBros-Nes-v0",
                 "timesteps": 1024,
+                "training_backend": {"id": "sb3.ppo", "config": {}},
                 "state": "Level1-1",
                 "wandb": True,
                 "wandb_mode": "online",

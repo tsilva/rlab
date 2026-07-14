@@ -113,20 +113,6 @@ def _encode_policy_observation(observation: Any, native_space: gym.Space) -> Any
     return observation
 
 
-def _validate_ppo_action_space(space: gym.Space) -> None:
-    supported = (
-        gym.spaces.Box,
-        gym.spaces.Discrete,
-        gym.spaces.MultiBinary,
-        gym.spaces.MultiDiscrete,
-    )
-    if not isinstance(space, supported):
-        raise ValueError(
-            f"PPO does not support native action space {type(space).__name__}; "
-            "configure a task action codec"
-        )
-
-
 def _compile_action_lookup(space: gym.Space, values: Sequence[Any]) -> Any:
     for index, value in enumerate(values):
         if not space.contains(value):
@@ -730,7 +716,6 @@ class IdentityTaskKernel:
         self._action_buffer = None
         if action_values is None:
             self.action_space = self._native_action_space
-            _validate_ppo_action_space(self.action_space)
         else:
             if not action_values:
                 raise ValueError("task action codec values must not be empty")

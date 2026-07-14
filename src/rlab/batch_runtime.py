@@ -8,9 +8,15 @@ from typing import Any, Protocol
 import gymnasium as gym
 import numpy as np
 from numba import njit
-from stable_baselines3.common.vec_env import VecEnv
-
 from rlab.task_kernels import BoundTaskKernel, Outcome, event_names_from_bits
+
+
+def __getattr__(name: str) -> Any:
+    if name == "RlabVecEnv":
+        from rlab.training.sb3_vec_env import RlabVecEnv
+
+        return RlabVecEnv
+    raise AttributeError(name)
 
 
 @njit(cache=True, nogil=True)
@@ -160,8 +166,9 @@ class BatchStep:
     rewards: np.ndarray
     terminated: np.ndarray
     truncated: np.ndarray
-    dones: np.ndarray
-    infos: list[dict[str, Any]]
+    final_observations: Any | None
+    transition_info: Mapping[str, Any]
+    reset_info: Mapping[str, Any] | None
     diagnostics: StepDiagnostics | None = None
 
 
@@ -271,7 +278,7 @@ def _copy_tree_lanes(destination: Any, source: Any, mask: np.ndarray) -> None:
 
 def _copy_tree_lane(value: Any, lane: int) -> Any:
     if isinstance(value, np.ndarray):
-        return value[lane].copy()
+        return _copy_tree(value[lane])
     if isinstance(value, Mapping):
         return type(value)((key, _copy_tree_lane(item, lane)) for key, item in value.items())
     if isinstance(value, tuple):
@@ -320,6 +327,7 @@ class BatchRuntime:
         kernel: BoundTaskKernel,
         *,
         run_seed: int = 0,
+        global_lane_ids: Sequence[int] | None = None,
         capture_step_diagnostics: bool = False,
     ):
         self.provider = provider
@@ -346,6 +354,16 @@ class BatchRuntime:
         self.observation_space = kernel.observation_space
         self.action_space = kernel.action_space
         self.run_seed = int(run_seed)
+        self.global_lane_ids = tuple(
+            range(self.num_envs) if global_lane_ids is None else global_lane_ids
+        )
+        if len(self.global_lane_ids) != self.num_envs:
+            raise ValueError("global_lane_ids must contain one id per provider lane")
+        if len(set(self.global_lane_ids)) != self.num_envs or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in self.global_lane_ids
+        ):
+            raise ValueError("global_lane_ids must be unique non-negative integers")
         self.capture_step_diagnostics = bool(capture_step_diagnostics)
         self.reset_infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
         self._episode_returns = np.zeros(self.num_envs, dtype=np.float64)
@@ -355,7 +373,6 @@ class BatchRuntime:
         self._start_ids: list[str | None] = [None for _ in range(self.num_envs)]
         self._records: list[EpisodeRecord | TaskEventRecord] = []
         self._latest_metric_record: BatchMetricRecord | None = None
-        self._empty_sb3_infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
         self._combined_terminated = [np.zeros(self.num_envs, dtype=bool) for _ in range(2)]
         self._combined_truncated = [np.zeros(self.num_envs, dtype=bool) for _ in range(2)]
         self._combined_dones = [np.zeros(self.num_envs, dtype=bool) for _ in range(2)]
@@ -367,8 +384,9 @@ class BatchRuntime:
                 self._owned_rewards[index],
                 self._combined_terminated[index],
                 self._combined_truncated[index],
-                self._combined_dones[index],
-                self._empty_sb3_infos,
+                None,
+                {},
+                None,
             )
             for index in range(2)
         ]
@@ -387,6 +405,7 @@ class BatchRuntime:
             self._episode_lengths,
         )
         self._observation_buffers: list[Any] = []
+        self._final_observation_buffers: list[Any] = []
         self._current_observation_buffer = 0
         self._reuse_provider_observations = descriptor.observation_buffer_depth >= 2 and bool(
             getattr(kernel, "observation_encoding_is_view", False)
@@ -397,7 +416,9 @@ class BatchRuntime:
         self._closed = False
 
     def _seed_for(self, lane: int, episode_index: int) -> int:
-        sequence = np.random.SeedSequence([self.run_seed, lane, episode_index])
+        sequence = np.random.SeedSequence(
+            [self.run_seed, self.global_lane_ids[lane], episode_index]
+        )
         return int(sequence.generate_state(1, dtype=np.uint32)[0])
 
     def _start_for(self, lane: int, episode_index: int) -> str | None:
@@ -411,7 +432,9 @@ class BatchRuntime:
         probabilities = self.descriptor.start_probabilities
         if not probabilities:
             probabilities = tuple(1.0 / len(catalog) for _ in catalog)
-        sequence = np.random.SeedSequence([self.run_seed, lane, episode_index, 0x53544152])
+        sequence = np.random.SeedSequence(
+            [self.run_seed, self.global_lane_ids[lane], episode_index, 0x53544152]
+        )
         generator = np.random.default_rng(sequence)
         return catalog[int(generator.choice(len(catalog), p=probabilities))]
 
@@ -419,7 +442,7 @@ class BatchRuntime:
         if seed is None:
             return [self._seed_for(lane, 0) for lane in range(self.num_envs)]
         if isinstance(seed, int):
-            return [seed + lane for lane in range(self.num_envs)]
+            return [seed + lane_id for lane_id in self.global_lane_ids]
         seeds = list(seed)
         if len(seeds) != self.num_envs:
             raise ValueError(f"expected {self.num_envs} reset seeds, got {len(seeds)}")
@@ -454,6 +477,10 @@ class BatchRuntime:
         else:
             self._observation_buffers = [_copy_tree(encoded), _empty_tree_like(encoded)]
             initial_observations = self._observation_buffers[0]
+        self._final_observation_buffers = [
+            _empty_tree_like(encoded),
+            _empty_tree_like(encoded),
+        ]
         self._current_observation_buffer = 0
         info_columns = _InfoColumns(infos, self.num_envs)
         self.reset_infos = [info_columns.lane(lane) for lane in range(self.num_envs)]
@@ -642,17 +669,30 @@ class BatchRuntime:
 
         if getattr(self.kernel, "has_events", True):
             self._append_event_records(task_step)
-        sb3_infos = self._empty_sb3_infos
+        transition_info: Mapping[str, Any] = infos
+        reset_info: Mapping[str, Any] | None = None
+        final_observations = None
         if done_indices.size:
-            sb3_infos = [{} for _ in range(self.num_envs)]
-            terminal_info_columns = _InfoColumns(infos, self.num_envs)
+            final_observations = self._final_observation_buffers[next_buffer_index]
+            _copy_tree_lanes(final_observations, next_observations, dones)
+            owned_transition_info = _copy_tree(infos)
+            for name, values in (
+                ("rlab_episode_return", self._episode_returns.copy()),
+                ("rlab_episode_length", self._episode_lengths.copy()),
+                (
+                    "rlab_episode_elapsed",
+                    np.full(
+                        self.num_envs,
+                        time.monotonic() - self._started_at,
+                        dtype=np.float64,
+                    ),
+                ),
+            ):
+                owned_transition_info[name] = values
+                owned_transition_info[f"_{name}"] = dones.copy()
+            transition_info = owned_transition_info
             for lane in done_indices:
                 lane_index = int(lane)
-                terminal_observation = _copy_tree_lane(next_observations, lane_index)
-                info = terminal_info_columns.lane(lane_index)
-                info["terminal_observation"] = terminal_observation
-                info["TimeLimit.truncated"] = bool(truncated[lane_index])
-                sb3_infos[lane_index] = info
                 self._append_record(
                     lane_index,
                     bool(terminated[lane_index]),
@@ -660,7 +700,7 @@ class BatchRuntime:
                     task_step,
                 )
 
-        if sb3_infos is not self._empty_sb3_infos:
+        if done_indices.size:
             self._episode_indices[dones] += 1
             starts = [
                 self._start_for(lane, int(self._episode_indices[lane]))
@@ -678,6 +718,7 @@ class BatchRuntime:
             )
             if not isinstance(reset_infos, Mapping):
                 raise TypeError("native provider reset infos must be a columnar mapping")
+            reset_info = reset_infos
             self.kernel.on_reset(reset_observations, reset_infos, dones)
             encoded_reset = self.kernel.encode_observations(reset_observations)
             _copy_tree_lanes(next_observations, encoded_reset, dones)
@@ -685,23 +726,19 @@ class BatchRuntime:
             actual_starts = self._actual_start_ids(reset_infos, starts, dones)
             for lane in done_indices:
                 lane_index = int(lane)
-                reset_info = reset_info_columns.lane(lane_index)
-                self.reset_infos[lane_index] = reset_info
+                lane_reset_info = reset_info_columns.lane(lane_index)
+                self.reset_infos[lane_index] = lane_reset_info
                 self._start_ids[lane_index] = actual_starts[lane_index]
                 self._episode_seeds[lane_index] = seeds[lane_index]
-                sb3_infos[lane_index]["reset_info"] = reset_info
-                sb3_infos[lane_index]["episode"] = {
-                    "r": float(self._episode_returns[lane_index]),
-                    "l": int(self._episode_lengths[lane_index]),
-                    "t": round(time.monotonic() - self._started_at, 6),
-                }
                 self._episode_returns[lane_index] = 0.0
                 self._episode_lengths[lane_index] = 0
 
         self._current_observation_buffer = next_buffer_index
         batch_step = self._batch_steps[next_buffer_index]
         batch_step.observations = next_observations
-        batch_step.infos = sb3_infos
+        batch_step.final_observations = final_observations
+        batch_step.transition_info = transition_info
+        batch_step.reset_info = reset_info
         batch_step.diagnostics = diagnostics
         return batch_step
 
@@ -719,7 +756,7 @@ class BatchRuntime:
         metrics = self._lane_metrics(task_step.metrics, lane)
         self._records.append(
             EpisodeRecord(
-                lane=lane,
+                lane=self.global_lane_ids[lane],
                 episode_index=int(self._episode_indices[lane]),
                 start_id=self._start_ids[lane],
                 episode_return=float(self._episode_returns[lane]),
@@ -762,7 +799,7 @@ class BatchRuntime:
                 transitions[name] = (source_value, target_value)
             self._records.append(
                 TaskEventRecord(
-                    lane=lane_index,
+                    lane=self.global_lane_ids[lane_index],
                     episode_index=int(self._episode_indices[lane_index]),
                     start_id=self._start_ids[lane_index],
                     events=event_names,
@@ -793,113 +830,3 @@ class BatchRuntime:
             return
         self._closed = True
         self.provider.close()
-
-
-class RlabVecEnv(VecEnv):
-    """SB3 facade that exposes runtime-owned same-step reset observations."""
-
-    def __init__(self, runtime: BatchRuntime):
-        self.runtime = runtime
-        self.env = runtime.provider
-        self.waiting = False
-        self._actions: Any = None
-        self._step_diagnostics: StepDiagnostics | None = None
-        super().__init__(
-            runtime.num_envs,
-            runtime.observation_space,
-            runtime.action_space,
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        if name in {"runtime", "env"}:
-            raise AttributeError(name)
-        return getattr(self.env, name)
-
-    def reset(self) -> Any:
-        observations = self.runtime.reset(
-            seed=list(self._seeds),
-            options_by_lane=list(self._options),
-        )
-        self.reset_infos = self.runtime.reset_infos
-        self._reset_seeds()
-        self._reset_options()
-        self.waiting = False
-        self._actions = None
-        self._step_diagnostics = None
-        return observations
-
-    def step_async(self, actions: Any) -> None:
-        if self.waiting:
-            raise RuntimeError("step_async() called while another step is pending")
-        self._actions = actions
-        self.waiting = True
-
-    def step_wait(self):
-        if not self.waiting:
-            raise RuntimeError("step_wait() called without step_async()")
-        step = self.runtime.step(self._actions)
-        self._actions = None
-        self.waiting = False
-        self.reset_infos = self.runtime.reset_infos
-        self._step_diagnostics = step.diagnostics
-        return step.observations, step.rewards, step.dones, step.infos
-
-    def take_step_diagnostics(self) -> StepDiagnostics | None:
-        diagnostics = self._step_diagnostics
-        self._step_diagnostics = None
-        return diagnostics
-
-    def drain_records(
-        self,
-    ) -> list[BatchMetricRecord | EpisodeRecord | TaskEventRecord]:
-        return self.runtime.drain_records()
-
-    def native_step_stats(self) -> dict[str, float | int]:
-        return self.runtime.native_step_stats()
-
-    def close(self) -> None:
-        self.runtime.close()
-
-    def get_images(self):
-        if hasattr(self.env, "get_images"):
-            images = self.env.get_images()
-        else:
-            images = self.env.render()
-        if images is None or (isinstance(images, Sequence) and len(images) == 0):
-            images = self.env.render()
-        if images is None:
-            return [None for _ in range(self.num_envs)]
-        if isinstance(images, np.ndarray) and images.shape[0] == self.num_envs:
-            return [images[index] for index in range(self.num_envs)]
-        if isinstance(images, Sequence) and len(images) == self.num_envs:
-            return list(images)
-        if self.num_envs == 1:
-            return [images]
-        raise ValueError("provider render output must contain one frame per lane")
-
-    def render(self, mode: str | None = None):
-        if mode is None:
-            return self.env.render()
-        return self.env.render()
-
-    def get_attr(self, attr_name: str, indices=None) -> list[Any]:
-        value = getattr(self.env, attr_name)
-        return [value for _ in self._get_indices(indices)]
-
-    def set_attr(self, attr_name: str, value: Any, indices=None) -> None:
-        del indices
-        setattr(self.env, attr_name, value)
-
-    def env_method(
-        self,
-        method_name: str,
-        *method_args: Any,
-        indices=None,
-        **method_kwargs: Any,
-    ) -> list[Any]:
-        method = getattr(self.env, method_name)
-        return [method(*method_args, **method_kwargs) for _ in self._get_indices(indices)]
-
-    def env_is_wrapped(self, wrapper_class, indices=None) -> list[bool]:
-        del wrapper_class
-        return [False for _ in self._get_indices(indices)]

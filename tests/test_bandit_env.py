@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from rlab.env import EnvConfig, make_vec_envs
 from rlab.env_registry import resolve_env_id, resolve_env_provider
 from rlab.recipe_documents import load_recipe_document
 from rlab.recipe_schema import validate_materialized_train_recipe
+from rlab.train import main as train_main
 
 
 def _native_env(num_envs: int = 3) -> BanditVectorEnv:
@@ -184,6 +186,46 @@ def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
     assert train_config["post_train_eval_episodes"] == 256
     assert train_config["checkpoint_eval_n_envs"] == 32
     assert train_config["env_args"] == {"autoreset_mode": "disabled"}
+    assert train_config["training_backend"]["id"] == "sb3.ppo"
+
+
+def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: Path) -> None:
+    document = load_recipe_document(
+        Path("experiments/goals/rlab__bandit/recipes/base.yaml")
+    )
+    config = dict(document["train_config"])
+    config.update(
+        {
+            "run_name": "backend-smoke",
+            "run_description": "ROM-free backend boundary smoke.",
+            "runs_dir": str(tmp_path),
+            "timesteps": 64,
+            "checkpoint_freq": 0,
+            "checkpoint_eval_backend": "none",
+            "checkpoint_eval_stages": [],
+            "early_stop": None,
+            "post_train_eval_episodes": 0,
+            "wandb": False,
+            "wandb_mode": "disabled",
+        }
+    )
+    backend = dict(config["training_backend"])
+    backend_config = dict(backend["config"])
+    backend_config.update({"device": "cpu", "n_epochs": 1})
+    backend["config"] = backend_config
+    config["training_backend"] = backend
+    path = tmp_path / "train.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    assert train_main(["--train-config-json", str(path)]) == 0
+
+    run_dir = tmp_path / "backend-smoke"
+    assert (run_dir / "learner_ready.json").is_file()
+    assert (run_dir / "final_model.zip").is_file()
+    metadata = json.loads((run_dir / "final_model.metadata.json").read_text())
+    assert metadata["metadata_version"] == 5
+    assert metadata["training_backend_id"] == "sb3.ppo"
+    assert len(metadata["training_backend_config_hash"]) == 64
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])

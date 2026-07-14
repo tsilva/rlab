@@ -267,10 +267,11 @@ class ConfigValidationTests(unittest.TestCase):
 
         train_config = document["train_config"]
         self.assertEqual(document["recipe_id"], "stable-updates")
-        self.assertEqual(train_config["learning_rate"], 2.5e-4)
-        self.assertEqual(train_config["learning_rate_final"], 2.5e-5)
-        self.assertEqual(train_config["learning_rate_schedule_timesteps"], 100_000_000)
-        self.assertEqual(train_config["target_kl"], 0.03)
+        backend_config = train_config["training_backend"]["config"]
+        self.assertEqual(backend_config["learning_rate"], 2.5e-4)
+        self.assertEqual(backend_config["learning_rate_final"], 2.5e-5)
+        self.assertEqual(backend_config["learning_rate_schedule_timesteps"], 100_000_000)
+        self.assertEqual(backend_config["target_kl"], 0.03)
         self.assertIs(train_config["env_args"]["reward_clip"], True)
         self.assertIs(
             train_config["checkpoint_eval_environment"]["env_args"]["reward_clip"],

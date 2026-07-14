@@ -10,9 +10,11 @@ description: >-
   below the other; slightly lower learning rate, clip range, and target KL
   should improve retention without changing the task contract.
 train:
-  policy:
-    timesteps: 50000000
-    learning_rate: 1.25e-4
-    learning_rate_final: 1.25e-4
-    clip_range: 0.12
-    target_kl: 0.12
+  timesteps: 50000000
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.25e-4
+      learning_rate_final: 1.25e-4
+      clip_range: 0.12
+      target_kl: 0.12

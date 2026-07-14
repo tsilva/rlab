@@ -24,6 +24,11 @@ from rlab.task_kernels import (
     MarioTaskDefinition,
     Outcome,
 )
+from rlab.training.sb3_ppo import validate_action_space
+
+
+def done_flags(step) -> np.ndarray:
+    return np.logical_or(step.terminated, step.truncated)
 
 
 class DeterministicNativeVectorProvider:
@@ -282,8 +287,10 @@ class ProviderContractTests(unittest.TestCase):
             native_observation_space=provider.single_observation_space,
             native_action_space=gym.spaces.Dict({"turn": gym.spaces.Discrete(3)}),
         )
+        kernel = IdentityTaskDefinition().bind(descriptor, provider.num_envs)
+        self.assertIs(kernel.action_space, descriptor.native_action_space)
         with self.assertRaisesRegex(ValueError, "configure a task action codec"):
-            IdentityTaskDefinition().bind(descriptor, provider.num_envs)
+            validate_action_space(kernel.action_space)
         with self.assertRaisesRegex(ValueError, "absent from the start catalog"):
             ProviderDescriptor(
                 provider_id="bad-lanes",
@@ -400,13 +407,13 @@ class BatchRuntimeTests(unittest.TestCase):
 
         self.assertTrue(all(isinstance(seed, int) for seed in provider.reset_calls[0]["seed"]))
         np.testing.assert_array_equal(initial["image"], initial_snapshot["image"])
-        np.testing.assert_array_equal(step.infos[0]["terminal_observation"]["image"], [9, 9])
+        np.testing.assert_array_equal(step.final_observations["image"][0], [9, 9])
         np.testing.assert_array_equal(step.observations["image"][0], [0, 0])
         np.testing.assert_array_equal(step.observations["image"][1], [4, 4])
         np.testing.assert_array_equal(provider.reset_calls[-1]["mask"], [True, False])
         self.assertTrue(step.terminated[0])
         self.assertFalse(step.truncated[0], "termination must win over truncation")
-        self.assertFalse(step.infos[0]["TimeLimit.truncated"])
+        self.assertFalse(step.truncated[0])
         self.assertEqual(len(provider.reset_calls), 2)
 
         records = runtime.drain_records()
@@ -474,7 +481,7 @@ class BatchRuntimeTests(unittest.TestCase):
         step = runtime.step(np.zeros((2, 3), dtype=np.int8))
         returned_snapshot = step.observations["image"].copy()
 
-        np.testing.assert_array_equal(step.infos[0]["terminal_observation"]["image"], [9, 9])
+        np.testing.assert_array_equal(step.final_observations["image"][0], [9, 9])
         np.testing.assert_array_equal(step.observations["image"], [[0, 0], [4, 4]])
         self.assertFalse(
             any(
@@ -542,7 +549,7 @@ class BatchRuntimeTests(unittest.TestCase):
         provider.queue_step()
         second = runtime.step(np.zeros((2, 3), dtype=np.int8))
 
-        self.assertFalse(np.any(first.dones))
+        self.assertFalse(np.any(done_flags(first)))
         self.assertTrue(np.all(second.truncated))
         records = [
             record for record in runtime.drain_records() if isinstance(record, EpisodeRecord)
@@ -619,7 +626,7 @@ class MarioKernelTests(unittest.TestCase):
             key=lambda record: record.lane,
         )
 
-        self.assertTrue(np.all(step.dones))
+        self.assertTrue(np.all(done_flags(step)))
         self.assertEqual(records[0].outcome, Outcome.SUCCESS)
         self.assertEqual(records[1].outcome, Outcome.FAILURE)
         self.assertIn("level_change", records[0].events)
@@ -634,7 +641,7 @@ class MarioKernelTests(unittest.TestCase):
         provider.queue_step(x=[0, 0])
         second = runtime.step(np.asarray([0, 0]))
 
-        self.assertFalse(np.any(first.dones))
+        self.assertFalse(np.any(done_flags(first)))
         self.assertTrue(np.all(second.truncated))
         self.assertFalse(np.any(second.terminated))
         records = [
@@ -749,11 +756,11 @@ class RlabVecEnvTests(unittest.TestCase):
 
         provider.queue_step(ball_y=[0, 0], rewards=[0.0, 0.0])
         first = runtime.step(np.zeros((2, 3), dtype=np.int8))
-        self.assertFalse(first.dones.any())
+        self.assertFalse(done_flags(first).any())
 
         provider.queue_step(ball_y=[5, 0], rewards=[0.0, 0.0])
         second = runtime.step(np.zeros((2, 3), dtype=np.int8))
-        self.assertFalse(second.dones.any())
+        self.assertFalse(done_flags(second).any())
 
         provider.queue_step(ball_y=[0, 0], rewards=[0.0, 0.0])
         third = runtime.step(np.zeros((2, 3), dtype=np.int8))
@@ -768,7 +775,7 @@ class RlabVecEnvTests(unittest.TestCase):
 
         provider.queue_step(ball_y=[0, 5], rewards=[0.0, 0.0])
         fourth = runtime.step(np.zeros((2, 3), dtype=np.int8))
-        self.assertFalse(fourth.dones.any())
+        self.assertFalse(done_flags(fourth).any())
         provider.queue_step(ball_y=[0, 5], rewards=[0.0, 0.0])
         fifth = runtime.step(np.zeros((2, 3), dtype=np.int8))
         np.testing.assert_array_equal(fifth.terminated, [True, False])

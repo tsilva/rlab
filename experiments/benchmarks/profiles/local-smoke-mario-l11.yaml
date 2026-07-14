@@ -8,9 +8,9 @@ recipe_overrides:
 - recipe_id=benchmark-local-smoke
 - campaign_id=benchmark-local-smoke
 - description=Benchmark queue-backed localhost smoke run for Mario Level1-1.
-- train.policy.timesteps=512
+- train.timesteps=512
 - train.environment.env_config.n_envs=1
-- train.policy.batch_size=128
+- train.backend.config.batch_size=128
 - train.environment.task.termination.max_episode_steps=600
 - train.checkpoint_freq=256
 - logging.wandb=false

@@ -5,19 +5,21 @@ description: >-
   while exercising checkpoint evaluation and the disabled-autoreset masked-reset
   provider lifecycle.
 train:
-  policy:
-    timesteps: 256
-    n_steps: 8
-    batch_size: 64
-    n_epochs: 4
-    learning_rate: 0.01
-    ent_coef: 0.0
-    gamma: 1.0
-    gae_lambda: 1.0
-    clip_range: 0.2
-    vf_coef: 0.5
-    adam_eps: 1.0e-05
-    normalize_advantage: true
+  timesteps: 256
+  backend:
+    id: sb3.ppo
+    config:
+      n_steps: 8
+      batch_size: 64
+      n_epochs: 4
+      learning_rate: 0.01
+      ent_coef: 0.0
+      gamma: 1.0
+      gae_lambda: 1.0
+      clip_range: 0.2
+      vf_coef: 0.5
+      adam_eps: 1.0e-05
+      normalize_advantage: true
 logging:
   wandb: true
   wandb_mode: online

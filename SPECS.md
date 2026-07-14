@@ -17,6 +17,10 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Goal definitions must independently specify the environment, acceptance criteria, ranking order, evaluation protocol, and release expectations.
 - Goal environment definitions must explicitly cover every provider constructor argument through canonical environment fields or provider-native `env_args`; inheriting environment-provider defaults is unsupported.
 - Training configurations must declare a finite resource cap, a meaningful description, and every value required for validation and execution.
+- Every training configuration must select one strict `training_backend` identity and backend-local configuration. `timesteps` is the universal environment-step cap; learner updates, replay samples, search simulations, retained knowledge, and generated tokens remain backend-owned state and metrics.
+- The common training orchestrator owns validated configuration, environment resolution, run resources, metrics, readiness, and finalization. Each backend owns its collector, replay or retained knowledge, actor/learner queues, search, tokenization, inference scheduling, model construction, optimization, and checkpoint payload.
+- `sb3.ppo` is the only runnable backend. `rlab.ppo` and `rlab.a2c`, including model selection, PopArt, RND, and pHash options, are compatibility placeholders that must fail preflight before run resources are created.
+- A runnable backend must preserve the supported checkpoint evaluation, playback, and publication contract before it can run through the normal queue workflow; those pipelines remain SB3 ZIP-specific until another concrete backend requires a new evaluator boundary.
 - Invalid or internally inconsistent goals, training configurations, benchmarks, capacity rules, and machine settings must be rejected before execution.
 - Every run must be traceable to its goal, training configuration, overrides, seed, launch time, source state, resolved settings, and runtime identity.
 - Queue-backed W&B identity must keep an opaque stable run id, a seed-complete human run name, a submission-cohort batch/group, optional cross-submission campaign metadata, canonical game-family project routing, and run-id-owned artifact collections; historical project and display-name artifact references must remain readable.
@@ -28,6 +32,9 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Native providers must use disabled/manual autoreset and masked lane reset.
 - A masked reset must leave every unselected lane's emulator state, RNG, observations, frame stacks, counters, and sticky-action state unchanged.
 - The rlab SB3 facade must reset completed lanes before returning a vector step so policy-facing reset behavior is same-step.
+- The backend-neutral batch runtime must return post-reset observations, separate termination and truncation, batched final observations, and columnar transition/reset information without constructing SB3 dictionaries. Returned hot-path buffers are borrowed until the next runtime call.
+- Actor-style single-host backends must partition globally unique lane ids, and episode seeds must derive from the base seed, global lane id, and episode index so actor regrouping cannot duplicate streams.
+- Backend-neutral observation and action transport must preserve numeric, text, object-array, and structured Gymnasium values so interactive LLM agents can operate in RL environments without an SB3-shaped boundary.
 - Providers may interrupt internal frame skip only for genuine engine termination.
 - Vectorized task kernels must compute task events, reward shaping, task termination, truncation, outcomes, and metrics at vector-step boundaries from provider facts.
 - Policy actions may use native Gymnasium spaces or a task-owned, bind-time-validated discrete lookup codec; providers must not contain policy-specific action mappings.

@@ -4,13 +4,13 @@ kind: ppo_loop_throughput
 description: Bounded PPO throughput probe for the consolidated Mario native-vector runtime.
 recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 recipe_overrides:
-- train.policy.timesteps=4096
+- train.timesteps=4096
 - train.environment.env_config.n_envs=8
-- train.policy.n_steps=128
-- train.policy.batch_size=256
-- train.policy.n_epochs=1
+- train.backend.config.n_steps=128
+- train.backend.config.batch_size=256
+- train.backend.config.n_epochs=1
 - train.checkpoint_freq=0
-- train.policy.post_train_eval_episodes=0
+- train.post_train_eval_episodes=0
 - logging.wandb=false
 - logging.wandb_mode=disabled
 - logging.wandb_artifact_storage_uri=''

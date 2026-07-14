@@ -6,7 +6,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from rlab.callbacks import CallbackHelper, RlabCallback
 from rlab.schedules import EntropyCoefficientScheduleHelper
-from rlab.train import GracefulStopHelper, GracefulStopFlag, checkpoint_save_frequency
+from rlab.training.sb3_helpers import GracefulStopHelper
+from rlab.training.sb3_ppo import checkpoint_save_frequency
+from rlab.training_backend import GracefulStopFlag
 from rlab.seeds import (
     DEFAULT_EVAL_SEED,
     validate_eval_seed,

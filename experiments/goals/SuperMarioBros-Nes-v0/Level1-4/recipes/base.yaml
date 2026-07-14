@@ -10,8 +10,10 @@ description: >-
   historical Level1-4 screen winner to keep the score/progress reward contract while
   lowering PPO update pressure for more stable World 1-4 clears.
 train:
-  policy:
-    learning_rate: 1.2e-4
-    learning_rate_final: 8.0e-5
-    clip_range: 0.12
-    target_kl: 0.10
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.2e-4
+      learning_rate_final: 8.0e-5
+      clip_range: 0.12
+      target_kl: 0.10

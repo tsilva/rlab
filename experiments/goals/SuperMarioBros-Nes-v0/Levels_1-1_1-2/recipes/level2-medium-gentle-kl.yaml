@@ -9,8 +9,10 @@ description: >-
   regressions seen in the best medium run without slowing early discovery as
   much as the conservative arm.
 train:
-  policy:
-    learning_rate: 1.25e-4
-    learning_rate_final: 8.5e-5
-    clip_range: 0.12
-    target_kl: 0.1
+  backend:
+    id: sb3.ppo
+    config:
+      learning_rate: 1.25e-4
+      learning_rate_final: 8.5e-5
+      clip_range: 0.12
+      target_kl: 0.1

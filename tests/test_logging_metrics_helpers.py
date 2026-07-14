@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 import rlab.metric_names as metric_names
-from rlab.train import (
+from rlab.training.sb3_helpers import (
     Sb3HumanOutputFormatHelper,
     disable_sb3_human_output_truncation,
 )

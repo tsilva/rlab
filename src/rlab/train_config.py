@@ -15,8 +15,6 @@ from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_se
 from rlab.validation import normalize_obs_crop
 
 
-ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
-DEVICE_CHOICES = ("auto", "cpu", "cuda", "mps")
 WANDB_MODE_CHOICES = ("online", "offline", "disabled")
 
 FieldKind = Literal["value", "store_true", "bool_optional"]
@@ -24,7 +22,7 @@ TypeName = Literal["str", "int", "float", "json", "obs_crop"]
 SerializeMode = Literal["str", "json", "csv", "rows", "skip_nonpositive_float"]
 SequenceItemKind = Literal["str", "number", "rows"]
 FieldOwner = Literal["runtime", "goal_environment", "goal_objective"]
-SourceSection = Literal["runtime", "goal_train"]
+SourceSection = Literal["runtime", "train", "goal_train"]
 
 @dataclass(frozen=True)
 class TrainConfigField:
@@ -202,7 +200,11 @@ def load_materialized_train_config(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"train config file must contain a JSON object: {path}")
-    return validate_and_normalize_train_config(payload, label=f"train config file {path}")
+    return validate_and_normalize_train_config(
+        payload,
+        label=f"train config file {path}",
+        required_keys=("training_backend",),
+    )
 
 
 def materialized_train_args(path: Path) -> argparse.Namespace:
@@ -214,9 +216,10 @@ def materialized_train_args(path: Path) -> argparse.Namespace:
         for field in TRAIN_CONFIG_FIELDS
     }
     defaults.update(payload)
-    if isinstance(defaults.get("wandb_tags"), list | tuple):
-        defaults["wandb_tags"] = ",".join(str(tag) for tag in defaults["wandb_tags"])
     args = argparse.Namespace(**defaults)
+    apply_training_backend_arg_view(args, payload)
+    if isinstance(defaults.get("wandb_tags"), list | tuple):
+        args.wandb_tags = ",".join(str(tag) for tag in defaults["wandb_tags"])
     args.train_config_json = path
     args._train_config_json_fields = set(payload)
     args._explicit_train_arg_dests = set()
@@ -226,6 +229,30 @@ def materialized_train_args(path: Path) -> argparse.Namespace:
         seed_span=provider_num_envs(args, explicit_n_envs=payload.get("n_envs")),
     )
     return args
+
+
+def apply_training_backend_arg_view(
+    args: argparse.Namespace,
+    payload: Mapping[str, Any],
+) -> None:
+    from rlab.training_backend import (
+        training_backend_config,
+        training_backend_config_hash,
+        training_backend_id,
+    )
+
+    backend_config = training_backend_config(payload)
+    collisions = sorted(set(vars(args)) & set(backend_config))
+    if collisions:
+        raise ValueError(
+            "training_backend.config collides with common train fields: "
+            + ", ".join(collisions)
+        )
+    for key, value in backend_config.items():
+        setattr(args, key, value)
+    args.training_backend_id = training_backend_id(payload)
+    args.training_backend_config = backend_config
+    args.training_backend_config_hash = training_backend_config_hash(payload)
 
 
 def train_config_field_for_key(key: str) -> TrainConfigField | None:
@@ -481,6 +508,17 @@ def validate_and_normalize_train_config(
             raise ValueError(
                 f"{label}.checkpoint_eval_stages must be empty when checkpoint eval is disabled"
             )
+    if "training_backend" in normalized:
+        from rlab.training_backend import normalize_training_backend
+
+        common_config = {
+            key: value for key, value in normalized.items() if key != "training_backend"
+        }
+        normalized["training_backend"] = normalize_training_backend(
+            normalized["training_backend"],
+            common_config=common_config,
+            label=f"{label}.training_backend",
+        )
     return normalized
 
 
@@ -492,6 +530,17 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default=1_000_000,
         queue_required=True,
         validation_min=1,
+        source_section="train",
+    ),
+    TrainConfigField(
+        "training_backend",
+        "--training-backend",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        queue_required=True,
+        help="Selected training backend id and backend-local configuration.",
     ),
     TrainConfigField(
         "n_envs",
@@ -625,7 +674,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         type_name="int",
         env_default="hud_crop_top",
         environment=True,
-        validation_min=0,
+        validation_min=-1,
         help="Crop this many pixels from the top of raw frames before grayscale resize; -1 uses the target default.",
     ),
     TrainConfigField(
@@ -677,6 +726,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--post-train-eval-episodes",
         type_name="int",
         default=100,
+        source_section="train",
         help="Episodes per checkpoint for post-training checkpoint eval.",
     ),
     TrainConfigField(
@@ -782,91 +832,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         sequence_items="str",
         owner="goal_objective",
         help="Ordered objective.rank contract carried into checkpoint selection.",
-    ),
-    TrainConfigField("learning_rate", "--learning-rate", type_name="float", default=1e-4),
-    TrainConfigField(
-        "learning_rate_final",
-        "--learning-rate-final",
-        type_name="float",
-        default=None,
-        help="If set, linearly decay learning rate from --learning-rate to this value over training.",
-    ),
-    TrainConfigField(
-        "learning_rate_schedule_timesteps",
-        "--learning-rate-schedule-timesteps",
-        type_name="int",
-        default=0,
-        help="Timesteps over which to decay learning rate; <=0 decays over --timesteps.",
-    ),
-    TrainConfigField("n_steps", "--n-steps", type_name="int", default=512),
-    TrainConfigField("batch_size", "--batch-size", type_name="int", default=256),
-    TrainConfigField("n_epochs", "--n-epochs", type_name="int", default=10),
-    TrainConfigField(
-        "device", "--device", default="auto", choices=DEVICE_CHOICES, non_empty=True
-    ),
-    TrainConfigField("gamma", "--gamma", type_name="float", default=0.9),
-    TrainConfigField("gae_lambda", "--gae-lambda", type_name="float", default=1.0),
-    TrainConfigField("ent_coef", "--ent-coef", type_name="float", default=0.01),
-    TrainConfigField(
-        "ent_coef_final",
-        "--ent-coef-final",
-        type_name="float",
-        default=None,
-        help="If set, linearly decay entropy coefficient from --ent-coef to this value.",
-    ),
-    TrainConfigField(
-        "ent_coef_schedule_timesteps",
-        "--ent-coef-schedule-timesteps",
-        type_name="int",
-        default=0,
-        help="Timesteps over which to decay entropy coefficient; <=0 decays over --timesteps.",
-    ),
-    TrainConfigField("vf_coef", "--vf-coef", type_name="float", default=1.0),
-    TrainConfigField("clip_range", "--clip-range", type_name="float", default=0.2),
-    TrainConfigField(
-        "clip_range_vf",
-        "--clip-range-vf",
-        type_name="float",
-        default=None,
-        help="Optional PPO value-function clipping range; omitted keeps SB3 default.",
-    ),
-    TrainConfigField(
-        "policy_net_arch",
-        "--policy-net-arch",
-        default="",
-        help="Comma-separated policy MLP hidden sizes after the CNN/combined extractor.",
-    ),
-    TrainConfigField(
-        "value_net_arch",
-        "--value-net-arch",
-        default="",
-        help="Comma-separated value MLP hidden sizes after the CNN/combined extractor.",
-    ),
-    TrainConfigField(
-        "normalize_advantage",
-        "--normalize-advantage",
-        kind="bool_optional",
-        default=False,
-        help="Normalize PPO advantages before policy updates.",
-    ),
-    TrainConfigField(
-        "advantage_normalization",
-        "--advantage-normalization",
-        default="auto",
-        choices=ADVANTAGE_NORMALIZATION_CHOICES,
-        non_empty=True,
-        help="PPO advantage normalization mode. auto preserves --normalize-advantage; per-task normalizes each task-conditioned rollout slice once before PPO epochs.",
-    ),
-    TrainConfigField("adam_eps", "--adam-eps", type_name="float", default=1e-8),
-    TrainConfigField(
-        "target_kl",
-        "--target-kl",
-        type_name="float",
-        default=None,
-        serialize="skip_nonpositive_float",
-    ),
-    TrainConfigField(
-        "resume", "--resume", default=None, help="Path to an existing PPO .zip checkpoint"
     ),
     TrainConfigField(
         "wandb",

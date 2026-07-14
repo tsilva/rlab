@@ -42,7 +42,8 @@ SECRET_KEY_FRAGMENTS = (
     "database_url",
 )
 TRAIN_CONFIG_SECTION_KEYS = ("train", "logging")
-TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "policy"})
+TRAIN_NESTED_SECTION_KEYS = frozenset({"environment", "backend"})
+COMMON_TRAIN_CONFIG_KEYS = train_config_keys_in_source_section("train")
 GOAL_TRAIN_CONFIG_KEYS = train_config_keys_in_source_section("goal_train")
 GOAL_GAME_DIR_NAME = "SuperMarioBros-Nes-v0"
 RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
@@ -171,19 +172,21 @@ def _normalized_train_section(section: Mapping[str, Any] | None) -> dict[str, An
     environment = (
         copy.deepcopy(dict(nested_environment)) if isinstance(nested_environment, Mapping) else {}
     )
-    policy = {
+    common = {
         key: copy.deepcopy(value)
         for key, value in section.items()
-        if key in GOAL_TRAIN_CONFIG_KEYS
+        if key in GOAL_TRAIN_CONFIG_KEYS | COMMON_TRAIN_CONFIG_KEYS
     }
-    nested_policy = section.get("policy")
-    if isinstance(nested_policy, Mapping):
-        policy = deep_merge(policy, nested_policy)
+    nested_backend = section.get("backend")
+    backend = (
+        copy.deepcopy(dict(nested_backend)) if isinstance(nested_backend, Mapping) else {}
+    )
     normalized: dict[str, Any] = {}
     if environment:
         normalized["environment"] = environment
-    if policy:
-        normalized["policy"] = policy
+    normalized.update(common)
+    if backend:
+        normalized["backend"] = backend
     return normalized
 
 
@@ -193,9 +196,15 @@ def _train_config_from_train_section(section: Mapping[str, Any]) -> dict[str, An
     environment = normalized.get("environment")
     if isinstance(environment, Mapping):
         config = deep_merge(config, _train_environment_section_config(environment))
-    policy = normalized.get("policy")
-    if isinstance(policy, Mapping):
-        config = deep_merge(config, policy)
+    common = {
+        key: copy.deepcopy(value)
+        for key, value in normalized.items()
+        if key in GOAL_TRAIN_CONFIG_KEYS | COMMON_TRAIN_CONFIG_KEYS
+    }
+    config = deep_merge(config, common)
+    backend = normalized.get("backend")
+    if isinstance(backend, Mapping):
+        config["training_backend"] = copy.deepcopy(dict(backend))
     return config
 
 
@@ -415,19 +424,28 @@ def validate_source_recipe_shape(
     if retired:
         raise ValueError(
             f"{label} uses compiled or retired source field(s): {', '.join(retired)}; "
-            "author recipes with train.environment, train.policy, and logging"
+            "author recipes with train.environment, train.backend, and logging"
         )
     train = document.get("train")
     if train is None:
         return
     if not isinstance(train, Mapping):
         raise ValueError(f"{label}.train must be an object")
-    allowed = TRAIN_NESTED_SECTION_KEYS | (GOAL_TRAIN_CONFIG_KEYS if allow_goal_train_fields else set())
+    if "policy" in train:
+        raise ValueError(
+            f"{label}.train.policy is retired; use train.backend with an explicit id and config"
+        )
+    allowed = (
+        TRAIN_NESTED_SECTION_KEYS
+        | COMMON_TRAIN_CONFIG_KEYS
+        | (GOAL_TRAIN_CONFIG_KEYS if allow_goal_train_fields else set())
+    )
     unexpected = sorted(set(train) - allowed)
     if unexpected:
         raise ValueError(
             f"{label}.train uses unsupported flat field(s): {', '.join(unexpected)}; "
-            "put policy options under train.policy"
+            "put common fields directly under train and backend options under "
+            "train.backend.config"
         )
 
 

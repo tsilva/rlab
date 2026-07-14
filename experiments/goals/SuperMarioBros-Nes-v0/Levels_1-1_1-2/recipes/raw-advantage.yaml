@@ -9,6 +9,8 @@ description: >-
   signal that solved the single-level recipes while leaving the environment
   contract unchanged.
 train:
-  policy:
-    advantage_normalization: none
-    normalize_advantage: false
+  backend:
+    id: sb3.ppo
+    config:
+      advantage_normalization: none
+      normalize_advantage: false

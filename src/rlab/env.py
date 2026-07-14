@@ -9,7 +9,7 @@ import numpy as np
 import stable_retro as retro
 
 from rlab import env_providers as provider_runtime
-from rlab.batch_runtime import BatchRuntime, ProviderDescriptor, RlabVecEnv
+from rlab.batch_runtime import BatchRuntime, ProviderDescriptor
 from rlab.env_providers import (
     DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
     ale_py_atari_vector_env_type as _ale_py_atari_vector_env_type,
@@ -310,8 +310,9 @@ def bind_native_provider(
     seed: int,
     native_env: Any,
     descriptor: ProviderDescriptor,
+    global_lane_ids: tuple[int, ...] | None = None,
     capture_step_diagnostics: bool = False,
-) -> RlabVecEnv:
+) -> BatchRuntime:
     """Transfer a constructed provider into the task runtime or close it on failure."""
 
     runtime: BatchRuntime | None = None
@@ -322,9 +323,10 @@ def bind_native_provider(
             descriptor,
             kernel,
             run_seed=seed,
+            global_lane_ids=global_lane_ids,
             capture_step_diagnostics=capture_step_diagnostics,
         )
-        return RlabVecEnv(runtime)
+        return runtime
     except BaseException:
         if runtime is None:
             native_env.close()
@@ -372,23 +374,43 @@ def make_vec_envs(
     seed: int,
     *,
     capture_step_diagnostics: bool = False,
-) -> RlabVecEnv:
+) -> Any:
+    from rlab.training.sb3_vec_env import RlabVecEnv
+
+    runtime = make_training_batch_runtime(
+        config,
+        n_envs,
+        seed,
+        capture_step_diagnostics=capture_step_diagnostics,
+    )
+    vec_env = RlabVecEnv(runtime)
+    vec_env.seed(seed)
+    return vec_env
+
+
+def make_training_batch_runtime(
+    config: EnvConfig,
+    n_envs: int,
+    seed: int,
+    *,
+    global_lane_ids: tuple[int, ...] | None = None,
+    capture_step_diagnostics: bool = False,
+) -> BatchRuntime:
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
     native_env, descriptor = make_native_provider(config, n_envs)
-    vec_env = bind_native_provider(
+    return bind_native_provider(
         config,
         n_envs=n_envs,
         seed=seed,
         native_env=native_env,
         descriptor=descriptor,
+        global_lane_ids=global_lane_ids,
         capture_step_diagnostics=capture_step_diagnostics,
     )
-    vec_env.seed(seed)
-    return vec_env
 
 
-def make_training_vec_env(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
+def make_training_vec_env(config: EnvConfig, n_envs: int, seed: int) -> Any:
     return make_vec_envs(config=config, n_envs=n_envs, seed=seed)
 
 
@@ -398,7 +420,7 @@ def make_eval_vec_env(
     seed: int,
     *,
     capture_step_diagnostics: bool = False,
-) -> RlabVecEnv:
+) -> Any:
     return make_vec_envs(
         config=resolve_env_config(config),
         n_envs=n_envs,
