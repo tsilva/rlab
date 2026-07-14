@@ -29,8 +29,8 @@ protocol:
   seed_protocol: vector-lane-v1
   max_attempts: 2
 preview:
-  # Enable only after paired eval-speed and real W&B/R2 dashboard smoke tests pass.
-  enabled: false
+  # Required for every normal queue-backed screen checkpoint evaluation.
+  enabled: true
   max_frames: 450
   fps: 15
   max_lanes: 4

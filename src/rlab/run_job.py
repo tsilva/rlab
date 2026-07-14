@@ -27,6 +27,30 @@ RESULT_SCHEMA_VERSION = 1
 TRAIN_STARTUP_TIMEOUT_SECONDS = 300.0
 
 
+def worker_modules(
+    eval_backend: str,
+    *,
+    wandb_enabled: bool,
+) -> tuple[str | None, str | None]:
+    if eval_backend not in {"local", "modal", "none"}:
+        raise ValueError(f"unsupported checkpoint evaluation backend: {eval_backend}")
+    producer = (
+        "rlab.checkpoint_coordinator"
+        if eval_backend == "modal"
+        else "rlab.checkpoint_eval_worker"
+        if eval_backend == "local"
+        else None
+    )
+    publisher = (
+        "rlab.wandb_publisher"
+        if wandb_enabled
+        else "rlab.artifact_worker"
+        if eval_backend != "modal"
+        else None
+    )
+    return producer, publisher
+
+
 def load_payload(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -266,12 +290,18 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     publisher_workers: list[subprocess.Popen] = []
     config_document = json.loads(config_path.read_text(encoding="utf-8"))
     wandb_enabled = bool(config_document.get("wandb", False))
-    modal_eval = str(config_document.get("checkpoint_eval_backend") or "local") == "modal"
+    eval_backend = str(config_document.get("checkpoint_eval_backend") or "local")
+    modal_eval = eval_backend == "modal"
+    eval_disabled = eval_backend == "none"
+    producer_module, publisher_module = worker_modules(
+        eval_backend,
+        wandb_enabled=wandb_enabled,
+    )
     try:
-        if wandb_enabled or not modal_eval:
+        if publisher_module:
             publisher_workers.append(
                 start_worker(
-                    module="rlab.wandb_publisher" if wandb_enabled else "rlab.artifact_worker",
+                    module=publisher_module,
                     name="wandb_publisher" if wandb_enabled else "artifact_worker",
                     output_dir=output_dir,
                     run_dir=run_dir,
@@ -279,18 +309,17 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                     stop_file=publisher_stop_file,
                 )
             )
-        producer_workers.append(
-            start_worker(
-                module=(
-                    "rlab.checkpoint_coordinator" if modal_eval else "rlab.checkpoint_eval_worker"
-                ),
-                name="checkpoint_coordinator" if modal_eval else "checkpoint_eval_worker",
-                output_dir=output_dir,
-                run_dir=run_dir,
-                config_path=config_path,
-                stop_file=producer_stop_file,
+        if producer_module:
+            producer_workers.append(
+                start_worker(
+                    module=producer_module,
+                    name="checkpoint_coordinator" if modal_eval else "checkpoint_eval_worker",
+                    output_dir=output_dir,
+                    run_dir=run_dir,
+                    config_path=config_path,
+                    stop_file=producer_stop_file,
+                )
             )
-        )
     except Exception:
         stop_workers(producer_workers, producer_stop_file)
         stop_workers(publisher_workers, publisher_stop_file)
@@ -331,6 +360,10 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "log_path": str(log_path),
         },
         "workers": worker_results,
+        "evaluation": {
+            "backend": eval_backend,
+            "status": "disabled" if eval_disabled else "enabled",
+        },
     }
     if modal_eval:
         artifact_phases = dict(metadata.get("phase_counts") or {})

@@ -18,8 +18,11 @@ from rlab.modal_eval_orchestrator import (
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
+    finalize_runs,
+    project_eval_results,
     project_artifact_references,
     promotion_candidate_key,
+    reconcile_promotions,
     round_robin_jobs,
 )
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
@@ -141,7 +144,21 @@ class ModalEvalContractTests(unittest.TestCase):
             mock.patch.object(modal_eval_cli, "_missing_schema_tables", return_value=[]),
             mock.patch.object(modal_eval_cli, "asset_manifest_for_game", return_value=manifest),
             mock.patch.object(modal_eval_cli, "object_store_base_uri", return_value="s3://bucket"),
+            mock.patch.object(
+                modal_eval_cli,
+                "preview_storage_base_uri",
+                return_value="s3://preview-bucket",
+            ),
+            mock.patch.object(
+                modal_eval_cli,
+                "preview_public_base_url",
+                return_value="https://preview.example",
+            ),
             mock.patch.object(modal_eval_cli, "ObjectStore") as object_store,
+            mock.patch(
+                "rlab.fleet_service.eval_service_health",
+                return_value={"ready": True},
+            ),
             mock.patch("modal.Function.from_name", return_value=function),
         ):
             from rlab.runtime_contract import train_config_contract_sha256
@@ -150,6 +167,8 @@ class ModalEvalContractTests(unittest.TestCase):
                 "size": 1024,
                 "metadata": {"sha256": manifest["sha256"]},
             }
+            object_store.return_value.scheme = "s3"
+            object_store.return_value.base_uri = "s3://preview-bucket"
             function.remote.return_value = {
                 "schema_version": 1,
                 "app_name": "rlab-eval-" + "b" * 12,
@@ -167,6 +186,8 @@ class ModalEvalContractTests(unittest.TestCase):
             {check["name"] for check in report["checks"]},
             {
                 "config_guards",
+                "fleet_eval_service",
+                "preview_storage",
                 "postgres_schema",
                 "backend_state",
                 "rom_asset",
@@ -184,7 +205,7 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.initial_effective_capacity, 1)
         self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
-        self.assertFalse(config.preview_enabled)
+        self.assertTrue(config.preview_enabled)
         self.assertEqual(config.preview_max_frames, 450)
         self.assertEqual(config.preview_fps, 15)
         self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
@@ -213,6 +234,15 @@ class ModalEvalContractTests(unittest.TestCase):
             oversized_preview.write_text(source.replace("  max_lanes: 4", "  max_lanes: 5"))
             with self.assertRaisesRegex(ValueError, "must not exceed 4"):
                 load_modal_eval_config(oversized_preview)
+            disabled_preview = Path(temporary) / "disabled-preview.yaml"
+            disabled_preview.write_text(
+                source.replace("  enabled: true\n  max_frames", "  enabled: false\n  max_frames")
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "preview.enabled must be true when Modal evaluation is enabled",
+            ):
+                load_modal_eval_config(disabled_preview)
 
     def test_execution_identity_excludes_job_purpose_and_job_identity_includes_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -393,9 +423,7 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                         }
                     ),
                 ),
-                mock.patch(
-                    "rlab.docker_host.run_checkpoint_coordinator_container"
-                ) as recover,
+                mock.patch("rlab.docker_host.run_checkpoint_coordinator_container") as recover,
             ):
                 with self.assertRaisesRegex(ValueError, error):
                     modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
@@ -431,9 +459,7 @@ class ModalEvalRecoveryTests(unittest.TestCase):
             mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
             mock.patch("rlab.machines.load_machine_registry", return_value=object()),
             mock.patch("rlab.machines.resolve_machine", return_value=machine),
-            mock.patch(
-                "rlab.docker_host.run_checkpoint_coordinator_container"
-            ) as recover,
+            mock.patch("rlab.docker_host.run_checkpoint_coordinator_container") as recover,
             mock.patch.object(modal_eval_cli, "_kick"),
         ):
             result = modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
@@ -568,6 +594,93 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         }
         self.assertGreater(promotion_candidate_key(stronger), promotion_candidate_key(weaker))
 
+    def test_promotion_ranking_reads_known_historical_metric_contract(self) -> None:
+        historical = {
+            "id": 1,
+            "checkpoint_step": 100,
+            "train_config": {
+                "selection_rank": [
+                    "max(eval/full/info/level_complete/rate/min)",
+                    "max(eval/full/reward/mean)",
+                ]
+            },
+            "decision_json": {
+                "raw_metrics": {
+                    "eval/full/info/level_complete/rate/min": 1.0,
+                    "eval/full/reward/mean": 20.0,
+                }
+            },
+        }
+
+        self.assertEqual(promotion_candidate_key(historical)[0], (1.0, 20.0))
+
+    def test_promotion_reconciliation_isolates_invalid_run_and_continues(self) -> None:
+        invalid = {
+            "id": 1,
+            "train_job_id": 10,
+            "accepted_attempt_id": 11,
+            "checkpoint_step": 100,
+            "checkpoint_sha256": "a" * 64,
+            "checkpoint_uri": "s3://bucket/old.zip",
+            "train_config": {"selection_rank": ["max(unknown/metric)"]},
+            "decision_json": {"result_uri": "s3://bucket/old.json", "raw_metrics": {}},
+        }
+        valid = {
+            "id": 2,
+            "train_job_id": 17,
+            "accepted_attempt_id": 12,
+            "checkpoint_step": 500,
+            "checkpoint_sha256": "b" * 64,
+            "checkpoint_uri": "s3://bucket/new.zip",
+            "train_config": {"selection_rank": ["max(eval/full/outcome/success/rate/min)"]},
+            "decision_json": {
+                "result_uri": "s3://bucket/new.json",
+                "raw_metrics": {"eval/full/outcome/success/rate/min": 1.0},
+            },
+        }
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [invalid, valid]
+        cursor.rowcount = 1
+
+        self.assertEqual(reconcile_promotions(conn), 1)
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertIn("r.status = 'finalizing'", statements[0])
+        self.assertTrue(any("status = 'failed'" in statement for statement in statements))
+        self.assertTrue(any("promoted_eval_job_id" in statement for statement in statements))
+
+    def test_projection_queries_skip_backoff_and_exhausted_rows(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = None
+
+        self.assertEqual(
+            project_eval_results(
+                conn,
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+            ),
+            0,
+        )
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("projection_attempts <", statement)
+        self.assertIn("projection_next_retry_at <= now()", statement)
+        self.assertIn("r.status = 'finalizing'", statement)
+
+    def test_finalization_waits_for_wandb_projection(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 0
+
+        finalize_runs(conn)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
+        self.assertIn("promoted.projected_at IS NULL", statement)
+        self.assertIn("r.status = 'finalizing'", statement)
+
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
     def test_artifact_projection_embeds_checkpoint_playback_metadata(self) -> None:
@@ -636,7 +749,9 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             project_payload(payload)
 
         artifact, aliases = run.logged[0]
-        self.assertEqual(artifact.metadata["training_metadata"], model_metadata["training_metadata"])
+        self.assertEqual(
+            artifact.metadata["training_metadata"], model_metadata["training_metadata"]
+        )
         self.assertEqual(artifact.metadata["filename"], "model.zip")
         self.assertEqual(artifact.metadata["source_filename"], "ppo_game_500_steps.zip")
         self.assertEqual(artifact.metadata["artifact_storage_uri"], payload["checkpoint_uri"])
@@ -661,9 +776,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             "metadata_sha256": "b" * 64,
             "step": 500,
         }
-        model_metadata = {
-            "training_metadata": {"env_config": {"game": "Game-Nes-v0"}}
-        }
+        model_metadata = {"training_metadata": {"env_config": {"game": "Game-Nes-v0"}}}
         store = mock.MagicMock()
         store.get_json_optional.side_effect = [complete, announcement]
         store.get_json.return_value = model_metadata

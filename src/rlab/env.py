@@ -310,13 +310,20 @@ def bind_native_provider(
     seed: int,
     native_env: Any,
     descriptor: ProviderDescriptor,
+    capture_step_diagnostics: bool = False,
 ) -> RlabVecEnv:
     """Transfer a constructed provider into the task runtime or close it on failure."""
 
     runtime: BatchRuntime | None = None
     try:
         kernel = _bound_task_kernel(config, descriptor, n_envs)
-        runtime = BatchRuntime(native_env, descriptor, kernel, run_seed=seed)
+        runtime = BatchRuntime(
+            native_env,
+            descriptor,
+            kernel,
+            run_seed=seed,
+            capture_step_diagnostics=capture_step_diagnostics,
+        )
         return RlabVecEnv(runtime)
     except BaseException:
         if runtime is None:
@@ -359,7 +366,13 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
     ).bind(descriptor, n_envs)
 
 
-def make_vec_envs(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
+def make_vec_envs(
+    config: EnvConfig,
+    n_envs: int,
+    seed: int,
+    *,
+    capture_step_diagnostics: bool = False,
+) -> RlabVecEnv:
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
     native_env, descriptor = make_native_provider(config, n_envs)
@@ -369,6 +382,7 @@ def make_vec_envs(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
         seed=seed,
         native_env=native_env,
         descriptor=descriptor,
+        capture_step_diagnostics=capture_step_diagnostics,
     )
     vec_env.seed(seed)
     return vec_env
@@ -378,8 +392,19 @@ def make_training_vec_env(config: EnvConfig, n_envs: int, seed: int) -> RlabVecE
     return make_vec_envs(config=config, n_envs=n_envs, seed=seed)
 
 
-def make_eval_vec_env(config: EnvConfig, n_envs: int, seed: int) -> RlabVecEnv:
-    return make_vec_envs(config=resolve_env_config(config), n_envs=n_envs, seed=seed)
+def make_eval_vec_env(
+    config: EnvConfig,
+    n_envs: int,
+    seed: int,
+    *,
+    capture_step_diagnostics: bool = False,
+) -> RlabVecEnv:
+    return make_vec_envs(
+        config=resolve_env_config(config),
+        n_envs=n_envs,
+        seed=seed,
+        capture_step_diagnostics=capture_step_diagnostics,
+    )
 
 
 def assert_rom_imported(game: str) -> str:

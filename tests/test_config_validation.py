@@ -25,11 +25,13 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 class ConfigValidationTests(unittest.TestCase):
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
         from ale_py.vector_env import AtariVectorEnv
+        from rlab.bandit_env import BanditVectorEnv
         from stable_retro import RetroVecEnv
         from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
 
         constructors = {
             "ale-py": AtariVectorEnv,
+            "rlab": BanditVectorEnv,
             "stable-retro-turbo": RetroVecEnv,
             "supermariobrosnes-turbo": SuperMarioBrosNesTurboVecEnv,
         }
@@ -325,10 +327,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/outcome/success/rate/window_100/min)
+  - max(train/outcome/success/window_100/rate/min)
 train:
   early_stop:
-  - metric: train/outcome/success/rate/window_100/min
+  - metric: train/outcome/success/window_100/rate/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -472,11 +474,11 @@ goal_id: bad
 title: Bad Goal
 objective:
   success:
-    metric: train/outcome/success/rate/window_100/min
+    metric: train/outcome/success/window_100/rate/min
     operator: '>'
     threshold: 0.99
   rank:
-  - max(train/outcome/success/rate/window_100/min)
+  - max(train/outcome/success/window_100/rate/min)
 train:
   environment:
     env_config:
@@ -537,10 +539,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/outcome/success/rate/window_100/min)
+  - max(train/outcome/success/window_100/rate/min)
 train:
   early_stop:
-  - metric: train/outcome/success/rate/window_100/min
+  - metric: train/outcome/success/window_100/rate/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -668,15 +670,36 @@ environment_hash: sha256:deadbeef
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
         )
 
-        self.assertNotIn("owner", document["release"]["huggingface"])
-        self.assertEqual(
-            document["release"]["huggingface"]["repo"],
-            "SuperMarioBros-Nes-v0_Level1-1",
-        )
-        self.assertEqual(
-            document["release"]["huggingface"]["checkpoint_filename"],
-            "model.zip",
-        )
+        self.assertEqual(document["release"]["huggingface"], {})
+
+    def test_goal_validator_rejects_manual_huggingface_release_identity(self) -> None:
+        source = """
+goal_id: Level1-1
+title: Manual publication identity
+objective:
+  rank: [max(eval/full/outcome/success/rate/min)]
+train:
+  environment:
+    env_provider: gymnasium
+    env_config:
+      game: CustomNativeVector-v0
+      env_args: {}
+    task:
+      id: identity
+      action: {set: native}
+      signals: {}
+      events: {}
+      termination: {failure: [], success: [], timeout: [], max_episode_steps: 1}
+      reward: {reward_mode: native}
+release:
+  huggingface:
+    repo: manual-name
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "_goal.yaml"
+            path.write_text(source, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "marker-only"):
+                load_goal_contract(path)
 
     def test_validate_cli_success(self) -> None:
         stdout = io.StringIO()

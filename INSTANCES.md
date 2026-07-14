@@ -30,8 +30,7 @@ Queue work from checked-in goal recipe files:
 ```bash
 rlab train \
   --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
-  --machine beast-3 \
-  --runtime-image-ref-file rlab-train-image.json
+  --machine beast-3
 ```
 
 Install and inspect the Mac-side service, then observe jobs:
@@ -78,20 +77,26 @@ rlab eval modal preflight \
 rlab eval modal drain
 rlab eval modal resume --capacity 1
 rlab eval modal retry <eval-job-id>
+rlab eval modal retry-projection <train-job-id>
 rlab eval modal recover <train-job-id>
 rlab eval modal assets sync --game <game-id>
 rlab eval modal smoke-local
 ```
 
 The selected backend is materialized in the queue row and never changes for that job. Use
-`rlab train ... --checkpoint-eval-backend local` only for an explicit fallback. `preflight` fails
-closed unless the additive PostgreSQL schema, active capacity, private ROM object, local Modal
-credentials, and exact runtime-specific deployment are all present.
+`rlab train ... --checkpoint-eval-backend local` only for an explicit fallback. Use `none` only for
+a smoke/debug submission that does not need eval-owned early stopping, checkpoint promotion, or goal
+acceptance. `preflight` fails closed unless the additive PostgreSQL schema, active capacity, private
+ROM object, preview R2/public-URL path, local Modal credentials, and exact runtime-specific
+deployment are all present. Every normal screen evaluation captures a bounded policy-observation
+MP4 in R2 and projects it as `eval/screen/preview` in the producing W&B run.
 
-The train-image release workflow deploys and startup-probes the exact digest-specific Modal app
-before publishing `rlab-train-image.json`; a failed deployment leaves the previous successful
-runtime as the default. Every new Modal-backed submission and explicit retry repeats the full
-preflight before writing queue rows, so an explicitly supplied undeployed digest also fails closed.
+The train-image workflow publishes `rlab-train-image.json` as soon as the exact immutable image
+exists. It then deploys and startup-probes the digest-specific Modal app and publishes
+`rlab-modal-eval-readiness.json`. Local and `none` submissions may proceed from the early image
+receipt; Modal submissions wait for matching readiness and repeat the full live preflight before
+writing queue rows. Image workflow failure during the later Modal stage does not invalidate an
+already published image receipt, but it does block Modal-backed submissions for that digest.
 Use `rlab eval modal recover <train-job-id>` only after a terminal train job reports
 `awaiting_artifact_recovery`. Recovery drains pending artifacts inside the runtime container and
 rejects active, finalizing, complete, or otherwise ineligible eval runs without changing their state.
@@ -230,6 +235,13 @@ After collapsing the application files into one scratch overlay, fresh-runner ru
 skipped the dependency build, built and pushed the runtime image in 10 seconds, and completed the
 workflow in 37 seconds. That is an approximately 88% runtime-step reduction from the prior median;
 the accepted build transferred no 3.12 GB dependency blob and exported no runtime cache.
+
+Before readiness was split, exact-source run `29348722980` built the source-only image in about 8
+seconds but did not publish the usable runtime receipt until the CI image pull/contract smoke and
+Modal deployment/probe completed; the full workflow took 5 minutes 40 seconds. The split contract
+makes the early image receipt, named-machine image ensure, named-machine config validation, and
+optional Modal wait separate timed phases. The named-machine validation remains mandatory because it
+tests the real materialized payload inside the exact image on the actual selected runner.
 
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 

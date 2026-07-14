@@ -4,58 +4,35 @@ from itertools import islice
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from rlab.env import EnvConfig
 from rlab.play import (
-    StepOverControls,
+    optional_fast_env_frames,
+    playback_model_observation,
     playback_runtime_config,
     playback_step_indices,
     vector_env_frame,
 )
+from rlab.play_debug import DebugCommandError, parse_debug_command
 
 
-def test_step_over_controls_advance_once_on_space_press() -> None:
-    controls = StepOverControls()
-
-    controls.handle_event(
-        SimpleNamespace(type=1, key=32), keydown_type=1, keyup_type=2, step_key=32
-    )
-    controls.handle_event(
-        SimpleNamespace(type=2, key=32), keydown_type=1, keyup_type=2, step_key=32
-    )
-
-    assert controls.consume_step()
-    assert not controls.consume_step()
+def test_debug_commands_use_one_non_overlapping_step_grammar() -> None:
+    assert parse_debug_command("").count == 1
+    assert parse_debug_command("step 4").count == 4
+    assert parse_debug_command("continue", ("life_loss",)).target is None
+    assert parse_debug_command("continue life_loss", ("life_loss",)).target == "life_loss"
+    assert parse_debug_command("show policy").target == "policy"
+    assert parse_debug_command("reset 123").seed == 123
 
 
-def test_step_over_controls_keep_advancing_while_space_is_held() -> None:
-    controls = StepOverControls()
-
-    controls.handle_event(
-        SimpleNamespace(type=1, key=32), keydown_type=1, keyup_type=2, step_key=32
-    )
-
-    assert controls.consume_step()
-    assert controls.consume_step()
-
-    controls.handle_event(
-        SimpleNamespace(type=2, key=32), keydown_type=1, keyup_type=2, step_key=32
-    )
-
-    assert not controls.consume_step()
+@pytest.mark.parametrize("line", ["step 0", "step 101", "run 2", "show wat"])
+def test_invalid_debug_commands_never_parse_as_steps(line: str) -> None:
+    with pytest.raises(DebugCommandError):
+        parse_debug_command(line, ("life_loss",))
 
 
-def test_step_over_controls_ignore_other_keys() -> None:
-    controls = StepOverControls()
-
-    controls.handle_event(
-        SimpleNamespace(type=1, key=13), keydown_type=1, keyup_type=2, step_key=32
-    )
-
-    assert not controls.consume_step()
-
-
-def test_playback_runtime_config_requests_clean_mario_completion_records() -> None:
+def test_playback_runtime_config_preserves_selected_boundary_policy() -> None:
     original = EnvConfig(
         game="SuperMarioBros-Nes-v0",
         task={"termination": {"failure": [], "success": []}},
@@ -63,8 +40,24 @@ def test_playback_runtime_config_requests_clean_mario_completion_records() -> No
 
     configured = playback_runtime_config(original)
 
-    assert configured.task["termination"]["success"] == ["level_change"]
+    assert configured is original
+    assert configured.task["termination"]["success"] == []
     assert original.task["termination"]["success"] == []
+
+
+def test_generic_vector_observation_reaches_policy_unchanged() -> None:
+    observation = np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32)
+
+    result = playback_model_observation(
+        type("Model", (), {"observation_space": object()})(),
+        observation,
+        EnvConfig(game="CartPole-v1"),
+        active_task_state=None,
+        active_info_value=None,
+    )
+
+    assert result is observation
+    assert optional_fast_env_frames(result) is None
 
 
 def test_zero_max_episode_steps_keeps_playback_running() -> None:

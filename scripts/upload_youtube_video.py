@@ -383,6 +383,37 @@ def build_description(
     return "\n\n".join(parts)
 
 
+def replace_description_link_block(existing: str, model_page: str) -> str:
+    replacements: dict[str, str] = {}
+    for line in model_page.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        label, separator, _value = stripped.partition(":")
+        if not separator or label not in {"Model", "rlab"}:
+            raise ValueError("model page updates may contain only Model: and rlab: lines")
+        replacements[label] = stripped
+    if "Model" not in replacements:
+        raise ValueError("model page update must contain a Model: line")
+
+    output: list[str] = []
+    replaced: set[str] = set()
+    for line in existing.splitlines():
+        label, separator, _value = line.strip().partition(":")
+        if separator and label in replacements:
+            if label not in replaced:
+                output.append(replacements[label])
+                replaced.add(label)
+            continue
+        output.append(line)
+    missing = [replacements[label] for label in ("Model", "rlab") if label in replacements and label not in replaced]
+    if missing:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(missing)
+    return "\n".join(output).strip()
+
+
 def find_or_create_playlist(
     *,
     token: str,
@@ -583,6 +614,10 @@ def main() -> None:
         existing = get_video_metadata(token=token, video_id=args.video_id)
         existing_snippet = existing.get("snippet", {})
         existing_status = existing.get("status", {})
+        if args.model_page and not args.human_description and not args.description:
+            description = replace_description_link_block(
+                existing_snippet.get("description", ""), args.model_page
+            )
         tags = (
             [tag.strip() for tag in args.tags.split(",") if tag.strip()]
             if args.tags

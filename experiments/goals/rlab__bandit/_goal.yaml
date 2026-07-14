@@ -1,0 +1,58 @@
+defaults:
+- _self_
+goal_id: rlab__bandit
+tags:
+- "goal_id:{goal_id}"
+- "recipe_id:{recipe_id}"
+- "env_id:{env_id}"
+title: Rlab native-vector bandit smoke
+objective:
+  rank:
+  - max(eval/full/episode/return/mean)
+  - min(leader/checkpoint/step)
+train:
+  checkpoint_eval_backend: modal
+  checkpoint_freq: 128
+  environment:
+    env_provider: &bandit_provider rlab
+    env_config:
+      <<: &bandit_env_config
+        game: Bandit-v0
+        n_envs: 8
+        env_args: &bandit_provider_args
+          autoreset_mode: disabled
+    preprocessing: &bandit_preprocessing
+      frame_skip: 1
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 0
+      obs_crop: [0, 0, 0, 0]
+      obs_crop_mode: remove
+      obs_crop_fill: 0
+      obs_resize_algorithm: area
+    task: &bandit_task
+      id: identity
+      action:
+        set: native
+      signals: {}
+      events: {}
+      termination:
+        success: []
+        failure: []
+        timeout: []
+        max_episode_steps: 1
+      reward:
+        reward_mode: native
+eval:
+  episodes: 256
+  policy:
+    stochastic: true
+  environment:
+    env_provider: *bandit_provider
+    env_config:
+      <<: *bandit_env_config
+      n_envs: 32
+      env_args:
+        <<: *bandit_provider_args
+    preprocessing: *bandit_preprocessing
+    task: *bandit_task

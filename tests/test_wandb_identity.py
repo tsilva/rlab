@@ -20,37 +20,38 @@ from rlab.wandb_utils import (
 @pytest.mark.parametrize(
     ("provider", "game", "project", "family"),
     [
+        ("rlab", "Bandit-v0", "Bandit-v0", "Bandit"),
         (
             "supermariobrosnes-turbo",
             "SuperMarioBros-Nes-v0",
             "SuperMarioBros-Nes-v0",
-            "super-mario-bros-nes",
+            "NES-SuperMarioBros",
         ),
         (
             "stable-retro-turbo",
             "SuperMarioBros-Nes-v0",
             "SuperMarioBros-Nes-v0",
-            "super-mario-bros-nes",
+            "NES-SuperMarioBros",
         ),
-        ("ale-py", "breakout", "Breakout-Atari2600-v0", "breakout-atari2600"),
+        ("ale-py", "breakout", "Breakout-Atari2600-v0", "Atari2600-Breakout"),
         (
             "stable-retro-turbo",
             "Breakout-Atari2600-v0",
             "Breakout-Atari2600-v0",
-            "breakout-atari2600",
+            "Atari2600-Breakout",
         ),
-        ("ale-py", "ms_pacman", "MsPacman-Atari2600-v0", "ms-pacman-atari2600"),
+        ("ale-py", "ms_pacman", "MsPacman-Atari2600-v0", "Atari2600-MsPacman"),
         (
             "stable-retro-turbo",
             "MsPacman-Atari2600-v0",
             "MsPacman-Atari2600-v0",
-            "ms-pacman-atari2600",
+            "Atari2600-MsPacman",
         ),
         (
             "stable-retro-turbo",
             "SuperMarioBros3-Nes-v0",
             "SuperMarioBros3-Nes-v0",
-            "super-mario-bros-3-nes",
+            "NES-SuperMarioBros3",
         ),
     ],
 )
@@ -111,7 +112,7 @@ def test_init_wandb_records_resolved_identity_and_submission_group() -> None:
     assert captured["id"] == "rlab-0123456789abcdef01234567"
     assert captured["name"] == args.run_name
     assert captured["config"]["wandb_project"] == "Breakout-Atari2600-v0"
-    assert captured["config"]["game_family"] == "breakout-atari2600"
+    assert captured["config"]["game_family"] == "Atari2600-Breakout"
     assert captured["config"]["environment"]["env_id"] == "ale-py:breakout"
     assert "environment_hash" in captured["config"]
-    assert "game_family:breakout-atari2600" in captured["tags"]
+    assert "game_family:Atari2600-Breakout" in captured["tags"]

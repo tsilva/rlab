@@ -97,7 +97,7 @@ class TrainImageTests(unittest.TestCase):
         self.assertNotIn("type=gha", runtime_build)
         self.assertNotIn("cache-to:", runtime_build)
 
-    def test_runtime_artifact_is_published_only_after_modal_deployment(self) -> None:
+    def test_image_receipt_is_published_before_independent_modal_readiness(self) -> None:
         workflow = Path(".github/workflows/rlab-train-image.yml").read_text(encoding="utf-8")
         modal_workflow = Path(".github/workflows/rlab-modal-eval.yml").read_text(encoding="utf-8")
 
@@ -105,22 +105,19 @@ class TrainImageTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", modal_workflow)
         self.assertIn("deploy-modal-evaluator:", workflow)
         self.assertIn("uses: ./.github/workflows/rlab-modal-eval.yml", workflow)
-        publish = workflow.split("  publish-runtime:", maxsplit=1)[1]
-        self.assertIn("needs: [build, deploy-modal-evaluator]", publish)
-        self.assertIn("name: rlab-train-image", publish)
-        self.assertIn("if: github.event_name != 'pull_request'", publish)
         build = workflow.split("  build:", maxsplit=1)[1].split(
             "  deploy-modal-evaluator:", maxsplit=1
         )[0]
-        self.assertNotIn("name: rlab-train-image", build)
-        deploy = workflow.split("  deploy-modal-evaluator:", maxsplit=1)[1].split(
-            "  publish-runtime:", maxsplit=1
-        )[0]
+        self.assertIn("name: rlab-train-image", build)
+        self.assertIn('"schema_version": 3', build)
+        self.assertNotIn("docker pull", build)
+        self.assertNotIn("--validate-config-stdin", build)
+        deploy = workflow.split("  deploy-modal-evaluator:", maxsplit=1)[1]
         self.assertIn("if: github.event_name != 'pull_request'", deploy)
-        self.assertIn("train_config_contract_sha256", workflow)
-        self.assertIn('"schema_version": 2', workflow)
-        self.assertIn("startup_probe", workflow)
-        self.assertIn("python -m rlab.runtime_contract --validate-config-stdin", workflow)
+        self.assertNotIn("publish-runtime:", workflow)
+        self.assertIn("name: rlab-modal-eval-readiness", modal_workflow)
+        self.assertIn("--only-group modal-deploy --no-install-project", modal_workflow)
+        self.assertIn("uv run --no-sync modal deploy", modal_workflow)
         self.assertIn("required: false", modal_workflow)
 
 

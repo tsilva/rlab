@@ -38,7 +38,7 @@ from rlab.wandb_utils import (
 )
 
 
-MODEL_METADATA_VERSION = 3
+MODEL_METADATA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,8 @@ def build_model_metadata(
         "runtime_image_ref": getattr(args, "runtime_image_ref", ""),
         "machine": getattr(args, "machine", ""),
         "checkpoint_step": step,
+        "algorithm_id": str(getattr(args, "algorithm_id", "") or "").strip(),
+        "model_class": str(getattr(args, "model_class", "") or "").strip(),
         "training_metadata": training,
         "training_metadata_hash": stable_json_hash(training),
     }
@@ -266,7 +268,8 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     args.wandb_tags = ",".join(tags)
     wandb_config: dict[str, Any] = {**vars(args), **env_config_metadata(config)}
     wandb_config["metrics_schema_version"] = METRICS_SCHEMA_VERSION
-    wandb_config["algorithm_id"] = "ppo"
+    wandb_config["algorithm_id"] = str(getattr(args, "algorithm_id", "") or "").strip()
+    wandb_config["model_class"] = str(getattr(args, "model_class", "") or "").strip()
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]

@@ -66,7 +66,9 @@ class FleetServiceTests(unittest.TestCase):
             fleet_service.redact(url),
             "https://r2.example/checkpoint?[REDACTED]",
         )
-        self.assertEqual(fleet_service.redact({"model_get_url": url}), {"model_get_url": "[REDACTED]"})
+        self.assertEqual(
+            fleet_service.redact({"model_get_url": url}), {"model_get_url": "[REDACTED]"}
+        )
 
     def test_install_validates_bootstraps_and_kicks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -207,6 +209,43 @@ class FleetServiceTests(unittest.TestCase):
             by_machine = {row["machine"]: row for row in summary["machines"]}
             self.assertEqual(by_machine["beast-3"]["status"], "ok")
             self.assertEqual(by_machine["beast-2"]["error"], "unreachable password=[REDACTED]")
+
+    def test_eval_health_rejects_fresh_failed_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.state_dir.mkdir(parents=True)
+            paths.last_pass.write_text(
+                json.dumps(
+                    {
+                        "finished_at": fleet_service._iso_utc(),
+                        "eval": {"status": "error", "error": "bad rank"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(fleet_service, "service_is_loaded", return_value=True):
+                health = fleet_service.eval_service_health(paths)
+
+        self.assertFalse(health["ready"])
+        self.assertEqual(health["eval_status"], "error")
+
+    def test_eval_health_requires_successful_eval_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.state_dir.mkdir(parents=True)
+            paths.last_pass.write_text(
+                json.dumps(
+                    {
+                        "finished_at": fleet_service._iso_utc(),
+                        "eval": {"status": "ok", "detail": {"status": "ok"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(fleet_service, "service_is_loaded", return_value=True):
+                health = fleet_service.eval_service_health(paths)
+
+        self.assertTrue(health["ready"])
 
     def test_idle_pass_does_not_reconcile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

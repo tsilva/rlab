@@ -49,17 +49,6 @@ RECIPE_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     ("description",): QUEUE_TEMPLATE_FIELDS,
     ("goal", "description"): QUEUE_TEMPLATE_FIELDS,
     ("goal", "tags", "2"): frozenset({"env_id"}),
-    (
-        "goal",
-        "release",
-        "huggingface",
-        "checkpoint_filename",
-    ): frozenset({"checkpoint_step"}),
-    (
-        "release",
-        "huggingface",
-        "checkpoint_filename",
-    ): frozenset({"checkpoint_step"}),
 }
 GOAL_DEFERRED_TEMPLATE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
     **RECIPE_DEFERRED_TEMPLATE_FIELDS,

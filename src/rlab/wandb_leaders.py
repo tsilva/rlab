@@ -27,14 +27,18 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_STEPS_TO_GOAL,
     LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
     LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
-    TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+    LEGACY_TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
 )
 from rlab.ranking import parse_objective_rank, rank_score
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
-RUN_OBJECTIVE_KEYS = (TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,)
-RUN_PRIMARY_ORDER = f"-summary_metrics.{TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN}"
+RUN_OBJECTIVE_KEYS = (
+    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
+    LEGACY_TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+)
+RUN_PRIMARY_ORDER = "-created_at"
 CHECKPOINT_SUCCESS_KEYS = (LEADER_CHECKPOINT_SUCCESS_RATE_MIN,)
 CHECKPOINT_SUCCESS_MEAN_KEYS = (LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,)
 CHECKPOINT_OBJECTIVE_KEYS = (LEADER_CHECKPOINT_OBJECTIVE,)
@@ -171,7 +175,7 @@ def run_query_objective_keys(args: argparse.Namespace) -> tuple[str, ...]:
     explicit_keys = tuple(args.objective_key or ())
     if explicit_keys:
         return explicit_keys
-    return (RUN_OBJECTIVE_KEYS[0],)
+    return RUN_OBJECTIVE_KEYS
 
 
 def checkpoint_summary_filter() -> dict[str, Any]:

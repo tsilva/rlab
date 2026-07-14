@@ -225,6 +225,7 @@ def save_model_bundle(
         path=model_path,
         metadata_path=metadata_path,
         sha256=None,
+        eval_required=str(getattr(args, "checkpoint_eval_backend", "local")) != "none",
     )
     print(f"{kind} model ready: id={checkpoint_id} step={step} path={model_path}", flush=True)
     return model_path
@@ -306,6 +307,12 @@ class GracefulStopHelper(CallbackHelper):
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_train_args(argv)
+    args.algorithm_id = "ppo"
+    args.model_class = (
+        "rlab.task_advantage.PerTaskAdvantagePPO"
+        if resolve_advantage_normalization_mode(args) == "per-task"
+        else "stable_baselines3.ppo.ppo.PPO"
+    )
     set_random_seed(args.seed)
 
     run_dir = default_run_dir(args.run_name, args.runs_dir)
@@ -412,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_path=checkpoint_dir,
                 name_prefix=checkpoint_prefix(config.game),
                 metric_store_path=store_path,
+                eval_required=args.checkpoint_eval_backend != "none",
             )
         )
     if args.ent_coef_final is not None:
@@ -424,7 +432,10 @@ def main(argv: list[str] | None = None) -> int:
                 else args.timesteps,
             ),
         )
-    print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
+    if args.checkpoint_eval_backend == "none":
+        print("checkpoint evaluation disabled; this run cannot establish promotion or acceptance")
+    else:
+        print("training-loop eval disabled; async checkpoint eval handles promotion metrics")
 
     callback = RlabCallback(components)
 

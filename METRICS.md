@@ -1,4 +1,4 @@
-# Metrics schema v2
+# Metrics schema v3
 
 This file is the human contract for rlab telemetry. The Python registry in
 `src/rlab/metric_names.py` is the executable source of truth. Every emitted metric must match an
@@ -8,7 +8,7 @@ exact registry entry or a bounded template.
 
 - W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
   R2-backed `eval/screen/preview` media series.
-- W&B config contains run-defining dimensions: `metrics_schema_version: 2`, `algorithm_id`, goal,
+- W&B config contains run-defining dimensions: `metrics_schema_version: 3`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
@@ -26,7 +26,8 @@ attribution. `global_step` counts policy environment transitions; frame skip rem
 - Use `eval/full/outcome/success/rate/min` first for multi-start success goals, then the mean, then
   `leader/checkpoint/steps_to_goal`, then episode return. `steps_to_goal` exists only when minimum
   success is at least `0.99`.
-- Training `rate/current` is cumulative. `rate/window_100` is the latest 100 attempts. Global
+- Aggregate training `current/rate/*` is cumulative. Aggregate `window_100/rate/*` is the latest
+  100 attempts. Global
   window-100 min/mean appear only after every configured start has 100 attempts. Always pair early
   current aggregates with `start_coverage/rate`.
 - Failure reasons may overlap, so reason counts and rates need not sum to the terminal count.
@@ -55,7 +56,7 @@ are intentionally computed offline rather than added to W&B history.
 | Metric or template | Meaning | Unit | Cadence | Surface |
 |---|---|---|---|---|
 | `global_step` | Policy environment transitions consumed. | steps | frame | history |
-| `train/episode/return/shaped/mean` | Mean shaped episode return. | scalar | rollout | history |
+| `train/episode/return/shaped/mean` | SB3 rolling episode-info-buffer mean of shaped episode returns, normally the latest 100 episodes. | scalar | rollout | history |
 | `train/episode/length/mean` | Mean episode length. | steps | rollout | history |
 | `train/episode/count` | Cumulative completed training episodes. | episodes | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
@@ -65,10 +66,10 @@ are intentionally computed offline rather than added to W&B history.
 | `train/outcome/success/from/{start}/attempts` | Cumulative episode attempts from a start. | episodes | rollout | history |
 | `train/outcome/success/from/{start}/rate/current` | Cumulative success rate from a start. | fraction | rollout | history |
 | `train/outcome/success/from/{start}/rate/window_100` | Success rate over the latest 100 attempts from a start. | fraction | rollout | history |
-| `train/outcome/success/rate/current/min` | Minimum cumulative success rate across observed starts. | fraction | rollout | history |
-| `train/outcome/success/rate/current/mean` | Mean cumulative success rate across observed starts. | fraction | rollout | history |
-| `train/outcome/success/rate/window_100/min` | Minimum window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
-| `train/outcome/success/rate/window_100/mean` | Mean window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
+| `train/outcome/success/current/rate/min` | Minimum cumulative success rate across observed starts. | fraction | rollout | history |
+| `train/outcome/success/current/rate/mean` | Mean cumulative success rate across observed starts. | fraction | rollout | history |
+| `train/outcome/success/window_100/rate/min` | Minimum window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
+| `train/outcome/success/window_100/rate/mean` | Mean window-100 success rate after every start has 100 attempts. | fraction | rollout | history |
 | `train/outcome/success/start_coverage/rate` | Configured starts with an attempt divided by configured starts. | fraction | rollout | history |
 | `train/reward/shaped/mean` | Distribution of shaped per-step reward. | scalar | rollout | history |
 | `train/reward/shaped/std` | Distribution of shaped per-step reward. | scalar | rollout | history |
@@ -131,7 +132,7 @@ are intentionally computed offline rather than added to W&B history.
 | `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
-| `eval/screen/preview` | R2-backed HTML preview of screen-evaluation policy observations. | html | evaluation | media |
+| `eval/screen/preview` | External HTML player for the canonical R2 MP4 captured from policy observations during every normal queue-backed screen evaluation. | html | evaluation | media |
 | `eval/screen/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
 | `eval/confirm/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
 | `eval/screen/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |

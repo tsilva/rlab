@@ -95,7 +95,10 @@ def _reject_unknown_fields(document: Mapping[str, Any], *, label: str) -> None:
 
 
 def validate_materialized_train_recipe(
-    document: Mapping[str, Any], *, label: str = "recipe"
+    document: Mapping[str, Any],
+    *,
+    label: str = "recipe",
+    allow_no_eval_backend: bool = False,
 ) -> None:
     """Validate a goal-composed recipe immediately before queue persistence."""
 
@@ -138,6 +141,11 @@ def validate_materialized_train_recipe(
         require_key(document, "train_config", label=label),
         label=label_path(label, "train_config"),
     )
+    if train_config.get("checkpoint_eval_backend") == "none" and not allow_no_eval_backend:
+        raise ValueError(
+            f"{label_path(label, 'train_config.checkpoint_eval_backend')}=none is allowed "
+            "only as an explicit per-submission smoke/debug override"
+        )
     validate_and_normalize_train_config(
         train_config,
         label=label_path(label, "train_config"),

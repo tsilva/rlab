@@ -29,7 +29,7 @@ from rlab.callbacks import (
 )
 from rlab.env import EnvConfig
 from rlab.metric_store import MetricStore
-from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN, TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN
+from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN, TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -265,7 +265,7 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
         )
         callback._on_rollout_end()
         self.assertEqual(logger.records["train/outcome/success/from/StartA/attempts"], 150)
-        self.assertNotIn("train/outcome/success/rate/window_100/min", logger.records)
+        self.assertNotIn("train/outcome/success/window_100/rate/min", logger.records)
 
         callback._on_records(
             [
@@ -280,8 +280,8 @@ class RuntimeMetricsCompletionTests(unittest.TestCase):
             ]
         )
         callback._on_rollout_end()
-        self.assertEqual(logger.records["train/outcome/success/rate/window_100/min"], 0.0)
-        self.assertEqual(logger.records["train/outcome/success/rate/window_100/mean"], 0.5)
+        self.assertEqual(logger.records["train/outcome/success/window_100/rate/min"], 0.0)
+        self.assertEqual(logger.records["train/outcome/success/window_100/rate/mean"], 0.5)
 
 
 class MetricThresholdStopHelperTests(unittest.TestCase):
@@ -298,7 +298,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
         callback = MetricThresholdStopHelper(
             detector=[
                 {
-                    "metric": TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+                    "metric": TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
                     "operator": ">",
                     "threshold": 0.99,
                 }
@@ -317,17 +317,17 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
 
-            model.logger.records[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN] = 0.99
+            model.logger.records[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN] = 0.99
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
 
-            model.logger.records[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN] = 1.0
+            model.logger.records[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN] = 1.0
             callback.num_timesteps = 200
             self.assertFalse(callback._on_step())
 
             marker = marker_path.read_text(encoding="utf-8")
             self.assertIn("early_stop=metric_threshold", marker)
-            self.assertIn(f"early_stop_metric={TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN}", marker)
+            self.assertIn(f"early_stop_metric={TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN}", marker)
             self.assertIn("early_stop_operator=>", marker)
             self.assertIn("early_stop_threshold=0.99", marker)
             self.assertIn("early_stop_value=1", marker)
@@ -340,7 +340,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback = MetricThresholdStopHelper(
                 detector=[
                     {
-                        "metric": TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+                        "metric": TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
                         "operator": ">",
                         "threshold": 0.99,
                     },
@@ -355,7 +355,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             callback.model = model  # type: ignore[assignment]
             callback.num_timesteps = 100
 
-            model.logger.records[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN] = 1.0
+            model.logger.records[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN] = 1.0
             model.logger.records["train/episode/return/shaped/mean"] = 999
             self.assertTrue(callback._on_step())
             self.assertFalse(marker_path.exists())
@@ -413,7 +413,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             output_format = MetricStoreOutputFormat(store_path)
             output_format.write(
                 {
-                    TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN: 0.5,
+                    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN: 0.5,
                     "rollout/ep_rew_mean": np.float32(4.25),
                     "train/entropy_loss": -0.7,
                     "train/clip_range": 0.2,
@@ -428,7 +428,7 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
             )
 
             store = MetricStore(store_path)
-            self.assertEqual(store.latest_metric(TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN), 0.5)
+            self.assertEqual(store.latest_metric(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN), 0.5)
             self.assertEqual(store.latest_metric("train/episode/return/shaped/mean"), 4.25)
             self.assertEqual(store.latest_metric("train/algorithm/ppo/policy/entropy"), 0.7)
             self.assertIsNone(store.latest_metric("train/clip_range"))

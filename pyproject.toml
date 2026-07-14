@@ -57,3 +57,7 @@ dev = [
     "pytest>=8,<9",
     "ruff>=0.15,<0.16",
 ]
+modal-deploy = [
+    "hydra-core>=1.3,<2",
+    "modal>=1.3,<2",
+]

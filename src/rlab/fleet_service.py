@@ -208,7 +208,9 @@ def redact(value: Any, *, key: str | None = None) -> Any:
         if text.startswith(("http://", "https://")):
             parts = urlsplit(text)
             if parts.query:
-                text = urlunsplit((parts.scheme, parts.netloc, parts.path, "[REDACTED]", parts.fragment))
+                text = urlunsplit(
+                    (parts.scheme, parts.netloc, parts.path, "[REDACTED]", parts.fragment)
+                )
         return text
     return value
 
@@ -400,7 +402,7 @@ def install_service(
 def _load_last_pass(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except FileNotFoundError, OSError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -433,7 +435,37 @@ def service_status(
         "interval_seconds": SERVICE_INTERVAL_SECONDS,
         "last_pass": last_pass,
         "last_pass_age_seconds": last_pass_age,
-        "last_pass_stale": last_pass_age is None or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2,
+        "last_pass_stale": last_pass_age is None
+        or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2,
+    }
+
+
+def eval_service_health(
+    paths: ServicePaths,
+    *,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
+    """Return whether a recent fleet pass successfully reconciled evaluation."""
+    status = service_status(paths, runner=runner)
+    last_pass = status.get("last_pass") or {}
+    eval_lane = last_pass.get("eval") or {}
+    eval_detail = eval_lane.get("detail") or {}
+    eval_status = str(eval_lane.get("status") or "missing")
+    detail_status = str(eval_detail.get("status") or "missing")
+    ready = bool(
+        status.get("loaded")
+        and not status.get("last_pass_stale")
+        and eval_status == "ok"
+        and detail_status == "ok"
+    )
+    return {
+        "ready": ready,
+        "loaded": bool(status.get("loaded")),
+        "last_pass_stale": bool(status.get("last_pass_stale")),
+        "last_pass_age_seconds": status.get("last_pass_age_seconds"),
+        "eval_status": eval_status,
+        "eval_detail_status": detail_status,
+        "error": eval_lane.get("error") or eval_detail.get("error"),
     }
 
 
@@ -470,6 +502,12 @@ def service_doctor(
         "last_pass",
         last_pass_age is not None and last_pass_age <= DEFAULT_PASS_TIMEOUT_SECONDS * 2,
         str(paths.last_pass),
+    )
+    eval_health = eval_service_health(paths, runner=runner)
+    add(
+        "last_eval_pass",
+        bool(eval_health["ready"]),
+        json.dumps(eval_health, sort_keys=True, default=str),
     )
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
 
@@ -629,9 +667,7 @@ def _default_discover_machines(repo_root: Path) -> Sequence[str]:
                     """
                 )
                 rows = cur.fetchall()
-            work = {
-                str(row["machine"] if isinstance(row, Mapping) else row[0]) for row in rows
-            }
+            work = {str(row["machine"] if isinstance(row, Mapping) else row[0]) for row in rows}
         finally:
             conn.close()
     registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
@@ -752,9 +788,10 @@ def run_service_pass(
                     else:
                         summary["eval"] = {"status": "timeout"}
                 summary["machines"] = sorted(machine_results, key=lambda row: row["machine"])
-                all_ok = all(row["status"] == "ok" for row in machine_results) and summary[
-                    "eval"
-                ]["status"] == "ok"
+                all_ok = (
+                    all(row["status"] == "ok" for row in machine_results)
+                    and summary["eval"]["status"] == "ok"
+                )
                 eval_detail_status = summary["eval"].get("detail", {}).get("status")
                 summary["status"] = (
                     "idle"

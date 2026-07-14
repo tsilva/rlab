@@ -156,6 +156,27 @@ class MetricStoreTests(unittest.TestCase):
             self.assertEqual(len(store.pending_artifact_uploads()), 1)
             self.assertEqual(store.pending_evals(), [])
 
+    def test_no_eval_checkpoint_still_enqueues_artifact_without_eval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            model_path = run_dir / "checkpoints" / "model_100_steps.zip"
+            model_path.parent.mkdir(parents=True)
+            model_path.write_bytes(b"checkpoint")
+            store = MetricStore(metric_store_path(run_dir))
+            store.init()
+
+            store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=100,
+                path=model_path,
+                metadata_path=None,
+                eval_required=False,
+            )
+
+            self.assertEqual(len(store.pending_artifact_uploads()), 1)
+            self.assertEqual(store.pending_evals(), [])
+
     def test_checkpoint_scoped_eval_metric_latest_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")

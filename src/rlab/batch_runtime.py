@@ -162,6 +162,33 @@ class BatchStep:
     truncated: np.ndarray
     dones: np.ndarray
     infos: list[dict[str, Any]]
+    diagnostics: StepDiagnostics | None = None
+
+
+@dataclass(frozen=True)
+class StepDiagnostics:
+    """Owned lane-zero facts for an opt-in interactive debugger step."""
+
+    episode_index: int
+    episode_seed: int | None
+    start_id: str | None
+    policy_action: Any
+    native_action: Any
+    provider_reward: float
+    provider_terminated: bool
+    provider_truncated: bool
+    provider_info: Mapping[str, Any]
+    task_reward: float
+    task_terminated: bool
+    task_truncated: bool
+    outcome: Outcome
+    events: tuple[str, ...]
+    task_metrics: Mapping[str, Any]
+    event_transitions: Mapping[str, tuple[Any, Any]]
+    reward: float
+    terminated: bool
+    truncated: bool
+    next_episode_seed: int | None
 
 
 def _copy_tree(value: Any) -> Any:
@@ -293,6 +320,7 @@ class BatchRuntime:
         kernel: BoundTaskKernel,
         *,
         run_seed: int = 0,
+        capture_step_diagnostics: bool = False,
     ):
         self.provider = provider
         self.descriptor = descriptor
@@ -300,6 +328,8 @@ class BatchRuntime:
         self.num_envs = int(provider.num_envs)
         if self.num_envs <= 0:
             raise ValueError("provider num_envs must be positive")
+        if capture_step_diagnostics and self.num_envs != 1:
+            raise ValueError("step diagnostics require exactly one environment")
         if int(kernel.num_envs) != self.num_envs:
             raise ValueError("provider and task kernel num_envs differ")
         provider_obs_space = getattr(
@@ -316,10 +346,12 @@ class BatchRuntime:
         self.observation_space = kernel.observation_space
         self.action_space = kernel.action_space
         self.run_seed = int(run_seed)
+        self.capture_step_diagnostics = bool(capture_step_diagnostics)
         self.reset_infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
         self._episode_returns = np.zeros(self.num_envs, dtype=np.float64)
         self._episode_lengths = np.zeros(self.num_envs, dtype=np.int64)
         self._episode_indices = np.zeros(self.num_envs, dtype=np.int64)
+        self._episode_seeds: list[int | None] = [None for _ in range(self.num_envs)]
         self._start_ids: list[str | None] = [None for _ in range(self.num_envs)]
         self._records: list[EpisodeRecord | TaskEventRecord] = []
         self._latest_metric_record: BatchMetricRecord | None = None
@@ -356,9 +388,8 @@ class BatchRuntime:
         )
         self._observation_buffers: list[Any] = []
         self._current_observation_buffer = 0
-        self._reuse_provider_observations = (
-            descriptor.observation_buffer_depth >= 2
-            and bool(getattr(kernel, "observation_encoding_is_view", False))
+        self._reuse_provider_observations = descriptor.observation_buffer_depth >= 2 and bool(
+            getattr(kernel, "observation_encoding_is_view", False)
         )
         self._started_at = time.monotonic()
         self._native_step_seconds_total = 0.0
@@ -408,7 +439,8 @@ class BatchRuntime:
         mask = np.ones(self.num_envs, dtype=bool)
         starts = [self._start_for(lane, 0) for lane in range(self.num_envs)]
         options = self._reset_options(mask, starts, options_by_lane)
-        observations, infos = self.provider.reset(seed=self._normalize_seeds(seed), options=options)
+        normalized_seeds = self._normalize_seeds(seed)
+        observations, infos = self.provider.reset(seed=normalized_seeds, options=options)
         if not isinstance(infos, Mapping):
             raise TypeError("native provider reset infos must be a columnar mapping")
         self.kernel.on_reset(observations, infos, mask)
@@ -426,6 +458,7 @@ class BatchRuntime:
         info_columns = _InfoColumns(infos, self.num_envs)
         self.reset_infos = [info_columns.lane(lane) for lane in range(self.num_envs)]
         self._start_ids = self._actual_start_ids(infos, starts, mask)
+        self._episode_seeds = list(normalized_seeds)
         return initial_observations
 
     def _reset_options(
@@ -465,8 +498,7 @@ class BatchRuntime:
             values = reset_infos.get("state")
         if values is None:
             if self.descriptor.start_catalog and any(
-                bool(mask[lane]) and requested[lane] is not None
-                for lane in range(self.num_envs)
+                bool(mask[lane]) and requested[lane] is not None for lane in range(self.num_envs)
             ):
                 raise ValueError(
                     "provider reset infos must report actual start_id, start_state, or state"
@@ -508,8 +540,7 @@ class BatchRuntime:
         native_rewards = np.asarray(native_rewards)
         if native_rewards.shape != (self.num_envs,):
             raise ValueError(
-                f"provider rewards must have shape ({self.num_envs},), "
-                f"got {native_rewards.shape}"
+                f"provider rewards must have shape ({self.num_envs},), got {native_rewards.shape}"
             )
         provider_terminated = self._bool_batch(
             provider_terminated,
@@ -554,6 +585,52 @@ class BatchRuntime:
             self._episode_lengths,
         )
         done_indices = np.flatnonzero(dones) if any_done else self._empty_indices
+
+        diagnostics = None
+        if self.capture_step_diagnostics:
+            lane = 0
+            outcome = Outcome(int(np.asarray(task_step.outcomes)[lane]))
+            if outcome == Outcome.NEUTRAL and bool(truncated[lane]):
+                outcome = Outcome.TIMEOUT
+            event_bits = int(np.asarray(task_step.event_bits, dtype=np.uint64)[lane])
+            events = event_names_from_bits(event_bits, self.kernel.event_names)
+            event_transitions: dict[str, tuple[Any, Any]] = {}
+            for name in events:
+                transition = task_step.event_transitions.get(name)
+                if transition is None:
+                    continue
+                source, target = transition
+                event_transitions[name] = (
+                    _copy_tree_lane(np.asarray(source), lane),
+                    _copy_tree_lane(np.asarray(target), lane),
+                )
+            next_episode_seed = (
+                self._seed_for(lane, int(self._episode_indices[lane]) + 1)
+                if bool(dones[lane])
+                else None
+            )
+            diagnostics = StepDiagnostics(
+                episode_index=int(self._episode_indices[lane]),
+                episode_seed=self._episode_seeds[lane],
+                start_id=self._start_ids[lane],
+                policy_action=_copy_tree_lane(actions, lane),
+                native_action=_copy_tree_lane(native_actions, lane),
+                provider_reward=float(native_rewards[lane]),
+                provider_terminated=bool(provider_terminated[lane]),
+                provider_truncated=bool(provider_truncated[lane]),
+                provider_info=_InfoColumns(infos, self.num_envs).lane(lane),
+                task_reward=float(task_step.rewards[lane]),
+                task_terminated=bool(task_terminated[lane]),
+                task_truncated=bool(task_truncated[lane]),
+                outcome=outcome,
+                events=events,
+                task_metrics=self._lane_metrics(task_step.metrics, lane),
+                event_transitions=event_transitions,
+                reward=float(rewards[lane]),
+                terminated=bool(terminated[lane]),
+                truncated=bool(truncated[lane]),
+                next_episode_seed=next_episode_seed,
+            )
 
         encoded_transition = self.kernel.encode_observations(observations)
         if self._reuse_provider_observations and not any_done:
@@ -611,6 +688,7 @@ class BatchRuntime:
                 reset_info = reset_info_columns.lane(lane_index)
                 self.reset_infos[lane_index] = reset_info
                 self._start_ids[lane_index] = actual_starts[lane_index]
+                self._episode_seeds[lane_index] = seeds[lane_index]
                 sb3_infos[lane_index]["reset_info"] = reset_info
                 sb3_infos[lane_index]["episode"] = {
                     "r": float(self._episode_returns[lane_index]),
@@ -624,6 +702,7 @@ class BatchRuntime:
         batch_step = self._batch_steps[next_buffer_index]
         batch_step.observations = next_observations
         batch_step.infos = sb3_infos
+        batch_step.diagnostics = diagnostics
         return batch_step
 
     def _append_record(
@@ -724,6 +803,7 @@ class RlabVecEnv(VecEnv):
         self.env = runtime.provider
         self.waiting = False
         self._actions: Any = None
+        self._step_diagnostics: StepDiagnostics | None = None
         super().__init__(
             runtime.num_envs,
             runtime.observation_space,
@@ -745,6 +825,7 @@ class RlabVecEnv(VecEnv):
         self._reset_options()
         self.waiting = False
         self._actions = None
+        self._step_diagnostics = None
         return observations
 
     def step_async(self, actions: Any) -> None:
@@ -760,7 +841,13 @@ class RlabVecEnv(VecEnv):
         self._actions = None
         self.waiting = False
         self.reset_infos = self.runtime.reset_infos
+        self._step_diagnostics = step.diagnostics
         return step.observations, step.rewards, step.dones, step.infos
+
+    def take_step_diagnostics(self) -> StepDiagnostics | None:
+        diagnostics = self._step_diagnostics
+        self._step_diagnostics = None
+        return diagnostics
 
     def drain_records(
         self,

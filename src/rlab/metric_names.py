@@ -6,7 +6,7 @@ from numbers import Real
 from typing import Any, Mapping
 
 
-METRICS_SCHEMA_VERSION = 2
+METRICS_SCHEMA_VERSION = 3
 GLOBAL_STEP = "global_step"
 
 TRAIN_EPISODE_RETURN_SHAPED_MEAN = "train/episode/return/shaped/mean"
@@ -15,10 +15,13 @@ TRAIN_EPISODE_COUNT = "train/episode/count"
 
 TRAIN_OUTCOME_TERMINAL_COUNT = "train/outcome/terminal/count"
 TRAIN_OUTCOME_SUCCESS_ROOT = "train/outcome/success"
-TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/current/min"
-TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/current/mean"
-TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/window_100/min"
-TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/window_100/mean"
+TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/current/rate/min"
+TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/current/rate/mean"
+TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/window_100/rate/min"
+TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/window_100/rate/mean"
+LEGACY_TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN = (
+    f"{TRAIN_OUTCOME_SUCCESS_ROOT}/rate/window_100/min"
+)
 TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE = f"{TRAIN_OUTCOME_SUCCESS_ROOT}/start_coverage/rate"
 
 TRAIN_REWARD_ROOT = "train/reward"
@@ -115,7 +118,10 @@ def _definition(
 
 METRIC_DEFINITIONS = (
     _definition(GLOBAL_STEP, "Policy environment transitions consumed.", "steps", "frame"),
-    _definition(TRAIN_EPISODE_RETURN_SHAPED_MEAN, "Mean shaped episode return."),
+    _definition(
+        TRAIN_EPISODE_RETURN_SHAPED_MEAN,
+        "SB3 rolling episode-info-buffer mean of shaped episode returns, normally the latest 100 episodes.",
+    ),
     _definition(TRAIN_EPISODE_LENGTH_MEAN, "Mean episode length.", "steps"),
     _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
     _definition(TRAIN_OUTCOME_TERMINAL_COUNT, "Cumulative terminal episode records.", "episodes"),
@@ -150,22 +156,22 @@ METRIC_DEFINITIONS = (
         "fraction",
     ),
     _definition(
-        TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN,
+        TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
         "Minimum cumulative success rate across observed starts.",
         "fraction",
     ),
     _definition(
-        TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN,
+        TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
         "Mean cumulative success rate across observed starts.",
         "fraction",
     ),
     _definition(
-        TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+        TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
         "Minimum window-100 success rate after every start has 100 attempts.",
         "fraction",
     ),
     _definition(
-        TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN,
+        TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN,
         "Mean window-100 success rate after every start has 100 attempts.",
         "fraction",
     ),
@@ -343,7 +349,7 @@ METRIC_DEFINITIONS = (
     _definition("eval/{protocol}/source", "Evaluation execution source.", "text", "evaluation"),
     _definition(
         EVAL_SCREEN_PREVIEW,
-        "R2-backed HTML preview of screen-evaluation policy observations.",
+        "External HTML player for the canonical R2 MP4 captured from policy observations during every normal queue-backed screen evaluation.",
         "html",
         "evaluation",
         "media",

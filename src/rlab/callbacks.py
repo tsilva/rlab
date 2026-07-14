@@ -26,10 +26,10 @@ from rlab.metric_names import (
     canonical_training_scalars,
     GLOBAL_STEP,
     TRAIN_EPISODE_COUNT,
-    TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN,
-    TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN,
-    TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN,
-    TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+    TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
+    TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
+    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN,
+    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
     TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE,
     TRAIN_OUTCOME_TERMINAL_COUNT,
     TRAIN_PPO_ADVANTAGE_HIST,
@@ -99,6 +99,7 @@ class LedgerCheckpointHelper(CallbackHelper):
         save_path: str | Path,
         name_prefix: str,
         metric_store_path: Path | str,
+        eval_required: bool = True,
     ) -> None:
         super().__init__()
         self.args = args
@@ -107,6 +108,7 @@ class LedgerCheckpointHelper(CallbackHelper):
         self.save_path = Path(save_path)
         self.name_prefix = name_prefix
         self.metric_store = MetricStore(metric_store_path)
+        self.eval_required = bool(eval_required)
 
     def _init_callback(self) -> None:
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -137,6 +139,7 @@ class LedgerCheckpointHelper(CallbackHelper):
             path=final_path,
             metadata_path=metadata_path,
             sha256=None,
+            eval_required=self.eval_required,
         )
         print(
             f"checkpoint ready: id={checkpoint_id} step={step} path={final_path}",
@@ -838,8 +841,8 @@ class _SuccessMetricsReducer:
             count_metric: self.success_counts.get(source_key, 0),
             attempts_metric: self.attempt_counts[source_key],
             current_rate_metric: current_rate,
-            TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MIN: min(current_rates.values()),
-            TRAIN_OUTCOME_SUCCESS_RATE_CURRENT_MEAN: float(np.mean(tuple(current_rates.values()))),
+            TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN: min(current_rates.values()),
+            TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN: float(np.mean(tuple(current_rates.values()))),
             TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE: coverage,
         }
         if len(window) >= self.ep_window_size:
@@ -851,8 +854,8 @@ class _SuccessMetricsReducer:
             rates = [
                 sum(self.attempt_windows[start]) / self.ep_window_size for start in expected_starts
             ]
-            payload[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN] = min(rates)
-            payload[TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MEAN] = float(np.mean(rates))
+            payload[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN] = min(rates)
+            payload[TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN] = float(np.mean(rates))
         return payload
 
 

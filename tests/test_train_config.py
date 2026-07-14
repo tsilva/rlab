@@ -112,7 +112,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         self.assertNotIn("--no-post-train-eval-stochastic", options)
         self.assertTrue(parser.parse_args([]).post_train_eval_stochastic)
 
-    def test_checkpoint_eval_backend_defaults_to_modal_with_explicit_local_fallback(self) -> None:
+    def test_checkpoint_eval_backend_supports_explicit_local_and_none_fallbacks(self) -> None:
         parser = argparse.ArgumentParser()
         add_train_config_args(
             parser,
@@ -126,6 +126,45 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             parser.parse_args(["--checkpoint-eval-backend", "local"]).checkpoint_eval_backend,
             "local",
         )
+        self.assertEqual(
+            parser.parse_args(["--checkpoint-eval-backend", "none"]).checkpoint_eval_backend,
+            "none",
+        )
+
+    def test_no_eval_config_rejects_eval_owned_stop_behavior(self) -> None:
+        with self.assertRaisesRegex(ValueError, "early_stop must be null"):
+            validate_and_normalize_train_config(
+                {
+                    "checkpoint_eval_backend": "none",
+                    "early_stop": [
+                        {
+                            "metric": "eval/confirm/candidate/pass",
+                            "operator": ">=",
+                            "threshold": 1.0,
+                        }
+                    ],
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "checkpoint_eval_stages must be empty"):
+            validate_and_normalize_train_config(
+                {
+                    "checkpoint_eval_backend": "none",
+                    "checkpoint_eval_stages": [
+                        {
+                            "name": "screen",
+                            "episodes": 1,
+                            "n_envs": 1,
+                            "pass": [
+                                {
+                                    "metric": "eval/full/outcome/success/rate/min",
+                                    "operator": ">=",
+                                    "threshold": 1.0,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
 
     def test_train_config_rejects_deterministic_checkpoint_eval(self) -> None:
         with self.assertRaisesRegex(ValueError, "post_train_eval_stochastic must be true"):

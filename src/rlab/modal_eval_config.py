@@ -243,21 +243,17 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         estimated_hourly_usd=_positive_float(
             cost.get("estimated_hourly_usd"), label="cost.estimated_hourly_usd"
         ),
-        schema_version=_positive_int(protocol.get("schema_version"), label="protocol.schema_version"),
+        schema_version=_positive_int(
+            protocol.get("schema_version"), label="protocol.schema_version"
+        ),
         seed_protocol=seed_protocol,
         max_attempts=max_attempts,
         preview_enabled=_bool(preview.get("enabled", False), label="preview.enabled"),
-        preview_max_frames=_positive_int(
-            preview.get("max_frames"), label="preview.max_frames"
-        ),
+        preview_max_frames=_positive_int(preview.get("max_frames"), label="preview.max_frames"),
         preview_fps=_positive_int(preview.get("fps"), label="preview.fps"),
-        preview_max_lanes=_positive_int(
-            preview.get("max_lanes"), label="preview.max_lanes"
-        ),
+        preview_max_lanes=_positive_int(preview.get("max_lanes"), label="preview.max_lanes"),
         preview_scale=_positive_int(preview.get("scale"), label="preview.scale"),
-        preview_max_bytes=_positive_int(
-            preview.get("max_bytes"), label="preview.max_bytes"
-        ),
+        preview_max_bytes=_positive_int(preview.get("max_bytes"), label="preview.max_bytes"),
         preview_encode_timeout_seconds=_positive_int(
             preview.get("encode_timeout_seconds"),
             label="preview.encode_timeout_seconds",
@@ -273,6 +269,8 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         result.promotion_timeout_seconds,
     ):
         raise ValueError("timeouts.child_margin_seconds must be smaller than every eval timeout")
+    if result.enabled and not result.preview_enabled:
+        raise ValueError("preview.enabled must be true when Modal evaluation is enabled")
     if result.preview_max_frames > 450:
         raise ValueError("preview.max_frames must not exceed 450")
     if result.preview_fps > 15:

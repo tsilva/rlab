@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -194,16 +195,95 @@ GYMNASIUM_PROVIDER = EnvProvider(
     allows_unregistered_env_ids=True,
 )
 
+RLAB_PROVIDER = EnvProvider(
+    provider_id="rlab",
+    import_name="rlab",
+    distribution_name="rlab",
+    env_ids=("Bandit-v0",),
+    supports_states=False,
+    constructor_contract=ProviderConstructorContract(
+        canonical_args=frozenset({"game", "num_envs"}),
+        explicit_env_args=frozenset({"autoreset_mode"}),
+        required_values={"autoreset_mode": "disabled"},
+    ),
+)
+
 ENV_PROVIDERS: dict[str, EnvProvider] = {
+    RLAB_PROVIDER.provider_id: RLAB_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id: SUPERMARIOBROS_NES_TURBO_PROVIDER,
     ALE_PY_PROVIDER.provider_id: ALE_PY_PROVIDER,
     GYMNASIUM_PROVIDER.provider_id: GYMNASIUM_PROVIDER,
 }
 
+# Provider-neutral, human-readable game families used by W&B metadata and
+# published model identities. Publication must use this explicit registry;
+# provider-local environment ids are not parsed into public family names.
+CANONICAL_GAME_FAMILIES: dict[tuple[str, str], str] = {
+    ("rlab", "Bandit-v0"): "Bandit",
+    ("supermariobrosnes-turbo", "SuperMarioBros-Nes-v0"): "NES-SuperMarioBros",
+    ("stable-retro-turbo", "SuperMarioBros-Nes-v0"): "NES-SuperMarioBros",
+    ("stable-retro-turbo", "SuperMarioBros3-Nes-v0"): "NES-SuperMarioBros3",
+    ("ale-py", "breakout"): "Atari2600-Breakout",
+    ("stable-retro-turbo", "Breakout-Atari2600-v0"): "Atari2600-Breakout",
+    ("ale-py", "ms_pacman"): "Atari2600-MsPacman",
+    ("stable-retro-turbo", "MsPacman-Atari2600-v0"): "Atari2600-MsPacman",
+}
+CANONICAL_GAME_FAMILIES_BY_ENV_ID: dict[str, str] = {
+    "Bandit-v0": "Bandit",
+    "SuperMarioBros-Nes-v0": "NES-SuperMarioBros",
+    "SuperMarioBros3-Nes-v0": "NES-SuperMarioBros3",
+    "breakout": "Atari2600-Breakout",
+    "Breakout-Atari2600-v0": "Atari2600-Breakout",
+    "ms_pacman": "Atari2600-MsPacman",
+    "MsPacman-Atari2600-v0": "Atari2600-MsPacman",
+}
+
 STABLE_RETRO_ATARI_ENV_IDS = frozenset(
     {"Breakout-Atari2600-v0", "MsPacman-Atari2600-v0"}
 )
+
+
+def _environment_identity(provider_id: object, env_id: object) -> tuple[str, str]:
+    provider = str(provider_id or "").strip()
+    environment = str(env_id or "").strip()
+    if not provider and ":" in environment:
+        provider, environment = environment.split(":", 1)
+    return provider, environment
+
+
+def _fallback_game_family(env_id: str, *, fallback: str) -> str:
+    value = env_id or fallback
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", value)
+    return re.sub(r"[^a-z0-9]+", "-", words.lower()).strip("-") or "environment"
+
+
+def game_family_for_environment(
+    provider_id: object,
+    env_id: object,
+    *,
+    strict: bool = False,
+    fallback: str = "environment",
+) -> str:
+    """Return the provider-neutral public family for an environment.
+
+    Training metadata retains the historical fallback for arbitrary Gymnasium
+    environments. Publication passes ``strict=True`` and therefore requires an
+    explicit registered family rather than guessing a public model identity.
+    """
+
+    provider, environment = _environment_identity(provider_id, env_id)
+    family = CANONICAL_GAME_FAMILIES.get((provider, environment))
+    if family is None and not strict:
+        family = CANONICAL_GAME_FAMILIES_BY_ENV_ID.get(environment)
+    if family is not None:
+        return family
+    if strict:
+        qualified = f"{provider}:{environment}" if provider else environment
+        raise ValueError(
+            f"environment {qualified!r} has no registered canonical game family"
+        )
+    return _fallback_game_family(environment, fallback=fallback)
 
 
 def is_stable_retro_atari_env(provider_id: str, game: str) -> bool:

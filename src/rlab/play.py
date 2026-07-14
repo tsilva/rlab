@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import selectors
+import signal
 import sys
 import time
 from collections import deque
 from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import asdict, dataclass
 from itertools import count
 from types import ModuleType
 
@@ -21,6 +25,7 @@ import torch
 from tqdm import tqdm
 
 from rlab.artifacts import load_playback_env_config
+from rlab.batch_runtime import StepDiagnostics
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -29,7 +34,6 @@ from rlab.env import (
     state_name_candidates_from_level_id,
     task_action_set,
     task_conditioning,
-    task_conditioning_info_values,
     task_max_episode_steps,
     task_reward,
     task_termination,
@@ -40,7 +44,6 @@ from rlab.eval_metrics import (
     episode_records,
     episode_result_from_record,
     is_level_complete,
-    single_env_action,
 )
 from rlab.model_sources import (
     model_source_ref,
@@ -48,6 +51,28 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.play_attribution import PolicyActionAttributor
+from rlab.play_debug import (
+    DebugCommandError,
+    PolicyDecision,
+    action_display_name,
+    ansi,
+    debug_prompt,
+    debug_help,
+    field,
+    format_action,
+    format_model_input,
+    format_policy_detail,
+    format_raw,
+    model_input_lines,
+    policy_summary_lines,
+    reward_text,
+    section,
+    status_message,
+    terminal_panel,
+    inspect_policy,
+    parse_debug_command,
+    sample_policy_decision,
+)
 from rlab.policy_observation import (
     model_observation,
     task_info_value_from_info,
@@ -282,7 +307,6 @@ class PygameViewer:
             self.pygame.display.set_caption("rlab")
             self.screen = self.pygame.display.set_mode(self.size)
             self.font = self.pygame.font.Font(None, max(16, 5 * scale))
-        self.step_controls = StepOverControls()
 
     def show(self, frame: np.ndarray, overlay: list[str] | None = None) -> bool:
         for event in self.pygame.event.get():
@@ -293,12 +317,6 @@ class PygameViewer:
                 self.pygame.K_q,
             }:
                 return False
-            self.step_controls.handle_event(
-                event,
-                keydown_type=self.pygame.KEYDOWN,
-                keyup_type=self.pygame.KEYUP,
-                step_key=self.pygame.K_SPACE,
-            )
         surface = self.pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
         surface = self.pygame.transform.scale(surface, self.size)
         self.screen.blit(surface, (0, 0))
@@ -321,28 +339,6 @@ class PygameViewer:
 
     def close(self) -> None:
         self.pygame.quit()
-
-
-class StepOverControls:
-    def __init__(self) -> None:
-        self.step_key_pressed = False
-        self.step_requested = False
-
-    def handle_event(self, event, *, keydown_type: int, keyup_type: int, step_key: int) -> None:
-        if event.type == keydown_type and getattr(event, "key", None) == step_key:
-            self.step_key_pressed = True
-            self.step_requested = True
-        elif event.type == keyup_type and getattr(event, "key", None) == step_key:
-            self.step_key_pressed = False
-
-    def consume_step(self) -> bool:
-        if self.step_key_pressed:
-            self.step_requested = False
-            return True
-        if self.step_requested:
-            self.step_requested = False
-            return True
-        return False
 
 
 class ObsStackViewer:
@@ -447,12 +443,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument(
-        "--step-over",
+        "--debug",
         action="store_true",
-        help=(
-            "Pause before each policy step. Press Space to advance one step; "
-            "hold Space to keep playing and release it to pause again."
-        ),
+        help="Open an interactive policy debugger; press Enter to advance one step.",
     )
     parser.add_argument(
         "--respect-task-termination",
@@ -544,7 +537,7 @@ def resolved_play_launch_lines(
             f"device={args.device} stochastic=True "
             f"seed={args.seed} episodes={args.episodes} "
             f"max_steps={task_max_episode_steps(policy_config)} "
-            f"step_over={getattr(args, 'step_over', False)} "
+            f"debug={getattr(args, 'debug', False)} "
             f"respect_task_termination={getattr(args, 'respect_task_termination', False)}",
             "green",
         ),
@@ -626,6 +619,730 @@ def startup_progress(name: str, *, disabled: bool = False):
         progress.update(1)
 
 
+def optional_vector_env_frame(env) -> np.ndarray | None:
+    try:
+        return vector_env_frame(env)
+    except AttributeError, NotImplementedError, RuntimeError, TypeError, ValueError:
+        return None
+
+
+def optional_fast_env_frames(obs) -> deque[np.ndarray] | None:
+    try:
+        return fast_env_frames(obs)
+    except KeyError, TypeError, ValueError:
+        return None
+
+
+def playback_model_observation(
+    model,
+    policy_obs,
+    config,
+    *,
+    active_task_state: str | None,
+    active_info_value: tuple[int | str, ...] | None,
+):
+    spaces = getattr(model.observation_space, "spaces", None)
+    if isinstance(spaces, dict) and {"image", "task"}.issubset(spaces):
+        return model_observation(
+            model,
+            fast_env_obs(policy_obs),
+            config,
+            active_task_state=active_task_state,
+            active_info_value=active_info_value,
+        )
+    if isinstance(policy_obs, Mapping):
+        return policy_obs
+    try:
+        return fast_env_obs(policy_obs)
+    except ValueError:
+        return np.asarray(policy_obs)
+
+
+def _observation_shape(value) -> str:
+    if isinstance(value, Mapping):
+        return (
+            "{"
+            + ", ".join(f"{name}:{np.asarray(item).shape}" for name, item in value.items())
+            + "}"
+        )
+    return str(np.asarray(value).shape)
+
+
+@dataclass(frozen=True)
+class _PlaybackTransition:
+    episode: int
+    step: int
+    seed: int | None
+    start_id: str | None
+    model_obs: object
+    decision: PolicyDecision
+    diagnostics: StepDiagnostics | None
+    info: dict[str, object]
+    pre_task: object
+    next_task: object
+    reward: float
+    total_reward: float
+    max_x_pos: int
+    terminated: bool
+    truncated: bool
+    completed: bool
+    boundary: bool
+
+    @property
+    def events(self) -> tuple[str, ...]:
+        return self.diagnostics.events if self.diagnostics is not None else ()
+
+
+class _PlaybackSession:
+    """The sole mutable owner of one playback trajectory."""
+
+    def __init__(
+        self,
+        *,
+        model,
+        env,
+        config,
+        initial_seed: int,
+        attributor: PolicyActionAttributor | None,
+        attribution_mode: str,
+        attribution_interval: int,
+        attribution_opacity: float,
+    ):
+        self.model = model
+        self.env = env
+        self.config = config
+        self.initial_seed = initial_seed
+        self.attributor = attributor
+        self.attribution_mode = attribution_mode
+        self.attribution_interval = attribution_interval
+        self.attribution_opacity = attribution_opacity
+        self.viewer: PygameViewer | None = None
+        self.obs_viewer: ObsStackViewer | None = None
+        self.info_vars = task_info_vars(config)
+        self.conditioning_enabled = bool(task_conditioning(config).get("enabled"))
+        self.configured_task_states = task_state_names(config) if self.conditioning_enabled else ()
+        try:
+            self.action_names = target_for_game(config.game).action_names_for_set(
+                task_action_set(config)
+            )
+        except ValueError:
+            self.action_names = ()
+        self.policy_obs = None
+        self.current_frame: np.ndarray | None = None
+        self.frames: deque[np.ndarray] | None = None
+        self.active_task_state: str | None = None
+        self.active_info_value: tuple[int | str, ...] | None = None
+        self.active_seed: int | None = initial_seed
+        self.episode = 1
+        self.step_index = 0
+        self.total_reward = 0.0
+        self.max_x_pos = 0
+        self.last_transition: _PlaybackTransition | None = None
+
+    @property
+    def active_task(self):
+        return (
+            self.active_info_value if self.active_info_value is not None else self.active_task_state
+        )
+
+    @property
+    def model_obs(self):
+        return playback_model_observation(
+            self.model,
+            self.policy_obs,
+            self.config,
+            active_task_state=self.active_task_state,
+            active_info_value=self.active_info_value,
+        )
+
+    def _set_initial_conditioning(self, reset_info: Mapping[str, object]) -> None:
+        self.active_task_state = (
+            (self.config.state or self.configured_task_states[0])
+            if self.configured_task_states
+            else None
+        )
+        self.active_info_value = None
+        if self.info_vars:
+            self.active_info_value = task_info_value_from_info(reset_info, self.config)
+            if self.active_info_value is None:
+                self.active_info_value = info_value_from_state_name(
+                    self.active_task_state or "",
+                    self.info_vars,
+                )
+        elif self.configured_task_states:
+            self._update_conditioning(reset_info)
+
+    def _update_conditioning(self, info: Mapping[str, object]) -> None:
+        if self.info_vars:
+            next_value = None
+            if "level_hi" in info and "level_lo" in info:
+                next_value = (int(info["level_hi"]), int(info["level_lo"]))
+            if next_value is None:
+                next_value = task_info_value_from_info(info, self.config)
+            if next_value is not None:
+                self.active_info_value = next_value
+            return
+        if not self.configured_task_states:
+            return
+        candidate = info.get("start_id") or info.get("start_state") or info.get("state")
+        if isinstance(candidate, str) and candidate in self.configured_task_states:
+            self.active_task_state = candidate
+            return
+        mutable_info = dict(info)
+        if "level_hi" in mutable_info and "level_lo" in mutable_info:
+            mutable_info["level_id"] = (
+                f"{int(mutable_info['level_hi'])}-{int(mutable_info['level_lo'])}"
+            )
+        next_state = task_state_from_info(mutable_info, self.configured_task_states)
+        if next_state is not None:
+            self.active_task_state = next_state
+
+    def restart(self, seed: int | None = None) -> None:
+        seed = self.initial_seed if seed is None else seed
+        torch.manual_seed(seed)
+        if bool(getattr(self.model, "use_sde", False)):
+            self.model.policy.reset_noise()
+        self.env.seed(seed)
+        self.policy_obs = self.env.reset()
+        reset_info = dict(self.env.reset_infos[0])
+        self._set_initial_conditioning(reset_info)
+        self.active_seed = seed
+        self.episode = 1
+        self.step_index = 0
+        self.total_reward = 0.0
+        self.max_x_pos = 0
+        self.last_transition = None
+        self.current_frame = optional_vector_env_frame(self.env)
+        self.frames = optional_fast_env_frames(self.policy_obs)
+
+    def inspect_policy(self) -> PolicyDecision:
+        return inspect_policy(self.model, self.model_obs)
+
+    def step(self) -> _PlaybackTransition:
+        model_obs = self.model_obs
+        model_obs_snapshot = deepcopy(model_obs)
+        pre_task = deepcopy(self.active_task)
+        decision = sample_policy_decision(self.model, model_obs)
+        if (
+            self.attributor is not None
+            and self.frames is not None
+            and self.step_index % self.attribution_interval == 0
+        ):
+            heatmap = self.attributor.attribute(
+                self.attribution_mode,
+                model_obs,
+                decision.raw_action,
+            )
+            if self.obs_viewer is not None:
+                self.obs_viewer.show(
+                    self.frames,
+                    heatmap=heatmap,
+                    heatmap_opacity=self.attribution_opacity,
+                )
+
+        batched_action = np.expand_dims(np.asarray(decision.executed_action), axis=0)
+        policy_obs, rewards, dones, infos = self.env.step(batched_action)
+        diagnostics = self.env.take_step_diagnostics()
+        records = drain_runtime_records(self.env)
+        step_metrics = batch_metrics_for_lane(records, 0)
+        info: dict[str, object] = {}
+        if diagnostics is not None:
+            info.update(diagnostics.provider_info)
+            info.update(diagnostics.task_metrics)
+        info.update(dict(infos[0]))
+        info.update(step_metrics)
+
+        reward = float(np.asarray(rewards)[0])
+        done = bool(np.asarray(dones)[0])
+        truncated = bool(info.get("TimeLimit.truncated", False))
+        terminated = done and not truncated
+        completed_records = episode_records(records)
+        episode_result = None
+        if completed_records:
+            episode_result = episode_result_from_record(
+                completed_records[0],
+                semantics=target_for_game(self.config.game).eval_semantics,
+                terminal_info=info,
+            )
+            terminated = bool(episode_result["terminated"])
+            truncated = bool(episode_result["truncated"])
+
+        self.total_reward += reward
+        self.max_x_pos = max(self.max_x_pos, int(info.get("max_x_pos", 0)))
+        final_info = info
+        if episode_result is not None:
+            self.total_reward = float(episode_result["return"])
+            self.max_x_pos = max(
+                self.max_x_pos,
+                int(episode_result.get("max_x_pos", 0)),
+            )
+            final_info = dict(episode_result.get("final_info", {}))
+            completed = bool(episode_result.get("level_complete", False))
+        else:
+            completed = is_level_complete(final_info)
+        boundary = playback_should_end_episode(terminated, truncated, completed)
+
+        next_conditioning_info = dict(info.get("reset_info", {})) if boundary else info
+        self._update_conditioning(next_conditioning_info)
+        next_task = deepcopy(self.active_task)
+        transition = _PlaybackTransition(
+            episode=self.episode,
+            step=self.step_index + 1,
+            seed=self.active_seed,
+            start_id=(diagnostics.start_id if diagnostics is not None else None),
+            model_obs=model_obs_snapshot,
+            decision=decision,
+            diagnostics=diagnostics,
+            info=dict(info),
+            pre_task=pre_task,
+            next_task=next_task,
+            reward=reward,
+            total_reward=self.total_reward,
+            max_x_pos=self.max_x_pos,
+            terminated=terminated,
+            truncated=truncated,
+            completed=completed,
+            boundary=boundary,
+        )
+        self.last_transition = transition
+        self.policy_obs = policy_obs
+        self.current_frame = optional_vector_env_frame(self.env)
+        self.frames = optional_fast_env_frames(policy_obs)
+        if boundary:
+            self.episode += 1
+            self.step_index = 0
+            self.total_reward = 0.0
+            self.max_x_pos = 0
+            if diagnostics is not None:
+                self.active_seed = diagnostics.next_episode_seed
+        else:
+            self.step_index += 1
+        return transition
+
+    def render(self) -> bool:
+        if self.viewer is not None and self.current_frame is not None:
+            transition = self.last_transition
+            overlay = (
+                ["r_step: 0.00", "r_total: 0.00", f"step: 0 seed: {self.active_seed}"]
+                if transition is None
+                else [
+                    f"r_step: {transition.reward:.2f}",
+                    f"r_total: {transition.total_reward:.2f}",
+                    f"max_x: {transition.max_x_pos}",
+                    f"step: {transition.step} seed: {transition.seed}",
+                ]
+            )
+            if not self.viewer.show(self.current_frame, overlay):
+                return False
+        if self.obs_viewer is not None and self.frames is not None:
+            return self.obs_viewer.show(self.frames)
+        return True
+
+
+def _transition_debug_text(
+    transition: _PlaybackTransition,
+    action_names: tuple[str, ...],
+) -> str:
+    diagnostics = transition.diagnostics
+    if diagnostics is None:
+        raise RuntimeError("debug playback step did not produce runtime diagnostics")
+    components = {
+        name: value
+        for name, value in diagnostics.task_metrics.items()
+        if name.endswith("_component") and np.any(np.asarray(value) != 0)
+    }
+    deltas = {
+        name: value
+        for name, value in diagnostics.task_metrics.items()
+        if name.endswith("_delta") and np.any(np.asarray(value) != 0)
+    }
+    selected = transition.decision.selected_discrete_action
+    controller = (
+        action_display_name(selected, action_names)
+        if selected is not None
+        else format_action(diagnostics.native_action)
+    )
+    event_labels = []
+    for event in diagnostics.events:
+        lowered = event.lower()
+        icon = (
+            "💀"
+            if "life_loss" in lowered or "death" in lowered or "fail" in lowered
+            else "🏁"
+            if "complete" in lowered or "success" in lowered
+            else "◆"
+        )
+        style = "red" if icon == "💀" else "green" if icon == "🏁" else "yellow"
+        event_labels.append(f"{icon} {ansi(event.replace('_', ' ').upper(), style)}")
+    boundary_parts = []
+    if diagnostics.provider_terminated:
+        boundary_parts.append("provider terminated")
+    if diagnostics.provider_truncated:
+        boundary_parts.append("provider truncated")
+    if diagnostics.task_terminated:
+        boundary_parts.append("task terminated")
+    if diagnostics.task_truncated:
+        boundary_parts.append("task truncated")
+    outcome = diagnostics.outcome.name.lower()
+    outcome_style = "green" if outcome == "success" else "red" if outcome == "failure" else "dim"
+
+    lines = [
+        section("👁", "INPUT", style="blue"),
+        field("trajectory", f"episode {transition.episode}  ·  policy step {transition.step}"),
+        field("scenario", f"seed {transition.seed}  ·  start {transition.start_id or 'default'}"),
+        field("conditioning", repr(transition.pre_task) if transition.pre_task is not None else ansi("none", "dim")),
+        field("observation", _observation_shape(transition.model_obs)),
+        "",
+        section("🎲", "POLICY", style="magenta"),
+        *policy_summary_lines(transition.decision, action_names),
+        "",
+        section("⚙", "TRANSITION", style="yellow"),
+        field("controller", ansi(controller, "bold")),
+        field(
+            "reward",
+            f"provider {reward_text(diagnostics.provider_reward)}  →  "
+            f"training {reward_text(diagnostics.reward)}",
+        ),
+    ]
+    for name, value in components.items():
+        component_value = float(np.asarray(value).reshape(-1)[0])
+        lines.append(
+            field(
+                f"↳ {name.removesuffix('_component').replace('_', ' ')}",
+                reward_text(component_value),
+            )
+        )
+    if deltas:
+        lines.append(
+            field(
+                "signal deltas",
+                "  ·  ".join(
+                    f"{name.removesuffix('_delta').replace('_', ' ')} {format_action(value)}"
+                    for name, value in deltas.items()
+                ),
+            )
+        )
+    if diagnostics.event_transitions:
+        lines.append(
+            field(
+                "signal changes",
+                "  ·  ".join(
+                    f"{name.replace('_', ' ')} {format_action(source)}→{format_action(target)}"
+                    for name, (source, target) in diagnostics.event_transitions.items()
+                ),
+            )
+        )
+    lines.extend(
+        [
+            field("events", "  ·  ".join(event_labels) if event_labels else ansi("none", "dim")),
+            field(
+                "boundary",
+                ansi("  ·  ".join(boundary_parts), "red" if outcome == "failure" else "yellow")
+                if boundary_parts
+                else ansi("continuing", "green"),
+            ),
+            field("outcome", ansi(outcome.upper(), outcome_style)),
+            "",
+            section("↻" if transition.boundary else "→", "NEXT", style="green"),
+            field("conditioning", repr(transition.next_task) if transition.next_task is not None else ansi("none", "dim")),
+        ]
+    )
+    if transition.boundary:
+        lines.extend(
+            [
+                field("observation", ansi("same-step reset", "yellow")),
+                field("terminal frame", ansi("preserved for inspection", "green")),
+                field("next seed", diagnostics.next_episode_seed),
+            ]
+        )
+    else:
+        lines.append(field("observation", ansi("ordinary successor", "green")))
+    title = f"TRANSITION  ·  EPISODE {transition.episode}  ·  STEP {transition.step}"
+    accent = "red" if outcome == "failure" else "green" if outcome == "success" else "cyan"
+    return terminal_panel(title, lines, accent=accent)
+
+
+def _raw_transition_payload(transition: _PlaybackTransition) -> dict[str, object]:
+    diagnostics = transition.diagnostics
+    terminal_observation = transition.info.get("terminal_observation")
+    return {
+        "runtime": None if diagnostics is None else asdict(diagnostics),
+        "sb3_info_keys": sorted(transition.info),
+        "terminal_observation_present": "terminal_observation" in transition.info,
+        "terminal_observation": (
+            None if terminal_observation is None else model_input_lines(terminal_observation)
+        ),
+        "reset_info": transition.info.get("reset_info"),
+    }
+
+
+def _read_debug_line(session: _PlaybackSession) -> str | None:
+    prompt = debug_prompt()
+    if session.viewer is None or not sys.stdin.isatty():
+        try:
+            return input(prompt)
+        except EOFError:
+            return None
+    try:
+        selector = selectors.DefaultSelector()
+        selector.register(sys.stdin, selectors.EVENT_READ)
+    except AttributeError, OSError, ValueError:
+        try:
+            return input(prompt)
+        except EOFError:
+            return None
+    print(prompt, end="", flush=True)
+    try:
+        while True:
+            if not session.render():
+                print()
+                return None
+            if selector.select(timeout=0.02):
+                line = sys.stdin.readline()
+                return None if line == "" else line.rstrip("\n")
+    finally:
+        selector.close()
+
+
+@contextlib.contextmanager
+def _deferred_sigint():
+    interrupted = False
+    previous = signal.getsignal(signal.SIGINT)
+
+    def handle_interrupt(_signum, _frame):
+        nonlocal interrupted
+        interrupted = True
+
+    signal.signal(signal.SIGINT, handle_interrupt)
+    try:
+        yield lambda: interrupted
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _run_debugger(
+    session: _PlaybackSession,
+    args: argparse.Namespace,
+    config_text: str,
+) -> int:
+    event_names = tuple(session.env.runtime.kernel.event_names)
+    boundaries = 0
+    print(
+        terminal_panel(
+            "INTERACTIVE POLICY DEBUGGER",
+            [
+                section("🧪", "READY", style="cyan"),
+                field("Enter", "take one policy step"),
+                field("continue", "run to an event or boundary"),
+                field("inspect", "show policy  ·  show input  ·  show raw"),
+                field("commands", "enter help for the full command list"),
+            ],
+            accent="cyan",
+        ),
+        flush=True,
+    )
+    if not session.render():
+        return 0
+    while True:
+        try:
+            line = _read_debug_line(session)
+        except KeyboardInterrupt:
+            print("\n" + status_message("■", "interrupted; debugger is still active", style="yellow"), flush=True)
+            continue
+        if line is None:
+            return 0
+        try:
+            command = parse_debug_command(line, event_names)
+        except DebugCommandError as exc:
+            print(status_message("✗", str(exc), style="red"), flush=True)
+            continue
+        if command.name == "quit":
+            return 0
+        if command.name == "help":
+            print(debug_help(event_names), flush=True)
+            continue
+        if command.name == "show":
+            if command.target == "policy":
+                print(
+                    format_policy_detail(session.inspect_policy(), session.action_names),
+                    flush=True,
+                )
+            elif command.target == "input":
+                print(format_model_input(session.model_obs), flush=True)
+            elif command.target == "raw":
+                if session.last_transition is None:
+                    print(status_message("○", "no transition has been stepped", style="yellow"), flush=True)
+                else:
+                    print(format_raw(_raw_transition_payload(session.last_transition)), flush=True)
+            elif command.target == "config":
+                print(
+                    terminal_panel(
+                        "PLAYBACK CONFIG",
+                        [
+                            *config_text.splitlines(),
+                            "",
+                            section("●", "ACTIVE SESSION", style="green"),
+                            field("seed", session.active_seed),
+                            field("conditioning", repr(session.active_task)),
+                        ],
+                        accent="blue",
+                    ),
+                    flush=True,
+                )
+            elif session.last_transition is None:
+                print(status_message("○", "no transition has been stepped", style="yellow"), flush=True)
+            else:
+                print(
+                    _transition_debug_text(session.last_transition, session.action_names),
+                    flush=True,
+                )
+            continue
+        if command.name == "reset":
+            try:
+                seed = (
+                    session.initial_seed
+                    if command.seed is None
+                    else validate_eval_seed(command.seed)
+                )
+                session.restart(seed)
+            except ValueError as exc:
+                print(status_message("✗", str(exc), style="red"), flush=True)
+                continue
+            print(status_message("↻", f"reset complete  ·  seed {seed}", style="green"), flush=True)
+            if not session.render():
+                return 0
+            continue
+
+        try:
+            if command.name == "step":
+                with _deferred_sigint() as interrupted:
+                    for _ in range(command.count):
+                        transition = session.step()
+                        print(
+                            _transition_debug_text(transition, session.action_names),
+                            flush=True,
+                        )
+                        if not session.render():
+                            return 0
+                        if transition.boundary:
+                            boundaries += 1
+                            if args.episodes > 0 and boundaries >= args.episodes:
+                                return 0
+                        if interrupted():
+                            print(
+                                status_message(
+                                    "■",
+                                    "interrupted after the completed step",
+                                    style="yellow",
+                                ),
+                                flush=True,
+                            )
+                            break
+            else:
+                transition = None
+                advanced = 0
+                matched = False
+                with _deferred_sigint() as interrupted:
+                    for advanced in range(1, 10_001):
+                        transition = session.step()
+                        if not session.render():
+                            return 0
+                        if transition.boundary:
+                            boundaries += 1
+                        matched = (
+                            transition.boundary
+                            if command.target == "done"
+                            else bool(transition.events)
+                            if command.target is None
+                            else command.target in transition.events
+                        )
+                        if matched or transition.boundary or interrupted():
+                            break
+                        if args.episodes > 0 and boundaries >= args.episodes:
+                            break
+                was_interrupted = interrupted()
+                if transition is not None:
+                    print(
+                        status_message("⏩", f"advanced {advanced:,} steps", style="cyan"),
+                        flush=True,
+                    )
+                    print(
+                        _transition_debug_text(transition, session.action_names),
+                        flush=True,
+                    )
+                if was_interrupted:
+                    print(
+                        status_message(
+                            "■", "interrupted after the completed step", style="yellow"
+                        ),
+                        flush=True,
+                    )
+                if (
+                    advanced == 10_000
+                    and transition is not None
+                    and not (matched or transition.boundary)
+                ):
+                    print(
+                        status_message(
+                            "⚠",
+                            "continue stopped at the 10,000-step safety limit",
+                            style="yellow",
+                        ),
+                        flush=True,
+                    )
+                if args.episodes > 0 and boundaries >= args.episodes:
+                    return 0
+        except KeyboardInterrupt:
+            print("\n" + status_message("■", "interrupted; debugger is still active", style="yellow"), flush=True)
+
+
+def _run_normal_playback(
+    session: _PlaybackSession,
+    args: argparse.Namespace,
+    throttle,
+) -> int:
+    episode_iter = count() if args.episodes <= 0 else range(args.episodes)
+    for episode in episode_iter:
+        if episode:
+            session.restart(args.seed + episode)
+        if not session.render():
+            return 0
+        throttle()
+        max_episode_steps = task_max_episode_steps(session.config)
+        final_transition = None
+        for _ in playback_step_indices(max_episode_steps):
+            final_transition = session.step()
+            if not session.render():
+                return 0
+            throttle()
+            if final_transition.boundary:
+                status = (
+                    "complete"
+                    if final_transition.completed
+                    else "terminated"
+                    if final_transition.terminated
+                    else "truncated"
+                )
+                print(
+                    f"episode={episode + 1} seed={final_transition.seed} "
+                    f"reward={final_transition.total_reward:.2f} "
+                    f"max_x={final_transition.max_x_pos} steps={final_transition.step} "
+                    f"status={status} complete={final_transition.completed}",
+                    flush=True,
+                )
+                time.sleep(0.5)
+                break
+        else:
+            print(
+                f"episode={episode + 1} seed={args.seed + episode} "
+                f"reward={0.0 if final_transition is None else final_transition.total_reward:.2f} "
+                f"max_x={0 if final_transition is None else final_transition.max_x_pos} "
+                f"steps={max_episode_steps} status=max_steps",
+                flush=True,
+            )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
@@ -672,26 +1389,42 @@ def main(argv: list[str] | None = None) -> int:
         attributor = None
 
     with startup_progress("Creating policy environment", disabled=args.no_progress):
-        policy_env = make_eval_vec_env(config=config, n_envs=1, seed=args.seed)
+        policy_env = make_eval_vec_env(
+            config=config,
+            n_envs=1,
+            seed=args.seed,
+            capture_step_diagnostics=args.debug,
+        )
 
-    with startup_progress("Seeding policy environment", disabled=args.no_progress):
-        policy_env.seed(args.seed)
+    session = _PlaybackSession(
+        model=model,
+        env=policy_env,
+        config=config,
+        initial_seed=args.seed,
+        attributor=attributor,
+        attribution_mode=args.attribution,
+        attribution_interval=args.attribution_interval,
+        attribution_opacity=args.attribution_opacity,
+    )
     with startup_progress("Resetting policy environment", disabled=args.no_progress):
-        policy_env.reset()
-    with startup_progress("Reading initial game frame", disabled=args.no_progress):
-        first_frame = vector_env_frame(policy_env)
-
-    obs_stack_position = (40, 240)
-    with startup_progress("Creating game viewer", disabled=args.no_progress):
-        viewer = PygameViewer(first_frame.shape, scale=DEFAULT_VIEWER_SCALE, position=None)
-    if args.show_obs or attributor is not None:
-        with startup_progress("Creating observation viewer", disabled=args.no_progress):
-            obs_viewer = ObsStackViewer(
-                scale=DEFAULT_OBS_VIEWER_SCALE,
-                position=obs_stack_position,
+        session.restart(args.seed)
+    if session.current_frame is not None:
+        with startup_progress("Creating game viewer", disabled=args.no_progress):
+            session.viewer = PygameViewer(
+                session.current_frame.shape,
+                scale=DEFAULT_VIEWER_SCALE,
+                position=None,
             )
-    else:
-        obs_viewer = None
+    if (args.show_obs or attributor is not None) and session.frames is not None:
+        with startup_progress("Creating observation viewer", disabled=args.no_progress):
+            session.obs_viewer = ObsStackViewer(
+                scale=DEFAULT_OBS_VIEWER_SCALE,
+                position=(40, 240),
+            )
+    elif args.show_obs:
+        print("warning: policy observation is not a four-frame image stack", flush=True)
+    if session.viewer is None and not args.debug and args.episodes <= 0:
+        raise ValueError("non-rendering playback requires --debug or a positive --episodes limit")
     current_fps = args.fps
     actual_fps: float | None = None
     fps_ema_alpha = 0.12
@@ -729,244 +1462,29 @@ def main(argv: list[str] | None = None) -> int:
             )
         last_frame_at = now
 
-    def update_controls(
-        frames: deque[np.ndarray] | None = None,
-        heatmap: np.ndarray | None = None,
-    ) -> bool:
-        if obs_viewer is not None and frames is not None:
-            return obs_viewer.show(
-                frames,
-                heatmap=heatmap,
-                heatmap_opacity=args.attribution_opacity,
-            )
-        return True
-
-    def step_over_overlay(overlay: list[str]) -> list[str]:
-        if not args.step_over:
-            return overlay
-        return [*overlay, "step_over: SPACE"]
-
-    def wait_for_step(frame: np.ndarray, overlay: list[str]) -> bool:
-        if not args.step_over:
-            return True
-        overlay = step_over_overlay(overlay)
-        while True:
-            if not viewer.show(frame, overlay):
-                return False
-            if viewer.step_controls.consume_step():
-                return True
-            time.sleep(0.02)
-
     try:
-        if not update_controls():
-            return 0
-        initial_overlay = step_over_overlay(
-            ["r_step: 0.00", "r_total: 0.00", "max_x: 0", "step: 0"]
+        config_text = "\n".join(
+            resolved_play_launch_lines(
+                args,
+                argv=argv_list,
+                artifact_ref=ref,
+                policy_config=config,
+                display_config=display_config,
+            )
         )
-        if not viewer.show(first_frame, initial_overlay):
-            return 0
-        throttle()
-        episode_iter = count() if args.episodes <= 0 else range(args.episodes)
-        for episode in episode_iter:
-            episode_seed = args.seed + episode
-            torch.manual_seed(episode_seed)
-            policy_env.seed(episode_seed)
-            policy_obs = policy_env.reset()
-            policy_reset_info = dict(policy_env.reset_infos[0])
-            frame = vector_env_frame(policy_env)
-            overlay = [
-                "r_step: 0.00",
-                "r_total: 0.00",
-                "dx: 0 penalty: 0.00",
-                "max_x: 0",
-                f"step: 0 seed: {episode_seed}",
-            ]
-            if not viewer.show(frame, step_over_overlay(overlay)):
-                break
-            throttle()
-            frames: deque[np.ndarray] = fast_env_frames(policy_obs)
-            conditioning_enabled = bool(task_conditioning(config).get("enabled"))
-            info_vars = task_info_vars(config)
-            configured_task_states = task_state_names(config) if conditioning_enabled else ()
-            active_task_state = (
-                config.state or configured_task_states[0] if configured_task_states else None
-            )
-            active_info_value = (
-                task_info_value_from_info(policy_reset_info, config)
-                or info_value_from_state_name(
-                    active_task_state or "",
-                    info_vars,
-                )
-                if info_vars
-                else None
-            )
-            if info_vars and active_info_value is not None:
-                values = task_conditioning_info_values(config)
-                print(
-                    task_conditioning_start_message(
-                        episode=episode + 1,
-                        step=0,
-                        task=active_info_value,
-                        task_index=values.index(active_info_value),
-                        task_count=len(values),
-                    ),
-                    flush=True,
-                )
-            elif (
-                not info_vars
-                and configured_task_states
-                and active_task_state is not None
-            ):
-                reset_task_state = task_state_from_info(policy_reset_info, configured_task_states)
-                if reset_task_state is not None:
-                    active_task_state = reset_task_state
-                print(
-                    task_conditioning_start_message(
-                        episode=episode + 1,
-                        step=0,
-                        task=active_task_state,
-                        task_index=configured_task_states.index(active_task_state),
-                        task_count=len(configured_task_states),
-                    ),
-                    flush=True,
-                )
-            if not update_controls(frames):
-                return 0
-            total_reward = 0.0
-            max_x_pos = 0
-            final_info = {}
-            max_episode_steps = task_max_episode_steps(config)
-            for step_idx in playback_step_indices(max_episode_steps):
-                if not wait_for_step(frame, overlay):
-                    return 0
-                image_obs = fast_env_obs(policy_obs)
-                model_obs = model_observation(
-                    model,
-                    image_obs,
-                    config,
-                    active_task_state=active_task_state,
-                    active_info_value=active_info_value,
-                )
-                action, _ = model.predict(model_obs, deterministic=False)
-                heatmap = None
-                if attributor is not None and step_idx % args.attribution_interval == 0:
-                    heatmap = attributor.attribute(args.attribution, model_obs, action)
-                if attributor is not None and not update_controls(frames, heatmap):
-                    return 0
-                env_action = single_env_action(action)
-                policy_obs, rewards, dones, infos = policy_env.step(np.asarray([env_action]))
-                reward = float(np.asarray(rewards)[0])
-                done = bool(np.asarray(dones)[0])
-                truncated = bool(infos[0].get("TimeLimit.truncated", False))
-                terminated = done and not truncated
-                records = drain_runtime_records(policy_env)
-                step_metrics = batch_metrics_for_lane(records, 0)
-                info = {**dict(infos[0]), **step_metrics}
-                completed_records = episode_records(records)
-                episode_result = None
-                if completed_records:
-                    episode_result = episode_result_from_record(
-                        completed_records[0],
-                        semantics=target_for_game(config.game).eval_semantics,
-                        terminal_info=info,
-                    )
-                    terminated = bool(episode_result["terminated"])
-                    truncated = bool(episode_result["truncated"])
-                if info_vars:
-                    next_info_value = (
-                        (int(info["level_hi"]), int(info["level_lo"]))
-                        if "level_hi" in info and "level_lo" in info
-                        else task_info_value_from_info(info, config)
-                    )
-                    if next_info_value is not None and next_info_value != active_info_value:
-                        values = task_conditioning_info_values(config)
-                        print(
-                            task_conditioning_change_message(
-                                episode=episode + 1,
-                                step=step_idx + 1,
-                                old_task=active_info_value,
-                                new_task=next_info_value,
-                                task_index=values.index(next_info_value),
-                                task_count=len(values),
-                            ),
-                            flush=True,
-                        )
-                        active_info_value = next_info_value
-                else:
-                    if "level_hi" in info and "level_lo" in info:
-                        info["level_id"] = f"{int(info['level_hi'])}-{int(info['level_lo'])}"
-                    next_task_state = task_state_from_info(info, configured_task_states)
-                    if next_task_state is not None and next_task_state != active_task_state:
-                        print(
-                            task_conditioning_change_message(
-                                episode=episode + 1,
-                                step=step_idx + 1,
-                                old_task=active_task_state,
-                                new_task=next_task_state,
-                                task_index=configured_task_states.index(next_task_state),
-                                task_count=len(configured_task_states),
-                            ),
-                            flush=True,
-                        )
-                        active_task_state = next_task_state
-                frames = fast_env_frames(policy_obs)
-                if attributor is None and not update_controls(frames):
-                    return 0
-                total_reward += float(reward)
-                max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
-                final_info = dict(info)
-                if episode_result is not None:
-                    total_reward = float(episode_result["return"])
-                    max_x_pos = max(max_x_pos, int(episode_result.get("max_x_pos", 0)))
-                    final_info = dict(episode_result.get("final_info", {}))
-                    completed = bool(episode_result.get("level_complete", False))
-                else:
-                    completed = is_level_complete(final_info)
-                frame = vector_env_frame(policy_env)
-                overlay = [
-                    f"r_step: {float(reward):.2f}",
-                    f"r_total: {total_reward:.2f}",
-                    (
-                        f"dx: {int(info.get('progress_delta', 0))} "
-                        f"penalty: {float(info.get('time_penalty', 0.0)):.2f}"
-                    ),
-                    (
-                        f"bonus: {float(info.get('completion_bonus', 0.0)):.0f} "
-                        f"shaped: {float(info.get('shaped_reward', reward)):.2f}"
-                    ),
-                    f"max_x: {max_x_pos}",
-                    f"step: {step_idx + 1} seed: {episode_seed}",
-                ]
-                if not viewer.show(frame, step_over_overlay(overlay)):
-                    return 0
-                throttle()
-                if playback_should_end_episode(terminated, truncated, completed):
-                    status = (
-                        "complete" if completed else "terminated" if terminated else "truncated"
-                    )
-                    print(
-                        "episode="
-                        f"{episode + 1} seed={episode_seed} reward={total_reward:.2f} "
-                        f"max_x={max_x_pos} steps={step_idx + 1} status={status} "
-                        f"died={bool(final_info.get('died', False))} "
-                        f"complete={completed}",
-                        flush=True,
-                    )
-                    time.sleep(0.5)
-                    break
-            else:
-                print(
-                    "episode="
-                    f"{episode + 1} seed={episode_seed} reward={total_reward:.2f} "
-                    f"max_x={max_x_pos} steps={max_episode_steps} status=max_steps "
-                    f"died={bool(final_info.get('died', False))} "
-                    f"complete={bool(final_info.get('level_complete', False))}",
-                    flush=True,
-                )
+        config_text += (
+            "\n"
+            f"checkpoint_step={source.checkpoint_step or '-'} "
+            f"environment_hash={source.run_config.get('environment_hash', '-')}"
+        )
+        if args.debug:
+            return _run_debugger(session, args, config_text)
+        return _run_normal_playback(session, args, throttle)
     finally:
-        if obs_viewer is not None:
-            obs_viewer.close()
-        viewer.close()
+        if session.obs_viewer is not None:
+            session.obs_viewer.close()
+        if session.viewer is not None:
+            session.viewer.close()
         try:
             policy_env.close()
         except Exception:

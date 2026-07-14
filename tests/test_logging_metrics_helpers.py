@@ -94,7 +94,7 @@ class MetricsDocumentationTests(unittest.TestCase):
 
     def test_logger_boundary_rejects_misspelled_rlab_metrics(self) -> None:
         with self.assertRaisesRegex(ValueError, "logger boundary"):
-            metric_names.canonical_training_scalars({"train/outcome/succes/rate/current/min": 0.5})
+            metric_names.canonical_training_scalars({"train/outcome/succes/current/rate/min": 0.5})
 
     def test_cardinality_has_no_start_by_reason_scalar_product(self) -> None:
         starts = [f"Start-{index}" for index in range(32)]

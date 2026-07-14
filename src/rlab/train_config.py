@@ -465,10 +465,21 @@ def validate_and_normalize_train_config(
             normalized["early_stop"], label=f"{label}.early_stop"
         )
     if normalized.get("checkpoint_eval_stages") is not None:
-        normalized["checkpoint_eval_stages"] = normalize_checkpoint_eval_stages(
-            normalized["checkpoint_eval_stages"],
-            label=f"{label}.checkpoint_eval_stages",
-        )
+        if not (
+            normalized.get("checkpoint_eval_backend") == "none"
+            and normalized.get("checkpoint_eval_stages") == []
+        ):
+            normalized["checkpoint_eval_stages"] = normalize_checkpoint_eval_stages(
+                normalized["checkpoint_eval_stages"],
+                label=f"{label}.checkpoint_eval_stages",
+            )
+    if normalized.get("checkpoint_eval_backend") == "none":
+        if normalized.get("early_stop") is not None:
+            raise ValueError(f"{label}.early_stop must be null when checkpoint eval is disabled")
+        if normalized.get("checkpoint_eval_stages"):
+            raise ValueError(
+                f"{label}.checkpoint_eval_stages must be empty when checkpoint eval is disabled"
+            )
     return normalized
 
 
@@ -513,7 +524,10 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         env_default="env_provider",
         environment=True,
         non_empty=True,
-        help="Environment provider id. Supported: stable-retro-turbo, supermariobrosnes-turbo, ale-py.",
+        help=(
+            "Environment provider id. Supported: rlab, stable-retro-turbo, "
+            "supermariobrosnes-turbo, ale-py, gymnasium."
+        ),
     ),
     TrainConfigField(
         "game",
@@ -697,12 +711,12 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "checkpoint_eval_backend",
         "--checkpoint-eval-backend",
         default="modal",
-        choices=("local", "modal"),
+        choices=("local", "modal", "none"),
         non_empty=True,
         source_section="goal_train",
         help=(
             "Checkpoint evaluation backend. Queue-backed jobs default to Modal; "
-            "local is an explicit fallback."
+            "local is an explicit fallback and none is for non-promotable smoke/debug runs."
         ),
     ),
     TrainConfigField(

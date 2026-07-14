@@ -12,7 +12,7 @@ from rlab.json_utils import json_safe
 from rlab.train_config import TRAIN_CONFIG_FIELDS, validate_and_normalize_train_config
 
 
-RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 2
+RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
 TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION = 1
 
 

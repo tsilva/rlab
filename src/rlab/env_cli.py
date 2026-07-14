@@ -7,8 +7,31 @@ from collections.abc import Mapping, Sequence
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
-from rlab.env_registry import ENV_PROVIDERS, EnvProvider, resolve_env_id, resolve_env_provider
+from rlab.env_registry import (
+    ENV_PROVIDERS,
+    RLAB_PROVIDER,
+    EnvProvider,
+    resolve_env_id,
+    resolve_env_provider,
+)
+
+
+def _editable_source_root(distribution: Any) -> Path | None:
+    try:
+        payload = json.loads(distribution.read_text("direct_url.json") or "")
+    except (AttributeError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    dir_info = payload.get("dir_info")
+    if not isinstance(dir_info, Mapping) or dir_info.get("editable") is not True:
+        return None
+    parsed = urlparse(str(payload.get("url") or ""))
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path)).resolve()
 
 
 def _json_safe(value: Any) -> Any:
@@ -348,7 +371,15 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
         if not module_file:
             raise RuntimeError(f"provider module {provider.import_name!r} has no source path")
         module_path = Path(module_file).resolve()
-        if not module_path.is_relative_to(distribution_root):
+        editable_source_root = (
+            _editable_source_root(distribution)
+            if provider.provider_id == RLAB_PROVIDER.provider_id
+            else None
+        )
+        if not module_path.is_relative_to(distribution_root) and not (
+            editable_source_root is not None
+            and module_path.is_relative_to(editable_source_root)
+        ):
             raise RuntimeError(
                 f"provider module resolves outside its installed distribution: {module_path}"
             )
@@ -359,6 +390,8 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "module_path": str(module_path),
             }
         )
+        if editable_source_root is not None:
+            report["observed"]["editable_source_root"] = str(editable_source_root)
         _record(
             report, stage, "passed", f"loaded {provider.distribution_name} {distribution.version}"
         )

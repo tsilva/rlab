@@ -52,16 +52,44 @@ rlab import-roms ~/Desktop/roms --game SuperMarioBros-Nes-v0
 
 ## Run
 
-Start with a queue-backed local smoke run:
+Start with the built-in ROM-free native-vector smoke environment:
+
+```bash
+rlab env inspect rlab:Bandit-v0
+rlab env check --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml
+```
+
+Run its complete queue-backed local training and checkpoint-evaluation path:
+
+```bash
+rlab train \
+  --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml \
+  --machine local-macbook \
+  --checkpoint-eval-backend local \
+  --wait terminal \
+  --json \
+  --set recipe_id=local-smoke \
+  --set campaign_id=local-smoke \
+  --set logging.wandb=false \
+  --set logging.wandb_mode=disabled \
+  --set logging.wandb_artifact_storage_uri=
+```
+
+`rlab:Bandit-v0` has no renderer. Replay it headlessly with
+`rlab play <checkpoint> --debug` for interactive stepping or add a positive `--episodes` limit
+for unattended playback.
+
+For a ROM-backed Mario smoke run, use the same queue path with explicit smoke overrides:
 
 ```bash
 rlab train \
   --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml \
   --machine local-macbook \
+  --checkpoint-eval-backend none \
   --wait terminal \
   --json \
-  --set recipe_id=local-smoke \
-  --set campaign_id=local-smoke \
+  --set recipe_id=local-mario-smoke \
+  --set campaign_id=local-mario-smoke \
   --set train.policy.timesteps=512 \
   --set train.environment.env_config.n_envs=1 \
   --set logging.wandb=false \
@@ -103,13 +131,15 @@ leaderboards do not mix sweep arms. Each submission receives one generated
 `bx<16 hex>` `batch_id`, shared by all of its seeds and used as the W&B group.
 Use optional `campaign_id` to connect related submissions over time.
 
-If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file` and `rlab train` will resolve the latest successful train-image artifact by default.
+If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab train` pins the clean local commit, reuses or dispatches its exact-source train-image workflow, and waits up to 20 minutes by default for the early image receipt. The commit must already be pushed. It never falls back to an older image.
 
 ## Commands
 
 ```bash
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
 rlab env list                                      # list declared providers and environments without importing them
+rlab env inspect rlab:Bandit-v0
+rlab env check --recipe-file experiments/goals/rlab__bandit/recipes/base.yaml
 rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
 rlab env check --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/base.yaml
 rlab train --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3
@@ -117,7 +147,7 @@ rlab eval --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/SuperMarioBros-NES_Level1-2     # download and play from Hugging Face
-rlab play <checkpoint> --step-over
+rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
 rlab jobs status --machine beast-3 --json
@@ -130,6 +160,7 @@ rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
 rlab fleet drain --machine beast-3
 rlab fleet resume --machine beast-3
 rlab fleet service status --json
+rlab eval modal status
 rlab benchmark list
 rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 ```
@@ -165,6 +196,12 @@ Train recipes are validated against the queue-backed schema before enqueue. Extr
 
 Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
 
+`rlab jobs status --job <id> --json` reports `eval_status`, `promoted_step`,
+`artifact_status`, `artifact_ref`, and `published_at`. Modal-backed enqueue fails closed when the
+fleet evaluator's latest pass is stale or unsuccessful. Projection failures retry with backoff and
+are isolated to their producing run; after correcting a persistent failure, reset only that run
+with `rlab eval modal retry-projection <train-job-id>`.
+
 To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
 single-row limit:
 
@@ -182,6 +219,40 @@ To regenerate the W&B checkpoint leaderboard report with one section per goal, r
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06-25T00:00:00Z python scripts/create_wandb_checkpoint_leaderboard_report.py
 ```
+
+## Publish a Policy
+
+Policies publish under `rlab-research` with a generated repository identity:
+
+```text
+<game-family>_<goal>_<policy-variant>_<algorithm>
+```
+
+For example:
+
+```text
+rlab-research/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo
+```
+
+The game family comes from rlab's provider-neutral registry, the policy variant comes from the
+saved observation/action contract, and the algorithm comes from checkpoint metadata. Provider,
+run, recipe, seed, runtime, and environment hash remain in `model_metadata.json` and
+`release_manifest.json`; they are not manually encoded in the repository name.
+
+Use the project `$upload-checkpoint` skill for releases. Before any Hub mutation, preview the exact
+identity with its bundled helper:
+
+```bash
+uv run python .codex/skills/upload-checkpoint/scripts/prepare_release.py \
+  --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
+  --model-metadata runs/<run>/checkpoints/<checkpoint>.metadata.json \
+  --identity-only
+```
+
+The complete workflow requires stochastic evaluation evidence, a browser-safe `replay.mp4`, the
+matching public YouTube preview, and the exact seven-file Hugging Face release bundle. The helper
+rejects unknown families, inconsistent model classes, manual names, non-portable paths, extra
+files, and invalid hashes before upload.
 
 
 ## Fleet
@@ -218,19 +289,22 @@ and beast host recommendations.
 - Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
   its only wait queue, and is the default for newly enqueued queue-backed jobs at effective
   capacity 1. Use `rlab eval modal smoke-local` for the credential-free integration path.
-- The train-image release workflow deploys and startup-probes the digest-specific Modal evaluator
-  before publishing that digest as the latest usable runtime. Modal-backed submissions also run the
-  full schema, capacity, asset, and deployment preflight before inserting queue rows, including for
-  explicitly supplied digests and retries. Use `rlab eval modal preflight --runtime-image-ref
-  <digest-ref> --game <game-id>` for operator diagnosis, and pass `--checkpoint-eval-backend local`
-  to opt a submission into the explicit local fallback.
+- The train-image workflow publishes the exact immutable image receipt immediately after the image
+  exists, then deploys and startup-probes the digest-specific Modal evaluator and publishes a
+  separate Modal readiness receipt. Local and no-eval submissions do not wait for Modal. Modal-backed
+  submissions also run the live schema, capacity, asset, and deployment preflight before inserting
+  queue rows. Use `rlab eval modal preflight --runtime-image-ref <digest-ref> --game <game-id>` for
+  operator diagnosis, `--checkpoint-eval-backend local` for the explicit local fallback, or
+  `--checkpoint-eval-backend none` only for a non-promotable smoke/debug run.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.
-- Lightweight screen-eval previews are disabled by default in `experiments/modal_eval.yaml`.
-  Before enabling them, set `MODAL_EVAL_PREVIEW_STORAGE_URI` to the public R2 bucket/prefix and
+- Every normal queue-backed screen evaluation captures a lightweight policy-observation preview,
+  stores its immutable MP4 in R2, and exposes an external player as `eval/screen/preview` in the
+  producing W&B run. Set `MODAL_EVAL_PREVIEW_STORAGE_URI` to the public R2 bucket/prefix and
   `MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL` to the matching HTTPS base URL. Configure that bucket to
-  serve `video/mp4` with byte ranges and allow the W&B application domain through CORS.
+  serve `video/mp4` with byte ranges and allow the W&B application domain through CORS; Modal
+  preflight fails closed when this preview path is not ready.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
 - Local eval outputs are written under `runs/local_evals/<run-name>/`.
 

@@ -134,9 +134,5 @@ eval:
         success: [level_change]
         max_episode_steps: 4500
 release:
-  huggingface:
-    repo: "{env_id}_{goal_id}"
-    card_template: stable-retro-sb3
-    checkpoint_filename: model.zip
-    preview_filename: replay.mp4
-    include_youtube_preview: true
+  # Marker-only. rlab derives the repository identity and owns the release file contract.
+  huggingface: {}

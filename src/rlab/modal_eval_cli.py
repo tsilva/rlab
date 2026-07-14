@@ -22,8 +22,20 @@ from rlab.runtime_refs import normalize_runtime_image_ref
 
 
 MODAL_SCHEMA_COLUMNS = {
-    "eval_runs": {"train_job_id", "contract_json"},
-    "eval_jobs": {"train_job_id", "job_key", "stage_index", "contract_json"},
+    "eval_runs": {
+        "train_job_id",
+        "contract_json",
+        "artifact_projection_attempts",
+        "artifact_projection_next_retry_at",
+    },
+    "eval_jobs": {
+        "train_job_id",
+        "job_key",
+        "stage_index",
+        "contract_json",
+        "projection_attempts",
+        "projection_next_retry_at",
+    },
     "eval_attempts": {"eval_job_id", "modal_call_id", "result_uri"},
     "eval_backend_state": {"backend", "effective_capacity"},
 }
@@ -93,11 +105,15 @@ def cmd_status(_args: argparse.Namespace) -> int:
                 "SELECT status, count(*) AS count FROM eval_attempts GROUP BY status ORDER BY status"
             )
             attempts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        from rlab.fleet_service import default_service_paths, eval_service_health
+
+        fleet_health = eval_service_health(default_service_paths())
         print(
             json.dumps(
                 {
-                    "ready": True,
+                    "ready": bool(fleet_health["ready"]),
                     "backend": backend,
+                    "fleet_eval_service": fleet_health,
                     "runs": runs,
                     "jobs": jobs,
                     "attempts": attempts,
@@ -107,7 +123,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
                 sort_keys=True,
             )
         )
-        return 0
+        return 0 if fleet_health["ready"] else 1
     finally:
         conn.close()
 
@@ -128,6 +144,17 @@ def modal_preflight(*, runtime_image_ref: str, game: str) -> dict[str, Any]:
         config.hard_max_active == config.max_containers and config.initial_effective_capacity == 1,
         f"enabled={str(config.enabled).lower()} hard_cap={config.hard_max_active} max_containers={config.max_containers}",
     )
+    try:
+        from rlab.fleet_service import default_service_paths, eval_service_health
+
+        fleet_health = eval_service_health(default_service_paths())
+        add(
+            "fleet_eval_service",
+            bool(fleet_health["ready"]),
+            json.dumps(fleet_health, sort_keys=True),
+        )
+    except Exception as exc:
+        add("fleet_eval_service", False, type(exc).__name__)
     if config.preview_enabled:
         try:
             preview_store = ObjectStore(preview_storage_base_uri())
@@ -299,6 +326,44 @@ def cmd_retry(args: argparse.Namespace) -> int:
         if not row:
             raise ValueError("eval job is not retryable or has exhausted two attempts")
         print(json.dumps(dict(row), sort_keys=True, default=str))
+        _kick()
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_retry_projection(args: argparse.Namespace) -> int:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_runs SET
+                      status = CASE WHEN complete_announcement_seen
+                        THEN 'finalizing' ELSE 'active' END,
+                      artifact_projection_attempts = 0,
+                      artifact_projection_next_retry_at = NULL,
+                      error = NULL, updated_at = now()
+                    WHERE train_job_id = %(id)s AND status = 'failed'
+                    RETURNING train_job_id
+                    """,
+                    {"id": int(args.train_job_id)},
+                )
+                row = cur.fetchone()
+                if row:
+                    cur.execute(
+                        """
+                        UPDATE eval_jobs SET projection_attempts = 0,
+                          projection_next_retry_at = NULL, projection_error = NULL,
+                          updated_at = now()
+                        WHERE train_job_id = %(id)s AND projected_at IS NULL
+                        """,
+                        {"id": int(args.train_job_id)},
+                    )
+        if not row:
+            raise ValueError("eval run is not failed or does not exist")
+        print(json.dumps({"train_job_id": int(args.train_job_id), "projection_retried": True}))
         _kick()
         return 0
     finally:
@@ -579,6 +644,9 @@ def build_parser() -> argparse.ArgumentParser:
     retry = commands.add_parser("retry")
     retry.add_argument("eval_job_id", type=int)
     retry.set_defaults(func=cmd_retry)
+    retry_projection = commands.add_parser("retry-projection")
+    retry_projection.add_argument("train_job_id", type=int)
+    retry_projection.set_defaults(func=cmd_retry_projection)
     recover = commands.add_parser("recover")
     recover.add_argument("train_job_id", type=int)
     recover.set_defaults(func=cmd_recover)

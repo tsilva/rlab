@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import psycopg2
 import psycopg2.extras
@@ -24,8 +25,9 @@ from rlab.json_utils import json_safe
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry, resolve_machine
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
-    DEFAULT_IMAGE_BRANCH,
     DEFAULT_IMAGE_WORKFLOW,
+    DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS,
+    clean_git_source_sha,
     normalize_runtime_image_ref,
     runtime_release_from_args,
 )
@@ -142,6 +144,9 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   promoted_eval_job_id BIGINT,
   promotion_json JSONB,
   artifacts_projected_at TIMESTAMPTZ,
+  artifact_projection_attempts INTEGER NOT NULL DEFAULT 0
+    CHECK (artifact_projection_attempts >= 0),
+  artifact_projection_next_retry_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   error TEXT
@@ -173,6 +178,8 @@ CREATE TABLE IF NOT EXISTS eval_jobs (
   decision_json JSONB,
   projected_at TIMESTAMPTZ,
   projection_error TEXT,
+  projection_attempts INTEGER NOT NULL DEFAULT 0 CHECK (projection_attempts >= 0),
+  projection_next_retry_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at TIMESTAMPTZ,
@@ -226,6 +233,10 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id BIGINT REFERENCE
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_url TEXT;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_status_check;
 ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_status_check
   CHECK (status IN ('pending', 'launching', 'starting', 'running', 'succeeded', 'failed', 'canceled'));
@@ -576,9 +587,7 @@ def _validate_queue_run_name(value: str, *, batch_id: str, label: str, seed: int
     return value
 
 
-def _document_seeds(
-    document: Mapping[str, Any], override_seeds: Sequence[int] = ()
-) -> list[int]:
+def _document_seeds(document: Mapping[str, Any], override_seeds: Sequence[int] = ()) -> list[int]:
     if override_seeds:
         return [int(seed) for seed in override_seeds]
     seeds = document.get("seeds")
@@ -645,8 +654,7 @@ def require_modal_eval_ready(*, runtime_image_ref: str, game: str) -> dict[str, 
     failed = [check for check in report.get("checks", []) if not bool(check.get("ok"))]
     detail = (
         ", ".join(
-            f"{check.get('name', 'unknown')} ({check.get('detail', 'failed')})"
-            for check in failed
+            f"{check.get('name', 'unknown')} ({check.get('detail', 'failed')})" for check in failed
         )
         or "unknown readiness failure"
     )
@@ -663,6 +671,30 @@ def require_modal_eval_ready(*, runtime_image_ref: str, game: str) -> dict[str, 
         ]
     )
     raise RuntimeError(f"Modal eval preflight failed: {detail}. Remediation: run {remediation}")
+
+
+def resolve_checkpoint_eval_backend(
+    train_config: Mapping[str, Any],
+    *,
+    checkpoint_eval_backend: str | None,
+) -> str:
+    configured = str(train_config.get("checkpoint_eval_backend") or "")
+    if configured == "none" and checkpoint_eval_backend != "none":
+        raise ValueError(
+            "checkpoint_eval_backend=none is a per-submission smoke/debug override and "
+            "cannot be a checked-in recipe default"
+        )
+    backend = str(checkpoint_eval_backend or configured or "")
+    if not backend:
+        modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
+        backend = (
+            "modal"
+            if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled
+            else "local"
+        )
+    if backend not in {"local", "modal", "none"}:
+        raise ValueError("checkpoint_eval_backend must be local, modal, or none")
+    return backend
 
 
 def enqueue_train_jobs_from_recipe_document(
@@ -682,19 +714,24 @@ def enqueue_train_jobs_from_recipe_document(
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
-    backend = str(checkpoint_eval_backend or train_config.get("checkpoint_eval_backend") or "")
-    if not backend:
-        modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
-        backend = (
-            "modal"
-            if modal_config_path.is_file() and load_modal_eval_config(modal_config_path).enabled
-            else "local"
-        )
-    if backend not in {"local", "modal"}:
-        raise ValueError("checkpoint_eval_backend must be local or modal")
+    backend = resolve_checkpoint_eval_backend(
+        train_config,
+        checkpoint_eval_backend=checkpoint_eval_backend,
+    )
     train_config["checkpoint_eval_backend"] = backend
+    if backend == "none":
+        train_config["early_stop"] = None
+        train_config["checkpoint_eval_stages"] = []
+        train_config.pop("checkpoint_eval_asset_manifest", None)
+        tags = [str(tag) for tag in document.get("tags", [])]
+        if "checkpoint_eval_backend:none" not in tags:
+            tags.append("checkpoint_eval_backend:none")
+        document["tags"] = tags
     document["train_config"] = train_config
-    validate_materialized_train_recipe(document)
+    validate_materialized_train_recipe(
+        document,
+        allow_no_eval_backend=backend == "none" and checkpoint_eval_backend == "none",
+    )
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
     machine = normalize_machine(machine)
@@ -932,9 +969,7 @@ def enqueue_train_job(
     if campaign_id and f"campaign_id:{campaign_id}" not in normalized_tags:
         normalized_tags.append(f"campaign_id:{campaign_id}")
     if retry_of_job_id is not None:
-        normalized_tags = [
-            tag for tag in normalized_tags if not tag.startswith("retry_of_job_id:")
-        ]
+        normalized_tags = [tag for tag in normalized_tags if not tag.startswith("retry_of_job_id:")]
         retry_tag = f"retry_of_job_id:{int(retry_of_job_id)}"
         if retry_tag not in normalized_tags:
             normalized_tags.append(retry_tag)
@@ -1620,9 +1655,7 @@ def retry_train_job(
         raise ValueError(f"job {job_id} is not terminal or does not exist")
     preview = dict(preview)
     preview_config = dict(preview.get("train_config") or {})
-    effective_runtime_image_ref = str(
-        runtime_image_ref or preview["runtime_image_ref"]
-    )
+    effective_runtime_image_ref = str(runtime_image_ref or preview["runtime_image_ref"])
     modal_readiness_validated = (
         str(preview_config.get("checkpoint_eval_backend") or "local") != "modal"
     )
@@ -1911,6 +1944,14 @@ def queue_status(
               launch.next_retry_at,
               launch.output_uri,
               launch.last_observed_at,
+              eval_run.status AS eval_status,
+              eval_run.error AS eval_error,
+              eval_run.artifacts_projected_at AS published_at,
+              eval_run.artifact_projection_attempts,
+              eval_run.artifact_projection_next_retry_at,
+              promoted.checkpoint_step AS promoted_step,
+              promoted.projected_at AS promoted_projection_at,
+              promoted.projection_error AS promoted_projection_error,
               COALESCE(control.drained, FALSE) AS machine_drained,
               control.effective_capacity,
               (
@@ -1921,6 +1962,8 @@ def queue_status(
               ) AS active_reservations
             FROM train_jobs AS job
             LEFT JOIN job_launches AS launch ON launch.job_id = job.id
+            LEFT JOIN eval_runs AS eval_run ON eval_run.train_job_id = job.id
+            LEFT JOIN eval_jobs AS promoted ON promoted.id = eval_run.promoted_eval_job_id
             LEFT JOIN machine_controls AS control ON control.machine = job.machine
             WHERE {where}
             ORDER BY job.id
@@ -1932,7 +1975,11 @@ def queue_status(
     unreachable_terms = ("unreachable", "timed out", "permission denied", "connection")
     for row in jobs:
         blocked_reason = None
-        if row.get("cancel_requested") and row.get("status") in {"launching", "starting", "running"}:
+        if row.get("cancel_requested") and row.get("status") in {
+            "launching",
+            "starting",
+            "running",
+        }:
             blocked_reason = "canceling"
         elif row.get("status") == "pending" and row.get("machine_drained"):
             blocked_reason = "drained"
@@ -1954,6 +2001,27 @@ def queue_status(
         ):
             blocked_reason = "unreachable"
         row["blocked_reason"] = blocked_reason
+        if row.get("eval_status") is None:
+            artifact_status = "not_applicable"
+        elif row.get("published_at") is not None:
+            artifact_status = "published"
+        elif row.get("eval_status") == "failed":
+            artifact_status = "failed"
+        else:
+            artifact_status = "pending"
+        row["artifact_status"] = artifact_status
+        row["artifact_ref"] = None
+        wandb_url = str(row.get("wandb_url") or "")
+        wandb_run_id = str(row.get("wandb_run_id") or "")
+        if artifact_status == "published" and wandb_url and wandb_run_id:
+            parts = [part for part in urlparse(wandb_url).path.split("/") if part]
+            if len(parts) >= 2:
+                alias = (
+                    f"step-{int(row['promoted_step'])}"
+                    if row.get("promoted_step") is not None
+                    else "latest"
+                )
+                row["artifact_ref"] = f"{parts[0]}/{parts[1]}/{wandb_run_id}-checkpoint:{alias}"
     counts: dict[str, int] = {}
     for row in jobs:
         counts[str(row["status"])] = counts.get(str(row["status"]), 0) + 1
@@ -1969,7 +2037,9 @@ def print_status(report: Mapping[str, Any]) -> None:
             "  "
             f"job={row['id']} machine={row['machine']} status={row['status']} "
             f"image={row.get('runtime_image_ref') or ''} "
-            f"run={row.get('run_name') or ''}"
+            f"run={row.get('run_name') or ''} "
+            f"eval={row.get('eval_status') or 'not_applicable'} "
+            f"artifact={row.get('artifact_status') or 'unknown'}"
         )
 
 
@@ -1993,16 +2063,25 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    parser.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    parser.add_argument(
+        "--image-branch",
+        help="Pushed branch used for automatic workflow dispatch; defaults to the current branch.",
+    )
     parser.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
+    parser.add_argument(
+        "--runtime-readiness-timeout",
+        type=parse_duration_seconds,
+        default=DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS,
+        help="Maximum wait for exact-source image and required backend readiness (default: 20m).",
+    )
     parser.add_argument("--seed", type=int, action="append", default=[])
     parser.add_argument(
         "--checkpoint-eval-backend",
-        choices=("local", "modal"),
+        choices=("local", "modal", "none"),
         default=None,
         help=(
             "Materialize the checkpoint evaluation backend for this submission; "
-            "defaults to the checked-in Modal rollout policy."
+            "none is limited to non-promotable smoke/debug runs."
         ),
     )
     parser.add_argument("--wait", choices=("running", "terminal"))
@@ -2072,8 +2151,13 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("--runtime-image-ref")
     retry.add_argument("--runtime-image-ref-file", type=Path)
     retry.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    retry.add_argument("--image-branch", default=DEFAULT_IMAGE_BRANCH)
+    retry.add_argument("--image-branch")
     retry.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
+    retry.add_argument(
+        "--runtime-readiness-timeout",
+        type=parse_duration_seconds,
+        default=DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS,
+    )
     retry.add_argument("--wait", choices=("running", "terminal"))
     retry.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
     retry.add_argument("--json", action="store_true")
@@ -2168,35 +2252,66 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
 
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
+    document = load_recipe_document(
+        args.recipe_file,
+        recipe_overrides=args.recipe_overrides,
+    )
+    backend = resolve_checkpoint_eval_backend(
+        dict(document.get("train_config") or {}),
+        checkpoint_eval_backend=args.checkpoint_eval_backend,
+    )
     registry = load_machine_registry(args.machines)
     machine_config = resolve_machine(registry, args.machine)
-    release = runtime_release_from_args(args)
+    timings: dict[str, float] = {}
+    readiness_started = time.perf_counter()
+    release = runtime_release_from_args(args, checkpoint_eval_backend=backend)
+    timings["runtime_readiness_seconds"] = time.perf_counter() - readiness_started
     runtime_image_ref = release.runtime_image_ref
+    if clean_git_source_sha() != release.source_sha:
+        raise RuntimeError(
+            "Git source changed while waiting for runtime readiness; rerun rlab train"
+        )
+    metadata = recipe_metadata(args.recipe_file, document)
     from rlab.docker_host import DockerRunnerHost
 
     host = DockerRunnerHost(machine_config)
 
     def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
-        return host.validate_runtime_train_config(
-            runtime_image_ref=runtime_image_ref,
-            train_config=train_config,
-            expected_source_sha=release.source_sha,
-            expected_contract_sha256=release.train_config_contract_sha256,
-        )
+        if clean_git_source_sha() != release.source_sha:
+            raise RuntimeError(
+                "Git source changed before target-machine preflight; rerun rlab train"
+            )
+        started = time.perf_counter()
+        try:
+            return host.validate_runtime_train_config(
+                runtime_image_ref=runtime_image_ref,
+                train_config=train_config,
+                expected_source_sha=release.source_sha,
+                expected_contract_sha256=release.train_config_contract_sha256,
+            )
+        finally:
+            timings["target_preflight_seconds"] = (
+                timings.get("target_preflight_seconds", 0.0) + time.perf_counter() - started
+            )
 
     conn = _connect_from_args(args)
     try:
-        rows = enqueue_train_jobs_from_recipe_file(
+        enqueue_started = time.perf_counter()
+        rows = enqueue_train_jobs_from_recipe_document(
             conn,
-            path=args.recipe_file,
+            document=document,
             runtime_image_ref=runtime_image_ref,
             machine=args.machine,
             submission_key=args.submission_key,
+            recipe_path=metadata["recipe_path"],
+            recipe_sha256=metadata["recipe_sha256"],
+            repo_git_commit=metadata["repo_git_commit"],
+            repo_dirty=metadata["repo_dirty"],
             seeds=args.seed,
-            recipe_overrides=args.recipe_overrides,
             checkpoint_eval_backend=args.checkpoint_eval_backend,
             runtime_config_validator=validate_runtime_config,
         )
+        timings["enqueue_preflight_seconds"] = time.perf_counter() - enqueue_started
         dispatch = dispatch_fleet_service()
         wait_result = None
         if args.wait:
@@ -2224,6 +2339,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         "dispatch": dispatch,
         "jobs": report["jobs"],
         "wait": wait_result,
+        "readiness_timings": {key: round(value, 3) for key, value in timings.items()},
     }
     if args.json:
         print(json.dumps(json_safe(payload), sort_keys=True))
@@ -2388,28 +2504,37 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
-    release = runtime_release_from_args(args)
     registry = load_machine_registry(args.machines)
     capacities = {
-        name: machine.limits.max_parallel_containers
-        for name, machine in registry.machines.items()
+        name: machine.limits.max_parallel_containers for name, machine in registry.machines.items()
     }
     conn = _connect_from_args(args)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT machine FROM train_jobs WHERE id = %(job_id)s",
+                "SELECT machine, train_config FROM train_jobs WHERE id = %(job_id)s",
                 {"job_id": args.job_id},
             )
             source = cur.fetchone()
         if not source:
             raise ValueError(f"job {args.job_id} does not exist")
+        source_config = dict(source.get("train_config") or {})
+        backend = str(source_config.get("checkpoint_eval_backend") or "local")
+        release = runtime_release_from_args(args, checkpoint_eval_backend=backend)
+        if clean_git_source_sha() != release.source_sha:
+            raise RuntimeError(
+                "Git source changed while waiting for runtime readiness; rerun the retry"
+            )
         machine_config = resolve_machine(registry, str(source["machine"]))
         from rlab.docker_host import DockerRunnerHost
 
         host = DockerRunnerHost(machine_config)
 
         def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
+            if clean_git_source_sha() != release.source_sha:
+                raise RuntimeError(
+                    "Git source changed before target-machine preflight; rerun the retry"
+                )
             return host.validate_runtime_train_config(
                 runtime_image_ref=release.runtime_image_ref,
                 train_config=train_config,

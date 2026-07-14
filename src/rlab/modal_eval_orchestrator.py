@@ -16,9 +16,10 @@ from typing import Any, Protocol
 from urllib.parse import quote
 
 from rlab.job_queue import connect, database_url, json_arg
-from rlab.checkpoint_eval_worker import eval_score, evaluation_metric_payload
+from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.eval_metrics import eval_by_start_rows
 from rlab.metric_names import checkpoint_eval_stage_metric, validate_metric_payload
+from rlab.ranking import parse_persisted_objective_rank, rank_score
 from rlab.modal_eval_config import ModalEvalConfig, load_modal_eval_config, modal_app_name
 from rlab.modal_eval_protocol import (
     apply_decision_rules,
@@ -38,6 +39,8 @@ from rlab.modal_eval_storage import (
 
 EVAL_RECONCILE_LOCK = "rlab-fleet-reconciler:eval:modal-cpu"
 ACTIVE_ATTEMPT_STATES = ("dispatching", "submitted")
+MAX_PROJECTION_ATTEMPTS = 3
+PROJECTION_RETRY_DELAYS_SECONDS = (30, 120, 300)
 
 
 def deterministic_eval_failure(error: object) -> bool:
@@ -140,7 +143,9 @@ def _mark_eval_run_failed(conn, train_job_id: int, error: object) -> None:
             )
 
 
-def _insert_eval_job(conn, announcement: Mapping[str, Any], descriptor: Mapping[str, Any]) -> int | None:
+def _insert_eval_job(
+    conn, announcement: Mapping[str, Any], descriptor: Mapping[str, Any]
+) -> int | None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -272,8 +277,7 @@ def ingest_announcements(
                     if (
                         int(metadata.get("queue_train_job_id") or 0)
                         != int(announcement["train_job_id"])
-                        or int(metadata.get("checkpoint_step") or 0)
-                        != int(announcement["step"])
+                        or int(metadata.get("checkpoint_step") or 0) != int(announcement["step"])
                         or str(metadata.get("runtime_image_ref") or "")
                         != str(announcement["runtime_image_ref"])
                     ):
@@ -369,7 +373,9 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
     return published
 
 
-def _stage_metrics(job: Mapping[str, Any], raw_metrics: Mapping[str, Any], passed: bool) -> dict[str, object]:
+def _stage_metrics(
+    job: Mapping[str, Any], raw_metrics: Mapping[str, Any], passed: bool
+) -> dict[str, object]:
     if str(job["purpose"]) == "promotion":
         return evaluation_metric_payload(
             protocol="full",
@@ -386,9 +392,7 @@ def _stage_metrics(job: Mapping[str, Any], raw_metrics: Mapping[str, Any], passe
         checkpoint_artifact=str(job["checkpoint_uri"]),
         eval_source="modal",
     )
-    metrics[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = (
-        1.0 if passed else 0.0
-    )
+    metrics[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = 1.0 if passed else 0.0
     metrics[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(
         job["stage_index"]
     )
@@ -440,7 +444,9 @@ def _next_stage_or_promotion(conn, job: Mapping[str, Any], passed: bool) -> None
     next_index = int(job["stage_index"]) + 1
     stages = announcement.get("eval", {}).get("stages", [])
     if next_index < len(stages):
-        _insert_eval_job(conn, announcement, stage_job_descriptor(announcement, stage_index=next_index))
+        _insert_eval_job(
+            conn, announcement, stage_job_descriptor(announcement, stage_index=next_index)
+        )
 
 
 def accept_attempt_result(
@@ -471,9 +477,7 @@ def accept_attempt_result(
                 ),
             }
         )
-    passed, observed = (
-        apply_decision_rules(raw_metrics, rules) if rules else (True, [])
-    )
+    passed, observed = apply_decision_rules(raw_metrics, rules) if rules else (True, [])
     metrics = _stage_metrics(attempt, raw_metrics, passed)
     decision = {
         "schema_version": 1,
@@ -571,9 +575,11 @@ def poll_attempts(
                     if str(receipt.get("result_uri") or "") != str(attempt["result_uri"]):
                         raise ValueError("Modal receipt result URI mismatch")
                     expected_result_sha = str(receipt.get("result_sha256") or "")
-                    if expected_result_sha and hashlib.sha256(
-                        store.get_bytes(str(attempt["result_uri"]))
-                    ).hexdigest() != expected_result_sha:
+                    if (
+                        expected_result_sha
+                        and hashlib.sha256(store.get_bytes(str(attempt["result_uri"]))).hexdigest()
+                        != expected_result_sha
+                    ):
                         raise ValueError("Modal receipt result hash mismatch")
                 if str(result.get("status") or "") != "succeeded":
                     detail = str(result.get("error") or result.get("status") or "unknown failure")
@@ -612,9 +618,7 @@ def poll_attempts(
         if attempt.get("modal_call_id"):
             state, detail = invoker.poll(str(attempt["modal_call_id"]))
             if state == "failed":
-                _mark_attempt_failure(
-                    conn, attempt=attempt, error=str(detail), config=config
-                )
+                _mark_attempt_failure(conn, attempt=attempt, error=str(detail), config=config)
                 changed += 1
             elif state == "finished":
                 if not isinstance(detail, Mapping):
@@ -692,9 +696,7 @@ def round_robin_jobs(
     remaining = [job for job in jobs if job is not promotion]
     remaining.sort(
         key=lambda job: (
-            0
-            if int(job["stage_index"]) > 0 and str(job["purpose"]) != "promotion"
-            else 1,
+            0 if int(job["stage_index"]) > 0 and str(job["purpose"]) != "promotion" else 1,
             int(job["id"]),
         )
     )
@@ -834,7 +836,9 @@ def dispatch_pending(
                     )
             continue
         attempt_id = uuid.uuid4().hex
-        app_name = modal_app_name(config.app_name_prefix, str(job["contract_json"]["runtime_image_ref"]))
+        app_name = modal_app_name(
+            config.app_name_prefix, str(job["contract_json"]["runtime_image_ref"])
+        )
         result_uri = store.uri(f"eval-attempts/{job['execution_key']}/{attempt_id}.json")
         expires_at = datetime.now(UTC) + timedelta(
             seconds=config.startup_timeout_seconds + timeout + config.expiry_margin_seconds
@@ -904,8 +908,7 @@ def dispatch_pending(
                         cache_control=cache_control,
                     ),
                     "public_url": (
-                        f"{preview_public_base_url()}/"
-                        f"{quote(preview_key, safe='/._-')}"
+                        f"{preview_public_base_url()}/{quote(preview_key, safe='/._-')}"
                     ),
                     "content_type": "video/mp4",
                     "cache_control": cache_control,
@@ -997,11 +1000,28 @@ def finalize_runs(conn) -> int:
                 """
                 UPDATE eval_runs r SET status = 'complete', updated_at = now(), error = NULL
                 WHERE r.complete_announcement_seen = TRUE
+                  AND r.artifacts_projected_at IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM eval_jobs promoted
+                    WHERE promoted.train_job_id = r.train_job_id
+                      AND promoted.purpose = 'promotion'
+                      AND promoted.status = 'succeeded'
+                      AND promoted.projected_at IS NULL
+                  )
+                  AND (
+                    NOT EXISTS (
+                      SELECT 1 FROM eval_jobs candidate
+                      WHERE candidate.train_job_id = r.train_job_id
+                        AND candidate.purpose = 'promotion'
+                        AND candidate.status = 'succeeded'
+                    )
+                    OR r.promoted_eval_job_id IS NOT NULL
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j WHERE j.train_job_id = r.train_job_id
                       AND j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
                   )
-                  AND r.status <> 'complete'
+                  AND r.status = 'finalizing'
                 """
             )
             return cur.rowcount
@@ -1011,8 +1031,11 @@ def promotion_candidate_key(job: Mapping[str, Any]) -> tuple[Any, int, int]:
     decision = job["decision_json"]
     raw_metrics = dict(decision["raw_metrics"])
     selection_rank = job["train_config"].get("selection_rank") or ()
+    criteria = parse_persisted_objective_rank(selection_rank)
+    if not criteria:
+        raise ValueError("persisted objective.rank contains unsupported metric criteria")
     return (
-        eval_score(raw_metrics, selection_rank),
+        rank_score(raw_metrics, criteria),
         -int(job["checkpoint_step"]),
         -int(job["id"]),
     )
@@ -1024,7 +1047,9 @@ def reconcile_promotions(conn) -> int:
             """
             SELECT j.*, t.train_config
             FROM eval_jobs j JOIN train_jobs t ON t.id = j.train_job_id
+            JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.purpose = 'promotion' AND j.status = 'succeeded'
+              AND r.status = 'finalizing'
             ORDER BY j.train_job_id, j.id
             """
         )
@@ -1034,7 +1059,22 @@ def reconcile_promotions(conn) -> int:
         by_run[int(job["train_job_id"])].append(job)
     updated = 0
     for train_job_id, candidates in by_run.items():
-        winner = max(candidates, key=promotion_candidate_key)
+        try:
+            winner = max(candidates, key=promotion_candidate_key)
+        except (KeyError, TypeError, ValueError) as exc:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET status = 'failed', error = %(error)s,
+                          updated_at = now() WHERE train_job_id = %(train_job_id)s
+                        """,
+                        {
+                            "error": f"promotion reconciliation failed: {exc}"[:4000],
+                            "train_job_id": train_job_id,
+                        },
+                    )
+            continue
         promotion = {
             "eval_job_id": int(winner["id"]),
             "accepted_attempt_id": int(winner["accepted_attempt_id"]),
@@ -1106,9 +1146,14 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
             WHERE j.status = 'succeeded' AND j.projected_at IS NULL
               AND j.purpose = 'promotion'
               AND t.status IN ('succeeded', 'failed', 'canceled')
-            ORDER BY j.train_job_id, j.checkpoint_step, j.stage_index
+              AND r.status = 'finalizing'
+              AND j.projection_attempts < %(max_attempts)s
+              AND (j.projection_next_retry_at IS NULL OR j.projection_next_retry_at <= now())
+            ORDER BY COALESCE(j.projection_next_retry_at, j.created_at),
+              j.train_job_id, j.checkpoint_step, j.stage_index
             LIMIT 1
-            """
+            """,
+            {"max_attempts": MAX_PROJECTION_ATTEMPTS},
         )
         job = cur.fetchone()
     if not job:
@@ -1134,14 +1179,43 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
         with conn.cursor() as cur:
             if error is None:
                 cur.execute(
-                    "UPDATE eval_jobs SET projected_at = now(), projection_error = NULL, updated_at = now() WHERE id = %(id)s",
+                    """
+                    UPDATE eval_jobs SET projected_at = now(), projection_error = NULL,
+                      projection_next_retry_at = NULL, updated_at = now()
+                    WHERE id = %(id)s
+                    """,
                     {"id": int(job["id"])},
                 )
             else:
+                attempts = int(job.get("projection_attempts") or 0) + 1
+                retry_delay = PROJECTION_RETRY_DELAYS_SECONDS[
+                    min(attempts - 1, len(PROJECTION_RETRY_DELAYS_SECONDS) - 1)
+                ]
                 cur.execute(
-                    "UPDATE eval_jobs SET projection_error = %(error)s, updated_at = now() WHERE id = %(id)s",
-                    {"error": error[:4000], "id": int(job["id"])},
+                    """
+                    UPDATE eval_jobs SET projection_error = %(error)s,
+                      projection_attempts = %(attempts)s,
+                      projection_next_retry_at = now() + (%(retry_delay)s * interval '1 second'),
+                      updated_at = now() WHERE id = %(id)s
+                    """,
+                    {
+                        "error": error[:4000],
+                        "attempts": attempts,
+                        "retry_delay": retry_delay,
+                        "id": int(job["id"]),
+                    },
                 )
+                if attempts >= MAX_PROJECTION_ATTEMPTS:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET status = 'failed', error = %(error)s,
+                          updated_at = now() WHERE train_job_id = %(train_job_id)s
+                        """,
+                        {
+                            "error": f"evaluation projection exhausted retries: {error}"[:4000],
+                            "train_job_id": int(job["train_job_id"]),
+                        },
+                    )
     return int(error is None)
 
 
@@ -1161,8 +1235,16 @@ def project_artifact_references(
             FROM eval_runs r JOIN train_jobs t ON t.id = r.train_job_id
             WHERE r.complete_announcement_seen = TRUE AND r.artifacts_projected_at IS NULL
               AND t.status IN ('succeeded', 'failed', 'canceled')
-            ORDER BY r.train_job_id LIMIT 1
-            """
+              AND r.status = 'finalizing'
+              AND r.artifact_projection_attempts < %(max_attempts)s
+              AND (
+                r.artifact_projection_next_retry_at IS NULL
+                OR r.artifact_projection_next_retry_at <= now()
+              )
+            ORDER BY COALESCE(r.artifact_projection_next_retry_at, r.created_at),
+              r.train_job_id LIMIT 1
+            """,
+            {"max_attempts": MAX_PROJECTION_ATTEMPTS},
         )
         run = cur.fetchone()
     if not run:
@@ -1178,7 +1260,12 @@ def project_artifact_references(
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE eval_runs SET artifacts_projected_at = now(), updated_at = now() WHERE train_job_id = %(id)s",
+                    """
+                    UPDATE eval_runs SET artifacts_projected_at = now(),
+                      artifact_projection_attempts = 0,
+                      artifact_projection_next_retry_at = NULL, updated_at = now()
+                    WHERE train_job_id = %(id)s
+                    """,
                     {"id": train_job_id},
                 )
         return 0
@@ -1219,14 +1306,38 @@ def project_artifact_references(
                 cur.execute(
                     """
                     UPDATE eval_runs SET next_artifact_projection_id = next_artifact_projection_id + 1,
+                      artifact_projection_attempts = 0,
+                      artifact_projection_next_retry_at = NULL,
                       error = NULL, updated_at = now() WHERE train_job_id = %(id)s
                     """,
                     {"id": train_job_id},
                 )
             else:
+                attempts = int(run.get("artifact_projection_attempts") or 0) + 1
+                retry_delay = PROJECTION_RETRY_DELAYS_SECONDS[
+                    min(attempts - 1, len(PROJECTION_RETRY_DELAYS_SECONDS) - 1)
+                ]
                 cur.execute(
-                    "UPDATE eval_runs SET error = %(error)s, updated_at = now() WHERE train_job_id = %(id)s",
-                    {"error": error[:4000], "id": train_job_id},
+                    """
+                    UPDATE eval_runs SET error = %(error)s,
+                      artifact_projection_attempts = %(attempts)s,
+                      artifact_projection_next_retry_at =
+                        now() + (%(retry_delay)s * interval '1 second'),
+                      status = CASE WHEN %(attempts)s >= %(max_attempts)s
+                        THEN 'failed' ELSE status END,
+                      updated_at = now() WHERE train_job_id = %(id)s
+                    """,
+                    {
+                        "error": (
+                            f"artifact projection exhausted retries: {error}"
+                            if attempts >= MAX_PROJECTION_ATTEMPTS
+                            else error
+                        )[:4000],
+                        "attempts": attempts,
+                        "max_attempts": MAX_PROJECTION_ATTEMPTS,
+                        "retry_delay": retry_delay,
+                        "id": train_job_id,
+                    },
                 )
     return int(error is None)
 
@@ -1248,9 +1359,7 @@ def run_service_eval_pass(
         if not _try_lock(conn):
             return {"status": "locked"}
         created_runs = ensure_eval_runs(conn)
-        ingested = ingest_announcements(
-            conn, store, deadline_monotonic=deadline_monotonic
-        )
+        ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
         skipped_decisions = publish_skipped_decisions(conn, store)
         polled = poll_attempts(
             conn,

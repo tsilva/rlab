@@ -464,6 +464,7 @@ class MetricStore:
         sha256: str | None = None,
         status: str = "ready",
         created_at: float | None = None,
+        eval_required: bool = True,
     ) -> int:
         now = time.time() if created_at is None else created_at
         path_text = str(path)
@@ -505,7 +506,7 @@ class MetricStore:
                 """,
                 (checkpoint_id, now, now),
             )
-            if kind not in FINAL_LIKE_KINDS:
+            if eval_required and kind not in FINAL_LIKE_KINDS:
                 conn.execute(
                     """
                     INSERT INTO eval_results (checkpoint_id, status, created_at, updated_at)

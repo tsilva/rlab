@@ -15,6 +15,23 @@ def _value(source: Mapping[str, Any] | Any, key: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def _environment_argument(
+    source: Mapping[str, Any] | Any,
+    key: str,
+    aliases: tuple[str, ...],
+    default: Any,
+) -> Any:
+    direct = _value(source, key, None)
+    if direct is not None:
+        return direct
+    env_args = _value(source, "env_args", {})
+    if isinstance(env_args, Mapping):
+        for alias in aliases:
+            if alias in env_args and env_args[alias] is not None:
+                return env_args[alias]
+    return default
+
+
 def preprocessing_contract(
     source: Mapping[str, Any] | Any,
     *,
@@ -30,15 +47,11 @@ def preprocessing_contract(
         else f"{provider.replace('-', '_')}_native_vec_env"
     )
     existing_resize = source.get("obs_resize") if isinstance(source, Mapping) else None
-    observation_size = int(
-        _value(
-            source,
-            "observation_size",
-            existing_resize[0]
-            if isinstance(existing_resize, list | tuple) and existing_resize
-            else 84,
-        )
-    )
+    if isinstance(existing_resize, list | tuple) and len(existing_resize) == 2:
+        obs_resize = [int(existing_resize[0]), int(existing_resize[1])]
+    else:
+        observation_size = int(_value(source, "observation_size", 84))
+        obs_resize = [observation_size, observation_size]
     raw_crop = _value(source, "obs_crop", None)
     if raw_crop is None:
         hud_crop_top = int(_value(source, "hud_crop_top", 0))
@@ -58,14 +71,28 @@ def preprocessing_contract(
     )
     return {
         "pipeline": pipeline,
-        "obs_resize": [observation_size, observation_size],
+        "obs_resize": obs_resize,
         "obs_crop": list(crop) if crop is not None else None,
         "obs_crop_mode": str(_value(source, "obs_crop_mode", "remove")),
         "obs_crop_fill": int(_value(source, "obs_crop_fill", 0)),
-        "obs_grayscale": True,
+        "obs_grayscale": bool(
+            _environment_argument(
+                source,
+                "obs_grayscale",
+                ("obs_grayscale", "grayscale"),
+                True,
+            )
+        ),
         "obs_resize_algorithm": str(_value(source, "obs_resize_algorithm", "area")),
         "frame_skip": int(_value(source, "frame_skip", 4)),
-        "frame_stack": int(_value(source, "frame_stack", 4)),
+        "frame_stack": int(
+            _environment_argument(
+                source,
+                "frame_stack",
+                ("frame_stack", "stack_num"),
+                4,
+            )
+        ),
         "max_pool_frames": bool(max_pool_frames),
         "sticky_action_prob": float(_value(source, "sticky_action_prob", 0.0)),
         "obs_copy": str(_value(source, "obs_copy", "safe_view")),

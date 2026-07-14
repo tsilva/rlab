@@ -323,9 +323,10 @@ class ProviderContractTests(unittest.TestCase):
         np.testing.assert_array_equal(second["attack"], [[0, 0], [1, 0]])
 
         with self.assertRaisesRegex(ValueError, "outside native action space"):
-            IdentityTaskDefinition(
-                action_values=({"attack": [0, 0], "turn": 7},)
-            ).bind(descriptor, provider.num_envs)
+            IdentityTaskDefinition(action_values=({"attack": [0, 0], "turn": 7},)).bind(
+                descriptor, provider.num_envs
+            )
+
 
 class BatchRuntimeTests(unittest.TestCase):
     def make_identity_runtime(self):
@@ -343,6 +344,46 @@ class BatchRuntimeTests(unittest.TestCase):
             side_effect=AssertionError("hot path consulted provider registry"),
         ):
             runtime.step(np.zeros((runtime.num_envs, 3), dtype=np.int8))
+
+    def test_step_diagnostics_are_one_lane_owned_and_survive_same_step_reset(self):
+        provider = DeterministicNativeVectorProvider(num_envs=1)
+        descriptor = descriptor_for(provider)
+        runtime = BatchRuntime(
+            provider,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, 1),
+            run_seed=17,
+            capture_step_diagnostics=True,
+        )
+        env = RlabVecEnv(runtime)
+        env.seed(123)
+        env.reset()
+        provider.queue_step(x=[9], rewards=[2.5], terminated=[True])
+
+        env.step(np.zeros((1, 3), dtype=np.int8))
+        diagnostics = env.take_step_diagnostics()
+
+        self.assertIsNotNone(diagnostics)
+        self.assertEqual(diagnostics.episode_seed, 123)
+        self.assertEqual(diagnostics.provider_info["x"], 9)
+        self.assertEqual(diagnostics.provider_reward, 2.5)
+        self.assertTrue(diagnostics.terminated)
+        self.assertIsInstance(diagnostics.next_episode_seed, int)
+        self.assertEqual(provider._x[0], 0, "the provider has already reset its live buffer")
+        self.assertIsNone(env.take_step_diagnostics())
+
+    def test_step_diagnostics_reject_more_than_one_lane(self):
+        provider = DeterministicNativeVectorProvider(num_envs=2)
+        descriptor = descriptor_for(provider)
+        kernel = IdentityTaskDefinition().bind(descriptor, 2)
+
+        with self.assertRaisesRegex(ValueError, "exactly one environment"):
+            BatchRuntime(
+                provider,
+                descriptor,
+                kernel,
+                capture_step_diagnostics=True,
+            )
 
     def test_provider_done_snapshots_terminal_observation_and_masked_resets_once(self):
         provider, runtime = self.make_identity_runtime()

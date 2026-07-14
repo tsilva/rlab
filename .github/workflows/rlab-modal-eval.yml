@@ -11,10 +11,6 @@ on:
         description: Git source revision embedded in the runtime
         required: true
         type: string
-      train_config_contract_sha256:
-        description: Expected train-config contract fingerprint
-        required: true
-        type: string
     secrets:
       MODAL_TOKEN_ID:
         required: true
@@ -22,13 +18,6 @@ on:
         required: true
       RLAB_MODAL_REGISTRY_SECRET_NAME:
         required: false
-    outputs:
-      app_name:
-        description: Digest-specific Modal application name
-        value: ${{ jobs.deploy.outputs.app_name }}
-      startup_probe:
-        description: JSON startup-probe receipt from the deployed runtime
-        value: ${{ jobs.deploy.outputs.startup_probe }}
   workflow_dispatch:
     inputs:
       runtime_image_ref:
@@ -37,10 +26,6 @@ on:
         type: string
       source_sha:
         description: Git source revision embedded in the runtime
-        required: true
-        type: string
-      train_config_contract_sha256:
-        description: Expected train-config contract fingerprint
         required: true
         type: string
 
@@ -64,14 +49,16 @@ jobs:
       RLAB_MODAL_REGISTRY_SECRET: ${{ secrets.RLAB_MODAL_REGISTRY_SECRET_NAME }}
       RLAB_MODAL_EVAL_RUNTIME_IMAGE: ${{ inputs.runtime_image_ref }}
       RLAB_EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
-      RLAB_EXPECTED_TRAIN_CONFIG_CONTRACT_SHA256: ${{ inputs.train_config_contract_sha256 }}
+      PYTHONPATH: src
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Install locked deployment runtime
-        run: uv sync --frozen
+        run: uv sync --frozen --only-group modal-deploy --no-install-project
       - name: Validate immutable runtime ref
         run: |
           case "$RLAB_MODAL_EVAL_RUNTIME_IMAGE" in
@@ -79,11 +66,11 @@ jobs:
             *) echo "runtime_image_ref must be an immutable docker digest ref" >&2; exit 2 ;;
           esac
       - name: Deploy immutable Modal evaluator
-        run: uv run modal deploy -m rlab.modal_app
+        run: uv run --no-sync modal deploy -m rlab.modal_app
       - name: Prove deployed worker image startup
         id: probe
         run: |
-          uv run python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import json
           import os
 
@@ -99,14 +86,26 @@ jobs:
               "app_name": app_name,
               "runtime_image_ref": runtime_image_ref,
               "source_sha": os.environ["RLAB_EXPECTED_SOURCE_SHA"],
-              "train_config_contract_sha256": os.environ[
-                  "RLAB_EXPECTED_TRAIN_CONFIG_CONTRACT_SHA256"
-              ],
           }
           if any(result.get(key) != value for key, value in expected.items()):
               raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
           if int(result.get("schema_version") or 0) != 1:
               raise SystemExit(f"unexpected Modal startup probe schema: {result!r}")
+          contract_sha = str(result.get("train_config_contract_sha256") or "")
+          if len(contract_sha) != 64:
+              raise SystemExit(f"unexpected Modal train-config contract: {result!r}")
+          receipt = {
+              "schema_version": 1,
+              "source_sha": os.environ["RLAB_EXPECTED_SOURCE_SHA"],
+              "runtime_image_ref": runtime_image_ref,
+              "modal_app_name": app_name,
+              "startup_probe": result,
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          with open("rlab-modal-eval-readiness.json", "w", encoding="utf-8") as output:
+              json.dump(receipt, output, indent=2, sort_keys=True)
+              output.write("\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"app_name={app_name}\n")
               output.write(
@@ -116,3 +115,9 @@ jobs:
               )
           print(f"Modal startup probe passed for {app_name}")
           PY
+
+      - name: Upload Modal readiness receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlab-modal-eval-readiness
+          path: rlab-modal-eval-readiness.json

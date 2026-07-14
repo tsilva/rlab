@@ -220,6 +220,7 @@ assert 'supermariobrosnes_turbo' not in sys.modules
     assert {item["provider_id"] for item in payload["providers"]} == {
         "ale-py",
         "gymnasium",
+        "rlab",
         "stable-retro-turbo",
         "supermariobrosnes-turbo",
     }

@@ -102,6 +102,21 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(args.checkpoint_eval_backend, "modal")
 
+    def test_train_enqueue_parser_accepts_explicit_no_eval_backend(self) -> None:
+        args = job_queue.build_train_enqueue_parser().parse_args(
+            [
+                "--recipe-file",
+                "recipe.yaml",
+                "--machine",
+                "beast-3",
+                "--checkpoint-eval-backend",
+                "none",
+            ]
+        )
+
+        self.assertEqual(args.checkpoint_eval_backend, "none")
+        self.assertEqual(args.runtime_readiness_timeout, 20 * 60)
+
     def test_implicit_submission_defaults_to_modal_backend(self) -> None:
         calls = []
         document = valid_train_recipe()
@@ -184,6 +199,7 @@ class JobQueueTests(unittest.TestCase):
     def test_modal_readiness_reports_each_failed_check_and_remediation(self) -> None:
         check_names = (
             "config_guards",
+            "fleet_eval_service",
             "postgres_schema",
             "backend_state",
             "rom_asset",
@@ -242,6 +258,73 @@ class JobQueueTests(unittest.TestCase):
                 FakeConnection(row={"id": 10}),
                 goal_slug="Level1-1",
                 train_config=explicit_train_config(),
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
+    def test_explicit_no_eval_submission_disables_eval_owned_behavior(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["early_stop"] = [
+            {
+                "metric": "eval/confirm/candidate/pass",
+                "operator": ">=",
+                "threshold": 1.0,
+            }
+        ]
+        document["train_config"]["checkpoint_eval_stages"] = [
+            {
+                "name": "screen",
+                "episodes": 1,
+                "n_envs": 1,
+                "pass": [
+                    {
+                        "metric": "eval/full/outcome/success/rate/min",
+                        "operator": ">=",
+                        "threshold": 1.0,
+                    }
+                ],
+            }
+        ]
+        calls = []
+
+        def fake_enqueue(conn, **kwargs):
+            calls.append(kwargs)
+            return {"id": 100 + len(calls), "run_name": kwargs["run_name"]}
+
+        with (
+            patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue),
+            patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                side_effect=AssertionError("Modal preflight must not run"),
+            ),
+        ):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                checkpoint_eval_backend="none",
+            )
+
+        self.assertTrue(calls)
+        self.assertTrue(
+            all(call["train_config"]["checkpoint_eval_backend"] == "none" for call in calls)
+        )
+        self.assertTrue(all(call["train_config"]["early_stop"] is None for call in calls))
+        self.assertTrue(all(call["train_config"]["checkpoint_eval_stages"] == [] for call in calls))
+        self.assertTrue(
+            all("checkpoint_eval_asset_manifest" not in call["train_config"] for call in calls)
+        )
+        self.assertTrue(all("checkpoint_eval_backend:none" in call["wandb_tags"] for call in calls))
+
+    def test_checked_in_no_eval_default_is_rejected(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["checkpoint_eval_backend"] = "none"
+        with self.assertRaisesRegex(ValueError, "per-submission smoke/debug override"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
             )
@@ -345,13 +428,13 @@ class JobQueueTests(unittest.TestCase):
                 run_id="a1",
                 name="a-s1",
                 config={"goal_slug": "Level1-1", "recipe_slug": "a", "seed": 1},
-                summary={"train/outcome/success/rate/window_100/min": 1.0},
+                summary={"train/outcome/success/window_100/rate/min": 1.0},
             ),
             FakeWandbRun(
                 run_id="a2",
                 name="a-s2",
                 config={"goal_slug": "Level1-1", "recipe_slug": "a", "seed": 2},
-                summary={"train/outcome/success/rate/window_100/min": 0.8},
+                summary={"train/outcome/success/window_100/rate/min": 0.8},
             ),
             FakeWandbRun(
                 run_id="b1",
@@ -363,7 +446,7 @@ class JobQueueTests(unittest.TestCase):
                 run_id="b2",
                 name="b-s2",
                 config={"goal_slug": "Level1-1", "recipe_slug": "b", "seed": 2},
-                summary={"train/outcome/success/rate/window_100/min": 0.9},
+                summary={"train/outcome/success/window_100/rate/min": 0.9},
             ),
         ]
 
@@ -727,6 +810,35 @@ class JobQueueTests(unittest.TestCase):
         status_sql = conn.cursor_obj.executed_sqls[-1]
         self.assertIn("job.goal_slug", status_sql)
         self.assertNotIn("profile_id", status_sql)
+        self.assertIn("eval_run.status AS eval_status", status_sql)
+
+    def test_queue_status_exposes_published_artifact(self) -> None:
+        conn = FakeConnection(
+            rows=[
+                {
+                    "id": 17,
+                    "machine": "beast-3",
+                    "status": "succeeded",
+                    "eval_status": "complete",
+                    "published_at": "2026-07-14T16:00:00Z",
+                    "promoted_step": 500,
+                    "wandb_run_id": "rlab-run-id",
+                    "wandb_url": "https://wandb.ai/entity/project/runs/rlab-run-id",
+                    "cancel_requested": False,
+                    "machine_drained": False,
+                    "active_reservations": 0,
+                }
+            ]
+        )
+
+        report = job_queue.queue_status(conn, job_id=17)
+        job = report["jobs"][0]
+
+        self.assertEqual(job["artifact_status"], "published")
+        self.assertEqual(
+            job["artifact_ref"],
+            "entity/project/rlab-run-id-checkpoint:step-500",
+        )
 
     def test_claim_uses_exact_machine_and_one_stable_launch(self) -> None:
         conn = FakeConnection(
@@ -1011,7 +1123,7 @@ class JobExecutionTests(unittest.TestCase):
 
         self.assertEqual(
             config["wandb_tags"],
-            "screen,game_family:super-mario-bros-nes,goal_id:Level1-1,"
+            "screen,game_family:NES-SuperMarioBros,goal_id:Level1-1,"
             "recipe_id:base,level_id:Level1-1",
         )
         self.assertEqual(written_config["recipe_slug"], "base")

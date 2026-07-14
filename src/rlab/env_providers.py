@@ -11,10 +11,12 @@ import stable_retro as retro
 from gymnasium.vector import AutoresetMode
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
+from rlab.bandit_env import BanditVectorEnv
 from rlab.batch_runtime import ProviderDescriptor, SignalSpec
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
     GYMNASIUM_PROVIDER,
+    RLAB_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER,
     is_stable_retro_atari_env,
@@ -154,6 +156,11 @@ def provider_native_vec_kwargs(
     """Compile provider mechanics without task events or termination rules."""
     native_kwargs = dict(config.env_args or {})
     provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == RLAB_PROVIDER.provider_id:
+        if config.state or config.states or config.state_probs:
+            raise ValueError("rlab provider does not support state, states, or state_probs")
+        native_kwargs.setdefault("num_envs", n_envs)
+        return native_kwargs
     if provider.provider_id in {
         STABLE_RETRO_TURBO_PROVIDER.provider_id,
         SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
@@ -434,6 +441,19 @@ def _registered_native_gymnasium_vec_env(config: Any, native_kwargs: Mapping[str
     return _require_disabled_autoreset_mode(env, provider.provider_id)
 
 
+def _rlab_make_vec_env(
+    config: Any,
+    *,
+    native_kwargs: Mapping[str, Any],
+    bandit_vec_env_type=BanditVectorEnv,
+):
+    _require_provider(config, RLAB_PROVIDER.provider_id)
+    kwargs = dict(native_kwargs)
+    kwargs["autoreset_mode"] = _declared_autoreset_mode(RLAB_PROVIDER.provider_id)
+    env = bandit_vec_env_type(config.game, **kwargs)
+    return _require_disabled_autoreset_mode(env, RLAB_PROVIDER.provider_id)
+
+
 def _require_provider(config: Any, expected_provider_id: str):
     provider = resolve_env_provider(config.env_provider)
     if provider.provider_id != expected_provider_id:
@@ -574,6 +594,8 @@ def make_provider_vec_env(
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
 ):
     provider = resolve_env_provider(config.env_provider)
+    if provider.provider_id == RLAB_PROVIDER.provider_id:
+        return _rlab_make_vec_env(config, native_kwargs=native_kwargs)
     if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
         return _stable_retro_turbo_make_vec_env(
             config,
