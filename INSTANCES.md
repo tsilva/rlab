@@ -203,8 +203,9 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
   commands never claim, launch, cancel, or finalize jobs. The container reads a
   payload and atomically publishes `result.json`. Queue-backed run directories live under the
   host-mounted launch output so a checkpoint coordinator can recover incomplete R2 uploads after
-  the training container exits. The live W&B publisher owns training telemetry only when Modal
-  eval is selected; it does not upload checkpoint artifacts.
+  the training container exits. When Modal eval is selected, the live W&B publisher owns training
+  telemetry plus imported `eval/screen/*` and `eval/confirm/*` frames; it does not upload checkpoint
+  artifacts. The Mac-side terminal projector owns promotion-quality `eval/full/*` evidence.
   Later service passes reconcile DB launch rows, Docker labels, and durable
   output directories without creating a replacement launch.
 ## Native Vector Runtime V2 Acceptance (2026-07-10)

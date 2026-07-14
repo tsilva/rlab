@@ -1051,6 +1051,7 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
             FROM eval_jobs j JOIN train_jobs t ON t.id = j.train_job_id
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.status = 'succeeded' AND j.projected_at IS NULL
+              AND j.purpose = 'promotion'
               AND t.status IN ('succeeded', 'failed', 'canceled')
             ORDER BY j.train_job_id, j.checkpoint_step, j.stage_index
             LIMIT 1

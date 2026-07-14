@@ -11,8 +11,12 @@ from rlab.metric_names import (
     EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
     EVAL_REWARD_MEAN,
+    LEGACY_EVAL_BEST_REWARD,
     LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+    LEGACY_EVAL_REWARD_MEAN,
     LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
 )
 
@@ -80,10 +84,24 @@ def _metric_value(metrics: Mapping[str, Any], metric: str) -> Any:
         return value
     alternate_keys = {
         EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: (
+            LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
             LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
             "completion_rate",
         ),
         EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN: (
+            LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+            "completion_rate",
+        ),
+        EVAL_REWARD_MEAN: (LEGACY_EVAL_REWARD_MEAN, "reward_mean"),
+        EVAL_BEST_REWARD: (LEGACY_EVAL_BEST_REWARD, "reward_max"),
+        LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: (
+            EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
+            "completion_rate",
+        ),
+        LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN: (
+            EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
             LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
             "completion_rate",
         ),

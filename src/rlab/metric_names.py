@@ -42,47 +42,54 @@ TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_CURRENT = "train/info/level_complete/rate/me
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN = "train/info/level_complete/rate/min"
 TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN = "train/info/level_complete/rate/mean"
 
-EVAL_INFO_LEVEL_COMPLETE_ROOT = "eval/info/level_complete"
-EVAL_INFO_LEVEL_COMPLETE_RATE_MIN = "eval/info/level_complete/rate/min"
-EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN = "eval/info/level_complete/rate/mean"
+EVAL_ROOT = "eval"
+EVAL_FULL_ROOT = f"{EVAL_ROOT}/full"
+EVAL_INFO_LEVEL_COMPLETE_ROOT = f"{EVAL_FULL_ROOT}/info/level_complete"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MIN = f"{EVAL_INFO_LEVEL_COMPLETE_ROOT}/rate/min"
+EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN = f"{EVAL_INFO_LEVEL_COMPLETE_ROOT}/rate/mean"
 
-EVAL_DONE_ALL = "eval/done/all"
-EVAL_DONE_ROOT = "eval/done/"
-EVAL_DONE_LEVEL_CHANGE = "eval/done/level_change"
-EVAL_DONE_LEVEL_CHANGE_RATE = "eval/done/level_change/rate"
+EVAL_DONE_ALL = f"{EVAL_FULL_ROOT}/done/all"
+EVAL_DONE_ROOT = f"{EVAL_FULL_ROOT}/done/"
+EVAL_DONE_LEVEL_CHANGE = f"{EVAL_FULL_ROOT}/done/level_change"
+EVAL_DONE_LEVEL_CHANGE_RATE = f"{EVAL_DONE_LEVEL_CHANGE}/rate"
+LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN = "eval/info/level_complete/rate/min"
+LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN = "eval/info/level_complete/rate/mean"
 LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN = "eval/done/level_change/from_rate/min"
 LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN = "eval/done/level_change/from_rate/mean"
 LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST = "train/info/level_complete/rate/min/last"
 LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MEAN_LAST = "train/info/level_complete/rate/mean/last"
-EVAL_DONE_MAX_STEPS = "eval/done/max_steps"
-EVAL_DONE_MAX_STEPS_RATE = "eval/done/max_steps/rate"
-EVAL_DONE_TERMINATED = "eval/done/terminated"
-EVAL_DONE_TERMINATED_RATE = "eval/done/terminated/rate"
-EVAL_DONE_UNCLASSIFIED = "eval/done/unclassified"
-EVAL_DONE_UNCLASSIFIED_RATE = "eval/done/unclassified/rate"
-EVAL_REWARD_MEAN = "eval/reward/mean"
-EVAL_REWARD_STD = "eval/reward/std"
-EVAL_REWARD_MAX = "eval/reward/max"
-EVAL_PROGRESS_X_MEAN = "eval/progress/x/mean"
-EVAL_PROGRESS_X_MAX = "eval/progress/x/max"
-EVAL_PROGRESS_LEVEL_X_MEAN = "eval/progress/level_x/mean"
-EVAL_PROGRESS_LEVEL_X_MAX = "eval/progress/level_x/max"
-EVAL_DEATH_COUNT = "eval/death/count"
-EVAL_DEATH_RATE = "eval/death/rate"
-EVAL_BEST_REWARD = "eval/best/reward"
-EVAL_BEST_X = "eval/best/x"
-EVAL_CHECKPOINT_STEP = "eval/checkpoint/step"
-EVAL_CHECKPOINT_ARTIFACT = "eval/checkpoint/artifact"
-EVAL_CONFIG_HUD_CROP_TOP = "eval/config/hud_crop_top"
-EVAL_DURATION_SECONDS = "eval/duration/seconds"
-EVAL_SOURCE = "eval/source"
-EVAL_EPISODES = "eval/episodes"
-EVAL_INFO_ROOT = "eval/info/"
+EVAL_DONE_MAX_STEPS = f"{EVAL_FULL_ROOT}/done/max_steps"
+EVAL_DONE_MAX_STEPS_RATE = f"{EVAL_DONE_MAX_STEPS}/rate"
+EVAL_DONE_TERMINATED = f"{EVAL_FULL_ROOT}/done/terminated"
+EVAL_DONE_TERMINATED_RATE = f"{EVAL_DONE_TERMINATED}/rate"
+EVAL_DONE_UNCLASSIFIED = f"{EVAL_FULL_ROOT}/done/unclassified"
+EVAL_DONE_UNCLASSIFIED_RATE = f"{EVAL_DONE_UNCLASSIFIED}/rate"
+EVAL_REWARD_MEAN = f"{EVAL_FULL_ROOT}/reward/mean"
+EVAL_REWARD_STD = f"{EVAL_FULL_ROOT}/reward/std"
+EVAL_REWARD_MAX = f"{EVAL_FULL_ROOT}/reward/max"
+EVAL_PROGRESS_X_MEAN = f"{EVAL_FULL_ROOT}/progress/x/mean"
+EVAL_PROGRESS_X_MAX = f"{EVAL_FULL_ROOT}/progress/x/max"
+EVAL_PROGRESS_LEVEL_X_MEAN = f"{EVAL_FULL_ROOT}/progress/level_x/mean"
+EVAL_PROGRESS_LEVEL_X_MAX = f"{EVAL_FULL_ROOT}/progress/level_x/max"
+EVAL_DEATH_COUNT = f"{EVAL_FULL_ROOT}/death/count"
+EVAL_DEATH_RATE = f"{EVAL_FULL_ROOT}/death/rate"
+EVAL_BEST_REWARD = f"{EVAL_FULL_ROOT}/best/reward"
+EVAL_BEST_X = f"{EVAL_FULL_ROOT}/best/x"
+EVAL_CHECKPOINT_STEP = f"{EVAL_FULL_ROOT}/checkpoint/step"
+EVAL_CHECKPOINT_ARTIFACT = f"{EVAL_FULL_ROOT}/checkpoint/artifact"
+EVAL_CONFIG_HUD_CROP_TOP = f"{EVAL_FULL_ROOT}/config/hud_crop_top"
+EVAL_DURATION_SECONDS = f"{EVAL_FULL_ROOT}/duration/seconds"
+EVAL_SOURCE = f"{EVAL_FULL_ROOT}/source"
+EVAL_EPISODES = f"{EVAL_FULL_ROOT}/episodes"
+EVAL_INFO_ROOT = f"{EVAL_FULL_ROOT}/info/"
 
-CHECKPOINT_EVAL_CANDIDATE_PASS = "checkpoint_eval/candidate/pass"
-CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "checkpoint_eval/candidate/stage_index"
-CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP = "checkpoint_eval/candidate/checkpoint_step"
-CHECKPOINT_EVAL_CANDIDATE_EPISODES = "checkpoint_eval/candidate/episodes"
+LEGACY_EVAL_REWARD_MEAN = "eval/reward/mean"
+LEGACY_EVAL_BEST_REWARD = "eval/best/reward"
+
+CHECKPOINT_EVAL_CANDIDATE_PASS = "eval/confirm/candidate/pass"
+CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "eval/confirm/candidate/stage_index"
+CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP = "eval/confirm/candidate/checkpoint_step"
+CHECKPOINT_EVAL_CANDIDATE_EPISODES = "eval/confirm/candidate/episodes"
 
 LEADER_CHECKPOINT_COMPLETION_RATE = "leader/checkpoint/completion_rate"
 LEADER_CHECKPOINT_COMPLETION_RATE_MEAN = "leader/checkpoint/completion_rate_mean"
@@ -112,13 +119,16 @@ def stat_metric(prefix: str, stat: str) -> str:
 
 
 def checkpoint_eval_stage_metric(stage_name: str, name: str) -> str:
-    return f"checkpoint_eval/{stage_name}/{name}"
+    return f"{EVAL_ROOT}/{metric_path_segment(stage_name)}/{name}"
 
 
 def staged_metric_name(stage_name: str, metric_name: str) -> str:
     if metric_name == GLOBAL_STEP:
         return metric_name
-    return checkpoint_eval_stage_metric(stage_name, metric_name.removeprefix("eval/"))
+    suffix = metric_name.removeprefix(f"{EVAL_FULL_ROOT}/")
+    if suffix == metric_name:
+        suffix = metric_name.removeprefix(f"{EVAL_ROOT}/")
+    return checkpoint_eval_stage_metric(stage_name, suffix)
 
 
 def train_done_reason_metric(reason: object) -> str:
@@ -180,7 +190,7 @@ def eval_info_level_complete_rate_metric(value: object) -> str:
 
 
 def eval_done_reason_metric(reason: object) -> str:
-    return f"eval/done/{metric_path_segment(reason)}"
+    return f"{EVAL_DONE_ROOT}{metric_path_segment(reason)}"
 
 
 def eval_done_value_metric(reason: object, direction: str, value: object) -> str:

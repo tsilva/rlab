@@ -88,9 +88,9 @@ def eval_metrics(*, episodes: int, completion: float) -> dict[str, object]:
         "reward_std": 1.0,
         "reward_max": 15.0,
         "best_episode": {"reward": 15.0},
-        "eval/info/level_complete/rate/min": completion,
+        "eval/full/info/level_complete/rate/min": completion,
         EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: completion,
-        "eval/info/level_complete/rate/mean": completion,
+        "eval/full/info/level_complete/rate/mean": completion,
         EVAL_DURATION_SECONDS: 12.5,
     }
 
@@ -158,9 +158,9 @@ class AsyncWorkerTests(unittest.TestCase):
                 "reward_std": 1.0,
                 "reward_max": 15.0,
                 "best_episode": {"reward": 15.0},
-                "eval/info/level_complete/rate/min": 1.0,
+                "eval/full/info/level_complete/rate/min": 1.0,
                 EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0,
-                "eval/info/level_complete/rate/mean": 1.0,
+                "eval/full/info/level_complete/rate/mean": 1.0,
                 EVAL_DURATION_SECONDS: 12.5,
             }
 
@@ -230,10 +230,10 @@ class AsyncWorkerTests(unittest.TestCase):
 
             self.assertIsNone(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN))
             self.assertEqual(
-                store.latest_metric("checkpoint_eval/screen/info/level_complete/rate/min"),
+                store.latest_metric("eval/screen/info/level_complete/rate/min"),
                 0.9,
             )
-            self.assertEqual(store.latest_metric("checkpoint_eval/screen/pass"), 0.0)
+            self.assertEqual(store.latest_metric("eval/screen/pass"), 0.0)
             self.assertIsNone(store.latest_metric(CHECKPOINT_EVAL_CANDIDATE_PASS))
             self.assertEqual(store.phase_counts()["evals:non_candidate"], 1)
             self.assertEqual(store.phase_counts()["eval_stages:succeeded"], 1)
@@ -299,7 +299,7 @@ class AsyncWorkerTests(unittest.TestCase):
                     row=confirm_row,
                 )
 
-            self.assertEqual(store.latest_metric("checkpoint_eval/confirm/pass"), 1.0)
+            self.assertEqual(store.latest_metric("eval/confirm/pass"), 1.0)
             self.assertEqual(store.latest_metric(CHECKPOINT_EVAL_CANDIDATE_PASS), 1.0)
             self.assertIsNone(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN))
             self.assertEqual(store.phase_counts()["evals:candidate"], 1)

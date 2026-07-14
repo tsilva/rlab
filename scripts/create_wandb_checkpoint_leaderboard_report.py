@@ -23,11 +23,11 @@ PINNED_COLUMNS = [
     "summary:leader/checkpoint/step",
     "summary:leader/checkpoint/artifact_ref",
     "summary:leader/checkpoint/updated_at",
-    "summary:eval/info/level_complete/rate/min",
-    "summary:eval/info/level_complete/rate/mean",
-    "summary:eval/reward/mean",
-    "summary:eval/progress/x/max",
-    "summary:eval/checkpoint/artifact",
+    "summary:eval/full/info/level_complete/rate/min",
+    "summary:eval/full/info/level_complete/rate/mean",
+    "summary:eval/full/reward/mean",
+    "summary:eval/full/progress/x/max",
+    "summary:eval/full/checkpoint/artifact",
 ]
 
 VISIBLE_COLUMNS = PINNED_COLUMNS + [
@@ -42,7 +42,7 @@ COLUMN_WIDTHS = {
     "config:recipe_slug.value": 260,
     "summary:leader/checkpoint/artifact_ref": 460,
     "summary:leader/checkpoint/updated_at": 220,
-    "summary:eval/checkpoint/artifact": 460,
+    "summary:eval/full/checkpoint/artifact": 460,
 }
 
 
@@ -76,7 +76,7 @@ def goal_filter(goal: str):
         expr.Or(expr.Config("goal_slug") == goal, expr.Tags().isin([f"goal:{goal}"])),
         expr.Or(
             expr.Summary("leader/checkpoint/artifact_ref") != "",
-            expr.Summary("eval/checkpoint/artifact") != "",
+            expr.Summary("eval/full/checkpoint/artifact") != "",
             expr.Summary("eval/checkpoint_artifact") != "",
         ),
     )
@@ -98,9 +98,9 @@ def goal_runset(*, entity: str, project: str, goal: str):
                 ascending=True,
             ),
             wr.OrderBy(wr.SummaryMetric("leader/checkpoint/reward_mean"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/info/level_complete/rate/min"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/info/level_complete/rate/mean"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/reward/mean"), ascending=False),
+            wr.OrderBy(wr.SummaryMetric("eval/full/info/level_complete/rate/min"), ascending=False),
+            wr.OrderBy(wr.SummaryMetric("eval/full/info/level_complete/rate/mean"), ascending=False),
+            wr.OrderBy(wr.SummaryMetric("eval/full/reward/mean"), ascending=False),
         ],
         pinned_columns=PINNED_COLUMNS,
         visible_columns=VISIBLE_COLUMNS,

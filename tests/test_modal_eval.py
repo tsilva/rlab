@@ -71,8 +71,8 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
         "status": "succeeded",
         "duration_seconds": 1.0,
         "metrics": {
-            "eval/reward/mean": 1.0,
-            "eval/done/all/from/Start": eval_contract["episodes"],
+            "eval/full/reward/mean": 1.0,
+            "eval/full/done/all/from/Start": eval_contract["episodes"],
         },
         "episode_results": [
             {
@@ -283,15 +283,15 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(rotated[0]["train_job_id"], 3)
 
     def test_promotion_ranking_uses_accepted_evidence_not_wandb(self) -> None:
-        rank = ["max(eval/info/level_complete/rate/min)", "max(eval/reward/mean)"]
+        rank = ["max(eval/full/info/level_complete/rate/min)", "max(eval/full/reward/mean)"]
         weaker = {
             "id": 1,
             "checkpoint_step": 100,
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/info/level_complete/rate/min": 0.9,
-                    "eval/reward/mean": 100.0,
+                    "eval/full/info/level_complete/rate/min": 0.9,
+                    "eval/full/reward/mean": 100.0,
                 }
             },
         }
@@ -301,8 +301,8 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/info/level_complete/rate/min": 1.0,
-                    "eval/reward/mean": 1.0,
+                    "eval/full/info/level_complete/rate/min": 1.0,
+                    "eval/full/reward/mean": 1.0,
                 }
             },
         }

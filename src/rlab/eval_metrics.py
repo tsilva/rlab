@@ -16,6 +16,8 @@ from rlab.metric_names import (
     EVAL_DONE_UNCLASSIFIED_RATE,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
     EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
+    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
     LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
     LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
     eval_done_reason_metric,
@@ -433,6 +435,8 @@ def metric_float(metrics: dict[str, Any] | Any, key: str, default: float = float
 def completion_score(metrics: dict[str, Any]) -> tuple[float, float] | None:
     completion_min = metric_float(metrics, EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
     if completion_min == float("-inf"):
+        completion_min = metric_float(metrics, LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
+    if completion_min == float("-inf"):
         completion_min = metric_float(metrics, LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN)
     if completion_min == float("-inf"):
         completion_min = metric_float(metrics, EVAL_DONE_LEVEL_CHANGE_RATE)
@@ -443,11 +447,15 @@ def completion_score(metrics: dict[str, Any]) -> tuple[float, float] | None:
         EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
         metric_float(
             metrics,
-            LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+            LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
             metric_float(
                 metrics,
-                EVAL_DONE_LEVEL_CHANGE_RATE,
-                metric_float(metrics, "completion_rate"),
+                LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
+                metric_float(
+                    metrics,
+                    EVAL_DONE_LEVEL_CHANGE_RATE,
+                    metric_float(metrics, "completion_rate"),
+                ),
             ),
         ),
     )

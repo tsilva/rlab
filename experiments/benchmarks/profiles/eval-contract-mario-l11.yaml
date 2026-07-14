@@ -9,7 +9,7 @@ max_steps: 4500
 expectations:
   exit_code: 0
   required_metrics:
-  - eval/done/level_change/rate
-  - eval/progress/x/max
-  - eval/reward/mean
+  - eval/full/done/level_change/rate
+  - eval/full/progress/x/max
+  - eval/full/reward/mean
   metadata_reconstructed: true

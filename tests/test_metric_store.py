@@ -191,7 +191,7 @@ class MetricStoreTests(unittest.TestCase):
                 int(rows[0]["eval_stage_id"]),
                 episodes=10,
                 n_envs=2,
-                metrics={"checkpoint_eval/screen/pass": 1.0},
+                metrics={"eval/screen/pass": 1.0},
             )
             store.enqueue_checkpoint_eval_stage(
                 int(rows[0]["id"]),
@@ -217,6 +217,41 @@ class MetricStoreTests(unittest.TestCase):
             self.assertEqual(rows[1]["stage_name"], "screen")
             self.assertEqual(store.phase_counts()["evals:skipped_stale"], 2)
             self.assertEqual(store.phase_counts()["eval_stages:skipped_stale"], 2)
+
+    def test_modal_stage_decision_queues_live_wandb_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            checkpoint_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=500000,
+                path=Path(tmp) / "checkpoint.zip",
+                metadata_path=None,
+                sha256="sha",
+            )
+            metrics = {
+                "global_step": 500000.0,
+                "eval/screen/info/level_complete/rate/min": 1.0,
+                "eval/screen/pass": 1.0,
+            }
+
+            store.apply_modal_eval_decision(
+                checkpoint_id,
+                stage_name="screen",
+                stage_index=0,
+                episodes=10,
+                n_envs=2,
+                metrics=metrics,
+                passed=True,
+                candidate_stop=False,
+            )
+
+            frames = store.pending_metric_frames()
+            self.assertEqual(len(frames), 1)
+            self.assertEqual(frames[0]["kind"], "history")
+            self.assertEqual(frames[0]["source"], "modal_checkpoint_eval")
+            self.assertEqual(json.loads(frames[0]["payload_json"]), metrics)
 
 
 if __name__ == "__main__":

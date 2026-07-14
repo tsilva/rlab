@@ -46,9 +46,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["selection_rank"],
             [
-                "min(eval/done/serve_stall/rate)",
-                "max(eval/reward/mean)",
-                "max(eval/best/reward)",
+                "min(eval/full/done/serve_stall/rate)",
+                "max(eval/full/reward/mean)",
+                "max(eval/full/best/reward)",
                 "min(leader/checkpoint/steps_to_completion_goal)",
             ],
         )
@@ -283,7 +283,7 @@ eval:
     def test_goal_validator_rejects_rank_forms_the_runtime_cannot_parse(self) -> None:
         with self.assertRaisesRegex(ValueError, "max\\(metric\\) or min\\(metric\\)"):
             config_validation._validate_rank_order(
-                [{"metric": "eval/reward/mean", "direction": "maximize"}],
+                [{"metric": "eval/full/reward/mean", "direction": "maximize"}],
                 label="objective.rank",
             )
 
@@ -441,7 +441,7 @@ environment_hash: sha256:deadbeef
             document["train"]["early_stop"],
             [
                 {
-                    "metric": "checkpoint_eval/candidate/pass",
+                    "metric": "eval/confirm/candidate/pass",
                     "operator": ">=",
                     "threshold": 1.0,
                 }
@@ -453,10 +453,10 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["objective"]["rank"],
             [
-                "max(eval/info/level_complete/rate/min)",
-                "max(eval/info/level_complete/rate/mean)",
+                "max(eval/full/info/level_complete/rate/min)",
+                "max(eval/full/info/level_complete/rate/mean)",
                 "min(leader/checkpoint/steps_to_completion_goal)",
-                "max(eval/reward/mean)",
+                "max(eval/full/reward/mean)",
             ],
         )
         self.assertNotIn("selection_policy", document)

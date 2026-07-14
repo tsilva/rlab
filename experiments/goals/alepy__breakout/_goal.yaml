@@ -9,9 +9,9 @@ tags:
 title: Baseline stable-retro Atari Breakout PPO training
 objective:
   rank:
-  - min(eval/done/serve_stall/rate)
-  - max(eval/reward/mean)
-  - max(eval/best/reward)
+  - min(eval/full/done/serve_stall/rate)
+  - max(eval/full/reward/mean)
+  - max(eval/full/best/reward)
   - min(leader/checkpoint/steps_to_completion_goal)
 train:
   checkpoint_freq: 500000

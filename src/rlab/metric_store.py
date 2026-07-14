@@ -629,7 +629,7 @@ class MetricStore:
             step=checkpoint_step,
             source="modal_checkpoint_eval",
             checkpoint_step=checkpoint_step,
-            publish=False,
+            publish=True,
         )
 
     def apply_modal_eval_skip(

@@ -39,7 +39,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Provider observation layouts must be normalized to the policy's declared input contract without changing semantic content.
 - Dependency installation must be reproducible, supply-chain hardened, resistant to known-bad releases, and compatible with every supported provider.
 - Training must preserve durable metrics and checkpoint artifacts by default, keep result evidence distinct from job state, and use documented, unambiguous metric semantics.
-- A metric with the same semantic quantity in training and evaluation must use the same path after the `train/` or `eval/` phase prefix; phase-specific aggregation windows may add explicit suffixes but must not rename the underlying quantity.
+- Evaluation metrics must use `eval/screen/*`, `eval/confirm/*`, or `eval/full/*` according to the producing protocol. Metrics with the same semantic quantity must keep the same semantic suffix after the training phase or evaluation-protocol prefix; protocol-specific aggregation windows may add explicit suffixes but must not rename the underlying quantity.
 - Evaluation must reproduce the goal's observation, action, reward, start-state, reset, and termination contract; training metrics and results from another contract cannot establish acceptance.
 - Every policy evaluation and playback must sample actions stochastically; deterministic argmax evaluation and playback are unsupported.
 - Mario completion must be a clean level transition without death or life loss.

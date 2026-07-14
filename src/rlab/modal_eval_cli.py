@@ -387,7 +387,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
                     "name": "screen",
                     "episodes": 2,
                     "n_envs": 2,
-                    "pass": [{"metric": "eval/reward/mean", "operator": ">=", "threshold": 1.0}],
+                    "pass": [{"metric": "eval/full/reward/mean", "operator": ">=", "threshold": 1.0}],
                     "candidate_stop": True,
                 }
             ],
@@ -430,7 +430,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
         if (invoker.active, invoker.queued) != (2, 1):
             raise RuntimeError("bounded fake Modal dispatch failed")
         attempt_id = "smoke-attempt"
-        raw_metrics = {"eval/reward/mean": 1.0}
+        raw_metrics = {"eval/full/reward/mean": 1.0}
         result = {
             "schema_version": 1,
             "contract_schema_version": descriptor["contract"]["schema_version"],
@@ -460,7 +460,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
         passed, observed = apply_decision_rules(raw_metrics, descriptor["decision_rules"])
         decision_metrics = {
             "global_step": 10.0,
-            staged_metric_name("screen", "eval/reward/mean"): 1.0,
+            staged_metric_name("screen", "eval/full/reward/mean"): 1.0,
             checkpoint_eval_stage_metric("screen", "pass"): 1.0,
         }
         decision = {

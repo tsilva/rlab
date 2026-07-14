@@ -18,17 +18,17 @@ title: Sample-efficient SuperMarioBros-NES {goal_id} completion
 objective:
   # Ordered ranking signals; compare each metric in sequence until a candidate wins.
   rank:
-  - max(eval/info/level_complete/rate/min)
-  - max(eval/info/level_complete/rate/mean)
+  - max(eval/full/info/level_complete/rate/min)
+  - max(eval/full/info/level_complete/rate/mean)
   - min(leader/checkpoint/steps_to_completion_goal)
-  - max(eval/reward/mean)
+  - max(eval/full/reward/mean)
 # Training contract for this goal.
 train:
   # Shared checkpoint cadence for Mario training jobs.
   checkpoint_freq: 500000
   # The metric itself owns the 100-attempt FIFO semantics.
   early_stop:
-  - metric: checkpoint_eval/candidate/pass
+  - metric: eval/confirm/candidate/pass
     operator: '>='
     threshold: 1.0
   checkpoint_eval_stages:
@@ -36,14 +36,14 @@ train:
     episodes: 10
     n_envs: 2
     pass:
-    - metric: eval/info/level_complete/rate/min
+    - metric: eval/full/info/level_complete/rate/min
       operator: '>='
       threshold: 1.0
   - name: confirm
     episodes: 30
     n_envs: 4
     pass:
-    - metric: eval/info/level_complete/rate/min
+    - metric: eval/full/info/level_complete/rate/min
       operator: '>='
       threshold: 1.0
     candidate_stop: true
