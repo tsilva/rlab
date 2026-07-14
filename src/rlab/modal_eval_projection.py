@@ -65,7 +65,6 @@ def project_payload(payload: Mapping[str, Any]) -> None:
                 wandb_artifact_collection_name(
                     kind,
                     run_id=run_id,
-                    run_name=train_config.get("run_name"),
                 ),
                 type="model",
                 metadata=artifact_metadata,

@@ -43,9 +43,7 @@ def worker_modules(
     )
     publisher = (
         "rlab.wandb_publisher"
-        if wandb_enabled
-        else "rlab.artifact_worker"
-        if eval_backend != "modal"
+        if wandb_enabled or eval_backend != "modal"
         else None
     )
     return producer, publisher
@@ -302,7 +300,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             publisher_workers.append(
                 start_worker(
                     module=publisher_module,
-                    name="wandb_publisher" if wandb_enabled else "artifact_worker",
+                    name="wandb_publisher",
                     output_dir=output_dir,
                     run_dir=run_dir,
                     config_path=config_path,
@@ -396,7 +394,7 @@ def run_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run one claimed rlab job payload and write result.json."
+        prog="rlab run-job", description="Run one claimed rlab job payload and write result.json."
     )
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

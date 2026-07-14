@@ -405,7 +405,10 @@ def add_common_args(parser: argparse.ArgumentParser, *, suppress_defaults: bool 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Query W&B leaderboards for rlab goals.")
+    parser = argparse.ArgumentParser(
+        prog="rlab leaders",
+        description="Query W&B leaderboards for rlab goals.",
+    )
     add_common_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 

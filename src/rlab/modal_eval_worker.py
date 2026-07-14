@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
-from rlab.modal_eval_protocol import execution_key
+from rlab.modal_eval_protocol import PROTOCOL_SCHEMA_VERSION, execution_key
 from rlab.modal_eval_storage import file_sha256, write_downloaded_file
 from rlab.video import PolicyObservationPreview, write_preview_video
 
@@ -195,7 +195,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
     contract = dict(payload["contract"])
     execution = execution_key(contract)
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "contract_schema_version": int(contract["schema_version"]),
         "attempt_id": attempt_id,
         "execution_key": execution,

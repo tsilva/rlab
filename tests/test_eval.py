@@ -22,6 +22,7 @@ from rlab.eval_metrics import (
 from rlab.callbacks import _DoneMetricsReducer
 from rlab.eval_runner import _eval_runtime_config, evaluate_model_episodes
 from rlab.metric_names import EVAL_FULL_DURATION_SECONDS, metric_path_segment
+from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.targets import target_for_game
 from rlab.task_kernels import Outcome
 from rlab.checkpoint_eval_worker import (
@@ -1000,7 +1001,7 @@ class EvalMetricTests(unittest.TestCase):
         self.assertFalse(any("/outcome/reason/" in key and "/from/" in key for key in metrics))
         self.assertEqual(metrics["episode_results"][0]["env_index"], 1)
         self.assertEqual(metrics["episode_results"][0]["seed"], 7)
-        self.assertEqual(metrics["episode_results"][0]["seed_protocol"], "vector-lane-v1")
+        self.assertEqual(metrics["episode_results"][0]["seed_protocol"], SEED_PROTOCOL)
         self.assertEqual(metrics["episode_results"][0]["seed_lane"], 1)
         self.assertEqual(metrics["episode_results"][0]["seed_episode_ordinal"], 0)
         self.assertEqual(metrics["episode_results"][0]["start_state"], "Level1-2")

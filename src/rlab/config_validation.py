@@ -21,6 +21,7 @@ from rlab.env_registry import (
     resolve_env_id,
     validate_provider_constructor_args,
 )
+from rlab.goal_schema import validate_goal_document_shape
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
@@ -447,7 +448,7 @@ def load_goal_contract(
         label=f"goal file {_display_path(path, repo_root)}",
     )
     if validate:
-        _validate_goal_contract_document(document, path, repo_root)
+        validate_goal_contract_document(document, path, repo_root)
     return document
 
 
@@ -455,10 +456,10 @@ def validate_goal_contract(path: Path, repo_root: Path | None = None) -> None:
     repo_root = (repo_root or Path(".")).resolve()
     path = path.resolve()
     document = load_goal_contract(path, repo_root, validate=False)
-    _validate_goal_contract_document(document, path, repo_root)
+    validate_goal_contract_document(document, path, repo_root)
 
 
-def _validate_goal_contract_document(
+def validate_goal_contract_document(
     document: Mapping[str, Any],
     path: Path,
     repo_root: Path,
@@ -588,6 +589,7 @@ def _validate_goal_contract_document(
                 f"{label}.train.environment start identifiers must be safe metric dimensions"
             ) from exc
 
+    validate_goal_document_shape(document, label=label)
     _validate_goal_eval(document, label=label)
 
 

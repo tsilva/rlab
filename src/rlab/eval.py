@@ -90,7 +90,10 @@ class ScriptedPolicy:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate PPO or scripted provider baselines")
+    parser = argparse.ArgumentParser(
+        prog="rlab eval",
+        description="Evaluate PPO or scripted provider baselines",
+    )
     add_model_source_args(
         parser,
         positional_artifact=True,

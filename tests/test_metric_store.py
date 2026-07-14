@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import threading
 import time
@@ -79,6 +80,40 @@ class MetricStoreTests(unittest.TestCase):
                 mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
 
             self.assertEqual(mode.lower(), "wal")
+
+    def test_init_migrates_legacy_metric_observations_to_latest_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rlab.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE metric_observations (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name TEXT NOT NULL,
+                      value REAL NOT NULL,
+                      step INTEGER,
+                      source TEXT NOT NULL,
+                      checkpoint_step INTEGER,
+                      created_at REAL NOT NULL
+                    );
+                    INSERT INTO metric_observations
+                      (name, value, step, source, checkpoint_step, created_at)
+                    VALUES
+                      ('train/episode/return/shaped/mean', 1.0, 10, 'train', NULL, 1.0),
+                      ('train/episode/return/shaped/mean', 2.5, 20, 'train', NULL, 2.0);
+                    """
+                )
+
+            store = MetricStore(path)
+            store.init()
+
+            self.assertEqual(store.latest_metric("train/episode/return/shaped/mean"), 2.5)
+            with store.connect() as conn:
+                legacy_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'metric_observations'"
+                ).fetchone()
+            self.assertIsNone(legacy_table)
 
     def test_append_metrics_and_latest_lookup_keep_newest_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,13 +220,11 @@ class MetricStoreTests(unittest.TestCase):
                 {EVAL_FULL_SUCCESS_RATE_MIN: 0.5},
                 step=100,
                 source="eval",
-                checkpoint_step=100,
             )
             store.append_metrics(
                 {EVAL_FULL_SUCCESS_RATE_MIN: 1.0},
                 step=200,
                 source="eval",
-                checkpoint_step=200,
             )
 
             self.assertEqual(store.latest_metric(EVAL_FULL_SUCCESS_RATE_MIN), 1.0)

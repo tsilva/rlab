@@ -17,6 +17,7 @@ from rlab.eval_metrics import (
     summarize_episode_results,
 )
 from rlab.metric_names import EVAL_FULL_DURATION_SECONDS
+from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.video import PolicyObservationPreview, write_video
 
@@ -92,7 +93,7 @@ def _evaluate_model_episodes_vector(
                 result = {
                     "episode": len(episode_results) + 1,
                     "seed": seed,
-                    "seed_protocol": "vector-lane-v1",
+                    "seed_protocol": SEED_PROTOCOL,
                     "seed_lane": lane,
                     "seed_episode_ordinal": lane_ordinal,
                     **result,
@@ -180,7 +181,7 @@ def evaluate_model_episodes(
                     result = {
                         "episode": episode_idx + 1,
                         "seed": episode_seed,
-                        "seed_protocol": "vector-lane-v1",
+                        "seed_protocol": SEED_PROTOCOL,
                         "seed_lane": 0,
                         "seed_episode_ordinal": episode_idx,
                         **result,

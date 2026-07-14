@@ -50,7 +50,6 @@ from rlab.play import display_replay_config
 from rlab.play import main as play_main
 from rlab.play import model_observation
 from rlab.play import ObsStackViewer
-from rlab.play import playback_runtime_config
 from rlab.play import playback_should_end_episode
 from rlab.play import render_obs_stack
 from rlab.play import resolved_play_launch_lines
@@ -299,9 +298,13 @@ class CommandAndArtifactTests(unittest.TestCase):
 
     def test_s3_artifact_uri_includes_wandb_rom_id_prefix(self) -> None:
         args = argparse.Namespace(game="TestGame-Platform", run_name="candidate/run")
+        with self.assertRaisesRegex(ValueError, "immutable W&B run id"):
+            build_s3_artifact_uri("s3://wandb", args, Path("final_model.zip"), "final")
+
+        args.wandb_run_id = "rlab-immutable"
         self.assertEqual(
             build_s3_artifact_uri("s3://wandb", args, Path("final_model.zip"), "final"),
-            "s3://wandb/TestGame-Platform/candidate-run-final/final_model.zip",
+            "s3://wandb/TestGame-Platform/rlab-immutable-final/final_model.zip",
         )
         self.assertEqual(
             build_s3_artifact_uri(
@@ -310,12 +313,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 Path("ppo_test_100_steps.zip"),
                 "checkpoint",
             ),
-            "s3://wandb/TestGame-Platform/candidate-run-checkpoint/ppo_test_100_steps.zip",
-        )
-        args.wandb_run_id = "rlab-immutable"
-        self.assertEqual(
-            build_s3_artifact_uri("s3://wandb", args, Path("final_model.zip"), "final"),
-            "s3://wandb/TestGame-Platform/rlab-immutable-final/final_model.zip",
+            "s3://wandb/TestGame-Platform/rlab-immutable-checkpoint/ppo_test_100_steps.zip",
         )
 
     def test_wandb_artifact_logging_reports_stall_timing_metrics(self) -> None:
@@ -857,7 +855,6 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(playback_config.task["termination"]["max_episode_steps"], 0)
         self.assertNotIn("stalled", playback_config.task["events"])
         self.assertIn("level_change", playback_config.task["events"])
-        self.assertIs(playback_runtime_config(playback_config), playback_config)
         self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
         self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
         self.assertIn("stalled", config.task["events"])

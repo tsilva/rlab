@@ -15,7 +15,6 @@ from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.docker_host import (
     DockerRunnerHost,
     JobContainer,
-    RuntimeHostImage,
     setup_docker_host,
 )
 from rlab.job_queue import (
@@ -60,6 +59,7 @@ from rlab.fleet_labels import (
     MANAGED_LABEL,
     OUTPUT_URI_LABEL,
 )
+
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
 SHARED_RUNNER_ENV_KEYS = (
     "WANDB_API_KEY",
@@ -122,10 +122,6 @@ def repo_root_from_args(args: argparse.Namespace) -> Path:
     return default_repo_root()
 
 
-def shared_runner_env_file_from_args(args: argparse.Namespace) -> Path:
-    return repo_root_from_args(args) / DEFAULT_SHARED_RUNNER_ENV_FILE
-
-
 def load_shared_runner_env(path: Path) -> dict[str, str]:
     if not path.is_file():
         raise RuntimeError(f"shared runner env file is missing: {path}")
@@ -146,7 +142,9 @@ def load_shared_runner_env(path: Path) -> dict[str, str]:
         if not value:
             raise RuntimeError(f"shared runner env value is empty: {key} in {path}")
         if "\x00" in value or "\n" in value or "\r" in value:
-            raise RuntimeError(f"shared runner env value contains an invalid control character: {key}")
+            raise RuntimeError(
+                f"shared runner env value contains an invalid control character: {key}"
+            )
         values[key] = value
     missing = [key for key in SHARED_RUNNER_ENV_KEYS if key not in values]
     if missing:
@@ -218,21 +216,6 @@ def repositories_for_runtime_images(protected_refs: set[str]) -> tuple[str, ...]
     return tuple(sorted(repositories))
 
 
-def stale_runtime_host_images(
-    *,
-    machine: MachineConfig,
-    images: Sequence[RuntimeHostImage],
-    demands: Sequence[QueueDemand],
-    containers: Sequence[JobContainer],
-) -> tuple[RuntimeHostImage, ...]:
-    protected = protected_runtime_image_refs(
-        machine=machine,
-        demands=demands,
-        containers=containers,
-    )
-    return tuple(image for image in images if image.runtime_image_ref not in protected)
-
-
 def prune_stale_runtime_images(
     conn,
     host: DockerRunnerHost,
@@ -259,8 +242,7 @@ def prune_stale_runtime_images(
 def prune_inactive_job_containers(conn, host: DockerRunnerHost) -> int:
     machine = host.machine
     active_launch_ids = {
-        str(launch["launch_id"])
-        for launch in active_job_launches(conn, machine=machine.name)
+        str(launch["launch_id"]) for launch in active_job_launches(conn, machine=machine.name)
     }
     removed = 0
     for container in host.list_job_containers():
@@ -436,10 +418,14 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
         if container is None:
             observation = host.observe_result(str(launch["output_uri"]))
             if observation.state == "present":
-                finish_job_launch_from_result(conn, launch_id=launch_id, result=observation.payload or {})
+                finish_job_launch_from_result(
+                    conn, launch_id=launch_id, result=observation.payload or {}
+                )
                 reconciled += 1
             elif observation.state == "error":
-                _record_launch_error(conn, launch_id, observation.error or "result observation failed")
+                _record_launch_error(
+                    conn, launch_id, observation.error or "result observation failed"
+                )
             elif launch_cancel_requested(conn, launch):
                 finish_job_launch_from_result(
                     conn,
@@ -468,9 +454,8 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                 )
                 reconciled += 1
             continue
-        if (
-            container.state in {"created", "restarting", "running"}
-            and launch_cancel_requested(conn, launch)
+        if container.state in {"created", "restarting", "running"} and launch_cancel_requested(
+            conn, launch
         ):
             if cancel_running_job_launch(
                 conn,
@@ -540,7 +525,11 @@ def train_container_slot_usage(conn, host: DockerRunnerHost) -> tuple[int, int, 
     reserved = {str(launch["launch_id"]) for launch in launches}
     orphan_count = 0
     for container in containers:
-        if container.job_kind != TRAIN_JOB_KIND or container.state not in {"running", "created", "restarting"}:
+        if container.job_kind != TRAIN_JOB_KIND or container.state not in {
+            "running",
+            "created",
+            "restarting",
+        }:
             continue
         if container.launch_id:
             reserved.add(container.launch_id)
@@ -718,7 +707,12 @@ def cmd_drain(args: argparse.Namespace) -> int:
         )
     finally:
         conn.close()
-    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
+    print(
+        json.dumps(
+            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -729,7 +723,12 @@ def cmd_resume(args: argparse.Namespace) -> int:
         control = set_machine_control(conn, machine=args.machine, drained=False, reason="resumed")
     finally:
         conn.close()
-    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
+    print(
+        json.dumps(
+            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -751,7 +750,12 @@ def cmd_capacity(args: argparse.Namespace) -> int:
         )
     finally:
         conn.close()
-    print(json.dumps({"control": json_safe(control), "dispatch": _kick_after_machine_control()}, sort_keys=True))
+    print(
+        json.dumps(
+            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -791,7 +795,10 @@ def add_runtime_image_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage one-job rlab containers from queue state.")
+    parser = argparse.ArgumentParser(
+        prog="rlab fleet",
+        description="Manage one-job rlab containers from queue state.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     drain = subparsers.add_parser("drain", help="Block new claims for one machine.")

@@ -540,6 +540,18 @@ class JobQueueTests(unittest.TestCase):
                 machine="beast-3",
             )
 
+    def test_train_recipe_rejects_unknown_embedded_goal_fields(self) -> None:
+        document = valid_train_recipe()
+        document["goal"]["hypotesis"] = "typo"
+
+        with self.assertRaisesRegex(ValueError, "goal.*unknown field.*hypotesis"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
     def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
         rejected_fields = {
             "env": {"action_set": "right"},

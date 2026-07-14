@@ -46,6 +46,14 @@ class ResolvedEnvId:
     import_name: str
 
 
+@dataclass(frozen=True)
+class CanonicalEnvironmentIdentity:
+    game_family: str
+    wandb_project: str
+    env_id_game_family_fallback: bool = True
+    env_id_wandb_project_fallback: bool = True
+
+
 STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
     provider_id="stable-retro-turbo",
     import_name="stable_retro",
@@ -216,28 +224,49 @@ ENV_PROVIDERS: dict[str, EnvProvider] = {
     GYMNASIUM_PROVIDER.provider_id: GYMNASIUM_PROVIDER,
 }
 
-# Provider-neutral, human-readable game families used by W&B metadata and
+# Provider-neutral public identity used by W&B metadata, project routing, and
 # published model identities. Publication must use this explicit registry;
-# provider-local environment ids are not parsed into public family names.
-CANONICAL_GAME_FAMILIES: dict[tuple[str, str], str] = {
-    ("rlab", "Bandit-v0"): "Bandit",
-    ("supermariobrosnes-turbo", "SuperMarioBros-Nes-v0"): "NES-SuperMarioBros",
-    ("stable-retro-turbo", "SuperMarioBros-Nes-v0"): "NES-SuperMarioBros",
-    ("stable-retro-turbo", "SuperMarioBros3-Nes-v0"): "NES-SuperMarioBros3",
-    ("ale-py", "breakout"): "Atari2600-Breakout",
-    ("stable-retro-turbo", "Breakout-Atari2600-v0"): "Atari2600-Breakout",
-    ("ale-py", "ms_pacman"): "Atari2600-MsPacman",
-    ("stable-retro-turbo", "MsPacman-Atari2600-v0"): "Atari2600-MsPacman",
-}
-CANONICAL_GAME_FAMILIES_BY_ENV_ID: dict[str, str] = {
-    "Bandit-v0": "Bandit",
-    "SuperMarioBros-Nes-v0": "NES-SuperMarioBros",
-    "SuperMarioBros3-Nes-v0": "NES-SuperMarioBros3",
-    "breakout": "Atari2600-Breakout",
-    "Breakout-Atari2600-v0": "Atari2600-Breakout",
-    "ms_pacman": "Atari2600-MsPacman",
-    "MsPacman-Atari2600-v0": "Atari2600-MsPacman",
-}
+# provider-local environment ids are not parsed into public identity fields.
+# The env-id fallback flags preserve historical reads where old metadata omitted
+# or carried a stale provider. ALE's short ids historically inferred a family
+# but not a W&B project when the provider mapping did not match.
+CANONICAL_ENVIRONMENT_IDENTITIES: Mapping[
+    tuple[str, str], CanonicalEnvironmentIdentity
+] = MappingProxyType(
+    {
+        ("rlab", "Bandit-v0"): CanonicalEnvironmentIdentity("Bandit", "Bandit-v0"),
+        (
+            "supermariobrosnes-turbo",
+            "SuperMarioBros-Nes-v0",
+        ): CanonicalEnvironmentIdentity("NES-SuperMarioBros", "SuperMarioBros-Nes-v0"),
+        (
+            "stable-retro-turbo",
+            "SuperMarioBros-Nes-v0",
+        ): CanonicalEnvironmentIdentity("NES-SuperMarioBros", "SuperMarioBros-Nes-v0"),
+        (
+            "stable-retro-turbo",
+            "SuperMarioBros3-Nes-v0",
+        ): CanonicalEnvironmentIdentity("NES-SuperMarioBros3", "SuperMarioBros3-Nes-v0"),
+        ("ale-py", "breakout"): CanonicalEnvironmentIdentity(
+            "Atari2600-Breakout",
+            "Breakout-Atari2600-v0",
+            env_id_wandb_project_fallback=False,
+        ),
+        (
+            "stable-retro-turbo",
+            "Breakout-Atari2600-v0",
+        ): CanonicalEnvironmentIdentity("Atari2600-Breakout", "Breakout-Atari2600-v0"),
+        ("ale-py", "ms_pacman"): CanonicalEnvironmentIdentity(
+            "Atari2600-MsPacman",
+            "MsPacman-Atari2600-v0",
+            env_id_wandb_project_fallback=False,
+        ),
+        (
+            "stable-retro-turbo",
+            "MsPacman-Atari2600-v0",
+        ): CanonicalEnvironmentIdentity("Atari2600-MsPacman", "MsPacman-Atari2600-v0"),
+    }
+)
 
 STABLE_RETRO_ATARI_ENV_IDS = frozenset(
     {"Breakout-Atari2600-v0", "MsPacman-Atari2600-v0"}
@@ -250,6 +279,40 @@ def _environment_identity(provider_id: object, env_id: object) -> tuple[str, str
     if not provider and ":" in environment:
         provider, environment = environment.split(":", 1)
     return provider, environment
+
+
+def _canonical_identity_by_env_id(
+    env_id: str,
+    *,
+    fallback_field: str,
+) -> CanonicalEnvironmentIdentity | None:
+    matches = {
+        identity
+        for (_provider, registered_env_id), identity in CANONICAL_ENVIRONMENT_IDENTITIES.items()
+        if registered_env_id == env_id and getattr(identity, fallback_field)
+    }
+    if len(matches) == 1:
+        return matches.pop()
+    return None
+
+
+def _canonical_environment_identity(
+    provider_id: object,
+    env_id: object,
+    *,
+    fallback_field: str,
+    allow_env_id_fallback: bool = True,
+) -> tuple[str, CanonicalEnvironmentIdentity | None]:
+    """Resolve a registered public identity while preserving historical reads."""
+
+    provider, environment = _environment_identity(provider_id, env_id)
+    identity = CANONICAL_ENVIRONMENT_IDENTITIES.get((provider, environment))
+    if identity is None and allow_env_id_fallback:
+        identity = _canonical_identity_by_env_id(
+            environment,
+            fallback_field=fallback_field,
+        )
+    return environment, identity
 
 
 def _fallback_game_family(env_id: str, *, fallback: str) -> str:
@@ -272,18 +335,39 @@ def game_family_for_environment(
     explicit registered family rather than guessing a public model identity.
     """
 
-    provider, environment = _environment_identity(provider_id, env_id)
-    family = CANONICAL_GAME_FAMILIES.get((provider, environment))
-    if family is None and not strict:
-        family = CANONICAL_GAME_FAMILIES_BY_ENV_ID.get(environment)
-    if family is not None:
-        return family
+    environment, identity = _canonical_environment_identity(
+        provider_id,
+        env_id,
+        fallback_field="env_id_game_family_fallback",
+        allow_env_id_fallback=not strict,
+    )
+    if identity is not None:
+        return identity.game_family
     if strict:
+        provider, _environment = _environment_identity(provider_id, env_id)
         qualified = f"{provider}:{environment}" if provider else environment
         raise ValueError(
             f"environment {qualified!r} has no registered canonical game family"
         )
     return _fallback_game_family(environment, fallback=fallback)
+
+
+def wandb_project_for_environment(
+    provider_id: object,
+    env_id: object,
+    *,
+    fallback: str,
+) -> str:
+    """Return the registered W&B project with historical providerless fallback."""
+
+    environment, identity = _canonical_environment_identity(
+        provider_id,
+        env_id,
+        fallback_field="env_id_wandb_project_fallback",
+    )
+    if identity is not None:
+        return identity.wandb_project
+    return environment or fallback
 
 
 def is_stable_retro_atari_env(provider_id: str, game: str) -> bool:

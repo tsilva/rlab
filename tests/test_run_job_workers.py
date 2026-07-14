@@ -21,7 +21,7 @@ class RunJobWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             worker_modules("none", wandb_enabled=False),
-            (None, "rlab.artifact_worker"),
+            (None, "rlab.wandb_publisher"),
         )
 
     def test_unknown_backend_is_rejected(self) -> None:

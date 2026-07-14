@@ -17,7 +17,11 @@ from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX,
 )
 from rlab.metric_store import MetricStore, metric_store_path
-from rlab.modal_eval_protocol import stage_job_descriptor
+from rlab.modal_eval_protocol import (
+    PROTOCOL_SCHEMA_VERSION,
+    SEED_PROTOCOL,
+    stage_job_descriptor,
+)
 from rlab.modal_eval_storage import ObjectStore, file_sha256, object_store_base_uri
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
@@ -108,7 +112,7 @@ def _eval_payload(args) -> dict[str, Any]:
         "max_steps": _max_steps(args),
         "seed": int(getattr(args, "checkpoint_eval_seed", DEFAULT_EVAL_SEED)),
         "seed_protocol": str(
-            getattr(args, "checkpoint_eval_seed_protocol", "vector-lane-v1")
+            getattr(args, "checkpoint_eval_seed_protocol", SEED_PROTOCOL)
         ),
         "asset": asset,
         "promotion_episodes": int(getattr(args, "post_train_eval_episodes", 100)),
@@ -125,7 +129,7 @@ def checkpoint_announcement(
     metadata_sha256: str,
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "train_job_id": int(getattr(args, "queue_train_job_id", 0)),
         "ledger_id": int(row["id"]),
         "kind": str(row["kind"]),
@@ -183,7 +187,7 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
         attempts = int(row.get("attempts") or 0) + 1
         if attempts >= MAX_UPLOAD_ATTEMPTS:
             tombstone = {
-                "schema_version": 1,
+                "schema_version": PROTOCOL_SCHEMA_VERSION,
                 "train_job_id": int(getattr(args, "queue_train_job_id", 0)),
                 "ledger_id": checkpoint_id,
                 "kind": "tombstone",
@@ -314,7 +318,7 @@ def write_complete_marker(store: MetricStore, object_store: ObjectStore, args) -
     object_store.put_json(
         f"artifact-announcements/{train_job_id}/complete.json",
         {
-            "schema_version": 1,
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
             "train_job_id": train_job_id,
             "last_ledger_id": max((int(row["id"]) for row in rows), default=0),
             "checkpoint_count": len(rows),

@@ -22,6 +22,7 @@ from rlab.metric_names import checkpoint_eval_stage_metric, validate_metric_payl
 from rlab.ranking import parse_persisted_objective_rank, rank_score
 from rlab.modal_eval_config import ModalEvalConfig, load_modal_eval_config, modal_app_name
 from rlab.modal_eval_protocol import (
+    PROTOCOL_SCHEMA_VERSION,
     apply_decision_rules,
     promotion_job_descriptor,
     stage_job_descriptor,
@@ -340,7 +341,7 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
     published = 0
     for job in jobs:
         decision = {
-            "schema_version": 1,
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
             "status": "skipped_stale",
             "job_key": str(job["job_key"]),
             "execution_key": str(job["execution_key"]),
@@ -480,7 +481,7 @@ def accept_attempt_result(
     passed, observed = apply_decision_rules(raw_metrics, rules) if rules else (True, [])
     metrics = _stage_metrics(attempt, raw_metrics, passed)
     decision = {
-        "schema_version": 1,
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "job_key": str(attempt["job_key"]),
         "execution_key": str(attempt["execution_key"]),
         "attempt_id": str(attempt["attempt_id"]),

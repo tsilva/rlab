@@ -10,7 +10,6 @@ from rlab.env import EnvConfig
 from rlab.play import (
     optional_fast_env_frames,
     playback_model_observation,
-    playback_runtime_config,
     playback_step_indices,
     vector_env_frame,
 )
@@ -30,19 +29,6 @@ def test_debug_commands_use_one_non_overlapping_step_grammar() -> None:
 def test_invalid_debug_commands_never_parse_as_steps(line: str) -> None:
     with pytest.raises(DebugCommandError):
         parse_debug_command(line, ("life_loss",))
-
-
-def test_playback_runtime_config_preserves_selected_boundary_policy() -> None:
-    original = EnvConfig(
-        game="SuperMarioBros-Nes-v0",
-        task={"termination": {"failure": [], "success": []}},
-    )
-
-    configured = playback_runtime_config(original)
-
-    assert configured is original
-    assert configured.task["termination"]["success"] == []
-    assert original.task["termination"]["success"] == []
 
 
 def test_generic_vector_observation_reaches_policy_unchanged() -> None:

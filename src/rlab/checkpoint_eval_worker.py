@@ -77,7 +77,6 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
         name = wandb_artifact_collection_name(
             "checkpoint",
             run_id=getattr(args, "wandb_run_id", None),
-            run_name=args.run_name,
         )
         return f"{entity}/{project}/{name}:step-{step}"
     return str(checkpoint_path)
@@ -304,12 +303,6 @@ def staged_metric_payload(
     return payload
 
 
-def log_staged_checkpoint_eval_metrics(wandb_run, payload: dict[str, object]) -> None:
-    if wandb_run is None:
-        return
-    wandb_run.log(payload)
-
-
 def update_summary_file(run_dir: Path, summary: dict[str, object]) -> None:
     path = run_dir / "checkpoint_eval_summary.json"
     existing: list[dict[str, object]] = []
@@ -421,7 +414,7 @@ def process_staged_eval(
             passed=passed,
             config=config,
         )
-        store.append_metrics(payload, step=step, source="checkpoint_eval", checkpoint_step=step)
+        store.append_metrics(payload, step=step, source="checkpoint_eval")
         store.mark_checkpoint_eval_stage_succeeded(
             stage_id,
             episodes=episodes,
@@ -448,7 +441,6 @@ def process_staged_eval(
                 candidate_payload,
                 step=step,
                 source="checkpoint_eval",
-                checkpoint_step=step,
             )
             store.mark_checkpoint_eval_candidate(
                 checkpoint_id,
@@ -556,7 +548,6 @@ def process_eval(
             payload,
             step=step,
             source="eval",
-            checkpoint_step=step,
             publish=False,
         )
         store.mark_eval_succeeded(checkpoint_id, episodes=episodes, metrics=payload)

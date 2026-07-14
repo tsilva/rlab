@@ -75,8 +75,6 @@ class ModalEvalConfig:
     child_margin_seconds: int
     expiry_margin_seconds: int
     estimated_hourly_usd: float
-    schema_version: int
-    seed_protocol: str
     max_attempts: int
     preview_enabled: bool
     preview_max_frames: int
@@ -155,7 +153,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             },
         ),
         "cost": (cost, {"estimated_hourly_usd"}),
-        "protocol": (protocol, {"schema_version", "seed_protocol", "max_attempts"}),
+        "protocol": (protocol, {"max_attempts"}),
         "preview": (
             preview,
             {
@@ -190,9 +188,8 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         raise ValueError("protocol.max_attempts must not exceed 2")
     prefix = str(deployment.get("app_name_prefix") or "").strip()
     function_name = str(deployment.get("function_name") or "").strip()
-    seed_protocol = str(protocol.get("seed_protocol") or "").strip()
-    if not prefix or not function_name or not seed_protocol:
-        raise ValueError("deployment names and protocol.seed_protocol must be non-empty")
+    if not prefix or not function_name:
+        raise ValueError("deployment names must be non-empty")
     result = ModalEvalConfig(
         enabled=_bool(document.get("enabled", False), label="enabled"),
         app_name_prefix=prefix,
@@ -243,10 +240,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         estimated_hourly_usd=_positive_float(
             cost.get("estimated_hourly_usd"), label="cost.estimated_hourly_usd"
         ),
-        schema_version=_positive_int(
-            protocol.get("schema_version"), label="protocol.schema_version"
-        ),
-        seed_protocol=seed_protocol,
         max_attempts=max_attempts,
         preview_enabled=_bool(preview.get("enabled", False), label="preview.enabled"),
         preview_max_frames=_positive_int(preview.get("max_frames"), label="preview.max_frames"),

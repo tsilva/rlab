@@ -109,6 +109,27 @@ gates: {}
             with self.assertRaisesRegex(ValueError, "gates is unsupported"):
                 load_benchmark_profile(path)
 
+    def test_benchmark_profile_rejects_unknown_kind_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(
+                """
+schema_version: 1
+name: bad
+kind: env_throughput
+game: SuperMarioBros-Nes-v0
+state: Level1-1
+steps: 10
+warmup: 1
+timstepz: 10
+expectations: {}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unknown field.*timstepz"):
+                load_benchmark_profile(path)
+
     def test_local_smoke_uses_queue_backed_local_fleet_commands(self) -> None:
         profile = find_benchmark_profile("local-smoke-mario-l11")
         commands = build_benchmark_commands(profile)

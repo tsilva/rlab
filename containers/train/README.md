@@ -96,11 +96,19 @@ source provenance plus the exact dependency-image digest in both OCI labels and
 Mac-side `rlab fleet` reconciles these one-job containers over local Docker or
 SSH while the queue remains the scheduling authority. See
 [INSTANCES.md](../../INSTANCES.md) for
-the canonical setup, shepherd, watch, capacity, and cleanup commands.
+the canonical service, job-status, host-setup, capacity, and cleanup commands:
+
+```bash
+rlab fleet service status --json
+rlab jobs status --machine beast-3 --json
+rlab fleet capacity --machine beast-3 --set 4
+rlab fleet drain --machine beast-3
+rlab fleet resume --machine beast-3
+```
 
 Each launched container owns exactly one queue launch and is labeled with
 `rlab.job-container=true`, `rlab.job-id`, `rlab.launch-id`, `rlab.machine`, and
-`rlab.runtime-image-ref`. The shepherd finalizes completed launches from
+`rlab.runtime-image-ref`. The Mac fleet service finalizes completed launches from
 `result.json` and prunes stale host runtime images that are not demanded by the
 queue or used by active containers.
 

@@ -152,15 +152,6 @@ def load_model_metadata(model_path: Path) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def env_config_from_model_metadata(
-    model_path: Path,
-) -> EnvConfig | None:
-    saved_config = env_config_from_metadata(load_model_metadata(model_path))
-    if not saved_config:
-        return None
-    return env_config_from_config_dict(saved_config)
-
-
 def playback_env_config(
     config: EnvConfig,
     *,
@@ -302,12 +293,13 @@ def sanitize_artifact_name(value: str) -> str:
 def wandb_artifact_collection_name(
     kind: str,
     *,
-    run_id: object = None,
-    run_name: object = None,
+    run_id: object,
 ) -> str:
-    """Return an immutable collection name, with a legacy display-name fallback."""
+    """Return a collection name owned by one immutable rlab/W&B run id."""
 
-    owner = str(run_id or "").strip() or str(run_name or "").strip()
+    owner = str(run_id or "").strip()
+    if not owner:
+        raise ValueError("new artifact writes require an immutable W&B run id")
     return f"{sanitize_artifact_name(owner)}-{sanitize_artifact_name(kind)}"
 
 
@@ -393,7 +385,6 @@ def build_s3_artifact_uri(
     collection_name = wandb_artifact_collection_name(
         kind,
         run_id=run_id or getattr(args, "wandb_run_id", ""),
-        run_name=args.run_name,
     )
     key_parts = [
         prefix,
@@ -488,10 +479,8 @@ def log_wandb_model_artifact(
     timer = clock or time.perf_counter
     started_at = timer()
     run_id = getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None)
-    artifact_name = wandb_artifact_collection_name(
-        kind,
-        run_id=run_id,
-        run_name=args.run_name,
+    artifact_name = (
+        wandb_artifact_collection_name(kind, run_id=run_id) if str(run_id or "").strip() else ""
     )
     step = checkpoint_step(model_path)
     artifact_step = step if step is not None else metric_step
@@ -507,7 +496,13 @@ def log_wandb_model_artifact(
     sidecar_path = write_model_metadata_payload(model_path, metadata)
     metadata_seconds = timer() - metadata_started_at
 
-    if not wandb_artifacts_enabled(wandb_run, args):
+    wandb_output_enabled = wandb_artifacts_enabled(wandb_run, args)
+    storage_base_uri = (
+        wandb_artifact_storage_uri(args)
+        if not getattr(args, "no_wandb_artifacts", False)
+        else ""
+    )
+    if not wandb_output_enabled and not storage_base_uri:
         finished_at = timer()
         return ArtifactLogTiming(
             artifact_name=artifact_name,
@@ -526,7 +521,8 @@ def log_wandb_model_artifact(
             local_save_seconds=local_save_seconds,
         )
 
-    import wandb
+    if not artifact_name:
+        raise ValueError("new artifact writes require an immutable W&B run id")
 
     if run_id:
         metadata["wandb_run_id"] = run_id
@@ -534,7 +530,6 @@ def log_wandb_model_artifact(
     if run_path:
         metadata["wandb_run_path"] = format_wandb_run_path(run_path)
 
-    storage_base_uri = wandb_artifact_storage_uri(args)
     reference_uri = None
     storage_upload_seconds = 0.0
     if storage_base_uri:
@@ -549,6 +544,34 @@ def log_wandb_model_artifact(
         upload_s3_artifact(model_path, reference_uri)
         storage_upload_seconds = timer() - upload_started_at
         metadata["artifact_storage_uri"] = reference_uri
+
+    if not wandb_output_enabled:
+        finished_at = timer()
+        timing = ArtifactLogTiming(
+            artifact_name=artifact_name,
+            kind=kind,
+            checkpoint_step=artifact_step,
+            metadata_seconds=metadata_seconds,
+            storage_upload_seconds=storage_upload_seconds,
+            wandb_log_seconds=0.0,
+            log_seconds=finished_at - started_at,
+            stall_seconds=artifact_stall_seconds(
+                finished_at=finished_at,
+                started_at=started_at,
+                stall_started_at=stall_started_at,
+                local_save_seconds=local_save_seconds,
+            ),
+            local_save_seconds=local_save_seconds,
+        )
+        print(
+            f"artifact stored: {artifact_name} ({reference_uri}); "
+            f"artifact_stall_seconds={timing.stall_seconds:.3f}"
+        )
+        if purge_after_upload and getattr(args, "wandb_mode", "online") == "online":
+            purge_model_artifact_files(model_path)
+        return timing
+
+    import wandb
 
     artifact = wandb.Artifact(
         artifact_name,

@@ -12,7 +12,6 @@ from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
 from rlab.preprocessing import preprocessing_contract
 from rlab.task_kernels import default_task_document
-from rlab.validation import normalize_obs_crop
 
 
 ENVIRONMENT_HASH_ALGORITHM = "rlab.environment.v2"
@@ -347,14 +346,6 @@ def environment_identity_from_train_config(
         identity.setdefault("provider_args", deepcopy(provider_args))
     _normalize_preprocessing(identity)
     return identity
-
-
-def _obs_crop_from_value(obs_crop: Any) -> list[int] | None:
-    normalized = normalize_obs_crop(
-        obs_crop,
-        label="environment.preprocessing.obs_crop",
-    )
-    return list(normalized) if normalized is not None else None
 
 
 def train_config_from_source_environment(

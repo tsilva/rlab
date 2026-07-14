@@ -123,7 +123,10 @@ def run_profile(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run named rlab benchmark profiles.")
+    parser = argparse.ArgumentParser(
+        prog="rlab benchmark",
+        description="Run named rlab benchmark profiles.",
+    )
     parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     subparsers = parser.add_subparsers(dest="command", required=True)
 

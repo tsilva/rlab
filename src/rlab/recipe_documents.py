@@ -462,6 +462,15 @@ def load_recipe_document(path: Path, *, recipe_overrides: Sequence[str] = ()) ->
         else _goal_composition_for_recipe(path, document)
     )
     if goal_composition is not None:
+        if goal_composition.sources:
+            from rlab.config_validation import validate_goal_contract_document
+
+            goal_path = goal_composition.sources[-1]
+            validate_goal_contract_document(
+                goal_composition.document,
+                goal_path,
+                Path(".").resolve(),
+            )
         sources = [*goal_composition.sources, *sources]
     sources = list(dict.fromkeys(sources))
     document = materialize_train_recipe_document(

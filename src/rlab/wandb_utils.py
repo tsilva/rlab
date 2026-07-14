@@ -4,29 +4,11 @@ import os
 from pathlib import Path
 
 from rlab.dotenv import load_env_file
-from rlab.env_registry import game_family_for_environment
+from rlab.env_registry import game_family_for_environment, wandb_project_for_environment
 
 DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-Nes-v0"
 DEFAULT_WANDB_PROJECT_PATH = f"{DEFAULT_WANDB_ENTITY}/{DEFAULT_WANDB_PROJECT}"
-
-CANONICAL_WANDB_PROJECTS: dict[tuple[str, str], str] = {
-    ("rlab", "Bandit-v0"): "Bandit-v0",
-    ("supermariobrosnes-turbo", "SuperMarioBros-Nes-v0"): "SuperMarioBros-Nes-v0",
-    ("stable-retro-turbo", "SuperMarioBros-Nes-v0"): "SuperMarioBros-Nes-v0",
-    ("stable-retro-turbo", "SuperMarioBros3-Nes-v0"): "SuperMarioBros3-Nes-v0",
-    ("ale-py", "breakout"): "Breakout-Atari2600-v0",
-    ("stable-retro-turbo", "Breakout-Atari2600-v0"): "Breakout-Atari2600-v0",
-    ("ale-py", "ms_pacman"): "MsPacman-Atari2600-v0",
-    ("stable-retro-turbo", "MsPacman-Atari2600-v0"): "MsPacman-Atari2600-v0",
-}
-CANONICAL_WANDB_PROJECTS_BY_ENV_ID: dict[str, str] = {
-    "Bandit-v0": "Bandit-v0",
-    "SuperMarioBros-Nes-v0": "SuperMarioBros-Nes-v0",
-    "SuperMarioBros3-Nes-v0": "SuperMarioBros3-Nes-v0",
-    "Breakout-Atari2600-v0": "Breakout-Atari2600-v0",
-    "MsPacman-Atari2600-v0": "MsPacman-Atari2600-v0",
-}
 
 WANDB_ENV_PREFIXES = ("WANDB_", "AWS_")
 WANDB_ARTIFACT_ENV_KEYS = {
@@ -54,14 +36,6 @@ def default_wandb_project_path(project: str | None = None) -> str:
     return f"{wandb_entity_from_env()}/{project_name}"
 
 
-def _environment_identity(env_provider: object, env_id: object) -> tuple[str, str]:
-    provider = str(env_provider or "").strip()
-    environment = str(env_id or "").strip()
-    if not provider and ":" in environment:
-        provider, environment = environment.split(":", 1)
-    return provider, environment
-
-
 def canonical_wandb_environment(
     env_provider: object,
     env_id: object,
@@ -70,14 +44,14 @@ def canonical_wandb_environment(
 ) -> tuple[str, str]:
     """Return the canonical W&B project and provider-neutral game family."""
 
-    provider, environment = _environment_identity(env_provider, env_id)
-    project = CANONICAL_WANDB_PROJECTS.get((provider, environment))
-    if project is None:
-        project = CANONICAL_WANDB_PROJECTS_BY_ENV_ID.get(environment)
-    project = project or environment or fallback
+    project = wandb_project_for_environment(
+        env_provider,
+        env_id,
+        fallback=fallback,
+    )
     family = game_family_for_environment(
-        provider,
-        environment,
+        env_provider,
+        env_id,
         fallback=project,
     )
     return project, family

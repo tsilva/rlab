@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from rlab.env import EnvConfig
+from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.provider_config import provider_num_envs
 from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
 from rlab.validation import normalize_obs_crop
@@ -732,8 +733,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
     TrainConfigField(
         "checkpoint_eval_seed_protocol",
         "--checkpoint-eval-seed-protocol",
-        default="vector-lane-v1",
-        choices=("vector-lane-v1",),
+        default=SEED_PROTOCOL,
+        choices=(SEED_PROTOCOL,),
         non_empty=True,
         cli_exposed=False,
         help="Versioned stochastic checkpoint-evaluation seed trace protocol.",

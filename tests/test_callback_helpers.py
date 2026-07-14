@@ -378,7 +378,6 @@ class MetricThresholdStopHelperTests(unittest.TestCase):
                 {EVAL_FULL_SUCCESS_RATE_MIN: 1.0},
                 step=120000,
                 source="eval",
-                checkpoint_step=120000,
             )
             model = self.FakeModel()
             clock_value = 100.0

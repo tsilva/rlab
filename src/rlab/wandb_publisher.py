@@ -9,8 +9,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rlab.artifact_worker import process_upload
-from rlab.artifacts import init_wandb, write_wandb_url
+from rlab.artifacts import (
+    build_s3_artifact_uri,
+    init_wandb,
+    log_wandb_model_artifact,
+    wandb_artifact_collection_name,
+    wandb_artifact_storage_uri,
+    write_wandb_url,
+)
 from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
@@ -18,6 +24,92 @@ from rlab.metric_store import MetricStore, metric_store_path
 from rlab.metric_names import validate_metric_payload
 from rlab.metric_names import EVAL_SCREEN_PREVIEW
 from rlab.train_config import materialized_train_args
+from rlab.wandb_utils import resolve_wandb_namespace
+
+
+def artifact_aliases(kind: str, step: int | None) -> list[str]:
+    if kind == "checkpoint":
+        aliases = ["latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    if kind == "interrupted":
+        aliases = ["interrupted", "latest"]
+        if step is not None:
+            aliases.append(f"step-{step}")
+        return aliases
+    return [kind, "latest"]
+
+
+def artifact_ref(
+    args: argparse.Namespace,
+    kind: str,
+    aliases: list[str],
+    *,
+    wandb_run=None,
+) -> str | None:
+    if not getattr(args, "wandb", False) or getattr(args, "no_wandb_artifacts", False):
+        return None
+    entity, project = resolve_wandb_namespace(
+        getattr(args, "wandb_entity", None),
+        getattr(args, "wandb_project", None),
+        str(args.game),
+        env_provider=getattr(args, "env_provider", None),
+    )
+    if not entity or not project:
+        return None
+    alias = aliases[-1] if aliases else "latest"
+    run_id = getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None)
+    name = wandb_artifact_collection_name(kind, run_id=run_id)
+    return f"{entity}/{project}/{name}:{alias}"
+
+
+def process_upload(
+    *,
+    store: MetricStore,
+    args: argparse.Namespace,
+    config,
+    row: dict[str, Any],
+    wandb_run=None,
+) -> bool:
+    checkpoint_id = int(row["id"])
+    if not store.claim_artifact_upload(checkpoint_id):
+        return False
+    path = Path(str(row["path"]))
+    kind = str(row["kind"])
+    step = row.get("step")
+    step_value = int(step) if step is not None else None
+    aliases = artifact_aliases(kind, step_value)
+    try:
+        log_wandb_model_artifact(
+            wandb_run,
+            args,
+            config,
+            path,
+            kind=kind,
+            aliases=aliases,
+            metric_step=step_value,
+        )
+        storage_uri = None
+        if wandb_artifact_storage_uri(args):
+            storage_uri = build_s3_artifact_uri(
+                wandb_artifact_storage_uri(args),
+                args,
+                path,
+                kind,
+                run_id=getattr(wandb_run, "id", None)
+                or getattr(args, "wandb_run_id", None),
+            )
+        store.mark_artifact_uploaded(
+            checkpoint_id,
+            artifact_ref=artifact_ref(args, kind, aliases, wandb_run=wandb_run),
+            storage_uri=storage_uri,
+        )
+        return True
+    except Exception as exc:
+        store.mark_artifact_failed(checkpoint_id, repr(exc))
+        print(f"artifact upload failed checkpoint_id={checkpoint_id}: {exc}", flush=True)
+        return False
 
 
 def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
@@ -137,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
     config = resolve_env_config(env_config_from_args(args, include_states=True))
     store = MetricStore(metric_store_path(cli_args.run_dir))
     store.init()
-    store.reset_interrupted_metric_frames()
+    wandb_enabled = bool(getattr(args, "wandb", False))
+    if wandb_enabled:
+        store.reset_interrupted_metric_frames()
     modal_eval = str(getattr(args, "checkpoint_eval_backend", "local")) == "modal"
     if not modal_eval:
         store.reset_interrupted_artifact_uploads()
@@ -146,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         retry_delay = max(cli_args.poll_seconds, 0.1)
         while True:
             store.touch_publisher()
-            if run is None:
+            if wandb_enabled and run is None:
                 try:
                     run = init_wandb(args, str(cli_args.run_dir), config)
                     write_wandb_url(run, str(cli_args.run_dir))
@@ -157,12 +251,16 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2.0, 60.0)
                     continue
-            activity = publish_pending_frames(
-                store,
-                run,
-                args=args,
-                config=config,
-                limit=max(cli_args.limit, 1),
+            activity = (
+                publish_pending_frames(
+                    store,
+                    run,
+                    args=args,
+                    config=config,
+                    limit=max(cli_args.limit, 1),
+                )
+                if wandb_enabled
+                else 0
             )
             if not modal_eval:
                 for row in store.pending_artifact_uploads(limit=max(cli_args.limit, 1)):
@@ -170,19 +268,18 @@ def main(argv: list[str] | None = None) -> int:
                         store=store,
                         args=args,
                         config=config,
-                        run_dir=cli_args.run_dir,
                         row=row,
                         wandb_run=run,
                     )
                     activity += int(bool(uploaded))
             if cli_args.stop_file.exists():
-                if not store.pending_metric_frames(limit=1) and (
+                if (not wandb_enabled or not store.pending_metric_frames(limit=1)) and (
                     modal_eval or not store.pending_artifact_uploads(limit=1)
                 ):
                     return 0
             if not activity:
                 has_backlog = bool(
-                    store.pending_metric_frames(limit=1)
+                    (wandb_enabled and store.pending_metric_frames(limit=1))
                     or (not modal_eval and store.pending_artifact_uploads(limit=1))
                 )
                 time.sleep(retry_delay)

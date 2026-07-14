@@ -5,6 +5,7 @@ from typing import Any
 
 from rlab.config_loader import QUEUE_TEMPLATE_VALUES, validate_template_string
 from rlab.env_registry import env_supports_states, validate_provider_constructor_args
+from rlab.goal_schema import validate_goal_document_shape
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     queue_required_train_config_fields,
@@ -117,6 +118,7 @@ def validate_materialized_train_recipe(
     goal = require_mapping(
         require_key(document, "goal", label=label), label=label_path(label, "goal")
     )
+    validate_goal_document_shape(goal, label=label_path(label, "goal"))
     require_non_empty_string(goal, "goal_id", label=label_path(label, "goal"))
     if not train_recipe_id(document):
         raise ValueError(f"{label}.recipe_id is required by train recipe schema")

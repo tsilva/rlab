@@ -28,6 +28,7 @@ from rlab.modal_eval_orchestrator import (
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.modal_eval_projection import project_payload
 from rlab.modal_eval_protocol import (
+    SEED_PROTOCOL,
     build_execution_contract,
     execution_key,
     job_key,
@@ -52,7 +53,7 @@ def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
         n_envs=n_envs,
         max_steps=100,
         seed=10_000,
-        seed_protocol="vector-lane-v1",
+        seed_protocol=SEED_PROTOCOL,
         asset_manifest={
             "filename": rom.name,
             "sha256": file_sha256(rom),
@@ -879,7 +880,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             n_envs=1,
             max_steps=10,
             seed=10_000,
-            seed_protocol="vector-lane-v1",
+            seed_protocol=SEED_PROTOCOL,
             asset_manifest={
                 "filename": rom.name,
                 "sha256": file_sha256(rom),

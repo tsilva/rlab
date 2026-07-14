@@ -158,6 +158,54 @@ class FleetServiceTests(unittest.TestCase):
             self.assertFalse(paths.plist.exists())
             self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands)
 
+    def test_default_count_nonterminal_jobs_delegates_to_queue_api(self) -> None:
+        connection = mock.Mock()
+        with (
+            mock.patch.object(fleet_service, "_connect_queue", return_value=connection),
+            mock.patch(
+                "rlab.job_queue.count_nonterminal_jobs",
+                return_value=3,
+            ) as count_nonterminal_jobs,
+        ):
+            count = fleet_service._default_count_nonterminal_jobs(Path("/repo"))
+
+        self.assertEqual(count, 3)
+        count_nonterminal_jobs.assert_called_once_with(connection)
+        connection.close.assert_called_once_with()
+
+    def test_default_discover_machines_delegates_to_queue_api(self) -> None:
+        connection = mock.Mock()
+        registry = mock.Mock(machines={})
+        with (
+            mock.patch.object(fleet_service, "_connect_queue", return_value=connection),
+            mock.patch(
+                "rlab.job_queue.machines_with_service_work",
+                return_value=("beast-3",),
+            ) as machines_with_service_work,
+            mock.patch("rlab.machines.load_machine_registry", return_value=registry),
+        ):
+            machines = fleet_service._default_discover_machines(Path("/repo"))
+
+        self.assertEqual(machines, ("beast-3",))
+        machines_with_service_work.assert_called_once_with(connection)
+        connection.close.assert_called_once_with()
+
+    def test_default_reconcile_machine_delegates_to_fleet_api(self) -> None:
+        expected = {"reconciled": 1}
+        with mock.patch(
+            "rlab.fleet.run_service_machine_pass",
+            return_value=expected,
+        ) as run_service_machine_pass:
+            result = fleet_service._default_reconcile_machine(Path("/repo"), "beast-3", 42.0)
+
+        self.assertIs(result, expected)
+        run_service_machine_pass.assert_called_once_with(
+            machine_name="beast-3",
+            machines_path=Path("/repo/experiments/machines.yaml"),
+            repo_root=Path("/repo"),
+            deadline_monotonic=42.0,
+        )
+
     def test_run_once_fans_out_and_writes_redacted_atomic_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

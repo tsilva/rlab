@@ -50,6 +50,46 @@ def ssh_machine():
 
 
 class FleetHostTests(unittest.TestCase):
+    def test_machine_registry_rejects_unknown_nested_and_root_fields(self) -> None:
+        cases = {
+            "root": "surprise: true\n",
+            "docker": "      typo: true\n",
+            "paths": "      typo: true\n",
+        }
+        for location, extra in cases.items():
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as temporary_dir:
+                path = Path(temporary_dir) / "machines.yaml"
+                if location == "root":
+                    text = (
+                        "machines:\n"
+                        "  local:\n"
+                        "    backend: local_docker\n"
+                        "    limits: {max_parallel_containers: 1}\n"
+                        f"{extra}"
+                    )
+                elif location == "docker":
+                    text = (
+                        "machines:\n"
+                        "  local:\n"
+                        "    backend: local_docker\n"
+                        "    docker:\n"
+                        f"{extra}"
+                        "    limits: {max_parallel_containers: 1}\n"
+                    )
+                else:
+                    text = (
+                        "machines:\n"
+                        "  local:\n"
+                        "    backend: local_docker\n"
+                        "    limits: {max_parallel_containers: 1}\n"
+                        "    paths:\n"
+                        f"{extra}"
+                    )
+                path.write_text(text, encoding="utf-8")
+
+                with self.assertRaisesRegex(ValueError, "unknown.*typo|unknown root"):
+                    load_machine_registry(path)
+
     def test_shared_runner_env_is_allowlisted_and_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             path = Path(temporary_dir) / ".env"

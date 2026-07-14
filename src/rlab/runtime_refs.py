@@ -728,7 +728,3 @@ def runtime_image_digest(value: str) -> str:
     match = DIGEST_IMAGE_REF_RE.fullmatch(normalize_runtime_image_ref(value))
     assert match is not None
     return match.group("digest").lower()
-
-
-def runtime_image_digest_slug(value: str, *, length: int = 12) -> str:
-    return runtime_image_digest(value)[:length]

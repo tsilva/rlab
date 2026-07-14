@@ -72,6 +72,19 @@ def test_explicit_project_wins_and_unknown_environment_falls_back() -> None:
     )
 
 
+def test_historical_env_id_fallbacks_are_preserved() -> None:
+    assert canonical_wandb_environment(None, "SuperMarioBros-Nes-v0") == (
+        "SuperMarioBros-Nes-v0",
+        "NES-SuperMarioBros",
+    )
+    assert canonical_wandb_environment("legacy-provider", "breakout") == (
+        "breakout",
+        "Atari2600-Breakout",
+    )
+    with pytest.raises(ValueError, match="no registered canonical game family"):
+        game_family_for_environment(None, "SuperMarioBros-Nes-v0", strict=True)
+
+
 def test_init_wandb_records_resolved_identity_and_submission_group() -> None:
     captured = {}
 

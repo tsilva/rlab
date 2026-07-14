@@ -243,11 +243,6 @@ def vector_env_frame(env) -> np.ndarray:
     return np.asarray(images[0]).copy()
 
 
-def playback_runtime_config(config):
-    """Preserve the playback boundary policy selected from model metadata."""
-    return config
-
-
 def _heatmap_color(heatmap: np.ndarray) -> np.ndarray:
     heatmap = np.clip(np.asarray(heatmap, dtype=np.float32), 0.0, 1.0)
     red = np.clip(1.6 * heatmap, 0.0, 1.0)
@@ -425,7 +420,8 @@ def attribution_opacity_arg(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Show a PPO checkpoint playing a provider environment in a GUI window"
+        prog="rlab play",
+        description="Show a PPO checkpoint playing a provider environment in a GUI window",
     )
     add_play_source_args(parser)
     parser.add_argument(
@@ -990,7 +986,10 @@ def _transition_debug_text(
         section("👁", "INPUT", style="blue"),
         field("trajectory", f"episode {transition.episode}  ·  policy step {transition.step}"),
         field("scenario", f"seed {transition.seed}  ·  start {transition.start_id or 'default'}"),
-        field("conditioning", repr(transition.pre_task) if transition.pre_task is not None else ansi("none", "dim")),
+        field(
+            "conditioning",
+            repr(transition.pre_task) if transition.pre_task is not None else ansi("none", "dim"),
+        ),
         field("observation", _observation_shape(transition.model_obs)),
         "",
         section("🎲", "POLICY", style="magenta"),
@@ -1044,7 +1043,12 @@ def _transition_debug_text(
             field("outcome", ansi(outcome.upper(), outcome_style)),
             "",
             section("↻" if transition.boundary else "→", "NEXT", style="green"),
-            field("conditioning", repr(transition.next_task) if transition.next_task is not None else ansi("none", "dim")),
+            field(
+                "conditioning",
+                repr(transition.next_task)
+                if transition.next_task is not None
+                else ansi("none", "dim"),
+            ),
         ]
     )
     if transition.boundary:
@@ -1147,7 +1151,10 @@ def _run_debugger(
         try:
             line = _read_debug_line(session)
         except KeyboardInterrupt:
-            print("\n" + status_message("■", "interrupted; debugger is still active", style="yellow"), flush=True)
+            print(
+                "\n" + status_message("■", "interrupted; debugger is still active", style="yellow"),
+                flush=True,
+            )
             continue
         if line is None:
             return 0
@@ -1171,7 +1178,10 @@ def _run_debugger(
                 print(format_model_input(session.model_obs), flush=True)
             elif command.target == "raw":
                 if session.last_transition is None:
-                    print(status_message("○", "no transition has been stepped", style="yellow"), flush=True)
+                    print(
+                        status_message("○", "no transition has been stepped", style="yellow"),
+                        flush=True,
+                    )
                 else:
                     print(format_raw(_raw_transition_payload(session.last_transition)), flush=True)
             elif command.target == "config":
@@ -1190,7 +1200,10 @@ def _run_debugger(
                     flush=True,
                 )
             elif session.last_transition is None:
-                print(status_message("○", "no transition has been stepped", style="yellow"), flush=True)
+                print(
+                    status_message("○", "no transition has been stepped", style="yellow"),
+                    flush=True,
+                )
             else:
                 print(
                     _transition_debug_text(session.last_transition, session.action_names),
@@ -1272,9 +1285,7 @@ def _run_debugger(
                     )
                 if was_interrupted:
                     print(
-                        status_message(
-                            "■", "interrupted after the completed step", style="yellow"
-                        ),
+                        status_message("■", "interrupted after the completed step", style="yellow"),
                         flush=True,
                     )
                 if (
@@ -1293,7 +1304,10 @@ def _run_debugger(
                 if args.episodes > 0 and boundaries >= args.episodes:
                     return 0
         except KeyboardInterrupt:
-            print("\n" + status_message("■", "interrupted; debugger is still active", style="yellow"), flush=True)
+            print(
+                "\n" + status_message("■", "interrupted; debugger is still active", style="yellow"),
+                flush=True,
+            )
 
 
 def _run_normal_playback(
@@ -1365,7 +1379,7 @@ def main(argv: list[str] | None = None) -> int:
             source.model_path,
             respect_task_termination=args.respect_task_termination,
         )
-    config = playback_runtime_config(artifact_config)
+    config = artifact_config
     display_config = display_replay_config(config)
     print_resolved_play_launch(
         args,

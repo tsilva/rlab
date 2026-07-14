@@ -21,13 +21,6 @@ def artifact_aliases(artifact: Any) -> list[str]:
     return aliases
 
 
-def artifact_qualified_name(artifact: Any) -> str:
-    value = getattr(artifact, "qualified_name", None)
-    if value:
-        return str(value)
-    return str(getattr(artifact, "name"))
-
-
 def checkpoint_step_from_name(value: str) -> int | None:
     match = re.search(r"_(\d+)_steps(?:\.zip)?$", value)
     return int(match.group(1)) if match else None

@@ -80,22 +80,6 @@ CREATE TABLE IF NOT EXISTS checkpoint_eval_stages (
 CREATE INDEX IF NOT EXISTS checkpoint_eval_stages_status_idx
   ON checkpoint_eval_stages (status, stage_index, updated_at);
 
-CREATE TABLE IF NOT EXISTS metric_observations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  value REAL NOT NULL,
-  step INTEGER,
-  source TEXT NOT NULL,
-  checkpoint_step INTEGER,
-  created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS metric_observations_name_id_idx
-  ON metric_observations (name, id DESC);
-
-CREATE INDEX IF NOT EXISTS metric_observations_source_idx
-  ON metric_observations (source, id DESC);
-
 CREATE TABLE IF NOT EXISTS metric_frames (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL UNIQUE,
@@ -166,6 +150,27 @@ class MetricStore:
             # healthy WAL workload fail spuriously under concurrent writers.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA_SQL)
+            conn.execute("BEGIN IMMEDIATE")
+            legacy_metrics = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metric_observations'"
+            ).fetchone()
+            if legacy_metrics is not None:
+                conn.execute(
+                    """
+                    INSERT INTO metric_latest (name, value, step, source, updated_at)
+                    SELECT observations.name, observations.value, observations.step,
+                           observations.source, observations.created_at
+                    FROM metric_observations AS observations
+                    JOIN (
+                      SELECT name, MAX(id) AS id
+                      FROM metric_observations
+                      GROUP BY name
+                    ) AS latest
+                      ON latest.id = observations.id
+                    ON CONFLICT(name) DO NOTHING
+                    """
+                )
+                conn.execute("DROP TABLE metric_observations")
 
     def append_metrics(
         self,
@@ -173,11 +178,9 @@ class MetricStore:
         *,
         step: int | None,
         source: str,
-        checkpoint_step: int | None = None,
         created_at: float | None = None,
         publish: bool = True,
     ) -> int:
-        del checkpoint_step  # retained for API compatibility; the frame already carries its step.
         payload: dict[str, float] = {}
         now = time.time() if created_at is None else created_at
         for name, value in metrics.items():
@@ -430,14 +433,6 @@ class MetricStore:
                 """,
                 (name,),
             ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    """
-                    SELECT value FROM metric_observations
-                    WHERE name = ? ORDER BY id DESC LIMIT 1
-                    """,
-                    (name,),
-                ).fetchone()
         return None if row is None else float(row["value"])
 
     def reset_interrupted_artifact_uploads(self) -> int:
@@ -645,7 +640,6 @@ class MetricStore:
             metrics,
             step=checkpoint_step,
             source="modal_checkpoint_eval",
-            checkpoint_step=checkpoint_step,
             publish=True,
         )
 

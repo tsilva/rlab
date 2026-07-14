@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from rlab.artifact_worker import process_upload
 from rlab.checkpoint_eval_worker import process_eval
 from rlab.env import EnvConfig
 from rlab.metric_names import (
@@ -15,6 +14,7 @@ from rlab.metric_names import (
     EVAL_FULL_SUCCESS_RATE_MIN,
 )
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.wandb_publisher import process_upload
 
 
 class FakeWandbRun:
@@ -35,10 +35,12 @@ def worker_args(**overrides: object) -> argparse.Namespace:
         "run_description": "test",
         "game": "SuperMarioBros-Nes-v0",
         "wandb": True,
+        "wandb_run_id": "rlab-test-run",
         "no_wandb_artifacts": False,
         "wandb_entity": "entity",
         "wandb_project": "project",
         "wandb_mode": "offline",
+        "wandb_artifact_storage_uri": "",
         "device": "cpu",
         "hud_crop_top": 32,
         "post_train_eval_episodes": 100,
@@ -106,6 +108,52 @@ def eval_metrics(*, episodes: int, completion: float) -> dict[str, object]:
 
 
 class AsyncWorkerTests(unittest.TestCase):
+    def test_publisher_uploads_to_object_storage_without_wandb(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            checkpoint_path = run_dir / "checkpoints" / "model_100_steps.zip"
+            checkpoint_path.parent.mkdir(parents=True)
+            checkpoint_path.write_bytes(b"checkpoint")
+            store = MetricStore(metric_store_path(run_dir))
+            store.init()
+            checkpoint_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=100,
+                path=checkpoint_path,
+                metadata_path=None,
+                sha256="sha",
+            )
+            row = store.pending_artifact_uploads()[0]
+            args = worker_args(
+                wandb=False,
+                wandb_artifact_storage_uri="s3://bucket/checkpoints",
+            )
+
+            with patch("rlab.artifacts.upload_s3_artifact") as upload:
+                uploaded = process_upload(
+                    store=store,
+                    args=args,
+                    config=EnvConfig(),
+                    row=row,
+                )
+
+            expected_uri = (
+                "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/"
+                "rlab-test-run-checkpoint/model_100_steps.zip"
+            )
+            self.assertTrue(uploaded)
+            upload.assert_called_once_with(checkpoint_path, expected_uri)
+            with store.connection() as conn:
+                uploaded_row = conn.execute(
+                    "SELECT status, artifact_ref, storage_uri FROM artifact_uploads "
+                    "WHERE checkpoint_id = ?",
+                    (checkpoint_id,),
+                ).fetchone()
+            self.assertEqual(uploaded_row["status"], "uploaded")
+            self.assertIsNone(uploaded_row["artifact_ref"])
+            self.assertEqual(uploaded_row["storage_uri"], expected_uri)
+
     def test_artifact_upload_failure_becomes_retryable_worker_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
@@ -126,7 +174,7 @@ class AsyncWorkerTests(unittest.TestCase):
 
             with (
                 patch(
-                    "rlab.artifact_worker.log_wandb_model_artifact",
+                    "rlab.wandb_publisher.log_wandb_model_artifact",
                     side_effect=RuntimeError("wandb 503"),
                 ),
             ):
@@ -134,7 +182,6 @@ class AsyncWorkerTests(unittest.TestCase):
                     store=store,
                     args=worker_args(),
                     config=EnvConfig(),
-                    run_dir=run_dir,
                     row=row,
                     wandb_run=FakeWandbRun(),
                 )

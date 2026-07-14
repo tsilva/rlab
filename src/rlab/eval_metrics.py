@@ -270,14 +270,6 @@ def eval_by_start_rows(episode_results: list[dict[str, Any]]) -> list[list[Any]]
     return rows
 
 
-def flat_numeric_metrics(metrics: dict[str, Any], prefix: str) -> dict[str, int | float]:
-    return {
-        key: value
-        for key, value in metrics.items()
-        if key.startswith(prefix) and isinstance(value, int | float) and not isinstance(value, bool)
-    }
-
-
 def primary_progress_value(
     result: dict[str, Any],
     semantics: EvalSemantics | None = None,

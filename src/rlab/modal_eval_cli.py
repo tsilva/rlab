@@ -448,6 +448,8 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
     from rlab.metric_store import MetricStore
     from rlab.modal_eval_projection import project_payload
     from rlab.modal_eval_protocol import (
+        PROTOCOL_SCHEMA_VERSION,
+        SEED_PROTOCOL,
         apply_decision_rules,
         stage_job_descriptor,
         validate_attempt_result,
@@ -501,7 +503,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
             ],
             checkpoint_eval_asset_manifest=asset_manifest,
             checkpoint_eval_n_envs=2,
-            checkpoint_eval_seed_protocol="vector-lane-v1",
+            checkpoint_eval_seed_protocol=SEED_PROTOCOL,
             post_train_eval_max_steps=100,
             post_train_eval_episodes=2,
         )
@@ -540,7 +542,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
         attempt_id = "smoke-attempt"
         raw_metrics = {"eval/full/episode/return/mean": 1.0}
         result = {
-            "schema_version": 1,
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
             "contract_schema_version": descriptor["contract"]["schema_version"],
             "attempt_id": attempt_id,
             "execution_key": descriptor["execution_key"],
@@ -556,7 +558,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
             "episode_results": [
                 {
                     "seed": 10_000,
-                    "seed_protocol": "vector-lane-v1",
+                    "seed_protocol": SEED_PROTOCOL,
                     "seed_lane": lane,
                     "seed_episode_ordinal": 0,
                     "start_state": "Start",
@@ -572,7 +574,7 @@ def cmd_smoke_local(_args: argparse.Namespace) -> int:
             checkpoint_eval_stage_metric("screen", "pass"): 1.0,
         }
         decision = {
-            "schema_version": 1,
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
             "job_key": descriptor["job_key"],
             "execution_key": descriptor["execution_key"],
             "attempt_id": attempt_id,

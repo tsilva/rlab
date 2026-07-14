@@ -51,6 +51,7 @@ from rlab.provider_config import provider_num_envs
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.modal_eval_assets import asset_manifest_for_game
 from rlab.modal_eval_config import load_modal_eval_config
+from rlab.modal_eval_protocol import SEED_PROTOCOL
 
 
 SCHEMA_SQL = """
@@ -331,22 +332,6 @@ def queue_demands(conn) -> list[QueueDemand]:
         )
         for row in rows
     ]
-
-
-def machine_queue_counts(conn, *, machine: str) -> dict[str, dict[str, int]]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT status, COUNT(*) AS count
-            FROM train_jobs
-            WHERE machine = %(machine)s
-            GROUP BY status
-            ORDER BY status
-            """,
-            {"machine": normalize_machine(machine)},
-        )
-        train_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
-    return {"train": train_counts}
 
 
 def json_arg(value: Any) -> psycopg2.extras.Json:
@@ -848,36 +833,6 @@ def enqueue_train_jobs_from_recipe_document(
     return rows
 
 
-def enqueue_train_jobs_from_recipe_file(
-    conn,
-    *,
-    path: Path,
-    runtime_image_ref: str,
-    machine: str,
-    submission_key: str | None = None,
-    seeds: Sequence[int] = (),
-    recipe_overrides: Sequence[str] = (),
-    checkpoint_eval_backend: str | None = None,
-    runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
-) -> list[dict[str, Any]]:
-    document = load_recipe_document(path, recipe_overrides=recipe_overrides)
-    metadata = recipe_metadata(path, document)
-    return enqueue_train_jobs_from_recipe_document(
-        conn,
-        document=document,
-        runtime_image_ref=runtime_image_ref,
-        machine=machine,
-        submission_key=submission_key,
-        recipe_path=metadata["recipe_path"],
-        recipe_sha256=metadata["recipe_sha256"],
-        repo_git_commit=metadata["repo_git_commit"],
-        repo_dirty=metadata["repo_dirty"],
-        seeds=seeds,
-        checkpoint_eval_backend=checkpoint_eval_backend,
-        runtime_config_validator=runtime_config_validator,
-    )
-
-
 def enqueue_train_job(
     conn,
     *,
@@ -943,7 +898,7 @@ def enqueue_train_job(
             config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
                 str(config.get("game") or "")
             )
-        config.setdefault("checkpoint_eval_seed_protocol", "vector-lane-v1")
+        config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -2053,13 +2008,20 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
     parser.add_argument("--machine", required=True, help="Exact registered machine name.")
     parser.add_argument("--request-id", dest="submission_key")
-    parser.add_argument("--runtime-image-ref")
+    parser.add_argument(
+        "--runtime-image-ref",
+        help=(
+            "Optional immutable runtime image ref; it must match the image receipt for the "
+            "current clean source revision."
+        ),
+    )
     parser.add_argument(
         "--runtime-image-ref-file",
         type=Path,
         help=(
-            "JSON artifact or plain-text file containing the immutable runtime image ref; "
-            "defaults to latest."
+            "Optional JSON artifact or plain-text descriptor containing the immutable runtime "
+            "image ref for the current clean source revision. When omitted, rlab resolves or "
+            "builds that exact-source image and never falls back to an older image."
         ),
     )
     parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
@@ -2102,7 +2064,10 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage rlab train job queues.")
+    parser = argparse.ArgumentParser(
+        prog="rlab jobs",
+        description="Manage rlab train job queues.",
+    )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

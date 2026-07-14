@@ -14,6 +14,7 @@ from rlab.config_validation import (
     main as validate_main,
     validate_experiment_tree,
     validate_goal_contract,
+    validate_goal_contract_document,
 )
 from rlab.env_registry import resolve_env_provider
 from rlab.job_queue import load_recipe_document
@@ -441,6 +442,14 @@ eval:
                 [{"metric": "eval/full/episode/return/mean", "direction": "maximize"}],
                 label="objective.rank",
             )
+
+    def test_goal_validator_rejects_unknown_top_level_field(self) -> None:
+        path = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml").resolve()
+        document = load_goal_contract(path)
+        document["hypotesis"] = "typo"
+
+        with self.assertRaisesRegex(ValueError, "unknown field.*hypotesis"):
+            validate_goal_contract_document(document, path, Path(".").resolve())
 
     def test_goal_validator_requires_slug_to_match_goal_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

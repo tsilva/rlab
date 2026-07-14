@@ -28,7 +28,6 @@ DEFAULT_LANE_TIMEOUT_SECONDS = 120.0
 DEFAULT_PASS_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_MACHINE_LANES = 4
 SCHEMA_MAINTENANCE_LOCK = "rlab-fleet-schema-maintenance"
-TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "canceled"})
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 DiscoverMachines = Callable[[Path], Sequence[str]]
@@ -595,27 +594,11 @@ def schema_change_service_guard(
 
 
 def _default_count_nonterminal_jobs(repo_root: Path) -> int:
-    from rlab import job_queue
+    from rlab.job_queue import count_nonterminal_jobs
 
-    hook = getattr(job_queue, "count_nonterminal_jobs", None)
-    if callable(hook):
-        return int(hook())
     conn = _connect_queue(repo_root)
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  (SELECT COUNT(*) FROM train_jobs WHERE status <> ALL(%(terminal)s))
-                  +
-                  (SELECT COUNT(*) FROM eval_jobs
-                   WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
-                  AS count
-                """,
-                {"terminal": list(TERMINAL_JOB_STATES)},
-            )
-            row = cur.fetchone()
-        return int(row["count"] if isinstance(row, Mapping) else row[0])
+        return int(count_nonterminal_jobs(conn))
     finally:
         conn.close()
 
@@ -647,29 +630,14 @@ def uninstall_service(
 
 
 def _default_discover_machines(repo_root: Path) -> Sequence[str]:
-    from rlab import job_queue
+    from rlab.job_queue import machines_with_service_work
     from rlab.machines import load_machine_registry
 
-    hook = getattr(job_queue, "machines_with_service_work", None)
-    if callable(hook):
-        work = {str(name) for name in hook()}
-    else:
-        conn = _connect_queue(repo_root)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT machine
-                    FROM train_jobs
-                    WHERE machine IS NOT NULL
-                      AND (status IN ('pending', 'launching', 'starting', 'running') OR cancel_requested = TRUE)
-                    ORDER BY machine
-                    """
-                )
-                rows = cur.fetchall()
-            work = {str(row["machine"] if isinstance(row, Mapping) else row[0]) for row in rows}
-        finally:
-            conn.close()
+    conn = _connect_queue(repo_root)
+    try:
+        work = {str(name) for name in machines_with_service_work(conn)}
+    finally:
+        conn.close()
     registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
     now = time.time()
     for machine_name in registry.machines:
@@ -688,12 +656,9 @@ def _default_reconcile_machine(
     machine_name: str,
     deadline_monotonic: float,
 ) -> Mapping[str, Any] | None:
-    from rlab import fleet
+    from rlab.fleet import run_service_machine_pass
 
-    hook = getattr(fleet, "run_service_machine_pass", None)
-    if not callable(hook):
-        raise RuntimeError("rlab.fleet.run_service_machine_pass is required by the fleet service")
-    return hook(
+    return run_service_machine_pass(
         machine_name=machine_name,
         machines_path=repo_root / "experiments" / "machines.yaml",
         repo_root=repo_root,

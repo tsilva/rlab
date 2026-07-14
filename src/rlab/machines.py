@@ -9,6 +9,21 @@ from rlab.config_loader import load_mapping_document
 
 
 DEFAULT_MACHINE_REGISTRY = Path("experiments/machines.yaml")
+MACHINE_REGISTRY_KEYS = frozenset({"machines"})
+MACHINE_DOCKER_KEYS = frozenset({"command", "gpu_args", "pull_policy"})
+MACHINE_PATH_KEYS = frozenset(
+    {
+        "host_root",
+        "payloads_dir",
+        "outputs_dir",
+        "logs_dir",
+        "roms_dir",
+        "env_file",
+        "container_payloads_dir",
+        "container_outputs_dir",
+        "container_roms_dir",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -89,15 +104,35 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
     ssh_target = str(raw.get("ssh_target") or "").strip()
     if backend == "docker_ssh" and not ssh_target:
         raise ValueError(f"machine {name!r} backend docker_ssh requires ssh_target")
-    docker = raw.get("docker") if isinstance(raw.get("docker"), Mapping) else {}
+    raw_docker = raw.get("docker")
+    if raw_docker is not None and not isinstance(raw_docker, Mapping):
+        raise ValueError(f"machine {name!r} docker must be an object")
+    docker = raw_docker if isinstance(raw_docker, Mapping) else {}
+    unknown_docker_keys = sorted(set(docker) - MACHINE_DOCKER_KEYS)
+    if unknown_docker_keys:
+        raise ValueError(
+            f"machine {name!r} docker has unknown field(s): "
+            f"{', '.join(unknown_docker_keys)}"
+        )
     default_gpu_args: tuple[str, ...] = ("--gpus", "all") if backend == "docker_ssh" else ()
-    limits_raw = raw.get("limits") if isinstance(raw.get("limits"), Mapping) else {}
+    raw_limits = raw.get("limits")
+    if not isinstance(raw_limits, Mapping):
+        raise ValueError(f"machine {name!r} limits must be an object")
+    limits_raw = raw_limits
     unknown_limit_keys = sorted(set(limits_raw) - {"max_parallel_containers"})
     if unknown_limit_keys:
         raise ValueError(
             f"machine {name!r} limits has unknown field(s): {', '.join(unknown_limit_keys)}"
         )
-    paths_raw = raw.get("paths") if isinstance(raw.get("paths"), Mapping) else {}
+    raw_paths = raw.get("paths")
+    if raw_paths is not None and not isinstance(raw_paths, Mapping):
+        raise ValueError(f"machine {name!r} paths must be an object")
+    paths_raw = raw_paths if isinstance(raw_paths, Mapping) else {}
+    unknown_path_keys = sorted(set(paths_raw) - MACHINE_PATH_KEYS)
+    if unknown_path_keys:
+        raise ValueError(
+            f"machine {name!r} paths has unknown field(s): {', '.join(unknown_path_keys)}"
+        )
     host_root = str(paths_raw.get("host_root") or "/home/tsilva/rlab")
     return MachineConfig(
         name=name,
@@ -133,13 +168,21 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
 
 def load_machine_registry(path: Path = DEFAULT_MACHINE_REGISTRY) -> MachineRegistry:
     data = load_config_file(path)
+    unknown_root_keys = sorted(set(data) - MACHINE_REGISTRY_KEYS)
+    if unknown_root_keys:
+        raise ValueError(
+            f"{path} has unknown root field(s): {', '.join(unknown_root_keys)}"
+        )
     raw_machines = data.get("machines")
     if not isinstance(raw_machines, Mapping) or not raw_machines:
         raise ValueError(f"{path} must define machines")
+    invalid_machines = sorted(str(name) for name, raw in raw_machines.items() if not isinstance(raw, Mapping))
+    if invalid_machines:
+        raise ValueError(
+            f"{path} machine definitions must be objects: {', '.join(invalid_machines)}"
+        )
     machines = {
-        str(name): _machine_from_raw(str(name), raw)
-        for name, raw in raw_machines.items()
-        if isinstance(raw, Mapping)
+        str(name): _machine_from_raw(str(name), raw) for name, raw in raw_machines.items()
     }
     if not machines:
         raise ValueError(f"{path} must define at least one machine")

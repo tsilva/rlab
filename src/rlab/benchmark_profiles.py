@@ -32,6 +32,49 @@ ALLOWED_KINDS = {
     "local_smoke",
     "ppo_loop_throughput",
 }
+COMMON_PROFILE_FIELDS = frozenset(
+    {"schema_version", "name", "kind", "description", "expectations", "artifacts"}
+)
+PROFILE_FIELDS_BY_KIND = {
+    "artifact_storage_smoke": frozenset(
+        {"recipe_file", "recipe_overrides", "run_name", "run_description"}
+    ),
+    "container_smoke": frozenset({"runtime_image_ref", "runtime_image_ref_file"}),
+    "env_throughput": frozenset(
+        {
+            "allow_state_none",
+            "env_provider",
+            "envs",
+            "game",
+            "max_runtime_overhead",
+            "modes",
+            "repeats",
+            "script",
+            "seed",
+            "state",
+            "steps",
+            "warmup",
+        }
+    ),
+    "eval_contract": frozenset(
+        {"artifact_ref", "episodes", "game", "max_steps", "model_path"}
+    ),
+    "fleet_capacity": frozenset(
+        {"machine", "recipe_file", "requested_workers", "runtime_image_ref_file"}
+    ),
+    "local_smoke": frozenset(
+        {
+            "machine",
+            "recipe_file",
+            "recipe_overrides",
+            "runtime_image_ref",
+            "runtime_image_ref_file",
+        }
+    ),
+    "ppo_loop_throughput": frozenset(
+        {"recipe_file", "recipe_overrides", "run_description", "run_name"}
+    ),
+}
 STATE_NONE_VALUES = {"", "none", "state.none"}
 
 
@@ -182,6 +225,13 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
     if kind == "eval_contract":
         if not payload.get("artifact_ref") and not payload.get("model_path"):
             raise ValueError(f"{label} must define artifact_ref or model_path")
+
+    allowed_fields = COMMON_PROFILE_FIELDS | PROFILE_FIELDS_BY_KIND[kind]
+    unknown_fields = sorted(set(payload) - allowed_fields)
+    if unknown_fields:
+        raise ValueError(
+            f"{label} has unknown field(s) for {kind}: {', '.join(unknown_fields)}"
+        )
 
 
 def load_benchmark_profile(path: Path) -> BenchmarkProfile:
