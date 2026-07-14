@@ -216,10 +216,12 @@ image step of about 83 seconds. In run `29314888343`, BuildKit spent 38.2 second
 package itself took 1.3 seconds.
 
 The first same-builder rebased canary, run `29321462616`, created the new dependency-keyed image
-once in 114 seconds and then built the runtime image in 9 seconds. A cold-builder follow-up, run
-`29321693205`, exposed a repeated linked-copy destination that still materialized the dependency
-filesystem; final acceptance therefore requires a fresh-runner canary after collapsing the
-application files into one scratch overlay and one final linked copy.
+once in 114 seconds and then built the runtime image in 9 seconds. Cold-builder run `29321693205`
+exposed a repeated linked-copy destination that still materialized the dependency filesystem.
+After collapsing the application files into one scratch overlay, fresh-runner run `29321898579`
+skipped the dependency build, built and pushed the runtime image in 10 seconds, and completed the
+workflow in 37 seconds. That is an approximately 88% runtime-step reduction from the prior median;
+the accepted build transferred no 3.12 GB dependency blob and exported no runtime cache.
 
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 
