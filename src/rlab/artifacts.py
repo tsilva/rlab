@@ -25,12 +25,9 @@ from rlab.env_metadata import (
 )
 from rlab.metric_names import (
     GLOBAL_STEP,
-    TRAIN_ARTIFACT_LOCAL_SAVE_SECONDS,
-    TRAIN_ARTIFACT_LOG_SECONDS,
-    TRAIN_ARTIFACT_METADATA_SECONDS,
-    TRAIN_ARTIFACT_STALL_SECONDS,
-    TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS,
-    TRAIN_ARTIFACT_WANDB_LOG_SECONDS,
+    METRICS_SCHEMA_VERSION,
+    TRAIN_ARTIFACT_SAVE_SECONDS,
+    TRAIN_ARTIFACT_UPLOAD_SECONDS,
 )
 from rlab.wandb_utils import configure_wandb_metrics, load_wandb_env, resolve_wandb_namespace
 
@@ -226,6 +223,8 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
 
     tags = [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()]
     wandb_config: dict[str, Any] = {**vars(args), **env_config_metadata(config)}
+    wandb_config["metrics_schema_version"] = METRICS_SCHEMA_VERSION
+    wandb_config["algorithm_id"] = "ppo"
     training = training_metadata(config)
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]
@@ -375,14 +374,11 @@ def upload_s3_artifact(model_path: Path, destination_uri: str) -> None:
 
 def artifact_timing_payload(timing: ArtifactLogTiming) -> dict[str, float]:
     payload = {
-        TRAIN_ARTIFACT_STALL_SECONDS: timing.stall_seconds,
-        TRAIN_ARTIFACT_LOG_SECONDS: timing.log_seconds,
-        TRAIN_ARTIFACT_METADATA_SECONDS: timing.metadata_seconds,
-        TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS: timing.storage_upload_seconds,
-        TRAIN_ARTIFACT_WANDB_LOG_SECONDS: timing.wandb_log_seconds,
+        TRAIN_ARTIFACT_UPLOAD_SECONDS: timing.storage_upload_seconds
+        + timing.wandb_log_seconds,
     }
     if timing.local_save_seconds is not None:
-        payload[TRAIN_ARTIFACT_LOCAL_SAVE_SECONDS] = timing.local_save_seconds
+        payload[TRAIN_ARTIFACT_SAVE_SECONDS] = timing.local_save_seconds
     return payload
 
 

@@ -5,6 +5,22 @@ from collections import Counter
 from collections.abc import Sequence
 
 from rlab import wandb_leaders
+from rlab.metric_names import (
+    EVAL_FULL_CHECKPOINT_ARTIFACT,
+    EVAL_FULL_EPISODE_RETURN_MEAN,
+    EVAL_FULL_PROGRESS_X_MAX,
+    EVAL_FULL_SUCCESS_RATE_MEAN,
+    EVAL_FULL_SUCCESS_RATE_MIN,
+    LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_EVAL_SOURCE,
+    LEADER_CHECKPOINT_PROGRESS_MAX,
+    LEADER_CHECKPOINT_RETURN_MEAN,
+    LEADER_CHECKPOINT_STEP,
+    LEADER_CHECKPOINT_STEPS_TO_GOAL,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+    LEADER_CHECKPOINT_UPDATED_AT,
+)
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH
 
 
@@ -15,24 +31,24 @@ PINNED_COLUMNS = [
     "config:goal_slug.value",
     "config:recipe_slug.value",
     "config:seed.value",
-    "summary:leader/checkpoint/completion_rate",
-    "summary:leader/checkpoint/completion_rate_mean",
-    "summary:leader/checkpoint/steps_to_completion_goal",
-    "summary:leader/checkpoint/reward_mean",
-    "summary:leader/checkpoint/max_x_max",
-    "summary:leader/checkpoint/step",
-    "summary:leader/checkpoint/artifact_ref",
-    "summary:leader/checkpoint/updated_at",
-    "summary:eval/full/info/level_complete/rate/min",
-    "summary:eval/full/info/level_complete/rate/mean",
-    "summary:eval/full/reward/mean",
-    "summary:eval/full/progress/x/max",
-    "summary:eval/full/checkpoint/artifact",
+    f"summary:{LEADER_CHECKPOINT_SUCCESS_RATE_MIN}",
+    f"summary:{LEADER_CHECKPOINT_SUCCESS_RATE_MEAN}",
+    f"summary:{LEADER_CHECKPOINT_STEPS_TO_GOAL}",
+    f"summary:{LEADER_CHECKPOINT_RETURN_MEAN}",
+    f"summary:{LEADER_CHECKPOINT_PROGRESS_MAX}",
+    f"summary:{LEADER_CHECKPOINT_STEP}",
+    f"summary:{LEADER_CHECKPOINT_ARTIFACT_REF}",
+    f"summary:{LEADER_CHECKPOINT_UPDATED_AT}",
+    f"summary:{EVAL_FULL_SUCCESS_RATE_MIN}",
+    f"summary:{EVAL_FULL_SUCCESS_RATE_MEAN}",
+    f"summary:{EVAL_FULL_EPISODE_RETURN_MEAN}",
+    f"summary:{EVAL_FULL_PROGRESS_X_MAX}",
+    f"summary:{EVAL_FULL_CHECKPOINT_ARTIFACT}",
 ]
 
 VISIBLE_COLUMNS = PINNED_COLUMNS + [
     "tags:__ALL__",
-    "summary:leader/checkpoint/eval_source",
+    f"summary:{LEADER_CHECKPOINT_EVAL_SOURCE}",
 ]
 
 COLUMN_WIDTHS = {
@@ -40,9 +56,9 @@ COLUMN_WIDTHS = {
     "run:group": 220,
     "config:goal_slug.value": 140,
     "config:recipe_slug.value": 260,
-    "summary:leader/checkpoint/artifact_ref": 460,
-    "summary:leader/checkpoint/updated_at": 220,
-    "summary:eval/full/checkpoint/artifact": 460,
+    f"summary:{LEADER_CHECKPOINT_ARTIFACT_REF}": 460,
+    f"summary:{LEADER_CHECKPOINT_UPDATED_AT}": 220,
+    f"summary:{EVAL_FULL_CHECKPOINT_ARTIFACT}": 460,
 }
 
 
@@ -75,9 +91,8 @@ def goal_filter(goal: str):
     return expr.And(
         expr.Or(expr.Config("goal_slug") == goal, expr.Tags().isin([f"goal:{goal}"])),
         expr.Or(
-            expr.Summary("leader/checkpoint/artifact_ref") != "",
-            expr.Summary("eval/full/checkpoint/artifact") != "",
-            expr.Summary("eval/checkpoint_artifact") != "",
+            expr.Summary(LEADER_CHECKPOINT_ARTIFACT_REF) != "",
+            expr.Summary(EVAL_FULL_CHECKPOINT_ARTIFACT) != "",
         ),
     )
 
@@ -91,16 +106,16 @@ def goal_runset(*, entity: str, project: str, goal: str):
         name=f"{goal} checkpoint leaders",
         filters=goal_filter(goal),
         order=[
-            wr.OrderBy(wr.SummaryMetric("leader/checkpoint/completion_rate"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("leader/checkpoint/completion_rate_mean"), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_SUCCESS_RATE_MIN), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_SUCCESS_RATE_MEAN), ascending=False),
             wr.OrderBy(
-                wr.SummaryMetric("leader/checkpoint/steps_to_completion_goal"),
+                wr.SummaryMetric(LEADER_CHECKPOINT_STEPS_TO_GOAL),
                 ascending=True,
             ),
-            wr.OrderBy(wr.SummaryMetric("leader/checkpoint/reward_mean"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/full/info/level_complete/rate/min"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/full/info/level_complete/rate/mean"), ascending=False),
-            wr.OrderBy(wr.SummaryMetric("eval/full/reward/mean"), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(LEADER_CHECKPOINT_RETURN_MEAN), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_SUCCESS_RATE_MIN), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_SUCCESS_RATE_MEAN), ascending=False),
+            wr.OrderBy(wr.SummaryMetric(EVAL_FULL_EPISODE_RETURN_MEAN), ascending=False),
         ],
         pinned_columns=PINNED_COLUMNS,
         visible_columns=VISIBLE_COLUMNS,

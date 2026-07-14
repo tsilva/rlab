@@ -13,6 +13,7 @@ from unittest import mock
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_orchestrator import (
     DefaultModalInvoker,
+    _stage_metrics,
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
@@ -20,6 +21,7 @@ from rlab.modal_eval_orchestrator import (
     promotion_candidate_key,
     round_robin_jobs,
 )
+from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.modal_eval_projection import project_payload
 from rlab.modal_eval_protocol import (
     build_execution_contract,
@@ -71,8 +73,7 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
         "status": "succeeded",
         "duration_seconds": 1.0,
         "metrics": {
-            "eval/full/reward/mean": 1.0,
-            "eval/full/done/all/from/Start": eval_contract["episodes"],
+            "eval/full/episode/return/mean": 1.0,
         },
         "episode_results": [
             {
@@ -88,6 +89,36 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_modal_and_local_full_eval_publish_the_same_metric_projection(self) -> None:
+        raw_metrics = {
+            "return_mean": 2.0,
+            "eval/full/episode/return/mean": 2.0,
+            "eval/full/episode/return/std": 0.5,
+            "eval/full/episode/count": 10,
+            "eval/full/outcome/success/rate/min": 0.8,
+            "eval/full/progress/x/max": 400,
+            "eval/full/duration/seconds": 3.0,
+        }
+        expected = evaluation_metric_payload(
+            protocol="full",
+            metrics=raw_metrics,
+            checkpoint_step=123,
+            checkpoint_artifact="s3://bucket/checkpoint.zip",
+            eval_source="modal",
+        )
+
+        actual = _stage_metrics(
+            {
+                "purpose": "promotion",
+                "checkpoint_step": 123,
+                "checkpoint_uri": "s3://bucket/checkpoint.zip",
+            },
+            raw_metrics,
+            True,
+        )
+
+        self.assertEqual(actual, expected)
+
     def test_preflight_checks_schema_asset_backend_and_exact_deployment(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -283,15 +314,18 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(rotated[0]["train_job_id"], 3)
 
     def test_promotion_ranking_uses_accepted_evidence_not_wandb(self) -> None:
-        rank = ["max(eval/full/info/level_complete/rate/min)", "max(eval/full/reward/mean)"]
+        rank = [
+            "max(eval/full/outcome/success/rate/min)",
+            "max(eval/full/episode/return/mean)",
+        ]
         weaker = {
             "id": 1,
             "checkpoint_step": 100,
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/full/info/level_complete/rate/min": 0.9,
-                    "eval/full/reward/mean": 100.0,
+                    "eval/full/outcome/success/rate/min": 0.9,
+                    "eval/full/episode/return/mean": 100.0,
                 }
             },
         }
@@ -301,8 +335,8 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             "train_config": {"selection_rank": rank},
             "decision_json": {
                 "raw_metrics": {
-                    "eval/full/info/level_complete/rate/min": 1.0,
-                    "eval/full/reward/mean": 1.0,
+                    "eval/full/outcome/success/rate/min": 1.0,
+                    "eval/full/episode/return/mean": 1.0,
                 }
             },
         }

@@ -398,12 +398,9 @@ class CommandAndArtifactTests(unittest.TestCase):
         payload, step = fake_run.metric_logs[0]
         self.assertIsNone(step)
         self.assertEqual(payload[metric_names.GLOBAL_STEP], 100)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_METADATA_SECONDS], 0.2)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_STORAGE_UPLOAD_SECONDS], 1.0)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_WANDB_LOG_SECONDS], 0.3)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_LOG_SECONDS], 1.5)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_LOCAL_SAVE_SECONDS], 2.0)
-        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_STALL_SECONDS], 4.0)
+        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_UPLOAD_SECONDS], 1.3)
+        self.assertAlmostEqual(payload[metric_names.TRAIN_ARTIFACT_SAVE_SECONDS], 2.0)
+        self.assertEqual(set(payload), {"global_step", "train/artifact/upload/seconds", "train/artifact/save/seconds"})
 
     def test_wandb_final_artifact_records_metric_step(self) -> None:
         class FakeArtifact:

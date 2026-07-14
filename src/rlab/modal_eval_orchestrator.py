@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from rlab.job_queue import connect, database_url, json_arg
-from rlab.checkpoint_eval_worker import eval_score
-from rlab.metric_names import GLOBAL_STEP, checkpoint_eval_stage_metric, staged_metric_name
+from rlab.checkpoint_eval_worker import eval_score, evaluation_metric_payload
+from rlab.eval_metrics import eval_by_start_rows
+from rlab.metric_names import checkpoint_eval_stage_metric, validate_metric_payload
 from rlab.modal_eval_config import ModalEvalConfig, load_modal_eval_config, modal_app_name
 from rlab.modal_eval_protocol import (
     apply_decision_rules,
@@ -363,22 +364,29 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
 
 def _stage_metrics(job: Mapping[str, Any], raw_metrics: Mapping[str, Any], passed: bool) -> dict[str, object]:
     if str(job["purpose"]) == "promotion":
-        return {
-            GLOBAL_STEP: float(job["checkpoint_step"]),
-            **{
-                str(name): value
-                for name, value in raw_metrics.items()
-                if isinstance(value, int | float) and not isinstance(value, bool)
-            },
-        }
+        return evaluation_metric_payload(
+            protocol="full",
+            metrics=raw_metrics,
+            checkpoint_step=int(job["checkpoint_step"]),
+            checkpoint_artifact=str(job["checkpoint_uri"]),
+            eval_source="modal",
+        )
     stage_name = str(job["stage_name"])
-    metrics: dict[str, object] = {GLOBAL_STEP: float(job["checkpoint_step"])}
-    for name, value in raw_metrics.items():
-        if str(name).startswith("eval/") and isinstance(value, int | float):
-            metrics[staged_metric_name(stage_name, str(name))] = value
-    metrics[checkpoint_eval_stage_metric(stage_name, "pass")] = 1.0 if passed else 0.0
-    metrics[checkpoint_eval_stage_metric(stage_name, "stage_index")] = float(job["stage_index"])
+    metrics = evaluation_metric_payload(
+        protocol=stage_name,
+        metrics=raw_metrics,
+        checkpoint_step=int(job["checkpoint_step"]),
+        checkpoint_artifact=str(job["checkpoint_uri"]),
+        eval_source="modal",
+    )
+    metrics[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = (
+        1.0 if passed else 0.0
+    )
+    metrics[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(
+        job["stage_index"]
+    )
     metrics[checkpoint_eval_stage_metric(stage_name, "source")] = "modal"
+    validate_metric_payload(metrics)
     return metrics
 
 
@@ -451,6 +459,9 @@ def accept_attempt_result(
             {
                 "checkpoint_step": int(attempt["checkpoint_step"]),
                 "checkpoint_artifact": str(attempt["checkpoint_uri"]),
+                "_eval_by_start_rows": eval_by_start_rows(
+                    [dict(episode) for episode in validated["episode_results"]]
+                ),
             }
         )
     passed, observed = (

@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
-from rlab.metric_names import EVAL_INFO_LEVEL_COMPLETE_RATE_MIN
+from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MIN
 from rlab.metric_store import MetricStore, file_sha256, metric_store_path
 
 STAGES = [
@@ -15,14 +15,14 @@ STAGES = [
         "name": "screen",
         "episodes": 10,
         "n_envs": 2,
-        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [{"metric": EVAL_FULL_SUCCESS_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": False,
     },
     {
         "name": "confirm",
         "episodes": 30,
         "n_envs": 4,
-        "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
+        "pass": [{"metric": EVAL_FULL_SUCCESS_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": True,
     },
 ]
@@ -141,19 +141,19 @@ class MetricStoreTests(unittest.TestCase):
             store = MetricStore(Path(tmp) / "rlab.sqlite")
             store.init()
             store.append_metrics(
-                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 0.5},
+                {EVAL_FULL_SUCCESS_RATE_MIN: 0.5},
                 step=100,
                 source="eval",
                 checkpoint_step=100,
             )
             store.append_metrics(
-                {EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0},
+                {EVAL_FULL_SUCCESS_RATE_MIN: 1.0},
                 step=200,
                 source="eval",
                 checkpoint_step=200,
             )
 
-            self.assertEqual(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN), 1.0)
+            self.assertEqual(store.latest_metric(EVAL_FULL_SUCCESS_RATE_MIN), 1.0)
 
     def test_staged_eval_skips_old_screens_but_preserves_confirm_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +187,7 @@ class MetricStoreTests(unittest.TestCase):
                 int(rows[0]["eval_stage_id"]),
                 episodes=10,
                 n_envs=2,
-                metrics={"eval/screen/pass": 1.0},
+                metrics={"eval/screen/candidate/pass": 1.0},
             )
             store.enqueue_checkpoint_eval_stage(
                 int(rows[0]["id"]),
@@ -228,8 +228,8 @@ class MetricStoreTests(unittest.TestCase):
             )
             metrics = {
                 "global_step": 500000.0,
-                "eval/screen/info/level_complete/rate/min": 1.0,
-                "eval/screen/pass": 1.0,
+                "eval/screen/outcome/success/rate/min": 1.0,
+                "eval/screen/candidate/pass": 1.0,
             }
 
             store.apply_modal_eval_decision(

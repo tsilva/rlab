@@ -107,10 +107,10 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["selection_rank"],
             [
-                "min(eval/full/done/serve_stall/rate)",
-                "max(eval/full/reward/mean)",
-                "max(eval/full/best/reward)",
-                "min(leader/checkpoint/steps_to_completion_goal)",
+                "min(eval/full/outcome/reason/serve_stall/rate)",
+                "max(eval/full/episode/return/mean)",
+                "max(eval/full/episode/return/best)",
+                "min(leader/checkpoint/step)",
             ],
         )
         self.assertEqual(
@@ -304,10 +304,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/info/level_complete/rate/min)
+  - max(train/outcome/success/rate/window_100/min)
 train:
   early_stop:
-  - metric: train/info/level_complete/rate/min
+  - metric: train/outcome/success/rate/window_100/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -419,7 +419,7 @@ eval:
     def test_goal_validator_rejects_rank_forms_the_runtime_cannot_parse(self) -> None:
         with self.assertRaisesRegex(ValueError, "max\\(metric\\) or min\\(metric\\)"):
             config_validation._validate_rank_order(
-                [{"metric": "eval/full/reward/mean", "direction": "maximize"}],
+                [{"metric": "eval/full/episode/return/mean", "direction": "maximize"}],
                 label="objective.rank",
             )
 
@@ -455,11 +455,11 @@ goal_id: bad
 title: Bad Goal
 objective:
   success:
-    metric: train/info/level_complete/rate/min
+    metric: train/outcome/success/rate/window_100/min
     operator: '>'
     threshold: 0.99
   rank:
-  - max(train/info/level_complete/rate/min)
+  - max(train/outcome/success/rate/window_100/min)
 train:
   environment:
     env_config:
@@ -520,10 +520,10 @@ title: Bad Goal
 objective:
   states: [Level1-1]
   rank:
-  - max(train/info/level_complete/rate/min)
+  - max(train/outcome/success/rate/window_100/min)
 train:
   early_stop:
-  - metric: train/info/level_complete/rate/min
+  - metric: train/outcome/success/rate/window_100/min
     operator: '>'
     threshold: 0.99
   environment:
@@ -590,10 +590,10 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["objective"]["rank"],
             [
-                "max(eval/full/info/level_complete/rate/min)",
-                "max(eval/full/info/level_complete/rate/mean)",
-                "min(leader/checkpoint/steps_to_completion_goal)",
-                "max(eval/full/reward/mean)",
+                "max(eval/full/outcome/success/rate/min)",
+                "max(eval/full/outcome/success/rate/mean)",
+                "min(leader/checkpoint/steps_to_goal)",
+                "max(eval/full/episode/return/mean)",
             ],
         )
         self.assertNotIn("selection_policy", document)

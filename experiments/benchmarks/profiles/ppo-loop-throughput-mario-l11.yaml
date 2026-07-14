@@ -19,6 +19,6 @@ run_description: Consolidated native-vector PPO throughput probe for Mario Level
 expectations:
   exit_code: 0
   required_metrics:
-  - throughput/rollout_fps
-  - throughput/loop_fps
+  - train/throughput/rollout_fps
+  - train/throughput/loop_fps
   - time/fps

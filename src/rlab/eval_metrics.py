@@ -6,25 +6,14 @@ from typing import Any
 import numpy as np
 
 from rlab.metric_names import (
-    EVAL_DONE_ALL,
-    EVAL_DONE_LEVEL_CHANGE_RATE,
-    EVAL_DONE_MAX_STEPS,
-    EVAL_DONE_MAX_STEPS_RATE,
-    EVAL_DONE_TERMINATED,
-    EVAL_DONE_TERMINATED_RATE,
-    EVAL_DONE_UNCLASSIFIED,
-    EVAL_DONE_UNCLASSIFIED_RATE,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
-    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-    LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
-    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
-    LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN,
-    eval_done_reason_metric,
-    eval_done_value_metric,
-    eval_info_level_complete_attempts_metric,
-    eval_info_level_complete_count_metric,
-    eval_info_level_complete_rate_metric,
+    EVAL_FULL_SUCCESS_RATE_MEAN,
+    EVAL_FULL_SUCCESS_RATE_MIN,
+    eval_metric,
+    eval_progress_metric,
+    eval_reason_count_metric,
+    eval_reason_rate_metric,
+    eval_success_from_rate_metric,
+    eval_success_rate_metric,
 )
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.task_kernels import Outcome
@@ -122,7 +111,7 @@ def episode_result_from_record(
         "env_index": int(getattr(record, "lane", 0)),
         "episode_index": int(getattr(record, "episode_index", 0)),
         "start_state": start_id or info.get("start_state") or info.get("state"),
-        "reward": float(getattr(record, "episode_return", 0.0)),
+        "return": float(getattr(record, "episode_return", 0.0)),
         "score": int(info.get("score", 0) or 0),
         "lives": int(info.get("lives", 0) or 0),
         "time": int(info.get("time", 0) or 0),
@@ -184,82 +173,93 @@ def serializable_info(info: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def eval_done_from_metrics(
+def episode_reasons(episode: Mapping[str, Any]) -> set[str]:
+    reasons = {str(event) for event in (episode.get("events", ()) or ())}
+    if episode.get("truncated"):
+        reasons.add("max_steps")
+    if not reasons:
+        reasons.add("terminated" if episode.get("terminated") else "unclassified")
+    return reasons
+
+
+def eval_outcome_metrics(
     episode_results: list[dict[str, Any]],
     *,
+    protocol: str = "full",
     semantics: EvalSemantics | None = None,
     event_names: Sequence[str] = (),
 ) -> dict[str, int | float]:
     semantics = semantics or default_eval_semantics()
     metrics: dict[str, int | float] = {}
-    completion_rates: list[float] = []
-    all_event_names = sorted(
-        set(str(name) for name in event_names)
+    success_rates: list[float] = []
+    configured_reasons = set(str(name) for name in event_names)
+    all_reasons = sorted(
+        configured_reasons
         | {
-            str(event)
+            reason
             for episode in episode_results
-            for event in (episode.get("events", ()) or ())
+            for reason in episode_reasons(episode)
         }
     )
+    episode_count = len(episode_results)
+    for reason in all_reasons:
+        count = sum(reason in episode_reasons(episode) for episode in episode_results)
+        metrics[eval_reason_count_metric(protocol, reason)] = count
+        metrics[eval_reason_rate_metric(protocol, reason)] = count / episode_count
+
     states = sorted(
         {state for episode in episode_results if (state := episode_start_state(episode))}
+    )
+    has_success_contract = bool(semantics.completion_reason) or any(
+        episode_is_complete(episode) for episode in episode_results
     )
     for state in states:
         state_episodes = [
             episode for episode in episode_results if episode_start_state(episode) == state
         ]
         denominator = len(state_episodes)
-        completion_count = sum(1 for episode in state_episodes if episode_is_complete(episode))
-        terminated_count = sum(
-            1
-            for episode in state_episodes
-            if episode.get("terminated") and not episode.get("truncated")
-        )
-        max_steps_count = sum(1 for episode in state_episodes if episode.get("truncated"))
-        unclassified_count = sum(
-            1
-            for episode in state_episodes
-            if not (episode.get("events", ()) or ()) and not episode.get("truncated")
-        )
-
-        all_metric = eval_done_value_metric("all", "from", state)
-        max_steps_metric = eval_done_value_metric("max_steps", "from", state)
-        terminated_metric = eval_done_value_metric("terminated", "from", state)
-        unclassified_metric = eval_done_value_metric("unclassified", "from", state)
-        metrics.update(
-            {
-                all_metric: denominator,
-                max_steps_metric: max_steps_count,
-                f"{max_steps_metric}/rate": max_steps_count / denominator,
-                terminated_metric: terminated_count,
-                f"{terminated_metric}/rate": terminated_count / denominator,
-                unclassified_metric: unclassified_count,
-                f"{unclassified_metric}/rate": unclassified_count / denominator,
-            },
-        )
-        for event in all_event_names:
-            event_count = sum(
-                1 for episode in state_episodes if event in (episode.get("events", ()) or ())
-            )
-            event_metric = eval_done_value_metric(event, "from", state)
-            metrics[event_metric] = event_count
-            metrics[f"{event_metric}/rate"] = event_count / denominator
-        if semantics.completion_reason:
-            completion_rate = completion_count / denominator
-            completion_rates.append(completion_rate)
-            metrics.update(
-                {
-                    eval_info_level_complete_count_metric(state): completion_count,
-                    eval_info_level_complete_attempts_metric(state): denominator,
-                    eval_info_level_complete_rate_metric(state): completion_rate,
-                }
-            )
-    if completion_rates and semantics.completion_reason == "level_change":
-        completion_rate_min = min(completion_rates)
-        completion_rate_mean = float(np.mean(completion_rates))
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MIN] = completion_rate_min
-        metrics[EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN] = completion_rate_mean
+        if has_success_contract:
+            success_count = sum(episode_is_complete(episode) for episode in state_episodes)
+            success_rate = success_count / denominator
+            success_rates.append(success_rate)
+            metrics[eval_success_from_rate_metric(protocol, state)] = success_rate
+    if success_rates:
+        metrics[eval_success_rate_metric(protocol, "min")] = min(success_rates)
+        metrics[eval_success_rate_metric(protocol, "mean")] = float(np.mean(success_rates))
     return metrics
+
+
+def eval_by_start_rows(episode_results: list[dict[str, Any]]) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    states = sorted(
+        {state for episode in episode_results if (state := episode_start_state(episode))}
+    )
+    for state in states:
+        episodes = [episode for episode in episode_results if episode_start_state(episode) == state]
+        returns = np.asarray([episode["return"] for episode in episodes], dtype=np.float64)
+        success_count = sum(episode_is_complete(episode) for episode in episodes)
+        reason_counts: dict[str, int] = {}
+        for episode in episodes:
+            for reason in episode_reasons(episode):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        reasons = sorted(reason_counts) or [""]
+        for reason in reasons:
+            reason_count = reason_counts.get(reason, 0)
+            rows.append(
+                [
+                    state,
+                    len(episodes),
+                    success_count,
+                    success_count / len(episodes),
+                    float(np.mean(returns)),
+                    float(np.std(returns)),
+                    float(np.median(returns)),
+                    reason,
+                    reason_count,
+                    reason_count / len(episodes),
+                ]
+            )
+    return rows
 
 
 def flat_numeric_metrics(metrics: dict[str, Any], prefix: str) -> dict[str, int | float]:
@@ -293,10 +293,10 @@ def episode_rank(
         elif item == "progress":
             values.append(primary_progress_value(result, semantics))
         elif item == "reward":
-            values.append(float(result.get("reward", 0.0) or 0.0))
+            values.append(float(result.get("return", 0.0) or 0.0))
         else:
             values.append(float(result.get(item, 0.0) or 0.0))
-    return tuple(values or [float(result.get("reward", 0.0) or 0.0)])
+    return tuple(values or [float(result.get("return", 0.0) or 0.0)])
 
 
 def progress_summary_fields(result_key: str) -> tuple[str, str]:
@@ -329,7 +329,8 @@ def summarize_episode_results(
         raise ValueError("episode_results must not be empty")
     semantics = semantics or default_eval_semantics()
 
-    rewards = np.array([episode["reward"] for episode in episode_results], dtype=np.float64)
+    returns = np.array([episode["return"] for episode in episode_results], dtype=np.float64)
+    lengths = np.array([episode["steps"] for episode in episode_results], dtype=np.float64)
     progress_metrics: dict[str, int | float] = {}
     for field in semantics.progress_fields:
         values = np.array(
@@ -339,6 +340,17 @@ def summarize_episode_results(
         mean_key, max_key = progress_summary_fields(field.result_key)
         progress_metrics[mean_key] = float(values.mean())
         progress_metrics[max_key] = int(values.max())
+        progress_name = (
+            "x"
+            if field.result_key == "max_x_pos"
+            else "level_x"
+            if field.result_key == "max_level_x_pos"
+            else field.result_key.removeprefix("max_").removesuffix("_pos")
+        )
+        progress_metrics[eval_progress_metric("full", progress_name, "mean")] = float(
+            values.mean()
+        )
+        progress_metrics[eval_progress_metric("full", progress_name, "max")] = int(values.max())
     death_x_positions = [
         int(episode["death_x_pos"])
         for episode in episode_results
@@ -346,62 +358,26 @@ def summarize_episode_results(
     ]
     completion_count = sum(1 for episode in episode_results if episode_is_complete(episode))
     death_count = sum(1 for episode in episode_results if episode.get("died"))
-    terminated_count = sum(
-        1
-        for episode in episode_results
-        if episode.get("terminated") and not episode.get("truncated")
-    )
-    truncated_count = sum(1 for episode in episode_results if episode.get("truncated"))
-    unclassified_count = sum(
-        1
-        for episode in episode_results
-        if not (episode.get("events", ()) or ()) and not episode.get("truncated")
-    )
     episode_count = len(episode_results)
     metrics: dict[str, Any] = {
         "episodes": episode_count,
         "deterministic": deterministic,
-        "reward_mean": float(rewards.mean()),
-        "reward_std": float(rewards.std()),
-        "reward_max": float(rewards.max()),
-        "terminated_count": terminated_count,
-        "terminated_rate": terminated_count / episode_count,
-        "truncated_count": truncated_count,
-        "truncated_rate": truncated_count / episode_count,
-        "unclassified_count": unclassified_count,
-        "unclassified_rate": unclassified_count / episode_count,
-        EVAL_DONE_ALL: episode_count,
-        EVAL_DONE_MAX_STEPS: truncated_count,
-        EVAL_DONE_MAX_STEPS_RATE: truncated_count / episode_count,
-        EVAL_DONE_TERMINATED: terminated_count,
-        EVAL_DONE_TERMINATED_RATE: terminated_count / episode_count,
-        EVAL_DONE_UNCLASSIFIED: unclassified_count,
-        EVAL_DONE_UNCLASSIFIED_RATE: unclassified_count / episode_count,
+        "return_mean": float(returns.mean()),
+        "return_std": float(returns.std()),
+        "return_median": float(np.median(returns)),
+        "return_max": float(returns.max()),
+        "episode_length_mean": float(lengths.mean()),
+        eval_metric("full", "episode/return/mean"): float(returns.mean()),
+        eval_metric("full", "episode/return/std"): float(returns.std()),
+        eval_metric("full", "episode/return/median"): float(np.median(returns)),
+        eval_metric("full", "episode/length/mean"): float(lengths.mean()),
+        eval_metric("full", "episode/count"): episode_count,
         "episode_results": episode_results,
     }
-    all_event_names = sorted(
-        set(str(name) for name in event_names)
-        | {
-            str(event)
-            for episode in episode_results
-            for event in (episode.get("events", ()) or ())
-        }
-    )
-    for event in all_event_names:
-        event_count = sum(
-            1 for episode in episode_results if event in (episode.get("events", ()) or ())
-        )
-        event_metric = eval_done_reason_metric(event)
-        metrics[event_metric] = event_count
-        metrics[f"{event_metric}/rate"] = event_count / episode_count
     metrics.update(progress_metrics)
-    if semantics.completion_reason == "level_change":
-        metrics.update(
-            {
-                "completion_count": completion_count,
-                "completion_rate": completion_count / episode_count,
-            }
-        )
+    if semantics.completion_reason:
+        metrics["success_count"] = completion_count
+        metrics["success_rate"] = completion_count / episode_count
     if semantics.death_flag_key:
         metrics.update(
             {
@@ -411,10 +387,10 @@ def summarize_episode_results(
             }
         )
     metrics.update(
-        eval_done_from_metrics(
+        eval_outcome_metrics(
             episode_results,
             semantics=semantics,
-            event_names=all_event_names,
+            event_names=event_names,
         )
     )
     if extra:
@@ -433,32 +409,8 @@ def metric_float(metrics: dict[str, Any] | Any, key: str, default: float = float
 
 
 def completion_score(metrics: dict[str, Any]) -> tuple[float, float] | None:
-    completion_min = metric_float(metrics, EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
-    if completion_min == float("-inf"):
-        completion_min = metric_float(metrics, LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MIN)
-    if completion_min == float("-inf"):
-        completion_min = metric_float(metrics, LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MIN)
-    if completion_min == float("-inf"):
-        completion_min = metric_float(metrics, EVAL_DONE_LEVEL_CHANGE_RATE)
-    if completion_min == float("-inf"):
-        completion_min = metric_float(metrics, "completion_rate")
-    completion_mean = metric_float(
-        metrics,
-        EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-        metric_float(
-            metrics,
-            LEGACY_EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-            metric_float(
-                metrics,
-                LEGACY_EVAL_DONE_LEVEL_CHANGE_FROM_RATE_MEAN,
-                metric_float(
-                    metrics,
-                    EVAL_DONE_LEVEL_CHANGE_RATE,
-                    metric_float(metrics, "completion_rate"),
-                ),
-            ),
-        ),
-    )
+    completion_min = metric_float(metrics, EVAL_FULL_SUCCESS_RATE_MIN)
+    completion_mean = metric_float(metrics, EVAL_FULL_SUCCESS_RATE_MEAN)
     if completion_min == float("-inf"):
         return None
     return (float(completion_min), float(completion_mean))

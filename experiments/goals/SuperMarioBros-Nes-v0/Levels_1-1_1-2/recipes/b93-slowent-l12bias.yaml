@@ -7,7 +7,7 @@ description: >-
   settings: 40/60 Level1-1/Level1-2 sampling, slow entropy decay with a higher
   entropy floor, constant learning rate, target_kl=0.20, clip_range=0.15,
   smaller policy head, clipped score progress, and no completion reward. Judge
-  this discovery run by peak train/info/level_complete/rate/min within
+  this discovery run by peak train/outcome/success/rate/window_100/min within
   the 5M-step historical cap before deciding whether to extend or confirm.
 train:
   policy:

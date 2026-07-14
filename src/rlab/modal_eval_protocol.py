@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rlab.early_stop import evaluate_early_stop_config
-from rlab.metric_names import EVAL_DONE_ALL
 
 
 PROTOCOL_SCHEMA_VERSION = 1
@@ -293,7 +292,6 @@ def validate_attempt_result(
         if episode.get("seed_protocol") != contract["seed_protocol"]:
             raise ValueError("eval episode seed protocol mismatch")
     seen_ordinals: set[tuple[int, int]] = set()
-    starts: dict[str, int] = {}
     for episode in episodes:
         lane = int(episode.get("seed_lane", -1))
         ordinal = int(episode.get("seed_episode_ordinal", -1))
@@ -308,11 +306,6 @@ def validate_attempt_result(
         start = str(episode.get("start_state") or "").strip()
         if not start:
             raise ValueError("eval episode start-state accounting is missing")
-        starts[start] = starts.get(start, 0) + 1
-    for start, count in starts.items():
-        metric_name = f"{EVAL_DONE_ALL}/from/{start}"
-        if metric_name in metrics and int(metrics[metric_name]) != count:
-            raise ValueError("eval result start-state accounting mismatch")
     return dict(result)
 
 

@@ -11,8 +11,8 @@ from rlab.checkpoint_eval_worker import process_eval
 from rlab.env import EnvConfig
 from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_PASS,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
-    EVAL_DURATION_SECONDS,
+    EVAL_FULL_DURATION_SECONDS,
+    EVAL_FULL_SUCCESS_RATE_MIN,
 )
 from rlab.metric_store import MetricStore, metric_store_path
 
@@ -46,6 +46,10 @@ def worker_args(**overrides: object) -> argparse.Namespace:
         "max_episode_steps": 4500,
         "checkpoint_eval_n_envs": 1,
         "post_train_eval_stochastic": True,
+        "selection_rank": [
+            "max(eval/full/outcome/success/rate/min)",
+            "max(eval/full/episode/return/mean)",
+        ],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -59,7 +63,7 @@ def checkpoint_eval_stages() -> list[dict[str, object]]:
             "n_envs": 2,
             "pass": [
                 {
-                    "metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+                    "metric": EVAL_FULL_SUCCESS_RATE_MIN,
                     "operator": ">=",
                     "threshold": 1.0,
                 }
@@ -71,7 +75,7 @@ def checkpoint_eval_stages() -> list[dict[str, object]]:
             "n_envs": 4,
             "pass": [
                 {
-                    "metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
+                    "metric": EVAL_FULL_SUCCESS_RATE_MIN,
                     "operator": ">=",
                     "threshold": 1.0,
                 }
@@ -84,14 +88,20 @@ def checkpoint_eval_stages() -> list[dict[str, object]]:
 def eval_metrics(*, episodes: int, completion: float) -> dict[str, object]:
     return {
         "episodes": episodes,
-        "reward_mean": 12.0,
-        "reward_std": 1.0,
-        "reward_max": 15.0,
-        "best_episode": {"reward": 15.0},
-        "eval/full/info/level_complete/rate/min": completion,
-        EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: completion,
-        "eval/full/info/level_complete/rate/mean": completion,
-        EVAL_DURATION_SECONDS: 12.5,
+        "return_mean": 12.0,
+        "return_std": 1.0,
+        "return_median": 12.0,
+        "return_max": 15.0,
+        "episode_length_mean": 100.0,
+        "best_episode": {"return": 15.0},
+        "eval/full/episode/return/mean": 12.0,
+        "eval/full/episode/return/std": 1.0,
+        "eval/full/episode/return/median": 12.0,
+        "eval/full/episode/length/mean": 100.0,
+        "eval/full/episode/count": episodes,
+        EVAL_FULL_SUCCESS_RATE_MIN: completion,
+        "eval/full/outcome/success/rate/mean": completion,
+        EVAL_FULL_DURATION_SECONDS: 12.5,
     }
 
 
@@ -154,14 +164,7 @@ class AsyncWorkerTests(unittest.TestCase):
             row = store.pending_evals()[0]
             metrics = {
                 "episodes": 100,
-                "reward_mean": 12.0,
-                "reward_std": 1.0,
-                "reward_max": 15.0,
-                "best_episode": {"reward": 15.0},
-                "eval/full/info/level_complete/rate/min": 1.0,
-                EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: 1.0,
-                "eval/full/info/level_complete/rate/mean": 1.0,
-                EVAL_DURATION_SECONDS: 12.5,
+                **eval_metrics(episodes=100, completion=1.0),
             }
 
             with (
@@ -179,8 +182,8 @@ class AsyncWorkerTests(unittest.TestCase):
                     row=row,
                 )
 
-            self.assertEqual(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN), 1.0)
-            self.assertEqual(store.latest_metric(EVAL_DURATION_SECONDS), 12.5)
+            self.assertEqual(store.latest_metric(EVAL_FULL_SUCCESS_RATE_MIN), 1.0)
+            self.assertEqual(store.latest_metric(EVAL_FULL_DURATION_SECONDS), 12.5)
             self.assertEqual(store.phase_counts()["evals:succeeded"], 1)
             frames = store.pending_metric_frames()
             self.assertEqual([frame["kind"] for frame in frames], ["checkpoint_eval"])
@@ -192,7 +195,7 @@ class AsyncWorkerTests(unittest.TestCase):
                     (checkpoint_id,),
                 ).fetchone()
             self.assertEqual(row["episodes"], 100)
-            self.assertIn(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, row["metrics_json"])
+            self.assertIn(EVAL_FULL_SUCCESS_RATE_MIN, row["metrics_json"])
 
     def test_staged_eval_screen_fail_does_not_write_canonical_eval_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,12 +231,12 @@ class AsyncWorkerTests(unittest.TestCase):
                     row=row,
                 )
 
-            self.assertIsNone(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN))
+            self.assertIsNone(store.latest_metric(EVAL_FULL_SUCCESS_RATE_MIN))
             self.assertEqual(
-                store.latest_metric("eval/screen/info/level_complete/rate/min"),
+                store.latest_metric("eval/screen/outcome/success/rate/min"),
                 0.9,
             )
-            self.assertEqual(store.latest_metric("eval/screen/pass"), 0.0)
+            self.assertEqual(store.latest_metric("eval/screen/candidate/pass"), 0.0)
             self.assertIsNone(store.latest_metric(CHECKPOINT_EVAL_CANDIDATE_PASS))
             self.assertEqual(store.phase_counts()["evals:non_candidate"], 1)
             self.assertEqual(store.phase_counts()["eval_stages:succeeded"], 1)
@@ -243,7 +246,7 @@ class AsyncWorkerTests(unittest.TestCase):
                     "SELECT metrics_json FROM eval_results WHERE checkpoint_id = ?",
                     (checkpoint_id,),
                 ).fetchone()
-            self.assertNotIn(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, result["metrics_json"])
+            self.assertNotIn(EVAL_FULL_SUCCESS_RATE_MIN, result["metrics_json"])
 
     def test_staged_eval_confirm_pass_emits_candidate_stop_metric(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -299,9 +302,9 @@ class AsyncWorkerTests(unittest.TestCase):
                     row=confirm_row,
                 )
 
-            self.assertEqual(store.latest_metric("eval/confirm/pass"), 1.0)
+            self.assertEqual(store.latest_metric("eval/confirm/candidate/pass"), 1.0)
             self.assertEqual(store.latest_metric(CHECKPOINT_EVAL_CANDIDATE_PASS), 1.0)
-            self.assertIsNone(store.latest_metric(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN))
+            self.assertIsNone(store.latest_metric(EVAL_FULL_SUCCESS_RATE_MIN))
             self.assertEqual(store.phase_counts()["evals:candidate"], 1)
             with store.connection() as conn:
                 result = conn.execute(
@@ -310,7 +313,7 @@ class AsyncWorkerTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(result["episodes"], 30)
             self.assertIn(CHECKPOINT_EVAL_CANDIDATE_PASS, result["metrics_json"])
-            self.assertNotIn(EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, result["metrics_json"])
+            self.assertNotIn(EVAL_FULL_SUCCESS_RATE_MIN, result["metrics_json"])
 
 
 if __name__ == "__main__":

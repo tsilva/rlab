@@ -43,7 +43,10 @@ class TrainTests(unittest.TestCase):
         callback.num_timesteps = 50
         self.assertTrue(callback._on_step())
         self.assertAlmostEqual(model.ent_coef, 0.05)
-        self.assertAlmostEqual(model.logger.records["train/ent_coef"], 0.05)
+        self.assertAlmostEqual(
+            model.logger.records["train/algorithm/ppo/hyperparameter/entropy_coefficient"],
+            0.05,
+        )
 
     def test_checkpoint_save_frequency_disables_zero_or_negative(self) -> None:
         self.assertIsNone(checkpoint_save_frequency(0, 2))

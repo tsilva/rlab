@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 from stable_baselines3 import PPO
 
-from rlab.metric_names import TRAIN_ADV_NORM_MODE, train_adv_task_metric
+from rlab.metric_names import TRAIN_PPO_ADVANTAGE_NORMALIZATION_MODE, train_adv_task_metric
 
 
 ADVANTAGE_NORMALIZATION_CHOICES = ("auto", "none", "global", "per-task")
@@ -70,7 +70,7 @@ class PerTaskAdvantagePPO(PPO):
             self.rollout_buffer.advantages,
             self.rollout_buffer.observations,
         )
-        self.logger.record(TRAIN_ADV_NORM_MODE, 1.0)
+        self.logger.record(TRAIN_PPO_ADVANTAGE_NORMALIZATION_MODE, 1.0)
         for task_id, task_stats in stats.items():
             for key, value in task_stats.items():
                 self.logger.record(train_adv_task_metric(task_id, key), value)

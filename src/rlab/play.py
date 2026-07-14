@@ -878,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_x_pos = max(max_x_pos, int(info.get("max_x_pos", 0)))
                 final_info = dict(info)
                 if episode_result is not None:
-                    total_reward = float(episode_result["reward"])
+                    total_reward = float(episode_result["return"])
                     max_x_pos = max(max_x_pos, int(episode_result.get("max_x_pos", 0)))
                     final_info = dict(episode_result.get("final_info", {}))
                     completed = bool(episode_result.get("level_complete", False))

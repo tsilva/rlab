@@ -8,7 +8,7 @@ import re
 import signal
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -34,7 +34,6 @@ from rlab.callbacks import (
     RolloutDiagnosticsHelper,
     RuntimeMetricsHelper,
     ThroughputHelper,
-    TimeElapsedHelper,
 )
 from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
@@ -64,6 +63,29 @@ from rlab.train_config import add_train_config_args, load_materialized_train_con
 
 
 SB3_HUMAN_OUTPUT_MAX_LENGTH = 512
+
+
+def active_reward_components(task: Mapping[str, object]) -> tuple[str, ...]:
+    reward = task.get("reward")
+    if not isinstance(reward, Mapping):
+        return ()
+    components: list[str] = []
+    reward_mode = str(reward.get("reward_mode") or "")
+    if reward_mode == "native" or bool(reward.get("use_native_reward")):
+        components.append("native")
+    if float(reward.get("progress_reward_scale") or 0.0) != 0.0:
+        components.append("progress")
+    if reward_mode == "score":
+        components.append("score")
+    if float(reward.get("terminal_reward") or 0.0) != 0.0 or float(
+        reward.get("completion_reward") or 0.0
+    ) != 0.0:
+        components.append("completion")
+    if float(reward.get("death_penalty") or 0.0) != 0.0:
+        components.append("death")
+    if float(reward.get("time_penalty") or 0.0) != 0.0:
+        components.append("time")
+    return tuple(components)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -342,10 +364,15 @@ def main(argv: list[str] | None = None) -> int:
     components = [
         GracefulStopHelper(graceful_stop_flag),
         Sb3HumanOutputFormatHelper(),
-        TimeElapsedHelper(),
         ThroughputHelper(),
         RuntimeMetricsHelper(
             event_names=tuple(config.task.get("events", {})),
+            active_reward_components=active_reward_components(config.task),
+            configured_starts=tuple(config.states or ((config.state,) if config.state else ())),
+            track_success=bool(
+                isinstance(config.task.get("termination"), Mapping)
+                and config.task["termination"].get("success")
+            ),
         ),
         *(
             [

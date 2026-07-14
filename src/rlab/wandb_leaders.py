@@ -10,41 +10,37 @@ from typing import Any
 
 from rlab.json_utils import json_safe
 from rlab.metric_names import (
-    EVAL_BEST_REWARD,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN,
-    EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,
-    EVAL_REWARD_MEAN,
+    EVAL_FULL_EPISODE_RETURN_BEST,
+    EVAL_FULL_EPISODE_RETURN_MEAN,
+    EVAL_FULL_SUCCESS_RATE_MEAN,
+    EVAL_FULL_SUCCESS_RATE_MIN,
     LEADER_CHECKPOINT_ARTIFACT_REF,
-    LEADER_CHECKPOINT_BEST_REWARD,
-    LEADER_CHECKPOINT_COMPLETION_RATE,
-    LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,
+    LEADER_CHECKPOINT_BEST_RETURN,
     LEADER_CHECKPOINT_EVAL_SOURCE,
-    LEADER_CHECKPOINT_MAX_X_MAX,
     LEADER_CHECKPOINT_OBJECTIVE,
     LEADER_CHECKPOINT_OBJECTIVE_NAME,
-    LEADER_CHECKPOINT_REWARD_MEAN,
+    LEADER_CHECKPOINT_PROGRESS_MAX,
     LEADER_CHECKPOINT_RANK,
     LEADER_CHECKPOINT_RANK_VALUES,
+    LEADER_CHECKPOINT_RETURN_MEAN,
     LEADER_CHECKPOINT_STEP,
-    LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
-    LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN,
+    LEADER_CHECKPOINT_STEPS_TO_GOAL,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+    TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
 )
-from rlab.ranking import default_objective_rank, parse_objective_rank, rank_score
+from rlab.ranking import parse_objective_rank, rank_score
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
-RUN_OBJECTIVE_KEYS = (
-    TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN,
-    LEGACY_TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN_LAST,
-)
-RUN_PRIMARY_ORDER = f"-summary_metrics.{TRAIN_INFO_LEVEL_COMPLETE_RATE_MIN}"
-CHECKPOINT_COMPLETION_KEYS = (LEADER_CHECKPOINT_COMPLETION_RATE,)
-CHECKPOINT_COMPLETION_MEAN_KEYS = (LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,)
+RUN_OBJECTIVE_KEYS = (TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,)
+RUN_PRIMARY_ORDER = f"-summary_metrics.{TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN}"
+CHECKPOINT_SUCCESS_KEYS = (LEADER_CHECKPOINT_SUCCESS_RATE_MIN,)
+CHECKPOINT_SUCCESS_MEAN_KEYS = (LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,)
 CHECKPOINT_OBJECTIVE_KEYS = (LEADER_CHECKPOINT_OBJECTIVE,)
-CHECKPOINT_MAX_X_KEYS = (LEADER_CHECKPOINT_MAX_X_MAX,)
-CHECKPOINT_REWARD_KEYS = (LEADER_CHECKPOINT_REWARD_MEAN,)
-CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS = (LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,)
+CHECKPOINT_PROGRESS_KEYS = (LEADER_CHECKPOINT_PROGRESS_MAX,)
+CHECKPOINT_RETURN_KEYS = (LEADER_CHECKPOINT_RETURN_MEAN,)
+CHECKPOINT_STEPS_TO_GOAL_KEYS = (LEADER_CHECKPOINT_STEPS_TO_GOAL,)
 CHECKPOINT_STEP_KEYS = (LEADER_CHECKPOINT_STEP,)
 CHECKPOINT_PRIMARY_ORDER = f"-summary_metrics.{LEADER_CHECKPOINT_OBJECTIVE}"
 WANDB_RUNS_PER_PAGE = 200
@@ -81,11 +77,11 @@ class CheckpointLeader:
     url: str
     objective: float
     objective_name: str
-    completion_rate: float | None
-    completion_rate_mean: float | None
-    max_x_max: float | None
-    reward_mean: float
-    steps_to_completion_goal: float | None
+    success_rate_min: float | None
+    success_rate_mean: float | None
+    progress_max: float | None
+    return_mean: float
+    steps_to_goal: float | None
     checkpoint_step: int | None
     artifact_ref: str
     eval_source: str
@@ -182,10 +178,10 @@ def checkpoint_summary_filter() -> dict[str, Any]:
             {
                 "$or": [
                     _exists_filter(LEADER_CHECKPOINT_OBJECTIVE),
-                    _exists_filter(LEADER_CHECKPOINT_COMPLETION_RATE),
+                    _exists_filter(LEADER_CHECKPOINT_SUCCESS_RATE_MIN),
                 ]
             },
-            _exists_filter(LEADER_CHECKPOINT_REWARD_MEAN),
+            _exists_filter(LEADER_CHECKPOINT_RETURN_MEAN),
             _exists_filter(LEADER_CHECKPOINT_ARTIFACT_REF),
         ]
     }
@@ -249,32 +245,31 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
 def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     config = dict(getattr(run, "config", {}) or {})
     summary = getattr(run, "summary", {}) or {}
-    completion = _first_float(summary, CHECKPOINT_COMPLETION_KEYS)
-    completion_mean = _first_float(summary, CHECKPOINT_COMPLETION_MEAN_KEYS)
+    success = _first_float(summary, CHECKPOINT_SUCCESS_KEYS)
+    success_mean = _first_float(summary, CHECKPOINT_SUCCESS_MEAN_KEYS)
     objective = _first_float(summary, CHECKPOINT_OBJECTIVE_KEYS)
     objective_name = _first_text(_mapping_value(summary, LEADER_CHECKPOINT_OBJECTIVE_NAME))
-    max_x = _first_float(summary, CHECKPOINT_MAX_X_KEYS)
-    reward = _first_float(summary, CHECKPOINT_REWARD_KEYS)
+    progress = _first_float(summary, CHECKPOINT_PROGRESS_KEYS)
+    episode_return = _first_float(summary, CHECKPOINT_RETURN_KEYS)
     checkpoint_step = _optional_int(_first_float(summary, CHECKPOINT_STEP_KEYS))
-    steps_to_completion_goal = _first_float(summary, CHECKPOINT_STEPS_TO_COMPLETION_GOAL_KEYS)
+    steps_to_goal = _first_float(summary, CHECKPOINT_STEPS_TO_GOAL_KEYS)
     artifact_ref = _first_text(
         _mapping_value(summary, LEADER_CHECKPOINT_ARTIFACT_REF),
     )
     if objective is None:
-        objective = completion
-        objective_name = LEADER_CHECKPOINT_COMPLETION_RATE if completion is not None else ""
-    if objective is None or reward is None or not artifact_ref:
+        return None
+    if episode_return is None or not artifact_ref:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
     rank = parse_objective_rank(_mapping_value(summary, LEADER_CHECKPOINT_RANK))
     if not rank:
         rank = parse_objective_rank(config.get("selection_rank"))
     rank_metrics: dict[str, Any] = {
-        EVAL_INFO_LEVEL_COMPLETE_RATE_MIN: completion,
-        EVAL_INFO_LEVEL_COMPLETE_RATE_MEAN: completion_mean,
-        EVAL_REWARD_MEAN: reward,
-        EVAL_BEST_REWARD: _first_float(summary, (LEADER_CHECKPOINT_BEST_REWARD,)),
-        LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL: steps_to_completion_goal,
+        EVAL_FULL_SUCCESS_RATE_MIN: success,
+        EVAL_FULL_SUCCESS_RATE_MEAN: success_mean,
+        EVAL_FULL_EPISODE_RETURN_MEAN: episode_return,
+        EVAL_FULL_EPISODE_RETURN_BEST: _first_float(summary, (LEADER_CHECKPOINT_BEST_RETURN,)),
+        LEADER_CHECKPOINT_STEPS_TO_GOAL: steps_to_goal,
         "checkpoint_step": checkpoint_step,
     }
     saved_rank_values = _mapping_value(summary, LEADER_CHECKPOINT_RANK_VALUES)
@@ -287,7 +282,8 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
                 for criterion, value in zip(rank, saved_rank_values, strict=False)
             }
         )
-    rank = rank or default_objective_rank(rank_metrics)
+    if not rank:
+        return None
     return CheckpointLeader(
         goal_slug=_first_text(
             config.get("goal_slug"),
@@ -300,11 +296,11 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         url=str(getattr(run, "url", "") or ""),
         objective=objective,
         objective_name=objective_name,
-        completion_rate=completion,
-        completion_rate_mean=completion_mean,
-        max_x_max=max_x,
-        reward_mean=reward,
-        steps_to_completion_goal=steps_to_completion_goal,
+        success_rate_min=success,
+        success_rate_mean=success_mean,
+        progress_max=progress,
+        return_mean=episode_return,
+        steps_to_goal=steps_to_goal,
         checkpoint_step=checkpoint_step,
         artifact_ref=artifact_ref,
         eval_source=_first_text(_mapping_value(summary, LEADER_CHECKPOINT_EVAL_SOURCE)),
@@ -357,29 +353,29 @@ def print_run_leaders(rows: Sequence[RunLeader]) -> None:
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
     print(
-        "goal_slug\trecipe_slug\tobjective\tobjective_name\tcompletion_min\t"
-        "completion_mean\tsteps_to_goal\treward\tmax_x\tstep\trun\tartifact_ref"
+        "goal_slug\trecipe_slug\tobjective\tobjective_name\tsuccess_min\t"
+        "success_mean\tsteps_to_goal\treturn\tprogress\tstep\trun\tartifact_ref"
     )
     for row in rows:
         steps_to_goal = (
-            f"{row.steps_to_completion_goal:.6g}"
-            if row.steps_to_completion_goal is not None
+            f"{row.steps_to_goal:.6g}"
+            if row.steps_to_goal is not None
             else ""
         )
-        completion_rate = (
-            f"{row.completion_rate:.6g}" if row.completion_rate is not None else ""
+        success_rate = (
+            f"{row.success_rate_min:.6g}" if row.success_rate_min is not None else ""
         )
-        completion_rate_mean = (
-            f"{row.completion_rate_mean:.6g}"
-            if row.completion_rate_mean is not None
+        success_rate_mean = (
+            f"{row.success_rate_mean:.6g}"
+            if row.success_rate_mean is not None
             else ""
         )
-        max_x = f"{row.max_x_max:.6g}" if row.max_x_max is not None else ""
+        progress = f"{row.progress_max:.6g}" if row.progress_max is not None else ""
         print(
             f"{row.goal_slug}\t{row.recipe_slug}\t{row.objective:.6g}\t"
-            f"{row.objective_name}\t{completion_rate}\t"
-            f"{completion_rate_mean}\t{steps_to_goal}\t{row.reward_mean:.6g}\t"
-            f"{max_x}\t"
+            f"{row.objective_name}\t{success_rate}\t"
+            f"{success_rate_mean}\t{steps_to_goal}\t{row.return_mean:.6g}\t"
+            f"{progress}\t"
             f"{row.checkpoint_step or ''}\t{row.run_name}\t{row.artifact_ref}"
         )
 

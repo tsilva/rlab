@@ -32,6 +32,8 @@ def normalize_checkpoint_eval_stages(
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"{stage_label}.name must be a non-empty string")
         name = name.strip()
+        if name not in {"screen", "confirm"}:
+            raise ValueError(f"{stage_label}.name must be 'screen' or 'confirm'")
         if name in names:
             raise ValueError(f"{stage_label}.name must be unique")
         names.add(name)

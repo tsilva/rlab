@@ -19,59 +19,38 @@ from rlab.early_stop import evaluate_early_stop_config
 from rlab.env import EnvConfig, resolve_env_config, task_max_episode_steps
 from rlab.env_metadata import env_config_from_config_dict
 from rlab.eval_runner import evaluate_model_episodes
-from rlab.eval_metrics import flat_numeric_metrics
+from rlab.eval_metrics import eval_by_start_rows
 from rlab.eval_metrics import completion_score as eval_completion_score
 from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
     CHECKPOINT_EVAL_CANDIDATE_EPISODES,
     CHECKPOINT_EVAL_CANDIDATE_PASS,
     CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX,
-    EVAL_BEST_X,
-    EVAL_BEST_REWARD,
-    EVAL_CHECKPOINT_ARTIFACT,
-    EVAL_CHECKPOINT_STEP,
-    EVAL_CONFIG_HUD_CROP_TOP,
-    EVAL_DURATION_SECONDS,
-    EVAL_DONE_ROOT,
-    EVAL_DEATH_COUNT,
-    EVAL_DEATH_RATE,
-    EVAL_PROGRESS_LEVEL_X_MAX,
-    EVAL_PROGRESS_LEVEL_X_MEAN,
-    EVAL_PROGRESS_X_MAX,
-    EVAL_PROGRESS_X_MEAN,
-    EVAL_REWARD_MAX,
-    EVAL_REWARD_MEAN,
-    EVAL_REWARD_STD,
-    EVAL_EPISODES,
-    EVAL_INFO_ROOT,
-    EVAL_SOURCE,
+    EVAL_FULL_BY_START,
+    EVAL_FULL_DURATION_SECONDS,
+    EVAL_FULL_EPISODE_RETURN_BEST,
     GLOBAL_STEP,
     LEADER_CHECKPOINT_ARTIFACT_REF,
-    LEADER_CHECKPOINT_BEST_REWARD,
-    LEADER_CHECKPOINT_COMPLETION_RATE,
-    LEADER_CHECKPOINT_COMPLETION_RATE_MEAN,
+    LEADER_CHECKPOINT_BEST_RETURN,
     LEADER_CHECKPOINT_EVAL_SOURCE,
     LEADER_CHECKPOINT_LOCAL_PATH,
-    LEADER_CHECKPOINT_MAX_X_MAX,
     LEADER_CHECKPOINT_OBJECTIVE,
     LEADER_CHECKPOINT_OBJECTIVE_NAME,
-    LEADER_CHECKPOINT_REWARD_MEAN,
+    LEADER_CHECKPOINT_PROGRESS_MAX,
     LEADER_CHECKPOINT_RANK,
     LEADER_CHECKPOINT_RANK_VALUES,
+    LEADER_CHECKPOINT_RETURN_MEAN,
     LEADER_CHECKPOINT_STEP,
-    LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL,
+    LEADER_CHECKPOINT_STEPS_TO_GOAL,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+    LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
     LEADER_CHECKPOINT_UPDATED_AT,
     checkpoint_eval_stage_metric,
-    staged_metric_name,
+    eval_metric,
+    validate_metric_payload,
 )
 from rlab.metric_store import MetricStore, metric_store_path
-from rlab.ranking import (
-    default_objective_rank,
-    objective_rank_strings,
-    parse_objective_rank,
-    rank_metric_values,
-    rank_score,
-)
+from rlab.ranking import objective_rank_strings, parse_objective_rank, rank_metric_values, rank_score, require_objective_rank
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
@@ -91,9 +70,8 @@ def eval_checkpoint_artifact_ref(args, checkpoint_path: Path, step: int) -> str:
     return str(checkpoint_path)
 
 
-def eval_score(metrics: dict[str, object], selection_rank: object = ()) -> tuple[float, ...]:
-    criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
-    return rank_score(metrics, criteria)
+def eval_score(metrics: dict[str, object], selection_rank: object) -> tuple[float, ...]:
+    return rank_score(metrics, require_objective_rank(selection_rank))
 
 
 def update_best_checkpoint_summary(
@@ -116,26 +94,10 @@ def update_best_checkpoint_summary(
         except AttributeError, KeyError:
             pass
 
-    def summary_float(key: str) -> float:
-        try:
-            value = wandb_run.summary.get(key)
-        except AttributeError:
-            value = None
-        if value is None:
-            return float("-inf")
-        try:
-            return float(value)
-        except TypeError, ValueError:
-            return float("-inf")
-
-    criteria = parse_objective_rank(selection_rank) or default_objective_rank(metrics)
+    criteria = require_objective_rank(selection_rank)
     score = rank_score(metrics, criteria)
     values = rank_metric_values(metrics, criteria)
     objective_name = criteria[0].metric
-    try:
-        previous_objective_name = str(wandb_run.summary.get(LEADER_CHECKPOINT_OBJECTIVE_NAME) or "")
-    except AttributeError:
-        previous_objective_name = ""
     try:
         previous_rank = parse_objective_rank(wandb_run.summary.get(LEADER_CHECKPOINT_RANK))
         previous_values = wandb_run.summary.get(LEADER_CHECKPOINT_RANK_VALUES)
@@ -149,29 +111,7 @@ def update_best_checkpoint_summary(
         }
         previous = rank_score(previous_metrics, criteria)
     else:
-        previous_objective = summary_float(LEADER_CHECKPOINT_OBJECTIVE)
-        previous_completion = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE)
-        previous_completion_mean = summary_float(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
-        previous_steps_to_goal = summary_float(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
-        previous_step_score = (
-            -previous_steps_to_goal if previous_steps_to_goal > float("-inf") else float("-inf")
-        )
-        if previous_objective_name == objective_name and previous_objective > float("-inf"):
-            previous = (
-                previous_objective,
-                previous_completion_mean
-                if objective_name != EVAL_REWARD_MEAN
-                else summary_float(LEADER_CHECKPOINT_BEST_REWARD),
-                previous_step_score,
-                summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
-            )[: len(score)]
-        else:
-            previous = (
-                previous_completion,
-                previous_completion_mean,
-                previous_step_score,
-                summary_float(LEADER_CHECKPOINT_REWARD_MEAN),
-            )[: len(score)]
+        previous = tuple(float("-inf") for _criterion in criteria)
     if not force and score < previous:
         return
 
@@ -181,25 +121,25 @@ def update_best_checkpoint_summary(
     wandb_run.summary[LEADER_CHECKPOINT_RANK_VALUES] = list(values)
     completion = eval_completion_score(dict(metrics))
     if completion is not None:
-        wandb_run.summary[LEADER_CHECKPOINT_COMPLETION_RATE] = completion[0]
-        wandb_run.summary[LEADER_CHECKPOINT_COMPLETION_RATE_MEAN] = completion[1]
+        wandb_run.summary[LEADER_CHECKPOINT_SUCCESS_RATE_MIN] = completion[0]
+        wandb_run.summary[LEADER_CHECKPOINT_SUCCESS_RATE_MEAN] = completion[1]
     else:
-        remove_summary_key(LEADER_CHECKPOINT_COMPLETION_RATE)
-        remove_summary_key(LEADER_CHECKPOINT_COMPLETION_RATE_MEAN)
-    wandb_run.summary[LEADER_CHECKPOINT_REWARD_MEAN] = metrics.get("reward_mean")
+        remove_summary_key(LEADER_CHECKPOINT_SUCCESS_RATE_MIN)
+        remove_summary_key(LEADER_CHECKPOINT_SUCCESS_RATE_MEAN)
+    wandb_run.summary[LEADER_CHECKPOINT_RETURN_MEAN] = metrics.get("return_mean")
     best_episode = metrics.get("best_episode")
-    wandb_run.summary[LEADER_CHECKPOINT_BEST_REWARD] = (
-        best_episode.get("reward") if isinstance(best_episode, dict) else metrics.get("reward_max")
+    wandb_run.summary[LEADER_CHECKPOINT_BEST_RETURN] = (
+        best_episode.get("return") if isinstance(best_episode, dict) else metrics.get("return_max")
     )
-    wandb_run.summary[LEADER_CHECKPOINT_MAX_X_MAX] = metrics.get("max_x_max")
+    wandb_run.summary[LEADER_CHECKPOINT_PROGRESS_MAX] = metrics.get("max_x_max")
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
     if any(
-        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL and value is not None
+        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_GOAL and value is not None
         for criterion, value in zip(criteria, values, strict=True)
     ):
-        wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL] = checkpoint_step_value
+        wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_GOAL] = checkpoint_step_value
     else:
-        remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_COMPLETION_GOAL)
+        remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_GOAL)
     wandb_run.summary[LEADER_CHECKPOINT_ARTIFACT_REF] = artifact_ref
     wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
     wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = eval_source
@@ -207,6 +147,36 @@ def update_best_checkpoint_summary(
         "%Y-%m-%dT%H:%M:%SZ",
         time.gmtime(),
     )
+
+
+def evaluation_metric_payload(
+    *,
+    protocol: str,
+    metrics: Mapping[str, Any],
+    checkpoint_step: int,
+    checkpoint_artifact: str,
+    eval_source: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {GLOBAL_STEP: checkpoint_step}
+    for name, value in metrics.items():
+        if not name.startswith("eval/full/"):
+            continue
+        suffix = name.removeprefix("eval/full/")
+        if suffix.startswith(("episode/", "outcome/")) or (
+            protocol == "full" and suffix.startswith("progress/")
+        ):
+            payload[eval_metric(protocol, suffix)] = value
+    best_episode = metrics.get("best_episode")
+    if protocol == "full" and isinstance(best_episode, Mapping):
+        payload[EVAL_FULL_EPISODE_RETURN_BEST] = best_episode["return"]
+    payload[eval_metric(protocol, "checkpoint/step")] = checkpoint_step
+    payload[eval_metric(protocol, "checkpoint/artifact")] = checkpoint_artifact
+    payload[eval_metric(protocol, "source")] = eval_source
+    duration = metrics.get(EVAL_FULL_DURATION_SECONDS)
+    if duration is not None:
+        payload[eval_metric(protocol, "duration/seconds")] = duration
+    validate_metric_payload(payload)
+    return payload
 
 
 def log_checkpoint_eval_metrics(
@@ -224,33 +194,41 @@ def log_checkpoint_eval_metrics(
 ) -> None:
     if wandb_run is None:
         return
-    payload: dict[str, object] = {
-        GLOBAL_STEP: checkpoint_step_value,
-        EVAL_CHECKPOINT_STEP: checkpoint_step_value,
-        EVAL_CHECKPOINT_ARTIFACT: artifact_ref,
-        EVAL_REWARD_MEAN: metrics["reward_mean"],
-        EVAL_REWARD_STD: metrics["reward_std"],
-        EVAL_REWARD_MAX: metrics["reward_max"],
-        EVAL_BEST_REWARD: metrics["best_episode"]["reward"],
-        EVAL_CONFIG_HUD_CROP_TOP: config.hud_crop_top,
-        EVAL_SOURCE: eval_source,
-    }
-    optional_metric_pairs = {
-        EVAL_DURATION_SECONDS: EVAL_DURATION_SECONDS,
-        EVAL_PROGRESS_X_MEAN: "max_x_mean",
-        EVAL_PROGRESS_X_MAX: "max_x_max",
-        EVAL_PROGRESS_LEVEL_X_MEAN: "max_level_x_mean",
-        EVAL_PROGRESS_LEVEL_X_MAX: "max_level_x_max",
-        EVAL_DEATH_COUNT: "death_count",
-        EVAL_DEATH_RATE: "death_rate",
-    }
-    for metric_name, source_key in optional_metric_pairs.items():
-        if source_key in metrics:
-            payload[metric_name] = metrics[source_key]
-    if "max_x_pos" in metrics["best_episode"]:
-        payload[EVAL_BEST_X] = metrics["best_episode"]["max_x_pos"]
-    payload.update(flat_numeric_metrics(metrics, EVAL_DONE_ROOT))
-    payload.update(flat_numeric_metrics(metrics, EVAL_INFO_ROOT))
+    del config
+    payload = evaluation_metric_payload(
+        protocol="full",
+        metrics=metrics,
+        checkpoint_step=checkpoint_step_value,
+        checkpoint_artifact=artifact_ref,
+        eval_source=eval_source,
+    )
+    table_rows = metrics.get("_eval_by_start_rows")
+    episode_results = metrics.get("episode_results")
+    if not isinstance(table_rows, list) and isinstance(episode_results, list):
+        table_rows = eval_by_start_rows(episode_results)
+    if isinstance(table_rows, list):
+        import wandb
+
+        columns = [
+            "checkpoint_step",
+            "start_id",
+            "episodes",
+            "success_count",
+            "success_rate",
+            "return_mean",
+            "return_std",
+            "return_median",
+            "reason",
+            "reason_count",
+            "reason_rate",
+        ]
+        payload[EVAL_FULL_BY_START] = wandb.Table(
+            columns=columns,
+            data=[
+                [checkpoint_step_value, *row]
+                for row in table_rows
+            ],
+        )
     wandb_run.log(payload)
     if update_leader:
         update_best_checkpoint_summary(
@@ -285,25 +263,14 @@ def metric_payload(
     checkpoint_step: int,
     config: EnvConfig,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
-        GLOBAL_STEP: checkpoint_step,
-        EVAL_CHECKPOINT_STEP: checkpoint_step,
-        EVAL_CHECKPOINT_ARTIFACT: eval_checkpoint_artifact_ref(
-            args, checkpoint_path, checkpoint_step
-        ),
-        EVAL_REWARD_MEAN: metrics["reward_mean"],
-        EVAL_REWARD_STD: metrics["reward_std"],
-        EVAL_REWARD_MAX: metrics["reward_max"],
-        EVAL_BEST_REWARD: metrics["best_episode"]["reward"],
-        EVAL_CONFIG_HUD_CROP_TOP: config.hud_crop_top,
-        EVAL_EPISODES: metrics["episodes"],
-    }
-    if EVAL_DURATION_SECONDS in metrics:
-        payload[EVAL_DURATION_SECONDS] = metrics[EVAL_DURATION_SECONDS]
-    for key, value in metrics.items():
-        if key.startswith((EVAL_DONE_ROOT, EVAL_INFO_ROOT)):
-            payload[key] = value
-    return payload
+    del config
+    return evaluation_metric_payload(
+        protocol="full",
+        metrics=metrics,
+        checkpoint_step=checkpoint_step,
+        checkpoint_artifact=eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
+        eval_source=str(metrics.get("eval_source") or "async_worker"),
+    )
 
 
 def staged_metric_payload(
@@ -317,22 +284,21 @@ def staged_metric_payload(
     passed: bool,
     config: EnvConfig,
 ) -> dict[str, object]:
-    canonical_payload = metric_payload(
-        args=args,
+    del config
+    payload = evaluation_metric_payload(
+        protocol=stage_name,
         metrics=metrics,
-        checkpoint_path=checkpoint_path,
         checkpoint_step=checkpoint_step,
-        config=config,
+        checkpoint_artifact=eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
+        eval_source="async_worker",
     )
-    payload: dict[str, object] = {GLOBAL_STEP: checkpoint_step}
-    for key, value in canonical_payload.items():
-        if key == GLOBAL_STEP:
-            continue
-        if key.startswith("eval/"):
-            payload[staged_metric_name(stage_name, key)] = value
-    payload[checkpoint_eval_stage_metric(stage_name, "pass")] = 1.0 if passed else 0.0
-    payload[checkpoint_eval_stage_metric(stage_name, "stage_index")] = float(stage_index)
-    payload[checkpoint_eval_stage_metric(stage_name, "source")] = "async_worker"
+    payload[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = (
+        1.0 if passed else 0.0
+    )
+    payload[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(
+        stage_index
+    )
+    validate_metric_payload(payload)
     return payload
 
 
@@ -500,7 +466,7 @@ def process_staged_eval(
                 metrics=payload,
             )
 
-        score = eval_score(metrics)
+        score = eval_score(metrics, getattr(args, "selection_rank", ()))
         summary = {
             "checkpoint_step": step,
             "checkpoint_path": str(checkpoint_path),
@@ -512,7 +478,7 @@ def process_staged_eval(
             "candidate_stop": bool(candidate_payload),
             "observed_rules": observed,
             "objective": score[0],
-            "reward_mean": float(metrics["reward_mean"]),
+            "return_mean": float(metrics["return_mean"]),
             "eval_source": "async_worker",
         }
         update_summary_file(run_dir, summary)
@@ -606,12 +572,12 @@ def process_eval(
             source="checkpoint_eval",
             event_id=f"checkpoint-eval:{checkpoint_id}:{step}",
         )
-        score = eval_score(metrics)
+        score = eval_score(metrics, getattr(args, "selection_rank", ()))
         summary = {
             "checkpoint_step": step,
             "checkpoint_path": str(checkpoint_path),
             "objective": score[0],
-            "reward_mean": float(metrics["reward_mean"]),
+            "return_mean": float(metrics["return_mean"]),
             "eval_source": "async_worker",
         }
         update_summary_file(run_dir, summary)

@@ -162,25 +162,25 @@ class JobQueueTests(unittest.TestCase):
                 run_id="a1",
                 name="a-s1",
                 config={"goal_slug": "Level1-1", "recipe_slug": "a", "seed": 1},
-                summary={"train/info/level_complete/rate/min": 1.0},
+                summary={"train/outcome/success/rate/window_100/min": 1.0},
             ),
             FakeWandbRun(
                 run_id="a2",
                 name="a-s2",
                 config={"goal_slug": "Level1-1", "recipe_slug": "a", "seed": 2},
-                summary={"train/info/level_complete/rate/min": 0.8},
+                summary={"train/outcome/success/rate/window_100/min": 0.8},
             ),
             FakeWandbRun(
                 run_id="b1",
                 name="b-s1",
                 config={"goal_slug": "Level1-1", "recipe_slug": "b", "seed": 1},
-                summary={"train/info/level_complete/rate/min/last": 0.9},
+                summary={"train/outcome/success/rate/window_100/min": 0.9},
             ),
             FakeWandbRun(
                 run_id="b2",
                 name="b-s2",
                 config={"goal_slug": "Level1-1", "recipe_slug": "b", "seed": 2},
-                summary={"train/info/level_complete/rate/min": 0.9},
+                summary={"train/outcome/success/rate/window_100/min": 0.9},
             ),
         ]
 
