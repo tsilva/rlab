@@ -41,8 +41,7 @@ train:
       threshold: 1.0
   - name: confirm
     episodes: 30
-    # Candidate-stop evidence must use the same one-lane stochastic schedule as playback.
-    n_envs: 1
+    n_envs: 4
     pass:
     - metric: eval/full/info/level_complete/rate/min
       operator: '>='
@@ -136,8 +135,8 @@ eval:
       <<: *mario_env_config
       # Eval must name the same start explicitly; it cannot inherit a provider default.
       state: "{state}"
-      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
-      n_envs: 1
+      # Promotion eval remains vectorized; the lane count is part of its reproducible protocol.
+      n_envs: 16
     task:
       <<: *mario_task
       # Eval episodes stop on observed level changes, not life loss.

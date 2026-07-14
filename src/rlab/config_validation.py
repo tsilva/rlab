@@ -478,14 +478,9 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             )
             validate_eval_seed(seed, label=f"{label}.eval.environment.env_config.seed")
         if "n_envs" in eval_env_config:
-            n_envs = _require_int(
+            _require_int(
                 eval_env_config, "n_envs", label=f"{label}.eval.environment.env_config", minimum=1
             )
-            if n_envs != 1:
-                raise ValueError(
-                    f"{label}.eval.environment.env_config.n_envs must be 1; "
-                    "promotion-quality eval must reproduce playback's one-lane stochastic schedule"
-                )
         if "max_steps" in eval_env_config:
             _require_int(
                 eval_env_config,

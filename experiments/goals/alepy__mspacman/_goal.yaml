@@ -74,8 +74,8 @@ eval:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_mspacman_env_config
-      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
-      n_envs: 1
+      # Promotion eval remains vectorized; the lane count is part of its reproducible protocol.
+      n_envs: 16
     preprocessing:
       <<: *atari_mspacman_preprocessing
       # ALE native 84x84 preprocessing leaves the bottom HUD in rows 69-83.

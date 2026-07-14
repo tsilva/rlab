@@ -21,7 +21,7 @@ STAGES = [
     {
         "name": "confirm",
         "episodes": 30,
-        "n_envs": 1,
+        "n_envs": 4,
         "pass": [{"metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN, "operator": ">=", "threshold": 1.0}],
         "candidate_stop": True,
     },

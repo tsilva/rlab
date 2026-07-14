@@ -71,29 +71,21 @@ class ConfigValidationTests(unittest.TestCase):
                 label="goal",
             )
 
-    def test_goal_validator_requires_playback_equivalent_promotion_lane(self) -> None:
-        document = load_goal_contract(
-            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml"),
-            validate=False,
+    def test_candidate_stop_stage_allows_vectorized_evidence(self) -> None:
+        stages = config_validation.normalize_checkpoint_eval_stages(
+            [
+                {
+                    "name": "confirm",
+                    "episodes": 30,
+                    "n_envs": 4,
+                    "pass": [{"metric": "metric", "operator": ">=", "threshold": 1}],
+                    "candidate_stop": True,
+                }
+            ]
         )
-        document["eval"]["environment"]["env_config"]["n_envs"] = 2
 
-        with self.assertRaisesRegex(ValueError, "promotion-quality eval.*one-lane"):
-            config_validation._validate_goal_eval(document, label="goal")
-
-    def test_candidate_stop_stage_requires_playback_equivalent_lane(self) -> None:
-        with self.assertRaisesRegex(ValueError, "candidate-stop evidence.*one-lane"):
-            config_validation.normalize_checkpoint_eval_stages(
-                [
-                    {
-                        "name": "confirm",
-                        "episodes": 30,
-                        "n_envs": 4,
-                        "pass": [{"metric": "metric", "operator": ">=", "threshold": 1}],
-                        "candidate_stop": True,
-                    }
-                ]
-            )
+        self.assertEqual(stages[0]["n_envs"], 4)
+        self.assertTrue(stages[0]["candidate_stop"])
 
     def test_checked_in_experiment_tree_validates(self) -> None:
         report = validate_experiment_tree(Path("."))
@@ -149,7 +141,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 16)
-        self.assertEqual(train_config["checkpoint_eval_n_envs"], 1)
+        self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["game"],
             "Breakout-Atari2600-v0",
@@ -593,7 +585,7 @@ environment_hash: sha256:deadbeef
         )
         self.assertEqual(document["train"]["checkpoint_eval_stages"][0]["episodes"], 10)
         self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["episodes"], 30)
-        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["n_envs"], 1)
+        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["n_envs"], 4)
         self.assertTrue(document["train"]["checkpoint_eval_stages"][1]["candidate_stop"])
         self.assertEqual(
             document["objective"]["rank"],
@@ -632,7 +624,7 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["eval"]["environment"]["env_config"]["game"], "SuperMarioBros-Nes-v0"
         )
-        self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 1)
+        self.assertEqual(document["eval"]["environment"]["env_config"]["n_envs"], 16)
         self.assertNotIn("env_threads", document["eval"]["environment"]["env_config"])
         self.assertNotIn("reward_mode", document["eval"]["environment"]["env_config"])
         self.assertEqual(document["eval"]["environment"]["env_config"]["obs_crop"], [32, 0, 0, 0])

@@ -68,7 +68,7 @@ def checkpoint_eval_stages() -> list[dict[str, object]]:
         {
             "name": "confirm",
             "episodes": 30,
-            "n_envs": 1,
+            "n_envs": 4,
             "pass": [
                 {
                     "metric": EVAL_INFO_LEVEL_COMPLETE_RATE_MIN,

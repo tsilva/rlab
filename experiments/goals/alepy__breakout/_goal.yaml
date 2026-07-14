@@ -95,8 +95,8 @@ eval:
     env_provider: *atari_env_provider
     env_config:
       <<: *atari_breakout_env_config
-      # Promotion-quality eval must reproduce the one-lane playback action-seed schedule.
-      n_envs: 1
+      # Promotion eval remains vectorized; the lane count is part of its reproducible protocol.
+      n_envs: 16
       # Train on clipped rewards, but rank checkpoints by the real game score.
       env_args:
         <<: *atari_breakout_provider_args
