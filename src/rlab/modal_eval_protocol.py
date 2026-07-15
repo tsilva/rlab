@@ -327,7 +327,7 @@ def validate_attempt_result(
         if int(episode.get("seed", -1)) != expected_seed:
             raise ValueError("eval episode seed trace is inconsistent")
         start = str(episode.get("start_state") or "").strip()
-        if not start:
+        if isinstance(asset, Mapping) and not start:
             raise ValueError("eval episode start-state accounting is missing")
     return dict(result)
 

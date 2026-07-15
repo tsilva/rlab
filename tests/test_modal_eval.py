@@ -147,6 +147,17 @@ class ModalEvalContractTests(unittest.TestCase):
             "",
         )
 
+        result = successful_result(eval_contract)
+        result["episode_results"][0]["start_state"] = None
+        self.assertEqual(
+            validate_attempt_result(
+                result,
+                contract=eval_contract,
+                attempt_id="attempt",
+            )["status"],
+            "succeeded",
+        )
+
     def test_modal_and_local_full_eval_publish_the_same_metric_projection(self) -> None:
         raw_metrics = {
             "return_mean": 2.0,
