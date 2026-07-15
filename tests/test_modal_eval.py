@@ -306,6 +306,42 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.preview_fps, 15)
         self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
 
+    def test_capacity_rollout_accepts_two_to_three(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"effective_capacity": 2},
+            {"backend": "modal", "drained": False, "effective_capacity": 3},
+        ]
+        with (
+            mock.patch.object(
+                modal_eval_cli,
+                "load_modal_eval_config",
+                return_value=SimpleNamespace(hard_max_active=20),
+            ),
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch.object(modal_eval_cli, "_kick"),
+        ):
+            self.assertEqual(
+                modal_eval_cli._set_backend(drained=False, capacity=3, reason="cap-3 canary"),
+                0,
+            )
+
+    def test_capacity_rollout_rejects_skipping_three(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"effective_capacity": 2}
+        with (
+            mock.patch.object(
+                modal_eval_cli,
+                "load_modal_eval_config",
+                return_value=SimpleNamespace(hard_max_active=20),
+            ),
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+        ):
+            with self.assertRaisesRegex(ValueError, "1 to 2 to 3 to 20"):
+                modal_eval_cli._set_backend(drained=False, capacity=20, reason=None)
+
     def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
         dockerfile = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
         self.assertIn(

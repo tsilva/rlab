@@ -286,7 +286,17 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> int:
     config = load_modal_eval_config()
-    allowed_capacities = {1, min(2, config.hard_max_active), config.hard_max_active}
+    capacity_stages = tuple(
+        sorted(
+            {
+                1,
+                min(2, config.hard_max_active),
+                min(3, config.hard_max_active),
+                config.hard_max_active,
+            }
+        )
+    )
+    allowed_capacities = set(capacity_stages)
     if capacity is not None and capacity not in allowed_capacities:
         raise ValueError(f"capacity must be one of {sorted(allowed_capacities)}")
     conn = _conn()
@@ -298,13 +308,13 @@ def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> 
                 )
                 current = int(cur.fetchone()["effective_capacity"])
                 if capacity is not None and capacity > current:
-                    allowed_increase = (current, capacity) in {
-                        (1, min(2, config.hard_max_active)),
-                        (min(2, config.hard_max_active), config.hard_max_active),
-                    }
+                    allowed_increase = (current, capacity) in set(
+                        zip(capacity_stages[:-1], capacity_stages[1:], strict=True)
+                    )
                     if not allowed_increase:
                         raise ValueError(
-                            "capacity rollout must progress from 1 to 2 to the hard cap"
+                            "capacity rollout must progress through "
+                            + " to ".join(str(stage) for stage in capacity_stages)
                         )
                 cur.execute(
                     """

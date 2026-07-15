@@ -83,9 +83,9 @@ Modal is a backend-bound evaluation lane owned by the same Mac fleet service; it
 registered training machine and must not be added to `experiments/machines.yaml`. Its checked-in
 deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The hard
 orchestration ceiling and the independent Modal `max_containers` guard are both 20, while rollout
-starts at effective capacity 1 and must be promoted through 2 before 20. Modal is the default for
-new queue-backed jobs at capacity 1; do not raise that capacity until the parity, interruption,
-cap-2, and cost canaries pass.
+starts at effective capacity 1 and must be promoted through 2 and 3 before 20. Modal is the default
+for new queue-backed jobs at capacity 1; do not raise to the next stage until the parity,
+interruption, staged-capacity, and cost canaries pass.
 
 ```bash
 rlab eval modal status
