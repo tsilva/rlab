@@ -81,6 +81,18 @@ class DockerHostTests(unittest.TestCase):
         self.assertIn("sudo -n docker info", script)
         self.assertIn("/home/tsilva/rlab", script)
 
+    def test_setup_host_allows_a_cold_runtime_image_pull(self) -> None:
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(docker_host, "_run_machine_shell", return_value=result) as run:
+            _, returncode = docker_host.setup_docker_host(
+                machine(backend="docker_ssh", host_root="/home/tsilva/rlab"),
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                execute=True,
+            )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(run.call_args.kwargs["timeout"], docker_host.DOCKER_PULL_TIMEOUT_SECONDS)
+
     def test_ssh_transport_is_noninteractive_and_bounded(self) -> None:
         target = machine(backend="docker_ssh", host_root="/home/tsilva/rlab")
         result = subprocess.CompletedProcess([], 0, "", "")
@@ -150,9 +162,7 @@ class DockerHostTests(unittest.TestCase):
                         "Labels": "rlab.job-container=true,rlab.launch-id=train-12",
                     }
                 ),
-                json.dumps(
-                    {"Names": "other", "State": "running", "Labels": "rlab.managed=true"}
-                ),
+                json.dumps({"Names": "other", "State": "running", "Labels": "rlab.managed=true"}),
             ]
         )
         result = subprocess.CompletedProcess([], 0, output, "")
