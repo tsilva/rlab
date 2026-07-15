@@ -8,6 +8,9 @@ exact registry entry or a bounded template.
 
 - W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
   R2-backed `eval/screen/preview` media series.
+- Metric producers always retain durable SQLite evidence. They create W&B outbox frames only when
+  W&B is enabled; the learner never writes W&B directly. The live publisher and post-train Modal
+  projector share the same run-owning projection implementation and immutable run id.
 - W&B config contains run-defining dimensions: `metrics_schema_version: 4`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
@@ -62,8 +65,8 @@ are intentionally computed offline rather than added to W&B history.
 | Metric or template | Meaning | Unit | Cadence | Surface |
 |---|---|---|---|---|
 | `global_step` | Policy environment transitions consumed. | steps | frame | history |
-| `train/episode/return/shaped/mean` | SB3 rolling episode-info-buffer mean of shaped episode returns, normally the latest 100 episodes. | scalar | rollout | history |
-| `train/episode/length/mean` | Mean episode length. | steps | rollout | history |
+| `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 completed training episodes. | scalar | rollout | history |
+| `train/episode/length/mean` | Rolling mean length over the latest 100 completed training episodes. | steps | rollout | history |
 | `train/episode/count` | Cumulative completed training episodes. | episodes | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
 | `train/outcome/reason/{reason}/count` | Cumulative failed episodes containing a reason. | episodes | rollout | history |

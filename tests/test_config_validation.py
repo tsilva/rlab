@@ -152,8 +152,11 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(backend["id"], "rlab.jerk")
         self.assertEqual(backend["config"]["forward_action"], "right_b")
         self.assertEqual(backend["config"]["jump_action"], "right_a_b")
+        self.assertEqual(backend["config"]["acceptance_mode"], "first_training_success")
         self.assertEqual(train_config["timesteps"], 1000000)
-        self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
+        self.assertEqual(train_config["checkpoint_eval_backend"], "none")
+        self.assertIsNone(train_config["early_stop"])
+        self.assertEqual(train_config["checkpoint_eval_stages"], [])
 
     def test_level1_1_on_policy_recipes_share_common_config(self) -> None:
         ppo = compose_train_document(self.MARIO_L11_GOAL, self.MARIO_SINGLE_RECIPES / "ppo.yaml")

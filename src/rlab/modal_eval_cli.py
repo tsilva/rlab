@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from rlab.dotenv import load_env_file
-from rlab.job_queue import connect, database_url
+from rlab.job_queue import connect, database_url, retry_train_job_finalization
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_storage import (
@@ -36,8 +36,9 @@ MODAL_SCHEMA_COLUMNS = {
         "contract_json",
         "projection_attempts",
         "projection_next_retry_at",
+        "retry_round",
     },
-    "eval_attempts": {"eval_job_id", "modal_call_id", "result_uri"},
+    "eval_attempts": {"eval_job_id", "modal_call_id", "result_uri", "retry_round"},
     "eval_backend_state": {"backend", "effective_capacity"},
 }
 
@@ -350,34 +351,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
 def cmd_retry_projection(args: argparse.Namespace) -> int:
     conn = _conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE eval_runs SET
-                      status = CASE WHEN complete_announcement_seen
-                        THEN 'finalizing' ELSE 'active' END,
-                      artifact_projection_attempts = 0,
-                      artifact_projection_next_retry_at = NULL,
-                      error = NULL, updated_at = now()
-                    WHERE train_job_id = %(id)s AND status = 'failed'
-                    RETURNING train_job_id
-                    """,
-                    {"id": int(args.train_job_id)},
-                )
-                row = cur.fetchone()
-                if row:
-                    cur.execute(
-                        """
-                        UPDATE eval_jobs SET projection_attempts = 0,
-                          projection_next_retry_at = NULL, projection_error = NULL,
-                          updated_at = now()
-                        WHERE train_job_id = %(id)s AND projected_at IS NULL
-                        """,
-                        {"id": int(args.train_job_id)},
-                    )
-        if not row:
-            raise ValueError("eval run is not failed or does not exist")
+        retry_train_job_finalization(conn, job_id=int(args.train_job_id))
         print(json.dumps({"train_job_id": int(args.train_job_id), "projection_retried": True}))
         _kick()
         return 0
@@ -407,7 +381,13 @@ def cmd_recover(args: argparse.Namespace) -> int:
             raise ValueError("train job or stable launch was not found")
         row = dict(row)
         train_status = str(row.get("status") or "")
-        if train_status not in {"succeeded", "failed", "canceled"}:
+        if train_status not in {
+            "finalizing",
+            "succeeded",
+            "failed",
+            "finalization_failed",
+            "canceled",
+        }:
             raise ValueError(
                 f"train job {args.train_job_id} is {train_status or 'unknown'}, not terminal"
             )

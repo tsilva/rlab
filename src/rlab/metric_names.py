@@ -158,9 +158,13 @@ METRIC_DEFINITIONS = (
     _definition(GLOBAL_STEP, "Policy environment transitions consumed.", "steps", "frame"),
     _definition(
         TRAIN_EPISODE_RETURN_SHAPED_MEAN,
-        "SB3 rolling episode-info-buffer mean of shaped episode returns, normally the latest 100 episodes.",
+        "Rolling mean shaped return over the latest 100 completed training episodes.",
     ),
-    _definition(TRAIN_EPISODE_LENGTH_MEAN, "Mean episode length.", "steps"),
+    _definition(
+        TRAIN_EPISODE_LENGTH_MEAN,
+        "Rolling mean length over the latest 100 completed training episodes.",
+        "steps",
+    ),
     _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
     _definition(TRAIN_OUTCOME_TERMINAL_COUNT, "Cumulative terminal episode records.", "episodes"),
     _definition(

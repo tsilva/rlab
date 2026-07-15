@@ -329,7 +329,8 @@ class FleetServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
             notifications = []
-            notifier = lambda title, message: notifications.append((title, message))
+            def notifier(title, message):
+                notifications.append((title, message))
             failed = {
                 "status": "degraded",
                 "eval": {"status": "ok"},

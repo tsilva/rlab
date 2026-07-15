@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -641,20 +641,13 @@ class ThroughputHelperTests(unittest.TestCase):
         )
 
     def test_complete_frame_uses_the_completed_rollout_step(self) -> None:
-        class Run:
-            def __init__(self) -> None:
-                self.payloads = []
-
-            def log(self, payload) -> None:
-                self.payloads.append(payload)
-
-        run = Run()
         times = iter([0.0, 2.0, 5.0])
         with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "rlab.sqlite"
             callback = ThroughputHelper(
                 clock=lambda: next(times),
-                metric_store_path=Path(tmp) / "rlab.sqlite",
-                wandb_run=run,
+                metric_store_path=store_path,
+                wandb_enabled=True,
             )
             callback.model = SimpleNamespace(
                 logger=SimpleNamespace(record=lambda *_args: None),
@@ -665,9 +658,10 @@ class ThroughputHelperTests(unittest.TestCase):
             callback.num_timesteps = 100
             callback._on_rollout_end()
             callback._on_rollout_start()
+            rows = MetricStore(store_path).pending_metric_frames(limit=10)
 
-        self.assertEqual(len(run.payloads), 1)
-        self.assertEqual(run.payloads[0]["global_step"], 100)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0]["payload_json"])["global_step"], 100)
 
 
 class RolloutDiagnosticsHelperTests(unittest.TestCase):
@@ -732,8 +726,6 @@ class RolloutDiagnosticsHelperTests(unittest.TestCase):
         self.assertEqual(logger.records["train/algorithm/ppo/policy/dominant_action_rate"], 0.75)
 
     def test_logs_action_histogram_on_the_configured_rollout_cadence(self) -> None:
-        run = SimpleNamespace(payload=None)
-        run.log = lambda payload: setattr(run, "payload", payload)
         logger = SimpleNamespace(record=lambda *_args: None)
         model = SimpleNamespace(
             logger=logger,
@@ -744,20 +736,24 @@ class RolloutDiagnosticsHelperTests(unittest.TestCase):
             ),
             action_space=gym.spaces.Discrete(2),
         )
-        callback = RolloutDiagnosticsHelper(
-            wandb_run=run,
-            histogram_interval=1,
-        )
-        callback.model = model  # type: ignore[assignment]
-        callback.num_timesteps = 64
-
-        with mock.patch("wandb.Histogram", side_effect=lambda values: tuple(values)):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "rlab.sqlite"
+            callback = RolloutDiagnosticsHelper(
+                metric_store_path=store_path,
+                wandb_enabled=True,
+                histogram_interval=1,
+            )
+            callback.model = model  # type: ignore[assignment]
+            callback.num_timesteps = 64
             callback._on_rollout_end()
+            rows = MetricStore(store_path).pending_metric_frames(limit=10)
 
-        self.assertEqual(run.payload["global_step"], 64)
+        self.assertEqual(len(rows), 1)
+        payload = json.loads(rows[0]["payload_json"])
+        self.assertEqual(rows[0]["step"], 64)
         self.assertEqual(
-            run.payload["train/algorithm/ppo/policy/action_hist"],
-            (0.0, 1.0, 1.0),
+            payload["histograms"]["train/algorithm/ppo/policy/action_hist"],
+            [0.0, 1.0, 1.0],
         )
 
 
@@ -854,17 +850,9 @@ class RuntimeMetricsRewardTests(unittest.TestCase):
         self.assertNotIn("train/reward/component/score/share", logger.records)
 
     def test_flushes_runtime_metrics_without_a_direct_wandb_write(self) -> None:
-        class FakeRun:
-            def __init__(self) -> None:
-                self.payloads: list[tuple[dict[str, object], int]] = []
-
-            def log(self, payload: dict[str, object], *, step: int) -> None:
-                self.payloads.append((payload, step))
-
         logger = SimpleNamespace(records={})
         logger.record = lambda key, value: logger.records.__setitem__(key, value)
-        run = FakeRun()
-        callback = RuntimeMetricsHelper(wandb_run=run)
+        callback = RuntimeMetricsHelper()
         callback.model = SimpleNamespace(logger=logger)  # type: ignore[assignment]
         callback.num_timesteps = 64
 
@@ -882,11 +870,8 @@ class RuntimeMetricsRewardTests(unittest.TestCase):
                     )
                 ]
             )
-        self.assertEqual(run.payloads, [])
-
         callback._on_rollout_end()
 
-        self.assertEqual(run.payloads, [])
         self.assertEqual(logger.records["train/outcome/terminal/count"], 3)
 
     def test_reward_accumulator_reuses_preallocated_buffers(self) -> None:

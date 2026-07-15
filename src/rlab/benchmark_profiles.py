@@ -381,6 +381,7 @@ def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand
         _command(
             "train",
             [sys.executable, "-m", "rlab.train", "--train-config-json", "/dev/stdin"],
+            env={"RLAB_INTERNAL_LEARNER": "1"},
             stdin=json.dumps(config, sort_keys=True),
         )
     ]

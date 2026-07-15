@@ -159,6 +159,7 @@ rlab play <checkpoint> --attribution occlusion --attribution-interval 12
 rlab jobs status --machine beast-3 --json
 rlab jobs wait --job <train-job-id> --until terminal --timeout 12h --json
 rlab jobs cancel --job <train-job-id> --wait --json
+rlab jobs retry-finalization --job <train-job-id> --json
 rlab jobs logs --job <train-job-id> --follow
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
@@ -173,7 +174,10 @@ rlab benchmark run retro-env-throughput-mario-l11 --dry-run
 
 The command surface is intentionally one binary:
 
-- `rlab train` enqueues queue-backed train jobs from checked-in recipes.
+- `rlab train` is the only supported training-job entrypoint. It enqueues a PostgreSQL job and
+  runs the same immutable Docker supervisor locally (`local-macbook`) or over SSH (Beast hosts).
+  `python -m rlab.train` is an internal learner entrypoint reserved for that supervisor, tests,
+  and explicitly labelled W&B-disabled core microbenchmarks.
 - `rlab eval` runs local/scripted or explicit-model evaluation. Queue-backed train jobs evaluate saved checkpoints asynchronously; jobs materialized for Modal use bounded remote CPU workers, while direct training and explicit `rlab eval` stay local.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab env` lists static provider contracts, inspects one qualified environment, or explicitly
@@ -200,7 +204,14 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
+Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. The learner writes only durable SQLite evidence and never opens W&B. One publisher implementation projects that evidence during training and later resumes the exact same run for Modal results. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
+
+The Docker launch owns scarce training capacity and becomes terminal as soon as training exits.
+The logical job then remains `finalizing` while its SQLite publisher drains and any Modal evaluation,
+artifact, and W&B projections finish. `training_finished_at` reports the launch boundary;
+`finished_at` reports overall completion. Exhausted post-train retries produce
+`finalization_failed` without changing the successful launch, and
+`rlab jobs retry-finalization --job <id>` reopens only that phase.
 
 After promotion evaluation succeeds, the promoted checkpoint takes a dedicated W&B projection fast
 path and becomes playable without waiting for historical checkpoint backfill. It receives immutable
@@ -212,7 +223,8 @@ aliases and cannot move `latest` away from the promoted checkpoint.
 means the promoted checkpoint is ready while historical backfill continues. Modal-backed enqueue fails closed when the
 fleet evaluator's latest pass is stale or unsuccessful. Projection failures retry with backoff and
 are isolated to their producing run; after correcting a persistent failure, reset only that run
-with `rlab eval modal retry-projection <train-job-id>`.
+with `rlab jobs retry-finalization --job <train-job-id>`. The older
+`rlab eval modal retry-projection <train-job-id>` command remains an alias.
 
 To ask for the current best evaluated checkpoint for a goal, query the checkpoint leaders with a
 single-row limit:

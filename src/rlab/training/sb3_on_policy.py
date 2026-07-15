@@ -160,7 +160,10 @@ def run_sb3_on_policy(
         components: list[Any] = [
             GracefulStopHelper(context.stop_flag),
             Sb3HumanOutputFormatHelper(),
-            ThroughputHelper(metric_store_path=store_path, wandb_run=context.wandb_run),
+            ThroughputHelper(
+                metric_store_path=store_path,
+                wandb_enabled=context.wandb_enabled,
+            ),
             RuntimeMetricsHelper(
                 event_names=tuple(task_termination(config).get("failure", ())),
                 active_reward_components=active_reward_components(config.task),
@@ -184,14 +187,14 @@ def run_sb3_on_policy(
             [
                 RolloutDiagnosticsHelper(
                     algorithm_id=algorithm_id,
-                    wandb_run=context.wandb_run,
-                    metric_store_path=store_path if context.external_wandb_publisher else None,
+                    metric_store_path=store_path,
+                    wandb_enabled=context.wandb_enabled,
                     histogram_interval=64,
                 ),
                 MetricStoreLoggerHelper(
                     store_path,
                     algorithm_id=algorithm_id,
-                    wandb_run=context.wandb_run,
+                    wandb_enabled=context.wandb_enabled,
                 ),
             ]
         )

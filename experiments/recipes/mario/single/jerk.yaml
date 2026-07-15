@@ -3,13 +3,14 @@ defaults:
 recipe_id: jerk
 description: >-
   Seed {seed} searches deterministic {goal_id} attempts with vectorized Just Enough Retained
-  Knowledge, retaining and replaying the strongest open-loop action sequence under the goal's
-  checkpoint-evaluation and promotion contract.
+  Knowledge, accepting and publishing the first open-loop action sequence that completes the
+  level; exhausting the transition budget without a completion is unsuccessful.
 train:
   timesteps: 1000000
   backend:
     id: rlab.jerk
     config:
+      acceptance_mode: first_training_success
       exploit_bias: 0.25
       forward_steps: 100
       backtrack_steps: 70

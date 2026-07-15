@@ -11,6 +11,7 @@ from rlab.train_config import (
     queue_required_train_config_fields,
     validate_and_normalize_train_config,
 )
+from rlab.training_backend import accepts_first_training_success
 from rlab.provider_config import provider_num_envs
 from rlab.validation import (
     int_list,
@@ -55,6 +56,8 @@ TRAIN_RECIPE_OPTIONAL_FIELDS = frozenset(
     }
 )
 TRAIN_RECIPE_ALLOWED_FIELDS = frozenset(TRAIN_RECIPE_REQUIRED_FIELDS) | TRAIN_RECIPE_OPTIONAL_FIELDS
+
+
 def require_explicit_queue_train_config(
     train_config: Mapping[str, Any],
     *,
@@ -143,10 +146,16 @@ def validate_materialized_train_recipe(
         require_key(document, "train_config", label=label),
         label=label_path(label, "train_config"),
     )
-    if train_config.get("checkpoint_eval_backend") == "none" and not allow_no_eval_backend:
+    declared_training_acceptance = accepts_first_training_success(train_config)
+    if (
+        train_config.get("checkpoint_eval_backend") == "none"
+        and not allow_no_eval_backend
+        and not declared_training_acceptance
+    ):
         raise ValueError(
             f"{label_path(label, 'train_config.checkpoint_eval_backend')}=none is allowed "
-            "only as an explicit per-submission smoke/debug override"
+            "only as an explicit per-submission smoke/debug override or for a backend "
+            "that declares first-training-success acceptance"
         )
     validate_and_normalize_train_config(
         train_config,

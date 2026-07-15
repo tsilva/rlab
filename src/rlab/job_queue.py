@@ -51,6 +51,7 @@ from rlab.recipe_schema import (
 )
 from rlab.provider_config import provider_num_envs
 from rlab.train_config import validate_and_normalize_train_config
+from rlab.training_backend import accepts_first_training_success
 from rlab.modal_eval_assets import asset_manifest_for_game
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.modal_eval_protocol import SEED_PROTOCOL
@@ -72,7 +73,10 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   machine TEXT NOT NULL,
   train_config JSONB NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'launching', 'starting', 'running', 'succeeded', 'failed', 'canceled')),
+    CHECK (status IN (
+      'pending', 'launching', 'starting', 'running', 'finalizing',
+      'succeeded', 'failed', 'finalization_failed', 'canceled'
+    )),
   cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
   batch_id TEXT NOT NULL,
   campaign_id TEXT,
@@ -93,6 +97,12 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   finished_at TIMESTAMPTZ,
   wandb_run_id TEXT,
   wandb_url TEXT,
+  live_publication_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (live_publication_status IN ('pending', 'live', 'complete', 'disabled', 'failed')),
+  live_publication_attempts INTEGER NOT NULL DEFAULT 0
+    CHECK (live_publication_attempts >= 0),
+  live_publication_next_retry_at TIMESTAMPTZ,
+  live_publication_error TEXT,
   error TEXT,
   UNIQUE (submission_key, submission_ordinal)
 );
@@ -141,7 +151,9 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE TABLE IF NOT EXISTS eval_runs (
   train_job_id BIGINT PRIMARY KEY REFERENCES train_jobs(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'active'
-    CHECK (status IN ('active', 'awaiting_artifact_recovery', 'finalizing', 'complete', 'failed')),
+    CHECK (status IN (
+      'active', 'awaiting_artifact_recovery', 'finalizing', 'complete', 'failed', 'canceled'
+    )),
   contract_json JSONB NOT NULL,
   next_announcement_id BIGINT NOT NULL DEFAULT 1 CHECK (next_announcement_id >= 1),
   next_artifact_projection_id BIGINT NOT NULL DEFAULT 1 CHECK (next_artifact_projection_id >= 1),
@@ -187,6 +199,7 @@ CREATE TABLE IF NOT EXISTS eval_jobs (
   projection_error TEXT,
   projection_attempts INTEGER NOT NULL DEFAULT 0 CHECK (projection_attempts >= 0),
   projection_next_retry_at TIMESTAMPTZ,
+  retry_round INTEGER NOT NULL DEFAULT 0 CHECK (retry_round >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at TIMESTAMPTZ,
@@ -199,6 +212,7 @@ CREATE TABLE IF NOT EXISTS eval_attempts (
   attempt_id TEXT NOT NULL UNIQUE,
   eval_job_id BIGINT NOT NULL REFERENCES eval_jobs(id) ON DELETE CASCADE,
   attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 2),
+  retry_round INTEGER NOT NULL DEFAULT 0 CHECK (retry_round >= 0),
   status TEXT NOT NULL DEFAULT 'dispatching'
     CHECK (status IN ('dispatching', 'submitted', 'succeeded', 'failed', 'expired', 'canceled')),
   modal_app_name TEXT NOT NULL,
@@ -214,7 +228,7 @@ CREATE TABLE IF NOT EXISTS eval_attempts (
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
   error TEXT,
-  UNIQUE (eval_job_id, attempt_number)
+  UNIQUE (eval_job_id, retry_round, attempt_number)
 );
 
 CREATE TABLE IF NOT EXISTS eval_backend_state (
@@ -259,14 +273,59 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_run_id TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS wandb_url TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_next_retry_at TIMESTAMPTZ;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_error TEXT;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projected_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE eval_attempts ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE eval_attempts DROP CONSTRAINT IF EXISTS eval_attempts_eval_job_id_attempt_number_key;
+ALTER TABLE eval_attempts DROP CONSTRAINT IF EXISTS eval_attempts_eval_job_id_retry_round_attempt_number_key;
+ALTER TABLE eval_attempts ADD CONSTRAINT eval_attempts_eval_job_id_retry_round_attempt_number_key
+  UNIQUE (eval_job_id, retry_round, attempt_number);
+ALTER TABLE eval_jobs DROP CONSTRAINT IF EXISTS eval_jobs_retry_round_check;
+ALTER TABLE eval_jobs ADD CONSTRAINT eval_jobs_retry_round_check CHECK (retry_round >= 0);
+ALTER TABLE eval_attempts DROP CONSTRAINT IF EXISTS eval_attempts_retry_round_check;
+ALTER TABLE eval_attempts ADD CONSTRAINT eval_attempts_retry_round_check CHECK (retry_round >= 0);
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_status_check;
 ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_status_check
-  CHECK (status IN ('pending', 'launching', 'starting', 'running', 'succeeded', 'failed', 'canceled'));
+  CHECK (status IN (
+    'pending', 'launching', 'starting', 'running', 'finalizing',
+    'succeeded', 'failed', 'finalization_failed', 'canceled'
+  ));
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_live_publication_status_check;
+ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_status_check
+  CHECK (live_publication_status IN ('pending', 'live', 'complete', 'disabled', 'failed'));
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_live_publication_attempts_check;
+ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_attempts_check
+  CHECK (live_publication_attempts >= 0);
+ALTER TABLE eval_runs DROP CONSTRAINT IF EXISTS eval_runs_status_check;
+ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_status_check
+  CHECK (status IN (
+    'active', 'awaiting_artifact_recovery', 'finalizing', 'complete', 'failed', 'canceled'
+  ));
+
+UPDATE train_jobs
+SET live_publication_status = CASE
+  WHEN COALESCE((train_config->>'wandb')::boolean, FALSE) THEN 'complete'
+  ELSE 'disabled'
+END
+WHERE live_publication_status = 'pending'
+  AND status IN ('succeeded', 'failed', 'finalization_failed', 'canceled');
+
+UPDATE train_jobs t
+SET status = 'finalizing', finished_at = NULL
+WHERE t.status = 'succeeded'
+  AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local') = 'modal'
+  AND EXISTS (
+    SELECT 1 FROM eval_runs r
+    WHERE r.train_job_id = t.id AND r.status <> 'complete'
+  );
 
 CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
   ON train_jobs (machine, status, id)
@@ -723,10 +782,16 @@ def resolve_checkpoint_eval_backend(
     checkpoint_eval_backend: str | None,
 ) -> str:
     configured = str(train_config.get("checkpoint_eval_backend") or "")
-    if configured == "none" and checkpoint_eval_backend != "none":
+    declared_training_acceptance = accepts_first_training_success(train_config)
+    if (
+        configured == "none"
+        and checkpoint_eval_backend != "none"
+        and not (checkpoint_eval_backend is None and declared_training_acceptance)
+    ):
         raise ValueError(
             "checkpoint_eval_backend=none is a per-submission smoke/debug override and "
-            "cannot be a checked-in recipe default"
+            "cannot be a checked-in recipe default unless the training backend declares "
+            "first-training-success acceptance"
         )
     backend = str(checkpoint_eval_backend or configured or "")
     if not backend:
@@ -764,6 +829,7 @@ def enqueue_train_jobs_from_recipe_document(
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
+    declared_training_acceptance = accepts_first_training_success(train_config)
     backend = resolve_checkpoint_eval_backend(
         train_config,
         checkpoint_eval_backend=checkpoint_eval_backend,
@@ -783,7 +849,8 @@ def enqueue_train_jobs_from_recipe_document(
     document["train_config"] = train_config
     validate_materialized_train_recipe(
         document,
-        allow_no_eval_backend=backend == "none" and checkpoint_eval_backend == "none",
+        allow_no_eval_backend=backend == "none"
+        and (checkpoint_eval_backend == "none" or declared_training_acceptance),
     )
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
@@ -1284,7 +1351,14 @@ def mark_job_launch_running(
                 """
                 UPDATE train_jobs
                 SET status = 'starting',
-                    started_at = COALESCE(started_at, now())
+                    started_at = COALESCE(started_at, now()),
+                    live_publication_status = CASE
+                      WHEN COALESCE((train_config->>'wandb')::boolean, FALSE)
+                        THEN 'live'
+                      ELSE 'disabled'
+                    END,
+                    live_publication_error = NULL,
+                    live_publication_next_retry_at = NULL
                 WHERE id = %(job_id)s
                   AND status = 'launching'
                 RETURNING id
@@ -1310,9 +1384,12 @@ def mark_train_job_ready(
     launch_id: str,
     readiness: Mapping[str, Any],
 ) -> dict[str, Any] | None:
+    wandb_enabled = bool(readiness.get("wandb_enabled", True))
     wandb_run_id = str(readiness.get("wandb_run_id") or "").strip()
     wandb_url = str(readiness.get("wandb_url") or "").strip()
-    if not wandb_run_id or not wandb_url.startswith("https://wandb.ai/"):
+    if wandb_enabled and (
+        not wandb_run_id or not wandb_url.startswith("https://wandb.ai/")
+    ):
         raise ValueError("training readiness requires a W&B run id and URL")
     learner_ready_at = str(readiness.get("learner_ready_at") or "").strip() or None
     wandb_ready_at = str(readiness.get("wandb_ready_at") or "").strip() or None
@@ -1335,23 +1412,33 @@ def mark_train_job_ready(
                         learner_ready_at, %(learner_ready_at)s::timestamptz, now()
                     ),
                     wandb_ready_at = COALESCE(
-                        wandb_ready_at, %(wandb_ready_at)s::timestamptz, now()
+                        wandb_ready_at,
+                        CASE WHEN %(wandb_enabled)s
+                          THEN COALESCE(%(wandb_ready_at)s::timestamptz, now())
+                          ELSE NULL
+                        END
                     ),
                     ready_at = COALESCE(ready_at, now()),
-                    wandb_run_id = %(wandb_run_id)s,
-                    wandb_url = %(wandb_url)s,
+                    wandb_run_id = COALESCE(%(wandb_run_id)s, wandb_run_id),
+                    wandb_url = COALESCE(%(wandb_url)s, wandb_url),
+                    live_publication_status = CASE
+                      WHEN %(wandb_enabled)s THEN 'live' ELSE 'disabled'
+                    END,
                     error = NULL
                 FROM job_launches AS launch
                 WHERE launch.launch_id = %(launch_id)s
                   AND launch.job_id = job.id
                   AND launch.state = 'running'
                   AND job.status = 'starting'
+                  AND COALESCE((job.train_config->>'wandb')::boolean, FALSE)
+                    = %(wandb_enabled)s
                 RETURNING job.*
                 """,
                 {
                     "launch_id": launch_id,
-                    "wandb_run_id": wandb_run_id,
-                    "wandb_url": wandb_url,
+                    "wandb_run_id": wandb_run_id or None,
+                    "wandb_url": wandb_url or None,
+                    "wandb_enabled": wandb_enabled,
                     "learner_ready_at": learner_ready_at,
                     "wandb_ready_at": wandb_ready_at,
                 },
@@ -1364,9 +1451,14 @@ def mark_train_job_ready(
                 conn,
                 job_id=int(job["id"]),
                 event_type="running",
-                message="learner and W&B publisher ready",
+                message=(
+                    "learner and W&B publisher ready"
+                    if wandb_enabled
+                    else "learner ready; W&B publication disabled"
+                ),
                 metadata={
                     "launch_id": launch_id,
+                    "wandb_enabled": wandb_enabled,
                     "wandb_run_id": wandb_run_id,
                     "wandb_url": wandb_url,
                     "learner_ready_at": learner_ready_at,
@@ -1534,7 +1626,10 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
                 SELECT DISTINCT machine
                 FROM train_jobs
                 WHERE status IN ('pending', 'launching', 'starting', 'running')
-                   OR cancel_requested = TRUE
+                   OR (
+                     status = 'finalizing'
+                     AND live_publication_status IN ('pending', 'live')
+                   )
                 ORDER BY machine
                 """
             )
@@ -1554,7 +1649,7 @@ def count_nonterminal_jobs(conn=None) -> int:
                 """
                 SELECT
                   (SELECT COUNT(*) FROM train_jobs
-                   WHERE status IN ('pending', 'launching', 'starting', 'running'))
+                   WHERE status IN ('pending', 'launching', 'starting', 'running', 'finalizing'))
                   +
                   (SELECT COUNT(*) FROM eval_jobs
                    WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
@@ -1566,6 +1661,123 @@ def count_nonterminal_jobs(conn=None) -> int:
     finally:
         if owned_connection:
             conn.close()
+
+
+def claim_live_publication_recovery(conn, *, machine: str) -> dict[str, Any] | None:
+    """Claim one CPU-only publisher recovery after its Docker launch is terminal."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.id
+                FROM train_jobs t
+                JOIN job_launches l ON l.job_id = t.id
+                WHERE t.machine = %(machine)s
+                  AND t.status = 'finalizing'
+                  AND l.state = 'succeeded'
+                  AND t.live_publication_status IN ('pending', 'live')
+                  AND (
+                    t.live_publication_next_retry_at IS NULL
+                    OR t.live_publication_next_retry_at <= now()
+                  )
+                ORDER BY t.id
+                FOR UPDATE OF t SKIP LOCKED
+                LIMIT 1
+                """,
+                {"machine": normalize_machine(machine)},
+            )
+            candidate = cur.fetchone()
+            if not candidate:
+                return None
+            cur.execute(
+                """
+                UPDATE train_jobs t
+                SET live_publication_status = 'live',
+                  live_publication_attempts = live_publication_attempts + 1,
+                  live_publication_next_retry_at = now() + interval '20 minutes',
+                  live_publication_error = NULL
+                FROM job_launches l
+                WHERE t.id = %(job_id)s AND l.job_id = t.id
+                RETURNING t.*, l.launch_id, l.output_uri, l.state AS launch_state
+                """,
+                {"job_id": int(candidate["id"])},
+            )
+            return dict(cur.fetchone())
+
+
+def finish_live_publication_recovery(
+    conn,
+    *,
+    job_id: int,
+    error: str | None,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    with conn:
+        with conn.cursor() as cur:
+            if error is None:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET status = CASE
+                        WHEN COALESCE(train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
+                          THEN 'succeeded' ELSE status END,
+                      finished_at = CASE
+                        WHEN COALESCE(train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
+                          THEN now() ELSE finished_at END,
+                      live_publication_status = 'complete',
+                      live_publication_next_retry_at = NULL,
+                      live_publication_error = NULL
+                    WHERE id = %(job_id)s AND status = 'finalizing'
+                    RETURNING *
+                    """,
+                    {"job_id": int(job_id)},
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET status = CASE
+                        WHEN live_publication_attempts >= %(max_attempts)s
+                          THEN 'finalization_failed' ELSE status END,
+                      finished_at = CASE
+                        WHEN live_publication_attempts >= %(max_attempts)s
+                          THEN now() ELSE finished_at END,
+                      error = CASE
+                        WHEN live_publication_attempts >= %(max_attempts)s
+                          THEN %(error)s ELSE error END,
+                      live_publication_status = CASE
+                        WHEN live_publication_attempts >= %(max_attempts)s
+                          THEN 'failed' ELSE 'pending' END,
+                      live_publication_next_retry_at = CASE
+                        WHEN live_publication_attempts >= %(max_attempts)s THEN NULL
+                        ELSE now() + (LEAST(300, 120 * live_publication_attempts)
+                          * interval '1 second') END,
+                      live_publication_error = %(error)s
+                    WHERE id = %(job_id)s AND status = 'finalizing'
+                    RETURNING *
+                    """,
+                    {
+                        "job_id": int(job_id),
+                        "max_attempts": int(max_attempts),
+                        "error": str(error)[:4000],
+                    },
+                )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError(f"publication recovery job {job_id} is no longer finalizing")
+            result = dict(row)
+            record_job_event(
+                conn,
+                job_id=int(job_id),
+                event_type="live_publication_recovery",
+                message=("publisher recovery complete" if error is None else str(error)[:4000]),
+                metadata={
+                    "status": result.get("live_publication_status"),
+                    "attempts": result.get("live_publication_attempts"),
+                },
+            )
+            return result
 
 
 def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
@@ -1617,7 +1829,7 @@ def request_cancel_train_jobs(
     selectors = sum(value is not None for value in (job_id, batch_id, machine))
     if selectors != 1:
         raise ValueError("exactly one of job_id, batch_id, or machine is required")
-    filters = ["status IN ('pending', 'launching', 'starting', 'running')"]
+    filters = ["status IN ('pending', 'launching', 'starting', 'running', 'finalizing')"]
     params: dict[str, Any] = {}
     if job_id is not None:
         filters.append("id = %(job_id)s")
@@ -1646,14 +1858,39 @@ def request_cancel_train_jobs(
                 f"""
                 UPDATE train_jobs
                 SET cancel_requested = TRUE,
-                    status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
-                    finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
+                    status = CASE
+                      WHEN status IN ('pending', 'finalizing') THEN 'canceled'
+                      ELSE status
+                    END,
+                    finished_at = CASE
+                      WHEN status IN ('pending', 'finalizing') THEN now()
+                      ELSE finished_at
+                    END
                 WHERE {" AND ".join(filters)}
                 RETURNING id
                 """,
                 params,
             )
             job_ids = [int(row["id"]) for row in cur.fetchall()]
+            if job_ids:
+                cur.execute(
+                    """
+                    UPDATE eval_jobs SET status = 'canceled', finished_at = now(),
+                      updated_at = now(), error = 'training finalization canceled'
+                    WHERE train_job_id = ANY(%(job_ids)s)
+                      AND status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                    """,
+                    {"job_ids": job_ids},
+                )
+                cur.execute(
+                    """
+                    UPDATE eval_runs SET status = 'canceled', updated_at = now(),
+                      error = 'training finalization canceled'
+                    WHERE train_job_id = ANY(%(job_ids)s)
+                      AND status NOT IN ('complete', 'failed', 'canceled')
+                    """,
+                    {"job_ids": job_ids},
+                )
         for canceled_job_id in job_ids:
             record_job_event(
                 conn,
@@ -1693,7 +1930,7 @@ def retry_train_job(
                 SELECT *
                 FROM train_jobs
                 WHERE id = %(job_id)s
-                  AND status IN ('succeeded', 'failed', 'canceled')
+                  AND status IN ('succeeded', 'failed', 'finalization_failed', 'canceled')
                 """,
                 {"job_id": int(job_id)},
             )
@@ -1735,7 +1972,7 @@ def retry_train_job(
                 SELECT *
                 FROM train_jobs
                 WHERE id = %(job_id)s
-                  AND status IN ('succeeded', 'failed', 'canceled')
+                  AND status IN ('succeeded', 'failed', 'finalization_failed', 'canceled')
                 FOR UPDATE
                 """,
                 {"job_id": int(job_id)},
@@ -1790,6 +2027,90 @@ def retry_train_job(
         return result
 
 
+def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
+    """Reopen only failed post-train work; never create or rerun a Docker launch."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.*, l.state AS launch_state
+                FROM train_jobs t
+                JOIN job_launches l ON l.job_id = t.id
+                WHERE t.id = %(job_id)s
+                FOR UPDATE OF t
+                """,
+                {"job_id": int(job_id)},
+            )
+            source = cur.fetchone()
+            if not source or str(source["status"]) != "finalization_failed":
+                raise ValueError(f"job {job_id} is not finalization_failed or does not exist")
+            if str(source["launch_state"]) != "succeeded":
+                raise ValueError(f"job {job_id} does not have a successful training launch")
+            cur.execute(
+                """
+                UPDATE eval_runs
+                SET status = CASE WHEN complete_announcement_seen
+                    THEN 'finalizing' ELSE 'active' END,
+                  artifact_projection_attempts = 0,
+                  artifact_projection_next_retry_at = NULL,
+                  error = NULL,
+                  updated_at = now()
+                WHERE train_job_id = %(job_id)s AND status = 'failed'
+                """,
+                {"job_id": int(job_id)},
+            )
+            cur.execute(
+                """
+                UPDATE eval_jobs
+                SET status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END,
+                  retry_round = CASE WHEN status = 'failed' THEN retry_round + 1 ELSE retry_round END,
+                  finished_at = CASE WHEN status = 'failed' THEN NULL ELSE finished_at END,
+                  error = CASE WHEN status = 'failed' THEN NULL ELSE error END,
+                  projection_attempts = 0,
+                  projection_next_retry_at = NULL,
+                  projection_error = NULL,
+                  updated_at = now()
+                WHERE train_job_id = %(job_id)s AND projected_at IS NULL
+                """,
+                {"job_id": int(job_id)},
+            )
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET status = 'finalizing', finished_at = NULL, error = NULL,
+                  cancel_requested = FALSE,
+                  live_publication_status = CASE
+                    WHEN live_publication_status = 'failed' THEN 'pending'
+                    ELSE live_publication_status
+                  END,
+                  live_publication_attempts = CASE
+                    WHEN live_publication_status = 'failed' THEN 0
+                    ELSE live_publication_attempts
+                  END,
+                  live_publication_next_retry_at = CASE
+                    WHEN live_publication_status IN ('failed', 'pending') THEN now()
+                    ELSE NULL
+                  END,
+                  live_publication_error = NULL
+                WHERE id = %(job_id)s AND status = 'finalization_failed'
+                RETURNING *
+                """,
+                {"job_id": int(job_id)},
+            )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError(f"job {job_id} changed while retrying finalization")
+            record_job_event(
+                conn,
+                job_id=int(job_id),
+                event_type="finalization_retried",
+                message="operator reopened failed finalization work",
+                metadata={"launch_state": "succeeded"},
+            )
+            return dict(row)
+
+
 def _terminal_status_from_result(result: Mapping[str, Any]) -> str:
     status = str(result.get("status") or "").strip()
     if status in {"succeeded", "failed", "canceled"}:
@@ -1827,6 +2148,10 @@ def finish_train_launch_from_result(
     train_result = result.get("train")
     train_payload = train_result.get("result") if isinstance(train_result, Mapping) else {}
     train_payload = dict(train_payload or {})
+    live_publication = result.get("live_publication")
+    live_publication = (
+        dict(live_publication) if isinstance(live_publication, Mapping) else {}
+    )
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1835,7 +2160,8 @@ def finish_train_launch_from_result(
                   launch.*,
                   job.cancel_requested,
                   job.status AS job_status,
-                  job.machine AS job_machine
+                  job.machine AS job_machine,
+                  job.train_config AS job_train_config
                 FROM job_launches AS launch
                 JOIN train_jobs AS job ON job.id = launch.job_id
                 WHERE launch.launch_id = %(launch_id)s
@@ -1860,13 +2186,13 @@ def finish_train_launch_from_result(
                         f"result {field} mismatch for {launch_id}: "
                         f"expected {expected_value!r}, got {actual!r}"
                     )
-            status = (
+            launch_status = (
                 "canceled"
                 if bool(launch["cancel_requested"])
                 else _terminal_status_from_result(result)
             )
             if launch["state"] in {"succeeded", "failed", "canceled"}:
-                if launch["state"] == status:
+                if launch["state"] == launch_status:
                     return
                 raise RuntimeError(f"launch {launch_id} is already terminal as {launch['state']}")
             cur.execute(
@@ -1883,7 +2209,7 @@ def finish_train_launch_from_result(
                 RETURNING *
                 """,
                 {
-                    "state": status,
+                    "state": launch_status,
                     "exit_code": exit_code,
                     "error": error,
                     "result_json": json_arg(launch_result_metadata(result)),
@@ -1895,25 +2221,57 @@ def finish_train_launch_from_result(
                 raise RuntimeError(f"launch {launch_id} is already terminal")
             if updated_launch["job_kind"] != "train":
                 raise RuntimeError(f"launch {launch_id} is not a train launch")
+            train_config = dict(launch.get("job_train_config") or {})
+            wandb_enabled = bool(train_config.get("wandb", False))
+            publication_status = str(live_publication.get("status") or "").strip()
+            if publication_status not in {"pending", "complete", "disabled", "failed"}:
+                publication_status = "pending" if wandb_enabled else "disabled"
+            if wandb_enabled and publication_status == "disabled":
+                publication_status = "pending"
+            if not wandb_enabled:
+                publication_status = "disabled"
+            publication_error = str(live_publication.get("error") or "").strip() or None
+            publication_attempts = max(0, int(live_publication.get("attempts") or 0))
+            eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
+            if launch_status == "canceled":
+                job_status = "canceled"
+            elif launch_status != "succeeded":
+                job_status = "failed"
+            elif eval_backend == "modal" or publication_status not in {"complete", "disabled"}:
+                job_status = "finalizing"
+            else:
+                job_status = "succeeded"
             cur.execute(
                 """
                 UPDATE train_jobs
                 SET status = %(status)s,
-                    finished_at = now(),
+                    finished_at = CASE WHEN %(status)s = 'finalizing' THEN NULL ELSE now() END,
                     wandb_run_id = COALESCE(%(wandb_run_id)s, wandb_run_id),
                     wandb_url = COALESCE(%(wandb_url)s, wandb_url),
+                    live_publication_status = %(publication_status)s,
+                    live_publication_attempts = GREATEST(
+                      live_publication_attempts, %(publication_attempts)s
+                    ),
+                    live_publication_next_retry_at = CASE
+                      WHEN %(publication_status)s IN ('pending', 'failed') THEN now()
+                      ELSE NULL
+                    END,
+                    live_publication_error = %(publication_error)s,
                     error = %(error)s
                 WHERE id = %(job_id)s
                   AND status IN ('launching', 'starting', 'running')
                 RETURNING *
                 """,
                 {
-                    "status": status,
+                    "status": job_status,
                     "error": error,
                     "job_id": updated_launch["job_id"],
                     "launch_id": launch_id,
                     "wandb_run_id": train_payload.get("wandb_run_id"),
                     "wandb_url": train_payload.get("wandb_url"),
+                    "publication_status": publication_status,
+                    "publication_attempts": publication_attempts,
+                    "publication_error": publication_error,
                 },
             )
             job = cur.fetchone()
@@ -1935,11 +2293,17 @@ def finish_train_launch_from_result(
             record_job_event(
                 conn,
                 job_id=int(job["id"]),
-                event_type=status,
-                message=error,
+                event_type=job_status,
+                message=(
+                    "training launch complete; finalization continues"
+                    if job_status == "finalizing"
+                    else error
+                ),
                 metadata={
                     "launch_id": launch_id,
                     "exit_code": exit_code,
+                    "launch_status": launch_status,
+                    "live_publication_status": publication_status,
                     "run_name": train_payload.get("run_name") or job.get("run_name"),
                     "wandb_run_id": train_payload.get("wandb_run_id"),
                     "wandb_url": train_payload.get("wandb_url"),
@@ -1997,6 +2361,7 @@ def queue_status(
               launch.launch_id,
               launch.container_name,
               launch.state AS launch_state,
+              launch.finished_at AS training_finished_at,
               launch.error AS launch_error,
               launch.next_retry_at,
               launch.output_uri,
@@ -2098,6 +2463,8 @@ def print_status(report: Mapping[str, Any]) -> None:
             f"job={row['id']} machine={row['machine']} status={row['status']} "
             f"image={row.get('runtime_image_ref') or ''} "
             f"run={row.get('run_name') or ''} "
+            f"launch={row.get('launch_state') or 'not_started'} "
+            f"publication={row.get('live_publication_status') or 'pending'} "
             f"eval={row.get('eval_status') or 'not_applicable'} "
             f"artifact={row.get('artifact_status') or 'unknown'}"
         )
@@ -2229,6 +2596,14 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
     retry.add_argument("--json", action="store_true")
     retry.set_defaults(func=cmd_retry)
+
+    retry_finalization = subparsers.add_parser(
+        "retry-finalization",
+        help="Reopen failed publication/evaluation finalization without rerunning training.",
+    )
+    retry_finalization.add_argument("--job", dest="job_id", type=int, required=True)
+    retry_finalization.add_argument("--json", action="store_true")
+    retry_finalization.set_defaults(func=cmd_retry_finalization)
 
     logs = subparsers.add_parser("logs", help="Read durable output logs for one job.")
     logs.add_argument("--job", dest="job_id", type=int, required=True)
@@ -2565,7 +2940,7 @@ def wait_for_job_ids(
     if not ids:
         raise ValueError("no jobs matched")
     deadline = time.monotonic() + max(0.0, timeout)
-    terminal = {"succeeded", "failed", "canceled"}
+    terminal = {"succeeded", "failed", "finalization_failed", "canceled"}
     while True:
         with conn.cursor() as cur:
             cur.execute(
@@ -2738,6 +3113,18 @@ def cmd_retry(args: argparse.Namespace) -> int:
     }
     print(json.dumps(json_safe(payload), sort_keys=True))
     return 0 if not wait_result or wait_result["reached"] else 1
+
+
+def cmd_retry_finalization(args: argparse.Namespace) -> int:
+    conn = _connect_from_args(args)
+    try:
+        row = retry_train_job_finalization(conn, job_id=int(args.job_id))
+        dispatch = dispatch_fleet_service()
+    finally:
+        conn.close()
+    payload = {"job": row, "dispatch": dispatch}
+    print(json.dumps(json_safe(payload), sort_keys=True))
+    return 0
 
 
 def cmd_logs(args: argparse.Namespace) -> int:

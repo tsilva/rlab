@@ -365,6 +365,14 @@ def materialize_train_recipe_document(
     _materialize_goal_train_environment(materialized, goal_document)
     train_config = _merge_train_config_sections(materialized, goal_document=goal_document)
     if train_config:
+        from rlab.training_backend import accepts_first_training_success
+
+        if accepts_first_training_success(train_config):
+            train_config["checkpoint_eval_backend"] = "none"
+            train_config["early_stop"] = None
+            train_config["checkpoint_eval_stages"] = []
+            train_config.pop("checkpoint_eval_asset_manifest", None)
+    if train_config:
         materialized["train_config"] = train_config
     return materialized
 

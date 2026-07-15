@@ -830,3 +830,49 @@ def run_checkpoint_coordinator_container(
     )
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
+
+
+def run_wandb_publisher_recovery_container(
+    host: DockerRunnerHost,
+    *,
+    launch_id: str,
+    run_name: str,
+    runtime_image_ref: str,
+) -> None:
+    """Drain the durable SQLite outbox in a CPU-only container on the launch host."""
+
+    container_output = host.output_container_path(launch_id)
+    result = _run_machine_docker(
+        host.machine,
+        [
+            "run",
+            "--rm",
+            "--name",
+            f"rlab-wandb-recovery-{launch_id}",
+            "--env-file",
+            host.machine.paths.env_file,
+            "-e",
+            "RLAB_IMPORT_ROMS=0",
+            "-v",
+            f"{host.machine.paths.outputs_dir}:{host.machine.paths.container_outputs_dir}",
+            docker_image_ref(runtime_image_ref),
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=5s",
+            "105s",
+            "python",
+            "-m",
+            "rlab.wandb_publisher",
+            "--run-dir",
+            f"{container_output}/runs/{run_name}",
+            "--train-config-json",
+            f"{container_output}/train_config.json",
+            "--stop-file",
+            f"{container_output}/publisher.stop",
+        ],
+        capture=True,
+        timeout=120,
+        deadline_monotonic=host.deadline_monotonic,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout)

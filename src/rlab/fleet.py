@@ -16,6 +16,7 @@ from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.docker_host import (
     DockerRunnerHost,
     JobContainer,
+    run_wandb_publisher_recovery_container,
     setup_docker_host,
 )
 from rlab.job_queue import (
@@ -23,9 +24,11 @@ from rlab.job_queue import (
     TRAIN_JOB_KIND,
     active_job_launches,
     claim_job_launch,
+    claim_live_publication_recovery,
     connect,
     database_url,
     finish_job_launch_from_result,
+    finish_live_publication_recovery,
     job_payload_for_launch,
     machine_control,
     mark_job_launch_running,
@@ -651,6 +654,30 @@ def run_reconcile_fill_pass(
     return reconciled, launched
 
 
+def recover_live_publication(conn, *, host: DockerRunnerHost) -> int:
+    """Run one CPU-only durable-outbox recovery without taking a train slot."""
+
+    recovery = claim_live_publication_recovery(conn, machine=host.machine.name)
+    if recovery is None:
+        return 0
+    error = None
+    try:
+        run_wandb_publisher_recovery_container(
+            host,
+            launch_id=str(recovery["launch_id"]),
+            run_name=str(recovery.get("run_name") or f"train_job_{recovery['id']}"),
+            runtime_image_ref=str(recovery["runtime_image_ref"]),
+        )
+    except Exception as exc:
+        error = repr(exc)
+    finish_live_publication_recovery(
+        conn,
+        job_id=int(recovery["id"]),
+        error=error,
+    )
+    return int(error is None)
+
+
 @contextmanager
 def machine_mutation_lock(conn, machine_name: str):
     lock = acquire_machine_lock(conn, machine_name)
@@ -712,6 +739,7 @@ def run_service_machine_pass(
                 host=host,
                 shared_env_file=repo_root / DEFAULT_SHARED_RUNNER_ENV_FILE,
             )
+            recovered_publications = recover_live_publication(conn, host=host)
             prewarm: dict[str, Any] = {"status": "disabled"}
             prewarmed_ref = ""
             if machine.prewarm_latest_runtime:
@@ -734,6 +762,7 @@ def run_service_machine_pass(
                 return {
                     "reconciled": reconciled,
                     "launched": launched,
+                    "recovered_publications": recovered_publications,
                     "removed_containers": 0,
                     "pruned_images": 0,
                     "prewarm": prewarm,
@@ -754,6 +783,7 @@ def run_service_machine_pass(
             return {
                 "reconciled": reconciled,
                 "launched": launched,
+                "recovered_publications": recovered_publications,
                 "removed_containers": removed_containers,
                 "pruned_images": pruned,
                 "prewarm": prewarm,

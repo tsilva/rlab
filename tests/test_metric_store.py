@@ -54,9 +54,11 @@ class MetricStoreTests(unittest.TestCase):
             )
 
             result = store.result_projection()
+            pending_frames = store.pending_metric_frames()
 
         self.assertEqual(result["metrics_json"]["global_step"], 128)
         self.assertEqual(result["metrics_json"]["train/throughput/loop_fps"], 1.25)
+        self.assertEqual(pending_frames, [])
         self.assertEqual(
             result["artifact_refs"],
             [
@@ -353,6 +355,7 @@ class MetricStoreTests(unittest.TestCase):
                 metrics=metrics,
                 passed=True,
                 candidate_stop=False,
+                publish=True,
             )
 
             frames = store.pending_metric_frames()

@@ -417,7 +417,12 @@ def process_staged_eval(
             passed=passed,
             config=config,
         )
-        store.append_metrics(payload, step=step, source="checkpoint_eval")
+        store.append_metrics(
+            payload,
+            step=step,
+            source="checkpoint_eval",
+            publish=bool(getattr(args, "wandb", False)),
+        )
         store.mark_checkpoint_eval_stage_succeeded(
             stage_id,
             episodes=episodes,
@@ -444,6 +449,7 @@ def process_staged_eval(
                 candidate_payload,
                 step=step,
                 source="checkpoint_eval",
+                publish=bool(getattr(args, "wandb", False)),
             )
             store.mark_checkpoint_eval_candidate(
                 checkpoint_id,

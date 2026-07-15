@@ -24,7 +24,6 @@ from rlab.env import EnvConfig
 from rlab.eval_metrics import episode_reason_names
 from rlab.metric_names import (
     canonical_training_scalars,
-    GLOBAL_STEP,
     TRAIN_EPISODE_COUNT,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
@@ -161,14 +160,14 @@ class ThroughputHelper(CallbackHelper):
         clock: Callable[[], float] | None = None,
         *,
         metric_store_path: Path | str | None = None,
-        wandb_run=None,
+        wandb_enabled: bool = True,
     ):
         super().__init__()
         self.clock = clock or time.perf_counter
         self.metric_store = MetricStore(metric_store_path) if metric_store_path else None
         if self.metric_store is not None:
             self.metric_store.init()
-        self.wandb_run = wandb_run
+        self.wandb_enabled = bool(wandb_enabled)
         self.rollout_start_time: float | None = None
         self.rollout_start_timesteps: int | None = None
         self.completed_rollout: _CompletedRollout | None = None
@@ -270,10 +269,8 @@ class ThroughputHelper(CallbackHelper):
                 payload,
                 step=rollout.step,
                 source="train",
-                publish=self.wandb_run is None,
+                publish=self.wandb_enabled,
             )
-            if self.wandb_run is not None:
-                self.wandb_run.log({GLOBAL_STEP: rollout.step, **payload})
             return
         for name, value in payload.items():
             self.logger.record(name, value)
@@ -410,7 +407,7 @@ class MetricStoreOutputFormat(KVWriter):
         *,
         algorithm_id: str = "ppo",
         source: str = "train",
-        wandb_run=None,
+        wandb_enabled: bool = True,
         clock: Callable[[], float] | None = None,
     ) -> None:
         # Training metrics are durable evidence. Let SQLite's bounded busy
@@ -419,7 +416,7 @@ class MetricStoreOutputFormat(KVWriter):
         self.metric_store = MetricStore(metric_store_path)
         self.algorithm_id = algorithm_id
         self.source = source
-        self.wandb_run = wandb_run
+        self.wandb_enabled = bool(wandb_enabled)
         self.clock = clock or time.perf_counter
         self.last_warning: float | None = None
         self.metric_store.init()
@@ -446,10 +443,8 @@ class MetricStoreOutputFormat(KVWriter):
                 payload,
                 step=step,
                 source=self.source,
-                publish=self.wandb_run is None,
+                publish=self.wandb_enabled,
             )
-            if self.wandb_run is not None:
-                self.wandb_run.log({**payload, GLOBAL_STEP: step})
         except Exception as exc:
             now = self.clock()
             if self.last_warning is None or now - self.last_warning >= 60:
@@ -458,7 +453,7 @@ class MetricStoreOutputFormat(KVWriter):
             raise RuntimeError("durable metric frame write failed") from exc
 
     def close(self) -> None:
-        """MetricStore owns no persistent connection and the W&B run is shared."""
+        """MetricStore owns no persistent connection."""
 
 
 class MetricStoreLoggerHelper(CallbackHelper):
@@ -470,7 +465,7 @@ class MetricStoreLoggerHelper(CallbackHelper):
         *,
         algorithm_id: str = "ppo",
         source: str = "train",
-        wandb_run=None,
+        wandb_enabled: bool = True,
         clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__()
@@ -478,7 +473,7 @@ class MetricStoreLoggerHelper(CallbackHelper):
             metric_store_path,
             algorithm_id=algorithm_id,
             source=source,
-            wandb_run=wandb_run,
+            wandb_enabled=wandb_enabled,
             clock=clock,
         )
 
@@ -502,17 +497,19 @@ class RolloutDiagnosticsHelper(CallbackHelper):
     def __init__(
         self,
         algorithm_id: str = "ppo",
-        wandb_run=None,
         log_histograms: bool = True,
         *,
         metric_store_path: Path | str | None = None,
+        wandb_enabled: bool = True,
         histogram_interval: int = 64,
     ):
         super().__init__()
         self.algorithm_id = algorithm_id
-        self.wandb_run = wandb_run
         self.log_histograms = log_histograms
         self.metric_store = MetricStore(metric_store_path) if metric_store_path else None
+        if self.metric_store is not None:
+            self.metric_store.init()
+        self.wandb_enabled = bool(wandb_enabled)
         self.histogram_interval = max(int(histogram_interval), 1)
         self.rollout_count = 0
 
@@ -603,21 +600,12 @@ class RolloutDiagnosticsHelper(CallbackHelper):
         if not values:
             return
         validate_metric_payload(values)
-        if self.metric_store is not None:
+        if self.metric_store is not None and self.wandb_enabled:
             self.metric_store.enqueue_event(
                 kind="histogram",
                 payload={"histograms": values},
                 step=self.num_timesteps,
                 source="train",
-            )
-        if self.wandb_run is not None:
-            import wandb
-
-            self.wandb_run.log(
-                {
-                    GLOBAL_STEP: self.num_timesteps,
-                    **{name: wandb.Histogram(data) for name, data in values.items()},
-                }
             )
 
 
@@ -881,7 +869,6 @@ class RuntimeMetricsHelper(CallbackHelper):
     def __init__(
         self,
         *,
-        wandb_run=None,
         event_names: Sequence[str] = (),
         active_reward_components: Sequence[str] = (),
         active_reward_signals: Sequence[str] = (),
@@ -889,7 +876,6 @@ class RuntimeMetricsHelper(CallbackHelper):
         track_success: bool = False,
     ) -> None:
         super().__init__()
-        self.wandb_run = wandb_run
         self.reward_stats = _RewardStatsAccumulator(
             active_components=active_reward_components,
             active_signals=active_reward_signals,

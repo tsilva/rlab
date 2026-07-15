@@ -301,7 +301,6 @@ class JobQueueTests(unittest.TestCase):
             with self.subTest(goal_path=goal_path, recipe_path=recipe_path):
                 document = compose_train_document(goal_path, recipe_path)
                 train_config = document["train_config"]
-                self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
                 expected_backend = (
                     "sb3.a2c"
                     if recipe_path.name == "a2c.yaml"
@@ -309,6 +308,8 @@ class JobQueueTests(unittest.TestCase):
                     if recipe_path.name == "jerk.yaml"
                     else "sb3.ppo"
                 )
+                expected_eval_backend = "none" if expected_backend == "rlab.jerk" else "modal"
+                self.assertEqual(train_config["checkpoint_eval_backend"], expected_eval_backend)
                 self.assertEqual(train_config["training_backend"]["id"], expected_backend)
                 self.assertEqual(
                     f"{train_config['env_provider']}:{train_config['game']}",
@@ -490,6 +491,39 @@ class JobQueueTests(unittest.TestCase):
                 machine="beast-3",
             )
 
+    def test_checked_in_first_training_success_acceptance_disables_eval(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"].update(
+            {
+                "checkpoint_eval_backend": "none",
+                "early_stop": None,
+                "checkpoint_eval_stages": [],
+                "training_backend": {
+                    "id": "rlab.jerk",
+                    "config": {"acceptance_mode": "first_training_success"},
+                },
+            }
+        )
+        calls = []
+
+        def fake_enqueue(conn, **kwargs):
+            del conn
+            calls.append(kwargs)
+            return {"id": len(calls), "run_name": kwargs["run_name"]}
+
+        with patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
+        self.assertTrue(calls)
+        self.assertTrue(
+            all(call["train_config"]["checkpoint_eval_backend"] == "none" for call in calls)
+        )
+
     def test_queue_demands_groups_by_machine_and_runtime_digest(self) -> None:
         conn = FakeConnection(
             rows=[
@@ -528,6 +562,10 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("learner_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("wandb_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("wandb_run_id TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("live_publication_status TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("'finalizing'", job_queue.SCHEMA_SQL)
+        self.assertIn("'finalization_failed'", job_queue.SCHEMA_SQL)
+        self.assertIn("r.status <> 'complete'", job_queue.SCHEMA_SQL)
         self.assertIn("'starting'", job_queue.SCHEMA_SQL)
         self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
         self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
@@ -1179,6 +1217,21 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("NOT EXISTS (SELECT 1 FROM job_launches", sql)
         self.assertEqual(conn.cursor_obj.executed_params_list[1]["launch_id"], "train-7")
 
+    def test_wandb_disabled_job_becomes_ready_without_wandb_identity(self) -> None:
+        conn = FakeConnection(results=[{"row": {"id": 7}}, {}])
+
+        row = job_queue.mark_train_job_ready(
+            conn,
+            launch_id="train-7",
+            readiness={"ready": True, "wandb_enabled": False},
+        )
+
+        self.assertEqual(row["id"], 7)
+        params = conn.cursor_obj.executed_params_list[0]
+        self.assertIs(params["wandb_enabled"], False)
+        self.assertIsNone(params["wandb_run_id"])
+        self.assertIsNone(params["wandb_url"])
+
     def test_cancel_only_terminalizes_pending_jobs(self) -> None:
         conn = FakeConnection(results=[{"rows": [{"id": 9}]}])
 
@@ -1186,7 +1239,7 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(changed, [9])
         sql = conn.cursor_obj.executed_sqls[0]
-        self.assertIn("CASE WHEN status = 'pending' THEN 'canceled'", sql)
+        self.assertIn("WHEN status IN ('pending', 'finalizing') THEN 'canceled'", sql)
         self.assertNotIn("status IN ('pending', 'launching') THEN 'canceled'", sql)
 
     def test_result_identity_is_validated_before_mutation(self) -> None:
@@ -1218,6 +1271,73 @@ class JobQueueTests(unittest.TestCase):
             )
 
         self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+
+    def test_successful_modal_launch_releases_capacity_while_job_finalizes(self) -> None:
+        launch = {
+            "launch_id": "train-7",
+            "job_kind": "train",
+            "job_id": 7,
+            "machine": "beast-3",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "state": "running",
+            "cancel_requested": False,
+            "job_train_config": {
+                "wandb": True,
+                "checkpoint_eval_backend": "modal",
+            },
+        }
+        terminal_launch = {**launch, "state": "succeeded"}
+        job = {"id": 7, "run_name": "run", "status": "finalizing"}
+        conn = FakeConnection(
+            results=[{"row": launch}, {"row": terminal_launch}, {"row": job}, {}]
+        )
+
+        job_queue.finish_train_launch_from_result(
+            conn,
+            launch_id="train-7",
+            result={
+                "schema_version": 1,
+                "job_kind": "train",
+                "job_id": 7,
+                "launch_id": "train-7",
+                "machine": "beast-3",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "status": "succeeded",
+                "exit_code": 0,
+                "live_publication": {"status": "complete", "attempts": 1},
+            },
+        )
+
+        self.assertEqual(conn.cursor_obj.executed_params_list[1]["state"], "succeeded")
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "finalizing")
+
+    def test_retry_finalization_preserves_successful_launch(self) -> None:
+        source = {
+            "id": 7,
+            "status": "finalization_failed",
+            "launch_state": "succeeded",
+        }
+        reopened = {
+            **source,
+            "status": "finalizing",
+            "live_publication_status": "pending",
+        }
+        conn = FakeConnection(
+            results=[
+                {"row": source},
+                {},
+                {},
+                {"row": reopened},
+                {},
+            ]
+        )
+
+        result = job_queue.retry_train_job_finalization(conn, job_id=7)
+
+        self.assertEqual(result["status"], "finalizing")
+        statements = conn.cursor_obj.executed_sqls
+        self.assertTrue(any("retry_round + 1" in statement for statement in statements))
+        self.assertFalse(any("UPDATE job_launches" in statement for statement in statements))
 
     def test_cancel_intent_dominates_success_result(self) -> None:
         launch = {

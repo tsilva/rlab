@@ -610,6 +610,7 @@ class MetricStore:
         metrics: Mapping[str, object],
         passed: bool,
         candidate_stop: bool,
+        publish: bool,
     ) -> None:
         now = time.time()
         stage_status = "succeeded" if passed else "failed_gate"
@@ -678,7 +679,7 @@ class MetricStore:
             metrics,
             step=checkpoint_step,
             source="modal_checkpoint_eval",
-            publish=True,
+            publish=bool(publish),
         )
 
     def apply_modal_eval_skip(

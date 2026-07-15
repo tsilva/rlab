@@ -34,9 +34,8 @@ class BackendContext:
     run_dir: Path
     checkpoint_dir: Path
     metric_store: Any
-    wandb_run: Any
+    wandb_enabled: bool
     stop_flag: Any
-    external_wandb_publisher: bool
 
     def mark_ready(self) -> Path:
         path = self.run_dir / "learner_ready.json"
@@ -74,6 +73,9 @@ _BACKEND_MODULES = {
     "rlab.a2c": "rlab.training.planned",
 }
 
+CHECKPOINT_EVAL_ACCEPTANCE = "checkpoint_eval"
+FIRST_TRAINING_SUCCESS_ACCEPTANCE = "first_training_success"
+
 
 def registered_training_backend_ids() -> tuple[str, ...]:
     return tuple(sorted(_BACKEND_MODULES))
@@ -110,6 +112,22 @@ def training_backend_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(backend_config, Mapping):
         raise ValueError("train_config.training_backend.config must be an object")
     return dict(backend_config)
+
+
+def training_backend_acceptance_mode(config: Mapping[str, Any]) -> str:
+    """Return the backend-declared acceptance authority for a train config."""
+
+    backend_id = training_backend_id(config)
+    backend_config = training_backend_config(config)
+    resolver = getattr(_backend_module(backend_id), "acceptance_mode", None)
+    if resolver is None:
+        return CHECKPOINT_EVAL_ACCEPTANCE
+    mode = str(resolver(backend_id, backend_config)).strip()
+    return mode or CHECKPOINT_EVAL_ACCEPTANCE
+
+
+def accepts_first_training_success(config: Mapping[str, Any]) -> bool:
+    return training_backend_acceptance_mode(config) == FIRST_TRAINING_SUCCESS_ACCEPTANCE
 
 
 def normalize_training_backend(

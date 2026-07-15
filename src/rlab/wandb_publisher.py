@@ -5,7 +5,9 @@ import html
 import json
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,12 +21,137 @@ from rlab.artifacts import (
 from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
+from rlab.env_metadata import env_config_from_config_dict
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.metric_names import validate_metric_payload
 from rlab.metric_names import EVAL_SCREEN_PREVIEW
 from rlab.train_config import materialized_train_args
-from rlab.wandb_utils import resolve_wandb_namespace
-from rlab.wandb_artifacts import artifact_write_aliases, artifact_write_ref
+from rlab.wandb_utils import (
+    configure_wandb_metrics,
+    load_wandb_env,
+    resolve_wandb_namespace,
+)
+from rlab.wandb_artifacts import (
+    artifact_collection_name,
+    artifact_write_aliases,
+    artifact_write_ref,
+)
+
+
+class WandbProjector:
+    """Own one resumed W&B run for both live outbox and final projections."""
+
+    def __init__(self, run, *, run_dir: str | None = None) -> None:
+        self.run = run
+        self.run_dir = run_dir
+
+    @classmethod
+    def start_live(cls, args, *, run_dir: str, config) -> WandbProjector:
+        return cls(init_wandb(args, run_dir, config), run_dir=run_dir)
+
+    @classmethod
+    def resume(cls, train_config: Mapping[str, Any]) -> WandbProjector:
+        run_id = str(train_config.get("wandb_run_id") or "")
+        if not run_id:
+            raise ValueError("W&B projection requires the producing run id")
+        load_wandb_env()
+        import wandb
+
+        entity, project = resolve_wandb_namespace(
+            train_config.get("wandb_entity"),
+            train_config.get("wandb_project"),
+            str(train_config.get("game") or ""),
+            env_provider=train_config.get("env_provider"),
+        )
+        run = configure_wandb_metrics(
+            wandb.init(
+                entity=entity,
+                project=project,
+                id=run_id,
+                resume="must",
+                mode=str(train_config.get("wandb_mode") or "online"),
+            )
+        )
+        return cls(run)
+
+    def close(self) -> None:
+        if self.run_dir is not None:
+            write_wandb_url(self.run, self.run_dir)
+        if self.run is not None:
+            self.run.finish()
+
+
+def project_payload(payload: Mapping[str, Any]) -> None:
+    """Project one durable post-training payload through the sole W&B writer."""
+
+    train_config = dict(payload["train_config"])
+    if not bool(train_config.get("wandb", False)):
+        return
+    projector = WandbProjector.resume(train_config)
+    run = projector.run
+    run_id = str(train_config["wandb_run_id"])
+    import wandb
+    try:
+        projection_kind = str(payload.get("projection_kind") or "evaluation")
+        if projection_kind == "artifact_reference":
+            if bool(train_config.get("no_wandb_artifacts", False)):
+                return
+            kind = str(payload["artifact_kind"])
+            checkpoint_step = int(payload["checkpoint_step"])
+            model_metadata = dict(payload["model_metadata"])
+            if not isinstance(model_metadata.get("training_metadata"), dict):
+                raise ValueError("artifact projection requires checkpoint training_metadata")
+            checkpoint_uri = str(payload["checkpoint_uri"])
+            artifact_filename = checkpoint_uri.rsplit("/", 1)[-1] or "model.zip"
+            artifact = wandb.Artifact(
+                artifact_collection_name(kind, run_id=run_id),
+                type="model",
+                metadata={
+                    **model_metadata,
+                    "source_filename": model_metadata.get("filename", ""),
+                    "filename": artifact_filename,
+                    "checkpoint_sha256": payload["checkpoint_sha256"],
+                    "metadata_sha256": payload["metadata_sha256"],
+                    "checkpoint_step": checkpoint_step,
+                    "metadata_uri": payload["metadata_uri"],
+                    "artifact_storage_uri": checkpoint_uri,
+                },
+            )
+            artifact.add_reference(checkpoint_uri)
+            raw_aliases = payload.get("artifact_aliases")
+            aliases = (
+                [str(alias) for alias in raw_aliases]
+                if isinstance(raw_aliases, list) and raw_aliases
+                else artifact_write_aliases(kind, checkpoint_step)
+            )
+            run.log_artifact(artifact, aliases=aliases)
+            return
+        decision = dict(payload["decision"])
+        purpose = str(payload["purpose"])
+        checkpoint_uri = str(payload["checkpoint_uri"])
+        if purpose == "promotion":
+            environment = train_config.get("checkpoint_eval_environment")
+            if not isinstance(environment, dict):
+                raise ValueError("W&B projection is missing the materialized environment")
+            config = env_config_from_config_dict(environment)
+            if config is None:
+                raise ValueError("W&B projection environment is invalid")
+            log_checkpoint_eval_metrics(
+                run,
+                args=SimpleNamespace(**train_config),
+                metrics=dict(decision["raw_metrics"]),
+                checkpoint_path=checkpoint_uri,
+                checkpoint_step_value=int(payload["checkpoint_step"]),
+                artifact_ref=checkpoint_uri,
+                eval_source="modal",
+                config=resolve_env_config(config),
+                update_leader=bool(payload.get("canonical_promotion", False)),
+                force_leader=bool(payload.get("canonical_promotion", False)),
+            )
+        else:
+            run.log(dict(decision["metrics"]))
+    finally:
+        projector.close()
 
 
 def artifact_ref(
@@ -225,15 +352,17 @@ def main(argv: list[str] | None = None) -> int:
     modal_eval = str(getattr(args, "checkpoint_eval_backend", "local")) == "modal"
     if not modal_eval:
         store.reset_interrupted_artifact_uploads()
-    run = None
+    projector = None
     try:
         retry_delay = max(cli_args.poll_seconds, 0.1)
         while True:
             store.touch_publisher()
-            if wandb_enabled and run is None:
+            if wandb_enabled and projector is None:
                 try:
-                    run = init_wandb(args, str(cli_args.run_dir), config)
-                    write_wandb_url(run, str(cli_args.run_dir))
+                    projector = WandbProjector.start_live(
+                        args, run_dir=str(cli_args.run_dir), config=config
+                    )
+                    write_wandb_url(projector.run, str(cli_args.run_dir))
                     retry_delay = max(cli_args.poll_seconds, 0.1)
                 except Exception as exc:
                     store.record_publisher_error(repr(exc))
@@ -244,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
             activity = (
                 publish_pending_frames(
                     store,
-                    run,
+                    projector.run if projector is not None else None,
                     args=args,
                     config=config,
                     limit=max(cli_args.limit, 1),
@@ -259,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
                         args=args,
                         config=config,
                         row=row,
-                        wandb_run=run,
+                        wandb_run=projector.run if projector is not None else None,
                     )
                     activity += int(bool(uploaded))
             if cli_args.stop_file.exists():
@@ -279,9 +408,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 retry_delay = max(cli_args.poll_seconds, 0.1)
     finally:
-        write_wandb_url(run, str(cli_args.run_dir))
-        if run is not None:
-            run.finish()
+        if projector is not None:
+            projector.close()
 
 
 if __name__ == "__main__":

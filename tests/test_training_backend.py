@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 from collections import deque
+from dataclasses import fields
 from pathlib import Path
+from unittest import mock
 
 import gymnasium as gym
 import numpy as np
@@ -16,7 +18,7 @@ from rlab.runtime_contract import train_config_contract_payload, train_config_co
 from rlab.task_kernels import IdentityTaskDefinition
 from rlab.train import main as train_main
 from rlab.train_config import materialized_train_args, validate_and_normalize_train_config
-from rlab.training_backend import BackendUnavailableError
+from rlab.training_backend import BackendContext, BackendUnavailableError
 
 
 def backend_config(backend_id: str = "sb3.ppo", **config) -> dict[str, object]:
@@ -40,6 +42,21 @@ def test_core_backend_contract_does_not_import_sb3() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_learner_backend_context_is_wandb_blind() -> None:
+    names = {field.name for field in fields(BackendContext)}
+    assert "wandb_run" not in names
+    assert "external_wandb_publisher" not in names
+    assert "wandb_enabled" in names
+
+
+def test_direct_learner_entrypoint_is_guarded() -> None:
+    with (
+        mock.patch.dict("os.environ", {}, clear=True),
+        pytest.raises(RuntimeError, match="use `rlab train`"),
+    ):
+        train_main([])
 
 
 def test_sb3_backend_schema_is_strict_and_materializes_backend_defaults() -> None:
@@ -80,9 +97,24 @@ def test_jerk_backend_schema_is_strict_and_available() -> None:
     config = normalized["training_backend"]["config"]
     assert config["jump_probability"] == 0.2
     assert config["forward_action"] == "right_b"
+    assert config["acceptance_mode"] == "checkpoint_eval"
 
     with pytest.raises(ValueError, match="jump_probability must be in"):
         validate_and_normalize_train_config(backend_config("rlab.jerk", jump_probability=1.1))
+    with pytest.raises(ValueError, match="requires checkpoint_eval_backend=none"):
+        validate_and_normalize_train_config(
+            backend_config("rlab.jerk", acceptance_mode="first_training_success")
+        )
+
+    accepted = validate_and_normalize_train_config(
+        {
+            "checkpoint_eval_backend": "none",
+            "early_stop": None,
+            "checkpoint_eval_stages": [],
+            **backend_config("rlab.jerk", acceptance_mode="first_training_success"),
+        }
+    )
+    assert accepted["training_backend"]["config"]["acceptance_mode"] == ("first_training_success")
 
 
 @pytest.mark.parametrize("backend_id", ["rlab.ppo", "rlab.a2c"])
@@ -119,7 +151,10 @@ def test_unavailable_backend_fails_before_run_resources_are_created() -> None:
             ),
             encoding="utf-8",
         )
-        with pytest.raises(BackendUnavailableError):
+        with (
+            mock.patch.dict("os.environ", {"RLAB_INTERNAL_LEARNER": "1"}),
+            pytest.raises(BackendUnavailableError),
+        ):
             train_main(["--train-config-json", str(config_path)])
         assert not (root / "runs" / "must-not-exist").exists()
 

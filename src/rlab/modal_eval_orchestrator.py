@@ -230,7 +230,12 @@ def ingest_announcements(
                                     "job_id": int(run["train_job_id"]),
                                 },
                             )
-                    if not seen and str(run["train_status"]) in {"succeeded", "failed"}:
+                    if not seen and str(run["train_status"]) in {
+                        "finalizing",
+                        "succeeded",
+                        "failed",
+                        "finalization_failed",
+                    }:
                         with conn:
                             with conn.cursor() as cur:
                                 cur.execute(
@@ -416,8 +421,14 @@ def _mark_attempt_failure(
                 {"id": int(attempt["id"]), "error": error[:4000]},
             )
             cur.execute(
-                "SELECT count(*) AS count FROM eval_attempts WHERE eval_job_id = %(job_id)s",
-                {"job_id": int(attempt["eval_job_id"])},
+                """
+                SELECT count(*) AS count FROM eval_attempts
+                WHERE eval_job_id = %(job_id)s AND retry_round = %(retry_round)s
+                """,
+                {
+                    "job_id": int(attempt["eval_job_id"]),
+                    "retry_round": int(attempt.get("retry_round") or 0),
+                },
             )
             attempts = int(cur.fetchone()["count"])
             retry = not terminal and attempts < config.max_attempts
@@ -653,6 +664,52 @@ def poll_attempts(
     return changed
 
 
+def cancel_requested_attempts(
+    conn,
+    invoker: ModalInvoker,
+    *,
+    deadline_monotonic: float,
+) -> int:
+    """Best-effort cancel Modal calls whose logical train job was canceled."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.id, a.modal_call_id
+            FROM eval_attempts a
+            JOIN eval_jobs j ON j.id = a.eval_job_id
+            JOIN train_jobs t ON t.id = j.train_job_id
+            WHERE t.status = 'canceled'
+              AND a.status IN ('dispatching', 'submitted')
+            ORDER BY a.created_at
+            """
+        )
+        attempts = [dict(row) for row in cur.fetchall()]
+    changed = 0
+    for attempt in attempts:
+        if time.monotonic() >= deadline_monotonic:
+            break
+        call_id = str(attempt.get("modal_call_id") or "")
+        error = None
+        if call_id:
+            try:
+                invoker.cancel(call_id)
+            except Exception as exc:
+                error = repr(exc)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_attempts
+                    SET status = 'canceled', finished_at = now(), error = %(error)s
+                    WHERE id = %(id)s AND status IN ('dispatching', 'submitted')
+                    """,
+                    {"id": int(attempt["id"]), "error": error},
+                )
+                changed += cur.rowcount
+    return changed
+
+
 def _reuse_result(conn, store: ObjectStore, job: Mapping[str, Any]) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -766,7 +823,7 @@ def dispatch_pending(
             SELECT j.* FROM eval_jobs j
             JOIN train_jobs t ON t.id = j.train_job_id
             WHERE j.status IN ('pending', 'blocked_budget')
-              AND (j.purpose <> 'promotion' OR t.status = 'succeeded')
+              AND (j.purpose <> 'promotion' OR t.status = 'finalizing')
             ORDER BY CASE WHEN stage_index > 0 AND purpose <> 'promotion' THEN 0
                           WHEN purpose = 'promotion' THEN 1 ELSE 2 END,
                      train_job_id, created_at
@@ -825,8 +882,14 @@ def dispatch_pending(
             continue
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT count(*) AS count FROM eval_attempts WHERE eval_job_id = %(job_id)s",
-                {"job_id": int(job["id"])},
+                """
+                SELECT count(*) AS count FROM eval_attempts
+                WHERE eval_job_id = %(job_id)s AND retry_round = %(retry_round)s
+                """,
+                {
+                    "job_id": int(job["id"]),
+                    "retry_round": int(job.get("retry_round") or 0),
+                },
             )
             attempt_number = int(cur.fetchone()["count"]) + 1
         if attempt_number > config.max_attempts:
@@ -850,10 +913,11 @@ def dispatch_pending(
                 cur.execute(
                     """
                     INSERT INTO eval_attempts (
-                      attempt_id, eval_job_id, attempt_number, modal_app_name,
+                      attempt_id, eval_job_id, attempt_number, retry_round, modal_app_name,
                       modal_function_name, result_uri, reserved_cost_usd, expires_at
                     ) VALUES (
-                      %(attempt_id)s, %(job_id)s, %(number)s, %(app)s, %(function)s,
+                      %(attempt_id)s, %(job_id)s, %(number)s, %(retry_round)s,
+                      %(app)s, %(function)s,
                       %(result_uri)s, %(reserved)s, %(expires_at)s
                     ) RETURNING id
                     """,
@@ -861,6 +925,7 @@ def dispatch_pending(
                         "attempt_id": attempt_id,
                         "job_id": int(job["id"]),
                         "number": attempt_number,
+                        "retry_round": int(job.get("retry_round") or 0),
                         "app": app_name,
                         "function": config.function_name,
                         "result_uri": result_uri,
@@ -979,7 +1044,7 @@ def enqueue_post_train_promotions(conn) -> int:
               ) - 1
               AND (j.decision_json->>'passed')::boolean = TRUE
               AND r.complete_announcement_seen = TRUE
-              AND t.status = 'succeeded'
+              AND t.status = 'finalizing'
             ORDER BY j.train_job_id, j.ledger_id, j.checkpoint_step
             """
         )
@@ -1000,7 +1065,9 @@ def finalize_runs(conn) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE eval_runs r SET status = 'complete', updated_at = now(), error = NULL
+                WITH completed AS (
+                  UPDATE eval_runs r
+                  SET status = 'complete', updated_at = now(), error = NULL
                 WHERE r.complete_announcement_seen = TRUE
                   AND r.artifacts_projected_at IS NOT NULL
                   AND NOT EXISTS (
@@ -1021,12 +1088,87 @@ def finalize_runs(conn) -> int:
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j WHERE j.train_job_id = r.train_job_id
-                      AND j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                      AND j.status IN (
+                        'pending', 'dispatching', 'submitted', 'blocked_budget', 'failed'
+                      )
                   )
                   AND r.status = 'finalizing'
+                  AND EXISTS (
+                    SELECT 1 FROM train_jobs ready
+                    WHERE ready.id = r.train_job_id
+                      AND ready.status = 'finalizing'
+                      AND ready.live_publication_status IN ('complete', 'disabled')
+                  )
+                  RETURNING r.train_job_id
+                )
+                UPDATE train_jobs t
+                SET status = 'succeeded', finished_at = now(), error = NULL,
+                  live_publication_next_retry_at = NULL,
+                  live_publication_error = NULL
+                FROM completed
+                WHERE t.id = completed.train_job_id
+                  AND t.status = 'finalizing'
+                  AND t.live_publication_status IN ('complete', 'disabled')
                 """
             )
             return cur.rowcount
+
+
+def reconcile_eval_run_failures(conn) -> int:
+    """Promote exhausted required eval jobs to a run-level finalization failure."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE eval_runs r
+                SET status = 'failed', updated_at = now(),
+                  error = COALESCE(
+                    (SELECT j.error FROM eval_jobs j
+                     WHERE j.train_job_id = r.train_job_id AND j.status = 'failed'
+                     ORDER BY j.updated_at DESC LIMIT 1),
+                    'required evaluation exhausted retries'
+                  )
+                WHERE r.status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
+                  AND EXISTS (
+                    SELECT 1 FROM eval_jobs j
+                    WHERE j.train_job_id = r.train_job_id AND j.status = 'failed'
+                  )
+                """
+            )
+            return cur.rowcount
+
+
+def reconcile_train_finalization_failures(conn) -> int:
+    """Expose exhausted post-train work without changing the successful launch."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs t
+                SET status = 'finalization_failed', finished_at = now(),
+                  error = COALESCE(r.error, t.live_publication_error, 'finalization failed')
+                FROM eval_runs r
+                WHERE r.train_job_id = t.id
+                  AND t.status = 'finalizing'
+                  AND (
+                    r.status = 'failed'
+                    OR t.live_publication_status = 'failed'
+                  )
+                """
+            )
+            changed = cur.rowcount
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET status = 'finalization_failed', finished_at = now(),
+                  error = COALESCE(live_publication_error, 'live publication failed')
+                WHERE status = 'finalizing'
+                  AND live_publication_status = 'failed'
+                """
+            )
+            return changed + cur.rowcount
 
 
 def promotion_candidate_key(job: Mapping[str, Any]) -> tuple[Any, int, int]:
@@ -1147,7 +1289,8 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.status = 'succeeded' AND j.projected_at IS NULL
               AND j.purpose = 'promotion'
-              AND t.status IN ('succeeded', 'failed', 'canceled')
+              AND t.status = 'finalizing'
+              AND t.live_publication_status IN ('complete', 'disabled')
               AND r.status = 'finalizing'
               AND j.projection_attempts < %(max_attempts)s
               AND (j.projection_next_retry_at IS NULL OR j.projection_next_retry_at <= now())
@@ -1239,7 +1382,8 @@ def project_artifact_references(
             FROM eval_runs r JOIN train_jobs t ON t.id = r.train_job_id
             LEFT JOIN eval_jobs promoted ON promoted.id = r.promoted_eval_job_id
             WHERE r.complete_announcement_seen = TRUE AND r.artifacts_projected_at IS NULL
-              AND t.status IN ('succeeded', 'failed', 'canceled')
+              AND t.status = 'finalizing'
+              AND t.live_publication_status IN ('complete', 'disabled')
               AND r.status = 'finalizing'
               AND r.artifact_projection_attempts < %(max_attempts)s
               AND (
@@ -1475,6 +1619,9 @@ def run_service_eval_pass(
         if not _try_lock(conn):
             return {"status": "locked"}
         created_runs = ensure_eval_runs(conn)
+        canceled_attempts = cancel_requested_attempts(
+            conn, invoker, deadline_monotonic=deadline_monotonic
+        )
         ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
         skipped_decisions = publish_skipped_decisions(conn, store)
         polled = poll_attempts(
@@ -1502,7 +1649,9 @@ def run_service_eval_pass(
             repo_root=repo_root,
             deadline_monotonic=deadline_monotonic,
         )
+        eval_run_failures = reconcile_eval_run_failures(conn)
         finalized = finalize_runs(conn)
+        finalization_failures = reconcile_train_finalization_failures(conn)
         try:
             app_cleanup = run_modal_app_cleanup(
                 conn,
@@ -1524,6 +1673,7 @@ def run_service_eval_pass(
         return {
             "status": "ok",
             "created_runs": created_runs,
+            "canceled_attempts": canceled_attempts,
             "ingested": ingested,
             "skipped_decisions": skipped_decisions,
             "polled": polled,
@@ -1532,7 +1682,9 @@ def run_service_eval_pass(
             "dispatched": dispatched,
             "projected": projected,
             "projected_artifacts": projected_artifacts,
+            "eval_run_failures": eval_run_failures,
             "finalized": finalized,
+            "finalization_failures": finalization_failures,
             "app_cleanup": app_cleanup,
         }
     finally:

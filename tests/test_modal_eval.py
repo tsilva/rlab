@@ -691,6 +691,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
         self.assertIn("promoted.projected_at IS NULL", statement)
         self.assertIn("r.status = 'finalizing'", statement)
+        self.assertIn("ready.live_publication_status IN ('complete', 'disabled')", statement)
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
@@ -747,13 +748,13 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
 
         with (
             mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
-            mock.patch("rlab.modal_eval_projection.load_wandb_env"),
+            mock.patch("rlab.wandb_publisher.load_wandb_env"),
             mock.patch(
-                "rlab.modal_eval_projection.resolve_wandb_namespace",
+                "rlab.wandb_publisher.resolve_wandb_namespace",
                 return_value=("entity", "project"),
             ),
             mock.patch(
-                "rlab.modal_eval_projection.configure_wandb_metrics",
+                "rlab.wandb_publisher.configure_wandb_metrics",
                 side_effect=lambda value: value,
             ),
         ):
@@ -804,13 +805,13 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
 
         with (
             mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
-            mock.patch("rlab.modal_eval_projection.load_wandb_env"),
+            mock.patch("rlab.wandb_publisher.load_wandb_env"),
             mock.patch(
-                "rlab.modal_eval_projection.resolve_wandb_namespace",
+                "rlab.wandb_publisher.resolve_wandb_namespace",
                 return_value=("entity", "project"),
             ),
             mock.patch(
-                "rlab.modal_eval_projection.configure_wandb_metrics",
+                "rlab.wandb_publisher.configure_wandb_metrics",
                 side_effect=lambda value: value,
             ),
         ):

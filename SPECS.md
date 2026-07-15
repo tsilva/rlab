@@ -4,8 +4,8 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 
 ## PROJECT REQUIREMENTS
 
-- A supported research goal must pass coherently through validation, training, checkpoint evaluation and ranking, playback, publication, and local or queued operation without phase-specific reinterpretation.
-- Goal definitions must independently declare the environment contract, acceptance criteria, ranking order, evaluation protocol, and release expectations. Training and evaluation environment definitions must explicitly cover every provider constructor argument rather than inherit provider defaults.
+- A supported research goal must pass coherently through validation, its declared training and acceptance workflow, playback, publication, and local or queued operation without phase-specific reinterpretation.
+- Goal definitions must independently declare the environment contract, default acceptance criteria, ranking order, evaluation protocol, and release expectations; any recipe-specific acceptance workflow and whether it requires independent evaluation must also be explicit and validated. Training and evaluation environment definitions must explicitly cover every provider constructor argument rather than inherit provider defaults.
 - Training configurations must declare a finite resource cap, a meaningful description, one backend identity, and every value required for validation and execution. Unsupported backends must fail before run resources are created.
 - Invalid or internally inconsistent goals, training configurations, benchmarks, capacity rules, and machine settings must be rejected before execution or external mutation.
 - Every run must be traceable to its goal, training configuration, overrides, seed, launch time, source state, resolved settings, execution target, and runtime identity.
@@ -20,7 +20,8 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Provider-specific requirements must not leak into generic Gymnasium workflows, and supported ROM-free and ROM-backed environments must remain trainable, evaluable, and playable through the common workflow.
 - Dependency installation must be reproducible, supply-chain hardened, resistant to known-bad releases, and compatible with every supported environment provider and execution path.
 - Training must preserve durable metrics and checkpoint artifacts by default, keep result evidence distinct from job state, and use documented, unambiguous metric semantics.
-- Policy evaluation and playback must sample actions stochastically. Early stopping and checkpoint promotion must rely on goal-defined checkpoint evaluation rather than training metrics alone, and a run without the required evaluation cannot establish promotion or goal acceptance.
+- Policy evaluation and playback must sample actions stochastically. Except for an explicitly declared deterministic-search workflow, early stopping and checkpoint promotion must rely on goal-defined checkpoint evaluation rather than training metrics alone, and a run without the required evaluation cannot establish promotion or goal acceptance.
+- An explicitly declared deterministic-search workflow may accept the first training episode that emits its goal success event without independent evaluation; exhausting its resource cap without that event is unsuccessful, and an accepted policy must still be published and playable.
 - Playback must support local and remote artifacts under the evaluation preprocessing contract, keep all simultaneous viewers on the same environment step, and refresh cached content when a mutable artifact reference advances.
 - Published policies must provide portable provenance and reproducibility metadata, verified evaluation evidence, the policy artifact, and, for visual behavior, a representative browser-safe replay.
 - Queued execution must fail closed unless its source state, fully resolved configuration, runtime, backend readiness, and explicit execution target satisfy the declared run contract; silent fallback to another runtime or target is unsupported.

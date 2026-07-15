@@ -95,6 +95,7 @@ def run_training_process(
     output_dir: Path,
     run_dir: Path,
     readiness_workers: list[subprocess.Popen],
+    wandb_enabled: bool = True,
     startup_timeout: float = TRAIN_STARTUP_TIMEOUT_SECONDS,
 ) -> int:
     """Run training while forwarding container termination as a graceful stop."""
@@ -132,30 +133,37 @@ def run_training_process(
             learner_ready = run_dir / "learner_ready.json"
             wandb_run_id_path = run_dir / "wandb_run_id.txt"
             wandb_url_path = run_dir / "wandb_url.txt"
-            if learner_ready.is_file() and wandb_run_id_path.is_file() and wandb_url_path.is_file():
-                wandb_run_id = wandb_run_id_path.read_text(encoding="utf-8").strip()
-                wandb_url = wandb_url_path.read_text(encoding="utf-8").strip()
-                if wandb_run_id and wandb_url.startswith("https://wandb.ai/"):
-                    write_atomic_json(
-                        output_dir / "readiness.json",
-                        {
-                            "schema_version": 1,
-                            "ready": True,
-                            "learner_ready_at": datetime.fromtimestamp(
-                                learner_ready.stat().st_mtime, UTC
-                            ).isoformat(),
-                            "wandb_ready_at": datetime.fromtimestamp(
-                                max(
-                                    wandb_run_id_path.stat().st_mtime,
-                                    wandb_url_path.stat().st_mtime,
-                                ),
-                                UTC,
-                            ).isoformat(),
-                            "wandb_run_id": wandb_run_id,
-                            "wandb_url": wandb_url,
-                        },
-                    )
+            if learner_ready.is_file():
+                receipt: dict[str, Any] = {
+                    "schema_version": 1,
+                    "ready": True,
+                    "wandb_enabled": bool(wandb_enabled),
+                    "learner_ready_at": datetime.fromtimestamp(
+                        learner_ready.stat().st_mtime, UTC
+                    ).isoformat(),
+                }
+                if not wandb_enabled:
+                    write_atomic_json(output_dir / "readiness.json", receipt)
                     break
+                if wandb_run_id_path.is_file() and wandb_url_path.is_file():
+                    wandb_run_id = wandb_run_id_path.read_text(encoding="utf-8").strip()
+                    wandb_url = wandb_url_path.read_text(encoding="utf-8").strip()
+                    if wandb_run_id and wandb_url.startswith("https://wandb.ai/"):
+                        receipt.update(
+                            {
+                                "wandb_ready_at": datetime.fromtimestamp(
+                                    max(
+                                        wandb_run_id_path.stat().st_mtime,
+                                        wandb_url_path.stat().st_mtime,
+                                    ),
+                                    UTC,
+                                ).isoformat(),
+                                "wandb_run_id": wandb_run_id,
+                                "wandb_url": wandb_url,
+                            }
+                        )
+                        write_atomic_json(output_dir / "readiness.json", receipt)
+                        break
             returncode = process.poll()
             if returncode is not None:
                 return int(returncode)
@@ -171,7 +179,7 @@ def run_training_process(
                     process.kill()
                     process.wait(timeout=5)
                 raise RuntimeError(
-                    "training worker exited before learner/W&B readiness: "
+                    "training worker exited before required readiness: "
                     f"{getattr(failed_worker, '_rlab_log_path', '')} "
                     f"returncode={failed_worker.returncode}; "
                     f"{worker_log_tail([failed_worker])}"
@@ -184,7 +192,8 @@ def run_training_process(
                     process.kill()
                     process.wait(timeout=5)
                 raise RuntimeError(
-                    f"training did not reach learner/W&B readiness within {startup_timeout:g}s; "
+                    "training did not reach learner/W&B readiness requirements within "
+                    f"{startup_timeout:g}s; "
                     f"{worker_log_tail(readiness_workers)}"
                 )
             time.sleep(0.25)
@@ -337,8 +346,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
             train_env = os.environ.copy()
-            if wandb_enabled:
-                train_env["RLAB_EXTERNAL_WANDB_PUBLISHER"] = "1"
+            train_env["RLAB_INTERNAL_LEARNER"] = "1"
             returncode = run_training_process(
                 command,
                 log_file=log_file,
@@ -346,19 +354,36 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 output_dir=output_dir,
                 run_dir=run_dir,
                 readiness_workers=[*producer_workers, *publisher_workers],
+                wandb_enabled=wandb_enabled,
             )
     finally:
-        worker_results = stop_workers(
+        producer_results = stop_workers(
             producer_workers, producer_stop_file, timeout=120.0 if modal_eval else 30.0
         )
-        worker_results.extend(stop_workers(publisher_workers, publisher_stop_file, timeout=120.0))
+        publisher_results = stop_workers(
+            publisher_workers, publisher_stop_file, timeout=120.0
+        )
+        worker_results = [*producer_results, *publisher_results]
     metadata_job = dict(job)
     metadata_job["train_config"] = {
         **dict(job.get("train_config") or {}),
         "runs_dir": str(output_dir / "runs"),
     }
     metadata = collect_result_metadata(metadata_job)
-    status = "succeeded" if returncode == 0 else "failed"
+    producer_failed = any(int(worker.get("returncode") or 0) != 0 for worker in producer_results)
+    publisher_failed = any(
+        int(worker.get("returncode") or 0) != 0 for worker in publisher_results
+    )
+    critical_worker_failure = not modal_eval and (
+        producer_failed or (not wandb_enabled and publisher_failed)
+    )
+    status = "succeeded" if returncode == 0 and not critical_worker_failure else "failed"
+    publisher_drained = bool(publisher_results) and all(
+        int(worker.get("returncode") or 0) == 0 for worker in publisher_results
+    )
+    publication_error = None
+    if wandb_enabled and not publisher_drained:
+        publication_error = "live W&B publisher did not drain cleanly"
     result = {
         **base_result(payload),
         "status": status,
@@ -369,6 +394,17 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "log_path": str(log_path),
         },
         "workers": worker_results,
+        "live_publication": {
+            "status": (
+                "disabled"
+                if not wandb_enabled
+                else "complete"
+                if publisher_drained
+                else "pending"
+            ),
+            "attempts": int(bool(publisher_results)),
+            "error": publication_error,
+        },
         "evaluation": {
             "backend": eval_backend,
             "status": "disabled" if eval_disabled else "enabled",
@@ -394,6 +430,8 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         )
     if returncode != 0:
         result["error"] = f"train process exited {returncode}"
+    elif critical_worker_failure:
+        result["error"] = "required local evaluation/artifact worker did not drain cleanly"
     return result
 
 

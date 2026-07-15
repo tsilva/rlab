@@ -214,6 +214,25 @@ class DockerHostTests(unittest.TestCase):
         self.assertIn("/output/train-12/runs/run-12", text)
         self.assertEqual(run.call_args.kwargs["timeout"], 900)
 
+    def test_wandb_recovery_container_is_cpu_only_and_bounded(self) -> None:
+        host = DockerRunnerHost(machine())
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run:
+            docker_host.run_wandb_publisher_recovery_container(
+                host,
+                launch_id="train-12",
+                run_name="run-12",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+
+        args = run.call_args.args[1]
+        self.assertIn("rlab.wandb_publisher", args)
+        self.assertIn("/output/train-12/publisher.stop", args)
+        self.assertNotIn("--gpus", args)
+        self.assertIn("rlab-wandb-recovery-train-12", args)
+        self.assertIn("105s", args)
+        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+
     def test_import_order_has_no_cycles(self) -> None:
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
         result = subprocess.run(

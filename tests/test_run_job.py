@@ -81,6 +81,33 @@ class RunJobResultTests(unittest.TestCase):
 
             self.assertFalse((output_dir / "readiness.json").exists())
 
+    def test_wandb_disabled_readiness_requires_only_learner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            run_dir = output_dir / "runs" / "run"
+            run_dir.mkdir(parents=True)
+            script = (
+                "import pathlib,time; "
+                f"p=pathlib.Path({str(run_dir)!r}); "
+                "(p/'learner_ready.json').write_text('{}'); time.sleep(0.1)"
+            )
+            with (output_dir / "train.log").open("w", encoding="utf-8") as log:
+                returncode = run_training_process(
+                    [sys.executable, "-c", script],
+                    log_file=log,
+                    env=os.environ,
+                    output_dir=output_dir,
+                    run_dir=run_dir,
+                    readiness_workers=[],
+                    wandb_enabled=False,
+                    startup_timeout=2,
+                )
+
+            self.assertEqual(returncode, 0)
+            readiness = json.loads((output_dir / "readiness.json").read_text())
+            self.assertIs(readiness["wandb_enabled"], False)
+            self.assertNotIn("wandb_run_id", readiness)
+
 
 if __name__ == "__main__":
     unittest.main()

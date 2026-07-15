@@ -191,7 +191,9 @@ def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
     assert train_config["training_backend"]["id"] == "sb3.ppo"
 
 
-def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: Path) -> None:
+def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
     document = _bandit_recipe_document()
     config = dict(document["train_config"])
     config.update(
@@ -217,6 +219,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: 
     path = tmp_path / "train.json"
     path.write_text(json.dumps(config), encoding="utf-8")
 
+    monkeypatch.setenv("RLAB_INTERNAL_LEARNER", "1")
     assert train_main(["--train-config-json", str(path)]) == 0
 
     run_dir = tmp_path / "backend-smoke"
@@ -228,7 +231,9 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(tmp_path: 
     assert len(metadata["training_backend_config_hash"]) == 64
 
 
-def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(tmp_path: Path) -> None:
+def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
     document = _bandit_recipe_document()
     config = dict(document["train_config"])
     config.update(
@@ -258,6 +263,7 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(tmp_path: Pa
     path = tmp_path / "a2c-train.json"
     path.write_text(json.dumps(config), encoding="utf-8")
 
+    monkeypatch.setenv("RLAB_INTERNAL_LEARNER", "1")
     assert train_main(["--train-config-json", str(path)]) == 0
 
     run_dir = tmp_path / "a2c-backend-smoke"

@@ -12,7 +12,7 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
-from rlab.artifacts import init_wandb, write_run_description, write_wandb_url
+from rlab.artifacts import write_run_description
 from rlab.env import (
     assert_provider_runtime_available,
     default_run_dir,
@@ -38,6 +38,7 @@ from rlab.training_backend import (
 
 
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
+INTERNAL_LEARNER_ENV = "RLAB_INTERNAL_LEARNER"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,6 +92,11 @@ def install_graceful_stop_handler(stop_flag: GracefulStopFlag) -> int | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if os.environ.get(INTERNAL_LEARNER_ENV) != "1":
+        raise RuntimeError(
+            "rlab.train is an internal learner entrypoint; use `rlab train` to launch "
+            "a queue-backed Docker job"
+        )
     args = parse_train_args(argv)
     train_config = dict(args._materialized_train_config)
     backend_id = training_backend_id(train_config)
@@ -119,9 +125,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("warning: --run-description is empty", flush=True)
 
-    external_publisher = os.environ.get("RLAB_EXTERNAL_WANDB_PUBLISHER") == "1"
-    wandb_run = None if external_publisher else init_wandb(args, str(run_dir), environment)
-    write_wandb_url(wandb_run, str(run_dir))
     stop_flag = GracefulStopFlag()
     graceful_stop_signal = install_graceful_stop_handler(stop_flag)
     if graceful_stop_signal is not None:
@@ -134,16 +137,10 @@ def main(argv: list[str] | None = None) -> int:
         run_dir=run_dir,
         checkpoint_dir=checkpoint_dir,
         metric_store=store,
-        wandb_run=wandb_run,
+        wandb_enabled=bool(args.wandb),
         stop_flag=stop_flag,
-        external_wandb_publisher=external_publisher,
     )
-    try:
-        backend.run(context)
-        write_wandb_url(wandb_run, str(run_dir))
-    finally:
-        if wandb_run is not None:
-            wandb_run.finish()
+    backend.run(context)
     return 0
 
 
