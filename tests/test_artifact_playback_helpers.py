@@ -1404,7 +1404,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 patch("rlab.eval.resolve_single_model_source", side_effect=fake_resolve),
                 patch("rlab.eval.apply_model_source_defaults", side_effect=fake_apply),
                 patch("rlab.eval.assert_provider_runtime_available") as assert_runtime,
-                patch("rlab.eval.load_sb3_model", return_value="ppo"),
+                patch("rlab.eval.load_policy_model", return_value="ppo"),
                 patch(
                     "rlab.eval.evaluate_model_episodes", side_effect=fake_evaluate_model_episodes
                 ),

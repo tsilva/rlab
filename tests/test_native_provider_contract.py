@@ -187,6 +187,148 @@ class GenericNativeProviderTests(unittest.TestCase):
 
         self.assertEqual(descriptor.observation_buffer_depth, 1)
 
+
+class BreakoutTurboProviderTests(unittest.TestCase):
+    @staticmethod
+    def config(**updates):
+        values = {
+            "env_provider": "breakout-turbo-env",
+            "game": "BreakoutTurbo-v0",
+            "state": "full",
+            "frame_skip": 4,
+            "max_pool_frames": False,
+            "sticky_action_prob": 0.0,
+            "observation_size": 84,
+            "obs_crop": (0, 0, 0, 0),
+            "obs_crop_mode": "remove",
+            "obs_crop_fill": 0,
+            "obs_resize_algorithm": "area",
+            "env_args": {
+                "num_threads": 1,
+                "frame_stack": 4,
+                "obs_layout": "chw",
+                "obs_grayscale": True,
+                "obs_copy": "safe_view",
+                "info_filter": "all",
+                "render_mode": "rgb_array",
+            },
+            "task": {
+                "id": "identity",
+                "action": {"set": "native"},
+                "signals": {
+                    "bricks_remaining": "bricks_remaining",
+                    "lives": "lives",
+                },
+                "events": {
+                    "cleared": {
+                        "signal": "bricks_remaining",
+                        "operation": "equals_for",
+                        "value": 0,
+                        "steps": 1,
+                    },
+                    "game_over": {
+                        "signal": "lives",
+                        "operation": "equals_for",
+                        "value": 0,
+                        "steps": 1,
+                    },
+                },
+                "termination": {
+                    "success": ["cleared"],
+                    "failure": ["game_over"],
+                    "max_episode_steps": 54_000,
+                },
+                "reward": {"reward_mode": "native"},
+            },
+        }
+        values.update(updates)
+        return EnvConfig(**values)
+
+    def test_runtime_meets_provider_minimum(self) -> None:
+        installed = Version(importlib.metadata.version("breakout-turbo-env"))
+        self.assertGreaterEqual(installed, Version("0.2.2"))
+
+    def test_constructs_and_preserves_native_manual_vector_contract(self) -> None:
+        config = self.config()
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=2,
+            native_obs_crop=lambda value: value.obs_crop,
+            state_weight_mapping=lambda _config: {},
+        )
+
+        self.assertEqual(kwargs["num_envs"], 2)
+        self.assertEqual(kwargs["obs_resize"], (84, 84))
+        self.assertEqual(kwargs["obs_crop"], (0, 0, 0, 0))
+        self.assertFalse(kwargs["maxpool_last_two"])
+        self.assertNotIn("state", kwargs)
+        self.assertNotIn("sticky_action_prob", kwargs)
+
+        env = make_provider_vec_env(config, native_kwargs=kwargs)
+        try:
+            descriptor = provider_descriptor(
+                config,
+                env,
+                state_weight_mapping=lambda _config: {},
+            )
+            self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
+            self.assertEqual(descriptor.start_catalog, ("full", "checker", "tunnel", "sparse"))
+            self.assertEqual(descriptor.lane_start_ids, ("full", "full"))
+            self.assertEqual(descriptor.render_support, ("rgb_array",))
+            self.assertEqual(descriptor.observation_buffer_depth, 2)
+            self.assertEqual(env.single_observation_space.shape, (4, 84, 84))
+            self.assertEqual(env.single_action_space.n, 3)
+            self.assertTrue(descriptor.signal_schema["bricks_remaining"].available_on_reset)
+            self.assertTrue(descriptor.signal_schema["bricks_remaining"].available_on_step)
+
+            observations, infos = env.reset(
+                seed=[1, 2],
+                options={
+                    "reset_mask": np.ones(2, dtype=np.bool_),
+                    "start_ids": np.asarray(["checker", "sparse"], dtype=object),
+                },
+            )
+            lane_one = observations[1].copy()
+            self.assertEqual(infos["start_id"].tolist(), ["checker", "sparse"])
+            observations, _rewards, terminated, truncated, infos = env.step(
+                np.zeros(2, dtype=np.uint8)
+            )
+            self.assertFalse(terminated.any())
+            self.assertFalse(truncated.any())
+            self.assertTrue(infos["_bricks_remaining"].all())
+            self.assertTrue(infos["_lives"].all())
+
+            reset_observations, reset_infos = env.reset(
+                seed=[3, None],
+                options={
+                    "reset_mask": np.asarray([True, False], dtype=np.bool_),
+                    "start_ids": np.asarray(["full", None], dtype=object),
+                },
+            )
+            np.testing.assert_array_equal(reset_observations[1], observations[1])
+            self.assertFalse(np.array_equal(reset_observations[1], lane_one))
+            np.testing.assert_array_equal(reset_infos["_start_id"], [True, False])
+
+            kernel = _bound_task_kernel(config, descriptor, 2)
+            self.assertIsNone(kernel._observation_mask)
+            self.assertTrue(kernel.observation_encoding_is_view)
+        finally:
+            env.close()
+
+    def test_rejects_unsupported_canonical_mechanics(self) -> None:
+        for update, message in (
+            ({"max_pool_frames": True}, "max_pool_frames=true"),
+            ({"sticky_action_prob": 0.25}, "sticky_action_prob=0.0"),
+        ):
+            with self.subTest(update=update), self.assertRaisesRegex(ValueError, message):
+                provider_native_vec_kwargs(
+                    self.config(**update),
+                    n_envs=2,
+                    native_obs_crop=lambda value: value.obs_crop,
+                    state_weight_mapping=lambda _config: {},
+                )
+
+
 class MarioNativeProviderTests(unittest.TestCase):
     @staticmethod
     def config(**updates):

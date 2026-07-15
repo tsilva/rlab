@@ -11,7 +11,7 @@ import numpy as np
 
 from rlab.batch_runtime import EpisodeRecord
 from rlab.env import EnvConfig
-from rlab.eval import ScriptedPolicy, load_eval_sb3_model
+from rlab.eval import ScriptedPolicy, load_eval_model
 from rlab.eval_metrics import (
     eval_by_start_rows,
     episode_rank,
@@ -317,8 +317,8 @@ class EvalMetricTests(unittest.TestCase):
             )
 
             loaded = object()
-            with patch("rlab.eval.load_sb3_model", return_value=loaded) as load_model:
-                model, policy = load_eval_sb3_model(model_path, device="cpu")
+            with patch("rlab.eval.load_policy_model", return_value=loaded) as load_model:
+                model, policy = load_eval_model(model_path, device="cpu")
 
             self.assertIs(model, loaded)
             self.assertEqual(policy, "a2c")

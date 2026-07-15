@@ -15,6 +15,7 @@ from rlab.bandit_env import BanditVectorEnv
 from rlab.batch_runtime import ProviderDescriptor, SignalSpec
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
+    BREAKOUT_TURBO_ENV_PROVIDER,
     GYMNASIUM_PROVIDER,
     RLAB_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER,
@@ -146,6 +147,16 @@ def ale_py_atari_vector_env_type():
     return AtariVectorEnv
 
 
+def breakout_turbo_vec_env_type():
+    try:
+        from breakout_turbo_env import BreakoutVecEnv
+    except ImportError as exc:
+        raise ImportError(
+            "breakout-turbo-env provider requires breakout-turbo-env",
+        ) from exc
+    return BreakoutVecEnv
+
+
 def _stable_retro_packaged_data_path(game: str, filename: str) -> Path:
     path = Path(retro.__file__).resolve().parent / "data" / "stable" / game / filename
     if not path.is_file():
@@ -205,6 +216,29 @@ def provider_native_vec_kwargs(
             )
         native_kwargs.setdefault("num_envs", n_envs)
         return native_kwargs
+    if provider.provider_id == BREAKOUT_TURBO_ENV_PROVIDER.provider_id:
+        if config.max_pool_frames:
+            raise ValueError("breakout-turbo-env does not support max_pool_frames=true")
+        if config.sticky_action_prob != 0.0:
+            raise ValueError("breakout-turbo-env requires sticky_action_prob=0.0")
+        defaults = {
+            "num_envs": n_envs,
+            "render_mode": "rgb_array",
+            "obs_resize": (config.observation_size, config.observation_size),
+            "obs_crop": native_obs_crop(config),
+            "obs_crop_mode": config.obs_crop_mode,
+            "obs_crop_fill": config.obs_crop_fill,
+            "obs_grayscale": True,
+            "obs_resize_algorithm": config.obs_resize_algorithm,
+            "frame_skip": config.frame_skip,
+            "frame_stack": 4,
+            "maxpool_last_two": False,
+            "obs_copy": "safe_view",
+            "obs_layout": "chw",
+            "info_filter": "all",
+        }
+        defaults.update(native_kwargs)
+        return defaults
     if provider.provider_id == ALE_PY_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
             raise ValueError("ale-py provider does not support state, states, or state_probs")
@@ -421,6 +455,7 @@ def provider_descriptor(
         if isinstance(native_kwargs, Mapping):
             obs_copy = native_kwargs.get("obs_copy")
     supports_safe_views = provider.provider_id in {
+        BREAKOUT_TURBO_ENV_PROVIDER.provider_id,
         STABLE_RETRO_TURBO_PROVIDER.provider_id,
         SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
     }
@@ -601,6 +636,18 @@ def _ale_py_make_vec_env(
     return _AleManualResetAdapter(env)
 
 
+def _breakout_turbo_make_vec_env(
+    config: Any,
+    *,
+    native_kwargs: Mapping[str, Any],
+    breakout_vec_env_type=breakout_turbo_vec_env_type,
+):
+    _require_provider(config, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
+    env_type = breakout_vec_env_type()
+    env = env_type(**dict(native_kwargs))
+    return _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
+
+
 def make_provider_vec_env(
     config: Any,
     *,
@@ -608,6 +655,7 @@ def make_provider_vec_env(
     retro_vec_env_type=DEFAULT_RETRO_VEC_ENV,
     super_mario_vec_env_type=super_mario_bros_nes_turbo_vec_env_type,
     ale_py_vec_env_type=ale_py_atari_vector_env_type,
+    breakout_vec_env_type=breakout_turbo_vec_env_type,
 ):
     provider = resolve_env_provider(config.env_provider)
     if provider.provider_id == RLAB_PROVIDER.provider_id:
@@ -629,6 +677,12 @@ def make_provider_vec_env(
             config,
             native_kwargs=native_kwargs,
             ale_py_vec_env_type=ale_py_vec_env_type,
+        )
+    if provider.provider_id == BREAKOUT_TURBO_ENV_PROVIDER.provider_id:
+        return _breakout_turbo_make_vec_env(
+            config,
+            native_kwargs=native_kwargs,
+            breakout_vec_env_type=breakout_vec_env_type,
         )
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         return _registered_native_gymnasium_vec_env(config, native_kwargs)

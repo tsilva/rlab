@@ -1,0 +1,27 @@
+defaults:
+- _self_
+recipe_id: jerk
+description: >-
+  Seed {seed} searches deterministic {goal_id} attempts with vectorized Just Enough Retained
+  Knowledge, retaining and replaying the strongest open-loop action sequence under the goal's
+  checkpoint-evaluation and promotion contract.
+train:
+  timesteps: 1000000
+  backend:
+    id: rlab.jerk
+    config:
+      exploit_bias: 0.25
+      forward_steps: 100
+      backtrack_steps: 70
+      jump_probability: 0.1
+      jump_repeat: 4
+      retained_limit: 256
+      forward_action: right_b
+      jump_action: right_a_b
+      backtrack_action: left
+      fallback_action: noop
+      log_interval_steps: 10000
+logging:
+  wandb: true
+  wandb_mode: online
+  wandb_artifact_storage_uri: CHECKPOINT_BUCKET_URI

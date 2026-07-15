@@ -52,4 +52,4 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Dependencies
 
 Use `uv` for dependency resolution and keep `uv.lock` committed. Preserve Python supply-chain hardening in `pyproject.toml`.
-The intentional exceptions to the seven-day `exclude-newer` window are `stable-retro-turbo` and `supermariobrosnes-turbo`, because this project tracks current forward Stable Retro and Mario runtimes while keeping the rest of the dependency graph age-gated. Keep the per-package cutoffs in `[tool.uv.exclude-newer-package]`, `uv-tool.toml`, and the user-level uv config in sync so `uv tool install . --editable` remains installable without extra flags.
+The intentional exceptions to the seven-day `exclude-newer` window are `breakout-turbo-env`, `stable-retro-turbo`, and `supermariobrosnes-turbo`, because this project tracks current forward native Breakout, Stable Retro, and Mario runtimes while keeping the rest of the dependency graph age-gated. Keep the per-package cutoffs in `[tool.uv.exclude-newer-package]`, `uv-tool.toml`, and the user-level uv config in sync so `uv tool install . --editable` remains installable without extra flags.

@@ -1,0 +1,81 @@
+defaults:
+- _self_
+goal_id: breakout-turbo-env__breakout
+tags:
+- "goal_id:{goal_id}"
+- "recipe_id:{recipe_id}"
+- "env_id:{env_id}"
+title: Native Breakout Turbo PPO training
+objective:
+  rank:
+  - max(eval/full/outcome/success/rate/min)
+  - max(eval/full/episode/return/mean)
+  - max(eval/full/episode/return/best)
+  - min(leader/checkpoint/step)
+train:
+  checkpoint_eval_backend: modal
+  checkpoint_freq: 500000
+  environment:
+    env_provider: &breakout_provider breakout-turbo-env
+    env_config:
+      <<: &breakout_env_config
+        game: BreakoutTurbo-v0
+        state: full
+        n_envs: 16
+        env_args: &breakout_provider_args
+          num_threads: 6
+          frame_stack: 4
+          obs_layout: chw
+          obs_grayscale: true
+          obs_copy: safe_view
+          info_filter: all
+          render_mode: rgb_array
+    preprocessing: &breakout_preprocessing
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      obs_crop: [0, 0, 0, 0]
+      obs_crop_mode: remove
+      obs_crop_fill: 0
+      obs_resize_algorithm: area
+    task: &breakout_task
+      id: identity
+      action:
+        set: native
+      signals:
+        bricks_remaining: bricks_remaining
+        lives: lives
+      events:
+        cleared:
+          signal: bricks_remaining
+          operation: equals_for
+          value: 0
+          steps: 1
+        game_over:
+          signal: lives
+          operation: equals_for
+          value: 0
+          steps: 1
+      termination:
+        success: [cleared]
+        failure: [game_over]
+        timeout: []
+        max_episode_steps: 54000
+      reward:
+        reward_mode: native
+eval:
+  episodes: 100
+  policy:
+    stochastic: true
+  environment:
+    env_provider: *breakout_provider
+    env_config:
+      <<: *breakout_env_config
+      n_envs: 16
+      env_args:
+        <<: *breakout_provider_args
+    preprocessing: *breakout_preprocessing
+    task: *breakout_task
+release:
+  huggingface: {}

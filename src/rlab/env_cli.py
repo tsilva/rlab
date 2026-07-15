@@ -338,6 +338,7 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
         from rlab.env_config import env_config_from_mapping
         from rlab.provider_config import provider_num_envs
         from rlab.recipe_documents import compose_train_document
+        from rlab.training.sb3_vec_env import RlabVecEnv
 
         document = compose_train_document(
             args.goal_file,
@@ -521,18 +522,23 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
             seed=[args.seed + 2 * n_envs + lane for lane in range(n_envs)],
             options=_reset_options(full_mask, start_ids),
         )
+        runtime = None
         try:
-            vec_env = bind_native_provider(
+            runtime = bind_native_provider(
                 config,
                 n_envs=n_envs,
                 seed=args.seed,
                 native_env=native_env,
                 descriptor=descriptor,
             )
-        except Exception:
             native_env = None
+            vec_env = RlabVecEnv(runtime)
+        except Exception:
+            if runtime is None:
+                native_env = None
+            else:
+                runtime.close()
             raise
-        native_env = None
         vec_env.seed(args.seed)
         vec_env.reset()
         policy_batch_space = gym.vector.utils.batch_space(vec_env.action_space, n_envs)

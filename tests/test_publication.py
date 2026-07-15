@@ -125,6 +125,7 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
     [
         ("stable-retro-turbo", "SuperMarioBros3-Nes-v0", "NES-SuperMarioBros3"),
         ("ale-py", "breakout", "Atari2600-Breakout"),
+        ("breakout-turbo-env", "BreakoutTurbo-v0", "BreakoutTurbo"),
         ("stable-retro-turbo", "Breakout-Atari2600-v0", "Atari2600-Breakout"),
         ("ale-py", "ms_pacman", "Atari2600-MsPacman"),
     ],
@@ -167,6 +168,7 @@ def test_policy_variant_accepts_another_registered_action_set() -> None:
         ("ppo", "stable_baselines3.ppo.ppo.PPO"),
         ("a2c", "stable_baselines3.a2c.a2c.A2C"),
         ("dqn", "stable_baselines3.dqn.dqn.DQN"),
+        ("jerk", "rlab.jerk.JerkPolicy"),
         ("recurrent-ppo", "sb3_contrib.ppo_recurrent.ppo_recurrent.RecurrentPPO"),
     ],
 )

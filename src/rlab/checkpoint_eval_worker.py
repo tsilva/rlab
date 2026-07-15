@@ -57,7 +57,7 @@ from rlab.ranking import (
     rank_score,
     require_objective_rank,
 )
-from rlab.sb3_models import load_sb3_model
+from rlab.policy_models import load_policy_model
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
@@ -372,7 +372,7 @@ def process_staged_eval(
     stage_index = int(row["stage_index"])
     stage_name = str(stage["name"])
     try:
-        eval_model = load_sb3_model(
+        eval_model = load_policy_model(
             checkpoint_path,
             device=resolve_sb3_device(args.device),
         )
@@ -520,7 +520,7 @@ def process_eval(
     checkpoint_path = Path(str(row["path"]))
     step = int(row["step"])
     try:
-        eval_model = load_sb3_model(
+        eval_model = load_policy_model(
             checkpoint_path,
             device=resolve_sb3_device(args.device),
         )

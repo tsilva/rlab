@@ -78,27 +78,31 @@ class FakeNativeProvider:
         self.close_calls += 1
 
 
-class FakeRlabVecEnv:
+class FakeBatchRuntime:
     def __init__(self, native: FakeNativeProvider):
-        self.native = native
+        self.provider = native
+        self.num_envs = native.num_envs
+        self.observation_space = native.single_observation_space
         self.action_space = gym.spaces.Discrete(2)
+        self.global_lane_ids = tuple(range(native.num_envs))
+        self.reset_infos = [{} for _ in range(native.num_envs)]
 
-    def seed(self, seed):
-        self.action_space.seed(seed)
-
-    def reset(self):
-        return np.zeros((self.native.num_envs, 2), dtype=np.uint8)
+    def reset(self, *, seed=None, options_by_lane=None):
+        del seed, options_by_lane
+        return np.zeros((self.num_envs, 2), dtype=np.uint8)
 
     def step(self, actions):
-        return (
-            np.zeros((self.native.num_envs, 2), dtype=np.uint8),
-            np.ones(self.native.num_envs, dtype=np.float32),
-            np.zeros(self.native.num_envs, dtype=np.bool_),
-            [{} for _ in range(self.native.num_envs)],
+        del actions
+        return SimpleNamespace(
+            observations=np.zeros((self.num_envs, 2), dtype=np.uint8),
+            rewards=np.ones(self.num_envs, dtype=np.float32),
+            terminated=np.zeros(self.num_envs, dtype=np.bool_),
+            truncated=np.zeros(self.num_envs, dtype=np.bool_),
+            diagnostics=None,
         )
 
     def close(self):
-        self.native.close()
+        self.provider.close()
 
 
 class MalformedStepProvider(FakeNativeProvider):
@@ -168,7 +172,7 @@ def _run_fake_check(
         return real_import_module(name, package)
 
     def bind_provider(*_args, **kwargs):
-        return FakeRlabVecEnv(kwargs["native_env"])
+        return FakeBatchRuntime(kwargs["native_env"])
 
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -212,9 +216,11 @@ import json, sys
 from rlab.env_cli import main
 assert 'stable_retro' not in sys.modules
 assert 'supermariobrosnes_turbo' not in sys.modules
+assert 'breakout_turbo_env' not in sys.modules
 assert main(['list', '--json']) == 0
 assert 'stable_retro' not in sys.modules
 assert 'supermariobrosnes_turbo' not in sys.modules
+assert 'breakout_turbo_env' not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-c", command],
@@ -227,6 +233,7 @@ assert 'supermariobrosnes_turbo' not in sys.modules
     payload = json.loads(result.stdout)
     assert {item["provider_id"] for item in payload["providers"]} == {
         "ale-py",
+        "breakout-turbo-env",
         "gymnasium",
         "rlab",
         "stable-retro-turbo",

@@ -43,6 +43,19 @@ def test_resolves_registered_stable_retro_turbo_atari_env_ids() -> None:
         assert env_supports_states("stable-retro-turbo", game)
 
 
+def test_resolves_registered_breakout_turbo_env_id() -> None:
+    env_id = "breakout-turbo-env:BreakoutTurbo-v0"
+
+    resolved = resolve_env_id(env_id)
+
+    assert env_id in registered_env_ids()
+    assert resolved.qualified_id == env_id
+    assert resolved.provider_id == "breakout-turbo-env"
+    assert resolved.provider_env_id == "BreakoutTurbo-v0"
+    assert resolved.import_name == "breakout_turbo_env"
+    assert env_supports_states("breakout-turbo-env", "BreakoutTurbo-v0")
+
+
 def test_resolves_registered_supermariobrosnes_turbo_env_id() -> None:
     env_id = "supermariobrosnes-turbo:SuperMarioBros-Nes-v0"
 

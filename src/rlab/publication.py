@@ -70,6 +70,7 @@ SOFTWARE.
 """
 
 ALGORITHM_MODEL_CLASSES: dict[str, frozenset[str]] = {
+    "jerk": frozenset({"rlab.jerk.JerkPolicy"}),
     "ppo": frozenset(
         {
             "stable_baselines3.ppo.ppo.PPO",
@@ -666,13 +667,27 @@ def render_model_card(
 This repository preserves a legacy release evaluated with deterministic action selection. It is
 not a schema-v1 release and has no `v1` tag. A current release requires new stochastic evaluation.
 """
+    is_jerk = algorithm == "jerk"
+    library_name = "rlab" if is_jerk else "stable-baselines3"
+    library_tag = "rlab-policy" if is_jerk else "stable-baselines3"
+    policy_description = (
+        f"rlab JERK open-loop policy for `{game}` `{goal}`, trained and evaluated with"
+        if is_jerk
+        else f"Stable-Baselines3 {algorithm.upper()} policy for `{game}` `{goal}`, "
+        "trained and evaluated with"
+    )
+    model_file_description = (
+        "Portable rlab JERK action-sequence policy"
+        if is_jerk
+        else "Stable-Baselines3 policy checkpoint"
+    )
     card = f"""---
-library_name: stable-baselines3
+library_name: {library_name}
 pipeline_tag: reinforcement-learning
 license: mit
 tags:
   - reinforcement-learning
-  - stable-baselines3
+  - {library_tag}
   - {algorithm}
   - {provider}
   - rlab
@@ -683,7 +698,7 @@ metrics:
 
 # {game} — {goal} — {algorithm.upper()}
 
-Stable-Baselines3 {algorithm.upper()} policy for `{game}` `{goal}`, trained and evaluated with
+{policy_description}
 [`rlab`](https://github.com/tsilva/rlab).
 
 ## At a Glance
@@ -745,7 +760,7 @@ Action selection was `{action_sampling}` under the published evaluation environm
 
 | File | Purpose |
 |---|---|
-| `model.zip` | Stable-Baselines3 policy checkpoint |
+| `model.zip` | {model_file_description} |
 | `model_metadata.json` | Portable model, environment, runtime, and provenance metadata |
 | `release_manifest.json` | {manifest_purpose} |
 | `replay.mp4` | Browser-safe representative episode |

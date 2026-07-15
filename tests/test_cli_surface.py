@@ -49,7 +49,8 @@ class PublicCliHelpTests(unittest.TestCase):
                     main([command, "--help"])
                 self.assertEqual(raised.exception.code, 0)
                 help_text = stdout.getvalue()
-                self.assertIn("SB3", help_text)
+                self.assertIn("rlab", help_text)
+                self.assertNotIn("SB3", help_text)
                 self.assertNotIn("PPO", help_text)
 
 

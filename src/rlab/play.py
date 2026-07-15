@@ -389,7 +389,7 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default="runs/smoke/final_model.zip",
-        help="Local SB3 checkpoint path. The checkpoint must have a .metadata.json sidecar.",
+        help="Local rlab policy path. The artifact must have a .metadata.json sidecar.",
     )
     parser.set_defaults(
         artifact=None,
@@ -421,7 +421,7 @@ def attribution_opacity_arg(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab play",
-        description="Show an SB3 checkpoint playing a provider environment in a GUI window",
+        description="Show an rlab policy artifact playing a provider environment in a GUI window",
     )
     add_play_source_args(parser)
     parser.add_argument(
@@ -637,7 +637,7 @@ def playback_model_observation(
     active_task_state: str | None,
     active_info_value: tuple[int | str, ...] | None,
 ):
-    spaces = getattr(model.observation_space, "spaces", None)
+    spaces = getattr(getattr(model, "observation_space", None), "spaces", None)
     if isinstance(spaces, dict) and {"image", "task"}.issubset(spaces):
         return model_observation(
             model,
@@ -800,6 +800,9 @@ class _PlaybackSession:
             self.model.policy.reset_noise()
         self.env.seed(seed)
         self.policy_obs = self.env.reset()
+        reset_episode = getattr(self.model, "reset_episode", None)
+        if callable(reset_episode):
+            reset_episode()
         reset_info = dict(self.env.reset_infos[0])
         self._set_initial_conditioning(reset_info)
         self.active_seed = seed
@@ -905,6 +908,9 @@ class _PlaybackSession:
         self.current_frame = optional_vector_env_frame(self.env)
         self.frames = optional_fast_env_frames(policy_obs)
         if boundary:
+            reset_lanes = getattr(self.model, "reset_lanes", None)
+            if callable(reset_lanes):
+                reset_lanes([True])
             self.episode += 1
             self.step_index = 0
             self.total_reward = 0.0
@@ -1392,11 +1398,13 @@ def main(argv: list[str] | None = None) -> int:
         assert_provider_runtime_available(config)
 
     with startup_progress("Loading policy runtime", disabled=args.no_progress):
-        from rlab.sb3_models import load_sb3_model
+        from rlab.policy_models import load_policy_model
 
     with startup_progress("Loading model checkpoint", disabled=args.no_progress):
-        model = load_sb3_model(args.model, device=resolve_sb3_device(args.device))
+        model = load_policy_model(args.model, device=resolve_sb3_device(args.device))
     if args.attribution != "none":
+        if not hasattr(model, "policy"):
+            raise ValueError("policy attribution is unavailable for non-neural policies")
         with startup_progress("Preparing policy attribution", disabled=args.no_progress):
             attributor = PolicyActionAttributor(model)
     else:
@@ -1409,6 +1417,9 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             capture_step_diagnostics=args.debug,
         )
+    bind_action_space = getattr(model, "bind_action_space", None)
+    if callable(bind_action_space):
+        bind_action_space(policy_env.action_space)
 
     session = _PlaybackSession(
         model=model,

@@ -9,6 +9,8 @@ dependencies = [
     "stable-retro-turbo==1.0.1.post30; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "supermariobrosnes-turbo==0.3.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "supermariobrosnes-turbo==0.3.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "breakout-turbo-env>=0.2.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "breakout-turbo-env>=0.2.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "tensorboard>=2.16,<3",
@@ -45,6 +47,7 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
+breakout-turbo-env = "2026-07-15T10:58:00Z"
 stable-retro-turbo = "2026-07-14T17:07:00Z"
 supermariobrosnes-turbo = "2026-07-14T18:00:00Z"
 

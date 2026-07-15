@@ -235,6 +235,10 @@ def _decision_from_distribution(
 def sample_policy_decision(model: Any, model_obs: Any) -> PolicyDecision:
     """Sample once from PPO and describe that same state without another sample."""
 
+    custom = getattr(model, "sample_policy_decision", None)
+    if callable(custom):
+        return custom(model_obs)
+
     policy = model.policy
     policy.set_training_mode(False)
     obs_tensor, _vectorized = policy.obs_to_tensor(model_obs)
@@ -256,6 +260,10 @@ def sample_policy_decision(model: Any, model_obs: Any) -> PolicyDecision:
 
 def inspect_policy(model: Any, model_obs: Any) -> PolicyDecision:
     """Inspect a state using its mode without sampling or changing policy RNG."""
+
+    custom = getattr(model, "inspect_policy_decision", None)
+    if callable(custom):
+        return custom(model_obs)
 
     policy = model.policy
     policy.set_training_mode(False)

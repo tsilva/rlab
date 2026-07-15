@@ -48,6 +48,7 @@ SUPPORTED_RECIPE_PAIRS = tuple(
     for goal_path in MARIO_SINGLE_GOALS
 ) + (
     (MARIO_L11_GOAL, Path("experiments/recipes/mario/single/a2c.yaml")),
+    (MARIO_L11_GOAL, Path("experiments/recipes/mario/single/jerk.yaml")),
     (
         Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/_goal.yaml"),
         Path("experiments/recipes/mario/mixed/ppo.yaml"),
@@ -301,7 +302,13 @@ class JobQueueTests(unittest.TestCase):
                 document = compose_train_document(goal_path, recipe_path)
                 train_config = document["train_config"]
                 self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
-                expected_backend = "sb3.a2c" if recipe_path.name == "a2c.yaml" else "sb3.ppo"
+                expected_backend = (
+                    "sb3.a2c"
+                    if recipe_path.name == "a2c.yaml"
+                    else "rlab.jerk"
+                    if recipe_path.name == "jerk.yaml"
+                    else "sb3.ppo"
+                )
                 self.assertEqual(train_config["training_backend"]["id"], expected_backend)
                 self.assertEqual(
                     f"{train_config['env_provider']}:{train_config['game']}",

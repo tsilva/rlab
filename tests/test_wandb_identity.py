@@ -35,6 +35,12 @@ from rlab.wandb_utils import (
         ),
         ("ale-py", "breakout", "Breakout-Atari2600-v0", "Atari2600-Breakout"),
         (
+            "breakout-turbo-env",
+            "BreakoutTurbo-v0",
+            "BreakoutTurbo-v0",
+            "BreakoutTurbo",
+        ),
+        (
             "stable-retro-turbo",
             "Breakout-Atari2600-v0",
             "Breakout-Atari2600-v0",

@@ -72,6 +72,19 @@ def test_sb3_a2c_schema_is_strict_and_rejects_ppo_only_fields() -> None:
         validate_and_normalize_train_config(backend_config("sb3.a2c", clip_range=0.2))
 
 
+def test_jerk_backend_schema_is_strict_and_available() -> None:
+    normalized = validate_and_normalize_train_config(
+        {"timesteps": 100, **backend_config("rlab.jerk", jump_probability=0.2)},
+        required_keys=("training_backend",),
+    )
+    config = normalized["training_backend"]["config"]
+    assert config["jump_probability"] == 0.2
+    assert config["forward_action"] == "right_b"
+
+    with pytest.raises(ValueError, match="jump_probability must be in"):
+        validate_and_normalize_train_config(backend_config("rlab.jerk", jump_probability=1.1))
+
+
 @pytest.mark.parametrize("backend_id", ["rlab.ppo", "rlab.a2c"])
 def test_planned_backends_and_optional_components_fail_preflight(
     backend_id: str,

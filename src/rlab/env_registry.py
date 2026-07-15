@@ -153,6 +153,39 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     ),
 )
 
+BREAKOUT_TURBO_ENV_PROVIDER = EnvProvider(
+    provider_id="breakout-turbo-env",
+    import_name="breakout_turbo_env",
+    distribution_name="breakout-turbo-env",
+    env_ids=("BreakoutTurbo-v0",),
+    constructor_contract=ProviderConstructorContract(
+        canonical_args=frozenset(
+            {
+                "frame_skip",
+                "maxpool_last_two",
+                "num_envs",
+                "obs_crop",
+                "obs_crop_fill",
+                "obs_crop_mode",
+                "obs_resize",
+                "obs_resize_algorithm",
+            }
+        ),
+        explicit_env_args=frozenset(
+            {
+                "frame_stack",
+                "info_filter",
+                "num_threads",
+                "obs_copy",
+                "obs_grayscale",
+                "obs_layout",
+                "render_mode",
+            }
+        ),
+        required_values={},
+    ),
+)
+
 ALE_PY_PROVIDER = EnvProvider(
     provider_id="ale-py",
     import_name="ale_py",
@@ -218,6 +251,7 @@ RLAB_PROVIDER = EnvProvider(
 
 ENV_PROVIDERS: dict[str, EnvProvider] = {
     RLAB_PROVIDER.provider_id: RLAB_PROVIDER,
+    BREAKOUT_TURBO_ENV_PROVIDER.provider_id: BREAKOUT_TURBO_ENV_PROVIDER,
     STABLE_RETRO_TURBO_PROVIDER.provider_id: STABLE_RETRO_TURBO_PROVIDER,
     SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id: SUPERMARIOBROS_NES_TURBO_PROVIDER,
     ALE_PY_PROVIDER.provider_id: ALE_PY_PROVIDER,
@@ -247,6 +281,10 @@ CANONICAL_ENVIRONMENT_IDENTITIES: Mapping[
             "stable-retro-turbo",
             "SuperMarioBros3-Nes-v0",
         ): CanonicalEnvironmentIdentity("NES-SuperMarioBros3", "SuperMarioBros3-Nes-v0"),
+        (
+            "breakout-turbo-env",
+            "BreakoutTurbo-v0",
+        ): CanonicalEnvironmentIdentity("BreakoutTurbo", "BreakoutTurbo-v0"),
         ("ale-py", "breakout"): CanonicalEnvironmentIdentity(
             "Atari2600-Breakout",
             "Breakout-Atari2600-v0",

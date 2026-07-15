@@ -127,13 +127,13 @@ def run_child(input_path: Path, output_path: Path) -> int:
     from rlab.env import resolve_env_config
     from rlab.env_metadata import env_config_from_config_dict
     from rlab.eval_runner import evaluate_model_episodes
-    from rlab.sb3_models import load_sb3_model
+    from rlab.policy_models import load_policy_model
 
     config = env_config_from_config_dict(dict(contract["environment"]))
     if config is None:
         raise ValueError("remote eval environment contract is invalid")
     config = resolve_env_config(config)
-    model = load_sb3_model(model_path, device="cpu", metadata=model_metadata)
+    model = load_policy_model(model_path, device="cpu", metadata=model_metadata)
     preview_request = request.get("preview")
     preview_capture = (
         PolicyObservationPreview(

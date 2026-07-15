@@ -28,6 +28,15 @@ TRAIN_REWARD_ROOT = "train/reward"
 
 TRAIN_ALGORITHM_ROOT = "train/algorithm"
 TRAIN_ACTOR_CRITIC_ALGORITHMS = ("ppo", "a2c")
+TRAIN_ALGORITHM_JERK_ROOT = f"{TRAIN_ALGORITHM_ROOT}/jerk"
+TRAIN_ALGORITHM_JERK_RETAINED_COUNT = f"{TRAIN_ALGORITHM_JERK_ROOT}/retained/count"
+TRAIN_ALGORITHM_JERK_BEST_RETURN_MEAN = f"{TRAIN_ALGORITHM_JERK_ROOT}/best/return_mean"
+TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH = (
+    f"{TRAIN_ALGORITHM_JERK_ROOT}/best/sequence_length"
+)
+TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY = (
+    f"{TRAIN_ALGORITHM_JERK_ROOT}/exploit/probability"
+)
 
 
 def train_algorithm_root(algorithm_id: str) -> str:
@@ -235,6 +244,26 @@ METRIC_DEFINITIONS = (
     ),
     _definition(TRAIN_PPO_APPROX_KL, "Approximate KL divergence for the PPO update."),
     _definition(TRAIN_PPO_CLIP_FRACTION, "Fraction of policy ratios clipped by PPO."),
+    _definition(
+        TRAIN_ALGORITHM_JERK_RETAINED_COUNT,
+        "Distinct action sequences retained by JERK search.",
+        "sequences",
+    ),
+    _definition(
+        TRAIN_ALGORITHM_JERK_BEST_RETURN_MEAN,
+        "Mean observed return of JERK's highest-ranked retained sequence.",
+        "return",
+    ),
+    _definition(
+        TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH,
+        "Action length of JERK's highest-ranked retained sequence.",
+        "steps",
+    ),
+    _definition(
+        TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY,
+        "Probability that JERK starts an episode by replaying its best retained sequence.",
+        "fraction",
+    ),
     _definition(
         "train/algorithm/{algorithm}/value/explained_variance",
         "Actor-critic value-function explained variance.",

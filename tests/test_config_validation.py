@@ -25,28 +25,57 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 
 
 class ConfigValidationTests(unittest.TestCase):
+    BREAKOUT_GOAL = Path("experiments/goals/breakout-turbo-env__breakout/_goal.yaml")
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
     MARIO_SINGLE_RECIPES = Path("experiments/recipes/mario/single")
 
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
         from ale_py.vector_env import AtariVectorEnv
+        from breakout_turbo_env import BreakoutVecEnv
         from rlab.bandit_env import BanditVectorEnv
         from stable_retro import RetroVecEnv
         from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
 
         constructors = {
             "ale-py": AtariVectorEnv,
+            "breakout-turbo-env": BreakoutVecEnv,
             "rlab": BanditVectorEnv,
             "stable-retro-turbo": RetroVecEnv,
             "supermariobrosnes-turbo": SuperMarioBrosNesTurboVecEnv,
         }
         for provider_id, constructor in constructors.items():
             with self.subTest(provider_id=provider_id):
-                signature_args = set(inspect.signature(constructor).parameters)
+                signature_args = {
+                    name
+                    for name, parameter in inspect.signature(constructor).parameters.items()
+                    if parameter.kind
+                    not in {
+                        inspect.Parameter.VAR_POSITIONAL,
+                        inspect.Parameter.VAR_KEYWORD,
+                    }
+                }
                 contract = resolve_env_provider(provider_id).constructor_contract
                 self.assertIsNotNone(contract)
                 covered_args = set(contract.canonical_args) | set(contract.explicit_env_args)
                 self.assertEqual(covered_args, signature_args)
+
+    def test_breakout_turbo_goal_composes_with_atari_ppo(self) -> None:
+        document = compose_train_document(
+            self.BREAKOUT_GOAL,
+            Path("experiments/recipes/atari/ppo.yaml"),
+        )
+
+        train_config = document["train_config"]
+        self.assertEqual(train_config["env_provider"], "breakout-turbo-env")
+        self.assertEqual(train_config["game"], "BreakoutTurbo-v0")
+        self.assertEqual(train_config["state"], "full")
+        self.assertEqual(train_config["task"]["action"]["set"], "native")
+        self.assertFalse(train_config["max_pool_frames"])
+        self.assertEqual(train_config["sticky_action_prob"], 0.0)
+        self.assertEqual(
+            document["goal"]["objective"]["rank"][0],
+            "max(eval/full/outcome/success/rate/min)",
+        )
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
         environment = {
@@ -110,6 +139,20 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["termination"]["failure"],
             ["life_loss", "stalled"],
         )
+        self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
+
+    def test_level1_1_jerk_recipe_is_playable_native_policy_search(self) -> None:
+        document = compose_train_document(
+            self.MARIO_L11_GOAL,
+            self.MARIO_SINGLE_RECIPES / "jerk.yaml",
+        )
+
+        train_config = document["train_config"]
+        backend = train_config["training_backend"]
+        self.assertEqual(backend["id"], "rlab.jerk")
+        self.assertEqual(backend["config"]["forward_action"], "right_b")
+        self.assertEqual(backend["config"]["jump_action"], "right_a_b")
+        self.assertEqual(train_config["timesteps"], 1000000)
         self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
 
     def test_level1_1_on_policy_recipes_share_common_config(self) -> None:

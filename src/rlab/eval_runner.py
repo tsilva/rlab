@@ -47,6 +47,18 @@ def _bind_policy_action_space(model: Any, action_space: Any) -> None:
         bind_action_space(action_space)
 
 
+def _reset_policy_episode(model: Any) -> None:
+    reset_episode = getattr(model, "reset_episode", None)
+    if callable(reset_episode):
+        reset_episode()
+
+
+def _reset_policy_lanes(model: Any, dones: Any) -> None:
+    reset_lanes = getattr(model, "reset_lanes", None)
+    if callable(reset_lanes):
+        reset_lanes(dones)
+
+
 def _evaluate_model_episodes_vector(
     *,
     model,
@@ -71,11 +83,13 @@ def _evaluate_model_episodes_vector(
     lane_episode_ordinals: dict[int, int] = {}
     try:
         _bind_policy_action_space(model, getattr(eval_env, "action_space", None))
+        _reset_policy_episode(model)
         torch.manual_seed(seed)
         obs = eval_env.reset()
         while len(episode_results) < episodes:
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, _step_rewards, dones, infos = eval_env.step(action)
+            _reset_policy_lanes(model, dones)
             if preview_capture is not None:
                 preview_capture.capture(obs)
             terminal_infos = {
