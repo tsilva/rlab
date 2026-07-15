@@ -655,6 +655,48 @@ class ModalEvalRecoveryTests(unittest.TestCase):
 
         self.assertFalse(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
 
+    def test_abandon_closes_nonterminal_eval_after_failed_training(self) -> None:
+        conn = FakeConnection(
+            results=[
+                {
+                    "row": {
+                        "train_status": "failed",
+                        "eval_run_status": "active",
+                        "active_attempts": 0,
+                    }
+                },
+                {"rowcount": 0},
+                {"rowcount": 1},
+                {"rowcount": 1},
+            ]
+        )
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch.object(modal_eval_cli, "_kick") as kick,
+        ):
+            self.assertEqual(modal_eval_cli.cmd_abandon(SimpleNamespace(train_job_id=27)), 0)
+
+        statements = conn.cursor_obj.executed_sqls
+        self.assertTrue(any("UPDATE eval_jobs" in sql for sql in statements))
+        self.assertTrue(any("UPDATE eval_runs" in sql for sql in statements))
+        kick.assert_called_once_with("modal_eval_abandon", entity_kind="train", entity_id=27)
+
+    def test_abandon_rejects_active_modal_attempts(self) -> None:
+        conn = FakeConnection(
+            row={
+                "train_status": "failed",
+                "eval_run_status": "active",
+                "active_attempts": 1,
+            }
+        )
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch.object(modal_eval_cli, "_kick") as kick,
+            self.assertRaisesRegex(ValueError, "active Modal attempts"),
+        ):
+            modal_eval_cli.cmd_abandon(SimpleNamespace(train_job_id=27))
+        kick.assert_not_called()
+
 
 class ModalEvalSchedulingTests(unittest.TestCase):
     def test_plain_runtime_error_from_modal_is_a_terminal_call_failure(self) -> None:

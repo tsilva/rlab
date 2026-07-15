@@ -1149,7 +1149,24 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
             eval_status = str(row.get("eval_status") or "")
             if status in {"launching", "starting", "running", "finalizing"}:
                 in_progress += 1
-            if eval_status == "awaiting_artifact_recovery":
+            if eval_status == "awaiting_artifact_recovery" and status in {
+                "failed",
+                "finalization_failed",
+                "canceled",
+            }:
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Terminal evaluation cleanup required",
+                        f"Training is {status}; incomplete evaluation cannot establish acceptance",
+                        reason_code="orphaned_eval",
+                        resolution="manual action",
+                        blast_radius="evaluation and promotion for this train job",
+                        command=f"rlab eval modal abandon {job_id}",
+                        timestamp=row.get("started_at"),
+                    )
+                )
+            elif eval_status == "awaiting_artifact_recovery":
                 needs_action.append(
                     _watch_item(
                         entity,
@@ -1169,9 +1186,9 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         "Inconsistent terminal state",
                         f"Training is {status} while evaluation remains {eval_status}",
                         reason_code="orphaned_eval",
-                        resolution="manual inspection",
+                        resolution="manual action",
                         blast_radius="evaluation and promotion for this train job",
-                        command=f"rlab runs status --job-id {job_id}",
+                        command=f"rlab eval modal abandon {job_id}",
                     )
                 )
             if str(row.get("live_publication_status") or "") == "failed":
@@ -1263,20 +1280,38 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
             purpose = str(row.get("purpose") or "evaluation")
             if status in {"dispatching", "submitted"}:
                 in_progress += 1
+            train_status = str(row.get("train_status") or "")
             if (
                 purpose == "promotion"
                 and status == "pending"
-                and row.get("train_status") != "finalizing"
+                and train_status
+                in {
+                    "failed",
+                    "finalization_failed",
+                    "canceled",
+                }
             ):
                 needs_action.append(
                     _watch_item(
                         entity,
                         "Promotion cannot become dispatchable",
-                        f"train/{train_job_id} is {row.get('train_status')}; promotion requires finalizing",
+                        f"train/{train_job_id} is {train_status}; promotion requires finalizing",
                         reason_code="ineligible_promotion",
-                        resolution="manual inspection",
+                        resolution="manual action",
                         blast_radius=f"promotion for train/{train_job_id}",
-                        command=f"rlab runs status --job-id {train_job_id}",
+                        command=f"rlab eval modal abandon {train_job_id}",
+                    )
+                )
+                continue
+            if purpose == "promotion" and status == "pending" and train_status != "finalizing":
+                waiting.append(
+                    _watch_item(
+                        entity,
+                        "Waiting for training finalization",
+                        f"train/{train_job_id} is {train_status or 'unknown'}",
+                        reason_code="promotion_wait",
+                        resolution="automatic",
+                        blast_radius=f"promotion for train/{train_job_id}",
                     )
                 )
                 continue

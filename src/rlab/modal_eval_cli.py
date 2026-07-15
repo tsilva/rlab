@@ -468,6 +468,115 @@ def cmd_recover(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_abandon(args: argparse.Namespace) -> int:
+    """Close evaluation work that cannot complete after terminal training failure."""
+
+    train_job_id = int(args.train_job_id)
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.status AS train_status, r.status AS eval_run_status,
+                  (SELECT count(*) FROM eval_attempts a
+                   JOIN eval_jobs j ON j.id = a.eval_job_id
+                   WHERE j.train_job_id = t.id
+                     AND a.status IN ('dispatching', 'submitted')) AS active_attempts
+                FROM train_jobs t
+                JOIN eval_runs r ON r.train_job_id = t.id
+                WHERE t.id = %(id)s
+                """,
+                {"id": train_job_id},
+            )
+            row = cur.fetchone()
+        if not row:
+            raise ValueError("train job or evaluation run was not found")
+        train_status = str(row.get("train_status") or "")
+        eval_run_status = str(row.get("eval_run_status") or "")
+        if train_status not in {"failed", "finalization_failed", "canceled"}:
+            raise ValueError(
+                f"train job {train_job_id} is {train_status or 'unknown'}, not terminal-failed"
+            )
+        if eval_run_status in {"complete", "failed", "canceled"}:
+            print(
+                json.dumps(
+                    {
+                        "train_job_id": train_job_id,
+                        "abandoned": False,
+                        "eval_run_status": eval_run_status,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if int(row.get("active_attempts") or 0):
+            raise ValueError(
+                f"eval run for train job {train_job_id} still has active Modal attempts"
+            )
+        if eval_run_status not in {"active", "awaiting_artifact_recovery", "finalizing"}:
+            raise ValueError(
+                f"eval run for train job {train_job_id} is {eval_run_status or 'unknown'}, "
+                "not abandonable"
+            )
+        terminal_eval_status = "canceled" if train_status == "canceled" else "failed"
+        error = f"evaluation abandoned after terminal training state: {train_status}"
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_attempts a
+                    SET status = 'canceled', finished_at = now(), error = %(error)s
+                    FROM eval_jobs j
+                    WHERE j.id = a.eval_job_id
+                      AND j.train_job_id = %(id)s
+                      AND a.status IN ('dispatching', 'submitted')
+                    """,
+                    {"id": train_job_id, "error": error},
+                )
+                attempts = int(cur.rowcount)
+                cur.execute(
+                    """
+                    UPDATE eval_jobs
+                    SET status = 'canceled', finished_at = now(), updated_at = now(),
+                      error = %(error)s
+                    WHERE train_job_id = %(id)s
+                      AND status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                    """,
+                    {"id": train_job_id, "error": error},
+                )
+                jobs = int(cur.rowcount)
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET status = %(status)s, error = %(error)s, updated_at = now()
+                    WHERE train_job_id = %(id)s
+                      AND status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
+                    """,
+                    {
+                        "id": train_job_id,
+                        "status": terminal_eval_status,
+                        "error": error,
+                    },
+                )
+                runs = int(cur.rowcount)
+        print(
+            json.dumps(
+                {
+                    "train_job_id": train_job_id,
+                    "abandoned": bool(runs),
+                    "eval_run_status": terminal_eval_status,
+                    "canceled_attempts": attempts,
+                    "canceled_jobs": jobs,
+                },
+                sort_keys=True,
+            )
+        )
+        _kick("modal_eval_abandon", entity_kind="train", entity_id=train_job_id)
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_assets_sync(args: argparse.Namespace) -> int:
     manifest = sync_rom_asset(
         args.game,
@@ -689,6 +798,9 @@ def build_parser() -> argparse.ArgumentParser:
     recover = commands.add_parser("recover")
     recover.add_argument("train_job_id", type=int)
     recover.set_defaults(func=cmd_recover)
+    abandon = commands.add_parser("abandon")
+    abandon.add_argument("train_job_id", type=int)
+    abandon.set_defaults(func=cmd_abandon)
     assets = commands.add_parser("assets")
     asset_commands = assets.add_subparsers(dest="asset_command", required=True)
     sync = asset_commands.add_parser("sync")

@@ -97,6 +97,7 @@ rlab eval modal resume --capacity 1
 rlab eval modal retry <eval-job-id>
 rlab eval modal retry-projection <train-job-id>
 rlab eval modal recover <train-job-id>
+rlab eval modal abandon <train-job-id>
 rlab eval modal assets sync --game <game-id>
 rlab eval modal smoke-local
 ```
@@ -123,6 +124,9 @@ already published image receipt, but it does block Modal-backed submissions for 
 Use `rlab eval modal recover <train-job-id>` only after a terminal train job reports
 `awaiting_artifact_recovery`. Recovery drains pending artifacts inside the runtime container and
 rejects active, finalizing, complete, or otherwise ineligible eval runs without changing their state.
+Use `rlab eval modal abandon <train-job-id>` after inspecting a failed, finalization-failed, or
+canceled train whose evaluation remains nonterminal. It preserves uploaded evidence while canceling
+undispatched evaluation work and closes the evaluation run with the matching terminal outcome.
 
 PostgreSQL is the wait queue, orchestration authority, and transient telemetry mailbox. The service
 never submits work beyond the effective capacity, reserves worst-case cost before dispatch, and
