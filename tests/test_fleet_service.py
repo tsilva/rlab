@@ -117,6 +117,7 @@ class FleetServiceTests(unittest.TestCase):
 
             with (
                 mock.patch.object(fleet_service.shutil, "which", return_value=None),
+                mock.patch.object(fleet_service.time, "sleep"),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
                 fleet_service.install_service(paths, replace=True, runner=runner)
@@ -124,8 +125,36 @@ class FleetServiceTests(unittest.TestCase):
             self.assertEqual(paths.plist.read_bytes(), old_data)
             self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands)
             self.assertEqual(
-                sum(command[:2] == ["launchctl", "bootstrap"] for command in commands), 2
+                sum(command[:2] == ["launchctl", "bootstrap"] for command in commands),
+                fleet_service.SERVICE_BOOTSTRAP_ATTEMPTS + 1,
             )
+
+    def test_replacement_retries_launchd_busy_after_bootout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.plist.parent.mkdir(parents=True)
+            paths.plist.write_bytes(b"old plist\n")
+            bootstrap_attempts = 0
+
+            def runner(argv, **kwargs):
+                nonlocal bootstrap_attempts
+                if argv[:2] == ["launchctl", "print"]:
+                    return completed(argv)
+                if argv[:2] == ["launchctl", "bootstrap"] and kwargs.get("check"):
+                    bootstrap_attempts += 1
+                    if bootstrap_attempts == 1:
+                        raise subprocess.CalledProcessError(5, argv)
+                return completed(argv)
+
+            with (
+                mock.patch.object(fleet_service.shutil, "which", return_value=None),
+                mock.patch.object(fleet_service.time, "sleep") as sleep,
+            ):
+                result = fleet_service.install_service(paths, replace=True, runner=runner)
+
+            self.assertTrue(result.replaced)
+            self.assertEqual(bootstrap_attempts, 2)
+            sleep.assert_called_once_with(fleet_service.SERVICE_BOOTSTRAP_RETRY_SECONDS)
 
     def test_uninstall_refuses_nonterminal_jobs_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

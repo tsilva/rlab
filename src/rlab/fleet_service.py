@@ -44,6 +44,8 @@ WorkloadSnapshot = Callable[[Path], Mapping[str, Any]]
 
 SERVICE_ALERT_AFTER_FAILURES = 2
 SERVICE_ALERT_REPEAT_SECONDS = 3600
+SERVICE_BOOTSTRAP_ATTEMPTS = 10
+SERVICE_BOOTSTRAP_RETRY_SECONDS = 0.25
 
 
 def _utc_now() -> datetime:
@@ -510,6 +512,24 @@ class InstallResult:
     kicked: bool
 
 
+def _bootstrap_launch_agent(
+    paths: ServicePaths,
+    *,
+    runner: CommandRunner,
+    retry_busy: bool,
+) -> None:
+    attempts = SERVICE_BOOTSTRAP_ATTEMPTS if retry_busy else 1
+    command = ["launchctl", "bootstrap", _domain(), str(paths.plist)]
+    for attempt in range(attempts):
+        try:
+            runner(command, check=True, capture_output=True, text=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 5 or attempt + 1 >= attempts:
+                raise
+            time.sleep(SERVICE_BOOTSTRAP_RETRY_SECONDS)
+
+
 def install_service(
     paths: ServicePaths,
     *,
@@ -543,11 +563,10 @@ def install_service(
             )
         os.replace(candidate, paths.plist)
         try:
-            runner(
-                ["launchctl", "bootstrap", _domain(), str(paths.plist)],
-                check=True,
-                capture_output=True,
-                text=True,
+            _bootstrap_launch_agent(
+                paths,
+                runner=runner,
+                retry_busy=was_loaded,
             )
         except Exception:
             if old_data is None:
