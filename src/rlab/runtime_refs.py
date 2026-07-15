@@ -32,12 +32,8 @@ LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
 LEGACY_MODAL_READINESS_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS = 20 * 60
 
-DIGEST_IMAGE_REF_RE = re.compile(
-    r"^docker:[^\s@]+@sha256:(?P<digest>[0-9a-fA-F]{64})$"
-)
-ACTIVE_WORKFLOW_STATUSES = frozenset(
-    {"queued", "in_progress", "pending", "requested", "waiting"}
-)
+DIGEST_IMAGE_REF_RE = re.compile(r"^docker:[^\s@]+@sha256:(?P<digest>[0-9a-fA-F]{64})$")
+ACTIVE_WORKFLOW_STATUSES = frozenset({"queued", "in_progress", "pending", "requested", "waiting"})
 
 
 @dataclass(frozen=True)
@@ -138,9 +134,7 @@ def runtime_release_from_payload(
     if digest and digest.lower() != runtime_image_digest(runtime_image_ref):
         raise ValueError(f"{label} digest does not match runtime_image_ref")
     runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
-    runtime_build_source_sha = str(
-        payload.get("runtime_build_source_sha") or source_sha
-    ).strip()
+    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or source_sha).strip()
     if schema_version == RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
         if not re.fullmatch(r"[0-9a-f]{64}", runtime_input_sha256):
             raise ValueError(f"{label} must include a valid runtime_input_sha256")
@@ -219,13 +213,14 @@ def modal_readiness_from_payload(
     if not modal_app_name or not isinstance(startup_probe, Mapping):
         raise ValueError(f"{label} must include Modal app and startup-probe evidence")
     runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
-    runtime_build_source_sha = str(
-        payload.get("runtime_build_source_sha") or source_sha
-    ).strip()
+    runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or source_sha).strip()
     if schema_version == MODAL_READINESS_SCHEMA_VERSION:
         expected_runtime_input_sha256 = str(expected_runtime_input_sha256).strip().lower()
         expected_runtime_build_source_sha = str(expected_runtime_build_source_sha).strip()
-        if not expected_runtime_input_sha256 or runtime_input_sha256 != expected_runtime_input_sha256:
+        if (
+            not expected_runtime_input_sha256
+            or runtime_input_sha256 != expected_runtime_input_sha256
+        ):
             raise ValueError(f"{label} runtime_input_sha256 does not match image receipt")
         if (
             not expected_runtime_build_source_sha
@@ -307,9 +302,7 @@ def current_git_branch(repo_root: Path | str = ".") -> str:
     return branch
 
 
-def require_remote_source(
-    source_sha: str, *, branch: str, repo_root: Path | str = "."
-) -> None:
+def require_remote_source(source_sha: str, *, branch: str, repo_root: Path | str = ".") -> None:
     result = subprocess.run(
         ["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
         cwd=Path(repo_root),
@@ -467,7 +460,11 @@ def _workflow_runs(
     if branch:
         command[5:5] = ["--branch", branch]
     payload = _run_gh_json(command)
-    return [dict(row) for row in payload if isinstance(row, Mapping)] if isinstance(payload, list) else []
+    return (
+        [dict(row) for row in payload if isinstance(row, Mapping)]
+        if isinstance(payload, list)
+        else []
+    )
 
 
 def _matching_runs(
@@ -494,9 +491,7 @@ def recent_runtime_images(
         run_id = str(run.get("databaseId") or "").strip()
         if not run_id:
             continue
-        payload = _artifact_payload_for_run(
-            run_id, artifact_name, DEFAULT_IMAGE_ARTIFACT_FILE
-        )
+        payload = _artifact_payload_for_run(run_id, artifact_name, DEFAULT_IMAGE_ARTIFACT_FILE)
         if payload is None:
             continue
         source_sha = str(payload.get("source_sha") or run.get("headSha") or "").strip()
@@ -536,9 +531,7 @@ def runtime_release_for_source(
         if not run_id:
             continue
         try:
-            payload = _artifact_payload_for_run(
-                run_id, artifact_name, DEFAULT_IMAGE_ARTIFACT_FILE
-            )
+            payload = _artifact_payload_for_run(run_id, artifact_name, DEFAULT_IMAGE_ARTIFACT_FILE)
             if payload is None:
                 continue
             info = runtime_release_from_payload(
@@ -572,10 +565,7 @@ def _workflow_status_detail(runs: Sequence[Mapping[str, Any]]) -> str:
     if not runs:
         return "no workflow run is visible yet"
     latest = runs[0]
-    return (
-        f"status={latest.get('conclusion') or latest.get('status')} "
-        f"url={latest.get('url')}"
-    )
+    return f"status={latest.get('conclusion') or latest.get('status')} url={latest.get('url')}"
 
 
 def wait_for_runtime_release(
@@ -603,14 +593,10 @@ def wait_for_runtime_release(
         except RuntimeError as receipt_error:
             runs = _matching_runs(source_sha=source_sha, workflow=workflow)
             active_runs = [
-                row
-                for row in runs
-                if str(row.get("status") or "") in ACTIVE_WORKFLOW_STATUSES
+                row for row in runs if str(row.get("status") or "") in ACTIVE_WORKFLOW_STATUSES
             ]
             active = bool(active_runs)
-            watched_run_ids.update(
-                str(row.get("databaseId") or "") for row in active_runs
-            )
+            watched_run_ids.update(str(row.get("databaseId") or "") for row in active_runs)
             current_run_ids = {str(row.get("databaseId") or "") for row in runs}
             watched_terminal = bool(watched_run_ids & current_run_ids) and not active
             if watched_terminal:
@@ -619,9 +605,7 @@ def wait_for_runtime_release(
                     f"{_workflow_status_detail(runs)}"
                 ) from receipt_error
             if not active and not dispatched:
-                run_ids_before_dispatch = {
-                    str(row.get("databaseId") or "") for row in runs
-                }
+                run_ids_before_dispatch = {str(row.get("databaseId") or "") for row in runs}
                 require_remote_source(source_sha, branch=branch, repo_root=repo_root)
                 _run_gh(
                     [
@@ -670,9 +654,7 @@ def modal_readiness_for_release(
     errors: list[str] = []
     for run_id in run_ids:
         try:
-            payload = _artifact_payload_for_run(
-                run_id, artifact_name, DEFAULT_MODAL_ARTIFACT_FILE
-            )
+            payload = _artifact_payload_for_run(run_id, artifact_name, DEFAULT_MODAL_ARTIFACT_FILE)
             if payload is None:
                 continue
             return modal_readiness_from_payload(
@@ -709,16 +691,12 @@ def wait_for_modal_readiness(
                 startup_probe=readiness.startup_probe,
             )
         except RuntimeError as readiness_error:
-            image_runs = _matching_runs(
-                source_sha=release.source_sha, workflow=image_workflow
-            )
+            image_runs = _matching_runs(source_sha=release.source_sha, workflow=image_workflow)
             modal_runs = _matching_runs(
                 source_sha=release.source_sha, workflow=DEFAULT_MODAL_WORKFLOW
             )
             runs = [*image_runs, *modal_runs]
-            active = any(
-                str(row.get("status") or "") in ACTIVE_WORKFLOW_STATUSES for row in runs
-            )
+            active = any(str(row.get("status") or "") in ACTIVE_WORKFLOW_STATUSES for row in runs)
             if runs and not active:
                 raise RuntimeError(
                     f"Modal deployment completed without valid readiness for "
@@ -741,7 +719,6 @@ def runtime_release_from_args(
 ) -> RuntimeImageInfo:
     source_sha = clean_git_source_sha(repo_root)
     workflow = getattr(args, "image_workflow", DEFAULT_IMAGE_WORKFLOW)
-    branch = getattr(args, "image_branch", None) or current_git_branch(repo_root)
     artifact_name = getattr(args, "image_artifact", DEFAULT_IMAGE_ARTIFACT)
     timeout = float(
         getattr(
@@ -760,6 +737,7 @@ def runtime_release_from_args(
             expected_source_sha=source_sha,
         )
     else:
+        branch = getattr(args, "image_branch", None) or current_git_branch(repo_root)
         release = wait_for_runtime_release(
             source_sha=source_sha,
             workflow=workflow,

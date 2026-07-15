@@ -60,6 +60,35 @@ def deterministic_eval_failure(error: object) -> bool:
     )
 
 
+def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, Any]) -> None:
+    artifacts = [
+        (str(announcement["model_uri"]), str(announcement["sha256"])),
+        (
+            str(announcement["metadata_uri"]),
+            str(announcement["metadata_sha256"]),
+        ),
+    ]
+    asset = announcement["eval"].get("asset")
+    if isinstance(asset, Mapping):
+        artifacts.append((str(asset["object_uri"]), str(asset["sha256"])))
+
+    for uri, expected_sha in artifacts:
+        head = store.head(uri)
+        if int(head["size"]) < 1:
+            raise ValueError("checkpoint artifact is empty")
+        remote_sha = str(head.get("metadata", {}).get("sha256") or "")
+        if store.scheme == "s3" and remote_sha != expected_sha:
+            raise ValueError("checkpoint artifact hash metadata mismatch")
+
+    metadata = store.get_json(str(announcement["metadata_uri"]))
+    if (
+        int(metadata.get("queue_train_job_id") or 0) != int(announcement["train_job_id"])
+        or int(metadata.get("checkpoint_step") or 0) != int(announcement["step"])
+        or str(metadata.get("runtime_image_ref") or "") != str(announcement["runtime_image_ref"])
+    ):
+        raise ValueError("checkpoint metadata does not match the announcement")
+
+
 class ModalInvoker(Protocol):
     def spawn(self, app_name: str, function_name: str, payload: Mapping[str, Any]) -> str: ...
     def poll(self, call_id: str) -> tuple[str, object | None]: ...
@@ -263,32 +292,7 @@ def ingest_announcements(
                         announcement,
                         materialized_train_config=dict(run["contract_json"]),
                     )
-                    for uri, expected_sha in (
-                        (str(announcement["model_uri"]), str(announcement["sha256"])),
-                        (
-                            str(announcement["metadata_uri"]),
-                            str(announcement["metadata_sha256"]),
-                        ),
-                        (
-                            str(announcement["eval"]["asset"]["object_uri"]),
-                            str(announcement["eval"]["asset"]["sha256"]),
-                        ),
-                    ):
-                        head = store.head(uri)
-                        if int(head["size"]) < 1:
-                            raise ValueError("checkpoint artifact is empty")
-                        remote_sha = str(head.get("metadata", {}).get("sha256") or "")
-                        if store.scheme == "s3" and remote_sha != expected_sha:
-                            raise ValueError("checkpoint artifact hash metadata mismatch")
-                    metadata = store.get_json(str(announcement["metadata_uri"]))
-                    if (
-                        int(metadata.get("queue_train_job_id") or 0)
-                        != int(announcement["train_job_id"])
-                        or int(metadata.get("checkpoint_step") or 0) != int(announcement["step"])
-                        or str(metadata.get("runtime_image_ref") or "")
-                        != str(announcement["runtime_image_ref"])
-                    ):
-                        raise ValueError("checkpoint metadata does not match the announcement")
+                    _verify_checkpoint_artifacts(store, announcement)
                 except ObjectNotFound:
                     break
                 except ValueError as exc:
@@ -405,23 +409,7 @@ def ingest_mailbox_announcements(
                     payload,
                     materialized_train_config=dict(event["contract_json"]),
                 )
-                for uri, expected_sha in (
-                    (str(announcement["model_uri"]), str(announcement["sha256"])),
-                    (
-                        str(announcement["metadata_uri"]),
-                        str(announcement["metadata_sha256"]),
-                    ),
-                    (
-                        str(announcement["eval"]["asset"]["object_uri"]),
-                        str(announcement["eval"]["asset"]["sha256"]),
-                    ),
-                ):
-                    head = store.head(uri)
-                    if int(head["size"]) < 1:
-                        raise ValueError("checkpoint artifact is empty")
-                    remote_sha = str(head.get("metadata", {}).get("sha256") or "")
-                    if store.scheme == "s3" and remote_sha != expected_sha:
-                        raise ValueError("checkpoint artifact hash metadata mismatch")
+                _verify_checkpoint_artifacts(store, announcement)
             except Exception as exc:
                 attempts = int(event.get("attempts") or 0) + 1
                 with conn:

@@ -241,6 +241,29 @@ class RuntimeRefsTests(unittest.TestCase):
 
         modal_wait.assert_called_once()
 
+    def test_explicit_runtime_receipt_does_not_require_git_branch(self) -> None:
+        args = SimpleNamespace(
+            image_workflow=runtime_refs.DEFAULT_IMAGE_WORKFLOW,
+            image_branch=None,
+            image_artifact=runtime_refs.DEFAULT_IMAGE_ARTIFACT,
+            runtime_readiness_timeout=60,
+            runtime_image_ref_file="receipt.json",
+        )
+        release = image_info()
+        with (
+            mock.patch.object(runtime_refs, "clean_git_source_sha", return_value=SOURCE_SHA),
+            mock.patch.object(runtime_refs, "runtime_image_payload_from_file", return_value={}),
+            mock.patch.object(runtime_refs, "runtime_release_from_payload", return_value=release),
+            mock.patch.object(
+                runtime_refs,
+                "current_git_branch",
+                side_effect=AssertionError("branch lookup is unnecessary"),
+            ),
+        ):
+            actual = runtime_refs.runtime_release_from_args(args, checkpoint_eval_backend="local")
+
+        self.assertEqual(actual, release)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_orchestrator import (
     DefaultModalInvoker,
     _stage_metrics,
+    _verify_checkpoint_artifacts,
     accept_attempt_result,
     available_eval_slots,
     budget_allows,
@@ -96,6 +97,33 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_rom_free_announcement_verifies_only_model_and_metadata(self) -> None:
+        announcement = {
+            "train_job_id": 38,
+            "step": 256,
+            "runtime_image_ref": "docker:example.invalid/rlab@sha256:" + "b" * 64,
+            "model_uri": "s3://bucket/model.zip",
+            "sha256": "a" * 64,
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "c" * 64,
+            "eval": {"asset": None},
+        }
+        store = mock.MagicMock(spec=ObjectStore)
+        store.scheme = "s3"
+        store.head.side_effect = [
+            {"size": 10, "metadata": {"sha256": "a" * 64}},
+            {"size": 20, "metadata": {"sha256": "c" * 64}},
+        ]
+        store.get_json.return_value = {
+            "queue_train_job_id": 38,
+            "checkpoint_step": 256,
+            "runtime_image_ref": announcement["runtime_image_ref"],
+        }
+
+        _verify_checkpoint_artifacts(store, announcement)
+
+        self.assertEqual(store.head.call_count, 2)
+
     def test_rom_free_execution_contract_accepts_empty_rom_identity(self) -> None:
         eval_contract = build_execution_contract(
             checkpoint_sha256="a" * 64,
@@ -767,9 +795,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 )
                 return subprocess.CompletedProcess(command, 0)
 
-            with mock.patch(
-                "rlab.modal_eval_worker.subprocess.run", side_effect=finish_child
-            ):
+            with mock.patch("rlab.modal_eval_worker.subprocess.run", side_effect=finish_child):
                 execute_attempt(payload)
 
             evidence = json.loads(result_path.read_text(encoding="utf-8"))
