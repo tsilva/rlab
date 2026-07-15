@@ -23,6 +23,14 @@ class RunJobWorkerTests(unittest.TestCase):
             worker_modules("none", wandb_enabled=False),
             (None, "rlab.wandb_publisher"),
         )
+        self.assertEqual(
+            worker_modules(
+                "modal",
+                wandb_enabled=True,
+                telemetry_transport="neon_mailbox_v1",
+            ),
+            ("rlab.checkpoint_coordinator", "rlab.telemetry_relay"),
+        )
 
     def test_unknown_backend_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported checkpoint evaluation backend"):

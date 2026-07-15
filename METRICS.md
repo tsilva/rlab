@@ -8,15 +8,20 @@ exact registry entry or a bounded template.
 
 - W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
   R2-backed `eval/screen/preview` media series.
-- Metric producers always retain durable SQLite evidence. They create W&B outbox frames only when
-  W&B is enabled; the learner never writes W&B directly. The live publisher and post-train Modal
-  projector share the same run-owning projection implementation and immutable run id.
+- Metric producers write to a local SQLite outbox, then deliver gzip batches to the transient Neon
+  mailbox. SQLite rows are deleted after Neon acknowledgement and the local database is removed
+  after a successful final-flush barrier. Neon batches are deleted after confirmed W&B publication;
+  neither buffer is permanent metric history.
+- Fleet is the sole W&B writer for new `neon_mailbox_v1` runs. Training and evaluation workers never
+  receive W&B credentials. Fleet preassigns the immutable W&B run id, publishes all streams to that
+  run, and stores per-stream commit cursors in the W&B summary before deleting mailbox batches.
 - W&B config contains run-defining dimensions: `metrics_schema_version: 4`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
-- SQLite and R2 retain raw episode evidence, worker state, artifacts, and videos.
+- W&B is the permanent metric history. R2 is the permanent byte store for checkpoints, metadata,
+  raw episode evidence, and videos. Postgres retains orchestration state and artifact locations.
 
 The only evaluation protocols are `screen`, `confirm`, and `full`. Dimension IDs must be unique and
 match `[A-Za-z0-9_.-]+`; unsafe IDs are rejected rather than silently rewritten. Starts use the same
@@ -24,11 +29,10 @@ readable ID in training and evaluation. Provider `info` fields never become metr
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
-W&B's built-in `_step` is only the zero-based sequence of committed history rows. Some media
-panels label that value `Step`; it is not an environment-transition or checkpoint count. Use
-`global_step` for the training timeline and `eval/{protocol}/checkpoint/step` for the evaluated
-checkpoint. Asynchronous evaluation rows may be appended after later training rows, so `_step` and
-`global_step` are not expected to match or remain ordered together.
+Fleet never supplies W&B's internal `_step`; W&B assigns it in arrival order. It is not an
+environment-transition or checkpoint count. Charts must use explicit `global_step` for the x-axis,
+and evaluation rows also carry `eval/{protocol}/checkpoint/step` for the evaluated checkpoint.
+Asynchronous evaluation rows may arrive after later training rows without overwriting them.
 
 ## Research interpretation
 
@@ -56,7 +60,7 @@ checkpoint. Asynchronous evaluation rows may be appended after later training ro
 `return_std`, `return_median`, `reason`, `reason_count`, `reason_rate`.
 The reason value is empty, with zero count and rate, when a start has no recorded failure reason.
 
-Episode-level evidence stays in R2/SQLite. Confidence intervals and start-by-reason scalar products
+Episode-level evidence stays in R2. Confidence intervals and start-by-reason scalar products
 are intentionally computed offline rather than added to W&B history.
 
 ## Registry

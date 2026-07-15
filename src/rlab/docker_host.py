@@ -261,6 +261,9 @@ class DockerRunnerHost:
     def output_host_path(self, launch_id: str) -> str:
         return f"{self.machine.paths.outputs_dir.rstrip('/')}/{launch_id}"
 
+    def attempt_env_host_path(self, launch_id: str) -> str:
+        return f"{self.machine.paths.payloads_dir.rstrip('/')}/{launch_id}.env"
+
     def payload_container_path(self, launch_id: str) -> str:
         return f"{self.machine.paths.container_payloads_dir.rstrip('/')}/{launch_id}.json"
 
@@ -328,6 +331,41 @@ class DockerRunnerHost:
         )
         if result.returncode != 0:
             raise RuntimeError(f"failed to write payload {path}: {result.stderr or result.stdout}")
+
+    def write_attempt_env(self, launch_id: str, values: Mapping[str, str]) -> str:
+        if not values:
+            raise ValueError("attempt environment must not be empty")
+        for key, value in values.items():
+            if not key or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in key):
+                raise ValueError(f"invalid attempt environment key: {key!r}")
+            if not value or "\n" in value or "\r" in value or "\x00" in value:
+                raise ValueError(f"invalid attempt environment value for {key}")
+        path = self.attempt_env_host_path(launch_id)
+        text = "".join(f"{key}={values[key]}\n" for key in sorted(values))
+        script = (
+            "set -eu; umask 077; temporary=$(mktemp); "
+            "trap 'rm -f \"$temporary\"' EXIT; cat > \"$temporary\"; "
+            f"install -m 0600 \"$temporary\" {shlex.quote(path)}"
+        )
+        result = _run_machine_shell(
+            self.machine,
+            script,
+            input_text=text,
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"failed to write attempt environment {path}")
+        return path
+
+    def remove_attempt_env(self, launch_id: str) -> None:
+        path = self.attempt_env_host_path(launch_id)
+        _run_machine_shell(
+            self.machine,
+            f"rm -f {shlex.quote(path)}",
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
 
     def _list_containers(
         self,
@@ -541,6 +579,7 @@ class DockerRunnerHost:
         container_name: str,
         runtime_image_ref: str,
         labels: Mapping[str, str],
+        attempt_env_path: str | None = None,
     ) -> HostOperationResult:
         args = [
             "create",
@@ -550,7 +589,7 @@ class DockerRunnerHost:
             "no",
             *self.machine.docker_gpu_args,
             "--env-file",
-            self.machine.paths.env_file,
+            attempt_env_path or self.machine.paths.env_file,
             "-v",
             f"{self.machine.paths.payloads_dir}:{self.machine.paths.container_payloads_dir}:ro",
             "-v",
@@ -743,6 +782,7 @@ def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None 
         f"  umask 077; cat > {shlex.quote(machine.paths.env_file)} <<'EOF'",
         "# rlab job-container secrets live here; fill values on the host.",
         "TRAIN_QUEUE_DATABASE_URL=",
+        "WORKER_MAILBOX_DATABASE_URL=",
         "WANDB_API_KEY=",
         "AWS_ACCESS_KEY_ID=",
         "AWS_SECRET_ACCESS_KEY=",

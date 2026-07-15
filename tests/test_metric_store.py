@@ -81,6 +81,45 @@ class MetricStoreTests(unittest.TestCase):
                     source="train",
                 )
 
+    def test_closed_mailbox_outbox_rejects_late_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            store.append_metrics(
+                {"train/throughput/loop_fps": 1.0},
+                step=1,
+                source="learner",
+            )
+
+            self.assertEqual(store.close_metric_outbox(), 1)
+            with self.assertRaisesRegex(RuntimeError, "outbox is closed"):
+                store.append_metrics(
+                    {"train/throughput/loop_fps": 2.0},
+                    step=2,
+                    source="late_callback",
+                )
+
+    def test_mailbox_ack_deletes_only_delivered_frames_and_advances_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            for step in (10, 20):
+                store.append_metrics(
+                    {"train/throughput/loop_fps": float(step)},
+                    step=step,
+                    source="learner",
+                )
+            frames = store.pending_mailbox_frames()
+
+            store.mark_metric_frames_delivered(
+                [int(frames[0]["id"])], batch_sequence=1
+            )
+
+            remaining = store.pending_mailbox_frames()
+            self.assertEqual([int(row["step"]) for row in remaining], [20])
+            self.assertEqual(store.next_mailbox_batch_sequence(), 2)
+            self.assertEqual(store.metric_outbox_stats()["frames"], 1)
+
     def test_writer_waits_for_bounded_concurrent_lock_instead_of_failing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rlab.sqlite"

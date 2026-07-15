@@ -39,6 +39,13 @@ from rlab.job_queue import (
     record_job_launch_error,
     set_machine_control,
 )
+from rlab.telemetry_mailbox import (
+    ATTEMPT_ID_ENV,
+    ATTEMPT_TOKEN_ENV,
+    MAILBOX_DATABASE_ENV,
+    TRANSPORT_NAME,
+    issue_worker_attempt_token,
+)
 from rlab.json_utils import json_safe
 from rlab.machines import (
     DEFAULT_MACHINE_REGISTRY,
@@ -68,6 +75,14 @@ from rlab.fleet_labels import (
 DEFAULT_SHARED_RUNNER_ENV_FILE = Path(".env")
 SHARED_RUNNER_ENV_KEYS = (
     "WANDB_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_S3_ENDPOINT_URL",
+    "AWS_REGION",
+    "CHECKPOINT_BUCKET_URI",
+)
+MAILBOX_RUNNER_ENV_KEYS = (
+    MAILBOX_DATABASE_ENV,
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_S3_ENDPOINT_URL",
@@ -148,6 +163,32 @@ def load_shared_runner_env(path: Path) -> dict[str, str]:
     if missing:
         raise RuntimeError(
             f"shared runner env file is missing required key(s): {', '.join(missing)} in {path}"
+        )
+    return values
+
+
+def load_mailbox_runner_env(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        raise RuntimeError(f"runner env file is missing: {path}")
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if key not in MAILBOX_RUNNER_ENV_KEYS:
+            continue
+        value = raw_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if not value or any(char in value for char in ("\x00", "\n", "\r")):
+            raise RuntimeError(f"runner env value is invalid: {key} in {path}")
+        values[key] = value
+    missing = [key for key in MAILBOX_RUNNER_ENV_KEYS if key not in values]
+    if missing:
+        raise RuntimeError(
+            f"runner env file is missing mailbox key(s): {', '.join(missing)} in {path}"
         )
     return values
 
@@ -354,6 +395,29 @@ def _start_or_resume_launch(
         if not image_ready and not host.ensure_runtime_image(str(launch["runtime_image_ref"])):
             _record_launch_error(conn, launch_id, "runtime image is unavailable")
             return False
+        telemetry_transport = str(
+            job.get("telemetry_transport")
+            or (job.get("train_config") or {}).get("telemetry_transport")
+            or "legacy_local"
+        )
+        if (
+            telemetry_transport == TRANSPORT_NAME
+            and known_container is not None
+            and known_container.state != "running"
+        ):
+            host.remove_container(known_container.name, force=True)
+            known_container = None
+        attempt_env_path = None
+        if telemetry_transport == TRANSPORT_NAME and (
+            known_container is None or known_container.state != "running"
+        ):
+            token = issue_worker_attempt_token(conn, attempt_id=launch_id)
+            mailbox_env = load_mailbox_runner_env(
+                default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE
+            )
+            mailbox_env[ATTEMPT_ID_ENV] = launch_id
+            mailbox_env[ATTEMPT_TOKEN_ENV] = token
+            attempt_env_path = host.write_attempt_env(launch_id, mailbox_env)
         host.write_payload(launch_id, job_payload_for_launch(job, launch))
         container = known_container
         if container is None:
@@ -372,6 +436,7 @@ def _start_or_resume_launch(
                 container_name=container_name,
                 runtime_image_ref=str(launch["runtime_image_ref"]),
                 labels=labels,
+                attempt_env_path=attempt_env_path,
             )
             containers = {item.launch_id: item for item in host.list_job_containers()}
             container = containers.get(launch_id)
@@ -421,6 +486,12 @@ def launch_cancel_requested(conn, launch: Mapping[str, Any]) -> bool:
     return bool(row and row.get("cancel_requested"))
 
 
+def _remove_attempt_env(host: DockerRunnerHost, launch_id: str) -> None:
+    remove = getattr(host, "remove_attempt_env", None)
+    if callable(remove):
+        remove(launch_id)
+
+
 def cancel_running_job_launch(
     conn,
     host: DockerRunnerHost,
@@ -432,7 +503,7 @@ def cancel_running_job_launch(
     result = (
         host.remove_container(container.name, force=True)
         if container.state == "created"
-        else host.stop_container(container.name, grace_seconds=120)
+        else host.stop_container(container.name, grace_seconds=300)
     )
     if not result.ok:
         _record_launch_error(
@@ -451,6 +522,7 @@ def cancel_running_job_launch(
             error="cancel requested",
         ),
     )
+    _remove_attempt_env(host, launch_id)
     return True
 
 
@@ -471,6 +543,7 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                 finish_job_launch_from_result(
                     conn, launch_id=launch_id, result=observation.payload or {}
                 )
+                _remove_attempt_env(host, launch_id)
                 reconciled += 1
             elif observation.state == "error":
                 _record_launch_error(
@@ -487,6 +560,7 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                         error="cancel requested; container authoritatively absent",
                     ),
                 )
+                _remove_attempt_env(host, launch_id)
                 reconciled += 1
             elif launch["state"] == "launching":
                 if _start_or_resume_launch(conn, host, launch=launch):
@@ -502,6 +576,7 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                         error="running container authoritatively absent without result.json",
                     ),
                 )
+                _remove_attempt_env(host, launch_id)
                 reconciled += 1
             continue
         if container.state in {"created", "restarting", "running"} and launch_cancel_requested(
@@ -550,6 +625,7 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                 launch_id=launch_id,
                 result=observation.payload or {},
             )
+            _remove_attempt_env(host, launch_id)
             reconciled += 1
         elif observation.state == "error":
             _record_launch_error(conn, launch_id, observation.error or "result observation failed")
@@ -564,6 +640,7 @@ def reconcile_machine_launches(conn, host: DockerRunnerHost) -> int:
                     error=f"container exited without result.json: {container.status}",
                 ),
             )
+            _remove_attempt_env(host, launch_id)
             reconciled += 1
     return reconciled
 

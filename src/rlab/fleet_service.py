@@ -794,14 +794,44 @@ def _default_reconcile_eval(
     deadline_monotonic: float,
 ) -> Mapping[str, Any] | None:
     config_path = repo_root / "experiments" / "modal_eval.yaml"
-    if not config_path.is_file():
+    if not config_path.is_file() and not (repo_root / ".env").is_file():
         return {"status": "unconfigured"}
-    from rlab.modal_eval_orchestrator import run_service_eval_pass
+    if config_path.is_file():
+        from rlab.modal_eval_orchestrator import run_service_eval_pass
 
-    return run_service_eval_pass(
-        repo_root=repo_root,
-        deadline_monotonic=deadline_monotonic,
+        detail = dict(
+            run_service_eval_pass(
+                repo_root=repo_root,
+                deadline_monotonic=deadline_monotonic,
+            )
+            or {}
+        )
+    else:
+        detail = {"status": "unconfigured"}
+    from rlab.fleet_wandb_publisher import drain_cycle
+    from rlab.telemetry_mailbox import (
+        consume_attempt_events,
+        discard_disabled_metric_batches,
+        finalize_mailbox_runs_without_eval,
+        mailbox_storage_bytes,
     )
+
+    conn = _connect_queue(repo_root)
+    try:
+        detail["consumed_attempt_events"] = consume_attempt_events(conn)
+        detail["discarded_disabled_metric_streams"] = discard_disabled_metric_batches(conn)
+        detail["wandb_publication"] = drain_cycle(conn)
+        detail["finalized_mailbox_runs_without_eval"] = finalize_mailbox_runs_without_eval(conn)
+        storage_bytes = mailbox_storage_bytes(conn)
+        detail["metric_mailbox_bytes"] = storage_bytes
+        detail["metric_mailbox_pressure"] = (
+            "hard" if storage_bytes >= 5 * 1024**3
+            else "soft" if storage_bytes >= 1024**3
+            else "ok"
+        )
+    finally:
+        conn.close()
+    return detail
 
 
 def run_service_pass(

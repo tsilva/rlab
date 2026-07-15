@@ -174,11 +174,20 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
             metadata_uri=metadata_uri,
             metadata_sha256=metadata_sha,
         )
-        object_store.put_json(
-            f"artifact-announcements/{announcement['train_job_id']}/{checkpoint_id:08d}.json",
-            announcement,
-            create_only=True,
-        )
+        if str(getattr(args, "telemetry_transport", "legacy_local")) == "neon_mailbox_v1":
+            from rlab.telemetry_mailbox import WorkerMailbox
+
+            WorkerMailbox.from_env().append_event(
+                "checkpoint_ready",
+                announcement,
+                event_id=f"checkpoint-ready:{announcement['train_job_id']}:{checkpoint_id}",
+            )
+        else:
+            object_store.put_json(
+                f"artifact-announcements/{announcement['train_job_id']}/{checkpoint_id:08d}.json",
+                announcement,
+                create_only=True,
+            )
         store.mark_artifact_uploaded(
             checkpoint_id, artifact_ref=None, storage_uri=model_uri
         )
@@ -197,7 +206,17 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
                 f"artifact-announcements/{tombstone['train_job_id']}/{checkpoint_id:08d}.json"
             )
             try:
-                if object_store.get_json_optional(tombstone_key) is None:
+                if str(getattr(args, "telemetry_transport", "legacy_local")) == (
+                    "neon_mailbox_v1"
+                ):
+                    from rlab.telemetry_mailbox import WorkerMailbox
+
+                    WorkerMailbox.from_env().append_event(
+                        "checkpoint_tombstone",
+                        tombstone,
+                        event_id=f"checkpoint-tombstone:{tombstone['train_job_id']}:{checkpoint_id}",
+                    )
+                elif object_store.get_json_optional(tombstone_key) is None:
                     object_store.put_json(tombstone_key, tombstone, create_only=True)
             except Exception as tombstone_exc:
                 store.mark_artifact_failed(
@@ -272,10 +291,16 @@ def import_decisions(store: MetricStore, object_store: ObjectStore, args) -> int
                 metrics=metrics,
                 passed=bool(decision.get("passed")),
                 candidate_stop=bool(descriptor["candidate_stop"]),
+                publish=(
+                    str(getattr(args, "telemetry_transport", "legacy_local"))
+                    != "neon_mailbox_v1"
+                ),
             )
             preview = decision.get("preview")
             if (
                 str(descriptor["purpose"]) == "screen"
+                and str(getattr(args, "telemetry_transport", "legacy_local"))
+                != "neon_mailbox_v1"
                 and isinstance(preview, dict)
                 and str(preview.get("status")) == "succeeded"
             ):
@@ -315,16 +340,30 @@ def write_complete_marker(store: MetricStore, object_store: ObjectStore, args) -
     if pending:
         return False
     train_job_id = int(getattr(args, "queue_train_job_id", 0))
-    object_store.put_json(
-        f"artifact-announcements/{train_job_id}/complete.json",
-        {
-            "schema_version": PROTOCOL_SCHEMA_VERSION,
-            "train_job_id": train_job_id,
-            "last_ledger_id": max((int(row["id"]) for row in rows), default=0),
-            "checkpoint_count": len(rows),
-        },
-        create_only=True,
-    )
+    payload = {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
+        "train_job_id": train_job_id,
+        "last_ledger_id": max((int(row["id"]) for row in rows), default=0),
+        "checkpoint_count": len(rows),
+    }
+    if str(getattr(args, "telemetry_transport", "legacy_local")) == "neon_mailbox_v1":
+        from rlab.telemetry_mailbox import WorkerMailbox
+
+        try:
+            WorkerMailbox.from_env().append_event(
+                "checkpoint_stream_closed",
+                payload,
+                event_id=f"checkpoint-stream-closed:{train_job_id}",
+            )
+        except Exception as exc:
+            print(f"checkpoint stream closure delivery failed; retrying: {exc}", flush=True)
+            return False
+    else:
+        object_store.put_json(
+            f"artifact-announcements/{train_job_id}/complete.json",
+            payload,
+            create_only=True,
+        )
     return True
 
 
@@ -356,7 +395,8 @@ def main(argv: list[str] | None = None) -> int:
         activity = reconcile_orphan_models(store, args, cli.run_dir)
         for row in store.pending_artifact_uploads(limit=max(1, cli.limit)):
             activity += int(process_upload(store, object_store, args, row))
-        activity += import_decisions(store, object_store, args)
+        if str(getattr(args, "telemetry_transport", "legacy_local")) != "neon_mailbox_v1":
+            activity += import_decisions(store, object_store, args)
         drain_requested = cli.drain_and_exit or (
             cli.stop_file is not None and cli.stop_file.exists()
         )

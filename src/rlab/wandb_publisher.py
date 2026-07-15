@@ -50,7 +50,12 @@ class WandbProjector:
         return cls(init_wandb(args, run_dir, config), run_dir=run_dir)
 
     @classmethod
-    def resume(cls, train_config: Mapping[str, Any]) -> WandbProjector:
+    def resume(
+        cls,
+        train_config: Mapping[str, Any],
+        *,
+        allow_create: bool = False,
+    ) -> WandbProjector:
         run_id = str(train_config.get("wandb_run_id") or "")
         if not run_id:
             raise ValueError("W&B projection requires the producing run id")
@@ -63,13 +68,23 @@ class WandbProjector:
             str(train_config.get("game") or ""),
             env_provider=train_config.get("env_provider"),
         )
+        raw_tags = train_config.get("wandb_tags") or ()
+        tags = (
+            [part.strip() for part in str(raw_tags).split(",") if part.strip()]
+            if isinstance(raw_tags, str)
+            else [str(tag) for tag in raw_tags]
+        )
         run = configure_wandb_metrics(
             wandb.init(
                 entity=entity,
                 project=project,
                 id=run_id,
-                resume="must",
+                resume="allow" if allow_create else "must",
                 mode=str(train_config.get("wandb_mode") or "online"),
+                name=str(train_config.get("run_name") or "") or None,
+                group=str(train_config.get("wandb_group") or "") or None,
+                tags=tags,
+                config=dict(train_config) if allow_create else None,
             )
         )
         return cls(run)
@@ -81,75 +96,122 @@ class WandbProjector:
             self.run.finish()
 
 
+def project_payload_to_run(
+    run,
+    payload: Mapping[str, Any],
+    *,
+    allow_artifact_references: bool = True,
+) -> None:
+    train_config = dict(payload["train_config"])
+    run_id = str(train_config["wandb_run_id"])
+    import wandb
+    projection_kind = str(payload.get("projection_kind") or "evaluation")
+    if projection_kind == "artifact_reference":
+        if not allow_artifact_references:
+            raise ValueError("mailbox telemetry does not project W&B artifact references")
+        if bool(train_config.get("no_wandb_artifacts", False)):
+            return
+        kind = str(payload["artifact_kind"])
+        checkpoint_step = int(payload["checkpoint_step"])
+        model_metadata = dict(payload["model_metadata"])
+        if not isinstance(model_metadata.get("training_metadata"), dict):
+            raise ValueError("artifact projection requires checkpoint training_metadata")
+        checkpoint_uri = str(payload["checkpoint_uri"])
+        artifact_filename = checkpoint_uri.rsplit("/", 1)[-1] or "model.zip"
+        artifact = wandb.Artifact(
+            artifact_collection_name(kind, run_id=run_id),
+            type="model",
+            metadata={
+                **model_metadata,
+                "source_filename": model_metadata.get("filename", ""),
+                "filename": artifact_filename,
+                "checkpoint_sha256": payload["checkpoint_sha256"],
+                "metadata_sha256": payload["metadata_sha256"],
+                "checkpoint_step": checkpoint_step,
+                "metadata_uri": payload["metadata_uri"],
+                "artifact_storage_uri": checkpoint_uri,
+            },
+        )
+        artifact.add_reference(checkpoint_uri)
+        raw_aliases = payload.get("artifact_aliases")
+        aliases = (
+            [str(alias) for alias in raw_aliases]
+            if isinstance(raw_aliases, list) and raw_aliases
+            else artifact_write_aliases(kind, checkpoint_step)
+        )
+        run.log_artifact(artifact, aliases=aliases)
+        return
+    decision = dict(payload["decision"])
+    purpose = str(payload["purpose"])
+    checkpoint_uri = str(payload["checkpoint_uri"])
+    if purpose == "promotion":
+        environment = train_config.get("checkpoint_eval_environment")
+        if not isinstance(environment, dict):
+            raise ValueError("W&B projection is missing the materialized environment")
+        config = env_config_from_config_dict(environment)
+        if config is None:
+            raise ValueError("W&B projection environment is invalid")
+        log_checkpoint_eval_metrics(
+            run,
+            args=SimpleNamespace(**train_config),
+            metrics=dict(decision["raw_metrics"]),
+            checkpoint_path=checkpoint_uri,
+            checkpoint_step_value=int(payload["checkpoint_step"]),
+            artifact_ref=checkpoint_uri,
+            eval_source="modal",
+            config=resolve_env_config(config),
+            update_leader=bool(payload.get("canonical_promotion", False)),
+            force_leader=bool(payload.get("canonical_promotion", False)),
+        )
+    else:
+        run.log(dict(decision["metrics"]))
+        preview = decision.get("preview")
+        if (
+            purpose == "screen"
+            and isinstance(preview, Mapping)
+            and str(preview.get("status") or "") == "succeeded"
+        ):
+            url = str(preview.get("public_url") or "")
+            parsed = urlparse(url)
+            if parsed.scheme != "https" or not parsed.netloc:
+                raise ValueError("checkpoint preview URL must be absolute HTTPS")
+            checkpoint_step = int(payload.get("checkpoint_step") or 0)
+            caption = (
+                f"checkpoint {checkpoint_step:,} · screen "
+                f"{'passed' if bool(decision.get('passed')) else 'did not pass'} · "
+                f"{int(preview.get('lane_count') or 0)} lanes · "
+                f"{float(preview.get('duration_seconds') or 0.0):.1f}s · "
+                "preprocessed observations"
+            )
+            markup = (
+                '<div style="font-family:system-ui,sans-serif">'
+                '<video controls muted loop playsinline preload="metadata" '
+                'style="display:block;width:100%;max-width:720px;image-rendering:pixelated" '
+                f'src="{html.escape(url, quote=True)}"></video>'
+                f'<div style="margin-top:6px;font-size:12px">{html.escape(caption)}</div>'
+                "</div>"
+            )
+            run.log(
+                {
+                    "global_step": checkpoint_step,
+                    EVAL_SCREEN_PREVIEW: wandb.Html(
+                        markup,
+                        inject=False,
+                        data_is_not_path=True,
+                    ),
+                }
+            )
+
+
 def project_payload(payload: Mapping[str, Any]) -> None:
-    """Project one durable post-training payload through the sole W&B writer."""
+    """Project one durable post-training payload through the legacy W&B owner."""
 
     train_config = dict(payload["train_config"])
     if not bool(train_config.get("wandb", False)):
         return
     projector = WandbProjector.resume(train_config)
-    run = projector.run
-    run_id = str(train_config["wandb_run_id"])
-    import wandb
     try:
-        projection_kind = str(payload.get("projection_kind") or "evaluation")
-        if projection_kind == "artifact_reference":
-            if bool(train_config.get("no_wandb_artifacts", False)):
-                return
-            kind = str(payload["artifact_kind"])
-            checkpoint_step = int(payload["checkpoint_step"])
-            model_metadata = dict(payload["model_metadata"])
-            if not isinstance(model_metadata.get("training_metadata"), dict):
-                raise ValueError("artifact projection requires checkpoint training_metadata")
-            checkpoint_uri = str(payload["checkpoint_uri"])
-            artifact_filename = checkpoint_uri.rsplit("/", 1)[-1] or "model.zip"
-            artifact = wandb.Artifact(
-                artifact_collection_name(kind, run_id=run_id),
-                type="model",
-                metadata={
-                    **model_metadata,
-                    "source_filename": model_metadata.get("filename", ""),
-                    "filename": artifact_filename,
-                    "checkpoint_sha256": payload["checkpoint_sha256"],
-                    "metadata_sha256": payload["metadata_sha256"],
-                    "checkpoint_step": checkpoint_step,
-                    "metadata_uri": payload["metadata_uri"],
-                    "artifact_storage_uri": checkpoint_uri,
-                },
-            )
-            artifact.add_reference(checkpoint_uri)
-            raw_aliases = payload.get("artifact_aliases")
-            aliases = (
-                [str(alias) for alias in raw_aliases]
-                if isinstance(raw_aliases, list) and raw_aliases
-                else artifact_write_aliases(kind, checkpoint_step)
-            )
-            run.log_artifact(artifact, aliases=aliases)
-            return
-        decision = dict(payload["decision"])
-        purpose = str(payload["purpose"])
-        checkpoint_uri = str(payload["checkpoint_uri"])
-        if purpose == "promotion":
-            environment = train_config.get("checkpoint_eval_environment")
-            if not isinstance(environment, dict):
-                raise ValueError("W&B projection is missing the materialized environment")
-            config = env_config_from_config_dict(environment)
-            if config is None:
-                raise ValueError("W&B projection environment is invalid")
-            log_checkpoint_eval_metrics(
-                run,
-                args=SimpleNamespace(**train_config),
-                metrics=dict(decision["raw_metrics"]),
-                checkpoint_path=checkpoint_uri,
-                checkpoint_step_value=int(payload["checkpoint_step"]),
-                artifact_ref=checkpoint_uri,
-                eval_source="modal",
-                config=resolve_env_config(config),
-                update_leader=bool(payload.get("canonical_promotion", False)),
-                force_leader=bool(payload.get("canonical_promotion", False)),
-            )
-        else:
-            run.log(dict(decision["metrics"]))
+        project_payload_to_run(projector.run, payload)
     finally:
         projector.close()
 

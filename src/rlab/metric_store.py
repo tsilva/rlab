@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS telemetry_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   local_latest_step INTEGER,
   published_step INTEGER,
+  mailbox_accepted_sequence INTEGER NOT NULL DEFAULT 0,
+  outbox_closed_at REAL,
   publisher_heartbeat REAL,
   retry_count INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
@@ -150,6 +152,16 @@ class MetricStore:
             # healthy WAL workload fail spuriously under concurrent writers.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA_SQL)
+            telemetry_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(telemetry_state)")
+            }
+            if "mailbox_accepted_sequence" not in telemetry_columns:
+                conn.execute(
+                    "ALTER TABLE telemetry_state ADD COLUMN "
+                    "mailbox_accepted_sequence INTEGER NOT NULL DEFAULT 0"
+                )
+            if "outbox_closed_at" not in telemetry_columns:
+                conn.execute("ALTER TABLE telemetry_state ADD COLUMN outbox_closed_at REAL")
             conn.execute("BEGIN IMMEDIATE")
             legacy_metrics = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metric_observations'"
@@ -196,6 +208,7 @@ class MetricStore:
         payload.setdefault("global_step", float(step) if step is not None else 0.0)
         event_id = self._metric_event_id(source=source, step=step, payload=payload)
         with self.connection() as conn:
+            self._require_open_outbox(conn)
             if publish:
                 conn.execute(
                     """
@@ -258,6 +271,7 @@ class MetricStore:
             source=source, step=step, payload={"kind": kind, **normalized}
         )
         with self.connection() as conn:
+            self._require_open_outbox(conn)
             conn.execute(
                 """
                 INSERT INTO metric_frames
@@ -276,6 +290,104 @@ class MetricStore:
                 ),
             )
         return event_id
+
+    @staticmethod
+    def _require_open_outbox(conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT outbox_closed_at FROM telemetry_state WHERE singleton = 1"
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            raise RuntimeError("metric outbox is closed")
+
+    def close_metric_outbox(self) -> int:
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO telemetry_state (singleton, outbox_closed_at, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  outbox_closed_at = COALESCE(outbox_closed_at, excluded.outbox_closed_at),
+                  updated_at = excluded.updated_at
+                """,
+                (now, now),
+            )
+            row = conn.execute(
+                "SELECT COUNT(*) FROM metric_frames "
+                "WHERE status IN ('pending', 'failed_retryable')"
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def next_mailbox_batch_sequence(self) -> int:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT mailbox_accepted_sequence FROM telemetry_state WHERE singleton = 1"
+            ).fetchone()
+        return int((row[0] if row else 0) or 0) + 1
+
+    def mark_metric_frames_delivered(
+        self,
+        frame_ids: Sequence[int],
+        *,
+        batch_sequence: int,
+    ) -> None:
+        now = time.time()
+        ids = [int(value) for value in frame_ids]
+        with self.connection() as conn:
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"DELETE FROM metric_frames WHERE id IN ({placeholders})",
+                    ids,
+                )
+            conn.execute(
+                """
+                INSERT INTO telemetry_state
+                  (singleton, mailbox_accepted_sequence, publisher_heartbeat, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  mailbox_accepted_sequence = MAX(
+                    mailbox_accepted_sequence, excluded.mailbox_accepted_sequence
+                  ),
+                  publisher_heartbeat = excluded.publisher_heartbeat,
+                  last_error = NULL,
+                  updated_at = excluded.updated_at
+                """,
+                (int(batch_sequence), now, now),
+            )
+
+    def metric_outbox_bytes(self) -> int:
+        return self.metric_outbox_stats()["bytes"]
+
+    def metric_outbox_stats(self) -> dict[str, int]:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS frame_count,
+                       COALESCE(SUM(
+                         length(payload_json) + length(event_id) + length(source) + 128
+                       ), 0) AS byte_count
+                FROM metric_frames
+                WHERE status IN ('pending', 'failed_retryable')
+                """
+            ).fetchone()
+        return {
+            "frames": int(row[0] if row else 0),
+            "bytes": int(row[1] if row else 0),
+        }
+
+    def pending_mailbox_frames(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM metric_frames
+                WHERE status IN ('pending', 'failed_retryable')
+                ORDER BY id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def pending_metric_frames(self, *, limit: int = 100) -> list[dict[str, Any]]:
         with self.connection() as conn:

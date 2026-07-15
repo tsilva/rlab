@@ -104,7 +104,7 @@ rlab train \
 Inspect the resulting launch and `result.json`:
 
 ```bash
-rlab jobs status --machine local-macbook --json
+rlab runs status --machine local-macbook --json
 ```
 
 Queue comparable experiments from checked-in recipe files:
@@ -156,7 +156,7 @@ rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-simple_p
 rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
-rlab jobs status --machine beast-3 --json
+rlab runs status --machine beast-3 --json
 rlab jobs wait --job <train-job-id> --until terminal --timeout 12h --json
 rlab jobs cancel --job <train-job-id> --wait --json
 rlab jobs retry-finalization --job <train-job-id> --json
@@ -182,7 +182,8 @@ The command surface is intentionally one binary:
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
 - `rlab env` lists static provider contracts, inspects one qualified environment, or explicitly
   preflights a materialized recipe against the installed native runtime.
-- `rlab jobs` and `rlab fleet` operate and inspect the queue and one-job container fleet.
+- `rlab runs` and `rlab fleet` operate and inspect training runs and one-attempt worker containers.
+  `rlab jobs` remains a compatibility alias for `rlab runs`.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
@@ -196,7 +197,7 @@ versioned report on stdout; provider diagnostics are routed to stderr.
 
 Maintenance commands are intentionally outside the normal research loop:
 
-- `rlab jobs reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
+- `rlab runs reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
 
 ## Research Loop
 
@@ -204,21 +205,22 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. The learner writes only durable SQLite evidence and never opens W&B. One publisher implementation projects that evidence during training and later resumes the exact same run for Modal results. For local evaluation, W&B remains the query projection. For Modal evaluation, immutable R2 evidence plus the accepted PostgreSQL attempt is authoritative; W&B is projected into the exact producing run only after its live publisher exits.
+Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. Workers never open W&B. They buffer metrics in SQLite, deliver acknowledged gzip batches to the transient Neon mailbox, and upload checkpoint bytes directly to R2. Fleet is the sole W&B writer for new runs and projects training plus late evaluation streams into the preassigned immutable run id. W&B is permanent metric history, R2 is permanent byte/evidence storage, and PostgreSQL is durable orchestration state plus a transient mailbox.
 
-The Docker launch owns scarce training capacity and becomes terminal as soon as training exits.
-The logical job then remains `finalizing` while its SQLite publisher drains and any Modal evaluation,
-artifact, and W&B projections finish. `training_finished_at` reports the launch boundary;
+The Docker launch owns scarce training capacity. It becomes successful only after required R2
+handoffs and the final Neon watermark are acknowledged, then releases the GPU without waiting for
+W&B. The logical run remains `finalizing` while Modal evaluation, promotion, and Fleet-owned W&B
+publication finish. `training_finished_at` reports the launch boundary;
 `finished_at` reports overall completion. Exhausted post-train retries produce
 `finalization_failed` without changing the successful launch, and
-`rlab jobs retry-finalization --job <id>` reopens only that phase.
+`rlab runs retry-finalization --run <id>` reopens only that phase.
 
 After promotion evaluation succeeds, the promoted checkpoint takes a dedicated W&B projection fast
 path and becomes playable without waiting for historical checkpoint backfill. It receives immutable
 `step-<n>` plus `promoted` and `latest` aliases; later historical projection uses only immutable step
 aliases and cannot move `latest` away from the promoted checkpoint.
 
-`rlab jobs status --job <id> --json` reports `eval_status`, `promoted_step`,
+`rlab runs status --run <id> --json` reports `eval_status`, `promoted_step`,
 `artifact_status`, `artifact_ref`, `playable_at`, and `published_at`; `artifact_status=playable`
 means the promoted checkpoint is ready while historical backfill continues. Modal-backed enqueue fails closed when the
 fleet evaluator's latest pass is stale or unsuccessful. Projection failures retry with backoff and
@@ -299,7 +301,7 @@ registered local or SSH Docker machines. Runner machines remain SSH/Docker-only.
 ```bash
 rlab fleet service install
 rlab fleet service status --json
-rlab jobs status --machine beast-3 --json
+rlab runs status --machine beast-3 --json
 ```
 
 Hard fleet capacity and exact machine configuration come from
@@ -333,6 +335,9 @@ and beast host recommendations.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.
+- Set `WORKER_MAILBOX_DATABASE_URL` to a pooled TLS Neon URL for the restricted mailbox role.
+  Run `rlab runs setup --worker-mailbox-role <role>` as the control-plane role to grant only the
+  three authenticated worker procedures; worker attempt tokens are generated and expired by Fleet.
 - Every normal queue-backed screen evaluation captures a lightweight policy-observation preview,
   stores its immutable MP4 in R2, and exposes an external player as `eval/screen/preview` in the
   producing W&B run. Set `MODAL_EVAL_PREVIEW_STORAGE_URI` to the public R2 bucket/prefix and

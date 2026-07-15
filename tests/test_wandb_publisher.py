@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab.metric_store import MetricStore
-from rlab.wandb_publisher import publish_pending_frames
+from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
 
 
 class FakeRun:
@@ -25,6 +25,30 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    def test_late_evaluations_keep_their_checkpoint_steps_without_internal_step(self) -> None:
+        run = FakeRun()
+        run.log({"global_step": 300, "train/throughput/loop_fps": 10.0})
+        with mock.patch.dict("sys.modules", {"wandb": SimpleNamespace()}):
+            for checkpoint_step in (100, 200):
+                project_payload_to_run(
+                    run,
+                    {
+                        "train_config": {"wandb_run_id": "rlab-test"},
+                        "purpose": "screen",
+                        "checkpoint_uri": f"s3://bucket/{checkpoint_step}/model.zip",
+                        "checkpoint_step": checkpoint_step,
+                        "decision": {
+                            "metrics": {
+                                "global_step": checkpoint_step,
+                                "eval/screen/checkpoint/step": checkpoint_step,
+                                "eval/screen/outcome/success/rate/min": 1.0,
+                            }
+                        },
+                    },
+                )
+
+        self.assertEqual([row["global_step"] for row in run.logged], [300, 100, 200])
+
     def test_publishes_batched_frame_without_overriding_wandb_internal_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")

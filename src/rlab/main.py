@@ -35,6 +35,12 @@ def _jobs(argv: Sequence[str]) -> int:
     return _run(queue_main, argv)
 
 
+def _runs(argv: Sequence[str]) -> int:
+    from rlab.job_queue import main as queue_main
+
+    return int(queue_main(list(argv), prog="rlab runs"))
+
+
 def _fleet(argv: Sequence[str]) -> int:
     from rlab.fleet import main as fleet_main
 
@@ -91,7 +97,8 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
     "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
     "env": ("list, inspect, and preflight environment providers", _env),
-    "jobs": ("manage queue schema, status, and cancellation", _jobs),
+    "runs": ("manage training runs, worker attempts, status, and cancellation", _runs),
+    "jobs": ("legacy alias for rlab runs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
     "run-job": ("run one claimed job payload inside a container", _run_job),

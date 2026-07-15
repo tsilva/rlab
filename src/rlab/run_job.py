@@ -32,6 +32,7 @@ def worker_modules(
     eval_backend: str,
     *,
     wandb_enabled: bool,
+    telemetry_transport: str = "legacy_local",
 ) -> tuple[str | None, str | None]:
     if eval_backend not in {"local", "modal", "none"}:
         raise ValueError(f"unsupported checkpoint evaluation backend: {eval_backend}")
@@ -43,7 +44,9 @@ def worker_modules(
         else None
     )
     publisher = (
-        "rlab.wandb_publisher"
+        "rlab.telemetry_relay"
+        if telemetry_transport == "neon_mailbox_v1"
+        else "rlab.wandb_publisher"
         if wandb_enabled or eval_backend != "modal"
         else None
     )
@@ -96,6 +99,9 @@ def run_training_process(
     run_dir: Path,
     readiness_workers: list[subprocess.Popen],
     wandb_enabled: bool = True,
+    telemetry_transport: str = "legacy_local",
+    configured_wandb_run_id: str | None = None,
+    command_file: Path | None = None,
     startup_timeout: float = TRAIN_STARTUP_TIMEOUT_SECONDS,
 ) -> int:
     """Run training while forwarding container termination as a graceful stop."""
@@ -129,11 +135,13 @@ def run_training_process(
 
     try:
         deadline = time.monotonic() + startup_timeout
+        readiness_written = False
         while True:
             learner_ready = run_dir / "learner_ready.json"
             wandb_run_id_path = run_dir / "wandb_run_id.txt"
             wandb_url_path = run_dir / "wandb_url.txt"
-            if learner_ready.is_file():
+            relay_ready = run_dir / "mailbox_relay_ready.json"
+            if learner_ready.is_file() and not readiness_written:
                 receipt: dict[str, Any] = {
                     "schema_version": 1,
                     "ready": True,
@@ -142,9 +150,21 @@ def run_training_process(
                         learner_ready.stat().st_mtime, UTC
                     ).isoformat(),
                 }
-                if not wandb_enabled:
+                if telemetry_transport == "neon_mailbox_v1" and relay_ready.is_file():
+                    receipt.update(
+                        {
+                            "telemetry_transport": telemetry_transport,
+                            "mailbox_ready_at": datetime.fromtimestamp(
+                                relay_ready.stat().st_mtime, UTC
+                            ).isoformat(),
+                            "wandb_run_id": configured_wandb_run_id,
+                        }
+                    )
                     write_atomic_json(output_dir / "readiness.json", receipt)
-                    break
+                    readiness_written = True
+                elif not wandb_enabled:
+                    write_atomic_json(output_dir / "readiness.json", receipt)
+                    readiness_written = True
                 if wandb_run_id_path.is_file() and wandb_url_path.is_file():
                     wandb_run_id = wandb_run_id_path.read_text(encoding="utf-8").strip()
                     wandb_url = wandb_url_path.read_text(encoding="utf-8").strip()
@@ -163,7 +183,7 @@ def run_training_process(
                             }
                         )
                         write_atomic_json(output_dir / "readiness.json", receipt)
-                        break
+                        readiness_written = True
             returncode = process.poll()
             if returncode is not None:
                 return int(returncode)
@@ -184,7 +204,11 @@ def run_training_process(
                     f"returncode={failed_worker.returncode}; "
                     f"{worker_log_tail([failed_worker])}"
                 )
-            if time.monotonic() >= deadline:
+            if command_file is not None and command_file.is_file() and process.poll() is None:
+                graceful_signal = getattr(signal, "SIGUSR1", signal.SIGTERM)
+                process.send_signal(graceful_signal)
+                command_file.unlink(missing_ok=True)
+            if not readiness_written and time.monotonic() >= deadline:
                 process.terminate()
                 try:
                     process.wait(timeout=30)
@@ -197,7 +221,6 @@ def run_training_process(
                     f"{worker_log_tail(readiness_workers)}"
                 )
             time.sleep(0.25)
-        return int(process.wait())
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
 
@@ -276,6 +299,25 @@ def stop_workers(
     return results
 
 
+def wait_for_mailbox_preflight(
+    process: subprocess.Popen,
+    ready_file: Path,
+    *,
+    timeout: float = 30.0,
+) -> None:
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    while time.monotonic() < deadline:
+        if ready_file.is_file():
+            return
+        returncode = process.poll()
+        if returncode is not None:
+            raise RuntimeError(
+                f"telemetry mailbox preflight failed before training: exit={returncode}"
+            )
+        time.sleep(0.1)
+    raise RuntimeError("telemetry mailbox preflight timed out before training")
+
+
 def base_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     job = dict(payload["job"])
     return {
@@ -309,11 +351,15 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     config_document = json.loads(config_path.read_text(encoding="utf-8"))
     wandb_enabled = bool(config_document.get("wandb", False))
     eval_backend = str(config_document.get("checkpoint_eval_backend") or "local")
+    telemetry_transport = str(
+        config_document.get("telemetry_transport") or "legacy_local"
+    )
     modal_eval = eval_backend == "modal"
     eval_disabled = eval_backend == "none"
     producer_module, publisher_module = worker_modules(
         eval_backend,
         wandb_enabled=wandb_enabled,
+        telemetry_transport=telemetry_transport,
     )
     try:
         if publisher_module:
@@ -342,6 +388,16 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         stop_workers(producer_workers, producer_stop_file)
         stop_workers(publisher_workers, publisher_stop_file)
         raise
+    if telemetry_transport == "neon_mailbox_v1":
+        try:
+            wait_for_mailbox_preflight(
+                publisher_workers[0],
+                run_dir / "mailbox_relay_ready.json",
+            )
+        except Exception:
+            stop_workers(producer_workers, producer_stop_file)
+            stop_workers(publisher_workers, publisher_stop_file)
+            raise
     log_path = log_dir / f"train_job_{job['id']}_{uuid.uuid4().hex[:8]}.log"
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
@@ -355,13 +411,16 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 run_dir=run_dir,
                 readiness_workers=[*producer_workers, *publisher_workers],
                 wandb_enabled=wandb_enabled,
+                telemetry_transport=telemetry_transport,
+                configured_wandb_run_id=str(config_document.get("wandb_run_id") or "") or None,
+                command_file=run_dir / "mailbox_command.json",
             )
     finally:
         producer_results = stop_workers(
             producer_workers, producer_stop_file, timeout=120.0 if modal_eval else 30.0
         )
         publisher_results = stop_workers(
-            publisher_workers, publisher_stop_file, timeout=120.0
+            publisher_workers, publisher_stop_file, timeout=135.0
         )
         worker_results = [*producer_results, *publisher_results]
     metadata_job = dict(job)
@@ -374,15 +433,21 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     publisher_failed = any(
         int(worker.get("returncode") or 0) != 0 for worker in publisher_results
     )
-    critical_worker_failure = not modal_eval and (
-        producer_failed or (not wandb_enabled and publisher_failed)
+    critical_worker_failure = (
+        producer_failed or publisher_failed
+        if telemetry_transport == "neon_mailbox_v1"
+        else not modal_eval and (producer_failed or (not wandb_enabled and publisher_failed))
     )
     status = "succeeded" if returncode == 0 and not critical_worker_failure else "failed"
     publisher_drained = bool(publisher_results) and all(
         int(worker.get("returncode") or 0) == 0 for worker in publisher_results
     )
     publication_error = None
-    if wandb_enabled and not publisher_drained:
+    if (
+        wandb_enabled
+        and telemetry_transport != "neon_mailbox_v1"
+        and not publisher_drained
+    ):
         publication_error = "live W&B publisher did not drain cleanly"
     result = {
         **base_result(payload),
@@ -398,6 +463,8 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "status": (
                 "disabled"
                 if not wandb_enabled
+                else "pending"
+                if telemetry_transport == "neon_mailbox_v1"
                 else "complete"
                 if publisher_drained
                 else "pending"
@@ -410,6 +477,11 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "status": "disabled" if eval_disabled else "enabled",
         },
     }
+    if telemetry_transport == "neon_mailbox_v1":
+        result["telemetry_handoff"] = {
+            "transport": telemetry_transport,
+            "status": "complete" if publisher_drained else "failed",
+        }
     if modal_eval:
         artifact_phases = dict(metadata.get("phase_counts") or {})
         incomplete_artifacts = any(
@@ -432,6 +504,14 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         result["error"] = f"train process exited {returncode}"
     elif critical_worker_failure:
         result["error"] = "required local evaluation/artifact worker did not drain cleanly"
+    if telemetry_transport == "neon_mailbox_v1" and status == "succeeded":
+        store_path = metric_store_path(run_dir)
+        for path in (
+            store_path,
+            store_path.with_name(store_path.name + "-wal"),
+            store_path.with_name(store_path.name + "-shm"),
+        ):
+            path.unlink(missing_ok=True)
     return result
 
 

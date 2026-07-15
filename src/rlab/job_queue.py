@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS eval_jobs (
     )),
   accepted_attempt_id BIGINT,
   decision_json JSONB,
+  projection_enqueued_at TIMESTAMPTZ,
   projected_at TIMESTAMPTZ,
   projection_error TEXT,
   projection_attempts INTEGER NOT NULL DEFAULT 0 CHECK (projection_attempts >= 0),
@@ -229,6 +230,87 @@ CREATE TABLE IF NOT EXISTS eval_attempts (
   finished_at TIMESTAMPTZ,
   error TEXT,
   UNIQUE (eval_job_id, retry_round, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS worker_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  attempt_id TEXT NOT NULL UNIQUE,
+  train_job_id BIGINT NOT NULL REFERENCES train_jobs(id) ON DELETE CASCADE,
+  eval_job_id BIGINT REFERENCES eval_jobs(id) ON DELETE CASCADE,
+  task_kind TEXT NOT NULL CHECK (task_kind IN ('train', 'eval')),
+  provider TEXT NOT NULL,
+  provider_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'launching'
+    CHECK (status IN ('launching', 'running', 'succeeded', 'failed', 'canceled')),
+  protocol_version INTEGER NOT NULL DEFAULT 1 CHECK (protocol_version = 1),
+  token_sha256 TEXT,
+  token_expires_at TIMESTAMPTZ,
+  last_heartbeat_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error TEXT,
+  CHECK (
+    (task_kind = 'train' AND eval_job_id IS NULL)
+    OR (task_kind = 'eval' AND eval_job_id IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS metric_streams (
+  id BIGSERIAL PRIMARY KEY,
+  stream_id TEXT NOT NULL UNIQUE,
+  attempt_id TEXT NOT NULL REFERENCES worker_attempts(attempt_id) ON DELETE CASCADE,
+  accepted_sequence BIGINT NOT NULL DEFAULT 0 CHECK (accepted_sequence >= 0),
+  final_sequence BIGINT CHECK (final_sequence IS NULL OR final_sequence >= 0),
+  published_sequence BIGINT NOT NULL DEFAULT 0 CHECK (published_sequence >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (final_sequence IS NULL OR accepted_sequence >= final_sequence),
+  CHECK (accepted_sequence >= published_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS metric_batches (
+  id BIGSERIAL PRIMARY KEY,
+  stream_id TEXT NOT NULL REFERENCES metric_streams(stream_id) ON DELETE CASCADE,
+  batch_sequence BIGINT NOT NULL CHECK (batch_sequence >= 1),
+  first_event_sequence BIGINT CHECK (
+    first_event_sequence IS NULL OR first_event_sequence >= 1
+  ),
+  last_event_sequence BIGINT CHECK (
+    last_event_sequence IS NULL OR last_event_sequence >= first_event_sequence
+  ),
+  frame_count INTEGER NOT NULL CHECK (frame_count BETWEEN 0 AND 1000),
+  codec TEXT NOT NULL DEFAULT 'gzip-json-v1' CHECK (codec = 'gzip-json-v1'),
+  payload BYTEA NOT NULL CHECK (octet_length(payload) <= 2097152),
+  final BOOLEAN NOT NULL DEFAULT FALSE,
+  lease_owner TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (stream_id, batch_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS attempt_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE,
+  attempt_id TEXT NOT NULL REFERENCES worker_attempts(attempt_id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_retry_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS attempt_commands (
+  id BIGSERIAL PRIMARY KEY,
+  command_id TEXT NOT NULL UNIQUE,
+  attempt_id TEXT NOT NULL REFERENCES worker_attempts(attempt_id) ON DELETE CASCADE,
+  command_type TEXT NOT NULL CHECK (command_type IN ('stop', 'cancel')),
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  acknowledged_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS eval_backend_state (
@@ -281,9 +363,20 @@ ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTE
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projected_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_enqueued_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE attempt_events DROP CONSTRAINT IF EXISTS attempt_events_attempts_check;
+ALTER TABLE attempt_events ADD CONSTRAINT attempt_events_attempts_check CHECK (attempts >= 0);
 ALTER TABLE eval_attempts ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS telemetry_transport TEXT NOT NULL
+  DEFAULT 'legacy_local';
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_telemetry_transport_check;
+ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_telemetry_transport_check
+  CHECK (telemetry_transport IN ('legacy_local', 'neon_mailbox_v1'));
 ALTER TABLE eval_attempts DROP CONSTRAINT IF EXISTS eval_attempts_eval_job_id_attempt_number_key;
 ALTER TABLE eval_attempts DROP CONSTRAINT IF EXISTS eval_attempts_eval_job_id_retry_round_attempt_number_key;
 ALTER TABLE eval_attempts ADD CONSTRAINT eval_attempts_eval_job_id_retry_round_attempt_number_key
@@ -356,11 +449,227 @@ CREATE INDEX IF NOT EXISTS eval_jobs_status_idx
 CREATE INDEX IF NOT EXISTS eval_attempts_status_idx
   ON eval_attempts (status, expires_at, created_at);
 
+CREATE INDEX IF NOT EXISTS worker_attempts_run_status_idx
+  ON worker_attempts (train_job_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS metric_batches_claim_idx
+  ON metric_batches (lease_expires_at, created_at, stream_id, batch_sequence);
+
+CREATE INDEX IF NOT EXISTS attempt_events_attempt_idx
+  ON attempt_events (attempt_id, created_at);
+CREATE INDEX IF NOT EXISTS attempt_events_retry_idx
+  ON attempt_events (next_retry_at, created_at);
+
+CREATE INDEX IF NOT EXISTS attempt_commands_pending_idx
+  ON attempt_commands (attempt_id, created_at)
+  WHERE acknowledged_at IS NULL;
+
+ALTER TABLE metric_batches SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_vacuum_threshold = 1000,
+  autovacuum_analyze_scale_factor = 0.05
+);
+ALTER TABLE attempt_events SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_vacuum_threshold = 1000
+);
+ALTER TABLE attempt_commands SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_vacuum_threshold = 1000
+);
+
 CREATE INDEX IF NOT EXISTS eval_jobs_execution_idx
   ON eval_jobs (execution_key, status);
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION worker_submit_metric_batch(
+  p_attempt_id TEXT,
+  p_token TEXT,
+  p_protocol_version INTEGER,
+  p_batch_sequence BIGINT,
+  p_first_event_sequence BIGINT,
+  p_last_event_sequence BIGINT,
+  p_frame_count INTEGER,
+  p_payload BYTEA,
+  p_final BOOLEAN
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  attempt_row worker_attempts%ROWTYPE;
+  stream_row metric_streams%ROWTYPE;
+  commands JSONB;
+BEGIN
+  SELECT * INTO attempt_row FROM worker_attempts
+  WHERE attempt_id = p_attempt_id FOR UPDATE;
+  IF NOT FOUND
+     OR attempt_row.protocol_version <> p_protocol_version
+     OR attempt_row.status NOT IN ('launching', 'running')
+     OR attempt_row.token_expires_at IS NULL
+     OR attempt_row.token_expires_at <= now()
+     OR attempt_row.token_sha256 IS DISTINCT FROM encode(digest(p_token, 'sha256'), 'hex') THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  IF p_batch_sequence < 1
+     OR p_frame_count < 0 OR p_frame_count > 1000
+     OR octet_length(p_payload) > 2097152 THEN
+    RAISE EXCEPTION 'worker metric batch exceeds protocol limits';
+  END IF;
+
+  INSERT INTO metric_streams (stream_id, attempt_id)
+  VALUES (p_attempt_id, p_attempt_id)
+  ON CONFLICT (stream_id) DO NOTHING;
+  SELECT * INTO stream_row FROM metric_streams
+  WHERE stream_id = p_attempt_id FOR UPDATE;
+
+  IF stream_row.final_sequence IS NOT NULL
+     AND p_batch_sequence > stream_row.final_sequence THEN
+    RAISE EXCEPTION 'worker metric stream is already closed';
+  END IF;
+  IF p_batch_sequence > stream_row.accepted_sequence + 1 THEN
+    RAISE EXCEPTION 'worker metric batch sequence gap';
+  END IF;
+  IF p_batch_sequence = stream_row.accepted_sequence + 1 THEN
+    INSERT INTO metric_batches (
+      stream_id, batch_sequence, first_event_sequence, last_event_sequence,
+      frame_count, payload, final
+    ) VALUES (
+      p_attempt_id, p_batch_sequence, p_first_event_sequence, p_last_event_sequence,
+      p_frame_count, p_payload, p_final
+    );
+    UPDATE metric_streams
+    SET accepted_sequence = p_batch_sequence,
+        final_sequence = CASE WHEN p_final THEN p_batch_sequence ELSE final_sequence END,
+        updated_at = now()
+    WHERE stream_id = p_attempt_id;
+  ELSE
+    IF p_batch_sequence > stream_row.published_sequence AND NOT EXISTS (
+      SELECT 1 FROM metric_batches
+      WHERE stream_id = p_attempt_id
+        AND batch_sequence = p_batch_sequence
+        AND first_event_sequence IS NOT DISTINCT FROM p_first_event_sequence
+        AND last_event_sequence IS NOT DISTINCT FROM p_last_event_sequence
+        AND frame_count = p_frame_count
+        AND payload = p_payload
+    ) THEN
+      RAISE EXCEPTION 'duplicate worker metric batch does not match accepted payload';
+    END IF;
+  END IF;
+  IF p_final THEN
+    UPDATE metric_streams
+    SET final_sequence = COALESCE(final_sequence, p_batch_sequence), updated_at = now()
+    WHERE stream_id = p_attempt_id;
+  END IF;
+
+  UPDATE worker_attempts SET last_heartbeat_at = now()
+  WHERE attempt_id = p_attempt_id;
+  UPDATE train_jobs
+  SET live_publication_status = CASE
+        WHEN COALESCE((train_config->>'wandb')::boolean, FALSE)
+          THEN 'pending'
+        ELSE 'disabled'
+      END,
+      live_publication_error = NULL,
+      live_publication_next_retry_at = NULL
+  WHERE id = attempt_row.train_job_id;
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'command_id', command_id,
+      'command_type', command_type,
+      'payload', payload_json
+    ) ORDER BY id), '[]'::jsonb)
+  INTO commands
+  FROM attempt_commands
+  WHERE attempt_id = p_attempt_id AND acknowledged_at IS NULL;
+  RETURN jsonb_build_object(
+    'accepted_sequence', GREATEST(stream_row.accepted_sequence, p_batch_sequence),
+    'commands', commands
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION worker_append_attempt_event(
+  p_attempt_id TEXT,
+  p_token TEXT,
+  p_event_id TEXT,
+  p_event_type TEXT,
+  p_payload JSONB
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_event_type NOT IN (
+       'mailbox_preflight', 'metric_stream_closed',
+       'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+     )
+     OR p_payload IS NULL
+     OR octet_length(p_payload::text) > 1048576 THEN
+    RAISE EXCEPTION 'worker attempt event exceeds protocol limits';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM worker_attempts
+    WHERE attempt_id = p_attempt_id
+      AND status IN ('launching', 'running')
+      AND token_expires_at > now()
+      AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
+  ) THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  INSERT INTO attempt_events (event_id, attempt_id, event_type, payload_json)
+  VALUES (p_event_id, p_attempt_id, p_event_type, COALESCE(p_payload, '{}'::jsonb))
+  ON CONFLICT (event_id) DO NOTHING;
+  UPDATE worker_attempts SET last_heartbeat_at = now()
+  WHERE attempt_id = p_attempt_id;
+  RETURN TRUE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION worker_ack_attempt_command(
+  p_attempt_id TEXT,
+  p_token TEXT,
+  p_command_id TEXT
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM worker_attempts
+    WHERE attempt_id = p_attempt_id
+      AND status IN ('launching', 'running')
+      AND token_expires_at > now()
+      AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
+  ) THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  DELETE FROM attempt_commands
+  WHERE attempt_id = p_attempt_id AND command_id = p_command_id;
+  RETURN FOUND;
+END;
+$$;
+
+REVOKE ALL ON worker_attempts, metric_streams, metric_batches,
+  attempt_events, attempt_commands FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_submit_metric_batch(
+  TEXT, TEXT, INTEGER, BIGINT, BIGINT, BIGINT, INTEGER, BYTEA, BOOLEAN
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_append_attempt_event(
+  TEXT, TEXT, TEXT, TEXT, JSONB
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_ack_attempt_command(TEXT, TEXT, TEXT) FROM PUBLIC;
 """
 
 RESET_TABLES = (
+    "attempt_commands",
+    "attempt_events",
+    "metric_batches",
+    "metric_streams",
+    "worker_attempts",
     "eval_attempts",
     "eval_jobs",
     "eval_runs",
@@ -490,6 +799,29 @@ def apply_schema(conn) -> None:
             cur.execute(SCHEMA_SQL)
 
 
+def grant_worker_mailbox_role(conn, role: str) -> None:
+    role = str(role).strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", role):
+        raise ValueError("worker mailbox role must be a plain PostgreSQL identifier")
+    identifier = psycopg2.extensions.quote_ident(role, conn)
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(f"GRANT USAGE ON SCHEMA public TO {identifier}")
+            cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_submit_metric_batch("
+                f"TEXT, TEXT, INTEGER, BIGINT, BIGINT, BIGINT, INTEGER, BYTEA, BOOLEAN) "
+                f"TO {identifier}"
+            )
+            cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_append_attempt_event("
+                f"TEXT, TEXT, TEXT, TEXT, JSONB) TO {identifier}"
+            )
+            cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_ack_attempt_command("
+                f"TEXT, TEXT, TEXT) TO {identifier}"
+            )
+
+
 def _table_exists(conn, table_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%(table_name)s) AS table_name", {"table_name": table_name})
@@ -542,6 +874,11 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
+                  attempt_commands,
+                  attempt_events,
+                  metric_batches,
+                  metric_streams,
+                  worker_attempts,
                   eval_attempts,
                   eval_jobs,
                   eval_runs,
@@ -565,6 +902,11 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                      OR to_regclass('eval_runs') IS NULL
                      OR to_regclass('eval_jobs') IS NULL
                      OR to_regclass('eval_attempts') IS NULL
+                     OR to_regclass('worker_attempts') IS NULL
+                     OR to_regclass('metric_streams') IS NULL
+                     OR to_regclass('metric_batches') IS NULL
+                     OR to_regclass('attempt_events') IS NULL
+                     OR to_regclass('attempt_commands') IS NULL
                      OR to_regclass('eval_backend_state') IS NULL THEN
                     RAISE EXCEPTION 'queue schema validation failed';
                   END IF;
@@ -1047,6 +1389,7 @@ def enqueue_train_job(
             :24
         ]
     )
+    config["telemetry_transport"] = "neon_mailbox_v1"
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     if str(config.get("checkpoint_eval_backend") or "local") == "modal":
         if not _modal_readiness_validated:
@@ -1132,6 +1475,7 @@ def enqueue_train_job(
                   goal_slug, goal_path, goal_sha256, recipe_slug, recipe_path, recipe_sha256,
                   repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
+                  telemetry_transport,
                   batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
                   retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
@@ -1141,6 +1485,7 @@ def enqueue_train_job(
                   %(recipe_path)s, %(recipe_sha256)s,
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
+                  %(telemetry_transport)s,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
@@ -1161,6 +1506,7 @@ def enqueue_train_job(
                     "runtime_image_ref": runtime_image_ref,
                     "machine": machine,
                     "train_config": json_arg(config),
+                    "telemetry_transport": str(config["telemetry_transport"]),
                     "batch_id": batch_id,
                     "campaign_id": campaign_id,
                     "submission_key": submission_key,
@@ -1290,11 +1636,22 @@ def claim_job_launch(
                     'launching', now()
                   FROM updated
                   RETURNING *
+                ),
+                inserted_attempt AS (
+                  INSERT INTO worker_attempts (
+                    attempt_id, train_job_id, task_kind, provider, status
+                  )
+                  SELECT launch_id, job_id, 'train', backend, 'launching'
+                  FROM inserted_launch
+                  ON CONFLICT (attempt_id) DO UPDATE
+                  SET provider = EXCLUDED.provider
+                  RETURNING *
                 )
                 SELECT
                   row_to_json(updated) AS job_json,
-                  row_to_json(inserted_launch) AS launch_json
-                FROM updated, inserted_launch
+                  row_to_json(inserted_launch) AS launch_json,
+                  row_to_json(inserted_attempt) AS attempt_json
+                FROM updated, inserted_launch, inserted_attempt
                 """,
                 params,
             )
@@ -1303,6 +1660,10 @@ def claim_job_launch(
                 return None
             job = dict(row["job_json"])
             launch = dict(row["launch_json"])
+            attempt_json = row.get("attempt_json") or {}
+            launch["worker_attempt_id"] = str(
+                attempt_json.get("attempt_id") or launch["launch_id"]
+            )
             record_job_event(
                 conn,
                 job_id=int(job["id"]),
@@ -1349,13 +1710,31 @@ def mark_job_launch_running(
                 raise RuntimeError(f"launch {launch_id} is not a train launch")
             cur.execute(
                 """
+                UPDATE worker_attempts
+                SET status = 'running',
+                    provider_run_id = COALESCE(%(provider_run_id)s, provider_run_id),
+                    started_at = COALESCE(started_at, now()),
+                    last_heartbeat_at = now(),
+                    error = NULL
+                WHERE attempt_id = %(launch_id)s
+                  AND status IN ('launching', 'running')
+                """,
+                {
+                    "launch_id": launch_id,
+                    "provider_run_id": provider_run_id,
+                },
+            )
+            cur.execute(
+                """
                 UPDATE train_jobs
                 SET status = 'starting',
                     started_at = COALESCE(started_at, now()),
                     live_publication_status = CASE
-                      WHEN COALESCE((train_config->>'wandb')::boolean, FALSE)
-                        THEN 'live'
-                      ELSE 'disabled'
+                      WHEN NOT COALESCE((train_config->>'wandb')::boolean, FALSE)
+                        THEN 'disabled'
+                      WHEN telemetry_transport = 'neon_mailbox_v1'
+                        THEN 'pending'
+                      ELSE 'live'
                     END,
                     live_publication_error = NULL,
                     live_publication_next_retry_at = NULL
@@ -1385,9 +1764,12 @@ def mark_train_job_ready(
     readiness: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     wandb_enabled = bool(readiness.get("wandb_enabled", True))
+    telemetry_transport = str(
+        readiness.get("telemetry_transport") or "legacy_local"
+    )
     wandb_run_id = str(readiness.get("wandb_run_id") or "").strip()
     wandb_url = str(readiness.get("wandb_url") or "").strip()
-    if wandb_enabled and (
+    if wandb_enabled and telemetry_transport != "neon_mailbox_v1" and (
         not wandb_run_id or not wandb_url.startswith("https://wandb.ai/")
     ):
         raise ValueError("training readiness requires a W&B run id and URL")
@@ -1413,7 +1795,7 @@ def mark_train_job_ready(
                     ),
                     wandb_ready_at = COALESCE(
                         wandb_ready_at,
-                        CASE WHEN %(wandb_enabled)s
+                        CASE WHEN %(wandb_enabled)s AND NOT %(mailbox_transport)s
                           THEN COALESCE(%(wandb_ready_at)s::timestamptz, now())
                           ELSE NULL
                         END
@@ -1422,7 +1804,9 @@ def mark_train_job_ready(
                     wandb_run_id = COALESCE(%(wandb_run_id)s, wandb_run_id),
                     wandb_url = COALESCE(%(wandb_url)s, wandb_url),
                     live_publication_status = CASE
-                      WHEN %(wandb_enabled)s THEN 'live' ELSE 'disabled'
+                      WHEN NOT %(wandb_enabled)s THEN 'disabled'
+                      WHEN %(mailbox_transport)s THEN 'pending'
+                      ELSE 'live'
                     END,
                     error = NULL
                 FROM job_launches AS launch
@@ -1439,6 +1823,7 @@ def mark_train_job_ready(
                     "wandb_run_id": wandb_run_id or None,
                     "wandb_url": wandb_url or None,
                     "wandb_enabled": wandb_enabled,
+                    "mailbox_transport": telemetry_transport == "neon_mailbox_v1",
                     "learner_ready_at": learner_ready_at,
                     "wandb_ready_at": wandb_ready_at,
                 },
@@ -1452,13 +1837,16 @@ def mark_train_job_ready(
                 job_id=int(job["id"]),
                 event_type="running",
                 message=(
-                    "learner and W&B publisher ready"
+                    "learner and Neon telemetry relay ready"
+                    if telemetry_transport == "neon_mailbox_v1"
+                    else "learner and W&B publisher ready"
                     if wandb_enabled
                     else "learner ready; W&B publication disabled"
                 ),
                 metadata={
                     "launch_id": launch_id,
                     "wandb_enabled": wandb_enabled,
+                    "telemetry_transport": telemetry_transport,
                     "wandb_run_id": wandb_run_id,
                     "wandb_url": wandb_url,
                     "learner_ready_at": learner_ready_at,
@@ -1628,6 +2016,7 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
                 WHERE status IN ('pending', 'launching', 'starting', 'running')
                    OR (
                      status = 'finalizing'
+                     AND telemetry_transport <> 'neon_mailbox_v1'
                      AND live_publication_status IN ('pending', 'live')
                    )
                 ORDER BY machine
@@ -1675,6 +2064,7 @@ def claim_live_publication_recovery(conn, *, machine: str) -> dict[str, Any] | N
                 JOIN job_launches l ON l.job_id = t.id
                 WHERE t.machine = %(machine)s
                   AND t.status = 'finalizing'
+                  AND t.telemetry_transport <> 'neon_mailbox_v1'
                   AND l.state = 'succeeded'
                   AND t.live_publication_status IN ('pending', 'live')
                   AND (
@@ -1790,6 +2180,11 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
             WHERE job.machine = %(machine)s
               AND job.status = 'pending'
               AND job.cancel_requested = FALSE
+              AND (
+                SELECT pg_total_relation_size('metric_batches')
+                     + pg_total_relation_size('attempt_events')
+                     + pg_total_relation_size('attempt_commands')
+              ) < 5368709120
               AND COALESCE(control.drained, FALSE) = FALSE
               AND NOT EXISTS (
                 SELECT 1 FROM job_launches AS launch WHERE launch.job_id = job.id
@@ -1804,6 +2199,11 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
 
 
 def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) -> dict[str, Any]:
+    telemetry_transport = str(
+        job.get("telemetry_transport")
+        or (job.get("train_config") or {}).get("telemetry_transport")
+        or "legacy_local"
+    )
     payload = {
         "schema_version": 1,
         "job_kind": launch["job_kind"],
@@ -1813,6 +2213,11 @@ def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) ->
         "backend": launch["backend"],
         "runtime_image_ref": launch["runtime_image_ref"],
         "output_uri": launch["output_uri"],
+        "telemetry": {
+            "transport": telemetry_transport,
+            "protocol_version": 1,
+            "attempt_id": str(launch.get("worker_attempt_id") or launch["launch_id"]),
+        },
     }
     assert_no_secrets(payload, label="job payload")
     return json_safe(payload)
@@ -2233,11 +2638,18 @@ def finish_train_launch_from_result(
             publication_error = str(live_publication.get("error") or "").strip() or None
             publication_attempts = max(0, int(live_publication.get("attempts") or 0))
             eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
+            telemetry_transport = str(
+                train_config.get("telemetry_transport") or "legacy_local"
+            )
             if launch_status == "canceled":
                 job_status = "canceled"
             elif launch_status != "succeeded":
                 job_status = "failed"
-            elif eval_backend == "modal" or publication_status not in {"complete", "disabled"}:
+            elif (
+                telemetry_transport == "neon_mailbox_v1"
+                or eval_backend == "modal"
+                or publication_status not in {"complete", "disabled"}
+            ):
                 job_status = "finalizing"
             else:
                 job_status = "succeeded"
@@ -2277,6 +2689,22 @@ def finish_train_launch_from_result(
             job = cur.fetchone()
             if not job:
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
+            cur.execute(
+                """
+                UPDATE worker_attempts
+                SET status = %(status)s,
+                    finished_at = now(),
+                    token_expires_at = now(),
+                    error = %(error)s
+                WHERE attempt_id = %(launch_id)s
+                  AND status IN ('launching', 'running')
+                """,
+                {
+                    "launch_id": launch_id,
+                    "status": launch_status,
+                    "error": error,
+                },
+            )
             if (
                 str(result.get("checkpoint_coordinator_status") or "")
                 == "awaiting_artifact_recovery"
@@ -2373,6 +2801,7 @@ def queue_status(
               eval_run.artifact_projection_attempts,
               eval_run.artifact_projection_next_retry_at,
               promoted.checkpoint_step AS promoted_step,
+              promoted.checkpoint_uri AS promoted_checkpoint_uri,
               promoted.projected_at AS promoted_projection_at,
               promoted.projection_error AS promoted_projection_error,
               COALESCE(control.drained, FALSE) AS machine_drained,
@@ -2436,9 +2865,20 @@ def queue_status(
             artifact_status = "pending"
         row["artifact_status"] = artifact_status
         row["artifact_ref"] = None
+        if (
+            str(row.get("telemetry_transport") or "legacy_local") == "neon_mailbox_v1"
+            and artifact_status in {"playable", "published"}
+            and row.get("promoted_checkpoint_uri")
+        ):
+            row["artifact_ref"] = str(row["promoted_checkpoint_uri"])
         wandb_url = str(row.get("wandb_url") or "")
         wandb_run_id = str(row.get("wandb_run_id") or "")
-        if artifact_status in {"playable", "published"} and wandb_url and wandb_run_id:
+        if (
+            row["artifact_ref"] is None
+            and artifact_status in {"playable", "published"}
+            and wandb_url
+            and wandb_run_id
+        ):
             parts = [part for part in urlparse(wandb_url).path.split("/") if part]
             if len(parts) >= 2:
                 alias = (
@@ -2450,19 +2890,19 @@ def queue_status(
     counts: dict[str, int] = {}
     for row in jobs:
         counts[str(row["status"])] = counts.get(str(row["status"]), 0) + 1
-    return {"selector": selector, "counts": counts, "jobs": jobs}
+    return {"selector": selector, "counts": counts, "runs": jobs, "jobs": jobs}
 
 
 def print_status(report: Mapping[str, Any]) -> None:
     print(f"selector: {json.dumps(report['selector'], sort_keys=True)}")
     print(f"counts: {json.dumps(report['counts'], sort_keys=True)}")
-    print("jobs:")
-    for row in report.get("jobs", []):
+    print("runs:")
+    for row in report.get("runs", report.get("jobs", [])):
         print(
             "  "
-            f"job={row['id']} machine={row['machine']} status={row['status']} "
+            f"run={row['id']} machine={row['machine']} status={row['status']} "
             f"image={row.get('runtime_image_ref') or ''} "
-            f"run={row.get('run_name') or ''} "
+            f"name={row.get('run_name') or ''} "
             f"launch={row.get('launch_state') or 'not_started'} "
             f"publication={row.get('live_publication_status') or 'pending'} "
             f"eval={row.get('eval_status') or 'not_applicable'} "
@@ -2533,15 +2973,20 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, prog: str = "rlab jobs") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="rlab jobs",
-        description="Manage rlab train job queues.",
+        prog=prog,
+        description="Manage rlab training runs and their worker attempts.",
     )
     parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     setup = subparsers.add_parser("setup", help="Create queue tables")
+    setup.add_argument(
+        "--worker-mailbox-role",
+        default=os.environ.get("WORKER_MAILBOX_ROLE"),
+        help="Restricted PostgreSQL role allowed to call worker mailbox procedures.",
+    )
     setup.set_defaults(func=cmd_setup)
 
     reset = subparsers.add_parser(
@@ -2556,7 +3001,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_arg(reset)
     reset.set_defaults(func=cmd_reset_schema)
 
-    status = subparsers.add_parser("status", help="Inspect jobs by job, batch, machine, or goal.")
+    status = subparsers.add_parser("status", help="Inspect runs by run, batch, machine, or goal.")
     add_job_selector(status, include_machine=True, include_goal=True)
     status.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     status.add_argument("--json", action="store_true")
@@ -2580,7 +3025,7 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.set_defaults(func=cmd_cancel)
 
     retry = subparsers.add_parser("retry", help="Create a new job from a terminal job.")
-    retry.add_argument("--job", dest="job_id", type=int, required=True)
+    retry.add_argument("--run", "--job", dest="job_id", type=int, required=True)
     retry.add_argument("--request-id", dest="submission_key")
     retry.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     retry.add_argument("--runtime-image-ref-file", type=Path)
@@ -2601,12 +3046,12 @@ def build_parser() -> argparse.ArgumentParser:
         "retry-finalization",
         help="Reopen failed publication/evaluation finalization without rerunning training.",
     )
-    retry_finalization.add_argument("--job", dest="job_id", type=int, required=True)
+    retry_finalization.add_argument("--run", "--job", dest="job_id", type=int, required=True)
     retry_finalization.add_argument("--json", action="store_true")
     retry_finalization.set_defaults(func=cmd_retry_finalization)
 
     logs = subparsers.add_parser("logs", help="Read durable output logs for one job.")
-    logs.add_argument("--job", dest="job_id", type=int, required=True)
+    logs.add_argument("--run", "--job", dest="job_id", type=int, required=True)
     logs.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     logs.add_argument("--tail", type=int, default=100)
     logs.add_argument("--follow", action="store_true")
@@ -2634,7 +3079,7 @@ def add_job_selector(
     include_goal: bool,
 ) -> None:
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--job", dest="job_id", type=int)
+    group.add_argument("--run", "--job", dest="job_id", type=int)
     group.add_argument("--batch", dest="batch_id")
     if include_machine:
         group.add_argument("--machine")
@@ -2665,6 +3110,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
         apply_schema(conn)
+        if args.worker_mailbox_role:
+            grant_worker_mailbox_role(conn, args.worker_mailbox_role)
     finally:
         conn.close()
     print("queue_schema=ok")
@@ -2694,6 +3141,11 @@ def cmd_reset_schema(args: argparse.Namespace) -> int:
 
 
 def cmd_enqueue_train(args: argparse.Namespace) -> int:
+    from rlab.fleet import default_repo_root, load_mailbox_runner_env
+
+    # New submissions use the mailbox transport. Fail before image readiness or
+    # queue mutation when the restricted worker DSN/R2 handoff credentials are absent.
+    load_mailbox_runner_env(default_repo_root() / ".env")
     document = compose_train_document(
         args.goal_file,
         args.recipe_file,
@@ -3155,8 +3607,8 @@ def cmd_logs(args: argparse.Namespace) -> int:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, prog: str = "rlab jobs") -> int:
+    args = build_parser(prog=prog).parse_args(argv)
     return int(args.func(args))
 
 

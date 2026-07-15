@@ -103,21 +103,21 @@ the canonical service, job-status, host-setup, capacity, and cleanup commands:
 
 ```bash
 rlab fleet service status --json
-rlab jobs status --machine beast-3 --json
+rlab runs status --machine beast-3 --json
 rlab fleet capacity --machine beast-3 --set 4
 rlab fleet drain --machine beast-3
 rlab fleet resume --machine beast-3
 ```
 
-Each launched container owns exactly one queue launch and is labeled with
+Each launched container owns exactly one worker attempt and is labeled with
 `rlab.job-container=true`, `rlab.job-id`, `rlab.launch-id`, `rlab.machine`, and
 `rlab.runtime-image-ref`. The Mac fleet service finalizes completed launches from
 `result.json` and prunes stale host runtime images that are not demanded by the
 queue or used by active containers.
 
-For a queue job materialized with `checkpoint_eval_backend: modal`, the container runs a
-low-priority checkpoint coordinator instead of the local evaluator. The trainer atomically saves
-into the launch output's mounted `runs/` tree; the coordinator hashes and uploads checkpoints and
-imports exact run-specific early-stop decisions. It drains uploads for at most 120 seconds at
-shutdown and reports `awaiting_artifact_recovery` without changing training success. The Mac fleet
-service schedules bounded Modal CPU calls and performs post-train W&B projection.
+For a run materialized with `checkpoint_eval_backend: modal`, the container runs a low-priority
+checkpoint coordinator plus a Neon telemetry relay. The trainer atomically saves into the launch
+output's mounted `runs/` tree; the coordinator hashes and uploads checkpoints to R2 and announces
+their verified locations through Neon. At shutdown, producers stop first and the relay immediately
+flushes every remaining SQLite frame plus a final watermark. The attempt succeeds only after Neon
+acknowledges that watermark. Fleet schedules bounded Modal CPU calls and is the only W&B writer.

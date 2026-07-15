@@ -247,7 +247,7 @@ class ReconciliationTests(unittest.TestCase):
             )
 
         self.assertTrue(changed)
-        self.assertEqual(host.stop_calls, [("rlab-job-beast-test-train-train-12", 120)])
+        self.assertEqual(host.stop_calls, [("rlab-job-beast-test-train-train-12", 300)])
         self.assertEqual(finish.call_args.kwargs["result"]["status"], "canceled")
 
 

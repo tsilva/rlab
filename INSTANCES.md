@@ -39,7 +39,7 @@ Install and inspect the Mac-side service, then observe jobs:
 ```bash
 rlab fleet service install
 rlab fleet service status --json
-rlab jobs status --machine beast-3 --json
+rlab runs status --machine beast-3 --json
 ```
 
 Mutating commands wake the service immediately; its 30-second launchd interval
@@ -65,7 +65,7 @@ rlab fleet capacity --machine beast-3 --reset
 
 Use `rlab fleet drain --machine <name>` to stop new claims without killing
 running jobs and `rlab fleet resume --machine <name>` to admit work again.
-`rlab jobs status` is observational. The service is the only normal mutating
+`rlab runs status` is observational. The service is the only normal mutating
 reconciler: it claims, launches, finalizes, and prunes stale Docker images after
 no active container or exact-machine queued demand needs them.
 
@@ -116,11 +116,12 @@ Use `rlab eval modal recover <train-job-id>` only after a terminal train job rep
 `awaiting_artifact_recovery`. Recovery drains pending artifacts inside the runtime container and
 rejects active, finalizing, complete, or otherwise ineligible eval runs without changing their state.
 
-PostgreSQL is the only wait queue. The service never submits work beyond the effective capacity,
-reserves worst-case cost before dispatch, and leaves budget-blocked jobs pending for operator
-inspection. Draining stops new Modal calls without stopping training. Checkpoint models, metadata,
-announcements, attempts, and decisions are immutable R2 objects; Modal return values are only
-receipts. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
+PostgreSQL is the wait queue, orchestration authority, and transient telemetry mailbox. The service
+never submits work beyond the effective capacity, reserves worst-case cost before dispatch, and
+leaves budget-blocked jobs pending for operator inspection. Draining stops new Modal calls without
+stopping training. Checkpoint models, metadata, previews, and raw Modal results are immutable R2
+objects; accepted attempts, commands, artifact locations, decisions, and publication cursors live
+in PostgreSQL. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
 shared train/eval image digest. Worker retries are disabled; the fleet service may create one
 separately recorded second attempt for transient failures. Modal 1.5 exposes only single-use or
 unbounded-reuse containers. V1 uses warm-container reuse with a 60-second scale-down window because
@@ -240,16 +241,15 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
 - The service may remove old managed containers and images only when no queued
   job on that exact machine demands the immutable runtime digest and no active
   launch or container uses it.
-- In the recoverable job-container path, one container is one stable job
-  launch. The service is the only normal mutating DB actor; status and log
+- In the recoverable job-container path, one container is one provider-neutral worker attempt.
+  The service owns orchestration and W&B publication; status and log
   commands never claim, launch, cancel, or finalize jobs. The container reads a
-  payload and atomically publishes `result.json`. Queue-backed run directories live under the
-  host-mounted launch output so a checkpoint coordinator can recover incomplete R2 uploads after
-  the training container exits. When Modal eval is selected, the live W&B publisher owns training
-  telemetry plus imported `eval/screen/*` and `eval/confirm/*` frames; it does not upload checkpoint
-  artifacts. The Mac-side terminal projector owns promotion-quality `eval/full/*` evidence.
+  payload and atomically publishes `result.json`. It receives R2 credentials plus a restricted,
+  expiring Neon attempt token, never W&B credentials. Queue-backed run directories live under the
+  host-mounted launch output while active; SQLite is deleted after the final Neon watermark is
+  acknowledged. Fleet publishes training and all evaluation protocols into the preassigned W&B run.
   Later service passes reconcile DB launch rows, Docker labels, and durable
-  output directories without creating a replacement launch.
+  output directories.
 ## Train Image Build Baseline (2026-07-14)
 
 Before dependency-image rebasing, six source-only GitHub Actions builds had a median runtime

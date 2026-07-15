@@ -333,13 +333,166 @@ def ingest_announcements(
     return ingested
 
 
+def ingest_mailbox_announcements(
+    conn,
+    store: ObjectStore,
+    *,
+    limit: int = 50,
+) -> int:
+    ingested = 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.*, r.contract_json, r.next_announcement_id
+            FROM attempt_events e
+            JOIN worker_attempts a ON a.attempt_id = e.attempt_id
+            JOIN eval_runs r ON r.train_job_id = a.train_job_id
+            JOIN train_jobs t ON t.id = r.train_job_id
+            WHERE e.event_type IN (
+                'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+              )
+              AND t.telemetry_transport = 'neon_mailbox_v1'
+              AND (e.next_retry_at IS NULL OR e.next_retry_at <= now())
+            ORDER BY e.id
+            LIMIT %(limit)s
+            """,
+            {"limit": max(1, int(limit))},
+        )
+        events = [dict(row) for row in cur.fetchall()]
+    for event in events:
+        payload = dict(event.get("payload_json") or {})
+        event_type = str(event["event_type"])
+        train_job_id = int(payload.get("train_job_id") or 0)
+        if not train_job_id:
+            raise ValueError("checkpoint mailbox event is missing train_job_id")
+        if event_type == "checkpoint_stream_closed":
+            last_id = int(payload.get("last_ledger_id") or 0)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT next_announcement_id FROM eval_runs "
+                        "WHERE train_job_id = %(train_job_id)s FOR UPDATE",
+                        {"train_job_id": train_job_id},
+                    )
+                    current = cur.fetchone()
+                    if not current or int(current["next_announcement_id"]) <= last_id:
+                        continue
+                    cur.execute(
+                        """
+                        UPDATE eval_runs
+                        SET complete_announcement_seen = TRUE,
+                            status = 'finalizing',
+                            error = NULL,
+                            updated_at = now()
+                        WHERE train_job_id = %(train_job_id)s
+                        """,
+                        {"train_job_id": train_job_id, "last_id": last_id},
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            "DELETE FROM attempt_events WHERE id = %(id)s",
+                            {"id": int(event["id"])},
+                        )
+            ingested += 1
+            continue
+        ledger_id = int(payload.get("ledger_id") or 0)
+        if ledger_id != int(event["next_announcement_id"]):
+            continue
+        announcement: Mapping[str, Any] = payload
+        if event_type == "checkpoint_ready":
+            try:
+                announcement = validate_announcement(
+                    payload,
+                    materialized_train_config=dict(event["contract_json"]),
+                )
+                for uri, expected_sha in (
+                    (str(announcement["model_uri"]), str(announcement["sha256"])),
+                    (
+                        str(announcement["metadata_uri"]),
+                        str(announcement["metadata_sha256"]),
+                    ),
+                    (
+                        str(announcement["eval"]["asset"]["object_uri"]),
+                        str(announcement["eval"]["asset"]["sha256"]),
+                    ),
+                ):
+                    head = store.head(uri)
+                    if int(head["size"]) < 1:
+                        raise ValueError("checkpoint artifact is empty")
+                    remote_sha = str(head.get("metadata", {}).get("sha256") or "")
+                    if store.scheme == "s3" and remote_sha != expected_sha:
+                        raise ValueError("checkpoint artifact hash metadata mismatch")
+            except Exception as exc:
+                attempts = int(event.get("attempts") or 0) + 1
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE attempt_events
+                            SET attempts = %(attempts)s, last_error = %(error)s,
+                                next_retry_at = now() + (
+                                  LEAST(300, 30 * %(attempts)s) * interval '1 second'
+                                )
+                            WHERE id = %(id)s
+                            """,
+                            {
+                                "id": int(event["id"]),
+                                "attempts": attempts,
+                                "error": repr(exc)[:4000],
+                            },
+                        )
+                        if attempts >= 3:
+                            cur.execute(
+                                """
+                                UPDATE eval_runs
+                                SET status = 'failed', error = %(error)s, updated_at = now()
+                                WHERE train_job_id = %(train_job_id)s
+                                """,
+                                {
+                                    "train_job_id": train_job_id,
+                                    "error": (
+                                        "checkpoint artifact verification failed: " + repr(exc)
+                                    )[:4000],
+                                },
+                            )
+                continue
+        with conn:
+            if event_type == "checkpoint_ready" and str(announcement.get("kind")) == "checkpoint":
+                stages = announcement.get("eval", {}).get("stages") or []
+                descriptor = (
+                    stage_job_descriptor(announcement, stage_index=0)
+                    if stages
+                    else promotion_job_descriptor(announcement)
+                )
+                _insert_eval_job(conn, announcement, descriptor)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET next_announcement_id = next_announcement_id + 1,
+                        status = 'active', error = NULL, updated_at = now()
+                    WHERE train_job_id = %(train_job_id)s
+                      AND next_announcement_id = %(ledger_id)s
+                    """,
+                    {"train_job_id": train_job_id, "ledger_id": ledger_id},
+                )
+                if cur.rowcount:
+                    cur.execute(
+                        "DELETE FROM attempt_events WHERE id = %(id)s",
+                        {"id": int(event["id"])},
+                    )
+        ingested += 1
+    return ingested
+
+
 def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT * FROM eval_jobs
-            WHERE status = 'skipped_stale' AND decision_json IS NULL
-            ORDER BY id LIMIT %(limit)s
+            SELECT j.*, t.telemetry_transport FROM eval_jobs j
+            JOIN train_jobs t ON t.id = j.train_job_id
+            WHERE j.status = 'skipped_stale' AND j.decision_json IS NULL
+            ORDER BY j.id LIMIT %(limit)s
             """,
             {"limit": max(1, int(limit))},
         )
@@ -362,11 +515,12 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
             "raw_metrics": {},
             "reason": "coalesced by newer undispatched screen",
         }
-        store.put_json(
-            f"eval-decisions/{int(job['train_job_id'])}/{job['job_key']}.json",
-            decision,
-            create_only=True,
-        )
+        if str(job.get("telemetry_transport") or "legacy_local") != "neon_mailbox_v1":
+            store.put_json(
+                f"eval-decisions/{int(job['train_job_id'])}/{job['job_key']}.json",
+                decision,
+                create_only=True,
+            )
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -419,6 +573,17 @@ def _mark_attempt_failure(
                   finished_at = now() WHERE id = %(id)s
                 """,
                 {"id": int(attempt["id"]), "error": error[:4000]},
+            )
+            cur.execute(
+                """
+                UPDATE worker_attempts
+                SET status = 'failed', error = %(error)s, finished_at = now()
+                WHERE attempt_id = %(attempt_id)s
+                """,
+                {
+                    "attempt_id": str(attempt["attempt_id"]),
+                    "error": error[:4000],
+                },
             )
             cur.execute(
                 """
@@ -512,11 +677,15 @@ def accept_attempt_result(
     preview = validated.get("preview")
     if str(attempt["purpose"]) == "screen" and isinstance(preview, Mapping):
         decision["preview"] = dict(preview)
-    store.put_json(
-        f"eval-decisions/{int(attempt['train_job_id'])}/{attempt['job_key']}.json",
-        decision,
-        create_only=True,
-    )
+    train_config = dict(attempt.get("train_config") or {})
+    if str(train_config.get("telemetry_transport") or "legacy_local") != (
+        "neon_mailbox_v1"
+    ):
+        store.put_json(
+            f"eval-decisions/{int(attempt['train_job_id'])}/{attempt['job_key']}.json",
+            decision,
+            create_only=True,
+        )
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -541,6 +710,14 @@ def accept_attempt_result(
             )
             cur.execute(
                 """
+                UPDATE worker_attempts
+                SET status = 'succeeded', finished_at = now(), error = NULL
+                WHERE attempt_id = %(attempt_id)s
+                """,
+                {"attempt_id": str(attempt["attempt_id"])},
+            )
+            cur.execute(
+                """
                 UPDATE eval_jobs SET status = 'succeeded', accepted_attempt_id = %(attempt_id)s,
                   decision_json = %(decision)s, updated_at = now(), finished_at = now(), error = NULL
                 WHERE id = %(job_id)s
@@ -551,7 +728,53 @@ def accept_attempt_result(
                     "job_id": int(attempt["eval_job_id"]),
                 },
             )
-        _next_stage_or_promotion(conn, attempt, passed)
+            if bool(attempt.get("candidate_stop")) and bool(decision.get("passed")):
+                cur.execute(
+                    """
+                    INSERT INTO attempt_commands (
+                      command_id, attempt_id, command_type, payload_json
+                    )
+                    SELECT
+                      'candidate-stop:' || %(eval_job_id)s::text,
+                      worker.attempt_id,
+                      'stop',
+                      jsonb_build_object(
+                        'eval_job_id', %(eval_job_id)s,
+                        'checkpoint_step', %(checkpoint_step)s
+                      )
+                    FROM worker_attempts worker
+                    WHERE worker.train_job_id = %(train_job_id)s
+                      AND worker.task_kind = 'train'
+                      AND worker.status = 'running'
+                    ON CONFLICT (command_id) DO NOTHING
+                    """,
+                    {
+                        "eval_job_id": int(attempt["eval_job_id"]),
+                        "checkpoint_step": int(attempt["checkpoint_step"]),
+                        "train_job_id": int(attempt["train_job_id"]),
+                    },
+                )
+    if (
+        str(train_config.get("telemetry_transport") or "legacy_local")
+        == "neon_mailbox_v1"
+        and str(attempt["purpose"]) != "promotion"
+    ):
+        from rlab.telemetry_mailbox import enqueue_projection_payload
+
+        enqueue_projection_payload(
+            conn,
+            eval_job_id=int(attempt["eval_job_id"]),
+            payload={
+                "projection_kind": "evaluation",
+                "train_config": train_config,
+                "decision": decision,
+                "purpose": str(attempt["purpose"]),
+                "checkpoint_uri": str(attempt["checkpoint_uri"]),
+                "checkpoint_step": int(attempt["checkpoint_step"]),
+                "canonical_promotion": False,
+            },
+        )
+    _next_stage_or_promotion(conn, attempt, passed)
 
 
 def poll_attempts(
@@ -568,8 +791,10 @@ def poll_attempts(
             SELECT a.*, j.train_job_id, j.ledger_id, j.checkpoint_step, j.checkpoint_uri,
               j.stage_name,
               j.stage_index, j.purpose, j.execution_key, j.job_key, j.contract_json,
-              j.source_announcement_json, j.decision_rules_json, j.candidate_stop
+              j.source_announcement_json, j.decision_rules_json, j.candidate_stop,
+              t.train_config
             FROM eval_attempts a JOIN eval_jobs j ON j.id = a.eval_job_id
+            JOIN train_jobs t ON t.id = j.train_job_id
             WHERE a.status IN ('dispatching', 'submitted')
             ORDER BY a.created_at
             """
@@ -935,6 +1160,23 @@ def dispatch_pending(
                 )
                 attempt_row_id = int(cur.fetchone()["id"])
                 cur.execute(
+                    """
+                    INSERT INTO worker_attempts (
+                      attempt_id, train_job_id, eval_job_id, task_kind, provider,
+                      status, started_at
+                    ) VALUES (
+                      %(attempt_id)s, %(train_job_id)s, %(job_id)s, 'eval', 'modal',
+                      'launching', now()
+                    )
+                    ON CONFLICT (attempt_id) DO NOTHING
+                    """,
+                    {
+                        "attempt_id": attempt_id,
+                        "train_job_id": int(job["train_job_id"]),
+                        "job_id": int(job["id"]),
+                    },
+                )
+                cur.execute(
                     "UPDATE eval_jobs SET status = 'dispatching', updated_at = now(), error = NULL WHERE id = %(id)s",
                     {"id": int(job["id"])},
                 )
@@ -1013,6 +1255,15 @@ def dispatch_pending(
                     {"call_id": call_id, "id": attempt_row_id},
                 )
                 cur.execute(
+                    """
+                    UPDATE worker_attempts
+                    SET status = 'running', provider_run_id = %(call_id)s,
+                        started_at = COALESCE(started_at, now()), last_heartbeat_at = now()
+                    WHERE attempt_id = %(attempt_id)s
+                    """,
+                    {"attempt_id": attempt_id, "call_id": call_id},
+                )
+                cur.execute(
                     "UPDATE eval_jobs SET status = 'submitted', updated_at = now() WHERE id = %(id)s",
                     {"id": int(job["id"])},
                 )
@@ -1077,6 +1328,12 @@ def finalize_runs(conn) -> int:
                       AND promoted.status = 'succeeded'
                       AND promoted.projected_at IS NULL
                   )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM eval_jobs unprojected
+                    WHERE unprojected.train_job_id = r.train_job_id
+                      AND unprojected.status = 'succeeded'
+                      AND unprojected.projected_at IS NULL
+                  )
                   AND (
                     NOT EXISTS (
                       SELECT 1 FROM eval_jobs candidate
@@ -1091,6 +1348,19 @@ def finalize_runs(conn) -> int:
                       AND j.status IN (
                         'pending', 'dispatching', 'submitted', 'blocked_budget', 'failed'
                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_batches b
+                    JOIN metric_streams s ON s.stream_id = b.stream_id
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = r.train_job_id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_streams s
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = r.train_job_id
+                      AND (s.final_sequence IS NULL
+                           OR s.published_sequence < s.final_sequence)
                   )
                   AND r.status = 'finalizing'
                   AND EXISTS (
@@ -1288,6 +1558,7 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
             FROM eval_jobs j JOIN train_jobs t ON t.id = j.train_job_id
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.status = 'succeeded' AND j.projected_at IS NULL
+              AND j.projection_enqueued_at IS NULL
               AND j.purpose = 'promotion'
               AND t.status = 'finalizing'
               AND t.live_publication_status IN ('complete', 'disabled')
@@ -1314,6 +1585,13 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
         "checkpoint_step": job["checkpoint_step"],
         "canonical_promotion": bool(job["canonical_promotion"]),
     }
+    if str(job["train_config"].get("telemetry_transport") or "legacy_local") == (
+        "neon_mailbox_v1"
+    ):
+        from rlab.telemetry_mailbox import enqueue_projection_payload
+
+        enqueue_projection_payload(conn, eval_job_id=int(job["id"]), payload=payload)
+        return 1
     error = _execute_projection(
         payload,
         repo_root=repo_root,
@@ -1364,6 +1642,70 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
     return int(error is None)
 
 
+def enqueue_missing_mailbox_projections(conn, *, limit: int = 100) -> int:
+    """Recover a crash after accepting an eval but before creating its W&B frame."""
+
+    from rlab.telemetry_mailbox import enqueue_projection_payload
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT j.*, t.train_config
+            FROM eval_jobs j
+            JOIN train_jobs t ON t.id = j.train_job_id
+            WHERE j.status = 'succeeded'
+              AND j.purpose <> 'promotion'
+              AND j.projected_at IS NULL
+              AND j.projection_enqueued_at IS NULL
+              AND t.telemetry_transport = 'neon_mailbox_v1'
+            ORDER BY j.id
+            LIMIT %(limit)s
+            """,
+            {"limit": max(1, int(limit))},
+        )
+        jobs = [dict(row) for row in cur.fetchall()]
+    enqueued = 0
+    for job in jobs:
+        enqueued += int(
+            enqueue_projection_payload(
+                conn,
+                eval_job_id=int(job["id"]),
+                payload={
+                    "projection_kind": "evaluation",
+                    "train_config": job["train_config"],
+                    "decision": job["decision_json"],
+                    "purpose": str(job["purpose"]),
+                    "checkpoint_uri": str(job["checkpoint_uri"]),
+                    "checkpoint_step": int(job["checkpoint_step"]),
+                    "canonical_promotion": False,
+                },
+            )
+        )
+    return enqueued
+
+
+def reconcile_published_mailbox_projections(conn) -> int:
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE eval_jobs j
+                SET projected_at = now(), projection_error = NULL,
+                    projection_next_retry_at = NULL, updated_at = now()
+                FROM metric_streams s
+                WHERE s.stream_id = 'eval-projection-' || j.id::text
+                  AND j.projection_enqueued_at IS NOT NULL
+                  AND j.projected_at IS NULL
+                  AND s.final_sequence IS NOT NULL
+                  AND s.published_sequence >= s.final_sequence
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_batches b WHERE b.stream_id = s.stream_id
+                  )
+                """
+            )
+            return cur.rowcount
+
+
 def project_artifact_references(
     conn,
     store: ObjectStore,
@@ -1400,6 +1742,30 @@ def project_artifact_references(
         return 0
     run = dict(run)
     train_job_id = int(run["train_job_id"])
+    if str(run["train_config"].get("telemetry_transport") or "legacy_local") == (
+        "neon_mailbox_v1"
+    ):
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET next_artifact_projection_id = next_announcement_id,
+                        promoted_artifact_projected_at = CASE
+                          WHEN promoted_eval_job_id IS NOT NULL
+                            THEN COALESCE(promoted_artifact_projected_at, now())
+                          ELSE promoted_artifact_projected_at
+                        END,
+                        artifacts_projected_at = now(),
+                        artifact_projection_attempts = 0,
+                        artifact_projection_next_retry_at = NULL,
+                        error = NULL,
+                        updated_at = now()
+                    WHERE train_job_id = %(train_job_id)s
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+        return 1
     complete = store.get_json_optional(f"artifact-announcements/{train_job_id}/complete.json")
     if complete is None:
         return 0
@@ -1622,6 +1988,7 @@ def run_service_eval_pass(
         canceled_attempts = cancel_requested_attempts(
             conn, invoker, deadline_monotonic=deadline_monotonic
         )
+        mailbox_ingested = ingest_mailbox_announcements(conn, store)
         ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
         skipped_decisions = publish_skipped_decisions(conn, store)
         polled = poll_attempts(
@@ -1631,6 +1998,7 @@ def run_service_eval_pass(
             config,
             deadline_monotonic=deadline_monotonic,
         )
+        recovered_projections = enqueue_missing_mailbox_projections(conn)
         promotions = enqueue_post_train_promotions(conn)
         dispatched = dispatch_pending(
             conn,
@@ -1649,6 +2017,7 @@ def run_service_eval_pass(
             repo_root=repo_root,
             deadline_monotonic=deadline_monotonic,
         )
+        reconciled_projections = reconcile_published_mailbox_projections(conn)
         eval_run_failures = reconcile_eval_run_failures(conn)
         finalized = finalize_runs(conn)
         finalization_failures = reconcile_train_finalization_failures(conn)
@@ -1675,13 +2044,16 @@ def run_service_eval_pass(
             "created_runs": created_runs,
             "canceled_attempts": canceled_attempts,
             "ingested": ingested,
+            "mailbox_ingested": mailbox_ingested,
             "skipped_decisions": skipped_decisions,
             "polled": polled,
+            "recovered_projections": recovered_projections,
             "promotions": promotions,
             "reconciled_promotions": reconciled_promotions,
             "dispatched": dispatched,
             "projected": projected,
             "projected_artifacts": projected_artifacts,
+            "reconciled_projections": reconciled_projections,
             "eval_run_failures": eval_run_failures,
             "finalized": finalized,
             "finalization_failures": finalization_failures,

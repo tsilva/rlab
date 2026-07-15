@@ -943,6 +943,14 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Stable W&B run id materialized for queue-backed publisher ownership.",
     ),
     TrainConfigField(
+        "telemetry_transport",
+        "--telemetry-transport",
+        default="legacy_local",
+        choices=("legacy_local", "neon_mailbox_v1"),
+        cli_exposed=False,
+        help="Internal queue-owned telemetry transport contract.",
+    ),
+    TrainConfigField(
         "no_wandb_artifacts",
         "--no-wandb-artifacts",
         kind="store_true",
