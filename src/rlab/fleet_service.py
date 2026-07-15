@@ -822,7 +822,10 @@ def _connect_queue(repo_root: Path):
     from rlab.job_queue import connect, database_url
 
     _load_repo_environment(repo_root)
-    return connect(database_url())
+    # Fleet holds session-scoped schema and W&B publication advisory locks.
+    # Those locks are unsafe through PgBouncer because a killed process can
+    # return its locked backend session to the pool.
+    return connect(database_url(use_direct=True))
 
 
 @contextmanager

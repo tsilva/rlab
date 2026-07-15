@@ -1954,7 +1954,9 @@ def run_service_eval_pass(
     config = load_modal_eval_config(repo_root / "experiments" / "modal_eval.yaml")
     if not config.enabled:
         return {"status": "disabled", "hard_cap": config.hard_max_active}
-    conn = connect(database_url())
+    # The eval reconciler lock is session-scoped and must live on a direct
+    # connection so process death releases it instead of poisoning a pool.
+    conn = connect(database_url(use_direct=True))
     invoker = invoker or DefaultModalInvoker()
     store = store or ObjectStore(object_store_base_uri())
     try:

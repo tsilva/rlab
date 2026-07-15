@@ -19,6 +19,19 @@ def completed(argv, returncode: int = 0, stdout: str = "", stderr: str = ""):
 
 
 class FleetServiceTests(unittest.TestCase):
+    def test_service_queue_connections_bypass_the_pool_for_session_locks(self) -> None:
+        connection = object()
+        with (
+            mock.patch.object(fleet_service, "_load_repo_environment"),
+            mock.patch("rlab.job_queue.database_url", return_value="direct") as database_url,
+            mock.patch("rlab.job_queue.connect", return_value=connection) as connect,
+        ):
+            actual = fleet_service._connect_queue(Path("/repo"))
+
+        self.assertIs(actual, connection)
+        database_url.assert_called_once_with(use_direct=True)
+        connect.assert_called_once_with("direct")
+
     def make_paths(self, root: Path) -> fleet_service.ServicePaths:
         repo = root / "repo"
         python = repo / ".venv" / "bin" / "python"

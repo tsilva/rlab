@@ -373,7 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     from rlab.job_queue import connect, database_url
 
-    conn = connect(database_url())
+    # Publishing holds a session-scoped per-run lock for the whole W&B
+    # session, so it must not use a PgBouncer-backed connection.
+    conn = connect(database_url(use_direct=True))
     try:
         print(f"published_batches={drain_once(conn, limit=max(1, args.limit))}")
     finally:

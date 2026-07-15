@@ -814,7 +814,10 @@ def run_service_machine_pass(
             progress(
                 "CHECKING MACHINE", f"Connecting to {machine.name} and acquiring its scheduler lock"
             )
-        conn = connect(database_url())
+        # Session-scoped advisory locks must bypass PgBouncer. Otherwise a
+        # terminated Fleet process can return a still-locked backend session
+        # to the pool and block an unrelated client indefinitely.
+        conn = connect(database_url(use_direct=True))
         with machine_mutation_lock(conn, machine.name):
             if progress:
                 progress(
