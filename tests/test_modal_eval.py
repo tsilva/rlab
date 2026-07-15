@@ -224,7 +224,7 @@ class ModalEvalContractTests(unittest.TestCase):
         function = mock.MagicMock()
         image_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
         manifest = {
-            "game": "Game-Nes-v0",
+            "game": "SuperMarioBros-Nes-v0",
             "sha256": "c" * 64,
             "object_uri": "s3://bucket/rom.nes",
             "filename": "rom.nes",
@@ -269,7 +269,8 @@ class ModalEvalContractTests(unittest.TestCase):
             }
             report = modal_eval_cli.modal_preflight(
                 runtime_image_ref=image_ref,
-                game="Game-Nes-v0",
+                game="SuperMarioBros-Nes-v0",
+                env_provider="supermariobrosnes-turbo",
             )
 
         self.assertTrue(report["ready"])

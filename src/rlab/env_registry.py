@@ -112,6 +112,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     import_name="supermariobrosnes_turbo",
     distribution_name="supermariobrosnes-turbo",
     env_ids=("SuperMarioBros-Nes-v0",),
+    uses_stable_retro_roms=True,
     constructor_contract=ProviderConstructorContract(
         canonical_args=frozenset(
             {

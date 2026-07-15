@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from rlab.env_identity import environment_identity_from_train_config
-from rlab.env_registry import env_supports_states, registered_env_ids, resolve_env_id
+from rlab.env_registry import (
+    env_supports_states,
+    registered_env_ids,
+    resolve_env_id,
+    resolve_env_provider,
+)
 
 
 def test_resolves_registered_stable_retro_turbo_env_id() -> None:
@@ -66,6 +71,7 @@ def test_resolves_registered_supermariobrosnes_turbo_env_id() -> None:
     assert resolved.provider_id == "supermariobrosnes-turbo"
     assert resolved.provider_env_id == "SuperMarioBros-Nes-v0"
     assert resolved.import_name == "supermariobrosnes_turbo"
+    assert resolve_env_provider(resolved.provider_id).uses_stable_retro_roms
 
 
 def test_resolves_registered_ale_py_env_id() -> None:
