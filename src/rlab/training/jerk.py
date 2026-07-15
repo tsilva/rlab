@@ -49,6 +49,8 @@ from rlab.training_backend import (
 DEFAULT_CONFIG: dict[str, Any] = {
     "acceptance_mode": CHECKPOINT_EVAL_ACCEPTANCE,
     "exploit_bias": 0.25,
+    "max_exploit_probability": 0.9,
+    "mutation_window_steps": 128,
     "forward_steps": 100,
     "backtrack_steps": 70,
     "jump_probability": 0.1,
@@ -68,7 +70,8 @@ _POSITIVE_INTEGER_FIELDS = {
     "retained_limit",
     "log_interval_steps",
 }
-_PROBABILITY_FIELDS = {"exploit_bias", "jump_probability"}
+_NON_NEGATIVE_INTEGER_FIELDS = {"mutation_window_steps"}
+_PROBABILITY_FIELDS = {"exploit_bias", "jump_probability", "max_exploit_probability"}
 _ACTION_FIELDS = {"forward_action", "jump_action", "backtrack_action", "fallback_action"}
 _ACCEPTANCE_MODES = {CHECKPOINT_EVAL_ACCEPTANCE, FIRST_TRAINING_SUCCESS_ACCEPTANCE}
 
@@ -82,6 +85,10 @@ def normalize_config(config: Mapping[str, Any], *, label: str) -> dict[str, Any]
         value = normalized[key]
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"{label}.{key} must be a positive integer")
+    for key in _NON_NEGATIVE_INTEGER_FIELDS:
+        value = normalized[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{label}.{key} must be a non-negative integer")
     for key in _PROBABILITY_FIELDS:
         value = normalized[key]
         if not isinstance(value, int | float) or isinstance(value, bool):
@@ -94,6 +101,8 @@ def normalize_config(config: Mapping[str, Any], *, label: str) -> dict[str, Any]
     if normalized["acceptance_mode"] not in _ACCEPTANCE_MODES:
         allowed = ", ".join(sorted(_ACCEPTANCE_MODES))
         raise ValueError(f"{label}.acceptance_mode must be one of: {allowed}")
+    if normalized["exploit_bias"] > normalized["max_exploit_probability"]:
+        raise ValueError(f"{label}.exploit_bias must not exceed {label}.max_exploit_probability")
     return normalized
 
 
@@ -274,6 +283,8 @@ def run_jerk(context: BackendContext) -> None:
             jump_probability=args.jump_probability,
             jump_repeat=args.jump_repeat,
             exploit_bias=args.exploit_bias,
+            max_exploit_probability=args.max_exploit_probability,
+            mutation_window_steps=args.mutation_window_steps,
             retained_limit=args.retained_limit,
         )
         env.reset()

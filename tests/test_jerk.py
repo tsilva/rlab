@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from rlab.batch_runtime import EpisodeRecord
-from rlab.jerk import JerkPolicy, JerkSearch
+from rlab.jerk import JerkPolicy, JerkSearch, RetainedSequence
 from rlab.policy_models import load_policy_model, resolve_policy_algorithm
 from rlab.task_kernels import Outcome
 from rlab.training import jerk as jerk_training
@@ -32,6 +32,8 @@ def test_jerk_search_retains_successful_full_sequence() -> None:
         jump_probability=0.0,
         jump_repeat=4,
         exploit_bias=0.25,
+        max_exploit_probability=0.9,
+        mutation_window_steps=0,
         retained_limit=8,
     )
     first = search.next_actions()
@@ -49,6 +51,104 @@ def test_jerk_search_retains_successful_full_sequence() -> None:
     assert candidate.progress == 3161
     assert candidate.actions == (int(first[0]), int(second[0]))
     assert candidate.mean_return == 3.0
+
+
+def test_jerk_replays_retained_prefix_then_extends_it() -> None:
+    search = JerkSearch(
+        n_envs=1,
+        seed=7,
+        total_timesteps=10,
+        action_names=ACTIONS,
+        forward_action="right_b",
+        jump_action="right_a_b",
+        backtrack_action="left",
+        fallback_action="noop",
+        forward_steps=100,
+        backtrack_steps=70,
+        jump_probability=0.0,
+        jump_repeat=4,
+        exploit_bias=1.0,
+        max_exploit_probability=1.0,
+        mutation_window_steps=0,
+        retained_limit=8,
+    )
+    prefix = (ACTIONS.index("right_b"),)
+    search._retained[prefix] = RetainedSequence(
+        actions=prefix,
+        returns=[1.0],
+        progress=100.0,
+    )
+    search._start_lane(0)
+
+    assert search.next_actions().tolist() == list(prefix)
+    search.observe([1.0], [False])
+    assert search.next_actions().tolist() == [ACTIONS.index("right_b")]
+    record = SimpleNamespace(outcome=Outcome.NEUTRAL, metrics={"max_x_pos": 200})
+    search.observe([1.0], [True], {0: record})
+
+    candidate = search.best_candidate()
+    assert candidate is not None
+    assert candidate.actions == (*prefix, ACTIONS.index("right_b"))
+    assert candidate.progress == 200
+
+
+def test_jerk_rewinds_retained_tail_before_exploring() -> None:
+    search = JerkSearch(
+        n_envs=1,
+        seed=7,
+        total_timesteps=10,
+        action_names=ACTIONS,
+        forward_action="right_b",
+        jump_action="right_a_b",
+        backtrack_action="left",
+        fallback_action="noop",
+        forward_steps=100,
+        backtrack_steps=70,
+        jump_probability=0.0,
+        jump_repeat=4,
+        exploit_bias=1.0,
+        max_exploit_probability=1.0,
+        mutation_window_steps=3,
+        retained_limit=8,
+    )
+    prefix = tuple(range(4))
+    search._retained[prefix] = RetainedSequence(
+        actions=prefix,
+        returns=[1.0],
+        progress=100.0,
+    )
+    search._start_lane(0)
+
+    replay_limit = search._lanes[0].replay_limit
+    assert 1 <= replay_limit <= len(prefix)
+    assert [int(search.next_actions()[0]) for _ in range(replay_limit)] == list(
+        prefix[:replay_limit]
+    )
+    assert int(search.next_actions()[0]) == ACTIONS.index("right_b")
+
+
+def test_jerk_preserves_root_exploration_floor() -> None:
+    search = JerkSearch(
+        n_envs=1,
+        seed=7,
+        total_timesteps=10,
+        action_names=ACTIONS,
+        forward_action="right_b",
+        jump_action="right_a_b",
+        backtrack_action="left",
+        fallback_action="noop",
+        forward_steps=100,
+        backtrack_steps=70,
+        jump_probability=0.0,
+        jump_repeat=4,
+        exploit_bias=0.25,
+        max_exploit_probability=0.9,
+        mutation_window_steps=0,
+        retained_limit=8,
+    )
+    search.global_step = search.total_timesteps
+
+    assert search.exploit_probability == 0.9
 
 
 def test_jerk_policy_round_trip_and_lane_resets(tmp_path) -> None:
@@ -154,6 +254,8 @@ def _jerk_context(tmp_path, *, timesteps: int):
         jump_probability=0.0,
         jump_repeat=4,
         exploit_bias=0.25,
+        max_exploit_probability=0.9,
+        mutation_window_steps=0,
         retained_limit=8,
         log_interval_steps=10,
         checkpoint_freq=100,
