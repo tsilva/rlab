@@ -38,6 +38,7 @@ Install and inspect the Mac-side service, then observe jobs:
 
 ```bash
 rlab fleet service install
+rlab fleet service watch
 rlab fleet service status --json
 rlab runs status --machine beast-3 --json
 ```
@@ -46,6 +47,13 @@ Mutating commands wake the service immediately; its 30-second launchd interval
 is the recovery path for missed wake-ups and remote completion. Each invocation
 loads current source, performs one bounded pass, and exits. launchd does not
 overlap invocations of the same service label.
+
+`rlab fleet service watch` is the normal read-only operational view. On an interactive terminal it
+opens a responsive dashboard; `--once`, `--plain`, and `--json` provide scriptable output modes.
+The dashboard reads only launchd registration and the service's redacted atomic state files; it
+does not query PostgreSQL, Docker, SSH, Modal, or W&B. The service records current phases and queue
+classifications so an interrupted pass remains distinguishable from stale completed state. Use
+`rlab fleet service logs --follow` for raw events and `rlab runs status` for exact job history.
 
 `rlab fleet service status --json` exits nonzero when the last pass is stale or degraded, and
 `rlab fleet service doctor` includes the last-pass result rather than treating a merely loaded
@@ -176,8 +184,8 @@ queue service and do not schedule experiments.
 - Default operating shape: 6 train containers.
 - Default runtime shape: goal-declared provider arguments and PyTorch thread defaults.
 - Lower-contention shape: 3-4 workers.
-- Current five-container benchmark expectation: about 6200 aggregate wall FPS
-  for the current Mario PPO shape. Re-measure aggregate wall FPS after the
+- Last measured five-container reference: about 6200 aggregate wall FPS for the
+  then-current Mario PPO shape. Re-measure aggregate wall FPS after the
   six-container shape has enough steady-state samples.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
@@ -297,9 +305,11 @@ revision `5f732c1d` in a detached worktree, using the same installed Turbo provi
 
 ## Provider Contract Preflight Acceptance (2026-07-14)
 
-The `retro-env-throughput-mario-l11` profile was run sequentially on the same idle Mac against
-revision `51f981d4` and the provider-contract working tree based on `60c4f352`, using the installed
-`stable-retro-turbo==1.0.1.post29`. Provider/runtime overhead before and after was `2.61%`/`3.41%`
-at one env, `-0.17%`/`1.36%` at 16 envs, and `0.66%`/`0.60%` at 32 envs. Every case passed the
-profile's `5%` runtime-overhead gate; after-change median runtime SPS was also higher at all three
-env counts.
+The since-retired `retro-env-throughput-mario-l11` profile was run sequentially on the same idle
+Mac against revision `51f981d4` and the provider-contract working tree based on `60c4f352`, using
+the installed `stable-retro-turbo==1.0.1.post29`. Provider/runtime overhead before and after was
+`2.61%`/`3.41%` at one env, `-0.17%`/`1.36%` at 16 envs, and `0.66%`/`0.60%` at 32 envs. Every case
+passed its `5%` runtime-overhead gate; after-change median runtime SPS was also higher at all three
+env counts. The active `mario-env-throughput-l11` successor targets the current
+`supermariobrosnes-turbo` Mario provider, so these historical Stable Retro numbers are not a direct
+baseline for it.

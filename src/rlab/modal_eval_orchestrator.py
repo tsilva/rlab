@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -1961,6 +1961,7 @@ def run_service_eval_pass(
     invoker: ModalInvoker | None = None,
     store: ObjectStore | None = None,
     app_client: ModalAppClient | None = None,
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     config = load_modal_eval_config(repo_root / "experiments" / "modal_eval.yaml")
     if not config.enabled:
@@ -1969,8 +1970,12 @@ def run_service_eval_pass(
     invoker = invoker or DefaultModalInvoker()
     store = store or ObjectStore(object_store_base_uri())
     try:
+        if progress:
+            progress("CHECKING EVALUATION", "Acquiring the Modal evaluation scheduler lock")
         if not _try_lock(conn):
             return {"status": "locked"}
+        if progress:
+            progress("INGESTING EVALUATION", "Reading checkpoint announcements and mailbox events")
         created_runs = ensure_eval_runs(conn)
         canceled_attempts = cancel_requested_attempts(
             conn, invoker, deadline_monotonic=deadline_monotonic
@@ -1978,6 +1983,8 @@ def run_service_eval_pass(
         mailbox_ingested = ingest_mailbox_announcements(conn, store)
         ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
         skipped_decisions = publish_skipped_decisions(conn, store)
+        if progress:
+            progress("POLLING EVALUATION", "Observing submitted Modal attempts and durable results")
         polled = poll_attempts(
             conn,
             store,
@@ -1987,6 +1994,8 @@ def run_service_eval_pass(
         )
         recovered_projections = enqueue_missing_mailbox_projections(conn)
         promotions = enqueue_post_train_promotions(conn)
+        if progress:
+            progress("DISPATCHING EVALUATION", "Filling available evaluation capacity")
         dispatched = dispatch_pending(
             conn,
             store,
@@ -1995,6 +2004,8 @@ def run_service_eval_pass(
             deadline_monotonic=deadline_monotonic,
         )
         reconciled_promotions = reconcile_promotions(conn)
+        if progress:
+            progress("PROJECTING RESULTS", "Publishing evaluation decisions and promoted artifacts")
         projected = project_eval_results(
             conn, repo_root=repo_root, deadline_monotonic=deadline_monotonic
         )
@@ -2009,6 +2020,8 @@ def run_service_eval_pass(
         finalized = finalize_runs(conn)
         finalization_failures = reconcile_train_finalization_failures(conn)
         try:
+            if progress:
+                progress("REMOVING STALE APPS", "Cleaning unused owned Modal deployments")
             app_cleanup = run_modal_app_cleanup(
                 conn,
                 config,

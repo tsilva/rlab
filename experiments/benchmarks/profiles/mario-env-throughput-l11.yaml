@@ -1,0 +1,18 @@
+schema_version: 1
+name: mario-env-throughput-l11
+kind: env_throughput
+description: Paired native-provider and rlab runtime throughput benchmark for the current Mario Level1-1 provider.
+env_provider: supermariobrosnes-turbo
+game: SuperMarioBros-Nes-v0
+state: Level1-1
+modes:
+- compare
+envs:
+- 1
+- 16
+- 32
+steps: 20000
+warmup: 1000
+seed: 123
+repeats: 3
+max_runtime_overhead: 0.05

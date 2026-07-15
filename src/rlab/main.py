@@ -100,7 +100,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "eval": ("run local evals", _eval),
     "play": ("render a local, W&B, or Hugging Face model in a GUI window", _play),
     "import-roms": ("import ROMs into the installed rlab runtime", _import_roms),
-    "benchmark": ("run named smoke, throughput, fleet, and eval-contract profiles", _benchmark),
+    "benchmark": ("run gated local-smoke and throughput profiles", _benchmark),
     "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
     "env": ("list, inspect, and preflight environment providers", _env),
     "runs": ("manage training runs, worker attempts, status, and cancellation", _runs),

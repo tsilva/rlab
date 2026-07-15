@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -313,7 +313,7 @@ def prewarm_latest_runtime(
     }
     try:
         current_state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError, json.JSONDecodeError, OSError:
         current_state = {}
     present = host.runtime_image_present(runtime_image_ref)
     pulled = False
@@ -802,6 +802,7 @@ def run_service_machine_pass(
     machines_path: Path,
     repo_root: Path,
     deadline_monotonic: float,
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     if time.monotonic() >= deadline_monotonic:
         raise TimeoutError(f"machine lane deadline expired before start: {machine_name}")
@@ -809,28 +810,40 @@ def run_service_machine_pass(
     host = DockerRunnerHost(machine, deadline_monotonic=deadline_monotonic)
     conn = None
     try:
+        if progress:
+            progress(
+                "CHECKING MACHINE", f"Connecting to {machine.name} and acquiring its scheduler lock"
+            )
         conn = connect(database_url())
         with machine_mutation_lock(conn, machine.name):
+            if progress:
+                progress(
+                    "RECONCILING TRAIN", "Observing active containers and filling available slots"
+                )
             reconciled, launched = run_reconcile_fill_pass(
                 conn,
                 host=host,
                 shared_env_file=repo_root / DEFAULT_SHARED_RUNNER_ENV_FILE,
             )
+            if progress:
+                progress(
+                    "FINALIZING PUBLICATION", "Recovering any durable train publication outbox"
+                )
             recovered_publications = recover_live_publication(conn, host=host)
             prewarm: dict[str, Any] = {"status": "disabled"}
             prewarmed_ref = ""
             if machine.prewarm_latest_runtime:
                 try:
+                    if progress:
+                        progress(
+                            "PREWARMING RUNTIME",
+                            "Pulling and probing the latest demanded runtime image",
+                        )
                     release = recent_runtime_images(limit=1)[0]
                     prewarmed_ref = release.runtime_image_ref
                     prewarm, prewarmed_ref = prewarm_latest_runtime(
                         host,
-                        state_path=(
-                            repo_root
-                            / "logs"
-                            / "fleet"
-                            / f"prewarm-{machine.name}.json"
-                        ),
+                        state_path=(repo_root / "logs" / "fleet" / f"prewarm-{machine.name}.json"),
                         release=release,
                     )
                 except Exception as exc:
@@ -849,6 +862,11 @@ def run_service_machine_pass(
             pruned = 0
             removed_containers = 0
             if reconciled or launched or _maintenance_due(maintenance_marker):
+                if progress:
+                    progress(
+                        "REMOVING STALE RESOURCES",
+                        "Pruning inactive containers and unused runtime images safely",
+                    )
                 removed_containers = prune_inactive_job_containers(conn, host)
                 pruned = prune_stale_runtime_images(
                     conn,
@@ -870,11 +888,15 @@ def run_service_machine_pass(
             conn.close()
 
 
-def _kick_after_machine_control() -> str:
+def _kick_after_machine_control(reason: str, machine: str) -> str:
     from rlab.fleet_service import kick_service
 
     try:
-        return "kicked" if kick_service() else "degraded"
+        return (
+            "kicked"
+            if kick_service(reason=reason, entity_kind="machine", entity_id=machine)
+            else "degraded"
+        )
     except Exception:
         return "degraded"
 
@@ -893,7 +915,10 @@ def cmd_drain(args: argparse.Namespace) -> int:
         conn.close()
     print(
         json.dumps(
-            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            {
+                "control": json_safe(control),
+                "dispatch": _kick_after_machine_control("machine_drain", args.machine),
+            },
             sort_keys=True,
         )
     )
@@ -909,7 +934,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
         conn.close()
     print(
         json.dumps(
-            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            {
+                "control": json_safe(control),
+                "dispatch": _kick_after_machine_control("machine_resume", args.machine),
+            },
             sort_keys=True,
         )
     )
@@ -936,7 +964,10 @@ def cmd_capacity(args: argparse.Namespace) -> int:
         conn.close()
     print(
         json.dumps(
-            {"control": json_safe(control), "dispatch": _kick_after_machine_control()},
+            {
+                "control": json_safe(control),
+                "dispatch": _kick_after_machine_control("machine_capacity", machine.name),
+            },
             sort_keys=True,
         )
     )

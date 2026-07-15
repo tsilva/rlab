@@ -171,7 +171,7 @@ def summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Benchmark native provider and consolidated batch-runtime steps/sec."
     )
@@ -235,6 +235,7 @@ def main() -> None:
         "config": asdict(config),
         "results": {mode: summarize(values) for mode, values in samples.items()},
     }
+    gate_passed = True
     if args.mode == "compare":
         provider_elapsed = result["results"]["provider"]["median_elapsed_seconds"]
         runtime_elapsed = result["results"]["runtime"]["median_elapsed_seconds"]
@@ -242,8 +243,10 @@ def main() -> None:
         result["runtime_overhead_fraction"] = overhead
         result["max_runtime_overhead_fraction"] = args.max_overhead
         result["overhead_gate_passed"] = overhead <= args.max_overhead
+        gate_passed = bool(result["overhead_gate_passed"])
     print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if gate_passed else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

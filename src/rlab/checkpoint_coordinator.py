@@ -106,7 +106,9 @@ def _eval_payload(args) -> dict[str, Any]:
     if not isinstance(environment, dict):
         raise ValueError("Modal checkpoint eval requires a materialized environment")
     provider = str(getattr(args, "env_provider", "") or "").strip()
-    requires_rom_asset = resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    requires_rom_asset = (
+        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    )
     if requires_rom_asset and not isinstance(asset, dict):
         raise ValueError("Modal checkpoint eval requires a materialized asset manifest")
     if not requires_rom_asset:

@@ -1,10 +1,11 @@
 schema_version: 1
 name: local-smoke-mario-l11
 kind: local_smoke
-description: Tiny local train/save/load/eval smoke on the imported Mario Level1-1 state.
+description: Tiny queue-backed local training and durable-result smoke on Mario Level1-1.
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
 recipe_file: experiments/recipes/mario/single/ppo.yaml
 machine: local-macbook
+seed: 123
 recipe_overrides:
 - recipe_id=benchmark-local-smoke
 - campaign_id=benchmark-local-smoke
@@ -17,7 +18,3 @@ recipe_overrides:
 - logging.wandb=false
 - logging.wandb_mode=disabled
 - logging.wandb_artifact_storage_uri=''
-expectations:
-  train_exit_code: 0
-  status_exit_code: 0
-  result_json_exists: true

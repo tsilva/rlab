@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -10,13 +11,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from logging import Formatter, Logger
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -37,6 +40,7 @@ ReconcileMachine = Callable[[Path, str, float], Mapping[str, Any] | None]
 ReconcileEval = Callable[[Path, float], Mapping[str, Any] | None]
 CountNonterminalJobs = Callable[[Path], int]
 ServiceNotifier = Callable[[str, str], None]
+WorkloadSnapshot = Callable[[Path], Mapping[str, Any]]
 
 SERVICE_ALERT_AFTER_FAILURES = 2
 SERVICE_ALERT_REPEAT_SECONDS = 3600
@@ -81,6 +85,14 @@ class ServicePaths:
     @property
     def last_pass(self) -> Path:
         return self.state_dir / "last-pass.json"
+
+    @property
+    def current_pass(self) -> Path:
+        return self.state_dir / "current-pass.json"
+
+    @property
+    def wake_requests(self) -> Path:
+        return self.state_dir / "wake-requests.json"
 
     @property
     def health(self) -> Path:
@@ -193,6 +205,147 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+@contextmanager
+def _state_file_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def record_wake_request(
+    reason: str,
+    *,
+    entity_kind: str | None = None,
+    entity_id: str | int | None = None,
+    state_dir: Path | str | None = None,
+) -> None:
+    """Persist why a mutating command is waking launchd without exposing command data."""
+
+    paths = default_service_paths(state_dir=state_dir)
+    request = {
+        "requested_at": _iso_utc(),
+        "reason": str(reason).strip() or "unknown",
+        "entity_kind": str(entity_kind or ""),
+        "entity_id": str(entity_id or ""),
+    }
+    lock_path = paths.wake_requests.with_suffix(".lock")
+    with _state_file_lock(lock_path):
+        existing = _load_last_pass(paths.wake_requests) or {}
+        requests = [row for row in existing.get("requests") or [] if isinstance(row, Mapping)]
+        requests.append(request)
+        _atomic_write_json(paths.wake_requests, {"schema_version": 1, "requests": requests[-32:]})
+
+
+def consume_wake_requests(state_dir: Path) -> list[dict[str, str]]:
+    path = state_dir / "wake-requests.json"
+    lock_path = path.with_suffix(".lock")
+    with _state_file_lock(lock_path):
+        existing = _load_last_pass(path) or {}
+        path.unlink(missing_ok=True)
+    requests: list[dict[str, str]] = []
+    for row in existing.get("requests") or []:
+        if not isinstance(row, Mapping):
+            continue
+        requests.append(
+            {
+                "requested_at": str(row.get("requested_at") or ""),
+                "reason": str(row.get("reason") or "unknown"),
+                "entity_kind": str(row.get("entity_kind") or ""),
+                "entity_id": str(row.get("entity_id") or ""),
+            }
+        )
+    return requests
+
+
+def _source_state(repo_root: Path) -> dict[str, Any]:
+    commit = "unknown"
+    dirty = True
+    try:
+        result = _run_command(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            commit = result.stdout.strip()
+        dirty_result = _run_command(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=str(repo_root),
+            check=False,
+        )
+        dirty = dirty_result.returncode != 0 or bool(dirty_result.stdout.strip())
+    except OSError:
+        pass
+    return {"sha": commit, "dirty": dirty}
+
+
+class PassProgress:
+    """Thread-safe, atomic live state for one bounded scheduler pass."""
+
+    def __init__(self, path: Path, payload: Mapping[str, Any]) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._closed = False
+        self._payload = dict(payload)
+        self._payload.setdefault("lanes", {})
+        self._write()
+
+    def _write(self) -> None:
+        if self._closed:
+            return
+        self._payload["updated_at"] = _iso_utc()
+        _atomic_write_json(self.path, redact(self._payload))
+
+    def set_workload(self, workload: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._payload["workload"] = dict(workload)
+            self._write()
+
+    def start_lane(
+        self,
+        lane: str,
+        *,
+        action: str,
+        reason: str,
+        deadline_at: str,
+        entity_kind: str = "",
+        entity_id: str | int = "",
+        blast_radius: str = "",
+        command: str = "",
+    ) -> None:
+        with self._lock:
+            lanes = dict(self._payload.get("lanes") or {})
+            lanes[lane] = {
+                "lane": lane,
+                "action": action,
+                "reason": reason,
+                "started_at": _iso_utc(),
+                "deadline_at": deadline_at,
+                "entity_kind": entity_kind,
+                "entity_id": str(entity_id),
+                "blast_radius": blast_radius,
+                "command": command,
+            }
+            self._payload["lanes"] = lanes
+            self._write()
+
+    def finish_lane(self, lane: str) -> None:
+        with self._lock:
+            lanes = dict(self._payload.get("lanes") or {})
+            lanes.pop(lane, None)
+            self._payload["lanes"] = lanes
+            self._write()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self.path.unlink(missing_ok=True)
+
+
 _SENSITIVE_KEY = re.compile(
     r"(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|database[_-]?url|dsn|"
     r"presigned|signed[_-]?url|(?:get|put)[_-]?url)",
@@ -300,8 +453,19 @@ def kick_service(
     label: str = SERVICE_LABEL,
     *,
     uid: int | None = None,
+    reason: str | None = None,
+    entity_kind: str | None = None,
+    entity_id: str | int | None = None,
+    state_dir: Path | str | None = None,
     runner: CommandRunner = _run_command,
 ) -> bool:
+    if reason:
+        record_wake_request(
+            reason,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            state_dir=state_dir,
+        )
     command = ["launchctl", "kickstart", _target(label, uid)]
     if "-k" in command:
         raise AssertionError("fleet service kick must never terminate an active pass")
@@ -404,7 +568,12 @@ def install_service(
     return InstallResult(
         installed=True,
         replaced=old_data is not None,
-        kicked=kick_service(paths.label, runner=runner),
+        kicked=kick_service(
+            paths.label,
+            reason="service_install",
+            state_dir=paths.state_dir,
+            runner=runner,
+        ),
     )
 
 
@@ -432,17 +601,20 @@ def service_status(
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     loaded = service_is_loaded(paths.label, runner=runner)
+    try:
+        running = service_is_running(paths.label, runner=runner) if loaded else False
+    except OSError:
+        running = False
     last_pass = _load_last_pass(paths.last_pass)
     last_pass_age = _last_pass_age_seconds(last_pass)
-    last_pass_stale = (
-        last_pass_age is None or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2
-    )
+    last_pass_stale = last_pass_age is None or last_pass_age > DEFAULT_PASS_TIMEOUT_SECONDS * 2
     last_pass_status = str((last_pass or {}).get("status") or "missing")
     health = _load_last_pass(paths.health)
     return {
         "label": paths.label,
         "installed": paths.plist.is_file(),
         "loaded": loaded,
+        "running": running,
         "plist": str(paths.plist),
         "repo_root": str(paths.repo_root),
         "python": str(paths.python),
@@ -451,20 +623,13 @@ def service_status(
         "last_pass_age_seconds": last_pass_age,
         "last_pass_stale": last_pass_stale,
         "last_pass_status": last_pass_status,
-        "healthy": bool(
-            loaded
-            and not last_pass_stale
-            and last_pass_status in {"idle", "ok"}
-        ),
+        "healthy": bool(loaded and not last_pass_stale and last_pass_status in {"idle", "ok"}),
         "health": health,
     }
 
 
 def _default_service_notifier(title: str, message: str) -> None:
-    script = (
-        f"display notification {json.dumps(message)} "
-        f"with title {json.dumps(title)}"
-    )
+    script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
     subprocess.run(
         ["/usr/bin/osascript", "-e", script],
         check=False,
@@ -505,9 +670,7 @@ def record_service_health(
     last_notified_age = None
     if last_notified_at:
         try:
-            last_notified = datetime.fromisoformat(
-                str(last_notified_at).replace("Z", "+00:00")
-            )
+            last_notified = datetime.fromisoformat(str(last_notified_at).replace("Z", "+00:00"))
             last_notified_age = (now - last_notified.astimezone(UTC)).total_seconds()
         except ValueError:
             last_notified_age = None
@@ -709,7 +872,12 @@ def schema_change_service_guard(
                 capture_output=True,
                 text=True,
             )
-            kick_service(paths.label, runner=runner)
+            kick_service(
+                paths.label,
+                reason="schema_reload",
+                state_dir=paths.state_dir,
+                runner=runner,
+            )
 
 
 def _default_count_nonterminal_jobs(repo_root: Path) -> int:
@@ -778,20 +946,27 @@ def _default_reconcile_machine(
     repo_root: Path,
     machine_name: str,
     deadline_monotonic: float,
+    *,
+    progress: Callable[[str, str], None] | None = None,
 ) -> Mapping[str, Any] | None:
     from rlab.fleet import run_service_machine_pass
 
-    return run_service_machine_pass(
-        machine_name=machine_name,
-        machines_path=repo_root / "experiments" / "machines.yaml",
-        repo_root=repo_root,
-        deadline_monotonic=deadline_monotonic,
-    )
+    kwargs: dict[str, Any] = {
+        "machine_name": machine_name,
+        "machines_path": repo_root / "experiments" / "machines.yaml",
+        "repo_root": repo_root,
+        "deadline_monotonic": deadline_monotonic,
+    }
+    if progress is not None:
+        kwargs["progress"] = progress
+    return run_service_machine_pass(**kwargs)
 
 
 def _default_reconcile_eval(
     repo_root: Path,
     deadline_monotonic: float,
+    *,
+    progress: Callable[[str, str], None] | None = None,
 ) -> Mapping[str, Any] | None:
     config_path = repo_root / "experiments" / "modal_eval.yaml"
     if not config_path.is_file() and not (repo_root / ".env").is_file():
@@ -799,13 +974,13 @@ def _default_reconcile_eval(
     if config_path.is_file():
         from rlab.modal_eval_orchestrator import run_service_eval_pass
 
-        detail = dict(
-            run_service_eval_pass(
-                repo_root=repo_root,
-                deadline_monotonic=deadline_monotonic,
-            )
-            or {}
-        )
+        kwargs: dict[str, Any] = {
+            "repo_root": repo_root,
+            "deadline_monotonic": deadline_monotonic,
+        }
+        if progress is not None:
+            kwargs["progress"] = progress
+        detail = dict(run_service_eval_pass(**kwargs) or {})
     else:
         detail = {"status": "unconfigured"}
     from rlab.fleet_wandb_publisher import drain_cycle
@@ -816,6 +991,8 @@ def _default_reconcile_eval(
         mailbox_storage_bytes,
     )
 
+    if progress:
+        progress("PUBLISHING TELEMETRY", "Draining mailbox and W&B publication state")
     conn = _connect_queue(repo_root)
     try:
         detail["consumed_attempt_events"] = consume_attempt_events(conn)
@@ -825,13 +1002,377 @@ def _default_reconcile_eval(
         storage_bytes = mailbox_storage_bytes(conn)
         detail["metric_mailbox_bytes"] = storage_bytes
         detail["metric_mailbox_pressure"] = (
-            "hard" if storage_bytes >= 5 * 1024**3
-            else "soft" if storage_bytes >= 1024**3
-            else "ok"
+            "hard" if storage_bytes >= 5 * 1024**3 else "soft" if storage_bytes >= 1024**3 else "ok"
         )
     finally:
         conn.close()
     return detail
+
+
+def _watch_item(
+    entity: str,
+    title: str,
+    detail: str,
+    *,
+    reason_code: str,
+    resolution: str,
+    blast_radius: str,
+    command: str = "",
+    timestamp: object = None,
+) -> dict[str, Any]:
+    return {
+        "id": f"{reason_code}:{entity}",
+        "entity": entity,
+        "title": title,
+        "detail": str(redact(detail)),
+        "reason_code": reason_code,
+        "resolution": resolution,
+        "blast_radius": blast_radius,
+        "command": command,
+        "timestamp": str(timestamp or ""),
+    }
+
+
+def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
+    """Collect the queue state once inside the service; watchers never access PostgreSQL."""
+
+    from rlab.machines import load_machine_registry
+
+    captured_at = _iso_utc()
+    needs_action: list[dict[str, Any]] = []
+    retrying: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    counts: dict[str, dict[str, int]] = {"train": {}, "eval_jobs": {}, "eval_runs": {}}
+    in_progress = 0
+    try:
+        registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
+        hard_capacity = {
+            name: machine.limits.max_parallel_containers
+            for name, machine in registry.machines.items()
+        }
+        conn = _connect_queue(repo_root)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.id, t.machine, t.status, t.cancel_requested, t.error,
+                      t.live_publication_status, t.live_publication_attempts,
+                      t.live_publication_next_retry_at, t.live_publication_error,
+                      t.created_at, t.started_at,
+                      r.status AS eval_status, r.error AS eval_error,
+                      r.artifact_projection_attempts,
+                      r.artifact_projection_next_retry_at,
+                      control.drained AS machine_drained,
+                      control.effective_capacity, control.reason AS control_reason,
+                      launch.state AS launch_state, launch.error AS launch_error,
+                      launch.next_retry_at,
+                      (SELECT COUNT(*) FROM job_launches active
+                       WHERE active.machine = t.machine
+                         AND active.state IN ('launching', 'running')) AS active_reservations
+                    FROM train_jobs t
+                    LEFT JOIN eval_runs r ON r.train_job_id = t.id
+                    LEFT JOIN machine_controls control ON control.machine = t.machine
+                    LEFT JOIN LATERAL (
+                      SELECT state, error, next_retry_at FROM job_launches
+                      WHERE job_id = t.id ORDER BY id DESC LIMIT 1
+                    ) launch ON TRUE
+                    WHERE t.status IN ('pending', 'launching', 'starting', 'running', 'finalizing')
+                       OR r.status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
+                    ORDER BY t.id
+                    LIMIT 500
+                    """
+                )
+                trains = [dict(row) for row in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT j.id, j.train_job_id, j.status, j.purpose, j.stage_name,
+                      j.projection_attempts, j.projection_next_retry_at,
+                      j.projection_error, j.error, j.created_at,
+                      t.status AS train_status, r.status AS eval_run_status,
+                      backend.drained AS backend_drained,
+                      backend.effective_capacity,
+                      (SELECT COUNT(*) FROM eval_attempts a
+                       WHERE a.eval_job_id = j.id
+                         AND a.status IN ('dispatching', 'submitted')) AS active_attempts
+                    FROM eval_jobs j
+                    JOIN train_jobs t ON t.id = j.train_job_id
+                    JOIN eval_runs r ON r.train_job_id = j.train_job_id
+                    LEFT JOIN eval_backend_state backend ON backend.backend = 'modal'
+                    WHERE j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                       OR (j.status = 'succeeded' AND j.projected_at IS NULL
+                           AND j.projection_error IS NOT NULL)
+                    ORDER BY j.id
+                    LIMIT 500
+                    """
+                )
+                eval_jobs = [dict(row) for row in cur.fetchall()]
+                cur.execute("SELECT status, count(*) AS count FROM train_jobs GROUP BY status")
+                counts["train"] = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+                cur.execute("SELECT status, count(*) AS count FROM eval_jobs GROUP BY status")
+                counts["eval_jobs"] = {
+                    str(row["status"]): int(row["count"]) for row in cur.fetchall()
+                }
+                cur.execute("SELECT status, count(*) AS count FROM eval_runs GROUP BY status")
+                counts["eval_runs"] = {
+                    str(row["status"]): int(row["count"]) for row in cur.fetchall()
+                }
+        finally:
+            conn.close()
+
+        terminal_train = {"succeeded", "failed", "finalization_failed", "canceled"}
+        for row in trains:
+            job_id = int(row["id"])
+            entity = f"train/{job_id}"
+            status = str(row.get("status") or "unknown")
+            eval_status = str(row.get("eval_status") or "")
+            if status in {"launching", "starting", "running", "finalizing"}:
+                in_progress += 1
+            if eval_status == "awaiting_artifact_recovery":
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Artifact recovery required",
+                        str(row.get("eval_error") or "Evaluation cannot continue"),
+                        reason_code="artifact_recovery",
+                        resolution="manual action",
+                        blast_radius="checkpoint promotion and publication",
+                        command=f"rlab eval modal recover {job_id}",
+                        timestamp=row.get("started_at"),
+                    )
+                )
+            if status in terminal_train and eval_status in {"active", "finalizing"}:
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Inconsistent terminal state",
+                        f"Training is {status} while evaluation remains {eval_status}",
+                        reason_code="orphaned_eval",
+                        resolution="manual inspection",
+                        blast_radius="evaluation and promotion for this train job",
+                        command=f"rlab runs status --job-id {job_id}",
+                    )
+                )
+            if str(row.get("live_publication_status") or "") == "failed":
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Publication retries exhausted",
+                        str(row.get("live_publication_error") or "Live publication failed"),
+                        reason_code="publication_failed",
+                        resolution="manual action",
+                        blast_radius="W&B publication for this train job",
+                        command=f"rlab runs retry-finalization {job_id}",
+                    )
+                )
+            elif row.get("live_publication_next_retry_at"):
+                retrying.append(
+                    _watch_item(
+                        entity,
+                        "Retrying publication",
+                        "The service will retry the durable publication outbox",
+                        reason_code="publication_retry",
+                        resolution="automatic",
+                        blast_radius="publication only",
+                        timestamp=row.get("live_publication_next_retry_at"),
+                    )
+                )
+            launch_error = str(row.get("launch_error") or "")
+            if row.get("next_retry_at"):
+                retrying.append(
+                    _watch_item(
+                        entity,
+                        "Retrying machine launch",
+                        launch_error or "The launch has a scheduled retry",
+                        reason_code="launch_retry",
+                        resolution="automatic",
+                        blast_radius=entity,
+                        timestamp=row.get("next_retry_at"),
+                    )
+                )
+            if status != "pending":
+                continue
+            if bool(row.get("machine_drained")):
+                waiting.append(
+                    _watch_item(
+                        entity,
+                        f"Waiting for {row['machine']} resume",
+                        str(row.get("control_reason") or "Machine is operator-drained"),
+                        reason_code="machine_drained",
+                        resolution="intentionally paused",
+                        blast_radius=f"pending jobs for {row['machine']}",
+                        command=f"rlab fleet resume --machine {row['machine']}",
+                    )
+                )
+                continue
+            configured = hard_capacity.get(str(row["machine"]))
+            override = row.get("effective_capacity")
+            capacity = (
+                min(configured, int(override))
+                if configured is not None and override is not None
+                else int(override)
+                if override is not None
+                else configured
+            )
+            at_capacity = (
+                capacity is not None and int(row.get("active_reservations") or 0) >= capacity
+            )
+            waiting.append(
+                _watch_item(
+                    entity,
+                    f"Waiting for {row['machine']} capacity"
+                    if at_capacity
+                    else "Queued for next pass",
+                    (
+                        f"{row.get('active_reservations') or 0}/{capacity} train slots reserved"
+                        if at_capacity
+                        else "The scheduler will claim this job automatically"
+                    ),
+                    reason_code="machine_capacity" if at_capacity else "queued",
+                    resolution="automatic",
+                    blast_radius=entity,
+                )
+            )
+
+        for row in eval_jobs:
+            eval_job_id = int(row["id"])
+            train_job_id = int(row["train_job_id"])
+            entity = f"eval/{eval_job_id}"
+            status = str(row.get("status") or "unknown")
+            purpose = str(row.get("purpose") or "evaluation")
+            if status in {"dispatching", "submitted"}:
+                in_progress += 1
+            if (
+                purpose == "promotion"
+                and status == "pending"
+                and row.get("train_status") != "finalizing"
+            ):
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Promotion cannot become dispatchable",
+                        f"train/{train_job_id} is {row.get('train_status')}; promotion requires finalizing",
+                        reason_code="ineligible_promotion",
+                        resolution="manual inspection",
+                        blast_radius=f"promotion for train/{train_job_id}",
+                        command=f"rlab runs status --job-id {train_job_id}",
+                    )
+                )
+                continue
+            if status == "blocked_budget":
+                needs_action.append(
+                    _watch_item(
+                        entity,
+                        "Evaluation budget blocked",
+                        f"{purpose} evaluation cannot reserve its configured budget",
+                        reason_code="budget_blocked",
+                        resolution="manual action",
+                        blast_radius=f"evaluation for train/{train_job_id}",
+                        command="rlab eval modal status",
+                    )
+                )
+                continue
+            if row.get("projection_next_retry_at"):
+                retrying.append(
+                    _watch_item(
+                        entity,
+                        "Retrying evaluation projection",
+                        str(row.get("projection_error") or "Projection retry is scheduled"),
+                        reason_code="projection_retry",
+                        resolution="automatic",
+                        blast_radius=f"evaluation evidence for train/{train_job_id}",
+                        timestamp=row.get("projection_next_retry_at"),
+                    )
+                )
+            if status == "pending":
+                waiting.append(
+                    _watch_item(
+                        entity,
+                        "Waiting for Modal resume"
+                        if row.get("backend_drained")
+                        else "Waiting for evaluation capacity",
+                        f"{purpose} evaluation for train/{train_job_id}",
+                        reason_code="eval_drained"
+                        if row.get("backend_drained")
+                        else "eval_capacity",
+                        resolution="intentionally paused"
+                        if row.get("backend_drained")
+                        else "automatic",
+                        blast_radius=entity,
+                        command="rlab eval modal resume" if row.get("backend_drained") else "",
+                    )
+                )
+    except Exception as exc:
+        needs_action.append(
+            _watch_item(
+                "scheduler",
+                "Work snapshot unavailable",
+                f"{type(exc).__name__}: {exc}",
+                reason_code="snapshot_error",
+                resolution="manual inspection",
+                blast_radius="watcher queue visibility only",
+                command="rlab fleet service logs --tail 100",
+            )
+        )
+
+    def deduplicate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return list({str(item["id"]): item for item in items}.values())
+
+    return redact(
+        {
+            "captured_at": captured_at,
+            "in_progress": in_progress,
+            "counts": counts,
+            "needs_action": deduplicate(needs_action),
+            "retrying": deduplicate(retrying),
+            "waiting": deduplicate(waiting),
+        }
+    )
+
+
+def _meaningful_work_changes(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    before: dict[str, tuple[str, str]] = {}
+    after: dict[str, tuple[str, str]] = {}
+    for bucket in ("needs_action", "retrying", "waiting"):
+        for item in (previous or {}).get(bucket) or []:
+            if isinstance(item, Mapping):
+                before[str(item.get("id"))] = (bucket, str(item.get("title") or ""))
+        for item in current.get(bucket) or []:
+            if isinstance(item, Mapping):
+                after[str(item.get("id"))] = (bucket, str(item.get("title") or ""))
+    changes: list[dict[str, str]] = []
+    for item_id, (bucket, title) in after.items():
+        if before.get(item_id) == (bucket, title):
+            continue
+        item = next(
+            (
+                row
+                for row in current.get(bucket) or []
+                if isinstance(row, Mapping) and str(row.get("id")) == item_id
+            ),
+            {},
+        )
+        changes.append(
+            {
+                "entity": str(item.get("entity") or "scheduler"),
+                "title": title,
+                "detail": str(item.get("detail") or ""),
+                "timestamp": str(current.get("captured_at") or _iso_utc()),
+            }
+        )
+    for item_id, (_bucket, title) in before.items():
+        if item_id not in after:
+            changes.append(
+                {
+                    "entity": item_id.rsplit(":", 1)[-1],
+                    "title": f"Resolved: {title}",
+                    "detail": "The condition is no longer present",
+                    "timestamp": str(current.get("captured_at") or _iso_utc()),
+                }
+            )
+    return changes[:20]
 
 
 def run_service_pass(
@@ -841,6 +1382,7 @@ def run_service_pass(
     discover_machines: DiscoverMachines = _default_discover_machines,
     reconcile_machine: ReconcileMachine = _default_reconcile_machine,
     reconcile_eval: ReconcileEval = _default_reconcile_eval,
+    workload_snapshot: WorkloadSnapshot = _default_workload_snapshot,
     max_machine_lanes: int = DEFAULT_MAX_MACHINE_LANES,
     lane_timeout_seconds: float = DEFAULT_LANE_TIMEOUT_SECONDS,
     pass_timeout_seconds: float = DEFAULT_PASS_TIMEOUT_SECONDS,
@@ -849,17 +1391,60 @@ def run_service_pass(
     started_at = _utc_now()
     started_monotonic = clock()
     pass_deadline = started_monotonic + pass_timeout_seconds
+    deadline_at = _iso_utc(started_at + timedelta(seconds=pass_timeout_seconds))
+    pass_id = uuid.uuid4().hex[:12]
+    previous_pass = _load_last_pass(state_dir / "last-pass.json") or {}
+    wake_requests = consume_wake_requests(state_dir)
+    triggers = wake_requests or [
+        {
+            "requested_at": _iso_utc(started_at),
+            "reason": "interval",
+            "entity_kind": "service",
+            "entity_id": "",
+        }
+    ]
+    source = _source_state(repo_root)
     event_log = ServiceEventLog(state_dir / "service.jsonl")
     summary: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "pass_id": pass_id,
         "started_at": _iso_utc(started_at),
         "repo_root": str(repo_root),
+        "deadline_at": deadline_at,
+        "triggers": triggers,
+        "source": source,
         "status": "running",
         "machines": [],
         "eval": {"status": "running"},
+        "workload": {},
+        "meaningful_changes": [],
     }
-    event_log.emit("pass_started", repo_root=str(repo_root))
+    progress = PassProgress(
+        state_dir / "current-pass.json",
+        {
+            "schema_version": 1,
+            "pass_id": pass_id,
+            "pid": os.getpid(),
+            "started_at": summary["started_at"],
+            "deadline_at": deadline_at,
+            "repo_root": str(repo_root),
+            "triggers": triggers,
+            "source": source,
+            "workload": {},
+            "lanes": {},
+        },
+    )
+    event_log.emit(
+        "pass_started",
+        pass_id=pass_id,
+        repo_root=str(repo_root),
+        triggers=triggers,
+        source=source,
+    )
     try:
+        starting_workload = dict(workload_snapshot(repo_root) or {})
+        summary["workload"] = starting_workload
+        progress.set_workload(starting_workload)
         machine_names = sorted(set(str(name) for name in discover_machines(repo_root)))
         machine_workers = min(int(max_machine_lanes), len(machine_names))
         workers = max(1, machine_workers + 1)
@@ -867,17 +1452,79 @@ def run_service_pass(
             executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rlab-fleet")
             futures: dict[Future[Mapping[str, Any] | None], tuple[str, str, float]] = {}
             try:
+                trigger_reason = ", ".join(
+                    sorted({str(row.get("reason") or "unknown") for row in triggers})
+                )
                 for machine_name in machine_names:
                     lane_deadline = min(pass_deadline, clock() + lane_timeout_seconds)
-                    future = executor.submit(
-                        reconcile_machine,
-                        repo_root,
-                        machine_name,
-                        lane_deadline,
-                    )
+
+                    def run_machine_lane(
+                        name: str = machine_name,
+                        deadline: float = lane_deadline,
+                    ) -> Mapping[str, Any] | None:
+                        lane_deadline_at = _iso_utc(
+                            _utc_now() + timedelta(seconds=max(0.0, deadline - clock()))
+                        )
+                        progress.start_lane(
+                            name,
+                            action="RECONCILING TRAIN",
+                            reason=trigger_reason,
+                            deadline_at=lane_deadline_at,
+                            blast_radius=f"train work assigned to {name}",
+                        )
+                        try:
+                            if reconcile_machine is _default_reconcile_machine:
+                                return _default_reconcile_machine(
+                                    repo_root,
+                                    name,
+                                    deadline,
+                                    progress=lambda action, reason: progress.start_lane(
+                                        name,
+                                        action=action,
+                                        reason=reason,
+                                        deadline_at=lane_deadline_at,
+                                        blast_radius=f"train work assigned to {name}",
+                                    ),
+                                )
+                            return reconcile_machine(repo_root, name, deadline)
+                        finally:
+                            progress.finish_lane(name)
+
+                    future = executor.submit(run_machine_lane)
                     futures[future] = ("machine", machine_name, lane_deadline)
                 eval_deadline = min(pass_deadline, clock() + lane_timeout_seconds)
-                eval_future = executor.submit(reconcile_eval, repo_root, eval_deadline)
+
+                def run_eval_lane() -> Mapping[str, Any] | None:
+                    lane_deadline_at = _iso_utc(
+                        _utc_now() + timedelta(seconds=max(0.0, eval_deadline - clock()))
+                    )
+                    progress.start_lane(
+                        "eval",
+                        action="RECONCILING EVALUATION",
+                        reason=trigger_reason,
+                        deadline_at=lane_deadline_at,
+                        blast_radius="checkpoint evaluation, promotion, and publication",
+                    )
+                    try:
+                        if reconcile_eval is _default_reconcile_eval:
+                            return _default_reconcile_eval(
+                                repo_root,
+                                eval_deadline,
+                                progress=lambda action, reason: progress.start_lane(
+                                    "eval",
+                                    action=action,
+                                    reason=reason,
+                                    deadline_at=lane_deadline_at,
+                                    blast_radius=(
+                                        "checkpoint evaluation, promotion, and publication"
+                                    ),
+                                ),
+                            )
+                        return reconcile_eval(repo_root, eval_deadline)
+                    finally:
+                        progress.finish_lane("eval")
+
+                eval_future = executor.submit(run_eval_lane)
                 futures[eval_future] = ("eval", "modal", eval_deadline)
                 remaining = max(0.0, pass_deadline - clock())
                 done, pending = wait(futures, timeout=remaining)
@@ -924,11 +1571,39 @@ def run_service_pass(
         summary["status"] = "error"
         summary["error"] = redact(str(exc))
     finally:
+        try:
+            final_workload = dict(workload_snapshot(repo_root) or {})
+        except Exception as exc:
+            final_workload = dict(summary.get("workload") or {})
+            final_workload.setdefault("needs_action", []).append(
+                _watch_item(
+                    "scheduler",
+                    "Final work snapshot unavailable",
+                    f"{type(exc).__name__}: {exc}",
+                    reason_code="snapshot_error",
+                    resolution="manual inspection",
+                    blast_radius="watcher queue visibility only",
+                    command="rlab fleet service logs --tail 100",
+                )
+            )
+        summary["workload"] = final_workload
+        summary["meaningful_changes"] = _meaningful_work_changes(
+            previous_pass.get("workload") if isinstance(previous_pass, Mapping) else None,
+            final_workload,
+        )
         summary["finished_at"] = _iso_utc()
         summary["duration_seconds"] = round(max(0.0, clock() - started_monotonic), 6)
         _atomic_write_json(state_dir / "last-pass.json", redact(summary))
+        progress.close()
+        if summary["meaningful_changes"]:
+            event_log.emit(
+                "work_changed",
+                pass_id=pass_id,
+                changes=summary["meaningful_changes"],
+            )
         event_log.emit(
             "pass_finished",
+            pass_id=pass_id,
             status=summary["status"],
             duration_seconds=summary["duration_seconds"],
             machines=summary["machines"],
@@ -1025,6 +1700,12 @@ def cmd_logs(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    from rlab.fleet_watch import run_watch_command
+
+    return run_watch_command(args)
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     changed = uninstall_service(_paths_from_args(args), force=bool(args.force))
     print(json.dumps({"uninstalled": changed}, sort_keys=True))
@@ -1094,6 +1775,15 @@ def add_service_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     logs.add_argument("--tail", type=int, default=100)
     logs.add_argument("--follow", action="store_true")
     logs.set_defaults(func=cmd_logs)
+
+    watch = commands.add_parser("watch", help="Watch scheduler health and current work.")
+    _add_path_arguments(watch)
+    output = watch.add_mutually_exclusive_group()
+    output.add_argument("--once", action="store_true", help="Print one human snapshot and exit.")
+    output.add_argument("--plain", action="store_true", help="Stream append-only human updates.")
+    output.add_argument("--json", action="store_true", help="Print one JSON snapshot and exit.")
+    watch.add_argument("--no-color", action="store_true", help="Use the monochrome TUI theme.")
+    watch.set_defaults(func=cmd_watch)
 
     uninstall = commands.add_parser("uninstall", help="Uninstall the fleet LaunchAgent.")
     _add_path_arguments(uninstall)

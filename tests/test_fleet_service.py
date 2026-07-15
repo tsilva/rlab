@@ -329,14 +329,14 @@ class FleetServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
             notifications = []
+
             def notifier(title, message):
                 notifications.append((title, message))
+
             failed = {
                 "status": "degraded",
                 "eval": {"status": "ok"},
-                "machines": [
-                    {"machine": "beast-2", "status": "error", "error": "unreachable"}
-                ],
+                "machines": [{"machine": "beast-2", "status": "error", "error": "unreachable"}],
             }
 
             first = fleet_service.record_service_health(paths, failed, notifier=notifier)
@@ -369,6 +369,99 @@ class FleetServiceTests(unittest.TestCase):
         self.assertEqual(summary["status"], "idle")
         reconcile.assert_not_called()
 
+    def test_wake_requests_coalesce_and_are_consumed_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "state"
+            fleet_service.record_wake_request(
+                "train_enqueue",
+                entity_kind="batch",
+                entity_id="bx1",
+                state_dir=state_dir,
+            )
+            fleet_service.record_wake_request(
+                "machine_resume",
+                entity_kind="machine",
+                entity_id="beast-3",
+                state_dir=state_dir,
+            )
+            consumed = fleet_service.consume_wake_requests(state_dir)
+            second = fleet_service.consume_wake_requests(state_dir)
+
+        self.assertEqual([row["reason"] for row in consumed], ["train_enqueue", "machine_resume"])
+        self.assertEqual(second, [])
+
+    def test_live_pass_state_is_atomic_visible_and_removed_after_last_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entered = threading.Event()
+            release = threading.Event()
+            result: dict[str, object] = {}
+
+            def reconcile(_repo, _machine, _deadline):
+                entered.set()
+                self.assertTrue(release.wait(timeout=2))
+                return {"launched": 1}
+
+            def run() -> None:
+                result.update(
+                    fleet_service.run_service_pass(
+                        repo_root=root,
+                        state_dir=root / "state",
+                        discover_machines=lambda _repo: ["beast-3"],
+                        reconcile_machine=reconcile,
+                        reconcile_eval=lambda _repo, _deadline: {"status": "ok"},
+                        workload_snapshot=lambda _repo: {
+                            "captured_at": fleet_service._iso_utc(),
+                            "in_progress": 1,
+                            "needs_action": [],
+                            "retrying": [],
+                            "waiting": [],
+                            "counts": {},
+                        },
+                    )
+                )
+
+            thread = threading.Thread(target=run)
+            thread.start()
+            self.assertTrue(entered.wait(timeout=2))
+            current_path = root / "state" / "current-pass.json"
+            current = json.loads(current_path.read_text(encoding="utf-8"))
+            self.assertTrue(current["pass_id"])
+            self.assertIn("beast-3", current["lanes"])
+            self.assertEqual(current["workload"]["in_progress"], 1)
+            release.set()
+            thread.join(timeout=3)
+
+            saved = json.loads((root / "state" / "last-pass.json").read_text(encoding="utf-8"))
+            self.assertFalse(current_path.exists())
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(saved["pass_id"], result["pass_id"])
+        self.assertEqual(saved["schema_version"], 2)
+        self.assertIn("source", saved)
+
+    def test_kick_with_reason_persists_trigger_before_launchctl(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "state"
+            observed: list[dict[str, object]] = []
+
+            def runner(argv, **_kwargs):
+                payload = json.loads((state_dir / "wake-requests.json").read_text())
+                observed.extend(payload["requests"])
+                return completed(argv)
+
+            kicked = fleet_service.kick_service(
+                reason="train_cancel",
+                entity_kind="train",
+                entity_id=31,
+                state_dir=state_dir,
+                runner=runner,
+            )
+
+        self.assertTrue(kicked)
+        self.assertEqual(observed[0]["reason"], "train_cancel")
+        self.assertEqual(observed[0]["entity_id"], "31")
+
     def test_parser_exposes_public_lifecycle_and_internal_run_once(self) -> None:
         parser = fleet_service.build_parser()
         for argv, function in (
@@ -376,6 +469,7 @@ class FleetServiceTests(unittest.TestCase):
             (["service", "status"], fleet_service.cmd_status),
             (["service", "doctor"], fleet_service.cmd_doctor),
             (["service", "logs"], fleet_service.cmd_logs),
+            (["service", "watch"], fleet_service.cmd_watch),
             (["service", "uninstall"], fleet_service.cmd_uninstall),
             (["run-once"], fleet_service.cmd_run_once),
         ):

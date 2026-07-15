@@ -22,6 +22,7 @@ class PublicCliHelpTests(unittest.TestCase):
             (("leaders", "runs", "--help"), "usage: rlab leaders runs"),
             (("reports", "plan", "--help"), "usage: rlab reports plan"),
             (("fleet", "service", "status", "--help"), "usage: rlab fleet service status"),
+            (("fleet", "service", "watch", "--help"), "usage: rlab fleet service watch"),
         )
         for argv, expected_usage in cases:
             with self.subTest(command=" ".join(argv)):

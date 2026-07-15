@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from rlab.config_loader import load_mapping_document
-from rlab.machines import load_machine_registry, resolve_machine
+from rlab.metric_names import validate_metric_name
 from rlab.recipe_documents import compose_train_document
-from rlab.runtime_refs import docker_image_ref, runtime_image_ref_from_file
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.validation import int_list
 from rlab.validation import require_int
@@ -25,22 +24,12 @@ BENCHMARK_PROFILE_SCHEMA_VERSION = 1
 DEFAULT_PROFILE_DIR = Path("experiments/benchmarks/profiles")
 DEFAULT_RESULT_DIR = Path("logs/benchmarks")
 ALLOWED_KINDS = {
-    "artifact_storage_smoke",
-    "container_smoke",
     "env_throughput",
-    "eval_contract",
-    "fleet_capacity",
     "local_smoke",
     "train_loop_throughput",
 }
-COMMON_PROFILE_FIELDS = frozenset(
-    {"schema_version", "name", "kind", "description", "expectations", "artifacts"}
-)
+COMMON_PROFILE_FIELDS = frozenset({"schema_version", "name", "kind", "description"})
 PROFILE_FIELDS_BY_KIND = {
-    "artifact_storage_smoke": frozenset(
-        {"goal_file", "recipe_file", "recipe_overrides", "run_name", "run_description"}
-    ),
-    "container_smoke": frozenset({"runtime_image_ref", "runtime_image_ref_file"}),
     "env_throughput": frozenset(
         {
             "allow_state_none",
@@ -57,10 +46,6 @@ PROFILE_FIELDS_BY_KIND = {
             "warmup",
         }
     ),
-    "eval_contract": frozenset({"artifact_ref", "episodes", "game", "max_steps", "model_path"}),
-    "fleet_capacity": frozenset(
-        {"goal_file", "machine", "recipe_file", "requested_workers", "runtime_image_ref_file"}
-    ),
     "local_smoke": frozenset(
         {
             "machine",
@@ -68,10 +53,19 @@ PROFILE_FIELDS_BY_KIND = {
             "recipe_file",
             "recipe_overrides",
             "runtime_image_ref_file",
+            "seed",
         }
     ),
     "train_loop_throughput": frozenset(
-        {"goal_file", "recipe_file", "recipe_overrides", "run_description", "run_name"}
+        {
+            "goal_file",
+            "recipe_file",
+            "recipe_overrides",
+            "required_metrics",
+            "run_description",
+            "run_name",
+            "seed",
+        }
     ),
 }
 STATE_NONE_VALUES = {"", "none", "state.none"}
@@ -145,15 +139,17 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
     if kind not in ALLOWED_KINDS:
         known = ", ".join(sorted(ALLOWED_KINDS))
         raise ValueError(f"{label}.kind must be one of {known}")
-    if "gates" in payload:
-        raise ValueError(f"{label}.gates is unsupported; use informational expectations")
+    if "expectations" in payload or "gates" in payload:
+        raise ValueError(
+            f"{label} must use executable kind-specific gate fields, not expectations or gates"
+        )
     if "environment_contract" in payload:
         raise ValueError(
             f"{label}.environment_contract is unsupported; derive it from executed inputs"
         )
-    require_mapping(payload.get("expectations", {}), label=f"{label}.expectations")
 
     if kind == "env_throughput":
+        require_non_empty_string(payload, "env_provider", label=label, require_present=False)
         game = require_non_empty_string(payload, "game", label=label, require_present=False)
         state = require_non_empty_string(payload, "state", label=label, require_present=False)
         if _is_state_none(state) and not payload.get("allow_state_none"):
@@ -161,24 +157,40 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
                 f"{label}.state must be an actual saved state for {game}; "
                 "set allow_state_none=true only for emulator hot-path diagnostics"
             )
-        string_list(payload.get("modes", ["fast"]), label=f"{label}.modes")
-        int_list(payload.get("envs", [1]), label=f"{label}.envs")
-        require_int(payload, "steps", label=label, require_present=False)
-        require_int(payload, "warmup", label=label, require_present=False)
+        modes = string_list(payload.get("modes", ["compare"]), label=f"{label}.modes")
+        if modes != ["compare"]:
+            raise ValueError(f"{label}.modes must be [compare] for an executable overhead gate")
+        envs = int_list(payload.get("envs", [1]), label=f"{label}.envs")
+        if any(env_count < 1 for env_count in envs):
+            raise ValueError(f"{label}.envs values must be >= 1")
+        require_int(payload, "steps", label=label, minimum=1, require_present=False)
+        require_int(payload, "warmup", label=label, minimum=0, require_present=False)
         if "repeats" in payload:
             require_int(payload, "repeats", label=label, minimum=1)
+        max_overhead = payload.get("max_runtime_overhead")
+        if (
+            isinstance(max_overhead, bool)
+            or not isinstance(max_overhead, int | float)
+            or max_overhead < 0
+        ):
+            raise ValueError(f"{label}.max_runtime_overhead must be a non-negative number")
 
-    if kind in {"train_loop_throughput", "artifact_storage_smoke"}:
+    if kind == "train_loop_throughput":
         require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
-        string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
-        document = compose_train_document(
-            Path(str(payload["goal_file"])),
-            Path(str(payload["recipe_file"])),
-            recipe_overrides=payload.get("recipe_overrides", ()),
+        string_list(
+            payload.get("recipe_overrides", ()),
+            label=f"{label}.recipe_overrides",
+            allow_empty=True,
         )
-        config = require_mapping(document.get("train_config"), label=f"{label}.train_config")
-        validate_and_normalize_train_config(config, label=f"{label}.train_config")
+        required_metrics = string_list(
+            payload.get("required_metrics", ()), label=f"{label}.required_metrics"
+        )
+        if not required_metrics:
+            raise ValueError(f"{label}.required_metrics must not be empty")
+        for metric_name in required_metrics:
+            validate_metric_name(metric_name)
+        config = _train_loop_config(payload)
         require_non_empty_string(
             config,
             "game",
@@ -186,6 +198,7 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
             require_present=False,
         )
         require_int(config, "timesteps", label=f"{label}.train_config", require_present=False)
+        require_int(payload, "seed", label=label, minimum=0, require_present=False)
 
     if kind == "local_smoke":
         if "workers" in payload:
@@ -193,44 +206,12 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         require_non_empty_string(payload, "goal_file", label=label, require_present=False)
         require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
         require_non_empty_string(payload, "machine", label=label, require_present=False)
-        string_list(payload.get("recipe_overrides", ()), label=f"{label}.recipe_overrides")
-
-    if kind == "fleet_capacity":
-        if "target" in payload or "host" in payload or "workers" in payload:
-            raise ValueError(
-                f"{label} must use machine and requested_workers; hard capacity "
-                "come from experiments/machines.yaml"
-            )
-        if not payload.get("recipe_file"):
-            raise ValueError(f"{label}.recipe_file must be a non-empty string")
-        require_non_empty_string(payload, "goal_file", label=label, require_present=False)
-        require_non_empty_string(payload, "recipe_file", label=label, require_present=False)
-        require_non_empty_string(
-            payload,
-            "runtime_image_ref_file",
-            label=label,
-            require_present=False,
+        string_list(
+            payload.get("recipe_overrides", ()),
+            label=f"{label}.recipe_overrides",
+            allow_empty=True,
         )
-        machine_name = require_non_empty_string(
-            payload, "machine", label=label, require_present=False
-        )
-        requested_workers = require_int(
-            payload,
-            "requested_workers",
-            label=label,
-            minimum=1,
-            require_present=False,
-        )
-        machine = resolve_machine(load_machine_registry(), machine_name)
-        if requested_workers > machine.limits.max_parallel_containers:
-            raise ValueError(
-                f"{label}.requested_workers={requested_workers} exceeds "
-                f"{machine_name} capacity={machine.limits.max_parallel_containers}"
-            )
-
-    if kind == "eval_contract":
-        if not payload.get("artifact_ref") and not payload.get("model_path"):
-            raise ValueError(f"{label} must define artifact_ref or model_path")
+        require_int(payload, "seed", label=label, minimum=0, require_present=False)
 
     allowed_fields = COMMON_PROFILE_FIELDS | PROFILE_FIELDS_BY_KIND[kind]
     unknown_fields = sorted(set(payload) - allowed_fields)
@@ -280,15 +261,6 @@ def _command(
     )
 
 
-def _runtime_image_from_profile(profile: Mapping[str, Any]) -> str:
-    if profile.get("runtime_image_ref"):
-        return docker_image_ref(str(profile["runtime_image_ref"]))
-    path = Path(str(profile.get("runtime_image_ref_file") or "rlab-train-image.json"))
-    if not path.is_file():
-        return f"<runtime-image-from:{path}>"
-    return docker_image_ref(runtime_image_ref_from_file(path))
-
-
 def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     goal_file = str(profile["goal_file"])
     recipe_file = str(profile["recipe_file"])
@@ -302,33 +274,27 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
         recipe_file,
         "--machine",
         machine,
+        "--seed",
+        str(profile.get("seed", 123)),
+        "--checkpoint-eval-backend",
+        "none",
         "--wait",
         "terminal",
+        "--json",
     ]
     if profile.get("runtime_image_ref_file"):
         enqueue.extend(["--runtime-image-ref-file", str(profile["runtime_image_ref_file"])])
-    for override in string_list(profile.get("recipe_overrides", ()), label="recipe_overrides"):
+    for override in string_list(
+        profile.get("recipe_overrides", ()), label="recipe_overrides", allow_empty=True
+    ):
         enqueue.extend(["--set", override])
-    return [
-        _command("train-local-smoke", enqueue),
-        _command(
-            "local-jobs-status",
-            [
-                "rlab",
-                "jobs",
-                "status",
-                "--machine",
-                machine,
-                "--json",
-            ],
-        ),
-    ]
+    return [_command("train-local-smoke", enqueue)]
 
 
 def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     script = str(profile.get("script") or "experiments/scripts/benchmarks/benchmark_env_sps.py")
     commands: list[BenchmarkCommand] = []
-    for mode in string_list(profile.get("modes", ["fast"]), label="modes"):
+    for mode in string_list(profile.get("modes", ["compare"]), label="modes"):
         for envs in int_list(profile.get("envs", [1]), label="envs"):
             commands.append(
                 _command(
@@ -337,7 +303,7 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
                         sys.executable,
                         script,
                         "--env-provider",
-                        str(profile.get("env_provider", "stable-retro-turbo")),
+                        str(profile["env_provider"]),
                         "--game",
                         str(profile["game"]),
                         "--state",
@@ -363,20 +329,32 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
     return commands
 
 
-def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+def _train_loop_config(profile: Mapping[str, Any]) -> dict[str, Any]:
     document = compose_train_document(
         Path(str(profile["goal_file"])),
         Path(str(profile["recipe_file"])),
         recipe_overrides=profile.get("recipe_overrides", ()),
     )
     config = dict(require_mapping(document["train_config"], label="train_config"))
-    config.pop("early_stop", None)
-    config.pop("checkpoint_eval_stages", None)
+    config["checkpoint_eval_backend"] = "none"
+    config["checkpoint_eval_stages"] = []
+    config["early_stop"] = None
+    config["post_train_eval_episodes"] = 0
+    config.pop("checkpoint_eval_asset_manifest", None)
+    config["wandb"] = False
+    config["wandb_mode"] = "disabled"
+    config["wandb_artifact_storage_uri"] = ""
+    config["seed"] = int(profile.get("seed", 123))
     config["run_name"] = str(profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}")
     config["run_description"] = str(
         profile.get("run_description")
         or f"Benchmark profile {profile['name']} training-loop probe."
     )
+    return validate_and_normalize_train_config(config, label="train_loop_benchmark.train_config")
+
+
+def _train_loop_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+    config = _train_loop_config(profile)
     return [
         _command(
             "train",
@@ -387,88 +365,13 @@ def _train_profile_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand
     ]
 
 
-def _container_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    image = _runtime_image_from_profile(profile)
-    argv = [
-        "docker",
-        "run",
-        "--rm",
-        "--entrypoint",
-        "rlab-container-entrypoint",
-        image,
-        "rlab-container-smoke",
-    ]
-    return [_command("container-smoke", argv)]
-
-
-def _fleet_capacity_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    goal_file = str(profile["goal_file"])
-    recipe_file = str(profile["recipe_file"])
-    machine = str(profile["machine"])
-    commands = [
-        _command(
-            "enqueue-train",
-            [
-                "rlab",
-                "train",
-                "--goal-file",
-                goal_file,
-                "--recipe-file",
-                recipe_file,
-                "--machine",
-                machine,
-                "--runtime-image-ref-file",
-                str(profile["runtime_image_ref_file"]),
-                "--wait",
-                "running",
-            ],
-        ),
-        _command(
-            "machine-jobs-status",
-            [
-                "rlab",
-                "jobs",
-                "status",
-                "--machine",
-                machine,
-                "--json",
-            ],
-        ),
-    ]
-    return commands
-
-
-def _eval_contract_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
-    argv = [
-        "rlab",
-        "eval",
-        "--game",
-        str(profile.get("game", "SuperMarioBros-Nes-v0")),
-        "--episodes",
-        str(profile.get("episodes", 5)),
-        "--max-steps",
-        str(profile.get("max_steps", 4500)),
-    ]
-    if profile.get("artifact_ref"):
-        argv.extend(["--artifact", str(profile["artifact_ref"])])
-    else:
-        argv.extend(["--model", str(profile["model_path"])])
-    return [_command("eval-contract", argv)]
-
-
 def build_benchmark_commands(profile: BenchmarkProfile) -> list[BenchmarkCommand]:
     payload = profile.payload
     kind = profile.kind
     if kind == "local_smoke":
         return _local_smoke_commands(payload)
-    if kind == "container_smoke":
-        return _container_smoke_commands(payload)
     if kind == "env_throughput":
         return _env_throughput_commands(payload)
-    if kind in {"artifact_storage_smoke", "train_loop_throughput"}:
-        return _train_profile_commands(payload)
-    if kind == "fleet_capacity":
-        return _fleet_capacity_commands(payload)
-    if kind == "eval_contract":
-        return _eval_contract_commands(payload)
+    if kind == "train_loop_throughput":
+        return _train_loop_commands(payload)
     raise ValueError(f"unsupported benchmark profile kind {kind!r}")

@@ -3279,7 +3279,11 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         )
         timings["enqueue_preflight_seconds"] = time.perf_counter() - enqueue_started
         dispatch_started = time.perf_counter()
-        dispatch = dispatch_fleet_service()
+        dispatch = dispatch_fleet_service(
+            "train_enqueue",
+            entity_kind="batch",
+            entity_id=str(rows[0]["batch_id"]) if rows else "",
+        )
         timings["dispatch_seconds"] = time.perf_counter() - dispatch_started
         wait_result = None
         if args.wait:
@@ -3377,11 +3381,24 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def dispatch_fleet_service() -> str:
+def dispatch_fleet_service(
+    reason: str = "unknown",
+    *,
+    entity_kind: str = "",
+    entity_id: str | int = "",
+) -> str:
     try:
         from rlab.fleet_service import kick_service
 
-        return "kicked" if kick_service() else "degraded"
+        return (
+            "kicked"
+            if kick_service(
+                reason=reason,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            else "degraded"
+        )
     except Exception:
         return "degraded"
 
@@ -3490,7 +3507,11 @@ def cmd_cancel(args: argparse.Namespace) -> int:
             machine=args.machine,
             drain=bool(args.drain),
         )
-        dispatch = dispatch_fleet_service()
+        dispatch = dispatch_fleet_service(
+            "train_cancel",
+            entity_kind="train",
+            entity_id=",".join(str(job_id) for job_id in ids),
+        )
         wait_result = (
             wait_for_job_ids(conn, ids, until="terminal", timeout=float(args.timeout))
             if args.wait and ids
@@ -3557,7 +3578,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
             repo_git_commit=release.source_sha,
             runtime_config_validator=validate_runtime_config,
         )
-        dispatch = dispatch_fleet_service()
+        dispatch = dispatch_fleet_service(
+            "train_retry",
+            entity_kind="train",
+            entity_id=int(row["id"]),
+        )
         wait_result = (
             wait_for_job_ids(
                 conn,
@@ -3593,7 +3618,11 @@ def cmd_retry_finalization(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
         row = retry_train_job_finalization(conn, job_id=int(args.job_id))
-        dispatch = dispatch_fleet_service()
+        dispatch = dispatch_fleet_service(
+            "train_finalization_retry",
+            entity_kind="train",
+            entity_id=int(args.job_id),
+        )
     finally:
         conn.close()
     payload = {"job": row, "dispatch": dispatch}

@@ -4,6 +4,7 @@ kind: train_loop_throughput
 description: Bounded SB3 on-policy throughput probe for the consolidated Mario native-vector runtime.
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
 recipe_file: experiments/recipes/mario/single/ppo.yaml
+seed: 123
 recipe_overrides:
 - train.timesteps=4096
 - train.environment.env_config.n_envs=8
@@ -11,15 +12,8 @@ recipe_overrides:
 - train.backend.config.batch_size=256
 - train.backend.config.n_epochs=1
 - train.checkpoint_freq=0
-- train.post_train_eval_episodes=0
-- logging.wandb=false
-- logging.wandb_mode=disabled
-- logging.wandb_artifact_storage_uri=''
 run_name: benchmark_train_loop_mario_l11
 run_description: Consolidated native-vector SB3 on-policy throughput probe for Mario Level1-1.
-expectations:
-  exit_code: 0
-  required_metrics:
-  - train/throughput/rollout_fps
-  - train/throughput/loop_fps
-  - time/fps
+required_metrics:
+- train/throughput/rollout_fps
+- train/throughput/loop_fps

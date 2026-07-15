@@ -232,7 +232,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertGreaterEqual(report.counts["train_recipes"], 1)
         self.assertGreaterEqual(report.counts["goals"], 1)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
-        self.assertGreaterEqual(report.counts["benchmark_profiles"], 6)
+        self.assertEqual(report.counts["benchmark_profiles"], 3)
 
     def test_breakout_recipe_loads_with_stable_retro_start_state(self) -> None:
         document = compose_train_document(

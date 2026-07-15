@@ -172,7 +172,7 @@ rlab fleet resume --machine beast-3
 rlab fleet service status --json
 rlab eval modal status
 rlab benchmark list
-rlab benchmark run retro-env-throughput-mario-l11 --dry-run
+rlab benchmark run mario-env-throughput-l11 --dry-run
 ```
 
 The command surface is intentionally one binary:
@@ -189,7 +189,7 @@ The command surface is intentionally one binary:
   `rlab jobs` remains a compatibility alias for `rlab runs`.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
 - `rlab reports` plans, explicitly synchronizes, and verifies source-controlled W&B reports.
-- `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
+- `rlab benchmark` runs named local-smoke and throughput profiles with executable gates.
 
 `rlab env list` and `rlab env inspect` are static and do not import provider modules or access
 ROMs. `rlab env check` is an explicit, recipe-backed behavioral probe: it constructs the same
@@ -312,9 +312,16 @@ registered local or SSH Docker machines. Runner machines remain SSH/Docker-only.
 
 ```bash
 rlab fleet service install
+rlab fleet service watch
 rlab fleet service status --json
 rlab runs status --machine beast-3 --json
 ```
+
+`rlab fleet service watch` is the read-only scheduler dashboard: it separates launchd health from
+workload health and shows active reconciliation phases, automatic retries, capacity waits, and
+conditions that need operator attention. Use `--once` for one human snapshot, `--plain` for an
+append-only stream, or `--json` for one structured snapshot. Use `rlab fleet service logs --follow`
+for raw service events and `rlab runs status ...` for full job evidence.
 
 Hard fleet capacity and exact machine configuration come from
 `experiments/machines.yaml`. `INSTANCES.md` is the authoritative operator guide

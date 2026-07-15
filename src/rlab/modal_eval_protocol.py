@@ -40,17 +40,15 @@ def validate_announcement(
         raise ValueError("checkpoint announcement seed protocol mismatch")
     asset = eval_contract.get("asset")
     environment = eval_contract.get("environment")
-    provider = (
-        str(environment.get("env_provider") or "") if isinstance(environment, Mapping) else ""
+    provider = str(environment.get("env_provider") or "") if isinstance(environment, Mapping) else ""
+    requires_rom_asset = (
+        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
     )
-    requires_rom_asset = resolve_env_provider(provider).uses_stable_retro_roms if provider else True
     if requires_rom_asset and not isinstance(asset, Mapping):
         raise ValueError("checkpoint announcement asset contract is missing")
     if isinstance(asset, Mapping):
         _sha256(asset.get("sha256"), label="ROM hash")
-        if not str(asset.get("object_uri") or "") or not str(
-            asset.get("provider_rom_identity") or ""
-        ):
+        if not str(asset.get("object_uri") or "") or not str(asset.get("provider_rom_identity") or ""):
             raise ValueError("checkpoint announcement asset identity is incomplete")
     elif asset is not None:
         raise ValueError("checkpoint announcement asset contract must be an object or null")
@@ -63,7 +61,8 @@ def validate_announcement(
         termination = task.get("termination") if isinstance(task, Mapping) else None
         expected_max_steps = int(
             termination.get("max_episode_steps")
-            if isinstance(termination, Mapping) and termination.get("max_episode_steps") is not None
+            if isinstance(termination, Mapping)
+            and termination.get("max_episode_steps") is not None
             else 0
         )
     expected = {
@@ -76,7 +75,9 @@ def validate_announcement(
             materialized_train_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
         ),
         "asset": expected_asset,
-        "promotion_episodes": int(materialized_train_config.get("post_train_eval_episodes") or 100),
+        "promotion_episodes": int(
+            materialized_train_config.get("post_train_eval_episodes") or 100
+        ),
     }
     if canonical_json(dict(eval_contract)) != canonical_json(expected):
         raise ValueError("checkpoint announcement eval contract does not match the queued contract")
@@ -117,7 +118,11 @@ def build_execution_contract(
         "seed": int(seed),
         "seed_protocol": seed_protocol,
         "asset": (
-            {str(key): value for key, value in asset_manifest.items() if str(key) != "object_uri"}
+            {
+                str(key): value
+                for key, value in asset_manifest.items()
+                if str(key) != "object_uri"
+            }
             if asset_manifest is not None
             else None
         ),
@@ -156,7 +161,9 @@ def job_key(
     )
 
 
-def stage_job_descriptor(announcement: Mapping[str, Any], *, stage_index: int) -> dict[str, Any]:
+def stage_job_descriptor(
+    announcement: Mapping[str, Any], *, stage_index: int
+) -> dict[str, Any]:
     eval_config = announcement.get("eval")
     if not isinstance(eval_config, Mapping):
         raise ValueError("checkpoint announcement is missing eval contract")
@@ -180,7 +187,9 @@ def stage_job_descriptor(announcement: Mapping[str, Any], *, stage_index: int) -
         seed=int(eval_config["seed"]),
         seed_protocol=str(eval_config["seed_protocol"]),
         asset_manifest=(
-            dict(eval_config["asset"]) if isinstance(eval_config.get("asset"), Mapping) else None
+            dict(eval_config["asset"])
+            if isinstance(eval_config.get("asset"), Mapping)
+            else None
         ),
     )
     execution = execution_key(contract)
@@ -222,7 +231,9 @@ def promotion_job_descriptor(announcement: Mapping[str, Any]) -> dict[str, Any]:
         seed=int(eval_config["seed"]),
         seed_protocol=str(eval_config["seed_protocol"]),
         asset_manifest=(
-            dict(eval_config["asset"]) if isinstance(eval_config.get("asset"), Mapping) else None
+            dict(eval_config["asset"])
+            if isinstance(eval_config.get("asset"), Mapping)
+            else None
         ),
     )
     execution = execution_key(contract)
@@ -281,7 +292,6 @@ def validate_attempt_result(
     metrics = result.get("metrics")
     if not isinstance(metrics, Mapping):
         raise ValueError("eval result metrics must be a mapping")
-
     def validate_finite(value: object, *, label: str) -> None:
         if isinstance(value, bool | str) or value is None:
             return

@@ -203,7 +203,9 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
         "checkpoint_sha256": str(contract["checkpoint_sha256"]),
         "runtime_image_ref": str(contract["runtime_image_ref"]),
         "rom_sha256": (
-            str(contract["asset"]["sha256"]) if isinstance(contract.get("asset"), Mapping) else ""
+            str(contract["asset"]["sha256"])
+            if isinstance(contract.get("asset"), Mapping)
+            else ""
         ),
         "seed_protocol": str(contract["seed_protocol"]),
         "n_envs": int(contract["n_envs"]),
@@ -231,9 +233,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(asset, Mapping):
                 cache_dir = Path("/tmp/rlab-modal-assets") / str(asset["sha256"])
                 cached_rom = cache_dir / str(asset["filename"])
-                cache_valid = cached_rom.is_file() and file_sha256(cached_rom) == str(
-                    asset["sha256"]
-                )
+                cache_valid = cached_rom.is_file() and file_sha256(cached_rom) == str(asset["sha256"])
                 if not cache_valid:
                     cached_rom.unlink(missing_ok=True)
                     cache_dir.mkdir(parents=True, exist_ok=True)

@@ -110,12 +110,14 @@ class ModalEvalContractTests(unittest.TestCase):
         )
 
         self.assertIsNone(eval_contract["asset"])
-        result = validate_attempt_result(
-            successful_result(eval_contract),
-            contract=eval_contract,
-            attempt_id="attempt",
+        self.assertEqual(
+            validate_attempt_result(
+                successful_result(eval_contract),
+                contract=eval_contract,
+                attempt_id="attempt",
+            )["rom_sha256"],
+            "",
         )
-        self.assertEqual(result["rom_sha256"], "")
 
     def test_modal_and_local_full_eval_publish_the_same_metric_projection(self) -> None:
         raw_metrics = {
@@ -731,16 +733,16 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 eval_environment={"env_provider": "rlab", "game": "Bandit-v0"},
                 episodes=1,
                 n_envs=1,
-                max_steps=10,
+                max_steps=1,
                 seed=10_000,
                 seed_protocol=SEED_PROTOCOL,
                 asset_manifest=None,
             )
             payload = {
-                "attempt_id": "worker-attempt",
+                "attempt_id": "rom-free-attempt",
                 "contract": eval_contract,
                 "expires_at": time.time() + 60,
-                "child_timeout_seconds": 1,
+                "child_timeout_seconds": 10,
                 "model_get_url": model.resolve().as_uri(),
                 "metadata_get_url": metadata.resolve().as_uri(),
                 "metadata_sha256": file_sha256(metadata),
@@ -748,7 +750,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 "result_put_url": result_path.resolve().as_uri(),
             }
 
-            def successful_child(command, **_kwargs):
+            def finish_child(command, **_kwargs):
                 child_input = Path(command[command.index("--input") + 1])
                 child_output = Path(command[command.index("--output") + 1])
                 request = json.loads(child_input.read_text(encoding="utf-8"))
@@ -763,17 +765,16 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0)
 
             with mock.patch(
-                "rlab.modal_eval_worker.subprocess.run",
-                side_effect=successful_child,
+                "rlab.modal_eval_worker.subprocess.run", side_effect=finish_child
             ):
                 execute_attempt(payload)
 
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-            self.assertEqual(result["status"], "succeeded")
-            self.assertEqual(result["rom_sha256"], "")
+            evidence = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["status"], "succeeded")
+            self.assertEqual(evidence["rom_sha256"], "")
 
     def test_artifact_projection_embeds_checkpoint_playback_metadata(self) -> None:
         class FakeArtifact:

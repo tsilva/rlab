@@ -48,10 +48,10 @@ def _conn():
     return connect(database_url())
 
 
-def _kick() -> None:
+def _kick(reason: str, *, entity_kind: str = "eval", entity_id: str | int = "") -> None:
     from rlab.fleet_service import kick_service
 
-    kick_service()
+    kick_service(reason=reason, entity_kind=entity_kind, entity_id=entity_id)
 
 
 def _missing_schema_tables(conn) -> list[str]:
@@ -319,7 +319,9 @@ def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> 
                 )
                 row = dict(cur.fetchone())
         print(json.dumps(row, sort_keys=True, default=str))
-        _kick()
+        _kick(
+            "modal_drain" if drained else "modal_resume", entity_kind="backend", entity_id="modal"
+        )
         return 0
     finally:
         conn.close()
@@ -352,7 +354,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
         if not row:
             raise ValueError("eval job is not retryable or has exhausted two attempts")
         print(json.dumps(dict(row), sort_keys=True, default=str))
-        _kick()
+        _kick("modal_eval_retry", entity_id=int(args.eval_job_id))
         return 0
     finally:
         conn.close()
@@ -363,7 +365,7 @@ def cmd_retry_projection(args: argparse.Namespace) -> int:
     try:
         retry_train_job_finalization(conn, job_id=int(args.train_job_id))
         print(json.dumps({"train_job_id": int(args.train_job_id), "projection_retried": True}))
-        _kick()
+        _kick("modal_projection_retry", entity_kind="train", entity_id=int(args.train_job_id))
         return 0
     finally:
         conn.close()
@@ -431,7 +433,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 if not cur.fetchone():
                     raise RuntimeError("eval run left awaiting_artifact_recovery during recovery")
         print(json.dumps({"train_job_id": int(args.train_job_id), "recovered": True}))
-        _kick()
+        _kick("modal_artifact_recovery", entity_kind="train", entity_id=int(args.train_job_id))
         return 0
     finally:
         conn.close()
@@ -443,7 +445,7 @@ def cmd_assets_sync(args: argparse.Namespace) -> int:
         rom_path=args.rom_path,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))
-    _kick()
+    _kick("modal_assets_sync", entity_kind="game", entity_id=args.game)
     return 0
 
 
