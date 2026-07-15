@@ -21,13 +21,20 @@ JERK_POLICY_MEMBER = "jerk_policy.json"
 @dataclass
 class RetainedSequence:
     actions: tuple[int, ...]
-    returns: list[float] = field(default_factory=list)
+    return_sum: float = 0.0
+    return_count: int = 0
     completed: bool = False
     progress: float = 0.0
 
     @property
     def mean_return(self) -> float:
-        return float(np.mean(self.returns)) if self.returns else float("-inf")
+        return self.return_sum / self.return_count if self.return_count else float("-inf")
+
+    def observe(self, value: float, *, completed: bool, progress: float) -> None:
+        self.return_sum += float(value)
+        self.return_count += 1
+        self.completed |= bool(completed)
+        self.progress = max(self.progress, float(progress))
 
     @property
     def rank(self) -> tuple[float, ...]:
@@ -46,10 +53,7 @@ class _LaneState:
     episode_return: float = 0.0
     best_return: float = float("-inf")
     best_length: int = 0
-    phase_steps: int = 0
-    phase_return: float = 0.0
-    jumping_left: int = 0
-    exploit_candidate: RetainedSequence | None = None
+    archive_candidate: RetainedSequence | None = None
     replay_limit: int = 0
 
 
@@ -63,17 +67,11 @@ class JerkSearch:
         seed: int,
         total_timesteps: int,
         action_names: Sequence[str],
-        forward_action: str,
-        jump_action: str,
-        backtrack_action: str,
         fallback_action: str,
-        forward_steps: int,
-        backtrack_steps: int,
-        jump_probability: float,
-        jump_repeat: int,
-        exploit_bias: float,
-        max_exploit_probability: float,
-        mutation_window_steps: int,
+        archive_replay_probability_initial: float,
+        archive_replay_probability_max: float,
+        protected_prefix_steps: int,
+        max_prefix_shorten_steps: int,
         retained_limit: int,
     ) -> None:
         if n_envs < 1:
@@ -82,33 +80,36 @@ class JerkSearch:
         self.total_timesteps = max(int(total_timesteps), 1)
         self.action_names = tuple(str(name) for name in action_names)
         indices = {name: index for index, name in enumerate(self.action_names)}
-        required = (forward_action, jump_action, backtrack_action, fallback_action)
-        missing = sorted(set(required) - set(indices))
-        if missing:
+        if not self.action_names:
+            raise ValueError("JERK requires at least one action name")
+        if fallback_action not in indices:
             raise ValueError(
-                f"JERK action names are absent from the task action set: {', '.join(missing)}"
+                f"JERK fallback action is absent from the task action set: {fallback_action}"
             )
-        self.forward_action = indices[forward_action]
-        self.jump_action = indices[jump_action]
-        self.backtrack_action = indices[backtrack_action]
         self.fallback_action = indices[fallback_action]
-        self.forward_steps = int(forward_steps)
-        self.backtrack_steps = int(backtrack_steps)
-        self.jump_probability = float(jump_probability)
-        self.jump_repeat = int(jump_repeat)
-        self.exploit_bias = float(exploit_bias)
-        self.max_exploit_probability = float(max_exploit_probability)
-        if not 0.0 <= self.exploit_bias <= self.max_exploit_probability <= 1.0:
+        self.archive_replay_probability_initial = float(archive_replay_probability_initial)
+        self.archive_replay_probability_max = float(archive_replay_probability_max)
+        if not (
+            0.0
+            <= self.archive_replay_probability_initial
+            <= self.archive_replay_probability_max
+            <= 1.0
+        ):
             raise ValueError(
-                "JERK probabilities must satisfy 0 <= exploit_bias <= max_exploit_probability <= 1"
+                "JERK probabilities must satisfy 0 <= archive_replay_probability_initial "
+                "<= archive_replay_probability_max <= 1"
             )
-        self.mutation_window_steps = int(mutation_window_steps)
-        if self.mutation_window_steps < 0:
-            raise ValueError("JERK mutation_window_steps must be non-negative")
+        self.protected_prefix_steps = int(protected_prefix_steps)
+        self.max_prefix_shorten_steps = int(max_prefix_shorten_steps)
+        if self.protected_prefix_steps < 0:
+            raise ValueError("JERK protected_prefix_steps must be non-negative")
+        if self.max_prefix_shorten_steps < 1:
+            raise ValueError("JERK max_prefix_shorten_steps must be positive")
         self.retained_limit = int(retained_limit)
         self.global_step = 0
         self.completed_episodes = 0
-        self.exploit_episodes = 0
+        self.archive_replay_episodes = 0
+        self.archive_selected_prefix_return_sum = 0.0
         self._retained: dict[tuple[int, ...], RetainedSequence] = {}
         self._lanes = [_LaneState() for _ in range(self.n_envs)]
         self._rngs = [
@@ -117,60 +118,71 @@ class JerkSearch:
         ]
 
     @property
-    def exploit_probability(self) -> float:
+    def archive_replay_probability(self) -> float:
         return min(
-            self.max_exploit_probability,
-            self.exploit_bias + self.global_step / self.total_timesteps,
+            self.archive_replay_probability_max,
+            self.archive_replay_probability_initial + self.global_step / self.total_timesteps,
         )
+
+    @property
+    def archive_selected_prefix_return_mean(self) -> float:
+        if not self.archive_replay_episodes:
+            return 0.0
+        return self.archive_selected_prefix_return_sum / self.archive_replay_episodes
 
     @property
     def retained_count(self) -> int:
         return len(self._retained)
 
-    def _best_retained(self) -> RetainedSequence | None:
-        return max(self._retained.values(), key=lambda candidate: candidate.rank, default=None)
+    def _retained_distribution(self) -> tuple[list[RetainedSequence], np.ndarray]:
+        candidates = sorted(self._retained.values(), key=lambda candidate: candidate.actions)
+        returns = np.asarray([candidate.mean_return for candidate in candidates], dtype=np.float64)
+        weights = returns - float(np.min(returns)) + 1e-12
+        probabilities = weights / float(np.sum(weights))
+        return candidates, probabilities
+
+    def _sample_retained(self, lane: int) -> RetainedSequence:
+        candidates, probabilities = self._retained_distribution()
+        index = int(self._rngs[lane].choice(len(candidates), p=probabilities))
+        return candidates[index]
 
     def _start_lane(self, lane: int) -> None:
         state = _LaneState()
-        candidate = self._best_retained()
-        if candidate is not None and self._rngs[lane].random() < self.exploit_probability:
-            state.mode = "exploit"
-            state.exploit_candidate = candidate
-            rewind_limit = min(self.mutation_window_steps, len(candidate.actions))
-            rewind_steps = int(self._rngs[lane].integers(0, rewind_limit + 1))
-            state.replay_limit = len(candidate.actions) - rewind_steps
-            self.exploit_episodes += 1
+        if self._retained and self._rngs[lane].random() < self.archive_replay_probability:
+            candidate = self._sample_retained(lane)
+            state.mode = "replay"
+            state.archive_candidate = candidate
+            length = len(candidate.actions)
+            if length > self.protected_prefix_steps:
+                shorten_limit = min(
+                    self.max_prefix_shorten_steps,
+                    length - self.protected_prefix_steps,
+                )
+                shorten_steps = int(self._rngs[lane].integers(1, shorten_limit + 1))
+                state.replay_limit = length - shorten_steps
+            else:
+                state.replay_limit = length
+            self.archive_replay_episodes += 1
+            self.archive_selected_prefix_return_sum += candidate.mean_return
         self._lanes[lane] = state
 
-    def _next_exploration_action(self, lane: int, state: _LaneState) -> int:
-        if state.mode == "backtrack":
-            return self.backtrack_action
-        if state.jumping_left > 0:
-            state.jumping_left -= 1
-            return self.jump_action
-        if self._rngs[lane].random() < self.jump_probability:
-            state.jumping_left = self.jump_repeat - 1
-            return self.jump_action
-        return self.forward_action
+    def _next_exploration_action(self, lane: int) -> int:
+        return int(self._rngs[lane].integers(0, len(self.action_names)))
 
     def next_actions(self) -> np.ndarray:
         actions = np.empty(self.n_envs, dtype=np.int64)
         for lane, state in enumerate(self._lanes):
-            if state.mode == "exploit":
-                candidate = state.exploit_candidate
+            if state.mode == "replay":
+                candidate = state.archive_candidate
                 if candidate is not None and len(state.actions) < state.replay_limit:
                     action = candidate.actions[len(state.actions)]
                 else:
                     state.mode = "explore"
-                    state.exploit_candidate = None
-                    state.phase_steps = 0
-                    state.phase_return = 0.0
-                    state.jumping_left = 0
-                    action = self._next_exploration_action(lane, state)
+                    state.archive_candidate = None
+                    action = self._next_exploration_action(lane)
             else:
-                action = self._next_exploration_action(lane, state)
+                action = self._next_exploration_action(lane)
             state.actions.append(int(action))
-            state.phase_steps += 1
             actions[lane] = action
         return actions
 
@@ -195,13 +207,26 @@ class JerkSearch:
             score_return = state.best_return
         if not actions or not math.isfinite(score_return):
             return
+        self._upsert_retained(
+            actions,
+            score_return=score_return,
+            completed=completed,
+            progress=progress,
+        )
+
+    def _upsert_retained(
+        self,
+        actions: tuple[int, ...],
+        *,
+        score_return: float,
+        completed: bool,
+        progress: float,
+    ) -> None:
         candidate = self._retained.get(actions)
         if candidate is None:
             candidate = RetainedSequence(actions=actions)
             self._retained[actions] = candidate
-        candidate.returns.append(float(score_return))
-        candidate.completed = candidate.completed or completed
-        candidate.progress = max(candidate.progress, progress)
+        candidate.observe(score_return, completed=completed, progress=progress)
         if len(self._retained) > self.retained_limit:
             retained = sorted(self._retained.values(), key=lambda item: item.rank, reverse=True)
             self._retained = {item.actions: item for item in retained[: self.retained_limit]}
@@ -221,43 +246,24 @@ class JerkSearch:
         for lane, state in enumerate(self._lanes):
             reward = float(rewards_array[lane])
             state.episode_return += reward
-            state.phase_return += reward
             if state.episode_return > state.best_return:
                 state.best_return = state.episode_return
                 state.best_length = len(state.actions)
             if dones_array[lane]:
                 record = records_by_lane.get(lane)
-                if state.mode == "exploit" and state.exploit_candidate is not None:
-                    completed, progress = self._record_facts(record)
-                    state.exploit_candidate.returns.append(state.episode_return)
-                    state.exploit_candidate.completed |= completed
-                    state.exploit_candidate.progress = max(
-                        state.exploit_candidate.progress, progress
-                    )
-                else:
-                    self._retain_exploration(state, record)
+                self._retain_exploration(state, record)
                 self.completed_episodes += 1
                 self._start_lane(lane)
-                continue
-            if state.mode == "explore" and state.phase_steps >= self.forward_steps:
-                if state.phase_return <= 0.0:
-                    state.mode = "backtrack"
-                state.phase_steps = 0
-                state.phase_return = 0.0
-            elif state.mode == "backtrack" and state.phase_steps >= self.backtrack_steps:
-                state.mode = "explore"
-                state.phase_steps = 0
-                state.phase_return = 0.0
-                state.jumping_left = 0
 
     def best_candidate(self) -> RetainedSequence | None:
         candidates = list(self._retained.values())
         for state in self._lanes:
-            if state.mode != "exploit" and state.best_length > 0:
+            if state.mode != "replay" and state.best_length > 0:
                 candidates.append(
                     RetainedSequence(
                         actions=tuple(state.actions[: state.best_length]),
-                        returns=[state.best_return],
+                        return_sum=state.best_return,
+                        return_count=1,
                     )
                 )
         return max(candidates, key=lambda candidate: candidate.rank, default=None)

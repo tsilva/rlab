@@ -6,6 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from rlab.fleet_wandb_publisher import (
+    _cursor_mapping,
+    _partition_batches,
+    _summary_step_max,
+)
 from rlab.metric_store import MetricStore
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
 
@@ -25,6 +30,41 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    def test_wandb_nested_summary_mapping_is_accepted(self) -> None:
+        class ItemsOnly:
+            def items(self):
+                return (("train-7", 3),)
+
+        self.assertEqual(
+            _cursor_mapping(ItemsOnly()),
+            {"train-7": 3},
+        )
+
+    def test_wandb_nested_step_summary_mapping_is_accepted(self) -> None:
+        class ItemsOnly:
+            def items(self):
+                return (("max", 4196496),)
+
+        self.assertEqual(_summary_step_max(ItemsOnly()), 4196496.0)
+        self.assertEqual(_summary_step_max({"max": 2000000}), 2000000.0)
+        self.assertIsNone(_summary_step_max({}))
+
+    def test_mailbox_batches_have_distinct_confirmed_submitted_and_new_states(self) -> None:
+        batches = [
+            {"id": 1, "stream_id": "train-7", "batch_sequence": 1, "submitted_sequence": 2},
+            {"id": 2, "stream_id": "train-7", "batch_sequence": 2, "submitted_sequence": 2},
+            {"id": 3, "stream_id": "train-7", "batch_sequence": 3, "submitted_sequence": 2},
+        ]
+
+        confirmed, awaiting, unpublished = _partition_batches(
+            batches,
+            {"train-7": 1},
+        )
+
+        self.assertEqual([row["id"] for row in confirmed], [1])
+        self.assertEqual([row["id"] for row in awaiting], [2])
+        self.assertEqual([row["id"] for row in unpublished], [3])
+
     def test_late_evaluations_keep_their_checkpoint_steps_without_internal_step(self) -> None:
         run = FakeRun()
         run.log({"global_step": 300, "train/throughput/loop_fps": 10.0})

@@ -678,9 +678,7 @@ def accept_attempt_result(
     if str(attempt["purpose"]) == "screen" and isinstance(preview, Mapping):
         decision["preview"] = dict(preview)
     train_config = dict(attempt.get("train_config") or {})
-    if str(train_config.get("telemetry_transport") or "legacy_local") != (
-        "neon_mailbox_v1"
-    ):
+    if str(train_config.get("telemetry_transport") or "legacy_local") != ("neon_mailbox_v1"):
         store.put_json(
             f"eval-decisions/{int(attempt['train_job_id'])}/{attempt['job_key']}.json",
             decision,
@@ -755,8 +753,7 @@ def accept_attempt_result(
                     },
                 )
     if (
-        str(train_config.get("telemetry_transport") or "legacy_local")
-        == "neon_mailbox_v1"
+        str(train_config.get("telemetry_transport") or "legacy_local") == "neon_mailbox_v1"
         and str(attempt["purpose"]) != "promotion"
     ):
         from rlab.telemetry_mailbox import enqueue_projection_payload
@@ -1585,9 +1582,7 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
         "checkpoint_step": job["checkpoint_step"],
         "canonical_promotion": bool(job["canonical_promotion"]),
     }
-    if str(job["train_config"].get("telemetry_transport") or "legacy_local") == (
-        "neon_mailbox_v1"
-    ):
+    if str(job["train_config"].get("telemetry_transport") or "legacy_local") == ("neon_mailbox_v1"):
         from rlab.telemetry_mailbox import enqueue_projection_payload
 
         enqueue_projection_payload(conn, eval_job_id=int(job["id"]), payload=payload)
@@ -1742,44 +1737,14 @@ def project_artifact_references(
         return 0
     run = dict(run)
     train_job_id = int(run["train_job_id"])
-    if str(run["train_config"].get("telemetry_transport") or "legacy_local") == (
-        "neon_mailbox_v1"
-    ):
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE eval_runs
-                    SET next_artifact_projection_id = next_announcement_id,
-                        promoted_artifact_projected_at = CASE
-                          WHEN promoted_eval_job_id IS NOT NULL
-                            THEN COALESCE(promoted_artifact_projected_at, now())
-                          ELSE promoted_artifact_projected_at
-                        END,
-                        artifacts_projected_at = now(),
-                        artifact_projection_attempts = 0,
-                        artifact_projection_next_retry_at = NULL,
-                        error = NULL,
-                        updated_at = now()
-                    WHERE train_job_id = %(train_job_id)s
-                    """,
-                    {"train_job_id": train_job_id},
-                )
-        return 1
-    complete = store.get_json_optional(f"artifact-announcements/{train_job_id}/complete.json")
-    if complete is None:
-        return 0
-    ordinal = int(run["next_artifact_projection_id"])
-    last_ordinal = int(complete.get("last_ledger_id") or 0)
-    promoted_ledger_id = (
-        int(run["promoted_ledger_id"])
-        if run.get("promoted_ledger_id") is not None
-        else None
+    mailbox_transport = (
+        str(run["train_config"].get("telemetry_transport") or "legacy_local") == "neon_mailbox_v1"
     )
-    if (
-        promoted_ledger_id is not None
-        and run.get("promoted_artifact_projected_at") is None
-    ):
+    ordinal = int(run["next_artifact_projection_id"])
+    promoted_ledger_id = (
+        int(run["promoted_ledger_id"]) if run.get("promoted_ledger_id") is not None else None
+    )
+    if promoted_ledger_id is not None and run.get("promoted_artifact_projected_at") is None:
         if ordinal > promoted_ledger_id:
             with conn:
                 with conn.cursor() as cur:
@@ -1863,6 +1828,27 @@ def project_artifact_references(
                         },
                     )
         return int(error is None)
+    if mailbox_transport:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET next_artifact_projection_id = next_announcement_id,
+                        artifacts_projected_at = now(),
+                        artifact_projection_attempts = 0,
+                        artifact_projection_next_retry_at = NULL,
+                        error = NULL,
+                        updated_at = now()
+                    WHERE train_job_id = %(train_job_id)s
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+        return 1
+    complete = store.get_json_optional(f"artifact-announcements/{train_job_id}/complete.json")
+    if complete is None:
+        return 0
+    last_ordinal = int(complete.get("last_ledger_id") or 0)
     if ordinal > last_ordinal:
         with conn:
             with conn.cursor() as cur:

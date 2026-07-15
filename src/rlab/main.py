@@ -53,6 +53,12 @@ def _leaders(argv: Sequence[str]) -> int:
     return _run(leaders_main, argv)
 
 
+def _reports(argv: Sequence[str]) -> int:
+    from rlab.wandb_reports import main as reports_main
+
+    return _run(reports_main, argv)
+
+
 def _run_job(argv: Sequence[str]) -> int:
     from rlab.run_job import main as run_job_main
 
@@ -100,6 +106,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "runs": ("manage training runs, worker attempts, status, and cancellation", _runs),
     "jobs": ("legacy alias for rlab runs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
+    "reports": ("plan, synchronize, and verify declarative W&B reports", _reports),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
     "run-job": ("run one claimed job payload inside a container", _run_job),
 }

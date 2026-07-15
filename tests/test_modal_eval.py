@@ -912,6 +912,85 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         statements = [call.args[0] for call in cursor.execute.call_args_list]
         self.assertTrue(any("promoted_artifact_projected_at = now()" in sql for sql in statements))
 
+    def test_mailbox_run_projects_promoted_artifact_before_marking_complete(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        promoted_announcement = {
+            "kind": "checkpoint",
+            "model_uri": "s3://bucket/promoted/model.zip",
+            "metadata_uri": "s3://bucket/promoted/metadata.json",
+            "sha256": "a" * 64,
+            "metadata_sha256": "b" * 64,
+            "step": 2_000_000,
+        }
+        cursor.fetchone.return_value = {
+            "train_job_id": 37,
+            "train_config": {"wandb": True, "telemetry_transport": "neon_mailbox_v1"},
+            "next_artifact_projection_id": 1,
+            "promoted_ledger_id": 4,
+            "promoted_announcement": promoted_announcement,
+            "promoted_artifact_projected_at": None,
+        }
+        store = mock.MagicMock()
+        store.get_json.return_value = {"training_metadata": {"env_config": {}}}
+        captured = {}
+
+        def fake_execute(payload, **_kwargs):
+            captured.update(payload)
+            return None
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator._execute_projection",
+            side_effect=fake_execute,
+        ):
+            projected = project_artifact_references(
+                conn,
+                store,
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+            )
+
+        self.assertEqual(projected, 1)
+        self.assertEqual(captured["checkpoint_uri"], promoted_announcement["model_uri"])
+        self.assertEqual(captured["artifact_aliases"], ["latest", "promoted", "step-2000000"])
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("promoted_artifact_projected_at = now()" in sql for sql in statements))
+
+    def test_identical_model_bytes_allow_distinct_checkpoint_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            objects = ObjectStore((root / "objects").resolve().as_uri())
+            store = MetricStore(root / "rlab.sqlite")
+            store.init()
+            args = SimpleNamespace(
+                queue_train_job_id=9,
+                checkpoint_eval_environment={},
+                checkpoint_eval_stages=[],
+                checkpoint_eval_asset_manifest={"game": "Game-Nes-v0"},
+                checkpoint_eval_n_envs=1,
+                post_train_eval_episodes=1,
+                post_train_eval_max_steps=10,
+            )
+            for index, kind in enumerate(("interrupted", "final"), start=1):
+                model = root / f"{kind}.zip"
+                metadata = root / f"{kind}.metadata.json"
+                model.write_bytes(b"same-model")
+                metadata.write_text(json.dumps({"kind": kind}) + "\n", encoding="utf-8")
+                store.record_checkpoint(
+                    run_name="smoke",
+                    kind=kind,
+                    step=index,
+                    path=model,
+                    metadata_path=metadata,
+                )
+                row = store.pending_artifact_uploads(limit=1)[0]
+                self.assertTrue(process_upload(store, objects, args, row))
+
+            first = objects.get_json("artifact-announcements/9/00000001.json")
+            second = objects.get_json("artifact-announcements/9/00000002.json")
+            self.assertEqual(first["model_uri"], second["model_uri"])
+            self.assertNotEqual(first["metadata_uri"], second["metadata_uri"])
+
     def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
         store = ObjectStore("s3://bucket/prefix")
         with (

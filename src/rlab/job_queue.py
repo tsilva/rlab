@@ -262,11 +262,13 @@ CREATE TABLE IF NOT EXISTS metric_streams (
   attempt_id TEXT NOT NULL REFERENCES worker_attempts(attempt_id) ON DELETE CASCADE,
   accepted_sequence BIGINT NOT NULL DEFAULT 0 CHECK (accepted_sequence >= 0),
   final_sequence BIGINT CHECK (final_sequence IS NULL OR final_sequence >= 0),
+  submitted_sequence BIGINT NOT NULL DEFAULT 0 CHECK (submitted_sequence >= 0),
   published_sequence BIGINT NOT NULL DEFAULT 0 CHECK (published_sequence >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (final_sequence IS NULL OR accepted_sequence >= final_sequence),
-  CHECK (accepted_sequence >= published_sequence)
+  CHECK (accepted_sequence >= submitted_sequence),
+  CHECK (submitted_sequence >= published_sequence)
 );
 
 CREATE TABLE IF NOT EXISTS metric_batches (
@@ -371,6 +373,14 @@ ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
 ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS last_error TEXT;
 ALTER TABLE attempt_events DROP CONSTRAINT IF EXISTS attempt_events_attempts_check;
 ALTER TABLE attempt_events ADD CONSTRAINT attempt_events_attempts_check CHECK (attempts >= 0);
+ALTER TABLE metric_streams ADD COLUMN IF NOT EXISTS submitted_sequence BIGINT NOT NULL DEFAULT 0;
+UPDATE metric_streams
+SET submitted_sequence = GREATEST(submitted_sequence, published_sequence);
+ALTER TABLE metric_streams DROP CONSTRAINT IF EXISTS metric_streams_sequence_order_check;
+ALTER TABLE metric_streams ADD CONSTRAINT metric_streams_sequence_order_check CHECK (
+  accepted_sequence >= submitted_sequence
+  AND submitted_sequence >= published_sequence
+);
 ALTER TABLE eval_attempts ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS telemetry_transport TEXT NOT NULL
   DEFAULT 'legacy_local';

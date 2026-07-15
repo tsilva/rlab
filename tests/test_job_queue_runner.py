@@ -567,6 +567,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("'finalization_failed'", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS worker_attempts", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS metric_streams", job_queue.SCHEMA_SQL)
+        self.assertIn("submitted_sequence BIGINT", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS metric_batches", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_events", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_commands", job_queue.SCHEMA_SQL)
@@ -1295,9 +1296,7 @@ class JobQueueTests(unittest.TestCase):
         }
         terminal_launch = {**launch, "state": "succeeded"}
         job = {"id": 7, "run_name": "run", "status": "finalizing"}
-        conn = FakeConnection(
-            results=[{"row": launch}, {"row": terminal_launch}, {"row": job}, {}]
-        )
+        conn = FakeConnection(results=[{"row": launch}, {"row": terminal_launch}, {"row": job}, {}])
 
         job_queue.finish_train_launch_from_result(
             conn,
@@ -1428,7 +1427,10 @@ class JobQueueTests(unittest.TestCase):
             "recipe_payload_json": {},
             "runtime_image_ref": RUNTIME_IMAGE_REF,
             "machine": "beast-3",
-            "train_config": explicit_train_config(checkpoint_eval_backend="modal"),
+            "train_config": explicit_train_config(
+                checkpoint_eval_backend="modal",
+                goal_contract_sha256="f" * 64,
+            ),
             "batch_id": "b-test",
             "campaign_id": "b93",
             "run_name": "candidate-s23",
@@ -1487,6 +1489,10 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(insert_params["batch_id"], "b-test")
         self.assertEqual(insert_params["goal_path"], source["goal_path"])
         self.assertEqual(insert_params["goal_sha256"], source["goal_sha256"])
+        self.assertEqual(
+            insert_params["train_config"].adapted["goal_contract_sha256"],
+            source["train_config"]["goal_contract_sha256"],
+        )
         self.assertEqual(insert_params["campaign_id"], "b93")
         self.assertEqual(insert_params["wandb_group"], "b-test")
         self.assertIn("campaign_id:b93", insert_params["wandb_tags"])

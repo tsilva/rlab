@@ -1626,6 +1626,7 @@ dependencies = [
     { name = "tensorboard" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "wandb" },
+    { name = "wandb-workspaces" },
 ]
 
 [package.dev-dependencies]
@@ -1658,6 +1659,7 @@ requires-dist = [
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==2.11.0" },
     { name = "wandb", specifier = ">=0.18,<0.23" },
+    { name = "wandb-workspaces", specifier = ">=0.4,<0.5" },
 ]
 
 [package.metadata.requires-dev]
@@ -2054,6 +2056,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/91/1decaf1a6ac2017481c782e0fad7f90bc9ae4057f3d76d478cb6527f3dd3/wandb-0.22.3-py3-none-win32.whl", hash = "sha256:09ca1edfe0fd6dc30447d368acddb825668e60ee705c98594a6bbfd30d34d47e", size = 19160297, upload-time = "2025-10-28T23:59:01.536Z" },
     { url = "https://files.pythonhosted.org/packages/4c/ba/3b092634279994b0c79fe05220532822be09f3a353ae95c54e7142769db8/wandb-0.22.3-py3-none-win_amd64.whl", hash = "sha256:55403bf93872c9978433d101324f51e43e78c70c809bf6d06ca7b2760e39f497", size = 19160300, upload-time = "2025-10-28T23:59:04.06Z" },
     { url = "https://files.pythonhosted.org/packages/7f/80/4662fce9eebcc8c71f5083e9152ccaf7d43d4ca9c446e1422f9aa784a51c/wandb-0.22.3-py3-none-win_arm64.whl", hash = "sha256:49f66b05882abfa53816cc8d01b3c2435a89c5a090176802fa6928b5979d34d9", size = 17461959, upload-time = "2025-10-28T23:59:07.059Z" },
+]
+
+[[package]]
+name = "wandb-workspaces"
+version = "0.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "wandb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/93/eb/b2669ea4e5883b55c44555607eaa552a839b101aa14a6d01818c0ed55c82/wandb_workspaces-0.4.4.tar.gz", hash = "sha256:084a006ca2735cb77634fd5b7d4e1c1d57c642d8601739797258349710db9edc", size = 238003, upload-time = "2026-06-25T20:17:47.845Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/36/531a070834fd33c729d5b6b56f5a6ce74c5aa0f07831420343349eae1475/wandb_workspaces-0.4.4-py3-none-any.whl", hash = "sha256:60ab10d4f648cf7c142fd8cbf105840685bb5013c39c921471c6c061a57ce4b0", size = 111957, upload-time = "2026-06-25T20:17:46.574Z" },
 ]
 
 [[package]]

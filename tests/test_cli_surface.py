@@ -20,6 +20,7 @@ class PublicCliHelpTests(unittest.TestCase):
             (("env", "check", "--help"), "usage: rlab env check"),
             (("jobs", "cancel", "--help"), "usage: rlab jobs cancel"),
             (("leaders", "runs", "--help"), "usage: rlab leaders runs"),
+            (("reports", "plan", "--help"), "usage: rlab reports plan"),
             (("fleet", "service", "status", "--help"), "usage: rlab fleet service status"),
         )
         for argv, expected_usage in cases:

@@ -662,6 +662,20 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
             issues, path, repo_root, lambda path=path: validate_goal_contract(path, repo_root)
         )
 
+    report_manifests = sorted(
+        path for path in goals_dir.rglob("_reports.yaml") if _active_experiment_path(path)
+    )
+    counts["report_manifests"] = len(report_manifests)
+    if report_manifests:
+        from rlab.wandb_reports import validate_report_declarations
+
+        _capture_issue(
+            issues,
+            report_manifests[0],
+            repo_root,
+            lambda: validate_report_declarations(repo_root),
+        )
+
     legacy_goal_recipes = sorted(
         path
         for path in (experiments_dir / "goals").rglob("recipes/*.yaml")

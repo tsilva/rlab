@@ -1,0 +1,59 @@
+name: rlab report declarations
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/rlab-reports-validate.yml
+      - experiments/goals/**/_goal*.yaml
+      - experiments/goals/**/_report*.yaml
+      - src/rlab/config_validation.py
+      - src/rlab/main.py
+      - src/rlab/metric_names.py
+      - src/rlab/recipe_documents.py
+      - src/rlab/train_config.py
+      - src/rlab/wandb_reports.py
+      - tests/test_cli_surface.py
+      - tests/test_config_validation.py
+      - tests/test_wandb_reports.py
+      - METRICS.md
+      - pyproject.toml
+      - uv.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/rlab-reports-validate.yml
+      - experiments/goals/**/_goal*.yaml
+      - experiments/goals/**/_report*.yaml
+      - src/rlab/config_validation.py
+      - src/rlab/main.py
+      - src/rlab/metric_names.py
+      - src/rlab/recipe_documents.py
+      - src/rlab/train_config.py
+      - src/rlab/wandb_reports.py
+      - tests/test_cli_surface.py
+      - tests/test_config_validation.py
+      - tests/test_wandb_reports.py
+      - METRICS.md
+      - pyproject.toml
+      - uv.lock
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install locked development environment
+        run: uv sync --frozen --group dev
+      - name: Validate checked-in declarations
+        run: uv run --no-sync rlab validate
+      - name: Test report compiler and public CLI
+        run: uv run --no-sync pytest -q tests/test_wandb_reports.py tests/test_cli_surface.py
+      - name: Lint report implementation
+        run: uv run --no-sync ruff check src/rlab/wandb_reports.py tests/test_wandb_reports.py

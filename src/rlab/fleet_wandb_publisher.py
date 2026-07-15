@@ -13,6 +13,7 @@ from rlab.telemetry_mailbox import (
     claim_run_metric_batches,
     commit_published_batches,
     decode_metric_batch,
+    mark_submitted_batches,
     release_metric_batch_claims,
     release_wandb_run_lock,
 )
@@ -38,6 +39,28 @@ class InvalidTelemetryBatchError(RuntimeError):
     pass
 
 
+def _cursor_mapping(raw: object) -> dict[str, int]:
+    items = getattr(raw, "items", None)
+    if not callable(items):
+        return {}
+    return {str(key): int(value) for key, value in items()}
+
+
+def _summary_step_max(raw: object) -> float | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    items = getattr(raw, "items", None)
+    if not callable(items):
+        return None
+    try:
+        value = dict(items()).get("max")
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _train_config(run: dict[str, Any]) -> dict[str, Any]:
     config = dict(run.get("train_config") or {})
     for key in (
@@ -51,7 +74,9 @@ def _train_config(run: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _remote_cursors(train_config: dict[str, Any]) -> dict[str, int]:
+def _remote_publication_state(
+    train_config: dict[str, Any],
+) -> tuple[dict[str, int], float | None]:
     load_wandb_env()
     import wandb
 
@@ -65,91 +90,39 @@ def _remote_cursors(train_config: dict[str, Any]) -> dict[str, int]:
     try:
         remote = wandb.Api().run(f"{entity}/{project}/{run_id}")
     except Exception:
-        return {}
-    raw = dict(remote.summary).get(SUMMARY_CURSOR_KEY) or {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(key): int(value) for key, value in raw.items()}
+        return {}, None
+    summary = dict(remote.summary)
+    raw = summary.get(SUMMARY_CURSOR_KEY) or {}
+    return _cursor_mapping(raw), _summary_step_max(summary.get("global_step"))
 
 
-def _confirm_remote_cursors(
-    train_config: dict[str, Any],
-    expected: dict[str, int],
-) -> None:
-    actual = _remote_cursors(train_config)
-    missing = {
-        stream_id: sequence
-        for stream_id, sequence in expected.items()
-        if int(actual.get(stream_id, 0)) < int(sequence)
-    }
-    if missing:
-        raise RuntimeError(f"W&B telemetry cursor confirmation is incomplete: {missing}")
-
-
-def publish_claimed_run(
-    conn,
-    run: dict[str, Any],
+def _partition_batches(
     batches: list[dict[str, Any]],
-) -> int:
-    train_config = _train_config(run)
-    decoded: dict[int, list[dict[str, Any]]] = {}
-    for batch in batches:
-        try:
-            frames = decode_metric_batch(bytes(batch["payload"]))
-        except Exception as exc:
-            raise InvalidTelemetryBatchError(str(exc)) from exc
-        unsupported = {
-            str(frame.get("kind") or "history") for frame in frames
-        } - SUPPORTED_FRAME_KINDS
-        if unsupported:
-            raise InvalidTelemetryBatchError(
-                f"unsupported telemetry frame kinds: {sorted(unsupported)}"
-            )
-        decoded[int(batch["id"])] = frames
-    expected: dict[str, int] = {}
+    remote: dict[str, int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    confirmed: list[dict[str, Any]] = []
+    awaiting_confirmation: list[dict[str, Any]] = []
+    unpublished: list[dict[str, Any]] = []
     for row in batches:
         stream_id = str(row["stream_id"])
-        expected[stream_id] = max(expected.get(stream_id, 0), int(row["batch_sequence"]))
-    remote = _remote_cursors(train_config)
-    unpublished = [
-        row
-        for row in batches
-        if int(remote.get(str(row["stream_id"]), 0)) < int(row["batch_sequence"])
-    ]
-    if unpublished:
-        projector = WandbProjector.resume(train_config, allow_create=True)
-        try:
-            train_config["wandb_url"] = str(getattr(projector.run, "url", "") or "")
-            args = SimpleNamespace(**train_config)
-            config = resolve_env_config(env_config_from_args(args, include_states=True))
-            for batch in unpublished:
-                for frame in decoded[int(batch["id"])]:
-                    kind = str(frame.get("kind") or "history")
-                    payload = dict(frame["payload"])
-                    if kind == "projection":
-                        project_payload_to_run(
-                            projector.run,
-                            payload,
-                            allow_artifact_references=False,
-                        )
-                    else:
-                        _publish_frame(
-                            projector.run,
-                            {
-                                "kind": kind,
-                                "payload_json": __import__("json").dumps(payload),
-                            },
-                            args=args,
-                            config=config,
-                        )
-            merged = dict(remote)
-            for stream_id, sequence in expected.items():
-                merged[stream_id] = max(int(merged.get(stream_id, 0)), int(sequence))
-            projector.run.summary[SUMMARY_CURSOR_KEY] = merged
-        finally:
-            projector.close()
-    _confirm_remote_cursors(train_config, expected)
-    commit_published_batches(conn, batches)
+        sequence = int(row["batch_sequence"])
+        if int(remote.get(stream_id, 0)) >= sequence:
+            confirmed.append(row)
+        elif int(row.get("submitted_sequence") or 0) >= sequence:
+            awaiting_confirmation.append(row)
+        else:
+            unpublished.append(row)
+    return confirmed, awaiting_confirmation, unpublished
+
+
+def _record_committed_effects(
+    conn,
+    *,
+    run: dict[str, Any],
+    batches: list[dict[str, Any]],
+    decoded: dict[int, list[dict[str, Any]]],
+    wandb_url: str | None,
+) -> None:
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -172,15 +145,13 @@ def publish_claimed_run(
                       ELSE 'pending'
                     END,
                     live_publication_error = NULL,
-                    wandb_url = COALESCE(
-                      wandb_url,
-                      %(wandb_url)s
-                    )
+                    live_publication_next_retry_at = NULL,
+                    wandb_url = COALESCE(wandb_url, %(wandb_url)s)
                 WHERE t.id = %(train_job_id)s
                 """,
                 {
                     "train_job_id": int(run["id"]),
-                    "wandb_url": str(train_config.get("wandb_url") or "") or None,
+                    "wandb_url": wandb_url,
                 },
             )
             projection_ids: list[int] = []
@@ -201,7 +172,109 @@ def publish_claimed_run(
                     """,
                     {"ids": sorted(set(projection_ids))},
                 )
-    return len(batches)
+
+
+def publish_claimed_run(
+    conn,
+    run: dict[str, Any],
+    batches: list[dict[str, Any]],
+) -> int:
+    train_config = _train_config(run)
+    decoded: dict[int, list[dict[str, Any]]] = {}
+    for batch in batches:
+        try:
+            frames = decode_metric_batch(bytes(batch["payload"]))
+        except Exception as exc:
+            raise InvalidTelemetryBatchError(str(exc)) from exc
+        unsupported = {
+            str(frame.get("kind") or "history") for frame in frames
+        } - SUPPORTED_FRAME_KINDS
+        if unsupported:
+            raise InvalidTelemetryBatchError(
+                f"unsupported telemetry frame kinds: {sorted(unsupported)}"
+            )
+        decoded[int(batch["id"])] = frames
+    remote, remote_step_max = _remote_publication_state(train_config)
+    confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
+    if confirmed:
+        commit_published_batches(conn, confirmed)
+        _record_committed_effects(
+            conn,
+            run=run,
+            batches=confirmed,
+            decoded=decoded,
+            wandb_url=None,
+        )
+    if awaiting_confirmation:
+        mark_submitted_batches(conn, awaiting_confirmation)
+    wandb_url: str | None = None
+    if unpublished:
+        session_step_max = remote_step_max
+        expected: dict[str, int] = {}
+        for row in unpublished:
+            stream_id = str(row["stream_id"])
+            expected[stream_id] = max(expected.get(stream_id, 0), int(row["batch_sequence"]))
+        projector = WandbProjector.resume(train_config, allow_create=True)
+        try:
+            wandb_url = str(getattr(projector.run, "url", "") or "") or None
+            args = SimpleNamespace(**train_config)
+            config = resolve_env_config(env_config_from_args(args, include_states=True))
+            for batch in unpublished:
+                for frame in decoded[int(batch["id"])]:
+                    try:
+                        frame_step = float(frame["global_step"])
+                    except (KeyError, TypeError, ValueError):
+                        frame_step = None
+                    if frame_step is not None:
+                        session_step_max = max(session_step_max or frame_step, frame_step)
+                    kind = str(frame.get("kind") or "history")
+                    payload = dict(frame["payload"])
+                    if kind == "projection":
+                        project_payload_to_run(
+                            projector.run,
+                            payload,
+                            allow_artifact_references=False,
+                        )
+                    else:
+                        _publish_frame(
+                            projector.run,
+                            {
+                                "kind": kind,
+                                "payload_json": __import__("json").dumps(payload),
+                            },
+                            args=args,
+                            config=config,
+                        )
+            merged = dict(remote)
+            for stream_id, sequence in expected.items():
+                merged[stream_id] = max(int(merged.get(stream_id, 0)), int(sequence))
+            projector.run.summary[SUMMARY_CURSOR_KEY] = merged
+            if session_step_max is not None:
+                summary_step: int | float = session_step_max
+                if session_step_max.is_integer():
+                    summary_step = int(session_step_max)
+                projector.run.summary["global_step"] = {"max": summary_step}
+        finally:
+            projector.close()
+        mark_submitted_batches(conn, unpublished)
+    if awaiting_confirmation or unpublished:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET live_publication_status = 'pending',
+                        live_publication_error = NULL,
+                        live_publication_next_retry_at = NULL,
+                        wandb_url = COALESCE(wandb_url, %(wandb_url)s)
+                    WHERE id = %(train_job_id)s
+                    """,
+                    {
+                        "train_job_id": int(run["id"]),
+                        "wandb_url": wandb_url,
+                    },
+                )
+    return len(confirmed)
 
 
 def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> int:
@@ -224,9 +297,7 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
                         "train_job_id": int(run["id"]),
                         "error": repr(exc)[:4000],
                         "publication_status": (
-                            "failed"
-                            if isinstance(exc, InvalidTelemetryBatchError)
-                            else "pending"
+                            "failed" if isinstance(exc, InvalidTelemetryBatchError) else "pending"
                         ),
                     },
                 )

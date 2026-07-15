@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -79,6 +80,13 @@ GOAL_OWNED_ENV_CONFIG_KEYS = train_config_keys_owned_by("goal_environment") | {
     "env_id",
 }
 GOAL_OWNED_OBJECTIVE_CONFIG_KEYS = train_config_keys_owned_by("goal_objective")
+
+
+def goal_contract_sha256(document: Mapping[str, Any]) -> str:
+    """Hash the fully composed semantic goal contract, excluding source formatting."""
+
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _contains_secret_key(value: Any, path: str = "") -> str | None:
@@ -522,6 +530,9 @@ def compose_train_document(
         path=goal_path,
         goal_composition=goal_composition,
     )
+    document["train_config"]["goal_contract_sha256"] = goal_contract_sha256(
+        goal_composition.document
+    )
     document = attach_environment_identity(document)
     if recipe_override_list:
         document["recipe_overrides"] = recipe_override_list
@@ -608,6 +619,9 @@ def recipe_metadata(
         "goal_slug": recipe_goal_slug(document),
         "goal_path": str(goal_path),
         "goal_sha256": file_sha256(goal_path),
+        "goal_contract_sha256": str(
+            document.get("train_config", {}).get("goal_contract_sha256") or ""
+        ),
         "recipe_slug": slug,
         "recipe_path": str(recipe_path),
         "recipe_sha256": file_sha256(recipe_path),

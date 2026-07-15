@@ -1,0 +1,23 @@
+schema_version: 1
+
+portfolio:
+  title: SuperMarioBros-NES research goal portfolio
+  sections:
+  - goal_navigation
+  - checkpoint_leaders
+  - active_runs
+
+goal:
+  enabled: true
+  title: "{goal_id}: {goal_title}"
+  sections:
+  - objective_summary
+  - checkpoint_leaderboard
+  - evaluation_progress
+  - evaluation_by_start
+  - training_progress
+  - active_runs
+  - failure_reasons
+  - algorithm_health
+  - throughput
+  - historical_contracts

@@ -6,22 +6,16 @@ description: >-
   Knowledge, accepting and publishing the first open-loop action sequence that completes the
   level; exhausting the transition budget without a completion is unsuccessful.
 train:
-  timesteps: 1000000
+  timesteps: 10000000
   backend:
     id: rlab.jerk
     config:
       acceptance_mode: first_training_success
-      exploit_bias: 0.25
-      max_exploit_probability: 0.9
-      mutation_window_steps: 128
-      forward_steps: 100
-      backtrack_steps: 70
-      jump_probability: 0.1
-      jump_repeat: 4
+      archive_replay_probability_initial: 0.25
+      archive_replay_probability_max: 0.9
+      protected_prefix_steps: 128
+      max_prefix_shorten_steps: 128
       retained_limit: 256
-      forward_action: right_b
-      jump_action: right_a_b
-      backtrack_action: left
       fallback_action: noop
       log_interval_steps: 10000
 logging:

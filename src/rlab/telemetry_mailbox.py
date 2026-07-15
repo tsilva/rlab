@@ -127,7 +127,9 @@ def decode_metric_batch(payload: bytes) -> list[dict[str, Any]]:
             sequence = int(raw.get("sequence"))
             float(raw.get("observed_at"))
         except (TypeError, ValueError) as exc:
-            raise MailboxProtocolError("metric batch frame sequence or timestamp is invalid") from exc
+            raise MailboxProtocolError(
+                "metric batch frame sequence or timestamp is invalid"
+            ) from exc
         if sequence < 1:
             raise MailboxProtocolError("metric batch frame sequence must be positive")
         payload_value = raw.get("payload")
@@ -336,7 +338,7 @@ def claim_run_metric_batches(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT b.*, s.published_sequence
+                    SELECT b.*, s.submitted_sequence, s.published_sequence
                     FROM metric_batches b
                     JOIN metric_streams s ON s.stream_id = b.stream_id
                     JOIN worker_attempts a ON a.attempt_id = s.attempt_id
@@ -421,6 +423,49 @@ def commit_published_batches(conn, batches: Sequence[Mapping[str, Any]]) -> None
                     {"stream_id": stream_id, "sequence": sequence},
                 )
             cur.execute("DELETE FROM metric_batches WHERE id = ANY(%(ids)s)", {"ids": ids})
+
+
+def mark_submitted_batches(
+    conn,
+    batches: Sequence[Mapping[str, Any]],
+    *,
+    confirm_after_seconds: float = 30.0,
+) -> None:
+    """Record W&B submission without treating it as remote confirmation."""
+
+    if not batches:
+        return
+    grouped: dict[str, int] = {}
+    ids: list[int] = []
+    for row in batches:
+        stream_id = str(row["stream_id"])
+        grouped[stream_id] = max(grouped.get(stream_id, 0), int(row["batch_sequence"]))
+        ids.append(int(row["id"]))
+    with conn:
+        with conn.cursor() as cur:
+            for stream_id, sequence in grouped.items():
+                cur.execute(
+                    """
+                    UPDATE metric_streams
+                    SET submitted_sequence = GREATEST(submitted_sequence, %(sequence)s),
+                        updated_at = now()
+                    WHERE stream_id = %(stream_id)s
+                    """,
+                    {"stream_id": stream_id, "sequence": sequence},
+                )
+            cur.execute(
+                """
+                UPDATE metric_batches
+                SET lease_owner = NULL,
+                    lease_expires_at = now() + (%(delay)s * interval '1 second'),
+                    last_error = NULL
+                WHERE id = ANY(%(ids)s)
+                """,
+                {
+                    "ids": ids,
+                    "delay": max(float(confirm_after_seconds), 0.0),
+                },
+            )
 
 
 def mailbox_storage_bytes(conn) -> int:

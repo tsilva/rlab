@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rlab.artifacts import checkpoint_step, load_model_metadata, model_metadata_path, write_model_metadata
+from rlab.artifacts import (
+    checkpoint_step,
+    load_model_metadata,
+    model_metadata_path,
+    write_model_metadata,
+)
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.metric_names import (
@@ -111,9 +116,7 @@ def _eval_payload(args) -> dict[str, Any]:
         "n_envs": int(getattr(args, "checkpoint_eval_n_envs", 1)),
         "max_steps": _max_steps(args),
         "seed": int(getattr(args, "checkpoint_eval_seed", DEFAULT_EVAL_SEED)),
-        "seed_protocol": str(
-            getattr(args, "checkpoint_eval_seed_protocol", SEED_PROTOCOL)
-        ),
+        "seed_protocol": str(getattr(args, "checkpoint_eval_seed_protocol", SEED_PROTOCOL)),
         "asset": asset,
         "promotion_episodes": int(getattr(args, "post_train_eval_episodes", 100)),
     }
@@ -144,7 +147,9 @@ def checkpoint_announcement(
     }
 
 
-def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dict[str, Any]) -> bool:
+def process_upload(
+    store: MetricStore, object_store: ObjectStore, args, row: dict[str, Any]
+) -> bool:
     checkpoint_id = int(row["id"])
     if not store.claim_artifact_upload(checkpoint_id):
         return False
@@ -153,15 +158,15 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
     try:
         sha256 = str(row.get("sha256") or "") or file_sha256(model_path)
         store.set_checkpoint_sha256(checkpoint_id, sha256)
+        if not metadata_path.is_file():
+            raise FileNotFoundError(f"checkpoint metadata is missing: {metadata_path}")
+        metadata_sha = file_sha256(metadata_path)
         prefix = f"checkpoints/{int(getattr(args, 'queue_train_job_id', 0))}/{sha256}"
         model_uri = object_store.put_file(
             f"{prefix}/model.zip", model_path, sha256=sha256, content_type="application/zip"
         )
-        if not metadata_path.is_file():
-            raise FileNotFoundError(f"checkpoint metadata is missing: {metadata_path}")
-        metadata_sha = file_sha256(metadata_path)
         metadata_uri = object_store.put_file(
-            f"{prefix}/metadata.json",
+            f"{prefix}/{metadata_sha}/metadata.json",
             metadata_path,
             sha256=metadata_sha,
             content_type="application/json",
@@ -188,9 +193,7 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
                 announcement,
                 create_only=True,
             )
-        store.mark_artifact_uploaded(
-            checkpoint_id, artifact_ref=None, storage_uri=model_uri
-        )
+        store.mark_artifact_uploaded(checkpoint_id, artifact_ref=None, storage_uri=model_uri)
         return True
     except Exception as exc:
         attempts = int(row.get("attempts") or 0) + 1
@@ -206,9 +209,7 @@ def process_upload(store: MetricStore, object_store: ObjectStore, args, row: dic
                 f"artifact-announcements/{tombstone['train_job_id']}/{checkpoint_id:08d}.json"
             )
             try:
-                if str(getattr(args, "telemetry_transport", "legacy_local")) == (
-                    "neon_mailbox_v1"
-                ):
+                if str(getattr(args, "telemetry_transport", "legacy_local")) == ("neon_mailbox_v1"):
                     from rlab.telemetry_mailbox import WorkerMailbox
 
                     WorkerMailbox.from_env().append_event(
@@ -292,15 +293,13 @@ def import_decisions(store: MetricStore, object_store: ObjectStore, args) -> int
                 passed=bool(decision.get("passed")),
                 candidate_stop=bool(descriptor["candidate_stop"]),
                 publish=(
-                    str(getattr(args, "telemetry_transport", "legacy_local"))
-                    != "neon_mailbox_v1"
+                    str(getattr(args, "telemetry_transport", "legacy_local")) != "neon_mailbox_v1"
                 ),
             )
             preview = decision.get("preview")
             if (
                 str(descriptor["purpose"]) == "screen"
-                and str(getattr(args, "telemetry_transport", "legacy_local"))
-                != "neon_mailbox_v1"
+                and str(getattr(args, "telemetry_transport", "legacy_local")) != "neon_mailbox_v1"
                 and isinstance(preview, dict)
                 and str(preview.get("status")) == "succeeded"
             ):
@@ -335,7 +334,8 @@ def write_complete_marker(store: MetricStore, object_store: ObjectStore, args) -
     pending = sum(
         count
         for key, count in phases.items()
-        if key.startswith("artifacts:") and key not in {"artifacts:uploaded", "artifacts:failed_terminal"}
+        if key.startswith("artifacts:")
+        and key not in {"artifacts:uploaded", "artifacts:failed_terminal"}
     )
     if pending:
         return False
@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     cli = build_parser().parse_args(argv)
     try:
         os.nice(10)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         pass
     args = materialized_train_args(cli.train_config_json)
     store = MetricStore(metric_store_path(cli.run_dir))

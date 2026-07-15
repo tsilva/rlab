@@ -164,6 +164,9 @@ rlab jobs logs --job <train-job-id> --follow
 rlab leaders runs --goal <goal-slug> --min-seeds 3
 rlab leaders checkpoints --goal <goal-slug>
 rlab leaders checkpoints --goal <goal-slug> --limit 1 --json
+rlab reports plan --goal <goal-slug>
+rlab reports sync --goal <goal-slug>
+rlab reports verify --goal <goal-slug>
 rlab fleet drain --machine beast-3
 rlab fleet resume --machine beast-3
 rlab fleet service status --json
@@ -185,6 +188,7 @@ The command surface is intentionally one binary:
 - `rlab runs` and `rlab fleet` operate and inspect training runs and one-attempt worker containers.
   `rlab jobs` remains a compatibility alias for `rlab runs`.
 - `rlab leaders` queries W&B for run/recipe winners and best evaluated checkpoints.
+- `rlab reports` plans, explicitly synchronizes, and verifies source-controlled W&B reports.
 - `rlab benchmark` runs named smoke, throughput, fleet, and eval-contract profiles.
 
 `rlab env list` and `rlab env inspect` are static and do not import provider modules or access
@@ -240,11 +244,19 @@ order, so `--limit 1` is the canonical best-checkpoint query. Use `leaders runs`
 the question is about training/recipe winners rather than the checkpoint artifact to play or promote.
 `leaders runs` uses the current primary goal metric by default for fast W&B queries.
 
-To regenerate the W&B checkpoint leaderboard report with one section per goal, run:
+Mario W&B report definitions live in
+`experiments/goals/SuperMarioBros-Nes-v0/_reports.yaml`. Preview the deterministic local plan,
+explicitly synchronize it, and verify the saved report structure with:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run --with 'wandb[workspaces]' --exclude-newer 2026-06-25T00:00:00Z python scripts/create_wandb_checkpoint_leaderboard_report.py
+rlab reports plan
+rlab reports sync
+rlab reports verify
 ```
+
+Reports are live W&B queries; new train and evaluation data appears without another sync. Sync is
+needed only when report declarations, goal contracts, or the set of goals changes. Generated report
+content is source-owned, so direct W&B edits are replaced by the next sync.
 
 ## Publish a Policy
 

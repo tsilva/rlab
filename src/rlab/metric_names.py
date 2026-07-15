@@ -31,12 +31,11 @@ TRAIN_ACTOR_CRITIC_ALGORITHMS = ("ppo", "a2c")
 TRAIN_ALGORITHM_JERK_ROOT = f"{TRAIN_ALGORITHM_ROOT}/jerk"
 TRAIN_ALGORITHM_JERK_RETAINED_COUNT = f"{TRAIN_ALGORITHM_JERK_ROOT}/retained/count"
 TRAIN_ALGORITHM_JERK_BEST_RETURN_MEAN = f"{TRAIN_ALGORITHM_JERK_ROOT}/best/return_mean"
-TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH = (
-    f"{TRAIN_ALGORITHM_JERK_ROOT}/best/sequence_length"
+TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH = f"{TRAIN_ALGORITHM_JERK_ROOT}/best/sequence_length"
+TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN = (
+    f"{TRAIN_ALGORITHM_JERK_ROOT}/archive/selected_prefix_return_mean"
 )
-TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY = (
-    f"{TRAIN_ALGORITHM_JERK_ROOT}/exploit/probability"
-)
+TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY = f"{TRAIN_ALGORITHM_JERK_ROOT}/exploit/probability"
 
 
 def train_algorithm_root(algorithm_id: str) -> str:
@@ -264,8 +263,13 @@ METRIC_DEFINITIONS = (
         "steps",
     ),
     _definition(
+        TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN,
+        "Cumulative mean retained-prefix return selected for JERK archive replay.",
+        "return",
+    ),
+    _definition(
         TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY,
-        "Probability that JERK starts an episode by replaying its best retained sequence.",
+        "Probability that JERK starts an episode by sampling a retained archive sequence.",
         "fraction",
     ),
     _definition(

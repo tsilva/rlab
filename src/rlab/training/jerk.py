@@ -19,6 +19,7 @@ from rlab.jerk import JerkSearch
 from rlab.metric_names import (
     TRAIN_ALGORITHM_JERK_BEST_RETURN_MEAN,
     TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH,
+    TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN,
     TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY,
     TRAIN_ALGORITHM_JERK_RETAINED_COUNT,
     TRAIN_EPISODE_COUNT,
@@ -48,31 +49,26 @@ from rlab.training_backend import (
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "acceptance_mode": CHECKPOINT_EVAL_ACCEPTANCE,
-    "exploit_bias": 0.25,
-    "max_exploit_probability": 0.9,
-    "mutation_window_steps": 128,
-    "forward_steps": 100,
-    "backtrack_steps": 70,
-    "jump_probability": 0.1,
-    "jump_repeat": 4,
+    "archive_replay_probability_initial": 0.25,
+    "archive_replay_probability_max": 0.9,
+    "protected_prefix_steps": 128,
+    "max_prefix_shorten_steps": 128,
     "retained_limit": 256,
-    "forward_action": "right_b",
-    "jump_action": "right_a_b",
-    "backtrack_action": "left",
     "fallback_action": "noop",
     "log_interval_steps": 10_000,
 }
 
 _POSITIVE_INTEGER_FIELDS = {
-    "forward_steps",
-    "backtrack_steps",
-    "jump_repeat",
+    "max_prefix_shorten_steps",
     "retained_limit",
     "log_interval_steps",
 }
-_NON_NEGATIVE_INTEGER_FIELDS = {"mutation_window_steps"}
-_PROBABILITY_FIELDS = {"exploit_bias", "jump_probability", "max_exploit_probability"}
-_ACTION_FIELDS = {"forward_action", "jump_action", "backtrack_action", "fallback_action"}
+_NON_NEGATIVE_INTEGER_FIELDS = {"protected_prefix_steps"}
+_PROBABILITY_FIELDS = {
+    "archive_replay_probability_initial",
+    "archive_replay_probability_max",
+}
+_ACTION_FIELDS = {"fallback_action"}
 _ACCEPTANCE_MODES = {CHECKPOINT_EVAL_ACCEPTANCE, FIRST_TRAINING_SUCCESS_ACCEPTANCE}
 
 
@@ -101,8 +97,14 @@ def normalize_config(config: Mapping[str, Any], *, label: str) -> dict[str, Any]
     if normalized["acceptance_mode"] not in _ACCEPTANCE_MODES:
         allowed = ", ".join(sorted(_ACCEPTANCE_MODES))
         raise ValueError(f"{label}.acceptance_mode must be one of: {allowed}")
-    if normalized["exploit_bias"] > normalized["max_exploit_probability"]:
-        raise ValueError(f"{label}.exploit_bias must not exceed {label}.max_exploit_probability")
+    if (
+        normalized["archive_replay_probability_initial"]
+        > normalized["archive_replay_probability_max"]
+    ):
+        raise ValueError(
+            f"{label}.archive_replay_probability_initial must not exceed "
+            f"{label}.archive_replay_probability_max"
+        )
     return normalized
 
 
@@ -217,7 +219,10 @@ def _publish_metrics(
     payload: dict[str, int | float] = {
         TRAIN_EPISODE_COUNT: search.completed_episodes,
         TRAIN_ALGORITHM_JERK_RETAINED_COUNT: search.retained_count,
-        TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY: search.exploit_probability,
+        TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY: search.archive_replay_probability,
+        TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN: (
+            search.archive_selected_prefix_return_mean
+        ),
         TRAIN_ALGORITHM_JERK_BEST_SEQUENCE_LENGTH: (
             len(candidate.actions) if candidate is not None else 0
         ),
@@ -274,17 +279,11 @@ def run_jerk(context: BackendContext) -> None:
             seed=args.seed,
             total_timesteps=args.timesteps,
             action_names=action_names,
-            forward_action=args.forward_action,
-            jump_action=args.jump_action,
-            backtrack_action=args.backtrack_action,
             fallback_action=args.fallback_action,
-            forward_steps=args.forward_steps,
-            backtrack_steps=args.backtrack_steps,
-            jump_probability=args.jump_probability,
-            jump_repeat=args.jump_repeat,
-            exploit_bias=args.exploit_bias,
-            max_exploit_probability=args.max_exploit_probability,
-            mutation_window_steps=args.mutation_window_steps,
+            archive_replay_probability_initial=args.archive_replay_probability_initial,
+            archive_replay_probability_max=args.archive_replay_probability_max,
+            protected_prefix_steps=args.protected_prefix_steps,
+            max_prefix_shorten_steps=args.max_prefix_shorten_steps,
             retained_limit=args.retained_limit,
         )
         env.reset()

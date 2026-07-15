@@ -91,16 +91,35 @@ def test_sb3_a2c_schema_is_strict_and_rejects_ppo_only_fields() -> None:
 
 def test_jerk_backend_schema_is_strict_and_available() -> None:
     normalized = validate_and_normalize_train_config(
-        {"timesteps": 100, **backend_config("rlab.jerk", jump_probability=0.2)},
+        {
+            "timesteps": 100,
+            **backend_config("rlab.jerk", archive_replay_probability_initial=0.2),
+        },
         required_keys=("training_backend",),
     )
     config = normalized["training_backend"]["config"]
-    assert config["jump_probability"] == 0.2
-    assert config["forward_action"] == "right_b"
+    assert config["archive_replay_probability_initial"] == 0.2
+    assert config["archive_replay_probability_max"] == 0.9
+    assert config["protected_prefix_steps"] == 128
+    assert config["max_prefix_shorten_steps"] == 128
     assert config["acceptance_mode"] == "checkpoint_eval"
 
-    with pytest.raises(ValueError, match="jump_probability must be in"):
-        validate_and_normalize_train_config(backend_config("rlab.jerk", jump_probability=1.1))
+    with pytest.raises(ValueError, match="archive_replay_probability_initial must be in"):
+        validate_and_normalize_train_config(
+            backend_config("rlab.jerk", archive_replay_probability_initial=1.1)
+        )
+    with pytest.raises(ValueError, match="archive_replay_probability_initial must not exceed"):
+        validate_and_normalize_train_config(
+            backend_config(
+                "rlab.jerk",
+                archive_replay_probability_initial=0.8,
+                archive_replay_probability_max=0.7,
+            )
+        )
+    with pytest.raises(ValueError, match="max_prefix_shorten_steps must be a positive integer"):
+        validate_and_normalize_train_config(backend_config("rlab.jerk", max_prefix_shorten_steps=0))
+    with pytest.raises(ValueError, match="unexpected fields.*jump_probability"):
+        validate_and_normalize_train_config(backend_config("rlab.jerk", jump_probability=0.1))
     with pytest.raises(ValueError, match="requires checkpoint_eval_backend=none"):
         validate_and_normalize_train_config(
             backend_config("rlab.jerk", acceptance_mode="first_training_success")

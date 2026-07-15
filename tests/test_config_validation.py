@@ -150,10 +150,12 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         backend = train_config["training_backend"]
         self.assertEqual(backend["id"], "rlab.jerk")
-        self.assertEqual(backend["config"]["forward_action"], "right_b")
-        self.assertEqual(backend["config"]["jump_action"], "right_a_b")
+        self.assertEqual(backend["config"]["archive_replay_probability_initial"], 0.25)
+        self.assertEqual(backend["config"]["archive_replay_probability_max"], 0.9)
+        self.assertEqual(backend["config"]["protected_prefix_steps"], 128)
+        self.assertEqual(backend["config"]["max_prefix_shorten_steps"], 128)
         self.assertEqual(backend["config"]["acceptance_mode"], "first_training_success")
-        self.assertEqual(train_config["timesteps"], 1000000)
+        self.assertEqual(train_config["timesteps"], 10000000)
         self.assertEqual(train_config["checkpoint_eval_backend"], "none")
         self.assertIsNone(train_config["early_stop"])
         self.assertEqual(train_config["checkpoint_eval_stages"], [])

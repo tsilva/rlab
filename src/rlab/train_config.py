@@ -892,6 +892,13 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Exact checked-in goal file hash recorded in W&B config.",
     ),
     TrainConfigField(
+        "goal_contract_sha256",
+        "--goal-contract-sha256",
+        default="",
+        cli_exposed=False,
+        help="Semantic hash of the fully composed goal contract recorded in W&B config.",
+    ),
+    TrainConfigField(
         "recipe_slug",
         "--recipe-slug",
         default="",

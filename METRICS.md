@@ -19,6 +19,9 @@ exact registry entry or a bounded template.
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
+- `goal_contract_sha256` is the semantic SHA-256 of the fully composed, rendered, validated goal
+  contract. Generated goal reports use it with `goal_slug` to keep current-contract leaderboards
+  comparable; runs without the current fingerprint remain historical evidence only.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
 - W&B is the permanent metric history. R2 is the permanent byte store for checkpoints, metadata,
   raw episode evidence, and videos. Postgres retains orchestration state and artifact locations.
@@ -102,7 +105,8 @@ are intentionally computed offline rather than added to W&B history.
 | `train/algorithm/jerk/retained/count` | Distinct action sequences retained by JERK search. | sequences | rollout | history |
 | `train/algorithm/jerk/best/return_mean` | Mean observed return of JERK's highest-ranked retained sequence. | return | rollout | history |
 | `train/algorithm/jerk/best/sequence_length` | Action length of JERK's highest-ranked retained sequence. | steps | rollout | history |
-| `train/algorithm/jerk/exploit/probability` | Probability that JERK starts an episode by replaying its best retained sequence. | fraction | rollout | history |
+| `train/algorithm/jerk/archive/selected_prefix_return_mean` | Cumulative mean retained-prefix return selected for JERK archive replay. | return | rollout | history |
+| `train/algorithm/jerk/exploit/probability` | Probability that JERK starts an episode by sampling a retained archive sequence. | fraction | rollout | history |
 | `train/algorithm/{algorithm}/value/explained_variance` | Actor-critic value-function explained variance. | scalar | rollout | history |
 | `train/algorithm/{algorithm}/update/policy_gradient_loss` | Actor-critic policy-gradient loss. | scalar | rollout | history |
 | `train/algorithm/{algorithm}/update/value_loss` | Actor-critic value loss. | scalar | rollout | history |
