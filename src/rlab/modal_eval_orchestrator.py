@@ -1745,17 +1745,6 @@ def project_artifact_references(
         int(run["promoted_ledger_id"]) if run.get("promoted_ledger_id") is not None else None
     )
     if promoted_ledger_id is not None and run.get("promoted_artifact_projected_at") is None:
-        if ordinal > promoted_ledger_id:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE eval_runs SET promoted_artifact_projected_at = now(),
-                          updated_at = now() WHERE train_job_id = %(id)s
-                        """,
-                        {"id": train_job_id},
-                    )
-            return 0
         promoted_announcement = dict(run.get("promoted_announcement") or {})
         error = None
         try:

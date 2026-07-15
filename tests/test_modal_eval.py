@@ -1072,7 +1072,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         cursor.fetchone.return_value = {
             "train_job_id": 37,
             "train_config": {"wandb": True, "telemetry_transport": "neon_mailbox_v1"},
-            "next_artifact_projection_id": 1,
+            "next_artifact_projection_id": 5,
             "promoted_ledger_id": 4,
             "promoted_announcement": promoted_announcement,
             "promoted_artifact_projected_at": None,
