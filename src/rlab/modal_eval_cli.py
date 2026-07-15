@@ -351,6 +351,22 @@ def cmd_retry(args: argparse.Namespace) -> int:
                     {"id": int(args.eval_job_id)},
                 )
                 row = cur.fetchone()
+                if row:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET status = 'active', error = NULL, updated_at = now()
+                        WHERE train_job_id = %(train_job_id)s AND status = 'failed'
+                        """,
+                        {"train_job_id": int(row["train_job_id"])},
+                    )
+                    cur.execute(
+                        """
+                        UPDATE train_jobs SET status = 'finalizing', error = NULL,
+                          finished_at = NULL
+                        WHERE id = %(train_job_id)s AND status = 'finalization_failed'
+                        """,
+                        {"train_job_id": int(row["train_job_id"])},
+                    )
         if not row:
             raise ValueError("eval job is not retryable")
         print(json.dumps(dict(row), sort_keys=True, default=str))

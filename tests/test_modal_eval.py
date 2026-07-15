@@ -100,16 +100,26 @@ class ModalEvalContractTests(unittest.TestCase):
     def test_operator_retry_starts_a_fresh_attempt_round(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = {"id": 10254, "status": "pending", "retry_round": 1}
+        cursor.fetchone.return_value = {
+            "id": 10254,
+            "train_job_id": 38,
+            "status": "pending",
+            "retry_round": 1,
+        }
         with (
             mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
             mock.patch.object(modal_eval_cli, "_kick") as kick,
         ):
             self.assertEqual(modal_eval_cli.cmd_retry(SimpleNamespace(eval_job_id=10254)), 0)
 
-        statement = cursor.execute.call_args.args[0]
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        statement = statements[0]
         self.assertIn("retry_round = retry_round + 1", statement)
         self.assertNotIn("count(*)", statement)
+        self.assertTrue(any("UPDATE eval_runs SET status = 'active'" in sql for sql in statements))
+        self.assertTrue(
+            any("UPDATE train_jobs SET status = 'finalizing'" in sql for sql in statements)
+        )
         kick.assert_called_once()
 
     def test_rom_free_announcement_verifies_only_model_and_metadata(self) -> None:
