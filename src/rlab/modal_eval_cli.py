@@ -354,7 +354,10 @@ def cmd_retry(args: argparse.Namespace) -> int:
                 if row:
                     cur.execute(
                         """
-                        UPDATE eval_runs SET status = 'active', error = NULL, updated_at = now()
+                        UPDATE eval_runs SET
+                          status = CASE WHEN complete_announcement_seen
+                            THEN 'finalizing' ELSE 'active' END,
+                          error = NULL, updated_at = now()
                         WHERE train_job_id = %(train_job_id)s AND status = 'failed'
                         """,
                         {"train_job_id": int(row["train_job_id"])},

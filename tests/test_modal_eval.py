@@ -116,7 +116,9 @@ class ModalEvalContractTests(unittest.TestCase):
         statement = statements[0]
         self.assertIn("retry_round = retry_round + 1", statement)
         self.assertNotIn("count(*)", statement)
-        self.assertTrue(any("UPDATE eval_runs SET status = 'active'" in sql for sql in statements))
+        self.assertTrue(
+            any("CASE WHEN complete_announcement_seen" in sql for sql in statements)
+        )
         self.assertTrue(
             any("UPDATE train_jobs SET status = 'finalizing'" in sql for sql in statements)
         )
