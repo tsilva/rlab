@@ -286,11 +286,11 @@ class DockerRunnerHost:
                 "set -eu",
                 "shared_tmp=$(mktemp)",
                 "merged_tmp=$(mktemp)",
-                "trap 'rm -f \"$shared_tmp\" \"$merged_tmp\"' EXIT",
+                'trap \'rm -f "$shared_tmp" "$merged_tmp"\' EXIT',
                 "umask 077",
                 'cat > "$shared_tmp"',
                 f"if [ -f {env_file} ]; then",
-                f"  awk -F= {shlex.quote(awk_program)} {env_file} > \"$merged_tmp\"",
+                f'  awk -F= {shlex.quote(awk_program)} {env_file} > "$merged_tmp"',
                 "else",
                 '  : > "$merged_tmp"',
                 "fi",
@@ -344,8 +344,8 @@ class DockerRunnerHost:
         text = "".join(f"{key}={values[key]}\n" for key in sorted(values))
         script = (
             "set -eu; umask 077; temporary=$(mktemp); "
-            "trap 'rm -f \"$temporary\"' EXIT; cat > \"$temporary\"; "
-            f"install -m 0600 \"$temporary\" {shlex.quote(path)}"
+            'trap \'rm -f "$temporary"\' EXIT; cat > "$temporary"; '
+            f'install -m 0600 "$temporary" {shlex.quote(path)}'
         )
         result = _run_machine_shell(
             self.machine,
@@ -689,8 +689,7 @@ class DockerRunnerHost:
         if result.returncode != 0:
             return ResultObservation(
                 "error",
-                error=(result.stderr or result.stdout or "").strip()
-                or f"exit={result.returncode}",
+                error=(result.stderr or result.stdout or "").strip() or f"exit={result.returncode}",
             )
         try:
             payload = json.loads(result.stdout)
@@ -706,8 +705,8 @@ class DockerRunnerHost:
         script = (
             f"file=$(find {shlex.quote(log_dir)} -maxdepth 1 -type f "
             "-name 'train_job_*.log' -print 2>/dev/null | sort | tail -n 1); "
-            "test -n \"$file\"; "
-            f"tail {follow_flag} -n {max(0, int(tail))} \"$file\""
+            'test -n "$file"; '
+            f'tail {follow_flag} -n {max(0, int(tail))} "$file"'
         )
         result = _run_machine_shell(
             self.machine,
@@ -831,7 +830,8 @@ def setup_docker_host(
     script = _setup_host_script(machine, runtime_image_ref=runtime_image_ref)
     if not execute:
         return script, None
-    result = _run_machine_shell(machine, script)
+    timeout = DOCKER_PULL_TIMEOUT_SECONDS if runtime_image_ref else MACHINE_COMMAND_TIMEOUT_SECONDS
+    result = _run_machine_shell(machine, script, timeout=timeout)
     return script, int(result.returncode)
 
 
