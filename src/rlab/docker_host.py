@@ -122,11 +122,20 @@ def _run_machine_shell(
         if remaining <= 0:
             raise MachineCommandTimeout(machine.name, 0.0)
         effective_timeout = min(float(timeout), max(0.1, remaining))
-    command = (
-        ["sh", "-lc", script]
-        if machine.backend == "local_docker"
-        else [*_machine_ssh_prefix(machine), "sh", "-lc", shlex.quote(script)]
-    )
+    if machine.backend == "local_docker":
+        command = ["sh", "-lc", script]
+    else:
+        remote_command = ["sh", "-lc", shlex.quote(script)]
+        if effective_timeout is not None:
+            remote_timeout = max(1.0, float(effective_timeout) - 5.0)
+            remote_command = [
+                "timeout",
+                "--signal=TERM",
+                "--kill-after=5s",
+                f"{remote_timeout:g}s",
+                *remote_command,
+            ]
+        command = [*_machine_ssh_prefix(machine), *remote_command]
     try:
         return subprocess.run(
             command,

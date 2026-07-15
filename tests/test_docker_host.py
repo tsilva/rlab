@@ -104,6 +104,7 @@ class DockerHostTests(unittest.TestCase):
         self.assertIn("BatchMode=yes", text)
         self.assertIn("ConnectTimeout=10", text)
         self.assertIn("ServerAliveCountMax=3", text)
+        self.assertIn("timeout --signal=TERM --kill-after=5s 115s sh -lc", text)
 
     def test_machine_command_timeout_is_typed(self) -> None:
         expired = subprocess.TimeoutExpired(["sh"], 0.01)
