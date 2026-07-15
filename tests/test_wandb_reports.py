@@ -243,6 +243,10 @@ class WandbReportSyncTests(unittest.TestCase):
 
         with (
             patch(
+                "wandb_workspaces.reports.v2.interface._get_api",
+                return_value=object(),
+            ),
+            patch(
                 "wandb_workspaces.reports.v2.interface.execute_graphql",
                 return_value={"project": {"internalId": "project-id"}},
             ),
