@@ -23,6 +23,7 @@ from rlab.modal_eval_orchestrator import (
     project_eval_results,
     project_artifact_references,
     promotion_candidate_key,
+    reconcile_canceled_eval_state,
     reconcile_promotions,
     round_robin_jobs,
 )
@@ -97,6 +98,20 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_canceled_train_reconciliation_closes_late_eval_rows(self) -> None:
+        conn = FakeConnection(results=[{"rowcount": 3}, {"rowcount": 1}])
+
+        self.assertEqual(
+            reconcile_canceled_eval_state(conn),
+            {"jobs": 3, "runs": 1},
+        )
+
+        jobs_sql, runs_sql = conn.cursor_obj.executed_sqls
+        self.assertIn("t.status = 'canceled'", jobs_sql)
+        self.assertIn("'pending', 'dispatching', 'submitted', 'blocked_budget'", jobs_sql)
+        self.assertIn("t.status = 'canceled'", runs_sql)
+        self.assertIn("r.status NOT IN ('complete', 'failed', 'canceled')", runs_sql)
+
     def test_operator_retry_starts_a_fresh_attempt_round(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -116,9 +131,7 @@ class ModalEvalContractTests(unittest.TestCase):
         statement = statements[0]
         self.assertIn("retry_round = retry_round + 1", statement)
         self.assertNotIn("count(*)", statement)
-        self.assertTrue(
-            any("CASE WHEN complete_announcement_seen" in sql for sql in statements)
-        )
+        self.assertTrue(any("CASE WHEN complete_announcement_seen" in sql for sql in statements))
         self.assertTrue(
             any("UPDATE train_jobs SET status = 'finalizing'" in sql for sql in statements)
         )

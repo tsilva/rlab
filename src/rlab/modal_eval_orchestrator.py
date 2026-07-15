@@ -920,6 +920,44 @@ def cancel_requested_attempts(
     return changed
 
 
+def reconcile_canceled_eval_state(conn) -> dict[str, int]:
+    """Close logical eval work that raced with train-job cancellation.
+
+    The operator cancellation transaction closes eval rows that already exist,
+    but checkpoint announcements can be ingested after that transaction while
+    the training container is shutting down. Those late rows must not remain
+    pending/submitted forever or keep appearing as queued work.
+    """
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE eval_jobs j
+                SET status = 'canceled', finished_at = now(), updated_at = now(),
+                  error = 'training finalization canceled'
+                FROM train_jobs t
+                WHERE t.id = j.train_job_id
+                  AND t.status = 'canceled'
+                  AND j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                """
+            )
+            jobs = int(cur.rowcount)
+            cur.execute(
+                """
+                UPDATE eval_runs r
+                SET status = 'canceled', updated_at = now(),
+                  error = 'training finalization canceled'
+                FROM train_jobs t
+                WHERE t.id = r.train_job_id
+                  AND t.status = 'canceled'
+                  AND r.status NOT IN ('complete', 'failed', 'canceled')
+                """
+            )
+            runs = int(cur.rowcount)
+    return {"jobs": jobs, "runs": runs}
+
+
 def _reuse_result(conn, store: ObjectStore, job: Mapping[str, Any]) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -1972,6 +2010,7 @@ def run_service_eval_pass(
         )
         mailbox_ingested = ingest_mailbox_announcements(conn, store)
         ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
+        canceled_eval_state = reconcile_canceled_eval_state(conn)
         skipped_decisions = publish_skipped_decisions(conn, store)
         if progress:
             progress("POLLING EVALUATION", "Observing submitted Modal attempts and durable results")
@@ -2033,6 +2072,8 @@ def run_service_eval_pass(
             "status": "ok",
             "created_runs": created_runs,
             "canceled_attempts": canceled_attempts,
+            "canceled_eval_jobs": canceled_eval_state["jobs"],
+            "canceled_eval_runs": canceled_eval_state["runs"],
             "ingested": ingested,
             "mailbox_ingested": mailbox_ingested,
             "skipped_decisions": skipped_decisions,
