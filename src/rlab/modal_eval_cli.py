@@ -343,16 +343,16 @@ def cmd_retry(args: argparse.Namespace) -> int:
                 cur.execute(
                     """
                     UPDATE eval_jobs j SET status = 'pending', error = NULL,
-                      finished_at = NULL, updated_at = now()
+                      finished_at = NULL, retry_round = retry_round + 1,
+                      updated_at = now()
                     WHERE j.id = %(id)s AND j.status IN ('failed', 'blocked_budget')
-                      AND (SELECT count(*) FROM eval_attempts a WHERE a.eval_job_id = j.id) < 2
                     RETURNING *
                     """,
                     {"id": int(args.eval_job_id)},
                 )
                 row = cur.fetchone()
         if not row:
-            raise ValueError("eval job is not retryable or has exhausted two attempts")
+            raise ValueError("eval job is not retryable")
         print(json.dumps(dict(row), sort_keys=True, default=str))
         _kick("modal_eval_retry", entity_id=int(args.eval_job_id))
         return 0

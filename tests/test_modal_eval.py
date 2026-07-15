@@ -97,6 +97,21 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_operator_retry_starts_a_fresh_attempt_round(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"id": 10254, "status": "pending", "retry_round": 1}
+        with (
+            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
+            mock.patch.object(modal_eval_cli, "_kick") as kick,
+        ):
+            self.assertEqual(modal_eval_cli.cmd_retry(SimpleNamespace(eval_job_id=10254)), 0)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("retry_round = retry_round + 1", statement)
+        self.assertNotIn("count(*)", statement)
+        kick.assert_called_once()
+
     def test_rom_free_announcement_verifies_only_model_and_metadata(self) -> None:
         announcement = {
             "train_job_id": 38,
