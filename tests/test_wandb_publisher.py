@@ -13,6 +13,7 @@ from rlab.fleet_wandb_publisher import (
 )
 from rlab.metric_store import MetricStore
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
+from rlab import wandb_publisher
 
 
 class FakeRun:
@@ -30,6 +31,40 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    def test_resumed_projection_can_flush_without_finishing_active_run(self) -> None:
+        captured: dict[str, object] = {}
+        fake_run = SimpleNamespace(define_metric=lambda *_args, **_kwargs: None)
+
+        def init(**kwargs):
+            captured.update(kwargs)
+            return fake_run
+
+        fake_wandb = SimpleNamespace(
+            init=init,
+            Settings=lambda **kwargs: SimpleNamespace(**kwargs),
+        )
+        with (
+            mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
+            mock.patch.object(wandb_publisher, "load_wandb_env"),
+            mock.patch.object(
+                wandb_publisher,
+                "resolve_wandb_namespace",
+                return_value=("entity", "project"),
+            ),
+            mock.patch.object(
+                wandb_publisher,
+                "configure_wandb_metrics",
+                side_effect=lambda run: run,
+            ),
+        ):
+            projector = wandb_publisher.WandbProjector.resume(
+                {"wandb_run_id": "rlab-test", "game": "game"},
+                update_finish_state=False,
+            )
+
+        self.assertIs(projector.run, fake_run)
+        self.assertFalse(captured["settings"].x_update_finish_state)
+
     def test_wandb_nested_summary_mapping_is_accepted(self) -> None:
         class ItemsOnly:
             def items(self):

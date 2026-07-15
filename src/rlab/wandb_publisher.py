@@ -55,6 +55,7 @@ class WandbProjector:
         train_config: Mapping[str, Any],
         *,
         allow_create: bool = False,
+        update_finish_state: bool = True,
     ) -> WandbProjector:
         run_id = str(train_config.get("wandb_run_id") or "")
         if not run_id:
@@ -85,6 +86,7 @@ class WandbProjector:
                 group=str(train_config.get("wandb_group") or "") or None,
                 tags=tags,
                 config=dict(train_config) if allow_create else None,
+                settings=wandb.Settings(x_update_finish_state=update_finish_state),
             )
         )
         return cls(run)
@@ -105,6 +107,7 @@ def project_payload_to_run(
     train_config = dict(payload["train_config"])
     run_id = str(train_config["wandb_run_id"])
     import wandb
+
     projection_kind = str(payload.get("projection_kind") or "evaluation")
     if projection_kind == "artifact_reference":
         if not allow_artifact_references:
@@ -276,8 +279,7 @@ def process_upload(
                 args,
                 path,
                 kind,
-                run_id=getattr(wandb_run, "id", None)
-                or getattr(args, "wandb_run_id", None),
+                run_id=getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None),
             )
         store.mark_artifact_uploaded(
             checkpoint_id,

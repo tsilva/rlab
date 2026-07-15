@@ -57,7 +57,7 @@ def _summary_step_max(raw: object) -> float | None:
     try:
         value = dict(items()).get("max")
         return None if value is None else float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -214,7 +214,12 @@ def publish_claimed_run(
         for row in unpublished:
             stream_id = str(row["stream_id"])
             expected[stream_id] = max(expected.get(stream_id, 0), int(row["batch_sequence"]))
-        projector = WandbProjector.resume(train_config, allow_create=True)
+        projector = WandbProjector.resume(
+            train_config,
+            allow_create=True,
+            update_finish_state=str(run.get("status") or "")
+            in {"succeeded", "failed", "finalization_failed", "canceled"},
+        )
         try:
             wandb_url = str(getattr(projector.run, "url", "") or "") or None
             args = SimpleNamespace(**train_config)
@@ -223,7 +228,7 @@ def publish_claimed_run(
                 for frame in decoded[int(batch["id"])]:
                     try:
                         frame_step = float(frame["global_step"])
-                    except (KeyError, TypeError, ValueError):
+                    except KeyError, TypeError, ValueError:
                         frame_step = None
                     if frame_step is not None:
                         session_step_max = max(session_step_max or frame_step, frame_step)

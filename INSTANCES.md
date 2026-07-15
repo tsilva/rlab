@@ -259,7 +259,9 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
   payload and atomically publishes `result.json`. It receives R2 credentials plus a restricted,
   expiring Neon attempt token, never W&B credentials. Queue-backed run directories live under the
   host-mounted launch output while active; SQLite is deleted after the final Neon watermark is
-  acknowledged. Fleet publishes training and all evaluation protocols into the preassigned W&B run.
+  acknowledged. Fleet publishes training and all evaluation protocols into the preassigned W&B run,
+  keeps that remote run active while queue work is nonterminal, and finishes it only after terminal
+  publication.
   Later service passes reconcile DB launch rows, Docker labels, and durable
   output directories.
 ## Train Image Build Baseline (2026-07-14)

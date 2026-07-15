@@ -959,6 +959,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         fake_wandb = SimpleNamespace(
             init=lambda **_kwargs: run,
             Artifact=FakeArtifact,
+            Settings=lambda **kwargs: SimpleNamespace(**kwargs),
         )
         model_metadata = {
             "metadata_version": 3,
@@ -1022,6 +1023,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         fake_wandb = SimpleNamespace(
             init=lambda **_kwargs: run,
             Artifact=FakeArtifact,
+            Settings=lambda **kwargs: SimpleNamespace(**kwargs),
         )
         payload = {
             "projection_kind": "artifact_reference",

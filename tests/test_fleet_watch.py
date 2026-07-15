@@ -133,6 +133,52 @@ class FleetWatchTests(unittest.TestCase):
         self.assertEqual(snapshot["work"]["needs_action"], 1)
         self.assertEqual(snapshot["needs_action"][0]["entity"], "train/15")
 
+    def test_idle_snapshot_keeps_active_work_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.last_pass.write_text(
+                json.dumps(
+                    {
+                        "pass_id": "pass-active",
+                        "status": "ok",
+                        "finished_at": fleet_service._iso_utc(),
+                        "workload": {
+                            "in_progress": 2,
+                            "active": [
+                                {
+                                    "id": "train_running:train/42",
+                                    "entity": "train/42",
+                                    "title": "Training",
+                                    "detail": "beast-3 · evaluation active",
+                                },
+                                {
+                                    "id": "eval_submitted:eval/10339",
+                                    "entity": "eval/10339",
+                                    "title": "Screen evaluation",
+                                    "detail": "train/42 checkpoint 3,500,000 · Modal submitted",
+                                },
+                            ],
+                            "needs_action": [],
+                            "retrying": [],
+                            "waiting": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = fleet_watch.collect_watch_snapshot(
+                paths,
+                runner=lambda argv, **_kwargs: completed(argv),
+            )
+
+        self.assertEqual(snapshot["scheduler"]["state"], "IDLE")
+        self.assertEqual(snapshot["work"]["in_progress"], 2)
+        self.assertEqual(
+            [item["entity"] for item in snapshot["now"]],
+            ["train/42", "eval/10339"],
+        )
+
     def test_collect_snapshot_never_opens_queue_or_mutation_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))

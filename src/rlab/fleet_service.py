@@ -1064,6 +1064,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
     needs_action: list[dict[str, Any]] = []
     retrying: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
     counts: dict[str, dict[str, int]] = {"train": {}, "eval_jobs": {}, "eval_runs": {}}
     in_progress = 0
     try:
@@ -1107,7 +1108,8 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                 trains = [dict(row) for row in cur.fetchall()]
                 cur.execute(
                     """
-                    SELECT j.id, j.train_job_id, j.status, j.purpose, j.stage_name,
+                    SELECT j.id, j.train_job_id, j.checkpoint_step, j.status,
+                      j.purpose, j.stage_name,
                       j.projection_attempts, j.projection_next_retry_at,
                       j.projection_error, j.error, j.created_at,
                       t.status AS train_status, r.status AS eval_run_status,
@@ -1149,6 +1151,23 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
             eval_status = str(row.get("eval_status") or "")
             if status in {"launching", "starting", "running", "finalizing"}:
                 in_progress += 1
+                title = {
+                    "launching": "Launching training",
+                    "starting": "Starting training",
+                    "running": "Training",
+                    "finalizing": "Finalizing training",
+                }[status]
+                active.append(
+                    _watch_item(
+                        entity,
+                        title,
+                        f"{row['machine']} · evaluation {eval_status or 'not started'}",
+                        reason_code=f"train_{status}",
+                        resolution="automatic",
+                        blast_radius=entity,
+                        timestamp=row.get("started_at") or row.get("created_at"),
+                    )
+                )
             if eval_status == "awaiting_artifact_recovery" and status in {
                 "failed",
                 "finalization_failed",
@@ -1280,6 +1299,17 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
             purpose = str(row.get("purpose") or "evaluation")
             if status in {"dispatching", "submitted"}:
                 in_progress += 1
+                active.append(
+                    _watch_item(
+                        entity,
+                        f"{purpose.title()} evaluation",
+                        f"train/{train_job_id} checkpoint {int(row['checkpoint_step']):,} · Modal {status}",
+                        reason_code=f"eval_{status}",
+                        resolution="automatic",
+                        blast_radius=entity,
+                        timestamp=row.get("created_at"),
+                    )
+                )
             train_status = str(row.get("train_status") or "")
             if (
                 purpose == "promotion"
@@ -1379,6 +1409,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
             "captured_at": captured_at,
             "in_progress": in_progress,
             "counts": counts,
+            "active": deduplicate(active),
             "needs_action": deduplicate(needs_action),
             "retrying": deduplicate(retrying),
             "waiting": deduplicate(waiting),

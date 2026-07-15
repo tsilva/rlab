@@ -171,6 +171,13 @@ def collect_watch_snapshot(
     retrying = list(workload.get("retrying") or [])
     waiting = list(workload.get("waiting") or [])
     now_items = _lane_items(current_pass)
+    active_work = [dict(item) for item in workload.get("active") or []]
+    now_items = list(
+        {
+            str(item.get("id") or f"{item.get('entity')}:{item.get('title')}"): item
+            for item in [*now_items, *active_work]
+        }.values()
+    )
 
     deadline = _parse_time((current_pass or {}).get("deadline_at"))
     updated_at = (current_pass or {}).get("updated_at") or last_pass.get("finished_at")
