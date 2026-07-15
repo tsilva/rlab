@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rlab.early_stop import evaluate_early_stop_config
+from rlab.env_registry import resolve_env_provider
 
 
 PROTOCOL_SCHEMA_VERSION = 1
@@ -38,11 +39,21 @@ def validate_announcement(
     if str(eval_contract.get("seed_protocol") or "") != SEED_PROTOCOL:
         raise ValueError("checkpoint announcement seed protocol mismatch")
     asset = eval_contract.get("asset")
-    if not isinstance(asset, Mapping):
+    environment = eval_contract.get("environment")
+    provider = (
+        str(environment.get("env_provider") or "") if isinstance(environment, Mapping) else ""
+    )
+    requires_rom_asset = resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    if requires_rom_asset and not isinstance(asset, Mapping):
         raise ValueError("checkpoint announcement asset contract is missing")
-    _sha256(asset.get("sha256"), label="ROM hash")
-    if not str(asset.get("object_uri") or "") or not str(asset.get("provider_rom_identity") or ""):
-        raise ValueError("checkpoint announcement asset identity is incomplete")
+    if isinstance(asset, Mapping):
+        _sha256(asset.get("sha256"), label="ROM hash")
+        if not str(asset.get("object_uri") or "") or not str(
+            asset.get("provider_rom_identity") or ""
+        ):
+            raise ValueError("checkpoint announcement asset identity is incomplete")
+    elif asset is not None:
+        raise ValueError("checkpoint announcement asset contract must be an object or null")
     expected_environment = materialized_train_config.get("checkpoint_eval_environment")
     expected_stages = materialized_train_config.get("checkpoint_eval_stages") or []
     expected_asset = materialized_train_config.get("checkpoint_eval_asset_manifest")
@@ -52,8 +63,7 @@ def validate_announcement(
         termination = task.get("termination") if isinstance(task, Mapping) else None
         expected_max_steps = int(
             termination.get("max_episode_steps")
-            if isinstance(termination, Mapping)
-            and termination.get("max_episode_steps") is not None
+            if isinstance(termination, Mapping) and termination.get("max_episode_steps") is not None
             else 0
         )
     expected = {
@@ -66,9 +76,7 @@ def validate_announcement(
             materialized_train_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
         ),
         "asset": expected_asset,
-        "promotion_episodes": int(
-            materialized_train_config.get("post_train_eval_episodes") or 100
-        ),
+        "promotion_episodes": int(materialized_train_config.get("post_train_eval_episodes") or 100),
     }
     if canonical_json(dict(eval_contract)) != canonical_json(expected):
         raise ValueError("checkpoint announcement eval contract does not match the queued contract")
@@ -93,7 +101,7 @@ def build_execution_contract(
     max_steps: int,
     seed: int,
     seed_protocol: str,
-    asset_manifest: Mapping[str, Any],
+    asset_manifest: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     if seed_protocol != SEED_PROTOCOL:
         raise ValueError(f"unsupported eval seed protocol: {seed_protocol}")
@@ -108,15 +116,15 @@ def build_execution_contract(
         "deterministic": False,
         "seed": int(seed),
         "seed_protocol": seed_protocol,
-        "asset": {
-            str(key): value
-            for key, value in asset_manifest.items()
-            if str(key) != "object_uri"
-        },
+        "asset": (
+            {str(key): value for key, value in asset_manifest.items() if str(key) != "object_uri"}
+            if asset_manifest is not None
+            else None
+        ),
     }
     if contract["episodes"] < 1 or contract["n_envs"] < 1 or contract["max_steps"] < 1:
         raise ValueError("eval episodes, n_envs, and max_steps must be positive")
-    if not str(asset_manifest.get("sha256") or ""):
+    if asset_manifest is not None and not str(asset_manifest.get("sha256") or ""):
         raise ValueError("eval asset manifest must include sha256")
     return contract
 
@@ -148,9 +156,7 @@ def job_key(
     )
 
 
-def stage_job_descriptor(
-    announcement: Mapping[str, Any], *, stage_index: int
-) -> dict[str, Any]:
+def stage_job_descriptor(announcement: Mapping[str, Any], *, stage_index: int) -> dict[str, Any]:
     eval_config = announcement.get("eval")
     if not isinstance(eval_config, Mapping):
         raise ValueError("checkpoint announcement is missing eval contract")
@@ -173,7 +179,9 @@ def stage_job_descriptor(
         max_steps=int(eval_config["max_steps"]),
         seed=int(eval_config["seed"]),
         seed_protocol=str(eval_config["seed_protocol"]),
-        asset_manifest=dict(eval_config["asset"]),
+        asset_manifest=(
+            dict(eval_config["asset"]) if isinstance(eval_config.get("asset"), Mapping) else None
+        ),
     )
     execution = execution_key(contract)
     rules = stage.get("pass") or []
@@ -213,7 +221,9 @@ def promotion_job_descriptor(announcement: Mapping[str, Any]) -> dict[str, Any]:
         max_steps=int(eval_config["max_steps"]),
         seed=int(eval_config["seed"]),
         seed_protocol=str(eval_config["seed_protocol"]),
-        asset_manifest=dict(eval_config["asset"]),
+        asset_manifest=(
+            dict(eval_config["asset"]) if isinstance(eval_config.get("asset"), Mapping) else None
+        ),
     )
     execution = execution_key(contract)
     key = job_key(
@@ -252,7 +262,9 @@ def validate_attempt_result(
         raise ValueError("eval result contract schema version mismatch")
     if str(result.get("runtime_image_ref") or "") != str(contract["runtime_image_ref"]):
         raise ValueError("eval result runtime identity mismatch")
-    if str(result.get("rom_sha256") or "") != str(contract["asset"]["sha256"]):
+    asset = contract.get("asset")
+    expected_rom_sha = str(asset.get("sha256") or "") if isinstance(asset, Mapping) else ""
+    if str(result.get("rom_sha256") or "") != expected_rom_sha:
         raise ValueError("eval result ROM hash mismatch")
     if str(result.get("seed_protocol") or "") != str(contract["seed_protocol"]):
         raise ValueError("eval result seed protocol mismatch")
@@ -269,6 +281,7 @@ def validate_attempt_result(
     metrics = result.get("metrics")
     if not isinstance(metrics, Mapping):
         raise ValueError("eval result metrics must be a mapping")
+
     def validate_finite(value: object, *, label: str) -> None:
         if isinstance(value, bool | str) or value is None:
             return

@@ -65,6 +65,7 @@ def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
 
 
 def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> dict:
+    asset = eval_contract.get("asset")
     return {
         "schema_version": 1,
         "contract_schema_version": eval_contract["schema_version"],
@@ -72,7 +73,7 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
         "execution_key": execution_key(eval_contract),
         "checkpoint_sha256": eval_contract["checkpoint_sha256"],
         "runtime_image_ref": eval_contract["runtime_image_ref"],
-        "rom_sha256": eval_contract["asset"]["sha256"],
+        "rom_sha256": asset["sha256"] if isinstance(asset, dict) else "",
         "seed_protocol": eval_contract["seed_protocol"],
         "n_envs": eval_contract["n_envs"],
         "episodes": eval_contract["episodes"],
@@ -95,6 +96,27 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_rom_free_execution_contract_accepts_empty_rom_identity(self) -> None:
+        eval_contract = build_execution_contract(
+            checkpoint_sha256="a" * 64,
+            runtime_image_ref="docker:example.invalid/rlab@sha256:" + "b" * 64,
+            eval_environment={"env_provider": "rlab", "game": "Bandit-v0"},
+            episodes=1,
+            n_envs=1,
+            max_steps=1,
+            seed=10_000,
+            seed_protocol=SEED_PROTOCOL,
+            asset_manifest=None,
+        )
+
+        self.assertIsNone(eval_contract["asset"])
+        result = validate_attempt_result(
+            successful_result(eval_contract),
+            contract=eval_contract,
+            attempt_id="attempt",
+        )
+        self.assertEqual(result["rom_sha256"], "")
+
     def test_modal_and_local_full_eval_publish_the_same_metric_projection(self) -> None:
         raw_metrics = {
             "return_mean": 2.0,
@@ -695,6 +717,64 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
+    def test_rom_free_worker_does_not_require_rom_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "model.zip"
+            metadata = root / "metadata.json"
+            result_path = root / "result.json"
+            model.write_bytes(b"model")
+            metadata.write_text("{}\n", encoding="utf-8")
+            eval_contract = build_execution_contract(
+                checkpoint_sha256=file_sha256(model),
+                runtime_image_ref="docker:example.invalid/rlab@sha256:" + "f" * 64,
+                eval_environment={"env_provider": "rlab", "game": "Bandit-v0"},
+                episodes=1,
+                n_envs=1,
+                max_steps=10,
+                seed=10_000,
+                seed_protocol=SEED_PROTOCOL,
+                asset_manifest=None,
+            )
+            payload = {
+                "attempt_id": "worker-attempt",
+                "contract": eval_contract,
+                "expires_at": time.time() + 60,
+                "child_timeout_seconds": 1,
+                "model_get_url": model.resolve().as_uri(),
+                "metadata_get_url": metadata.resolve().as_uri(),
+                "metadata_sha256": file_sha256(metadata),
+                "result_uri": result_path.resolve().as_uri(),
+                "result_put_url": result_path.resolve().as_uri(),
+            }
+
+            def successful_child(command, **_kwargs):
+                child_input = Path(command[command.index("--input") + 1])
+                child_output = Path(command[command.index("--output") + 1])
+                request = json.loads(child_input.read_text(encoding="utf-8"))
+                self.assertIsNone(request["rom_path"])
+                child_output.write_text(
+                    json.dumps(
+                        {
+                            "metrics": {"eval/full/episode/return/mean": 1.0},
+                            "episode_results": [],
+                            "preview": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch(
+                "rlab.modal_eval_worker.subprocess.run",
+                side_effect=successful_child,
+            ):
+                execute_attempt(payload)
+
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual(result["rom_sha256"], "")
+
     def test_artifact_projection_embeds_checkpoint_playback_metadata(self) -> None:
         class FakeArtifact:
             def __init__(self, name, type, metadata):
@@ -964,6 +1044,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             store.init()
             args = SimpleNamespace(
                 queue_train_job_id=9,
+                env_provider="stable-retro-turbo",
                 checkpoint_eval_environment={},
                 checkpoint_eval_stages=[],
                 checkpoint_eval_asset_manifest={"game": "Game-Nes-v0"},

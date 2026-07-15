@@ -113,17 +113,18 @@ def _upload_preview(url: str, path: Path, request: Mapping[str, Any]) -> None:
 def run_child(input_path: Path, output_path: Path) -> int:
     request = json.loads(input_path.read_text(encoding="utf-8"))
     contract = request["contract"]
-    rom_path = Path(request["rom_path"])
     model_path = Path(request["model_path"])
     model_metadata = request.get("model_metadata")
-    rom_dir = rom_path.parent
-    subprocess.run(
-        [sys.executable, "-m", "stable_retro.import", str(rom_dir)],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    raw_rom_path = request.get("rom_path")
+    if raw_rom_path:
+        rom_dir = Path(str(raw_rom_path)).parent
+        subprocess.run(
+            [sys.executable, "-m", "stable_retro.import", str(rom_dir)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
     from rlab.env import resolve_env_config
     from rlab.env_metadata import env_config_from_config_dict
     from rlab.eval_runner import evaluate_model_episodes
@@ -201,7 +202,9 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
         "execution_key": execution,
         "checkpoint_sha256": str(contract["checkpoint_sha256"]),
         "runtime_image_ref": str(contract["runtime_image_ref"]),
-        "rom_sha256": str(contract["asset"]["sha256"]),
+        "rom_sha256": (
+            str(contract["asset"]["sha256"]) if isinstance(contract.get("asset"), Mapping) else ""
+        ),
         "seed_protocol": str(contract["seed_protocol"]),
         "n_envs": int(contract["n_envs"]),
         "episodes": int(contract["episodes"]),
@@ -223,32 +226,36 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             if file_sha256(metadata_path) != str(payload["metadata_sha256"]):
                 raise ValueError("downloaded checkpoint metadata hash mismatch")
             model_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            asset = contract["asset"]
-            cache_dir = Path("/tmp/rlab-modal-assets") / str(asset["sha256"])
-            cached_rom = cache_dir / str(asset["filename"])
-            cache_valid = cached_rom.is_file() and file_sha256(cached_rom) == str(asset["sha256"])
-            if not cache_valid:
-                cached_rom.unlink(missing_ok=True)
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                downloaded_rom = write_downloaded_file(
-                    str(payload["rom_get_url"]), root / "roms" / str(asset["filename"])
+            asset = contract.get("asset")
+            rom_path: Path | None = None
+            if isinstance(asset, Mapping):
+                cache_dir = Path("/tmp/rlab-modal-assets") / str(asset["sha256"])
+                cached_rom = cache_dir / str(asset["filename"])
+                cache_valid = cached_rom.is_file() and file_sha256(cached_rom) == str(
+                    asset["sha256"]
                 )
-                if file_sha256(downloaded_rom) != str(asset["sha256"]):
-                    raise ValueError("downloaded ROM hash mismatch")
-                temporary_cache = cache_dir / f".{asset['filename']}.{attempt_id}.tmp"
-                temporary_cache.write_bytes(downloaded_rom.read_bytes())
-                try:
-                    os.link(temporary_cache, cached_rom)
-                except FileExistsError:
-                    pass
-                finally:
-                    temporary_cache.unlink(missing_ok=True)
-            rom_path = cached_rom
-            if _provider_rom_identity(
-                rom_path,
-                str(asset.get("provider_rom_identity_algorithm") or ""),
-            ) != str(asset["provider_rom_identity"]):
-                raise ValueError("downloaded ROM provider identity mismatch")
+                if not cache_valid:
+                    cached_rom.unlink(missing_ok=True)
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    downloaded_rom = write_downloaded_file(
+                        str(payload["rom_get_url"]), root / "roms" / str(asset["filename"])
+                    )
+                    if file_sha256(downloaded_rom) != str(asset["sha256"]):
+                        raise ValueError("downloaded ROM hash mismatch")
+                    temporary_cache = cache_dir / f".{asset['filename']}.{attempt_id}.tmp"
+                    temporary_cache.write_bytes(downloaded_rom.read_bytes())
+                    try:
+                        os.link(temporary_cache, cached_rom)
+                    except FileExistsError:
+                        pass
+                    finally:
+                        temporary_cache.unlink(missing_ok=True)
+                rom_path = cached_rom
+                if _provider_rom_identity(
+                    rom_path,
+                    str(asset.get("provider_rom_identity_algorithm") or ""),
+                ) != str(asset["provider_rom_identity"]):
+                    raise ValueError("downloaded ROM provider identity mismatch")
             child_input = root / "child-input.json"
             child_output = root / "child-output.json"
             _write_json(
@@ -257,7 +264,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                     "contract": contract,
                     "model_path": str(model_path),
                     "model_metadata": model_metadata,
-                    "rom_path": str(rom_path),
+                    "rom_path": str(rom_path) if rom_path is not None else None,
                     "preview": payload.get("preview"),
                 },
             )

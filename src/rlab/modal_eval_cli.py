@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from rlab.dotenv import load_env_file
+from rlab.env_registry import resolve_env_provider
 from rlab.job_queue import connect, database_url, retry_train_job_finalization
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
@@ -134,6 +135,7 @@ def modal_preflight(
     *,
     runtime_image_ref: str,
     game: str,
+    env_provider: str = "",
     runtime_input_sha256: str = "",
     runtime_build_source_sha: str = "",
 ) -> dict[str, Any]:
@@ -208,19 +210,24 @@ def modal_preflight(
         if conn is not None:
             conn.close()
 
-    try:
-        manifest = asset_manifest_for_game(game)
-        store = ObjectStore(object_store_base_uri())
-        head = store.head(str(manifest["object_uri"]))
-        remote_sha = str(head.get("metadata", {}).get("sha256") or "")
-        expected_sha = str(manifest["sha256"])
-        add(
-            "rom_asset",
-            int(head["size"]) > 0 and (not remote_sha or remote_sha == expected_sha),
-            f"game={game} size={int(head['size'])} sha256={expected_sha[:12]}",
-        )
-    except Exception as exc:
-        add("rom_asset", False, type(exc).__name__)
+    provider = str(env_provider or "").strip()
+    requires_rom_asset = not provider or resolve_env_provider(provider).uses_stable_retro_roms
+    if requires_rom_asset:
+        try:
+            manifest = asset_manifest_for_game(game)
+            store = ObjectStore(object_store_base_uri())
+            head = store.head(str(manifest["object_uri"]))
+            remote_sha = str(head.get("metadata", {}).get("sha256") or "")
+            expected_sha = str(manifest["sha256"])
+            add(
+                "rom_asset",
+                int(head["size"]) > 0 and (not remote_sha or remote_sha == expected_sha),
+                f"game={game} size={int(head['size'])} sha256={expected_sha[:12]}",
+            )
+        except Exception as exc:
+            add("rom_asset", False, type(exc).__name__)
+    else:
+        add("rom_asset", True, f"not_required provider={provider}")
 
     try:
         import modal
@@ -240,9 +247,7 @@ def modal_preflight(
                 and probe.get("train_config_contract_sha256") == expected_contract
             )
             if runtime_input_sha256:
-                probe_ok = probe_ok and (
-                    probe.get("runtime_input_sha256") == runtime_input_sha256
-                )
+                probe_ok = probe_ok and (probe.get("runtime_input_sha256") == runtime_input_sha256)
             if runtime_build_source_sha:
                 probe_ok = probe_ok and (
                     probe.get("runtime_build_source_sha") == runtime_build_source_sha
@@ -264,12 +269,17 @@ def modal_preflight(
         "runtime_image_ref": runtime_image_ref,
         "app_name": app_name,
         "game": game,
+        "env_provider": provider or None,
         "checks": checks,
     }
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    report = modal_preflight(runtime_image_ref=args.runtime_image_ref, game=args.game)
+    report = modal_preflight(
+        runtime_image_ref=args.runtime_image_ref,
+        game=args.game,
+        env_provider=args.env_provider,
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["ready"] else 1
 
@@ -630,6 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--runtime-image-ref", required=True)
     preflight.add_argument("--game", required=True)
+    preflight.add_argument("--env-provider", default="")
     preflight.set_defaults(func=cmd_preflight)
     drain = commands.add_parser("drain")
     drain.add_argument("--reason", default="")

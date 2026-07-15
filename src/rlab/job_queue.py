@@ -22,6 +22,7 @@ import psycopg2.extras
 
 from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
 from rlab.dotenv import load_env_file
+from rlab.env_registry import resolve_env_provider
 from rlab.json_utils import json_safe
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry, resolve_machine
 from rlab.runtime_refs import (
@@ -1072,6 +1073,7 @@ def modal_eval_readiness_report(
     *,
     runtime_image_ref: str,
     game: str,
+    env_provider: str = "",
     runtime_input_sha256: str = "",
     runtime_build_source_sha: str = "",
 ) -> dict[str, Any]:
@@ -1081,6 +1083,7 @@ def modal_eval_readiness_report(
     return modal_preflight(
         runtime_image_ref=runtime_image_ref,
         game=game,
+        env_provider=env_provider,
         runtime_input_sha256=runtime_input_sha256,
         runtime_build_source_sha=runtime_build_source_sha,
     )
@@ -1090,15 +1093,19 @@ def require_modal_eval_ready(
     *,
     runtime_image_ref: str,
     game: str,
+    env_provider: str = "",
     runtime_input_sha256: str = "",
     runtime_build_source_sha: str = "",
 ) -> dict[str, Any]:
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     game = str(game or "").strip()
+    env_provider = str(env_provider or "").strip()
     readiness_options: dict[str, Any] = {
         "runtime_image_ref": runtime_image_ref,
         "game": game,
     }
+    if env_provider:
+        readiness_options["env_provider"] = env_provider
     if runtime_input_sha256:
         readiness_options["runtime_input_sha256"] = runtime_input_sha256
     if runtime_build_source_sha:
@@ -1113,18 +1120,19 @@ def require_modal_eval_ready(
         )
         or "unknown readiness failure"
     )
-    remediation = shlex.join(
-        [
-            "rlab",
-            "eval",
-            "modal",
-            "preflight",
-            "--runtime-image-ref",
-            runtime_image_ref,
-            "--game",
-            game,
-        ]
-    )
+    remediation_parts = [
+        "rlab",
+        "eval",
+        "modal",
+        "preflight",
+        "--runtime-image-ref",
+        runtime_image_ref,
+        "--game",
+        game,
+    ]
+    if env_provider:
+        remediation_parts.extend(["--env-provider", env_provider])
+    remediation = shlex.join(remediation_parts)
     raise RuntimeError(f"Modal eval preflight failed: {detail}. Remediation: run {remediation}")
 
 
@@ -1245,6 +1253,7 @@ def enqueue_train_jobs_from_recipe_document(
         require_modal_eval_ready(
             runtime_image_ref=runtime_image_ref,
             game=str(train_config.get("game") or ""),
+            env_provider=str(train_config.get("env_provider") or ""),
         )
         modal_readiness_validated = True
     rows = []
@@ -1406,11 +1415,18 @@ def enqueue_train_job(
             require_modal_eval_ready(
                 runtime_image_ref=runtime_image_ref,
                 game=str(config.get("game") or ""),
+                env_provider=str(config.get("env_provider") or ""),
             )
-        if not config.get("checkpoint_eval_asset_manifest"):
+        provider = str(config.get("env_provider") or "").strip()
+        requires_rom_asset = (
+            resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+        )
+        if requires_rom_asset and not config.get("checkpoint_eval_asset_manifest"):
             config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
                 str(config.get("game") or "")
             )
+        elif not requires_rom_asset:
+            config.pop("checkpoint_eval_asset_manifest", None)
         config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
@@ -1671,9 +1687,7 @@ def claim_job_launch(
             job = dict(row["job_json"])
             launch = dict(row["launch_json"])
             attempt_json = row.get("attempt_json") or {}
-            launch["worker_attempt_id"] = str(
-                attempt_json.get("attempt_id") or launch["launch_id"]
-            )
+            launch["worker_attempt_id"] = str(attempt_json.get("attempt_id") or launch["launch_id"])
             record_job_event(
                 conn,
                 job_id=int(job["id"]),
@@ -1774,13 +1788,13 @@ def mark_train_job_ready(
     readiness: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     wandb_enabled = bool(readiness.get("wandb_enabled", True))
-    telemetry_transport = str(
-        readiness.get("telemetry_transport") or "legacy_local"
-    )
+    telemetry_transport = str(readiness.get("telemetry_transport") or "legacy_local")
     wandb_run_id = str(readiness.get("wandb_run_id") or "").strip()
     wandb_url = str(readiness.get("wandb_url") or "").strip()
-    if wandb_enabled and telemetry_transport != "neon_mailbox_v1" and (
-        not wandb_run_id or not wandb_url.startswith("https://wandb.ai/")
+    if (
+        wandb_enabled
+        and telemetry_transport != "neon_mailbox_v1"
+        and (not wandb_run_id or not wandb_url.startswith("https://wandb.ai/"))
     ):
         raise ValueError("training readiness requires a W&B run id and URL")
     learner_ready_at = str(readiness.get("learner_ready_at") or "").strip() or None
@@ -2362,6 +2376,7 @@ def retry_train_job(
         require_modal_eval_ready(
             runtime_image_ref=effective_runtime_image_ref,
             game=str(preview_config.get("game") or ""),
+            env_provider=str(preview_config.get("env_provider") or ""),
         )
         modal_readiness_validated = True
     with conn:
@@ -2564,9 +2579,7 @@ def finish_train_launch_from_result(
     train_payload = train_result.get("result") if isinstance(train_result, Mapping) else {}
     train_payload = dict(train_payload or {})
     live_publication = result.get("live_publication")
-    live_publication = (
-        dict(live_publication) if isinstance(live_publication, Mapping) else {}
-    )
+    live_publication = dict(live_publication) if isinstance(live_publication, Mapping) else {}
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -2648,9 +2661,7 @@ def finish_train_launch_from_result(
             publication_error = str(live_publication.get("error") or "").strip() or None
             publication_attempts = max(0, int(live_publication.get("attempts") or 0))
             eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
-            telemetry_transport = str(
-                train_config.get("telemetry_transport") or "legacy_local"
-            )
+            telemetry_transport = str(train_config.get("telemetry_transport") or "legacy_local")
             if launch_status == "canceled":
                 job_status = "canceled"
             elif launch_status != "succeeded":
@@ -3206,6 +3217,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             report = require_modal_eval_ready(
                 runtime_image_ref=runtime_image_ref,
                 game=str(document.get("train_config", {}).get("game") or ""),
+                env_provider=str(document.get("train_config", {}).get("env_provider") or ""),
                 runtime_input_sha256=release.runtime_input_sha256,
                 runtime_build_source_sha=release.runtime_build_source_sha,
             )

@@ -15,6 +15,7 @@ from rlab.artifacts import (
 )
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
+from rlab.env_registry import resolve_env_provider
 from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
     CHECKPOINT_EVAL_CANDIDATE_EPISODES,
@@ -104,8 +105,12 @@ def _eval_payload(args) -> dict[str, Any]:
     asset = getattr(args, "checkpoint_eval_asset_manifest", None)
     if not isinstance(environment, dict):
         raise ValueError("Modal checkpoint eval requires a materialized environment")
-    if not isinstance(asset, dict):
+    provider = str(getattr(args, "env_provider", "") or "").strip()
+    requires_rom_asset = resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    if requires_rom_asset and not isinstance(asset, dict):
         raise ValueError("Modal checkpoint eval requires a materialized asset manifest")
+    if not requires_rom_asset:
+        asset = None
     if stages is None:
         stages = []
     if not isinstance(stages, list):

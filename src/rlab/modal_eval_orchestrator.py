@@ -1178,7 +1178,7 @@ def dispatch_pending(
                     {"id": int(job["id"])},
                 )
         seconds_to_expiry = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
-        asset = job["source_announcement_json"]["eval"]["asset"]
+        asset = job["source_announcement_json"]["eval"].get("asset")
         payload = {
             "attempt_id": attempt_id,
             "contract": job["contract_json"],
@@ -1191,12 +1191,13 @@ def dispatch_pending(
                 str(job["metadata_uri"]), expires_seconds=seconds_to_expiry
             ),
             "metadata_sha256": str(job["source_announcement_json"]["metadata_sha256"]),
-            "rom_get_url": store.presign_get(
-                str(asset["object_uri"]), expires_seconds=seconds_to_expiry
-            ),
             "result_uri": result_uri,
             "result_put_url": store.presign_put(result_uri, expires_seconds=seconds_to_expiry),
         }
+        if isinstance(asset, Mapping):
+            payload["rom_get_url"] = store.presign_get(
+                str(asset["object_uri"]), expires_seconds=seconds_to_expiry
+            )
         if config.preview_enabled and str(job["purpose"]) == "screen":
             try:
                 preview_store = ObjectStore(preview_storage_base_uri())
