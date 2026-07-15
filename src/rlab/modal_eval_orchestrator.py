@@ -1307,6 +1307,10 @@ def finalize_runs(conn) -> int:
                   SET status = 'complete', updated_at = now(), error = NULL
                 WHERE r.complete_announcement_seen = TRUE
                   AND r.artifacts_projected_at IS NOT NULL
+                  AND (
+                    r.promoted_eval_job_id IS NULL
+                    OR r.promoted_artifact_projected_at IS NOT NULL
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs promoted
                     WHERE promoted.train_job_id = r.train_job_id
@@ -1707,7 +1711,14 @@ def project_artifact_references(
               promoted.source_announcement_json AS promoted_announcement
             FROM eval_runs r JOIN train_jobs t ON t.id = r.train_job_id
             LEFT JOIN eval_jobs promoted ON promoted.id = r.promoted_eval_job_id
-            WHERE r.complete_announcement_seen = TRUE AND r.artifacts_projected_at IS NULL
+            WHERE r.complete_announcement_seen = TRUE
+              AND (
+                r.artifacts_projected_at IS NULL
+                OR (
+                  r.promoted_eval_job_id IS NOT NULL
+                  AND r.promoted_artifact_projected_at IS NULL
+                )
+              )
               AND t.status = 'finalizing'
               AND t.live_publication_status IN ('complete', 'disabled')
               AND r.status = 'finalizing'

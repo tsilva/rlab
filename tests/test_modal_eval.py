@@ -779,6 +779,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
         statement = cursor.execute.call_args.args[0]
         self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
+        self.assertIn("r.promoted_artifact_projected_at IS NOT NULL", statement)
         self.assertIn("promoted.projected_at IS NULL", statement)
         self.assertIn("r.status = 'finalizing'", statement)
         self.assertIn("ready.live_publication_status IN ('complete', 'disabled')", statement)
@@ -1099,6 +1100,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         self.assertEqual(captured["checkpoint_uri"], promoted_announcement["model_uri"])
         self.assertEqual(captured["artifact_aliases"], ["latest", "promoted", "step-2000000"])
         statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertIn("r.promoted_artifact_projected_at IS NULL", statements[0])
         self.assertTrue(any("promoted_artifact_projected_at = now()" in sql for sql in statements))
 
     def test_identical_model_bytes_allow_distinct_checkpoint_metadata(self) -> None:
