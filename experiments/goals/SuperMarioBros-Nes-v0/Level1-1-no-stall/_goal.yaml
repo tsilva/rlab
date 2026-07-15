@@ -1,0 +1,10 @@
+# Hydra composition list; imports the shared Mario goal contract without the
+# Level1-1-specific no-progress termination override.
+defaults:
+- ../_goal-common@_global_
+- _self_
+
+# This control goal uses the same provider start state as Level1-1 while keeping
+# the shared Mario life-loss/max-step termination contract.
+template_vars:
+  state: Level1-1
