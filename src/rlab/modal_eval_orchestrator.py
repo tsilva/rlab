@@ -943,7 +943,8 @@ def poll_attempts(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT a.*, j.train_job_id, j.ledger_id, j.checkpoint_step, j.checkpoint_uri,
+            SELECT a.*, j.train_job_id, j.ledger_id, j.checkpoint_step,
+              j.checkpoint_sha256, j.checkpoint_uri,
               j.stage_name,
               j.stage_index, j.purpose, j.execution_key, j.job_key, j.contract_json,
               j.source_announcement_json, j.decision_rules_json, j.candidate_stop,

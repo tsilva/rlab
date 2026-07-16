@@ -23,6 +23,7 @@ from rlab.modal_eval_orchestrator import (
     finalize_runs,
     project_eval_results,
     ingest_mailbox_announcements,
+    poll_attempts,
     project_artifact_references,
     promotion_candidate_key,
     reconcile_canceled_eval_state,
@@ -105,6 +106,43 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_poll_attempts_loads_checkpoint_hash_for_accepted_commit(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [
+            {
+                "id": 101,
+                "attempt_id": "attempt-101",
+                "result_uri": "s3://bucket/result.json",
+                "receipt_json": None,
+                "purpose": "acceptance",
+                "stage_index": 0,
+                "checkpoint_sha256": "a" * 64,
+            }
+        ]
+        store = mock.MagicMock()
+        store.get_json_optional.return_value = {"status": "succeeded"}
+        config = mock.MagicMock()
+        config.timeout_for.return_value = 1200
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator.accept_attempt_result"
+        ) as accept_result:
+            changed = poll_attempts(
+                conn,
+                store,
+                mock.MagicMock(),
+                config,
+                deadline_monotonic=time.monotonic() + 1,
+            )
+
+        self.assertEqual(changed, 1)
+        self.assertIn("j.checkpoint_sha256", cursor.execute.call_args_list[0].args[0])
+        self.assertEqual(
+            accept_result.call_args.kwargs["attempt"]["checkpoint_sha256"],
+            "a" * 64,
+        )
+
     def test_canceled_train_reconciliation_closes_late_eval_rows(self) -> None:
         conn = FakeConnection(results=[{"rowcount": 3}, {"rowcount": 1}])
 
