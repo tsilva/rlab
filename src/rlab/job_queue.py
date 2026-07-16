@@ -974,6 +974,26 @@ def grant_worker_mailbox_role(conn, role: str) -> None:
             )
 
 
+def configured_worker_mailbox_role() -> str | None:
+    """Resolve the actual restricted mailbox role from its configured connection."""
+
+    load_env_file()
+    worker_database_url = str(os.environ.get("WORKER_MAILBOX_DATABASE_URL") or "").strip()
+    if not worker_database_url:
+        return None
+    worker_conn = connect(worker_database_url)
+    try:
+        with worker_conn.cursor() as cur:
+            cur.execute("SELECT current_user AS role")
+            row = cur.fetchone()
+    finally:
+        worker_conn.close()
+    role = str((row or {}).get("role") or "").strip()
+    if not role:
+        raise RuntimeError("worker mailbox database did not report its PostgreSQL role")
+    return role
+
+
 def _table_exists(conn, table_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%(table_name)s) AS table_name", {"table_name": table_name})
@@ -3419,8 +3439,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
     conn = _connect_from_args(args)
     try:
         apply_schema(conn)
-        if args.worker_mailbox_role:
-            grant_worker_mailbox_role(conn, args.worker_mailbox_role)
+        worker_mailbox_role = args.worker_mailbox_role or configured_worker_mailbox_role()
+        if worker_mailbox_role:
+            grant_worker_mailbox_role(conn, worker_mailbox_role)
     finally:
         conn.close()
     print("queue_schema=ok")

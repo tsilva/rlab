@@ -183,6 +183,9 @@ class WorkerMailbox:
                 raise MailboxProtocolError("worker mailbox preflight failed")
         finally:
             conn.close()
+        # Readiness must cover the independent stop-critical command path, not
+        # only generic connectivity and metric/event procedures.
+        self.poll_commands()
         self.append_event(
             "mailbox_preflight",
             {"protocol_version": PROTOCOL_VERSION},

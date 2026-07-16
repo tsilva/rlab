@@ -20,6 +20,9 @@ from rlab.telemetry_mailbox import (
 )
 
 
+MAX_COMMAND_RELAY_FAILURES = 5
+
+
 def _write_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -112,11 +115,21 @@ class CommandRelay(threading.Thread):
             self.mailbox.mark_command_delivered(command_id)
 
     def run(self) -> None:
-        try:
-            while not self.stop_event.is_set():
+        consecutive_failures = 0
+        while not self.stop_event.is_set():
+            try:
                 self._ack_receipts()
                 self._deliver()
-                self.stop_event.wait(self.poll_seconds)
+            except BaseException as exc:
+                self.error = exc
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_COMMAND_RELAY_FAILURES:
+                    return
+            else:
+                self.error = None
+                consecutive_failures = 0
+            self.stop_event.wait(self.poll_seconds)
+        try:
             self._ack_receipts()
         except BaseException as exc:
             self.error = exc
@@ -205,6 +218,12 @@ def main(argv: list[str] | None = None) -> int:
     next_flush = time.monotonic()
     retry_delay = 1.0
     while not args.stop_file.exists():
+        if (
+            command_relay is not None
+            and command_relay.error is not None
+            and not command_relay.is_alive()
+        ):
+            raise RuntimeError("dedicated command relay failed") from command_relay.error
         outbox = store.metric_outbox_stats()
         if outbox["bytes"] > max(1, int(args.outbox_limit_bytes)):
             raise RuntimeError("local metric outbox exceeded its safety limit")

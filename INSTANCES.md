@@ -170,7 +170,12 @@ completion and failure remain durable finalization-only state. A lifetime actor 
 the narrower per-session lock prevent duplicate owners or interleaved writers after a manager or Mac
 restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
-connection.
+connection. `rlab runs setup` resolves the restricted role from
+`WORKER_MAILBOX_DATABASE_URL` and grants every mailbox procedure after applying the schema.
+Worker readiness also executes the authenticated command poll, so a missing command grant fails
+the launch before training can be reported ready. The dedicated command relay retries transient
+poll failures but terminates the worker after five consecutive failures instead of silently losing
+the acceptance-stop path.
 
 The evaluation controller inventories owned `rlab-eval-<12-hex>` deployments hourly and stops at most ten
 zero-task apps per pass after a 24-hour grace period. It protects the latest runtime and every app

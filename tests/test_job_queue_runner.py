@@ -118,6 +118,26 @@ def valid_train_recipe() -> dict:
 
 
 class JobQueueTests(unittest.TestCase):
+    def test_setup_infers_and_grants_configured_worker_mailbox_role(self) -> None:
+        args = type("Args", (), {"direct": False, "worker_mailbox_role": None})()
+        conn = FakeConnection()
+
+        with (
+            patch.object(job_queue, "_connect_from_args", return_value=conn),
+            patch.object(job_queue, "apply_schema") as apply_schema,
+            patch.object(
+                job_queue,
+                "configured_worker_mailbox_role",
+                return_value="rlab_worker_mailbox",
+            ),
+            patch.object(job_queue, "grant_worker_mailbox_role") as grant,
+        ):
+            result = job_queue.cmd_setup(args)
+
+        self.assertEqual(result, 0)
+        apply_schema.assert_called_once_with(conn)
+        grant.assert_called_once_with(conn, "rlab_worker_mailbox")
+
     def test_host_validation_and_readiness_barrier_overlap(self) -> None:
         document = valid_train_recipe()
         document["seeds"] = [23]

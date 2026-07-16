@@ -9,6 +9,7 @@ from unittest import mock
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.telemetry_mailbox import (
     MailboxProtocolError,
+    WorkerMailbox,
     decode_metric_batch,
     encode_metric_batch,
     mark_submitted_batches,
@@ -67,6 +68,21 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    def test_worker_preflight_checks_the_command_poll_procedure(self) -> None:
+        mailbox = WorkerMailbox("postgresql://worker/db", "train-7", "token")
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"ready": 1}
+
+        with (
+            mock.patch("rlab.telemetry_mailbox.mailbox_connect", return_value=conn),
+            mock.patch.object(mailbox, "poll_commands", return_value=[]) as poll,
+            mock.patch.object(mailbox, "append_event") as append_event,
+        ):
+            mailbox.preflight()
+
+        poll.assert_called_once_with()
+        append_event.assert_called_once()
+
     def test_remote_confirmation_is_rechecked_after_five_seconds(self) -> None:
         conn = mock.MagicMock()
 
@@ -252,6 +268,31 @@ class TelemetryBatchTests(unittest.TestCase):
                 [(command_id, "2026-07-16T14:00:00+00:00")],
             )
             self.assertFalse(receipt.exists())
+
+    def test_persistent_command_poll_failure_stops_the_relay(self) -> None:
+        class BrokenCommandMailbox(FakeMailbox):
+            def poll_commands(self):
+                raise RuntimeError("command procedure unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            MetricStore(metric_store_path(run_dir)).init()
+            mailbox = BrokenCommandMailbox()
+
+            with mock.patch(
+                "rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox
+            ):
+                with self.assertRaisesRegex(RuntimeError, "dedicated command relay failed"):
+                    relay_main(
+                        [
+                            "--run-dir",
+                            str(run_dir),
+                            "--stop-file",
+                            str(Path(tmp) / "publisher.stop"),
+                            "--command-poll-seconds",
+                            "0.01",
+                        ]
+                    )
 
     def test_final_flush_retries_without_deleting_sqlite_before_ack(self) -> None:
         class FlakyMailbox(FakeMailbox):
