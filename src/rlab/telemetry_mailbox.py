@@ -145,6 +145,11 @@ def mailbox_connect(database_url: str):
     return psycopg2.connect(
         database_url,
         connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=10,
+        keepalives_interval=5,
+        keepalives_count=3,
+        tcp_user_timeout=30000,
         cursor_factory=psycopg2.extras.RealDictCursor,
         sslmode="require",
     )
@@ -303,6 +308,7 @@ def claim_run_metric_batches(
     owner: str,
     limit: int = 20,
     exclude_train_job_ids: Sequence[int] = (),
+    train_job_id: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
     with conn.cursor() as cur:
         cur.execute(
@@ -316,10 +322,14 @@ def claim_run_metric_batches(
               AND t.telemetry_transport = 'neon_mailbox_v1'
               AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
               AND t.id <> ALL(%(excluded_ids)s)
+              AND (%(train_job_id)s IS NULL OR t.id = %(train_job_id)s)
             ORDER BY b.created_at, b.id
             LIMIT 1
             """,
-            {"excluded_ids": list(exclude_train_job_ids) or [0]},
+            {
+                "excluded_ids": list(exclude_train_job_ids) or [0],
+                "train_job_id": None if train_job_id is None else int(train_job_id),
+            },
         )
         run = cur.fetchone()
     if not run:
@@ -370,6 +380,29 @@ def claim_run_metric_batches(
     except Exception:
         release_wandb_run_lock(conn, int(run["id"]))
         raise
+
+
+def pending_metric_run_ids(conn, *, limit: int = 3) -> list[int]:
+    """Return independent W&B runs ready for parallel publication."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.id, min(b.created_at) AS oldest_batch
+            FROM metric_batches b
+            JOIN metric_streams s ON s.stream_id = b.stream_id
+            JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+            JOIN train_jobs t ON t.id = a.train_job_id
+            WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
+              AND t.telemetry_transport = 'neon_mailbox_v1'
+              AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+            GROUP BY t.id
+            ORDER BY oldest_batch, t.id
+            LIMIT %(limit)s
+            """,
+            {"limit": max(1, int(limit))},
+        )
+        return [int(row["id"]) for row in cur.fetchall()]
 
 
 def release_wandb_run_lock(conn, train_job_id: int) -> None:

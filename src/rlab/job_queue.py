@@ -771,6 +771,11 @@ def connect(url: str):
     return psycopg2.connect(
         url,
         connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=10,
+        keepalives_interval=5,
+        keepalives_count=3,
+        tcp_user_timeout=30000,
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
 

@@ -26,6 +26,7 @@ SSH_CONNECT_TIMEOUT_SECONDS = 10
 MACHINE_COMMAND_TIMEOUT_SECONDS = 120.0
 DOCKER_PULL_TIMEOUT_SECONDS = 900.0
 DOCKER_STOP_TIMEOUT_SECONDS = 150.0
+TRAIN_CONTAINER_STOP_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -596,6 +597,8 @@ class DockerRunnerHost:
             container_name,
             "--restart",
             "no",
+            "--stop-timeout",
+            str(TRAIN_CONTAINER_STOP_TIMEOUT_SECONDS),
             *self.machine.docker_gpu_args,
             "--env-file",
             attempt_env_path or self.machine.paths.env_file,

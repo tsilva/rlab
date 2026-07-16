@@ -846,7 +846,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
     def test_projection_queries_skip_backoff_and_exhausted_rows(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
 
         self.assertEqual(
             project_eval_results(
@@ -861,6 +861,39 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertIn("projection_attempts <", statement)
         self.assertIn("projection_next_retry_at <= now()", statement)
         self.assertIn("r.status = 'finalizing'", statement)
+
+    def test_projection_enqueues_all_ready_mailbox_promotions(self) -> None:
+        jobs = [
+            {
+                "id": job_id,
+                "train_job_id": 17,
+                "train_config": {"telemetry_transport": "neon_mailbox_v1"},
+                "decision_json": {"metrics": {}},
+                "purpose": "promotion",
+                "checkpoint_uri": f"s3://bucket/{job_id}.zip",
+                "checkpoint_sha256": str(job_id) * 64,
+                "checkpoint_step": job_id * 100,
+                "canonical_promotion": job_id == 2,
+            }
+            for job_id in (1, 2, 3)
+        ]
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = jobs
+
+        with mock.patch(
+            "rlab.telemetry_mailbox.enqueue_projection_payload", return_value=1
+        ) as enqueue:
+            count = project_eval_results(
+                conn,
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+            )
+
+        self.assertEqual(count, 3)
+        self.assertEqual(enqueue.call_count, 3)
+        self.assertEqual(cursor.execute.call_args.kwargs.get("limit"), None)
+        self.assertEqual(cursor.execute.call_args.args[1]["limit"], 100)
 
     def test_finalization_waits_for_wandb_projection(self) -> None:
         conn = mock.MagicMock()

@@ -147,6 +147,7 @@ class DockerHostTests(unittest.TestCase):
         args = run.call_args.args[1]
         text = " ".join(args)
         self.assertEqual(args[0], "create")
+        self.assertIn("--stop-timeout 300", text)
         self.assertIn("rlab-container-entrypoint rlab run-job", text)
         self.assertIn("--payload /input/payloads/train-12.json", text)
         self.assertIn("--label rlab.launch-id=train-12", text)

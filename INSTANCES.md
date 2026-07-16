@@ -141,6 +141,13 @@ single-use containers impose the full cold-start cost on every evaluation; the g
 dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
 Modal supports `max_inputs > 1`.
 
+Ready promotion projections are enqueued in bounded batches rather than one per service pass, and
+the service drains up to three independent W&B runs concurrently in isolated publisher processes.
+Each run retains its session advisory lock, so concurrent publication cannot interleave writers for
+the same W&B run. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
+so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
+connection.
+
 The fleet service inventories owned `rlab-eval-<12-hex>` deployments hourly and stops at most ten
 zero-task apps per pass after a 24-hour grace period. It protects the latest runtime and every app
 referenced by nonterminal training, evaluation, recovery, queued, or active-attempt work; unrelated
@@ -261,7 +268,9 @@ pushed immutable GHCR digest refs for all comparable Docker fleet jobs.
   host-mounted launch output while active; SQLite is deleted after the final Neon watermark is
   acknowledged. Fleet publishes training and all evaluation protocols into the preassigned W&B run,
   keeps that remote run active while queue work is nonterminal, and finishes it only after terminal
-  publication.
+  publication. Managed training containers have a five-minute Docker stop timeout so an orderly
+  daemon or host shutdown gives `run-job` enough time to stop telemetry workers and atomically write
+  `result.json`; sudden power loss remains externally unrecoverable.
   Later service passes reconcile DB launch rows, Docker labels, and durable
   output directories.
 ## Train Image Build Baseline (2026-07-14)

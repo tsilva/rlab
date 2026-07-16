@@ -1005,7 +1005,7 @@ def _default_reconcile_eval(
         detail = dict(run_service_eval_pass(**kwargs) or {})
     else:
         detail = {"status": "unconfigured"}
-    from rlab.fleet_wandb_publisher import drain_cycle
+    from rlab.fleet_wandb_publisher import drain_cycle_parallel
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
         discard_disabled_metric_batches,
@@ -1019,7 +1019,12 @@ def _default_reconcile_eval(
     try:
         detail["consumed_attempt_events"] = consume_attempt_events(conn)
         detail["discarded_disabled_metric_streams"] = discard_disabled_metric_batches(conn)
-        detail["wandb_publication"] = drain_cycle(conn)
+        detail["wandb_publication"] = drain_cycle_parallel(
+            conn,
+            repo_root=repo_root,
+            max_runs=3,
+            deadline_monotonic=deadline_monotonic,
+        )
         detail["finalized_mailbox_runs_without_eval"] = finalize_mailbox_runs_without_eval(conn)
         storage_bytes = mailbox_storage_bytes(conn)
         detail["metric_mailbox_bytes"] = storage_bytes

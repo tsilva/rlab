@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
+import subprocess
 import sys
+import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,6 +18,7 @@ from rlab.telemetry_mailbox import (
     commit_published_batches,
     decode_metric_batch,
     mark_submitted_batches,
+    pending_metric_run_ids,
     release_metric_batch_claims,
     release_wandb_run_lock,
 )
@@ -330,6 +335,7 @@ def drain_once(
     owner: str | None = None,
     limit: int = 20,
     exclude_train_job_ids: tuple[int, ...] = (),
+    train_job_id: int | None = None,
 ) -> int:
     owner = owner or f"fleet-publisher-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     claim = claim_run_metric_batches(
@@ -337,6 +343,7 @@ def drain_once(
         owner=owner,
         limit=limit,
         exclude_train_job_ids=exclude_train_job_ids,
+        train_job_id=train_job_id,
     )
     if claim is None:
         return 0
@@ -368,9 +375,72 @@ def drain_cycle(conn, *, max_runs: int = 10, limit: int = 20) -> dict[str, int]:
     return {"runs_attempted": len(attempted), "batches_published": published, "runs_failed": failed}
 
 
+def drain_cycle_parallel(
+    conn,
+    *,
+    repo_root: Path,
+    max_runs: int = 3,
+    limit: int = 20,
+    deadline_monotonic: float | None = None,
+) -> dict[str, int]:
+    """Publish independent W&B runs in isolated processes.
+
+    W&B owns process-global SDK state, so process isolation preserves the per-run
+    advisory-lock contract while allowing active runs to drain concurrently.
+    """
+
+    run_ids = pending_metric_run_ids(conn, limit=max_runs)
+    if not run_ids:
+        return {"runs_attempted": 0, "batches_published": 0, "runs_failed": 0}
+    timeout = None
+    if deadline_monotonic is not None:
+        timeout = max(1.0, deadline_monotonic - time.monotonic())
+
+    def publish(train_job_id: int) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "rlab.fleet_wandb_publisher",
+                "--limit",
+                str(max(1, int(limit))),
+                "--train-job-id",
+                str(train_job_id),
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    published = 0
+    failed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(run_ids)) as executor:
+        futures = [executor.submit(publish, train_job_id) for train_job_id in run_ids]
+        for future in futures:
+            try:
+                completed = future.result()
+            except (OSError, subprocess.TimeoutExpired):
+                failed += 1
+                continue
+            if completed.returncode:
+                failed += 1
+                continue
+            for line in completed.stdout.splitlines():
+                if line.startswith("published_batches="):
+                    published += int(line.partition("=")[2])
+                    break
+    return {
+        "runs_attempted": len(run_ids),
+        "batches_published": published,
+        "runs_failed": failed,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Drain Fleet telemetry mailboxes to W&B.")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--train-job-id", type=int)
     return parser
 
 
@@ -382,7 +452,10 @@ def main(argv: list[str] | None = None) -> int:
     # session, so it must not use a PgBouncer-backed connection.
     conn = connect(database_url(use_direct=True))
     try:
-        print(f"published_batches={drain_once(conn, limit=max(1, args.limit))}")
+        print(
+            "published_batches="
+            f"{drain_once(conn, limit=max(1, args.limit), train_job_id=args.train_job_id)}"
+        )
     finally:
         conn.close()
     return 0

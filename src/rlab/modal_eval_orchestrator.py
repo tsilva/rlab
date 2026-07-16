@@ -1575,7 +1575,9 @@ def _execute_projection(
         payload_path.unlink(missing_ok=True)
 
 
-def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) -> int:
+def project_eval_results(
+    conn, *, repo_root: Path, deadline_monotonic: float, limit: int = 100
+) -> int:
     if deadline_monotonic - time.monotonic() < 2.0:
         return 0
     with conn.cursor() as cur:
@@ -1595,77 +1597,86 @@ def project_eval_results(conn, *, repo_root: Path, deadline_monotonic: float) ->
               AND (j.projection_next_retry_at IS NULL OR j.projection_next_retry_at <= now())
             ORDER BY COALESCE(j.projection_next_retry_at, j.created_at),
               j.train_job_id, j.checkpoint_step, j.stage_index
-            LIMIT 1
+            LIMIT %(limit)s
             """,
-            {"max_attempts": MAX_PROJECTION_ATTEMPTS},
+            {
+                "max_attempts": MAX_PROJECTION_ATTEMPTS,
+                "limit": max(1, int(limit)),
+            },
         )
-        job = cur.fetchone()
-    if not job:
-        return 0
-    job = dict(job)
-    payload = {
-        "projection_kind": "evaluation",
-        "train_config": job["train_config"],
-        "decision": job["decision_json"],
-        "purpose": job["purpose"],
-        "checkpoint_uri": job["checkpoint_uri"],
-        "checkpoint_sha256": job["checkpoint_sha256"],
-        "checkpoint_step": job["checkpoint_step"],
-        "canonical_promotion": bool(job["canonical_promotion"]),
-    }
-    if str(job["train_config"].get("telemetry_transport") or "legacy_local") == ("neon_mailbox_v1"):
-        from rlab.telemetry_mailbox import enqueue_projection_payload
+        jobs = [dict(row) for row in cur.fetchall()]
+    projected = 0
+    for job in jobs:
+        if deadline_monotonic - time.monotonic() < 2.0:
+            break
+        payload = {
+            "projection_kind": "evaluation",
+            "train_config": job["train_config"],
+            "decision": job["decision_json"],
+            "purpose": job["purpose"],
+            "checkpoint_uri": job["checkpoint_uri"],
+            "checkpoint_sha256": job["checkpoint_sha256"],
+            "checkpoint_step": job["checkpoint_step"],
+            "canonical_promotion": bool(job["canonical_promotion"]),
+        }
+        if str(job["train_config"].get("telemetry_transport") or "legacy_local") == (
+            "neon_mailbox_v1"
+        ):
+            from rlab.telemetry_mailbox import enqueue_projection_payload
 
-        enqueue_projection_payload(conn, eval_job_id=int(job["id"]), payload=payload)
-        return 1
-    error = _execute_projection(
-        payload,
-        repo_root=repo_root,
-        deadline_monotonic=deadline_monotonic,
-        label=f"eval-job-{job['id']}",
-    )
-    with conn:
-        with conn.cursor() as cur:
-            if error is None:
-                cur.execute(
-                    """
-                    UPDATE eval_jobs SET projected_at = now(), projection_error = NULL,
-                      projection_next_retry_at = NULL, updated_at = now()
-                    WHERE id = %(id)s
-                    """,
-                    {"id": int(job["id"])},
-                )
-            else:
-                attempts = int(job.get("projection_attempts") or 0) + 1
-                retry_delay = PROJECTION_RETRY_DELAYS_SECONDS[
-                    min(attempts - 1, len(PROJECTION_RETRY_DELAYS_SECONDS) - 1)
-                ]
-                cur.execute(
-                    """
-                    UPDATE eval_jobs SET projection_error = %(error)s,
-                      projection_attempts = %(attempts)s,
-                      projection_next_retry_at = now() + (%(retry_delay)s * interval '1 second'),
-                      updated_at = now() WHERE id = %(id)s
-                    """,
-                    {
-                        "error": error[:4000],
-                        "attempts": attempts,
-                        "retry_delay": retry_delay,
-                        "id": int(job["id"]),
-                    },
-                )
-                if attempts >= MAX_PROJECTION_ATTEMPTS:
+            projected += int(
+                enqueue_projection_payload(conn, eval_job_id=int(job["id"]), payload=payload)
+            )
+            continue
+        error = _execute_projection(
+            payload,
+            repo_root=repo_root,
+            deadline_monotonic=deadline_monotonic,
+            label=f"eval-job-{job['id']}",
+        )
+        with conn:
+            with conn.cursor() as cur:
+                if error is None:
                     cur.execute(
                         """
-                        UPDATE eval_runs SET status = 'failed', error = %(error)s,
-                          updated_at = now() WHERE train_job_id = %(train_job_id)s
+                        UPDATE eval_jobs SET projected_at = now(), projection_error = NULL,
+                          projection_next_retry_at = NULL, updated_at = now()
+                        WHERE id = %(id)s
+                        """,
+                        {"id": int(job["id"])},
+                    )
+                else:
+                    attempts = int(job.get("projection_attempts") or 0) + 1
+                    retry_delay = PROJECTION_RETRY_DELAYS_SECONDS[
+                        min(attempts - 1, len(PROJECTION_RETRY_DELAYS_SECONDS) - 1)
+                    ]
+                    cur.execute(
+                        """
+                        UPDATE eval_jobs SET projection_error = %(error)s,
+                          projection_attempts = %(attempts)s,
+                          projection_next_retry_at = now() + (%(retry_delay)s * interval '1 second'),
+                          updated_at = now() WHERE id = %(id)s
                         """,
                         {
-                            "error": f"evaluation projection exhausted retries: {error}"[:4000],
-                            "train_job_id": int(job["train_job_id"]),
+                            "error": error[:4000],
+                            "attempts": attempts,
+                            "retry_delay": retry_delay,
+                            "id": int(job["id"]),
                         },
                     )
-    return int(error is None)
+                    if attempts >= MAX_PROJECTION_ATTEMPTS:
+                        cur.execute(
+                            """
+                            UPDATE eval_runs SET status = 'failed', error = %(error)s,
+                              updated_at = now() WHERE train_job_id = %(train_job_id)s
+                            """,
+                            {
+                                "error": f"evaluation projection exhausted retries: {error}"[:4000],
+                                "train_job_id": int(job["train_job_id"]),
+                            },
+                        )
+        projected += int(error is None)
+    return projected
 
 
 def enqueue_missing_mailbox_projections(conn, *, limit: int = 100) -> int:
