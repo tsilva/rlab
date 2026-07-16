@@ -31,6 +31,7 @@ DEFAULT_FLUSH_SECONDS = 30.0
 DEFAULT_FINAL_FLUSH_SECONDS = 120.0
 DEFAULT_LOCAL_OUTBOX_LIMIT_BYTES = 256 * 1024 * 1024
 LEASE_SECONDS = 180
+REMOTE_CONFIRM_POLL_SECONDS = 5.0
 
 
 class MailboxProtocolError(RuntimeError):
@@ -517,7 +518,7 @@ def mark_submitted_batches(
     conn,
     batches: Sequence[Mapping[str, Any]],
     *,
-    confirm_after_seconds: float = 30.0,
+    confirm_after_seconds: float = REMOTE_CONFIRM_POLL_SECONDS,
 ) -> None:
     """Record W&B submission without treating it as remote confirmation."""
 

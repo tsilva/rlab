@@ -11,6 +11,7 @@ from rlab.telemetry_mailbox import (
     MailboxProtocolError,
     decode_metric_batch,
     encode_metric_batch,
+    mark_submitted_batches,
 )
 from rlab.telemetry_relay import CommandRelay, _handle_commands, main as relay_main
 
@@ -66,6 +67,18 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    def test_remote_confirmation_is_rechecked_after_five_seconds(self) -> None:
+        conn = mock.MagicMock()
+
+        mark_submitted_batches(
+            conn,
+            [{"id": 1, "stream_id": "train-7", "batch_sequence": 3}],
+        )
+
+        calls = conn.cursor.return_value.__enter__.return_value.execute.call_args_list
+        lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
+        self.assertEqual(lease_update.args[1]["delay"], 5.0)
+
     def test_batch_is_deterministic_gzip_and_preserves_explicit_global_steps(self) -> None:
         batch = encode_metric_batch(
             [frame(1, step=300), frame(2, step=100), frame(3, step=200)]

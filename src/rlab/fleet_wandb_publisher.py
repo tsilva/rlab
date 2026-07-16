@@ -31,6 +31,8 @@ from rlab.metric_names import EVAL_ACCEPTANCE_PASS
 
 
 SUMMARY_CURSOR_KEY = "_rlab_telemetry_cursors"
+DEFAULT_BATCH_LIMIT = 100
+ACTOR_POLL_SECONDS = 2.0
 SUPPORTED_FRAME_KINDS = {
     "history",
     "histogram",
@@ -477,7 +479,7 @@ def drain_once(
     conn,
     *,
     owner: str | None = None,
-    limit: int = 20,
+    limit: int = DEFAULT_BATCH_LIMIT,
     exclude_train_job_ids: tuple[int, ...] = (),
     train_job_id: int | None = None,
 ) -> int:
@@ -495,6 +497,68 @@ def drain_once(
         return 0
     run, batches = claim
     return _drain_claim(conn, run, batches)
+
+
+def _publisher_actor_done(conn, train_job_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT live_publication_status
+            FROM train_jobs
+            WHERE id = %(id)s
+            """,
+            {"id": int(train_job_id)},
+        )
+        row = cur.fetchone()
+    return not row or str(row["live_publication_status"]) in {
+        "complete",
+        "disabled",
+        "failed",
+    }
+
+
+def run_publisher_actor(
+    conn,
+    train_job_id: int,
+    *,
+    limit: int = DEFAULT_BATCH_LIMIT,
+    poll_seconds: float = ACTOR_POLL_SECONDS,
+    once: bool = False,
+) -> int:
+    """Own one run until publication completes, surviving idle producer gaps.
+
+    The lifetime advisory lock makes a launchd manager restart safe: a replacement actor waits
+    behind the existing owner instead of opening a second W&B SDK writer. Each drain still uses
+    the narrower run lock so recovery and tests keep the same transactional claim boundary.
+    """
+
+    actor_key = f"rlab-wandb-actor:{int(train_job_id)}"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_lock(hashtextextended(%(key)s, 0))",
+            {"key": actor_key},
+        )
+    published = 0
+    try:
+        while True:
+            published += drain_once(
+                conn,
+                limit=max(1, int(limit)),
+                train_job_id=int(train_job_id),
+            )
+            done = _publisher_actor_done(conn, int(train_job_id))
+            # Do not leave a read transaction open while an active producer is idle.
+            conn.rollback()
+            if done or once:
+                return published
+            time.sleep(max(float(poll_seconds), 0.01))
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_unlock(hashtextextended(%(key)s, 0))",
+                {"key": actor_key},
+            )
+        conn.rollback()
 
 
 def drain_cycle(conn, *, max_runs: int = 10, limit: int = 20) -> dict[str, int]:
@@ -586,8 +650,9 @@ def drain_cycle_parallel(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Drain Fleet telemetry mailboxes to W&B.")
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=DEFAULT_BATCH_LIMIT)
     parser.add_argument("--train-job-id", type=int)
+    parser.add_argument("--once", action="store_true")
     return parser
 
 
@@ -599,9 +664,18 @@ def main(argv: list[str] | None = None) -> int:
     # session, so it must not use a PgBouncer-backed connection.
     conn = connect(database_url(use_direct=True))
     try:
+        if args.train_job_id is not None:
+            published = run_publisher_actor(
+                conn,
+                int(args.train_job_id),
+                limit=max(1, args.limit),
+                once=bool(args.once),
+            )
+        else:
+            published = drain_once(conn, limit=max(1, args.limit))
         print(
             "published_batches="
-            f"{drain_once(conn, limit=max(1, args.limit), train_job_id=args.train_job_id)}"
+            f"{published}"
         )
     finally:
         conn.close()

@@ -94,10 +94,14 @@ fail-fast evaluations at each of 4, 8, and 16 requested CPUs against the exact i
 contract. Complete-eval median/p95 seconds were 50.272/57.886 at 4 CPUs, 35.664/39.866 at 8 CPUs,
 and 34.583/38.004 at 16 CPUs. Fail-fast median/p95 seconds were 25.428/27.641, 20.390/24.094, and
 19.020/24.763 respectively. Eight CPUs is the smallest request whose complete median and p95 are
-both within 5% of the fastest configuration, so it is the selected request. With the measured
-5,500 FPS upper bound, three-call capacity, and 1.25 safety factor, the derived minimum interval is
-91,360 steps. The selected 250,000-step interval reserves 0.8771 calls of load per run; the 80%
-admission ceiling is 2.4 calls, so two such runs may be admitted concurrently and a third waits.
+both within 5% of the fastest configuration, so it is the selected request. The 2026-07-16 job 49
+canary measured 1,068 learner-loop samples: 7,291 FPS median, 7,517 FPS p95, and 14,028 FPS maximum.
+The workload policy rounds that observed peak up to a 15,000 FPS operating upper bound. With
+three-call capacity and the 1.25 safety factor, the derived minimum interval is 249,164 steps. The
+selected 250,000-step interval reserves 2.392 calls of load per run, just below the 2.4-call
+admission ceiling, so only one such run is admitted at a time. The same canary's 34 checkpoint
+saves took 0.041 seconds median and 0.048 seconds maximum, about 0.3% of even the fastest expected
+checkpoint interval and therefore comfortably below the 2% learner-throughput gate.
 Immutable benchmark evidence is under
 `s3://wandb/rlab/benchmarks/acceptance-v1/20260716T135436Z-4610f913/`.
 
@@ -158,11 +162,13 @@ dollar budgets remain the spend guards. There is no enforceable ten-input contai
 Modal supports `max_inputs > 1`.
 
 Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches.
-The publisher manager starts exactly one isolated W&B SDK owner for each active run; its concurrency
-is independent of the three-call Modal limit. Publisher work never blocks eval reconciliation or
-stop delivery; publication completion and failure remain durable finalization-only state.
-Each run retains its session advisory lock, so concurrent publication cannot interleave writers for
-the same W&B run. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
+The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
+concurrency is independent of the three-call Modal limit. The actor survives idle producer gaps,
+drains up to 100 ordered durable batches per claim, and rechecks remotely submitted cursors after
+five seconds. Publisher work never blocks eval reconciliation or stop delivery; publication
+completion and failure remain durable finalization-only state. A lifetime actor advisory lock plus
+the narrower per-session lock prevent duplicate owners or interleaved writers after a manager or Mac
+restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
 connection.
 

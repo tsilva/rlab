@@ -16,11 +16,11 @@ workloads:
       checkpoint_step: 500000
     cpu: 8
     repetitions: 5
-    training_fps_upper_bound: 5500.0
+    training_fps_upper_bound: 15000.0
     full_eval_median_seconds: 35.664422118
     full_eval_p95_seconds: 39.866172223
     fail_fast_median_seconds: 20.389822332
     fail_fast_p95_seconds: 24.093650607
-    derived_minimum_interval_steps: 91360
+    derived_minimum_interval_steps: 249164
     selected_checkpoint_interval_steps: 250000
-    eval_load: 0.877055788906
+    eval_load: 2.39197033338

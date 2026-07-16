@@ -12,6 +12,7 @@ from rlab.fleet_wandb_publisher import (
     _summary_step_max,
     drain_cycle_parallel,
     finalize_finishing_run,
+    run_publisher_actor,
 )
 from rlab.metric_store import MetricStore
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
@@ -33,6 +34,40 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    def test_publisher_actor_survives_idle_gaps_until_remote_completion(self) -> None:
+        conn = mock.MagicMock()
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.drain_once",
+                side_effect=[2, 3],
+            ) as drain,
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publisher_actor_done",
+                side_effect=[False, True],
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.time.sleep") as sleep,
+        ):
+            published = run_publisher_actor(
+                conn,
+                41,
+                limit=100,
+                poll_seconds=2.0,
+            )
+
+        self.assertEqual(published, 5)
+        self.assertEqual(drain.call_count, 2)
+        self.assertEqual(
+            drain.call_args_list[0].kwargs,
+            {"limit": 100, "train_job_id": 41},
+        )
+        sleep.assert_called_once_with(2.0)
+        statements = [
+            call.args[0]
+            for call in conn.cursor.return_value.__enter__.return_value.execute.call_args_list
+        ]
+        self.assertTrue(any("pg_advisory_lock" in statement for statement in statements))
+        self.assertTrue(any("pg_advisory_unlock" in statement for statement in statements))
+
     def test_parallel_cycle_uses_one_isolated_process_per_run(self) -> None:
         with (
             mock.patch(
