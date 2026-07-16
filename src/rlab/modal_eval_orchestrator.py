@@ -1107,8 +1107,9 @@ def reconcile_canceled_eval_state(conn) -> dict[str, int]:
                 SET status = 'canceled', finished_at = now(), updated_at = now(),
                   error = 'training finalization canceled'
                 FROM train_jobs t
+                JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = j.train_job_id
-                  AND t.status = 'canceled'
+                  AND (t.status = 'canceled' OR r.outcome = 'canceled')
                   AND j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
                 """
             )
@@ -1116,7 +1117,7 @@ def reconcile_canceled_eval_state(conn) -> dict[str, int]:
             cur.execute(
                 """
                 UPDATE eval_runs r
-                SET status = 'canceled', updated_at = now(),
+                SET status = 'canceled', outcome = 'canceled', updated_at = now(),
                   error = 'training finalization canceled'
                 FROM train_jobs t
                 WHERE t.id = r.train_job_id

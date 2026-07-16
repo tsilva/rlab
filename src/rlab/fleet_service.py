@@ -549,7 +549,17 @@ def kick_service(
             entity_id=entity_id,
             state_dir=state_dir,
         )
-    command = ["launchctl", "kickstart", _target(label, uid)]
+    controller_by_entity = {
+        "batch": "machine",
+        "machine": "machine",
+        "train": "machine",
+        "eval": "evaluation",
+        "evaluation": "evaluation",
+        "wandb": "wandb",
+    }
+    controller = controller_by_entity.get(str(entity_kind or "").strip().lower())
+    target_label = f"{label}.{controller}" if label == SERVICE_LABEL and controller else label
+    command = ["launchctl", "kickstart", _target(target_label, uid)]
     if "-k" in command:
         raise AssertionError("fleet service kick must never terminate an active pass")
     result = runner(command, check=False, capture_output=True, text=True)

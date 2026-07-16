@@ -115,8 +115,10 @@ class ModalEvalContractTests(unittest.TestCase):
 
         jobs_sql, runs_sql = conn.cursor_obj.executed_sqls
         self.assertIn("t.status = 'canceled'", jobs_sql)
+        self.assertIn("r.outcome = 'canceled'", jobs_sql)
         self.assertIn("'pending', 'dispatching', 'submitted', 'blocked_budget'", jobs_sql)
         self.assertIn("t.status = 'canceled'", runs_sql)
+        self.assertIn("outcome = 'canceled'", runs_sql)
         self.assertIn("r.status NOT IN ('complete', 'failed', 'canceled')", runs_sql)
 
     def test_operator_retry_starts_a_fresh_attempt_round(self) -> None:

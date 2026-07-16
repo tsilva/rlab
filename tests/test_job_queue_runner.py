@@ -1247,8 +1247,12 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(changed, [9])
         sql = conn.cursor_obj.executed_sqls[0]
-        self.assertIn("WHEN status IN ('pending', 'finalizing') THEN 'canceled'", sql)
-        self.assertNotIn("status IN ('pending', 'launching') THEN 'canceled'", sql)
+        self.assertIn("WHEN status = 'pending' THEN 'canceled'", sql)
+        self.assertNotIn("WHEN status IN ('pending', 'finalizing')", sql)
+        self.assertIn("WHEN status = 'pending' THEN 'disabled'", sql)
+        eval_run_sql = conn.cursor_obj.executed_sqls[2]
+        self.assertIn("outcome = 'canceled'", eval_run_sql)
+        self.assertIn("WHEN t.status = 'finalizing' THEN 'finalizing'", eval_run_sql)
 
     def test_result_identity_is_validated_before_mutation(self) -> None:
         launch = {
@@ -1354,6 +1358,11 @@ class JobQueueTests(unittest.TestCase):
             "runtime_image_ref": RUNTIME_IMAGE_REF,
             "state": "running",
             "cancel_requested": True,
+            "job_train_config": {
+                "checkpoint_eval_backend": "modal",
+                "telemetry_transport": "neon_mailbox_v1",
+                "wandb": True,
+            },
         }
         terminal_launch = {**launch, "state": "canceled"}
         job = {"id": 7, "run_name": "run"}
@@ -1382,7 +1391,8 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(conn.cursor_obj.executed_params_list[1]["state"], "canceled")
-        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "canceled")
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "finalizing")
+        self.assertIn("outcome = 'canceled'", conn.cursor_obj.executed_sqls[3])
 
     def test_idempotent_batch_returns_existing_jobs(self) -> None:
         existing = [

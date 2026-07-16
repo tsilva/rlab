@@ -585,6 +585,35 @@ class FleetServiceTests(unittest.TestCase):
         self.assertEqual(observed[0]["reason"], "train_cancel")
         self.assertEqual(observed[0]["entity_id"], "31")
 
+    def test_kick_routes_work_to_the_owning_split_controller(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(argv, **_kwargs):
+            commands.append(list(argv))
+            return completed(argv)
+
+        for entity_kind in ("train", "batch", "machine"):
+            self.assertTrue(
+                fleet_service.kick_service(entity_kind=entity_kind, runner=runner, uid=501)
+            )
+        self.assertTrue(
+            fleet_service.kick_service(entity_kind="eval", runner=runner, uid=501)
+        )
+        self.assertTrue(
+            fleet_service.kick_service(entity_kind="wandb", runner=runner, uid=501)
+        )
+
+        self.assertEqual(
+            [command[-1] for command in commands],
+            [
+                "gui/501/com.rlab.fleet-service.machine",
+                "gui/501/com.rlab.fleet-service.machine",
+                "gui/501/com.rlab.fleet-service.machine",
+                "gui/501/com.rlab.fleet-service.evaluation",
+                "gui/501/com.rlab.fleet-service.wandb",
+            ],
+        )
+
     def test_parser_exposes_public_lifecycle_and_internal_run_once(self) -> None:
         parser = fleet_service.build_parser()
         for argv, function in (

@@ -2547,12 +2547,16 @@ def request_cancel_train_jobs(
                 UPDATE train_jobs
                 SET cancel_requested = TRUE,
                     status = CASE
-                      WHEN status IN ('pending', 'finalizing') THEN 'canceled'
+                      WHEN status = 'pending' THEN 'canceled'
                       ELSE status
                     END,
                     finished_at = CASE
-                      WHEN status IN ('pending', 'finalizing') THEN now()
+                      WHEN status = 'pending' THEN now()
                       ELSE finished_at
+                    END,
+                    live_publication_status = CASE
+                      WHEN status = 'pending' THEN 'disabled'
+                      ELSE live_publication_status
                     END
                 WHERE {" AND ".join(filters)}
                 RETURNING id
@@ -2572,10 +2576,18 @@ def request_cancel_train_jobs(
                 )
                 cur.execute(
                     """
-                    UPDATE eval_runs SET status = 'canceled', updated_at = now(),
-                      error = 'training finalization canceled'
-                    WHERE train_job_id = ANY(%(job_ids)s)
-                      AND status NOT IN ('complete', 'failed', 'canceled')
+                    UPDATE eval_runs r
+                    SET status = CASE
+                          WHEN t.status = 'canceled' THEN 'canceled'
+                          WHEN t.status = 'finalizing' THEN 'finalizing'
+                          ELSE r.status
+                        END,
+                      outcome = 'canceled', updated_at = now(),
+                      error = 'training cancellation requested'
+                    FROM train_jobs t
+                    WHERE t.id = r.train_job_id
+                      AND r.train_job_id = ANY(%(job_ids)s)
+                      AND r.status NOT IN ('complete', 'failed')
                     """,
                     {"job_ids": job_ids},
                 )
@@ -2921,8 +2933,13 @@ def finish_train_launch_from_result(
             publication_attempts = max(0, int(live_publication.get("attempts") or 0))
             eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
             telemetry_transport = str(train_config.get("telemetry_transport") or "legacy_local")
+            requires_finalization = (
+                telemetry_transport == "neon_mailbox_v1"
+                or eval_backend == "modal"
+                or publication_status not in {"complete", "disabled"}
+            )
             if launch_status == "canceled":
-                job_status = "canceled"
+                job_status = "finalizing" if requires_finalization else "canceled"
             elif launch_status != "succeeded":
                 job_status = "failed"
             elif (
@@ -2970,6 +2987,17 @@ def finish_train_launch_from_result(
             job = cur.fetchone()
             if not job:
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
+            if launch_status == "canceled" and job_status == "finalizing":
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET status = 'finalizing', outcome = 'canceled',
+                      updated_at = now(), error = 'training canceled; finalization continues'
+                    WHERE train_job_id = %(job_id)s
+                      AND status NOT IN ('complete', 'failed')
+                    """,
+                    {"job_id": updated_launch["job_id"]},
+                )
             cur.execute(
                 """
                 UPDATE worker_attempts
