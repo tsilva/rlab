@@ -7,6 +7,7 @@ from pathlib import Path
 
 from containers.train.dependency_key import dependency_key
 from containers.train.gpu_key import gpu_key
+from containers.train.lock_projection import projection_contents
 from containers.train.runtime_key import RUNTIME_INPUT_PATHS, overlay_key, runtime_key
 
 
@@ -82,20 +83,22 @@ class TrainImageTests(unittest.TestCase):
     def test_gpu_and_dependency_keys_follow_the_layer_dag(self) -> None:
         source = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
         gpu_lock = Path("containers/train/gpu-linux-amd64.lock").read_text(encoding="utf-8")
-        train_lock = Path("containers/train/train-linux-amd64.lock").read_text(encoding="utf-8")
+        dependency_lock = Path("containers/train/train-dependencies-linux-amd64.lock").read_text(
+            encoding="utf-8"
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             dockerfile = root / "Dockerfile"
             gpu_plan = root / "gpu.lock"
-            train_plan = root / "train.lock"
+            dependency_plan = root / "dependencies.lock"
             dockerfile.write_text(source, encoding="utf-8")
             gpu_plan.write_text(gpu_lock, encoding="utf-8")
-            train_plan.write_text(train_lock, encoding="utf-8")
+            dependency_plan.write_text(dependency_lock, encoding="utf-8")
 
             gpu_baseline = gpu_key(dockerfile=dockerfile, lockfile=gpu_plan)
             dependency_baseline = dependency_key(
                 dockerfile=dockerfile,
-                lockfile=train_plan,
+                lockfile=dependency_plan,
                 gpu_digest=DIGEST_A,
             )
             dockerfile.write_text(source + "\n# unrelated runtime edit\n", encoding="utf-8")
@@ -103,18 +106,18 @@ class TrainImageTests(unittest.TestCase):
             self.assertEqual(
                 dependency_key(
                     dockerfile=dockerfile,
-                    lockfile=train_plan,
+                    lockfile=dependency_plan,
                     gpu_digest=DIGEST_A,
                 ),
                 dependency_baseline,
             )
 
-            train_plan.write_text(train_lock + "# changed\n", encoding="utf-8")
+            dependency_plan.write_text(dependency_lock + "# changed\n", encoding="utf-8")
             self.assertEqual(gpu_key(dockerfile=dockerfile, lockfile=gpu_plan), gpu_baseline)
             self.assertNotEqual(
                 dependency_key(
                     dockerfile=dockerfile,
-                    lockfile=train_plan,
+                    lockfile=dependency_plan,
                     gpu_digest=DIGEST_A,
                 ),
                 dependency_baseline,
@@ -122,7 +125,7 @@ class TrainImageTests(unittest.TestCase):
             self.assertNotEqual(
                 dependency_key(
                     dockerfile=dockerfile,
-                    lockfile=Path("containers/train/train-linux-amd64.lock"),
+                    lockfile=Path("containers/train/train-dependencies-linux-amd64.lock"),
                     gpu_digest=DIGEST_B,
                 ),
                 dependency_baseline,
@@ -135,6 +138,8 @@ class TrainImageTests(unittest.TestCase):
             self.assertEqual(dockerfile.count(f"# {section}-image-inputs-begin"), 1)
             self.assertEqual(dockerfile.count(f"# {section}-image-inputs-end"), 1)
         self.assertIn("FROM ${PYTHON_IMAGE} AS gpu", dockerfile)
+        self.assertIn("FROM ${PYTHON_IMAGE} AS dependency-overlay-build", dockerfile)
+        self.assertIn("FROM scratch AS dependency-overlay", dockerfile)
         self.assertIn("FROM ${GPU_BASE} AS dependencies", dockerfile)
         self.assertIn("FROM scratch AS runtime-overlay", dockerfile)
         self.assertIn("FROM ${RUNTIME_BASE} AS runtime", dockerfile)
@@ -145,14 +150,45 @@ class TrainImageTests(unittest.TestCase):
             [line for line in instructions if line.startswith("COPY ")],
             ["COPY --link --from=runtime-overlay / /"],
         )
+        dependencies = dockerfile.split("FROM ${GPU_BASE} AS dependencies", maxsplit=1)[1].split(
+            "# dependency-image-inputs-end", maxsplit=1
+        )[0]
+        dependency_instructions = [
+            line.strip()
+            for line in dependencies.splitlines()
+            if line and not line.startswith(" ")
+        ]
+        self.assertFalse(any(line.startswith("RUN ") for line in dependency_instructions))
+        self.assertEqual(
+            [line for line in dependency_instructions if line.startswith("COPY ")],
+            ["COPY --link --from=dependency-overlay / /"],
+        )
 
     def test_projections_exclude_host_tools_and_isolate_gpu_packages(self) -> None:
+        root = Path(".").resolve()
+        first = projection_contents(root)
+        second = projection_contents(root)
+        self.assertEqual(first, second)
+        for name, content in first.items():
+            self.assertEqual(
+                (root / "containers" / "train" / name).read_text(encoding="utf-8"),
+                content,
+            )
+
         train = Path("containers/train/train-linux-amd64.lock").read_text(encoding="utf-8")
         gpu = Path("containers/train/gpu-linux-amd64.lock").read_text(encoding="utf-8")
+        dependencies = Path("containers/train/train-dependencies-linux-amd64.lock").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("textual==", train)
         self.assertNotIn("wandb-workspaces==", train)
         self.assertIn("torch==2.12.0", gpu)
+        train_lines = set(train.splitlines())
+        gpu_lines = set(gpu.splitlines())
+        dependency_lines = set(dependencies.splitlines())
+        self.assertFalse(gpu_lines & dependency_lines)
+        self.assertEqual(gpu_lines | dependency_lines, train_lines)
         for line in gpu.splitlines():
             name = line.split("==", maxsplit=1)[0]
             self.assertTrue(name in {"torch", "triton"} or name.startswith(("cuda-", "nvidia-")))
@@ -164,11 +200,15 @@ class TrainImageTests(unittest.TestCase):
         runtime = Path(".github/workflows/rlab-train-image.yml").read_text(encoding="utf-8")
 
         self.assertIn("branches-ignore: [main]", dependency)
-        self.assertIn(":build-${{ needs.metadata.outputs.gpu_key }}", dependency)
-        self.assertIn(":build-${{ needs.dependency-metadata.outputs.dependency_key }}", dependency)
-        self.assertIn("uses: ./.github/workflows/rlab-train-dependencies.yml", runtime)
-        self.assertIn('docker buildx imagetools inspect "$dependency_image"', runtime)
-        self.assertIn("runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}", runtime)
+        self.assertNotIn("workflow_call:", dependency)
+        self.assertEqual(dependency.count("runs-on: ubuntu-24.04"), 2)
+        self.assertEqual(dependency.count("docker/setup-buildx-action@v3"), 1)
+        self.assertNotIn("uses: ./.github/workflows/rlab-train-dependencies.yml", runtime)
+        self.assertNotIn("needs: dependencies", runtime)
+        self.assertIn("name: Build GPU foundation", runtime)
+        self.assertIn("name: Build train dependencies", runtime)
+        self.assertEqual(runtime.count("docker/setup-buildx-action@v3"), 1)
+        self.assertIn("runtime-${{ steps.runtime_meta.outputs.runtime_input_sha256 }}", runtime)
         self.assertIn('"schema_version": 5', runtime)
         self.assertNotIn("buildcache", dependency + runtime)
         self.assertNotIn("cache-to:", dependency + runtime)

@@ -8,7 +8,10 @@ not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 
 The Dockerfile keeps the heavyweight stack in two cacheable images: a GPU
 foundation (`torch`, Triton, and CUDA/NVIDIA wheels), then the remaining train
-dependencies. It assembles the small application filesystem in a scratch stage. Repository
+dependencies. The non-GPU packages are installed in a clean virtual environment
+at the final `/root/rlab/.venv` path, collapsed into a scratch overlay, and attached
+to the immutable GPU foundation with one `COPY --link`. No command executes after
+that merge. It assembles the small application filesystem in a separate scratch stage. Repository
 documentation, tests, goals, and recipes are not embedded in the runtime; goals and
 fully composed recipes travel in each queue payload. For
 published builds, the workflow selects the immutable dependency-image digest as
@@ -22,8 +25,10 @@ the multi-gigabyte transfer; ordinary runtime and non-GPU dependency changes do
 not invalidate it.
 
 `uv.lock` remains the universal resolution and provenance source. The committed
-`gpu-linux-amd64.lock` and `train-linux-amd64.lock` files are deterministic
-CPython 3.14/Linux x86-64 install projections for the container only. Regenerate
+`train-linux-amd64.lock`, `gpu-linux-amd64.lock`, and
+`train-dependencies-linux-amd64.lock` files are deterministic CPython 3.14/Linux
+x86-64 install projections for the container only. The GPU and non-GPU projections
+must be disjoint and their union must exactly reconstruct the full train projection. Regenerate
 and verify them with:
 
 ```bash
@@ -83,8 +88,12 @@ to fail if the mount is missing.
 ## Publishing
 
 The branch-triggered `.github/workflows/rlab-train-dependencies.yml` workflow
-prebuilds changed dependency layers. The main train-image workflow reuses those
-immutable images and publishes:
+uses one metadata job and one publisher job to prebuild changed foundations. The
+publisher resolves or builds the GPU and non-GPU images sequentially through one
+Buildx builder. The main train-image workflow is independently correct: one build
+job resolves or builds the GPU, dependency, and runtime images through one builder,
+then Modal deployment runs downstream. Both workflows reuse the immutable images
+and publish:
 
 ```text
 ghcr.io/tsilva/rlab/rlab-train-gpu:build-<gpu-key>
@@ -105,8 +114,9 @@ receipt's full `docker:...@sha256:...` ref into queue creation with
 
 GPU and dependency images carry SBOM and provenance. There is no mutable maximal
 registry build cache: published content-addressed images are the reusable cache
-contract. Runtime images use the immutable dependency digest as their base and add
-only linked application layers.
+contract. Dependency images use the immutable GPU digest as their base and add only
+the linked non-GPU virtual-environment overlay. Runtime images use the immutable
+dependency digest as their base and add only linked application layers.
 
 ## Fleet Integration
 

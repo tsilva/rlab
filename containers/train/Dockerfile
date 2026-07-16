@@ -59,15 +59,32 @@ LABEL io.rlab.gpu-plan.sha256="${GPU_PLAN_SHA256}"
 # gpu-image-inputs-end
 
 # dependency-image-inputs-begin
-FROM ${GPU_BASE} AS dependencies
+FROM ${PYTHON_IMAGE} AS dependency-overlay-build
 
-COPY containers/train/train-linux-amd64.lock /tmp/train-linux-amd64.lock
+ENV UV_PROJECT_ENVIRONMENT=/root/rlab/.venv
+ENV UV_LINK_MODE=copy
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+WORKDIR /root/rlab
+
+COPY containers/train/train-dependencies-linux-amd64.lock /tmp/train-dependencies-linux-amd64.lock
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip sync \
+    uv venv "${UV_PROJECT_ENVIRONMENT}" \
+    && uv pip install \
         --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
         --require-hashes \
-        /tmp/train-linux-amd64.lock
+        --no-deps \
+        -r /tmp/train-dependencies-linux-amd64.lock
+
+FROM scratch AS dependency-overlay
+
+COPY --from=dependency-overlay-build /root/rlab/.venv /root/rlab/.venv
+
+FROM ${GPU_BASE} AS dependencies
+
+COPY --link --from=dependency-overlay / /
 
 ARG TRAIN_PLAN_SHA256=unknown
 ARG GPU_IMAGE=unknown

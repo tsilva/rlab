@@ -1,24 +1,6 @@
 name: rlab train dependencies
 
 on:
-  workflow_call:
-    inputs:
-      source_sha:
-        required: false
-        type: string
-    outputs:
-      dependency_digest:
-        value: ${{ jobs.dependencies.outputs.digest }}
-      dependency_key:
-        value: ${{ jobs.dependencies.outputs.dependency_key }}
-      gpu_digest:
-        value: ${{ jobs.gpu.outputs.digest }}
-      gpu_key:
-        value: ${{ jobs.metadata.outputs.gpu_key }}
-      gpu_plan_sha256:
-        value: ${{ jobs.metadata.outputs.gpu_plan_sha256 }}
-      train_plan_sha256:
-        value: ${{ jobs.metadata.outputs.train_plan_sha256 }}
   workflow_dispatch:
     inputs:
       source_sha:
@@ -35,6 +17,7 @@ on:
       - containers/train/gpu-linux-amd64.lock
       - containers/train/gpu_key.py
       - containers/train/lock_projection.py
+      - containers/train/train-dependencies-linux-amd64.lock
       - containers/train/train-linux-amd64.lock
       - pyproject.toml
       - uv.lock
@@ -64,7 +47,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Validate deterministic lock projections
         run: uv run --frozen --only-group train-image-build python containers/train/lock_projection.py --check
-      - name: Resolve GPU inputs
+      - name: Resolve foundation inputs
         id: meta
         run: |
           {
@@ -73,14 +56,12 @@ jobs:
             echo "train_plan_sha256=$(sha256sum containers/train/train-linux-amd64.lock | awk '{print $1}')"
           } >> "$GITHUB_OUTPUT"
 
-  gpu:
+  publish:
     needs: metadata
     runs-on: ubuntu-24.04
     concurrency:
-      group: train-gpu-${{ needs.metadata.outputs.gpu_key }}
+      group: train-foundations-${{ needs.metadata.outputs.gpu_key }}-${{ needs.metadata.outputs.train_plan_sha256 }}
       cancel-in-progress: false
-    outputs:
-      digest: ${{ steps.result.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,16 +72,18 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Resolve immutable GPU image
-        id: existing
+        id: existing_gpu
         run: |
           image="${REGISTRY}/${GPU_IMAGE_NAME}:build-${{ needs.metadata.outputs.gpu_key }}"
           if metadata=$(docker buildx imagetools inspect "$image" 2>/dev/null); then
             echo "digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Build GPU foundation
-        id: build
-        if: steps.existing.outputs.digest == ''
+        id: build_gpu
+        if: steps.existing_gpu.outputs.digest == ''
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -112,59 +95,34 @@ jobs:
           sbom: true
           tags: ${{ env.REGISTRY }}/${{ env.GPU_IMAGE_NAME }}:build-${{ needs.metadata.outputs.gpu_key }}
           build-args: GPU_PLAN_SHA256=${{ needs.metadata.outputs.gpu_plan_sha256 }}
+
       - name: Select GPU digest
-        id: result
+        id: gpu
         env:
-          BUILT: ${{ steps.build.outputs.digest }}
-          EXISTING: ${{ steps.existing.outputs.digest }}
+          BUILT: ${{ steps.build_gpu.outputs.digest }}
+          EXISTING: ${{ steps.existing_gpu.outputs.digest }}
         run: |
           digest="${BUILT:-${EXISTING:-}}"
           test -n "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-  dependency-metadata:
-    needs: [metadata, gpu]
-    runs-on: ubuntu-24.04
-    outputs:
-      dependency_key: ${{ steps.meta.outputs.dependency_key }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-      - id: meta
+      - name: Resolve dependency key
+        id: dependency_meta
         run: |
-          key=$(python containers/train/dependency_key.py --gpu-digest '${{ needs.gpu.outputs.digest }}')
-          echo "dependency_key=$key" >> "$GITHUB_OUTPUT"
+          key=$(python containers/train/dependency_key.py --gpu-digest '${{ steps.gpu.outputs.digest }}')
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
-  dependencies:
-    needs: [metadata, gpu, dependency-metadata]
-    runs-on: ubuntu-24.04
-    concurrency:
-      group: train-dependencies-${{ needs.dependency-metadata.outputs.dependency_key }}
-      cancel-in-progress: false
-    outputs:
-      dependency_key: ${{ needs.dependency-metadata.outputs.dependency_key }}
-      digest: ${{ steps.result.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve immutable dependency image
-        id: existing
+        id: existing_dependency
         run: |
-          image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}:build-${{ needs.dependency-metadata.outputs.dependency_key }}"
+          image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}:build-${{ steps.dependency_meta.outputs.key }}"
           if metadata=$(docker buildx imagetools inspect "$image" 2>/dev/null); then
             echo "digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Build train dependencies
-        id: build
-        if: steps.existing.outputs.digest == ''
+        id: build_dependency
+        if: steps.existing_dependency.outputs.digest == ''
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -174,18 +132,18 @@ jobs:
           push: true
           provenance: true
           sbom: true
-          tags: ${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:build-${{ needs.dependency-metadata.outputs.dependency_key }}
+          tags: ${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:build-${{ steps.dependency_meta.outputs.key }}
           build-args: |
-            GPU_BASE=${{ env.REGISTRY }}/${{ env.GPU_IMAGE_NAME }}@${{ needs.gpu.outputs.digest }}
+            GPU_BASE=${{ env.REGISTRY }}/${{ env.GPU_IMAGE_NAME }}@${{ steps.gpu.outputs.digest }}
             GPU_IMAGE=${{ env.REGISTRY }}/${{ env.GPU_IMAGE_NAME }}
-            GPU_IMAGE_DIGEST=${{ needs.gpu.outputs.digest }}
+            GPU_IMAGE_DIGEST=${{ steps.gpu.outputs.digest }}
             TRAIN_PLAN_SHA256=${{ needs.metadata.outputs.train_plan_sha256 }}
+
       - name: Select dependency digest
-        id: result
         env:
-          BUILT: ${{ steps.build.outputs.digest }}
-          EXISTING: ${{ steps.existing.outputs.digest }}
+          BUILT: ${{ steps.build_dependency.outputs.digest }}
+          EXISTING: ${{ steps.existing_dependency.outputs.digest }}
         run: |
           digest="${BUILT:-${EXISTING:-}}"
           test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Published dependency build-${{ steps.dependency_meta.outputs.key }} at $digest"

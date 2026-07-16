@@ -17,6 +17,7 @@ TARGET_PYTHON = (3, 14)
 TARGET_INTERPRETER = "cp314"
 TRAIN_LOCK_NAME = "train-linux-amd64.lock"
 GPU_LOCK_NAME = "gpu-linux-amd64.lock"
+DEPENDENCY_LOCK_NAME = "train-dependencies-linux-amd64.lock"
 GPU_PACKAGE_NAMES = {"torch", "triton"}
 GPU_PACKAGE_PREFIXES = ("cuda-", "nvidia-")
 
@@ -167,11 +168,20 @@ def _is_gpu_package(name: str) -> bool:
 def projection_contents(repo_root: Path) -> dict[str, str]:
     train = projected_requirements(repo_root)
     gpu = {name: line for name, line in train.items() if _is_gpu_package(name)}
+    dependencies = {name: line for name, line in train.items() if name not in gpu}
     if "torch" not in gpu or "triton" not in gpu or not any(
         name.startswith("nvidia-") for name in gpu
     ):
         raise ValueError("GPU projection is missing Torch, Triton, or NVIDIA packages")
-    return {TRAIN_LOCK_NAME: _render(train), GPU_LOCK_NAME: _render(gpu)}
+    if set(gpu) & set(dependencies):
+        raise ValueError("GPU and non-GPU projections must be disjoint")
+    if set(gpu) | set(dependencies) != set(train):
+        raise ValueError("GPU and non-GPU projections must reconstruct the train projection")
+    return {
+        TRAIN_LOCK_NAME: _render(train),
+        GPU_LOCK_NAME: _render(gpu),
+        DEPENDENCY_LOCK_NAME: _render(dependencies),
+    }
 
 
 def main() -> int:

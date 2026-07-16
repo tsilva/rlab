@@ -312,6 +312,25 @@ Therefore source changes should publish a small overlay, ordinary dependency cha
 the GPU foundation, and only an actual GPU plan or GPU-stage change should require the multi-GB
 transfer again on a host that does not already contain that digest.
 
+The faster-publishing implementation was validated locally on 2026-07-16 before its CI canary.
+The deterministic train projection contains 121 packages and is exactly partitioned into 20 GPU
+packages plus 101 non-GPU packages. A genuinely cold Linux/amd64 GPU build on the arm64 development
+host took 564.44 seconds under emulation: package preparation took 438 seconds, installation took
+14.77 seconds, and the local image export took 108 seconds. The cold non-GPU overlay prepared its
+packages in 33.68 seconds, installed them in 3.27 seconds, finished the build stage in 44.9 seconds,
+and attached the linked overlay in 2.2 seconds. The dependency solve resolved the published GPU base
+from metadata without extracting it; the local dangling-image exporter later tried to materialize
+the remote parent, so that exporter run is not registry-push acceptance evidence.
+
+With the exact GPU-only base and non-GPU overlay cached, a complete merged runtime assembled locally
+in 3.52 seconds. A synthetic source-only invalidation took 12.78 seconds under Linux/amd64 emulation,
+including 9.7 seconds to rebuild the `rlab` wheel; the prior native GitHub runner evidence remains the
+relevant expectation for the at-most-10-second runtime assembly gate. The exact merged image passed
+`uv pip check` for all 121 packages, the container smoke, and imports for Torch, Stable Retro, SB3,
+OpenCV, Numba, W&B, Breakout, and Mario. Production acceptance remains pending the post-publication
+same-SHA dispatch (at most 45 seconds to the schema-v5 receipt) and the next natural source-only push;
+these local measurements do not declare that rollout accepted.
+
 Before readiness was split, exact-source run `29348722980` built the source-only image in about 8
 seconds but did not publish the usable runtime receipt until the CI image pull/contract smoke and
 Modal deployment/probe completed; the full workflow took 5 minutes 40 seconds. The split contract

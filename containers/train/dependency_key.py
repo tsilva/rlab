@@ -10,7 +10,7 @@ if __package__:
 else:
     from dockerfile_inputs import marked_dockerfile_bytes
 
-DEPENDENCY_KEY_SCHEMA = b"rlab-train-dependency-key-v2\0"
+DEPENDENCY_KEY_SCHEMA = b"rlab-train-dependency-key-v3\0"
 
 
 def _normalized_digest(value: str) -> str:
@@ -49,7 +49,7 @@ def main() -> None:
     parser.add_argument(
         "--lockfile",
         type=Path,
-        default=repo_root / "containers/train/train-linux-amd64.lock",
+        default=repo_root / "containers/train/train-dependencies-linux-amd64.lock",
     )
     parser.add_argument("--gpu-digest", required=True)
     args = parser.parse_args()
