@@ -23,7 +23,8 @@ from rlab.policy_bundle import (
 )
 from rlab.eval_runner import normalized_evaluation_request
 from rlab.recipe_documents import compose_train_document
-from rlab.training_backend import training_backend_config_hash
+from rlab.train_config import validate_and_normalize_train_config
+from rlab.training_backend import training_backend_config, training_backend_config_hash
 
 
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
@@ -77,6 +78,29 @@ def test_level1_1_recipe_fixture_preserves_distinct_train_and_eval_contracts() -
     assert eval_contract["action_sampling"] == "stochastic"
     assert eval_contract["seed_protocol"] == "vector-lane-v1"
     assert eval_contract["episodes"] == 100
+
+
+def test_recipe_materializes_the_backend_config_executed_by_the_learner() -> None:
+    materialized = compose_train_document(GOAL, RECIPE)
+    document = build_recipe_document(
+        materialized,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="normalized backend contract",
+        seed=7,
+        runtime_image_ref=RUNTIME,
+    )
+
+    recipe_train_config = document["recipe"]["train_config"]
+    executed_train_config = validate_and_normalize_train_config(materialized["train_config"])
+
+    assert training_backend_config(recipe_train_config) == training_backend_config(
+        executed_train_config
+    )
+    assert training_backend_config_hash(recipe_train_config) == training_backend_config_hash(
+        executed_train_config
+    )
+    assert training_backend_config(recipe_train_config)["device"] == "auto"
 
 
 @pytest.mark.parametrize(

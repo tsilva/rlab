@@ -574,6 +574,15 @@ def build_recipe_document(
     recipe.pop("logging", None)
     composition = recipe.pop("_composition", {})
     train_config = dict(_required_mapping(recipe.get("train_config"), label="train_config"))
+    # recipe.json is the immutable policy contract consumed by evaluation. Materialize
+    # backend defaults here, before the queue adds operational fields, so its backend
+    # hash is identical to the normalized config executed by the learner.
+    from rlab.train_config import validate_and_normalize_train_config
+
+    train_config = validate_and_normalize_train_config(
+        train_config,
+        label="recipe.json train_config",
+    )
     asset = train_config.get("checkpoint_eval_asset_manifest")
     portable_asset = None
     if isinstance(asset, Mapping):
