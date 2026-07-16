@@ -9,7 +9,7 @@ cleanup:
   max_stops_per_pass: 10
 limits:
   hard_max_active: 20
-  initial_effective_capacity: 1
+  initial_effective_capacity: 3
   per_run_budget_usd: 5.0
   rolling_24h_budget_usd: 20.0
 resources:
@@ -25,6 +25,7 @@ timeouts:
   screen_seconds: 900
   confirm_seconds: 1800
   promotion_seconds: 3600
+  acceptance_seconds: 1200
   child_margin_seconds: 60
   expiry_margin_seconds: 900
 cost:
@@ -32,8 +33,8 @@ cost:
 protocol:
   max_attempts: 2
 preview:
-  # Required for every normal queue-backed screen checkpoint evaluation.
-  enabled: true
+  # Historical compatibility only; acceptance workers never capture previews.
+  enabled: false
   max_frames: 450
   fps: 15
   max_lanes: 4

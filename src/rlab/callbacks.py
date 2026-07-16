@@ -24,6 +24,7 @@ from rlab.env import EnvConfig
 from rlab.eval_metrics import episode_reason_names
 from rlab.metric_names import (
     canonical_training_scalars,
+    TRAIN_ARTIFACT_SAVE_SECONDS,
     TRAIN_EPISODE_COUNT,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
@@ -115,6 +116,7 @@ class LedgerCheckpointHelper(CallbackHelper):
         return True
 
     def save_checkpoint(self, step: int, *, kind: str) -> Path:
+        started = time.perf_counter()
         final_path = self.save_path / f"{self.name_prefix}_{step}_steps.zip"
         temp_path = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}.zip"
         self.model.save(str(temp_path))
@@ -134,6 +136,12 @@ class LedgerCheckpointHelper(CallbackHelper):
             metadata_path=metadata_path,
             sha256=None,
             eval_required=self.eval_required,
+        )
+        self.metric_store.append_metrics(
+            {TRAIN_ARTIFACT_SAVE_SECONDS: time.perf_counter() - started},
+            step=step,
+            source=f"checkpoint-save:{kind}",
+            publish=bool(getattr(self.args, "wandb", True)),
         )
         print(
             f"checkpoint ready: id={checkpoint_id} step={step} path={final_path}",

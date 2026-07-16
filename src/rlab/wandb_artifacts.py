@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.wandb_utils import load_wandb_env
+from rlab.policy_bundle import MODEL_FILENAME, load_policy_bundle
 
 
 def safe_artifact_stem(value: str, fallback: str = "artifact") -> str:
@@ -100,6 +101,12 @@ def immutable_artifact_ref(ref: str, artifact: Any) -> str:
 def download_artifact_model(artifact: Any, root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     path = Path(artifact.download(root=str(root)))
+    if (path / MODEL_FILENAME).is_file():
+        return load_policy_bundle(
+            path,
+            source=str(getattr(artifact, "name", "W&B artifact")),
+            revision=str(getattr(artifact, "version", "") or "") or None,
+        ).checkpoint_path
     metadata = getattr(artifact, "metadata", {}) or {}
     expected_filename = metadata.get("filename") if isinstance(metadata, dict) else None
     model_path = model_zip_from_download(path, expected_filename=expected_filename)
@@ -108,13 +115,21 @@ def download_artifact_model(artifact: Any, root: Path) -> Path:
 
 
 def download_model_artifact(ref: str, root: Path) -> Path:
+    model_path, _revision = download_model_artifact_with_revision(ref, root)
+    return model_path
+
+
+def download_model_artifact_with_revision(ref: str, root: Path) -> tuple[Path, str]:
     load_wandb_env()
 
     import wandb
 
     artifact = wandb.Api().artifact(ref, type="model")
     resolved_ref = immutable_artifact_ref(ref, artifact)
-    return download_artifact_model(artifact, artifact_download_dir(root, resolved_ref))
+    return (
+        download_artifact_model(artifact, artifact_download_dir(root, resolved_ref)),
+        str(getattr(artifact, "version", "")),
+    )
 
 
 def metadata_from_wandb_artifact(artifact, model_path: Path) -> dict:

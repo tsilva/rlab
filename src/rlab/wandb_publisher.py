@@ -120,22 +120,35 @@ def project_payload_to_run(
         if not isinstance(model_metadata.get("training_metadata"), dict):
             raise ValueError("artifact projection requires checkpoint training_metadata")
         checkpoint_uri = str(payload["checkpoint_uri"])
-        artifact_filename = checkpoint_uri.rsplit("/", 1)[-1] or "model.zip"
+        versioned_bundle = bool(payload.get("recipe_uri"))
         artifact = wandb.Artifact(
             artifact_collection_name(kind, run_id=run_id),
             type="model",
             metadata={
                 **model_metadata,
                 "source_filename": model_metadata.get("filename", ""),
-                "filename": artifact_filename,
+                "filename": "model.zip",
                 "checkpoint_sha256": payload["checkpoint_sha256"],
                 "metadata_sha256": payload["metadata_sha256"],
                 "checkpoint_step": checkpoint_step,
                 "metadata_uri": payload["metadata_uri"],
+                **(
+                    {
+                        "recipe_uri": payload["recipe_uri"],
+                        "recipe_sha256": payload["recipe_sha256"],
+                    }
+                    if versioned_bundle
+                    else {}
+                ),
                 "artifact_storage_uri": checkpoint_uri,
             },
         )
-        artifact.add_reference(checkpoint_uri)
+        if versioned_bundle:
+            artifact.add_reference(checkpoint_uri, name="model.zip")
+            artifact.add_reference(str(payload["metadata_uri"]), name="model.json")
+            artifact.add_reference(str(payload["recipe_uri"]), name="recipe.json")
+        else:
+            artifact.add_reference(checkpoint_uri)
         raw_aliases = payload.get("artifact_aliases")
         aliases = (
             [str(alias) for alias in raw_aliases]

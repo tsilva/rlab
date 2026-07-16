@@ -204,6 +204,30 @@ class FleetWatchTests(unittest.TestCase):
                 )
         self.assertEqual(snapshot["scheduler"]["state"], "IDLE")
 
+    def test_split_controller_snapshot_uses_the_live_train_job_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            conn = mock.MagicMock()
+            cursor = conn.cursor.return_value.__enter__.return_value
+            cursor.fetchall.side_effect = [[], [], []]
+            with mock.patch("rlab.fleet_service._connect_queue", return_value=conn):
+                snapshot = fleet_watch._collect_authoritative_snapshot(
+                    paths,
+                    {
+                        "installed": True,
+                        "loaded": True,
+                        "running": True,
+                        "healthy": True,
+                        "poll_seconds": 2,
+                    },
+                    captured=fleet_watch._utc_now(),
+                )
+
+        statements = "\n".join(call.args[0] for call in cursor.execute.call_args_list)
+        self.assertNotIn("t.updated_at", statements)
+        self.assertEqual(snapshot["service"]["state"], "HEALTHY")
+        self.assertEqual(snapshot["work"]["needs_action"], 0)
+
     def test_current_pass_classifies_stuck_and_interrupted_from_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))

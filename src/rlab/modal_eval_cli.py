@@ -151,7 +151,7 @@ def modal_preflight(
 
     add(
         "config_guards",
-        config.hard_max_active == config.max_containers and config.initial_effective_capacity == 1,
+        config.hard_max_active == config.max_containers and config.initial_effective_capacity == 3,
         f"enabled={str(config.enabled).lower()} hard_cap={config.hard_max_active} max_containers={config.max_containers}",
     )
     try:

@@ -453,6 +453,24 @@ def validate_and_normalize_train_config(
                 normalized["checkpoint_eval_stages"],
                 label=f"{label}.checkpoint_eval_stages",
             )
+    if normalized.get("checkpoint_eval_acceptance") is not None:
+        normalized["checkpoint_eval_acceptance"] = normalize_early_stop_config(
+            normalized["checkpoint_eval_acceptance"],
+            label=f"{label}.checkpoint_eval_acceptance",
+        )
+    if normalized.get("stop_on_acceptance"):
+        if normalized.get("early_stop") is not None:
+            raise ValueError(
+                f"{label}.early_stop is incompatible with stop_on_acceptance"
+            )
+        if normalized.get("checkpoint_eval_stages"):
+            raise ValueError(
+                f"{label}.checkpoint_eval_stages is incompatible with stop_on_acceptance"
+            )
+        if not normalized.get("checkpoint_eval_acceptance"):
+            raise ValueError(
+                f"{label}.checkpoint_eval_acceptance is required when stop_on_acceptance is true"
+            )
     if normalized.get("checkpoint_eval_backend") == "none":
         if normalized.get("early_stop") is not None:
             raise ValueError(f"{label}.early_stop must be null when checkpoint eval is disabled")
@@ -714,6 +732,45 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="JSON list of cheap checkpoint eval stages for async candidate-stop screening.",
     ),
     TrainConfigField(
+        "checkpoint_eval_acceptance",
+        "--checkpoint-eval-acceptance",
+        type_name="json",
+        default=None,
+        serialize="json",
+        owner="goal_objective",
+        source_section="goal_train",
+        cli_exposed=False,
+        help="Canonical goal.eval acceptance rules for checkpoint evaluation.",
+    ),
+    TrainConfigField(
+        "checkpoint_eval_contract",
+        "--checkpoint-eval-contract",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        cli_exposed=False,
+        help="Immutable acceptance evidence contract materialized by the queue.",
+    ),
+    TrainConfigField(
+        "eval_load_reservation",
+        "--eval-load-reservation",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        cli_exposed=False,
+        help="Immutable benchmark-derived Modal load reservation materialized by the queue.",
+    ),
+    TrainConfigField(
+        "stop_on_acceptance",
+        "--stop-on-acceptance",
+        kind="bool_optional",
+        default=False,
+        source_section="goal_train",
+        help="Stop the learner when the first checkpoint proves goal.eval acceptance.",
+    ),
+    TrainConfigField(
         "checkpoint_eval_backend",
         "--checkpoint-eval-backend",
         default="modal",
@@ -909,6 +966,13 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         "--recipe-path",
         default="",
         help="Experiment recipe path recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "recipe_json_path",
+        "--recipe-json-path",
+        default="",
+        cli_exposed=False,
+        help="Canonical versioned policy recipe staged beside the queue train config.",
     ),
     TrainConfigField(
         "recipe_sha256",

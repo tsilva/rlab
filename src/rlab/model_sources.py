@@ -19,9 +19,17 @@ from rlab.env_metadata import (
     sanitize_env_config_metadata,
 )
 from rlab.recipe_documents import load_goal_contract_document
+from rlab.policy_bundle import (
+    CHECKPOINT_FILENAME,
+    MODEL_FILENAME,
+    RECIPE_FILENAME,
+    PolicyBundle,
+    load_policy_bundle,
+    load_policy_bundle_from_checkpoint,
+)
 from rlab.wandb_artifacts import (
     checkpoint_step_from_artifact,
-    download_model_artifact,
+    download_model_artifact_with_revision,
     model_artifact_ref,
     safe_artifact_stem,
 )
@@ -57,6 +65,7 @@ class ResolvedModelSource:
     artifact_name: str | None = None
     checkpoint_step: int | None = None
     run_config: dict[str, Any] = field(default_factory=dict)
+    bundle: PolicyBundle | None = None
 
 
 @dataclass(frozen=True)
@@ -746,11 +755,20 @@ def _mapping_value(mapping: Any, key: str) -> Any:
 
 
 def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
-    model_path = download_model_artifact(ref, root)
+    model_path, revision = download_model_artifact_with_revision(ref, root)
+    bundle = load_policy_bundle_from_checkpoint(
+        model_path, source=ref, revision=revision or None
+    )
     return ResolvedModelSource(
         model_path=model_path,
         artifact_ref=ref,
         artifact_name=ref,
+        bundle=bundle,
+        checkpoint_step=(
+            int(bundle.model["checkpoint"]["step"])
+            if bundle is not None and bundle.model["checkpoint"].get("step") is not None
+            else None
+        ),
     )
 
 
@@ -821,7 +839,7 @@ def download_huggingface_model_source(
     revision: str | None = None,
 ) -> ResolvedModelSource:
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import HfApi, hf_hub_download
     except ImportError as exc:
         raise SystemExit(
             "huggingface-hub is required for hf:// model refs; reinstall rlab with "
@@ -833,19 +851,68 @@ def download_huggingface_model_source(
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     resolved_revision = revision or parsed_revision or "main"
+    api = HfApi()
+    try:
+        repo_files = set(
+            api.list_repo_files(
+                repo_id=repo_id,
+                repo_type="model",
+                revision=resolved_revision,
+            )
+        )
+    except Exception as exc:
+        raise SystemExit(f"Could not inspect Hugging Face model repo {repo_id}: {exc}") from exc
+    if MODEL_FILENAME in repo_files:
+        try:
+            immutable_revision = str(
+                api.model_info(repo_id=repo_id, revision=resolved_revision).sha
+                or resolved_revision
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"Could not resolve immutable Hugging Face revision for {repo_id}: {exc}"
+            ) from exc
+        target_dir = root / safe_artifact_stem(f"{repo_id}@{immutable_revision}")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for bundle_filename in (CHECKPOINT_FILENAME, MODEL_FILENAME, RECIPE_FILENAME):
+            try:
+                hf_hub_download(
+                    repo_id=repo_id,
+                    repo_type="model",
+                    revision=immutable_revision,
+                    filename=bundle_filename,
+                    local_dir=target_dir,
+                )
+            except Exception as exc:
+                raise SystemExit(
+                    f"Could not download required {bundle_filename} from {repo_id}@"
+                    f"{immutable_revision}: {exc}"
+                ) from exc
+        bundle = load_policy_bundle(
+            target_dir,
+            source=f"hf://{repo_id}",
+            revision=immutable_revision,
+        )
+        return ResolvedModelSource(
+            model_path=bundle.checkpoint_path,
+            artifact_name=f"hf://{repo_id}@{immutable_revision}",
+            checkpoint_step=bundle.model["checkpoint"].get("step"),
+            bundle=bundle,
+        )
+    immutable_revision = resolved_revision
     checkpoint_filename = _select_huggingface_checkpoint(
         repo_id=repo_id,
         revision=resolved_revision,
         filename=filename or parsed_filename,
     )
-    target_dir = root / safe_artifact_stem(f"{repo_id}@{resolved_revision}")
+    target_dir = root / safe_artifact_stem(f"{repo_id}@{immutable_revision}")
     target_dir.mkdir(parents=True, exist_ok=True)
     try:
         checkpoint_path = Path(
             hf_hub_download(
                 repo_id=repo_id,
                 repo_type="model",
-                revision=resolved_revision,
+                revision=immutable_revision,
                 filename=checkpoint_filename,
                 local_dir=target_dir,
             )
@@ -860,7 +927,7 @@ def download_huggingface_model_source(
             hf_hub_download(
                 repo_id=repo_id,
                 repo_type="model",
-                revision=resolved_revision,
+                revision=immutable_revision,
                 filename="model_metadata.json",
                 local_dir=target_dir,
             )
@@ -904,7 +971,10 @@ def resolve_single_model_source(
     if ref is not None:
         return download_artifact_ref_source(ref, Path(args.artifact_root))
     model_path = Path(str(args.model))
-    return ResolvedModelSource(model_path=model_path)
+    return ResolvedModelSource(
+        model_path=model_path,
+        bundle=load_policy_bundle_from_checkpoint(model_path),
+    )
 
 
 def artifact_run_config(ref: str) -> dict[str, Any]:

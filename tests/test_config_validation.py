@@ -437,7 +437,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
 
-    def test_goal_validator_accepts_goal_without_default_spec(self) -> None:
+    def test_goal_validator_rejects_legacy_eval_driven_early_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             goal_dir = root / "experiments" / "goals" / "bad"
@@ -556,7 +556,8 @@ eval:
                 encoding="utf-8",
             )
 
-            validate_goal_contract(goal_path, root)
+            with self.assertRaisesRegex(ValueError, "unknown field.*early_stop"):
+                validate_goal_contract(goal_path, root)
 
     def test_goal_validator_rejects_rank_forms_the_runtime_cannot_parse(self) -> None:
         with self.assertRaisesRegex(ValueError, "max\\(metric\\) or min\\(metric\\)"):
@@ -723,20 +724,20 @@ environment_hash: sha256:deadbeef
         self.assertNotIn("forbidden_stop_rules", document["objective"])
         self.assertNotIn("max_train_timesteps", document["objective"])
         self.assertNotIn("success", document["objective"])
+        self.assertNotIn("early_stop", document["train"])
+        self.assertNotIn("checkpoint_eval_stages", document["train"])
+        self.assertTrue(document["train"]["stop_on_acceptance"])
+        self.assertEqual(document["eval"]["episodes"], 100)
         self.assertEqual(
-            document["train"]["early_stop"],
+            document["eval"]["acceptance"],
             [
                 {
-                    "metric": "eval/confirm/candidate/pass",
+                    "metric": "eval/full/outcome/success/rate/min",
                     "operator": ">=",
                     "threshold": 1.0,
                 }
             ],
         )
-        self.assertEqual(document["train"]["checkpoint_eval_stages"][0]["episodes"], 10)
-        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["episodes"], 30)
-        self.assertEqual(document["train"]["checkpoint_eval_stages"][1]["n_envs"], 4)
-        self.assertTrue(document["train"]["checkpoint_eval_stages"][1]["candidate_stop"])
         self.assertEqual(
             document["objective"]["rank"],
             [

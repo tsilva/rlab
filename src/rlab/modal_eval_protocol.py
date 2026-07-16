@@ -8,9 +8,16 @@ from typing import Any
 
 from rlab.early_stop import evaluate_early_stop_config
 from rlab.env_registry import resolve_env_provider
+from rlab.checkpoint_acceptance import (
+    acceptance_aggregates,
+    aggregates_match,
+    evaluate_acceptance,
+    manifest_index,
+    validate_episode_rows,
+)
 
 
-PROTOCOL_SCHEMA_VERSION = 1
+PROTOCOL_SCHEMA_VERSION = 3
 SEED_PROTOCOL = "vector-lane-v1"
 
 
@@ -32,7 +39,14 @@ def validate_announcement(
     if runtime_ref != str(materialized_train_config.get("runtime_image_ref") or ""):
         raise ValueError("checkpoint announcement runtime identity mismatch")
     _sha256(announcement.get("sha256"), label="checkpoint hash")
-    _sha256(announcement.get("metadata_sha256"), label="checkpoint metadata hash")
+    _sha256(announcement.get("model_document_sha256"), label="model document hash")
+    _sha256(announcement.get("recipe_sha256"), label="recipe hash")
+    _sha256(
+        announcement.get("evaluation_contract_sha256"),
+        label="evaluation contract hash",
+    )
+    if int(announcement.get("recipe_format_version") or 0) < 1:
+        raise ValueError("checkpoint announcement recipe format version is invalid")
     eval_contract = announcement.get("eval")
     if not isinstance(eval_contract, Mapping):
         raise ValueError("checkpoint announcement is missing eval contract")
@@ -52,6 +66,16 @@ def validate_announcement(
             raise ValueError("checkpoint announcement asset identity is incomplete")
     elif asset is not None:
         raise ValueError("checkpoint announcement asset contract must be an object or null")
+    if "acceptance" in eval_contract:
+        expected_contract = materialized_train_config.get("checkpoint_eval_contract")
+        if not isinstance(expected_contract, Mapping):
+            raise ValueError("queued acceptance contract is missing")
+        if canonical_json(dict(eval_contract)) != canonical_json(dict(expected_contract)):
+            raise ValueError(
+                "checkpoint announcement acceptance contract does not match the queued contract"
+            )
+        manifest_index(eval_contract)
+        return dict(announcement)
     expected_environment = materialized_train_config.get("checkpoint_eval_environment")
     expected_stages = materialized_train_config.get("checkpoint_eval_stages") or []
     expected_asset = materialized_train_config.get("checkpoint_eval_asset_manifest")
@@ -103,6 +127,9 @@ def build_execution_contract(
     seed: int,
     seed_protocol: str,
     asset_manifest: Mapping[str, Any] | None,
+    recipe_sha256: str | None = None,
+    recipe_format_version: int | None = None,
+    evaluation_contract_sha256: str | None = None,
 ) -> dict[str, Any]:
     if seed_protocol != SEED_PROTOCOL:
         raise ValueError(f"unsupported eval seed protocol: {seed_protocol}")
@@ -127,6 +154,15 @@ def build_execution_contract(
             else None
         ),
     }
+    if recipe_sha256 is not None:
+        contract["recipe_sha256"] = _sha256(recipe_sha256, label="recipe hash")
+    if recipe_format_version is not None:
+        contract["recipe_format_version"] = int(recipe_format_version)
+    if evaluation_contract_sha256 is not None:
+        contract["evaluation_contract_sha256"] = _sha256(
+            evaluation_contract_sha256,
+            label="evaluation contract hash",
+        )
     if contract["episodes"] < 1 or contract["n_envs"] < 1 or contract["max_steps"] < 1:
         raise ValueError("eval episodes, n_envs, and max_steps must be positive")
     if asset_manifest is not None and not str(asset_manifest.get("sha256") or ""):
@@ -191,6 +227,9 @@ def stage_job_descriptor(
             if isinstance(eval_config.get("asset"), Mapping)
             else None
         ),
+        recipe_sha256=str(announcement["recipe_sha256"]),
+        recipe_format_version=int(announcement["recipe_format_version"]),
+        evaluation_contract_sha256=str(announcement["evaluation_contract_sha256"]),
     )
     execution = execution_key(contract)
     rules = stage.get("pass") or []
@@ -217,6 +256,50 @@ def stage_job_descriptor(
     }
 
 
+def acceptance_job_descriptor(announcement: Mapping[str, Any]) -> dict[str, Any]:
+    eval_config = announcement.get("eval")
+    if not isinstance(eval_config, Mapping) or "acceptance" not in eval_config:
+        raise ValueError("checkpoint announcement is missing its acceptance contract")
+    contract = dict(eval_config)
+    contract.update(
+        schema_version=PROTOCOL_SCHEMA_VERSION,
+        checkpoint_sha256=str(announcement["sha256"]),
+        runtime_image_ref=str(announcement["runtime_image_ref"]),
+        recipe_sha256=str(announcement["recipe_sha256"]),
+        recipe_format_version=int(announcement["recipe_format_version"]),
+        evaluation_contract_sha256=str(announcement["evaluation_contract_sha256"]),
+    )
+    asset = contract.get("asset")
+    if isinstance(asset, Mapping):
+        contract["asset"] = {
+            str(key): value for key, value in asset.items() if str(key) != "object_uri"
+        }
+    manifest_index(contract)
+    execution = execution_key(contract)
+    rules = contract.get("acceptance")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("acceptance decision rules are missing")
+    key = job_key(
+        train_job_id=int(announcement["train_job_id"]),
+        ledger_id=int(announcement["ledger_id"]),
+        stage_name="acceptance",
+        purpose="acceptance",
+        candidate_stop=True,
+        execution_key_value=execution,
+        decision_rules=rules,
+    )
+    return {
+        "stage_name": "acceptance",
+        "stage_index": 0,
+        "purpose": "acceptance",
+        "candidate_stop": True,
+        "decision_rules": [dict(rule) for rule in rules],
+        "contract": contract,
+        "execution_key": execution,
+        "job_key": key,
+    }
+
+
 def promotion_job_descriptor(announcement: Mapping[str, Any]) -> dict[str, Any]:
     eval_config = announcement.get("eval")
     if not isinstance(eval_config, Mapping):
@@ -235,6 +318,9 @@ def promotion_job_descriptor(announcement: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(eval_config.get("asset"), Mapping)
             else None
         ),
+        recipe_sha256=str(announcement["recipe_sha256"]),
+        recipe_format_version=int(announcement["recipe_format_version"]),
+        evaluation_contract_sha256=str(announcement["evaluation_contract_sha256"]),
     )
     execution = execution_key(contract)
     key = job_key(
@@ -269,6 +355,22 @@ def validate_attempt_result(
         raise ValueError("eval result execution key mismatch")
     if str(result.get("checkpoint_sha256") or "") != str(contract["checkpoint_sha256"]):
         raise ValueError("eval result checkpoint hash mismatch")
+    if "recipe_sha256" in contract and str(result.get("recipe_sha256") or "") != str(
+        contract["recipe_sha256"]
+    ):
+        raise ValueError("eval result recipe hash mismatch")
+    if "recipe_format_version" in contract and int(
+        result.get("recipe_format_version") or 0
+    ) != int(
+        contract["recipe_format_version"]
+    ):
+        raise ValueError("eval result recipe format version mismatch")
+    if "evaluation_contract_sha256" in contract and str(
+        result.get("evaluation_contract_sha256") or ""
+    ) != str(
+        contract["evaluation_contract_sha256"]
+    ):
+        raise ValueError("eval result evaluation contract hash mismatch")
     if int(result.get("contract_schema_version") or 0) != int(contract["schema_version"]):
         raise ValueError("eval result contract schema version mismatch")
     if str(result.get("runtime_image_ref") or "") != str(contract["runtime_image_ref"]):
@@ -287,6 +389,49 @@ def validate_attempt_result(
     if status != "succeeded":
         raise ValueError(f"eval attempt did not succeed: {status or 'unknown'}")
     episodes = result.get("episode_results")
+    if "acceptance" in contract:
+        if not isinstance(episodes, list):
+            raise ValueError("acceptance result episode rows must be a list")
+        verdict = str(result.get("verdict") or "")
+        validated_rows = validate_episode_rows(
+            episodes,
+            contract=contract,
+            verdict=verdict,
+        )
+        computed = acceptance_aggregates(validated_rows, contract=contract)
+        claimed = result.get("claimed_aggregates")
+        if not isinstance(claimed, Mapping) or not aggregates_match(claimed, computed):
+            raise ValueError("acceptance result claimed aggregates do not match episode evidence")
+        metrics = result.get("metrics")
+        if not isinstance(metrics, Mapping):
+            raise ValueError("acceptance result metrics must be a mapping")
+        if verdict == "rejected":
+            if any(str(name).startswith("eval/full/") for name in metrics):
+                raise ValueError("partial rejection must not emit completed eval/full metrics")
+            if int(computed["failure_count"]) < 1:
+                raise ValueError("acceptance rejection has no failed episode")
+        else:
+            accepted, _observed = evaluate_acceptance(computed, contract=contract)
+            if accepted is not True:
+                raise ValueError("accepted evidence does not satisfy its acceptance rules")
+            for name in (
+                "eval/full/outcome/success/rate/min",
+                "eval/full/outcome/success/rate/mean",
+            ):
+                if name in computed and (
+                    name not in metrics
+                    or not math.isclose(
+                        float(metrics[name]),
+                        float(computed[name]),
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                ):
+                    raise ValueError("acceptance result decisive metric mismatch")
+        validated_result = dict(result)
+        validated_result["episode_results"] = validated_rows
+        validated_result["claimed_aggregates"] = computed
+        return validated_result
     if not isinstance(episodes, list) or len(episodes) != int(contract["episodes"]):
         raise ValueError("eval result episode count mismatch")
     metrics = result.get("metrics")

@@ -153,6 +153,10 @@ def _eval_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
     if episodes is None:
         return {}
     defaults: dict[str, Any] = {"post_train_eval_episodes": copy.deepcopy(episodes)}
+    if "acceptance" in eval_section:
+        defaults["checkpoint_eval_acceptance"] = copy.deepcopy(
+            eval_section["acceptance"]
+        )
     environment = eval_section.get("environment")
     if not isinstance(environment, Mapping):
         return defaults

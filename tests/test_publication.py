@@ -4,10 +4,22 @@ import json
 import tempfile
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from rlab.preprocessing import preprocessing_contract
+from rlab.policy_bundle import (
+    PolicyDocumentError,
+    UnsupportedPolicyDocumentVersion,
+    build_model_document,
+    build_recipe_document,
+    evaluation_contract_sha256,
+    sha256_file,
+    write_canonical_json,
+)
+from rlab.recipe_documents import compose_train_document
+from rlab.training_backend import training_backend_config_hash
 from rlab.publication import (
     GITATTRIBUTES_TEXT,
     HUGGINGFACE_RELEASE_FILES,
@@ -46,6 +58,8 @@ def model_metadata(
         "metadata_version": 6,
         "algorithm_id": algorithm,
         "model_class": model_class,
+        "training_backend_id": "sb3.ppo",
+        "training_backend_config_hash": "c" * 64,
         "seed": 7,
         "repo_git_commit": "a" * 40,
         "run_name": "bx0000000000000000-release-s7-20260714T120000Z",
@@ -283,18 +297,53 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
             ".gitattributes": GITATTRIBUTES_TEXT,
             "LICENSE": MIT_LICENSE_TEXT,
             "model.zip": "checkpoint",
-            "model_metadata.json": json.dumps(metadata, indent=2, sort_keys=True) + "\n",
             "replay.mp4": "video",
         }
         for filename, content in contents.items():
             (root / filename).write_text(content, encoding="utf-8")
+        composed = compose_train_document(
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml"),
+            Path("experiments/recipes/mario/single/ppo.yaml"),
+        )
+        recipe_document = build_recipe_document(
+            composed,
+            repo_root=Path.cwd(),
+            source_commit="a" * 40,
+            run_description="release fixture",
+            seed=7,
+            runtime_image_ref="docker:example.invalid/rlab@sha256:" + "b" * 64,
+        )
+        write_canonical_json(root / "recipe.json", recipe_document)
+        metadata["training_backend_id"] = recipe_document["recipe"]["train_config"][
+            "training_backend"
+        ]["id"]
+        metadata["training_backend_config_hash"] = training_backend_config_hash(
+            recipe_document["recipe"]["train_config"]
+        )
+        metadata["training_metadata"] = {
+            "environment_hash": recipe_document["recipe"]["environment_hash"],
+            "environment": recipe_document["recipe"]["environment"],
+            "preprocessing": recipe_document["recipe"]["environment"]["preprocessing"],
+        }
+        write_canonical_json(
+            root / "model.json",
+            build_model_document(root / "model.zip", root / "recipe.json", metadata),
+        )
+        evaluation_value = evaluation.as_manifest_value()
+        evaluation_value.update(
+            checkpoint_sha256=sha256_file(root / "model.zip"),
+            recipe_sha256=sha256_file(root / "recipe.json"),
+            recipe_format_version=recipe_document["format_version"],
+            evaluation_contract_sha256=evaluation_contract_sha256(recipe_document),
+            exact_contract=True,
+        )
         provisional = build_release_manifest(
             identity,
             metadata,
             release_version="v1",
             published_at="2026-07-14T12:00:00Z",
             source=source,
-            evaluation=evaluation.as_manifest_value(),
+            evaluation=evaluation_value,
             artifacts={},
             youtube_url="https://www.youtube.com/watch?v=example",
         )
@@ -308,7 +357,7 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
             release_version="v1",
             published_at="2026-07-14T12:00:00Z",
             source=source,
-            evaluation=evaluation.as_manifest_value(),
+            evaluation=evaluation_value,
             artifacts=records,
             youtube_url="https://www.youtube.com/watch?v=example",
         )
@@ -319,8 +368,24 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
         assert {path.name for path in root.iterdir()} == HUGGINGFACE_RELEASE_FILES
         assert validate_release_bundle(root) == manifest
 
+        future = deepcopy(manifest)
+        future["format_version"] = 999
+        write_canonical_json(root / "release_manifest.json", future)
+        with patch(
+            "rlab.publication.load_policy_bundle",
+            side_effect=AssertionError("bundle access"),
+        ):
+            with pytest.raises(UnsupportedPolicyDocumentVersion, match="999"):
+                validate_release_bundle(root)
+
+        malformed = deepcopy(manifest)
+        malformed["evaluation"]["unexpected_contract_field"] = True
+        write_canonical_json(root / "release_manifest.json", malformed)
+        with pytest.raises(PolicyDocumentError, match="unknown field"):
+            validate_release_bundle(root)
+
         broken = deepcopy(manifest)
-        broken["source"]["checkpoint"] = "/Users/example/model.zip"
+        broken["source"]["checkpoint_artifact"] = "/Users/example/model.zip"
         (root / "release_manifest.json").write_text(json.dumps(broken), encoding="utf-8")
         with pytest.raises(ValueError, match="absolute local path"):
             validate_release_bundle(root)

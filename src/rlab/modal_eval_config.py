@@ -76,6 +76,7 @@ class ModalEvalConfig:
     screen_timeout_seconds: int
     confirm_timeout_seconds: int
     promotion_timeout_seconds: int
+    acceptance_timeout_seconds: int
     child_margin_seconds: int
     expiry_margin_seconds: int
     estimated_hourly_usd: float
@@ -90,6 +91,8 @@ class ModalEvalConfig:
     preview_upload_timeout_seconds: int
 
     def timeout_for(self, purpose: str, stage_index: int) -> int:
+        if purpose == "acceptance":
+            return self.acceptance_timeout_seconds
         if purpose == "promotion":
             return self.promotion_timeout_seconds
         if stage_index > 0:
@@ -158,6 +161,7 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
                 "screen_seconds",
                 "confirm_seconds",
                 "promotion_seconds",
+                "acceptance_seconds",
                 "child_margin_seconds",
                 "expiry_margin_seconds",
             },
@@ -251,6 +255,10 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         promotion_timeout_seconds=_positive_int(
             timeouts.get("promotion_seconds"), label="timeouts.promotion_seconds"
         ),
+        acceptance_timeout_seconds=_positive_int(
+            timeouts.get("acceptance_seconds", timeouts.get("promotion_seconds")),
+            label="timeouts.acceptance_seconds",
+        ),
         child_margin_seconds=_positive_int(
             timeouts.get("child_margin_seconds"), label="timeouts.child_margin_seconds"
         ),
@@ -280,10 +288,9 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         result.screen_timeout_seconds,
         result.confirm_timeout_seconds,
         result.promotion_timeout_seconds,
+        result.acceptance_timeout_seconds,
     ):
         raise ValueError("timeouts.child_margin_seconds must be smaller than every eval timeout")
-    if result.enabled and not result.preview_enabled:
-        raise ValueError("preview.enabled must be true when Modal evaluation is enabled")
     if result.preview_max_frames > 450:
         raise ValueError("preview.max_frames must not exceed 450")
     if result.preview_fps > 15:

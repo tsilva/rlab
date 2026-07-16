@@ -51,9 +51,12 @@ from rlab.recipe_schema import (
     validate_materialized_train_recipe,
 )
 from rlab.provider_config import provider_num_envs
+from rlab.policy_bundle import build_recipe_document
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.training_backend import accepts_first_training_success
 from rlab.modal_eval_assets import asset_manifest_for_game
+from rlab.checkpoint_acceptance import checkpoint_eval_contract_from_train_config
+from rlab.eval_capacity_policy import load_eval_capacity_policy
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 
@@ -99,11 +102,16 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   wandb_run_id TEXT,
   wandb_url TEXT,
   live_publication_status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (live_publication_status IN ('pending', 'live', 'complete', 'disabled', 'failed')),
+    CHECK (live_publication_status IN (
+      'pending', 'live', 'finishing', 'complete', 'disabled', 'failed'
+    )),
   live_publication_attempts INTEGER NOT NULL DEFAULT 0
     CHECK (live_publication_attempts >= 0),
   live_publication_next_retry_at TIMESTAMPTZ,
   live_publication_error TEXT,
+  eval_load DOUBLE PRECISION CHECK (eval_load IS NULL OR eval_load >= 0),
+  eval_capacity_policy_sha256 TEXT,
+  eval_load_admitted_at TIMESTAMPTZ,
   error TEXT,
   UNIQUE (submission_key, submission_ordinal)
 );
@@ -162,6 +170,12 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   last_scheduled_at TIMESTAMPTZ,
   promoted_eval_job_id BIGINT,
   promotion_json JSONB,
+  outcome TEXT CHECK (
+    outcome IS NULL OR outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
+  ),
+  acceptance_committed_at TIMESTAMPTZ,
+  stop_delivery_slo_met BOOLEAN,
+  promoted_artifact_projection_enqueued_at TIMESTAMPTZ,
   promoted_artifact_projected_at TIMESTAMPTZ,
   artifacts_projected_at TIMESTAMPTZ,
   artifact_projection_attempts INTEGER NOT NULL DEFAULT 0
@@ -182,7 +196,7 @@ CREATE TABLE IF NOT EXISTS eval_jobs (
   metadata_uri TEXT NOT NULL,
   stage_name TEXT NOT NULL,
   stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
-  purpose TEXT NOT NULL CHECK (purpose IN ('screen', 'confirm', 'promotion')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('screen', 'confirm', 'promotion', 'acceptance')),
   execution_key TEXT NOT NULL,
   job_key TEXT NOT NULL UNIQUE,
   contract_json JSONB NOT NULL,
@@ -313,6 +327,7 @@ CREATE TABLE IF NOT EXISTS attempt_commands (
   command_type TEXT NOT NULL CHECK (command_type IN ('stop', 'cancel')),
   payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  delivered_at TIMESTAMPTZ,
   acknowledged_at TIMESTAMPTZ
 );
 
@@ -326,7 +341,7 @@ CREATE TABLE IF NOT EXISTS eval_backend_state (
 );
 
 INSERT INTO eval_backend_state (backend, effective_capacity)
-VALUES ('modal', 1)
+VALUES ('modal', 3)
 ON CONFLICT (backend) DO NOTHING;
 
 DROP INDEX IF EXISTS train_jobs_runtime_claim_idx;
@@ -362,9 +377,18 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_status TEXT NOT
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_next_retry_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_error TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS learner_stop_observed_at TIMESTAMPTZ;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS process_exited_at TIMESTAMPTZ;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_load DOUBLE PRECISION;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_capacity_policy_sha256 TEXT;
+ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_load_admitted_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projected_at TIMESTAMPTZ;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS outcome TEXT;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS acceptance_committed_at TIMESTAMPTZ;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS stop_delivery_slo_met BOOLEAN;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projection_enqueued_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_enqueued_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
@@ -372,6 +396,7 @@ ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS retry_round INTEGER NOT NULL DEFA
 ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
 ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE attempt_commands ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 ALTER TABLE attempt_events DROP CONSTRAINT IF EXISTS attempt_events_attempts_check;
 ALTER TABLE attempt_events ADD CONSTRAINT attempt_events_attempts_check CHECK (attempts >= 0);
 ALTER TABLE metric_streams ADD COLUMN IF NOT EXISTS submitted_sequence BIGINT NOT NULL DEFAULT 0;
@@ -404,15 +429,28 @@ ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_status_check
   ));
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_live_publication_status_check;
 ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_status_check
-  CHECK (live_publication_status IN ('pending', 'live', 'complete', 'disabled', 'failed'));
+  CHECK (live_publication_status IN (
+    'pending', 'live', 'finishing', 'complete', 'disabled', 'failed'
+  ));
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_live_publication_attempts_check;
 ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_attempts_check
   CHECK (live_publication_attempts >= 0);
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_eval_load_check;
+ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_eval_load_check
+  CHECK (eval_load IS NULL OR eval_load >= 0);
 ALTER TABLE eval_runs DROP CONSTRAINT IF EXISTS eval_runs_status_check;
 ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_status_check
   CHECK (status IN (
     'active', 'awaiting_artifact_recovery', 'finalizing', 'complete', 'failed', 'canceled'
   ));
+ALTER TABLE eval_runs DROP CONSTRAINT IF EXISTS eval_runs_outcome_check;
+ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_outcome_check
+  CHECK (outcome IS NULL OR outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled'));
+ALTER TABLE eval_jobs DROP CONSTRAINT IF EXISTS eval_jobs_purpose_check;
+ALTER TABLE eval_jobs ADD CONSTRAINT eval_jobs_purpose_check
+  CHECK (purpose IN ('screen', 'confirm', 'promotion', 'acceptance'));
+
+UPDATE eval_backend_state SET effective_capacity = 3 WHERE backend = 'modal';
 
 UPDATE train_jobs
 SET live_publication_status = CASE
@@ -615,7 +653,8 @@ AS $$
 BEGIN
   IF p_event_type NOT IN (
        'mailbox_preflight', 'metric_stream_closed',
-       'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+       'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed',
+       'learner_stop_observed'
      )
      OR p_payload IS NULL
      OR octet_length(p_payload::text) > 1048576 THEN
@@ -639,7 +678,42 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION worker_ack_attempt_command(
+CREATE OR REPLACE FUNCTION worker_poll_attempt_commands(
+  p_attempt_id TEXT,
+  p_token TEXT
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  commands JSONB;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM worker_attempts
+    WHERE attempt_id = p_attempt_id
+      AND status IN ('launching', 'running')
+      AND token_expires_at > now()
+      AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
+  ) THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'command_id', command_id,
+      'command_type', command_type,
+      'payload', payload_json,
+      'created_at', created_at
+    ) ORDER BY id), '[]'::jsonb)
+  INTO commands
+  FROM attempt_commands
+  WHERE attempt_id = p_attempt_id AND acknowledged_at IS NULL;
+  UPDATE worker_attempts SET last_heartbeat_at = now()
+  WHERE attempt_id = p_attempt_id;
+  RETURN commands;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION worker_mark_attempt_command_delivered(
   p_attempt_id TEXT,
   p_token TEXT,
   p_command_id TEXT
@@ -658,10 +732,53 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'worker mailbox authentication failed';
   END IF;
-  DELETE FROM attempt_commands
-  WHERE attempt_id = p_attempt_id AND command_id = p_command_id;
+  UPDATE attempt_commands
+  SET delivered_at = COALESCE(delivered_at, now())
+  WHERE attempt_id = p_attempt_id AND command_id = p_command_id
+    AND acknowledged_at IS NULL;
   RETURN FOUND;
 END;
+$$;
+
+CREATE OR REPLACE FUNCTION worker_ack_attempt_command(
+  p_attempt_id TEXT,
+  p_token TEXT,
+  p_command_id TEXT,
+  p_acknowledged_at TIMESTAMPTZ
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM worker_attempts
+    WHERE attempt_id = p_attempt_id
+      AND status IN ('launching', 'running')
+      AND token_expires_at > now()
+      AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
+  ) THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  UPDATE attempt_commands
+  SET delivered_at = COALESCE(delivered_at, p_acknowledged_at),
+      acknowledged_at = p_acknowledged_at
+  WHERE attempt_id = p_attempt_id AND command_id = p_command_id
+    AND acknowledged_at IS NULL;
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION worker_ack_attempt_command(
+  p_attempt_id TEXT,
+  p_token TEXT,
+  p_command_id TEXT
+) RETURNS BOOLEAN
+LANGUAGE SQL
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT worker_ack_attempt_command(p_attempt_id, p_token, p_command_id, now());
 $$;
 
 REVOKE ALL ON worker_attempts, metric_streams, metric_batches,
@@ -672,7 +789,14 @@ REVOKE ALL ON FUNCTION worker_submit_metric_batch(
 REVOKE ALL ON FUNCTION worker_append_attempt_event(
   TEXT, TEXT, TEXT, TEXT, JSONB
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_poll_attempt_commands(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_mark_attempt_command_delivered(
+  TEXT, TEXT, TEXT
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION worker_ack_attempt_command(TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_ack_attempt_command(
+  TEXT, TEXT, TEXT, TIMESTAMPTZ
+) FROM PUBLIC;
 """
 
 RESET_TABLES = (
@@ -833,8 +957,20 @@ def grant_worker_mailbox_role(conn, role: str) -> None:
                 f"TEXT, TEXT, TEXT, TEXT, JSONB) TO {identifier}"
             )
             cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_poll_attempt_commands("
+                f"TEXT, TEXT) TO {identifier}"
+            )
+            cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_mark_attempt_command_delivered("
+                f"TEXT, TEXT, TEXT) TO {identifier}"
+            )
+            cur.execute(
                 "GRANT EXECUTE ON FUNCTION worker_ack_attempt_command("
                 f"TEXT, TEXT, TEXT) TO {identifier}"
+            )
+            cur.execute(
+                "GRANT EXECUTE ON FUNCTION worker_ack_attempt_command("
+                f"TEXT, TEXT, TEXT, TIMESTAMPTZ) TO {identifier}"
             )
 
 
@@ -1206,6 +1342,9 @@ def enqueue_train_jobs_from_recipe_document(
     if backend == "none":
         train_config["early_stop"] = None
         train_config["checkpoint_eval_stages"] = []
+        train_config["stop_on_acceptance"] = False
+        train_config.pop("checkpoint_eval_acceptance", None)
+        train_config.pop("checkpoint_eval_contract", None)
         train_config.pop("checkpoint_eval_asset_manifest", None)
         tags = [str(tag) for tag in document.get("tags", [])]
         if "checkpoint_eval_backend:none" not in tags:
@@ -1299,6 +1438,34 @@ def enqueue_train_jobs_from_recipe_document(
                 )
             for row_owned_key in ("seed", "recipe_slug", "recipe_path", "machine"):
                 train_config.pop(row_owned_key, None)
+            run_name = _format_default_run_name(
+                batch_id, label=document_slug, seed=seed, utc=utc
+            )
+            run_description = _format_queue_template(
+                document.get("description"),
+                seed=seed,
+                recipe_id=document_slug,
+                utc=utc,
+                batch_id=batch_id,
+                campaign_id=campaign_id or "",
+            )
+            if isinstance(document.get("_composition"), Mapping):
+                source_commit = str(repo_git_commit or "").strip()
+                if not source_commit:
+                    raise ValueError(
+                        "repo_git_commit is required when enqueuing a composed policy recipe"
+                    )
+                recipe_payload = build_recipe_document(
+                    document,
+                    repo_root=Path(__file__).resolve().parents[2],
+                    source_commit=source_commit,
+                    run_description=run_description,
+                    seed=seed,
+                    runtime_image_ref=runtime_image_ref,
+                )
+            else:
+                # Compatibility for pre-composition queue rows and focused unit fixtures.
+                recipe_payload = compiled_recipe_payload(document)
             row = enqueue_train_job(
                 conn,
                 goal_slug=goal_slug,
@@ -1309,7 +1476,7 @@ def enqueue_train_jobs_from_recipe_document(
                 recipe_sha256=recipe_sha256,
                 repo_git_commit=repo_git_commit,
                 repo_dirty=repo_dirty,
-                recipe_payload=compiled_recipe_payload(document),
+                recipe_payload=recipe_payload,
                 runtime_image_ref=runtime_image_ref,
                 runtime_input_sha256=runtime_input_sha256,
                 runtime_build_source_sha=runtime_build_source_sha,
@@ -1320,17 +1487,8 @@ def enqueue_train_jobs_from_recipe_document(
                 submission_key=submission_key,
                 submission_ordinal=ordinal,
                 request_hash=request_hash,
-                run_name=_format_default_run_name(
-                    batch_id, label=document_slug, seed=seed, utc=utc
-                ),
-                run_description=_format_queue_template(
-                    document.get("description"),
-                    seed=seed,
-                    recipe_id=document_slug,
-                    utc=utc,
-                    batch_id=batch_id,
-                    campaign_id=campaign_id or "",
-                ),
+                run_name=run_name,
+                run_description=run_description,
                 seed=seed,
                 wandb_group=batch_id,
                 wandb_tags=recipe_tags(document),
@@ -1433,6 +1591,15 @@ def enqueue_train_job(
         elif not requires_rom_asset:
             config.pop("checkpoint_eval_asset_manifest", None)
         config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
+        if config.get("stop_on_acceptance"):
+            config["checkpoint_eval_contract"] = (
+                checkpoint_eval_contract_from_train_config(config)
+            )
+            config["eval_load_reservation"] = load_eval_capacity_policy().reservation(config)
+        else:
+            config.pop("eval_load_reservation", None)
+    else:
+        config.pop("eval_load_reservation", None)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -1507,6 +1674,7 @@ def enqueue_train_job(
                   repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
                   telemetry_transport,
+                  eval_load, eval_capacity_policy_sha256,
                   batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
                   retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
@@ -1517,6 +1685,7 @@ def enqueue_train_job(
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
                   %(telemetry_transport)s,
+                  %(eval_load)s, %(eval_capacity_policy_sha256)s,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
@@ -1538,6 +1707,16 @@ def enqueue_train_job(
                     "machine": machine,
                     "train_config": json_arg(config),
                     "telemetry_transport": str(config["telemetry_transport"]),
+                    "eval_load": (
+                        float(config["eval_load_reservation"]["eval_load"])
+                        if isinstance(config.get("eval_load_reservation"), Mapping)
+                        else None
+                    ),
+                    "eval_capacity_policy_sha256": (
+                        str(config["eval_load_reservation"]["policy_sha256"])
+                        if isinstance(config.get("eval_load_reservation"), Mapping)
+                        else None
+                    ),
                     "batch_id": batch_id,
                     "campaign_id": campaign_id,
                     "submission_key": submission_key,
@@ -2215,6 +2394,7 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
                      + pg_total_relation_size('attempt_commands')
               ) < 5368709120
               AND COALESCE(control.drained, FALSE) = FALSE
+              AND (job.eval_load IS NULL OR job.eval_load_admitted_at IS NOT NULL)
               AND NOT EXISTS (
                 SELECT 1 FROM job_launches AS launch WHERE launch.job_id = job.id
               )
@@ -2225,6 +2405,80 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
         )
         row = cur.fetchone()
     return dict(row) if row else None
+
+
+def admit_pending_eval_load(conn, *, limit: int = 100) -> int:
+    """Atomically reserve Modal load before an eval-enabled job may consume a GPU."""
+
+    admitted = 0
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended('rlab-modal-eval-admission', 0))"
+            )
+            cur.execute(
+                """
+                SELECT effective_capacity
+                FROM eval_backend_state
+                WHERE backend = 'modal'
+                FOR UPDATE
+                """
+            )
+            state = cur.fetchone()
+            if not state:
+                return 0
+            capacity_limit = float(state["effective_capacity"]) * 0.8
+            cur.execute(
+                """
+                SELECT COALESCE(sum(eval_load), 0.0) AS reserved
+                FROM train_jobs
+                WHERE eval_load_admitted_at IS NOT NULL
+                  AND status IN ('pending', 'launching', 'starting', 'running', 'finalizing')
+                """
+            )
+            reserved = float(cur.fetchone()["reserved"] or 0.0)
+            cur.execute(
+                """
+                SELECT id, eval_load
+                FROM train_jobs
+                WHERE status = 'pending'
+                  AND cancel_requested = FALSE
+                  AND eval_load IS NOT NULL
+                  AND eval_load_admitted_at IS NULL
+                ORDER BY id
+                FOR UPDATE SKIP LOCKED
+                LIMIT %(limit)s
+                """,
+                {"limit": max(1, int(limit))},
+            )
+            for row in cur.fetchall():
+                load = float(row["eval_load"])
+                if reserved + load > capacity_limit + 1e-12:
+                    continue
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET eval_load_admitted_at = now()
+                    WHERE id = %(id)s AND eval_load_admitted_at IS NULL
+                    """,
+                    {"id": int(row["id"])},
+                )
+                if cur.rowcount != 1:
+                    continue
+                reserved += load
+                admitted += 1
+                record_job_event(
+                    conn,
+                    job_id=int(row["id"]),
+                    event_type="eval_load_admitted",
+                    message="Modal evaluation load reservation admitted",
+                    metadata={
+                        "eval_load": load,
+                        "reserved_after": reserved,
+                        "capacity_limit": capacity_limit,
+                    },
+                )
+    return admitted
 
 
 def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) -> dict[str, Any]:
@@ -2684,6 +2938,7 @@ def finish_train_launch_from_result(
                 UPDATE train_jobs
                 SET status = %(status)s,
                     finished_at = CASE WHEN %(status)s = 'finalizing' THEN NULL ELSE now() END,
+                    process_exited_at = now(),
                     wandb_run_id = COALESCE(%(wandb_run_id)s, wandb_run_id),
                     wandb_url = COALESCE(%(wandb_url)s, wandb_url),
                     live_publication_status = %(publication_status)s,

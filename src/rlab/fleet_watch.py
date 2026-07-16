@@ -24,7 +24,7 @@ from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from rlab.fleet_service import ServicePaths, service_status
+from rlab.fleet_service import ServicePaths, controller_services_status, service_status
 
 
 WATCH_SCHEMA_VERSION = 1
@@ -162,6 +162,9 @@ def collect_watch_snapshot(
     from rlab.fleet_service import _run_command
 
     captured = now or _utc_now()
+    controller_status = controller_services_status(paths, runner=runner or _run_command)
+    if controller_status["installed"]:
+        return _collect_authoritative_snapshot(paths, controller_status, captured=captured)
     errors: list[str] = []
     status = service_status(paths, runner=runner or _run_command)
     current_pass = _load_json(paths.state_dir / "current-pass.json", errors)
@@ -251,6 +254,198 @@ def collect_watch_snapshot(
             "source": source,
         },
         "work": work,
+        "needs_action": needs_action,
+        "retrying": retrying,
+        "now": now_items,
+        "waiting": waiting,
+        "recent_changes": recent,
+    }
+
+
+def _collect_authoritative_snapshot(
+    paths: ServicePaths,
+    controller_status: Mapping[str, Any],
+    *,
+    captured: datetime,
+) -> dict[str, Any]:
+    """Build the dashboard from read-only PostgreSQL state under the split controllers."""
+
+    from rlab.fleet_service import _connect_queue
+
+    errors: list[str] = []
+    now_items: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    retrying: list[dict[str, Any]] = []
+    needs_action: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    source_at: object = None
+    try:
+        conn = _connect_queue(paths.repo_root)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.id, t.status, t.machine, t.created_at, t.started_at,
+                      t.finished_at, t.error, t.eval_load, t.eval_load_admitted_at,
+                      r.status AS eval_status, r.outcome AS eval_outcome,
+                      r.updated_at
+                    FROM train_jobs t
+                    LEFT JOIN eval_runs r ON r.train_job_id = t.id
+                    WHERE t.status IN ('pending', 'launching', 'starting', 'running', 'finalizing')
+                       OR (
+                         t.status = 'finalization_failed'
+                         AND coalesce(
+                           t.finished_at, r.updated_at, t.process_exited_at,
+                           t.started_at, t.created_at
+                         ) >= now() - interval '24 hours'
+                       )
+                    ORDER BY t.id
+                    """
+                )
+                jobs = [dict(row) for row in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT j.id, j.train_job_id, j.status, j.purpose, j.checkpoint_step,
+                      j.created_at, j.updated_at, j.error,
+                      count(a.id) FILTER (WHERE a.status IN ('failed', 'expired')) AS failures
+                    FROM eval_jobs j
+                    JOIN train_jobs t ON t.id = j.train_job_id
+                    LEFT JOIN eval_runs r ON r.train_job_id = j.train_job_id
+                    LEFT JOIN eval_attempts a ON a.eval_job_id = j.id
+                    WHERE (
+                      j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
+                      AND t.status IN ('pending', 'launching', 'starting', 'running', 'finalizing')
+                    ) OR (
+                      j.status = 'failed'
+                      AND t.status = 'finalizing'
+                      AND r.outcome IS NULL
+                    )
+                    GROUP BY j.id, t.id, r.train_job_id
+                    ORDER BY j.updated_at, j.id
+                    """
+                )
+                eval_jobs = [dict(row) for row in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT e.job_id, e.event_type, e.message, e.created_at
+                    FROM job_events e
+                    ORDER BY e.id DESC
+                    LIMIT 5
+                    """
+                )
+                events = [dict(row) for row in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as exc:
+        errors.append(f"postgres: {type(exc).__name__}: {exc}")
+        jobs = []
+        eval_jobs = []
+        events = []
+
+    for row in jobs:
+        status = str(row["status"])
+        source_at = max(
+            [value for value in (source_at, row.get("updated_at"), row.get("finished_at"), row.get("started_at"), row.get("created_at")) if value is not None],
+            default=source_at,
+        )
+        counts[status] = counts.get(status, 0) + 1
+        item = {
+            "id": f"train/{row['id']}",
+            "entity": f"train/{row['id']}",
+            "title": status.replace("_", " ").upper(),
+            "detail": (
+                f"machine={row['machine']} · eval={row.get('eval_status') or 'not created'}"
+                + (f" · outcome={row['eval_outcome']}" if row.get("eval_outcome") else "")
+            ),
+            "started_at": row.get("started_at") or row.get("created_at"),
+            "resolution": "automatic" if status != "finalization_failed" else "manual inspection",
+            "blast_radius": f"train/{row['id']}",
+        }
+        if status == "pending":
+            if row.get("eval_load") is not None and row.get("eval_load_admitted_at") is None:
+                item["title"] = "WAITING FOR EVAL CAPACITY"
+            waiting.append(item)
+        elif status == "finalization_failed":
+            item["detail"] = str(row.get("error") or item["detail"])
+            needs_action.append(item)
+        else:
+            now_items.append(item)
+
+    for row in eval_jobs:
+        status = str(row["status"])
+        source_at = max(
+            [value for value in (source_at, row.get("updated_at"), row.get("created_at")) if value is not None],
+            default=source_at,
+        )
+        item = {
+            "id": f"eval/{row['id']}",
+            "entity": f"eval/{row['id']}",
+            "title": f"{row['purpose']} {status}".upper(),
+            "detail": f"train/{row['train_job_id']} · checkpoint {int(row['checkpoint_step']):,}",
+            "started_at": row.get("created_at"),
+            "resolution": "automatic" if status != "failed" else "manual inspection",
+            "blast_radius": f"train/{row['train_job_id']}",
+        }
+        if status == "failed":
+            item["detail"] = str(row.get("error") or item["detail"])
+            needs_action.append(item)
+        elif int(row.get("failures") or 0) > 0:
+            retrying.append(item)
+        elif status in {"pending", "blocked_budget"}:
+            waiting.append(item)
+        else:
+            now_items.append(item)
+
+    for row in events:
+        recent.append(
+            {
+                "id": f"event/{row['job_id']}/{row['event_type']}",
+                "entity": f"train/{row['job_id']}",
+                "title": str(row["event_type"]).replace("_", " ").title(),
+                "detail": str(row.get("message") or ""),
+                "timestamp": row.get("created_at"),
+            }
+        )
+    loaded = bool(controller_status.get("loaded"))
+    running = bool(controller_status.get("running"))
+    healthy = bool(controller_status.get("healthy")) and not errors
+    scheduler_state = "RECONCILING" if now_items else "IDLE"
+    service_state = "HEALTHY" if healthy else "DEGRADED"
+    return {
+        "schema_version": WATCH_SCHEMA_VERSION,
+        "captured_at": _iso_utc(captured),
+        "data_freshness": {
+            "source_at": source_at,
+            "age_seconds": _age_seconds(source_at, now=captured),
+            "errors": errors,
+            "stale": bool(errors),
+        },
+        "service": {
+            "label": paths.label,
+            "state": service_state,
+            "installed": True,
+            "loaded": loaded,
+            "running": running,
+            "interval_seconds": controller_status.get("poll_seconds"),
+            "last_pass_status": None,
+            "consecutive_failures": 0,
+        },
+        "scheduler": {
+            "state": scheduler_state,
+            "pass_id": None,
+            "started_at": None,
+            "deadline_at": None,
+            "triggers": [],
+            "source": {},
+        },
+        "work": {
+            "in_progress": len(now_items),
+            "waiting": len(waiting),
+            "retrying": len(retrying),
+            "needs_action": len(needs_action),
+            "counts": counts,
+        },
         "needs_action": needs_action,
         "retrying": retrying,
         "now": now_items,

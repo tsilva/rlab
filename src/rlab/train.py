@@ -22,6 +22,7 @@ from rlab.env import (
 from rlab.env_config import env_config_from_args
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.provider_config import provider_num_envs
+from rlab.policy_bundle import load_recipe_document
 from rlab.seeds import validate_training_seed
 from rlab.train_config import (
     materialized_train_args,
@@ -98,6 +99,12 @@ def main(argv: list[str] | None = None) -> int:
             "a queue-backed Docker job"
         )
     args = parse_train_args(argv)
+    recipe_json_path = Path(str(getattr(args, "recipe_json_path", "") or ""))
+    if not recipe_json_path.is_file():
+        raise RuntimeError(
+            "queue-backed training requires the canonical versioned recipe.json"
+        )
+    load_recipe_document(recipe_json_path)
     train_config = dict(args._materialized_train_config)
     backend_id = training_backend_id(train_config)
     backend_config = training_backend_config(train_config)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from stable_baselines3.common.logger import HumanOutputFormat
@@ -37,9 +41,10 @@ class Sb3HumanOutputFormatHelper(CallbackHelper):
 
 
 class GracefulStopHelper(CallbackHelper):
-    def __init__(self, stop_flag: Any) -> None:
+    def __init__(self, stop_flag: Any, *, marker_path: Path | None = None) -> None:
         super().__init__()
         self.stop_flag = stop_flag
+        self.marker_path = marker_path
         self.logged = False
 
     def _on_step(self) -> bool:
@@ -52,5 +57,22 @@ class GracefulStopHelper(CallbackHelper):
                 f"num_timesteps={self.num_timesteps}",
                 flush=True,
             )
+            if self.marker_path is not None:
+                self.marker_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.marker_path.with_suffix(self.marker_path.suffix + ".tmp")
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "observed_at": datetime.now(UTC).isoformat(),
+                            "reason": reason,
+                            "num_timesteps": int(self.num_timesteps),
+                            "pid": os.getpid(),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                temporary.replace(self.marker_path)
             self.logged = True
         return False

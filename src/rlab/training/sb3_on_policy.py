@@ -158,7 +158,10 @@ def run_sb3_on_policy(
         model = model_factory(context, env, config, device)
 
         components: list[Any] = [
-            GracefulStopHelper(context.stop_flag),
+            GracefulStopHelper(
+                context.stop_flag,
+                marker_path=context.run_dir / "learner_stop_observed.json",
+            ),
             Sb3HumanOutputFormatHelper(),
             ThroughputHelper(
                 metric_store_path=store_path,
@@ -235,18 +238,6 @@ def run_sb3_on_policy(
 
         final_model_path = context.run_dir / "final_model.zip"
         model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=True)
-        if context.stop_flag.requested and checkpoint_save_freq is not None:
-            interrupted = context.checkpoint_dir / (
-                f"{checkpoint_prefix(config.game, algorithm_id=algorithm_id)}_interrupted_"
-                f"{model.num_timesteps}_steps.zip"
-            )
-            save_model_bundle(
-                model=model,
-                context=context,
-                model_path=interrupted,
-                kind="interrupted",
-                step=model.num_timesteps,
-            )
         save_model_bundle(
             model=model,
             context=context,

@@ -29,6 +29,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 SERVICE_LABEL = "com.rlab.fleet-service"
 SERVICE_INTERVAL_SECONDS = 30
+CONTROLLER_NAMES = ("machine", "evaluation", "wandb")
+CONTROLLER_POLL_SECONDS = 2
 DEFAULT_LANE_TIMEOUT_SECONDS = 120.0
 DEFAULT_PASS_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_MACHINE_LANES = 4
@@ -182,6 +184,85 @@ def render_launch_agent_plist(paths: ServicePaths) -> bytes:
     data = plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
     parsed = plistlib.loads(data)
     validate_launch_agent_payload(parsed, paths)
+    return data
+
+
+def controller_service_paths(paths: ServicePaths, controller: str) -> ServicePaths:
+    if controller not in CONTROLLER_NAMES:
+        raise ValueError(f"unknown fleet controller: {controller}")
+    return ServicePaths(
+        repo_root=paths.repo_root,
+        python=paths.python,
+        state_dir=paths.state_dir / controller,
+        launch_agents_dir=paths.launch_agents_dir,
+        label=f"{paths.label}.{controller}",
+    )
+
+
+def controller_launch_agent_payload(
+    paths: ServicePaths, controller: str
+) -> dict[str, Any]:
+    controller_paths = controller_service_paths(paths, controller)
+    return {
+        "Label": controller_paths.label,
+        "ProgramArguments": [
+            str(paths.python),
+            "-m",
+            "rlab.fleet_controllers",
+            controller,
+            "--repo-root",
+            str(paths.repo_root),
+        ],
+        "WorkingDirectory": str(paths.repo_root),
+        "KeepAlive": True,
+        "ThrottleInterval": CONTROLLER_POLL_SECONDS,
+        "ProcessType": "Background",
+        "StandardOutPath": str(controller_paths.bootstrap_stdout),
+        "StandardErrorPath": str(controller_paths.bootstrap_stderr),
+    }
+
+
+def validate_controller_launch_agent_payload(
+    payload: Mapping[str, Any], paths: ServicePaths, controller: str
+) -> None:
+    expected = controller_launch_agent_payload(paths, controller)
+    forbidden = {
+        "RunAtLoad",
+        "StartInterval",
+        "EnvironmentVariables",
+        "UserName",
+        "GroupName",
+    }
+    found_forbidden = forbidden.intersection(payload)
+    if found_forbidden:
+        raise ValueError(
+            f"controller launch agent contains forbidden keys: {sorted(found_forbidden)}"
+        )
+    for key, value in expected.items():
+        if payload.get(key) != value:
+            raise ValueError(f"controller launch agent {key} must be {value!r}")
+    if payload.get("KeepAlive") is not True:
+        raise ValueError("controller launch agent KeepAlive must be true")
+    if payload.get("ThrottleInterval") != CONTROLLER_POLL_SECONDS:
+        raise ValueError(
+            f"controller launch agent ThrottleInterval must be {CONTROLLER_POLL_SECONDS}"
+        )
+    for value in (
+        paths.repo_root,
+        paths.python,
+        paths.state_dir,
+        paths.launch_agents_dir,
+    ):
+        if not value.is_absolute():
+            raise ValueError(f"controller launch agent path must be absolute: {value}")
+
+
+def render_controller_launch_agent_plist(paths: ServicePaths, controller: str) -> bytes:
+    payload = controller_launch_agent_payload(paths, controller)
+    validate_controller_launch_agent_payload(payload, paths, controller)
+    data = plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
+    parsed = plistlib.loads(data)
+    validate_controller_launch_agent_payload(parsed, paths, controller)
     return data
 
 
@@ -505,6 +586,27 @@ def _validate_service_entrypoint(paths: ServicePaths, *, runner: CommandRunner) 
         )
 
 
+def _validate_controller_entrypoint(paths: ServicePaths, *, runner: CommandRunner) -> None:
+    environment = {
+        "HOME": str(Path.home()),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "TMPDIR": tempfile.gettempdir(),
+    }
+    result = runner(
+        [str(paths.python), "-m", "rlab.fleet_controllers", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(paths.repo_root),
+        env=environment,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "fleet controller entrypoint validation failed: "
+            + str(redact(result.stderr or result.stdout or f"exit={result.returncode}"))
+        )
+
+
 @dataclass(frozen=True)
 class InstallResult:
     installed: bool
@@ -596,6 +698,104 @@ def install_service(
     )
 
 
+def install_controller_services(
+    paths: ServicePaths,
+    *,
+    replace: bool = False,
+    runner: CommandRunner = _run_command,
+) -> InstallResult:
+    """Install the three independent persistent fleet controllers atomically enough for launchd.
+
+    Each controller has its own label and process. Existing controller plists are restored if a
+    later bootstrap fails. The retired combined pass is removed only after all three controllers
+    are loaded successfully.
+    """
+
+    if not paths.repo_root.is_dir():
+        raise FileNotFoundError(f"repository root does not exist: {paths.repo_root}")
+    if not paths.python.is_file() or not os.access(paths.python, os.X_OK):
+        raise FileNotFoundError(f"service interpreter is not executable: {paths.python}")
+
+    controller_paths = [controller_service_paths(paths, name) for name in CONTROLLER_NAMES]
+    previous: dict[str, tuple[bytes | None, bool]] = {}
+    for name, item in zip(CONTROLLER_NAMES, controller_paths, strict=True):
+        old_data = item.plist.read_bytes() if item.plist.exists() else None
+        if old_data is not None and not replace:
+            raise FileExistsError(f"launch agent already exists: {item.plist}; use --replace")
+        previous[name] = (old_data, service_is_loaded(item.label, runner=runner))
+
+    paths.launch_agents_dir.mkdir(parents=True, exist_ok=True)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    _validate_controller_entrypoint(paths, runner=runner)
+    installed: list[tuple[str, ServicePaths]] = []
+    try:
+        for name, item in zip(CONTROLLER_NAMES, controller_paths, strict=True):
+            item.state_dir.mkdir(parents=True, exist_ok=True)
+            data = render_controller_launch_agent_plist(paths, name)
+            candidate = item.plist.with_name(f".{item.plist.name}.candidate")
+            _atomic_write(candidate, data)
+            try:
+                _validate_candidate_plist(candidate, runner=runner)
+                old_data, was_loaded = previous[name]
+                if was_loaded:
+                    runner(
+                        ["launchctl", "bootout", _target(item.label)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                os.replace(candidate, item.plist)
+                installed.append((name, item))
+                _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
+            finally:
+                candidate.unlink(missing_ok=True)
+    except Exception:
+        for name, item in reversed(installed):
+            runner(
+                ["launchctl", "bootout", _target(item.label)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            old_data, was_loaded = previous[name]
+            if old_data is None:
+                item.plist.unlink(missing_ok=True)
+            else:
+                _atomic_write(item.plist, old_data)
+                if was_loaded:
+                    runner(
+                        ["launchctl", "bootstrap", _domain(), str(item.plist)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+        raise
+
+    legacy_loaded = service_is_loaded(paths.label, runner=runner)
+    if legacy_loaded:
+        runner(
+            ["launchctl", "bootout", _target(paths.label)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    paths.plist.unlink(missing_ok=True)
+    kicked = True
+    for item in controller_paths:
+        result = runner(
+            ["launchctl", "kickstart", _target(item.label)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        kicked = kicked and result.returncode == 0
+    return InstallResult(
+        installed=True,
+        replaced=replace and any(value[0] is not None for value in previous.values()),
+        kicked=kicked,
+    )
+
+
 def _load_last_pass(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -644,6 +844,44 @@ def service_status(
         "last_pass_status": last_pass_status,
         "healthy": bool(loaded and not last_pass_stale and last_pass_status in {"idle", "ok"}),
         "health": health,
+    }
+
+
+def controller_services_status(
+    paths: ServicePaths,
+    *,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
+    controllers: dict[str, dict[str, Any]] = {}
+    for name in CONTROLLER_NAMES:
+        item = controller_service_paths(paths, name)
+        loaded = service_is_loaded(item.label, runner=runner)
+        try:
+            running = service_is_running(item.label, runner=runner) if loaded else False
+        except OSError:
+            running = False
+        controllers[name] = {
+            "label": item.label,
+            "installed": item.plist.is_file(),
+            "loaded": loaded,
+            "running": running,
+            "plist": str(item.plist),
+            "stdout": str(item.bootstrap_stdout),
+            "stderr": str(item.bootstrap_stderr),
+        }
+    installed = all(row["installed"] for row in controllers.values())
+    loaded = all(row["loaded"] for row in controllers.values())
+    running = all(row["running"] for row in controllers.values())
+    return {
+        "label": paths.label,
+        "installed": installed,
+        "loaded": loaded,
+        "running": running,
+        "healthy": installed and loaded and running,
+        "poll_seconds": CONTROLLER_POLL_SECONDS,
+        "repo_root": str(paths.repo_root),
+        "python": str(paths.python),
+        "controllers": controllers,
     }
 
 
@@ -812,6 +1050,41 @@ def service_doctor(
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
 
 
+def controller_services_doctor(
+    paths: ServicePaths,
+    *,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    add("repo_root", paths.repo_root.is_dir(), str(paths.repo_root))
+    add(
+        "python",
+        paths.python.is_file() and os.access(paths.python, os.X_OK),
+        str(paths.python),
+    )
+    for name in CONTROLLER_NAMES:
+        item = controller_service_paths(paths, name)
+        payload_ok = False
+        detail = str(item.plist)
+        if item.plist.is_file():
+            try:
+                payload = plistlib.loads(item.plist.read_bytes())
+                validate_controller_launch_agent_payload(payload, paths, name)
+                payload_ok = True
+            except Exception as exc:
+                detail = str(redact(str(exc)))
+        add(f"{name}_plist", payload_ok, detail)
+        loaded = service_is_loaded(item.label, runner=runner)
+        add(f"{name}_loaded", loaded, item.label)
+        running = service_is_running(item.label, runner=runner) if loaded else False
+        add(f"{name}_running", running, item.label)
+    return {"ok": all(check["ok"] for check in checks), "checks": checks}
+
+
 def _load_repo_environment(repo_root: Path) -> None:
     from rlab.dotenv import load_env_file
 
@@ -938,6 +1211,47 @@ def uninstall_service(
     return existed or loaded
 
 
+def uninstall_controller_services(
+    paths: ServicePaths,
+    *,
+    force: bool = False,
+    count_nonterminal_jobs: CountNonterminalJobs = _default_count_nonterminal_jobs,
+    runner: CommandRunner = _run_command,
+) -> bool:
+    if not force:
+        count = int(count_nonterminal_jobs(paths.repo_root))
+        if count:
+            raise RuntimeError(
+                f"refusing to uninstall fleet controllers with {count} nonterminal job(s); "
+                "use --force"
+            )
+    changed = False
+    for name in CONTROLLER_NAMES:
+        item = controller_service_paths(paths, name)
+        loaded = service_is_loaded(item.label, runner=runner)
+        if loaded:
+            runner(
+                ["launchctl", "bootout", _target(item.label)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        existed = item.plist.exists()
+        item.plist.unlink(missing_ok=True)
+        changed = changed or loaded or existed
+    legacy_loaded = service_is_loaded(paths.label, runner=runner)
+    if legacy_loaded:
+        runner(
+            ["launchctl", "bootout", _target(paths.label)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    legacy_existed = paths.plist.exists()
+    paths.plist.unlink(missing_ok=True)
+    return changed or legacy_loaded or legacy_existed
+
+
 def _default_discover_machines(repo_root: Path) -> Sequence[str]:
     from rlab.job_queue import machines_with_service_work
     from rlab.machines import load_machine_registry
@@ -994,7 +1308,14 @@ def _default_reconcile_eval(
     if not config_path.is_file() and not (repo_root / ".env").is_file():
         return {"status": "unconfigured"}
     if config_path.is_file():
+        from rlab.job_queue import admit_pending_eval_load
         from rlab.modal_eval_orchestrator import run_service_eval_pass
+
+        admission_conn = _connect_queue(repo_root)
+        try:
+            admitted = admit_pending_eval_load(admission_conn)
+        finally:
+            admission_conn.close()
 
         kwargs: dict[str, Any] = {
             "repo_root": repo_root,
@@ -1003,6 +1324,7 @@ def _default_reconcile_eval(
         if progress is not None:
             kwargs["progress"] = progress
         detail = dict(run_service_eval_pass(**kwargs) or {})
+        detail["eval_load_admitted"] = admitted
     else:
         detail = {"status": "unconfigured"}
     from rlab.fleet_wandb_publisher import drain_cycle_parallel
@@ -1022,7 +1344,7 @@ def _default_reconcile_eval(
         detail["wandb_publication"] = drain_cycle_parallel(
             conn,
             repo_root=repo_root,
-            max_runs=3,
+            max_runs=100,
             deadline_monotonic=deadline_monotonic,
         )
         detail["finalized_mailbox_runs_without_eval"] = finalize_mailbox_runs_without_eval(conn)
@@ -1747,7 +2069,7 @@ def _paths_from_args(args: argparse.Namespace) -> ServicePaths:
 
 
 def cmd_install(args: argparse.Namespace) -> int:
-    result = install_service(_paths_from_args(args), replace=bool(args.replace))
+    result = install_controller_services(_paths_from_args(args), replace=bool(args.replace))
     print(
         json.dumps(
             {
@@ -1762,21 +2084,24 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    status = service_status(_paths_from_args(args))
+    status = controller_services_status(_paths_from_args(args))
     if args.json:
         print(json.dumps(status, sort_keys=True))
     else:
         print(
             f"fleet service installed={status['installed']} loaded={status['loaded']} "
-            f"healthy={status['healthy']} interval={status['interval_seconds']}s"
+            f"healthy={status['healthy']} poll={status['poll_seconds']}s"
         )
-        if status["last_pass"]:
-            print(json.dumps(status["last_pass"], sort_keys=True))
+        for name, row in status["controllers"].items():
+            print(
+                f"  {name}: loaded={row['loaded']} running={row['running']} "
+                f"label={row['label']}"
+            )
     return 0 if status["installed"] and status["loaded"] and status["healthy"] else 1
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    report = service_doctor(_paths_from_args(args))
+    report = controller_services_doctor(_paths_from_args(args))
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -1800,7 +2125,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    changed = uninstall_service(_paths_from_args(args), force=bool(args.force))
+    changed = uninstall_controller_services(_paths_from_args(args), force=bool(args.force))
     print(json.dumps({"uninstalled": changed}, sort_keys=True))
     return 0
 

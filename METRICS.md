@@ -6,8 +6,7 @@ exact registry entry or a bounded template.
 
 ## Surfaces and dimensions
 
-- W&B history contains searchable scalar time series, one `eval/full/by_start` table, and the
-  R2-backed `eval/screen/preview` media series.
+- W&B history contains searchable scalar time series and one `eval/full/by_start` table.
 - Metric producers write to a local SQLite outbox, then deliver gzip batches to the transient Neon
   mailbox. SQLite rows are deleted after Neon acknowledgement and the local database is removed
   after a successful final-flush barrier. Neon batches are deleted after confirmed W&B publication;
@@ -26,9 +25,11 @@ exact registry entry or a bounded template.
 - W&B is the permanent metric history. R2 is the permanent byte store for checkpoints, metadata,
   raw episode evidence, and videos. Postgres retains orchestration state and artifact locations.
 
-The only evaluation protocols are `screen`, `confirm`, and `full`. Dimension IDs must be unique and
-match `[A-Za-z0-9_.-]+`; unsafe IDs are rejected rather than silently rewritten. Starts use the same
-readable ID in training and evaluation. Provider `info` fields never become metrics automatically.
+The active checkpoint protocol is `acceptance`; complete accepted evidence additionally emits the
+`full` metric family. Historical `screen` and `confirm` rows remain readable but are not produced by
+new goal contracts. Dimension IDs must be unique and match `[A-Za-z0-9_.-]+`; unsafe IDs are rejected
+rather than silently rewritten. Starts use the same readable ID in training and evaluation. Provider
+`info` fields never become metrics automatically.
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
@@ -65,6 +66,10 @@ The reason value is empty, with zero count and rate, when a start has no recorde
 
 Episode-level evidence stays in R2. Confidence intervals and start-by-reason scalar products
 are intentionally computed offline rather than added to W&B history.
+
+An acceptance rejection is complete evidence of failure, but not a complete 100-episode
+evaluation. It emits `eval/acceptance/*` counters only. `eval/full/*` is emitted only after every
+manifest identity appears exactly once and all 100 episodes succeed.
 
 ## Registry
 
@@ -153,13 +158,18 @@ are intentionally computed offline rather than added to W&B history.
 | `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
-| `eval/screen/preview` | External HTML player for the canonical R2 MP4 captured from policy observations during every normal queue-backed screen evaluation. | html | evaluation | media |
-| `eval/screen/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
-| `eval/confirm/candidate/pass` | Staged checkpoint pass signal. | boolean | evaluation | history |
-| `eval/screen/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |
-| `eval/confirm/candidate/stage_index` | Staged checkpoint protocol index. | index | evaluation | history |
-| `eval/confirm/candidate/checkpoint_step` | Confirmed candidate checkpoint step. | steps | evaluation | history |
-| `eval/confirm/candidate/episodes` | Confirmed candidate evaluation episodes. | episodes | evaluation | history |
+| `eval/acceptance/pass` | Whether this checkpoint produced complete valid acceptance evidence. | boolean | acceptance evaluation | history |
+| `eval/acceptance/episodes/planned` | Exact episode identities required by the acceptance manifest. | episodes | acceptance evaluation | history |
+| `eval/acceptance/episodes/completed` | Valid planned episode rows completed before acceptance or fail-fast rejection. | episodes | acceptance evaluation | history |
+| `eval/acceptance/failure/count` | Failed planned episodes; zero for acceptance and one for fail-fast rejection. | episodes | acceptance evaluation | history |
+| `eval/acceptance/duration/seconds` | Acceptance-worker evaluation wall duration. | seconds | acceptance evaluation | history |
+| `eval/screen/preview` | Historical checkpoint-screen preview; new acceptance jobs do not capture or publish previews. | html | historical evaluation | media |
+| `eval/screen/candidate/pass` | Historical staged checkpoint pass signal. | boolean | historical evaluation | history |
+| `eval/confirm/candidate/pass` | Historical staged checkpoint pass signal. | boolean | historical evaluation | history |
+| `eval/screen/candidate/stage_index` | Historical staged checkpoint protocol index. | index | historical evaluation | history |
+| `eval/confirm/candidate/stage_index` | Historical staged checkpoint protocol index. | index | historical evaluation | history |
+| `eval/confirm/candidate/checkpoint_step` | Historical confirmed candidate checkpoint step. | steps | historical evaluation | history |
+| `eval/confirm/candidate/episodes` | Historical confirmed candidate evaluation episodes. | episodes | historical evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
 | `leader/checkpoint/success_rate_min` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/success_rate_mean` | Selected checkpoint summary field. | summary | selection | summary |

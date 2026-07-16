@@ -31,6 +31,7 @@ from rlab.modal_eval_orchestrator import (
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.modal_eval_projection import project_payload
 from rlab.modal_eval_protocol import (
+    PROTOCOL_SCHEMA_VERSION,
     SEED_PROTOCOL,
     build_execution_contract,
     execution_key,
@@ -70,7 +71,7 @@ def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
 def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> dict:
     asset = eval_contract.get("asset")
     return {
-        "schema_version": 1,
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "contract_schema_version": eval_contract["schema_version"],
         "attempt_id": attempt_id,
         "execution_key": execution_key(eval_contract),
@@ -293,7 +294,6 @@ class ModalEvalContractTests(unittest.TestCase):
             {
                 "config_guards",
                 "fleet_eval_service",
-                "preview_storage",
                 "postgres_schema",
                 "backend_state",
                 "rom_asset",
@@ -312,10 +312,10 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.cleanup_max_stops_per_pass, 10)
         self.assertEqual(config.hard_max_active, 20)
         self.assertEqual(config.max_containers, 20)
-        self.assertEqual(config.initial_effective_capacity, 1)
+        self.assertEqual(config.initial_effective_capacity, 3)
         self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
-        self.assertTrue(config.preview_enabled)
+        self.assertFalse(config.preview_enabled)
         self.assertEqual(config.preview_max_frames, 450)
         self.assertEqual(config.preview_fps, 15)
         self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
@@ -372,7 +372,7 @@ class ModalEvalContractTests(unittest.TestCase):
                 load_modal_eval_config(unknown)
             excessive = Path(temporary) / "excessive.yaml"
             excessive.write_text(
-                source.replace("initial_effective_capacity: 1", "initial_effective_capacity: 21")
+                source.replace("initial_effective_capacity: 3", "initial_effective_capacity: 21")
             )
             with self.assertRaisesRegex(ValueError, "exceeds the hard cap"):
                 load_modal_eval_config(excessive)
@@ -381,14 +381,8 @@ class ModalEvalContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not exceed 4"):
                 load_modal_eval_config(oversized_preview)
             disabled_preview = Path(temporary) / "disabled-preview.yaml"
-            disabled_preview.write_text(
-                source.replace("  enabled: true\n  max_frames", "  enabled: false\n  max_frames")
-            )
-            with self.assertRaisesRegex(
-                ValueError,
-                "preview.enabled must be true when Modal evaluation is enabled",
-            ):
-                load_modal_eval_config(disabled_preview)
+            disabled_preview.write_text(source)
+            self.assertFalse(load_modal_eval_config(disabled_preview).preview_enabled)
             invalid_cleanup = Path(temporary) / "invalid-cleanup.yaml"
             invalid_cleanup.write_text(
                 source.replace("  grace_seconds: 86400", "  grace_seconds: 0")
@@ -432,7 +426,7 @@ class ModalEvalContractTests(unittest.TestCase):
             result["episode_results"][1]["seed_lane"] = 0
             with self.assertRaisesRegex(ValueError, "duplicated"):
                 validate_attempt_result(result, contract=value, attempt_id="attempt")
-            result["schema_version"] = 2
+            result["schema_version"] = PROTOCOL_SCHEMA_VERSION + 1
             with self.assertRaisesRegex(ValueError, "schema version"):
                 validate_attempt_result(result, contract=value, attempt_id="attempt")
 
@@ -936,9 +930,9 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         statement = cursor.execute.call_args.args[0]
         self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
         self.assertIn("r.promoted_artifact_projected_at IS NOT NULL", statement)
-        self.assertIn("promoted.projected_at IS NULL", statement)
-        self.assertIn("r.status = 'finalizing'", statement)
-        self.assertIn("ready.live_publication_status IN ('complete', 'disabled')", statement)
+        self.assertIn("j.projected_at IS NULL", statement)
+        self.assertIn("t.process_exited_at IS NOT NULL", statement)
+        self.assertIn("t.live_publication_status IN ('complete', 'disabled')", statement)
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):

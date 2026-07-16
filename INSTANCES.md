@@ -2,8 +2,9 @@
 
 This repo supports one-job Docker containers on registered local or SSH Docker
 machines. Every queued `rlab train` job names one exact machine. A single
-Mac-side launchd service runs short reconciliation passes for `local-macbook`,
-`beast-3`, and `beast-2`; the runner machines remain simple SSH/Docker hosts.
+Mac-side launchd controllers continuously reconcile machine, evaluation, and
+W&B publication state for `local-macbook`, `beast-3`, and `beast-2`; the runner
+machines remain simple SSH/Docker hosts.
 Do not use provider launchers for this project while the beast path is being
 hardened.
 
@@ -43,16 +44,17 @@ rlab fleet service status --json
 rlab runs status --machine beast-3 --json
 ```
 
-Mutating commands wake the service immediately; its 30-second launchd interval
-is the recovery path for missed wake-ups and remote completion. Each invocation
-loads current source, performs one bounded pass, and exits. launchd does not
-overlap invocations of the same service label.
+launchd supervises three independent controllers: machine reconciliation,
+evaluation/promotion, and the per-run W&B publisher manager. Each polls
+PostgreSQL every two seconds and holds a macOS sleep assertion while it owns
+nonterminal work. Advisory locks prevent duplicate claims after a controller or
+Mac restart.
 
 `rlab fleet service watch` is the normal read-only operational view. On an interactive terminal it
 opens a responsive dashboard; `--once`, `--plain`, and `--json` provide scriptable output modes.
-The dashboard reads only launchd registration and the service's redacted atomic state files; it
-does not query PostgreSQL, Docker, SSH, Modal, or W&B. The service records current phases and queue
-classifications so an interrupted pass remains distinguishable from stale completed state. Use
+The dashboard reads launchd registration plus authoritative PostgreSQL state; it never mutates or
+repairs queue, Docker, SSH, Modal, or W&B state. It reports only failures that still block an active
+run as needing attention. Use
 `rlab fleet service logs --follow` for raw events and `rlab runs status` for exact job history.
 
 `rlab fleet service status --json` exits nonzero when the last pass is stale or degraded, and
@@ -73,19 +75,19 @@ rlab fleet capacity --machine beast-3 --reset
 
 Use `rlab fleet drain --machine <name>` to stop new claims without killing
 running jobs and `rlab fleet resume --machine <name>` to admit work again.
-`rlab runs status` is observational. The service is the only normal mutating
-reconciler: it claims, launches, finalizes, and prunes stale Docker images after
-no active container or exact-machine queued demand needs them.
+`rlab runs status` is observational. The three controllers are the only normal
+mutating reconcilers. The machine controller claims and launches jobs and prunes
+stale Docker images after no active container or exact-machine queued demand
+needs them.
 
-## Modal CPU Checkpoint Evaluation
+## Modal CPU Checkpoint Acceptance
 
-Modal is a backend-bound evaluation lane owned by the same Mac fleet service; it is not a
+Modal is a backend-bound evaluation lane owned by the Mac evaluation controller; it is not a
 registered training machine and must not be added to `experiments/machines.yaml`. Its checked-in
-deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The hard
-orchestration ceiling and the independent Modal `max_containers` guard are both 20, while rollout
-starts at effective capacity 1 and must be promoted through 2 and 3 before 20. Modal is the default
-for new queue-backed jobs at capacity 1; do not raise to the next stage until the parity,
-interruption, staged-capacity, and cost canaries pass.
+deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The
+independent hard safety ceiling is 20 and the effective acceptance-eval capacity is 3. Admission
+uses the checked-in workload policy in `experiments/eval_capacity.yaml`: an eval-enabled train job
+is claimed only when total reserved load remains at or below 80% of effective Modal capacity.
 
 ```bash
 rlab eval modal status
@@ -93,7 +95,7 @@ rlab eval modal preflight \
   --runtime-image-ref docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   --game <game-id>
 rlab eval modal drain
-rlab eval modal resume --capacity 1
+rlab eval modal resume --capacity 3
 rlab eval modal retry <eval-job-id>
 rlab eval modal retry-projection <train-job-id>
 rlab eval modal recover <train-job-id>
@@ -106,9 +108,9 @@ The selected backend is materialized in the queue row and never changes for that
 `rlab train ... --checkpoint-eval-backend local` only for an explicit fallback. Use `none` only for
 a smoke/debug submission that does not need eval-owned early stopping, checkpoint promotion, or goal
 acceptance. `preflight` fails closed unless the additive PostgreSQL schema, active capacity, private
-ROM object, preview R2/public-URL path, local Modal credentials, and exact runtime-specific
-deployment are all present. Every normal screen evaluation captures a bounded policy-observation
-MP4 in R2 and projects it as `eval/screen/preview` in the producing W&B run.
+ROM object, R2 evidence path, local Modal credentials, and exact runtime-specific deployment are
+all present. Acceptance evaluation never captures video; representative replay remains a
+release-time workflow.
 
 The train-image workflow runs on every push to `main` and publishes an exact-source version-5
 `rlab-train-image.json` as soon as the immutable image exists. Runtime images are keyed by the
@@ -129,30 +131,30 @@ Use `rlab eval modal abandon <train-job-id>` after inspecting a failed, finaliza
 canceled train whose evaluation remains nonterminal. It preserves uploaded evidence while canceling
 undispatched evaluation work and closes the evaluation run with the matching terminal outcome.
 
-PostgreSQL is the wait queue, orchestration authority, and transient telemetry mailbox. The service
-never submits work beyond the effective capacity, reserves worst-case cost before dispatch, and
-leaves budget-blocked jobs pending for operator inspection. Draining stops new Modal calls without
-stopping training. Checkpoint models, metadata, previews, and raw Modal results are immutable R2
-objects; accepted attempts, commands, artifact locations, decisions, and publication cursors live
-in PostgreSQL. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
-shared train/eval image digest. Worker retries are disabled; the fleet service may create one
-separately recorded second attempt for transient failures. Modal 1.5 exposes only single-use or
+PostgreSQL is the wait queue, orchestration authority, and transient telemetry mailbox. The
+evaluation controller never submits beyond effective capacity, reserves worst-case cost before
+dispatch, and leaves budget-blocked jobs pending for operator inspection. Draining stops new Modal
+calls without stopping training. Checkpoint models, metadata, immutable episode evidence, and raw
+Modal results are immutable R2 objects; accepted attempts, retained stop commands, artifact
+locations, decisions, and publication cursors live in PostgreSQL. Each checkpoint has one logical
+acceptance job and at most two immutable attempts; a valid rejection is successful execution and is
+never retried. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
+shared train/eval image digest. Modal 1.5 exposes only single-use or
 unbounded-reuse containers. V1 uses warm-container reuse with a 60-second scale-down window because
 single-use containers impose the full cold-start cost on every evaluation; the global call cap and
 dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
 Modal supports `max_inputs > 1`.
 
-Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches
-rather than one per service pass, and the service drains up to three independent W&B runs
-concurrently in isolated background publisher processes. Publisher launch does not block eval
-reconciliation; publication completion and failure remain durable mailbox state observed by later
-passes.
+Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches.
+The publisher manager starts exactly one isolated W&B SDK owner for each active run; its concurrency
+is independent of the three-call Modal limit. Publisher work never blocks eval reconciliation or
+stop delivery; publication completion and failure remain durable finalization-only state.
 Each run retains its session advisory lock, so concurrent publication cannot interleave writers for
 the same W&B run. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
 connection.
 
-The fleet service inventories owned `rlab-eval-<12-hex>` deployments hourly and stops at most ten
+The evaluation controller inventories owned `rlab-eval-<12-hex>` deployments hourly and stops at most ten
 zero-task apps per pass after a 24-hour grace period. It protects the latest runtime and every app
 referenced by nonterminal training, evaluation, recovery, queued, or active-attempt work; unrelated
 Modal apps are never eligible. Cleanup fails closed and reports separately from evaluation health.
@@ -325,11 +327,36 @@ the remote parent, so that exporter run is not registry-push acceptance evidence
 With the exact GPU-only base and non-GPU overlay cached, a complete merged runtime assembled locally
 in 3.52 seconds. A synthetic source-only invalidation took 12.78 seconds under Linux/amd64 emulation,
 including 9.7 seconds to rebuild the `rlab` wheel; the prior native GitHub runner evidence remains the
-relevant expectation for the at-most-10-second runtime assembly gate. The exact merged image passed
+relevant expectation for the at-most-10-second runtime assembly gate. That same-path overlay passed
 `uv pip check` for all 121 packages, the container smoke, and imports for Torch, Stable Retro, SB3,
-OpenCV, Numba, W&B, Breakout, and Mario. Production acceptance remains pending the post-publication
-same-SHA dispatch (at most 45 seconds to the schema-v5 receipt) and the next natural source-only push;
-these local measurements do not declare that rollout accepted.
+OpenCV, Numba, W&B, Breakout, and Mario.
+
+The first published cold canary, run `29495731114`, exposed one remaining composition bug: both the
+GPU foundation and non-GPU overlay targeted `/root/rlab/.venv`, so the linked copy still had to merge
+the parent filesystem. The dependency step took 177 seconds and downloaded a 2.74 GB GPU blob before
+SBOM scanning; runtime assembly itself remained 6 seconds. Reused same-SHA run `29496130906` then
+created its schema-v5 receipt in 20 seconds, proving the steady-state at-most-45-second path while
+leaving the cold non-GPU path unaccepted.
+
+The follow-up implementation keeps GPU packages at `/root/rlab/.venv`, installs the 101 non-GPU
+packages at `/opt/rlab-dependencies`, and bridges only the GPU site-packages with `rlab-gpu.pth`.
+The final dependency image is still one immutable tag and one linked overlay, but its destination is
+now disjoint from the GPU filesystem. SBOM generation scans the non-GPU scratch stage and explicitly
+does not rescan the final composite; the separately published GPU image retains its own SBOM. The
+dependency identity is version 4 and continues to hash the non-GPU projection, dependency Docker
+contract, and resolved GPU digest.
+
+Local Linux/amd64 verification on 2026-07-16 built the dependency target in 18.78 seconds with warm
+archive cache: the 101-package venv took 7.5 seconds and the log contained no GPU-layer download or
+extraction. A separate SBOM-enabled cache-only build took 41.65 seconds including a one-time 43 MB
+scanner pull, a 7.8-second linked merge, and a 13.6-second scan, again with no GPU-layer transfer.
+The full runtime build took 12.52 seconds under emulation, of which 9.4 seconds rebuilt the `rlab`
+wheel and 0.3 seconds linked/exported the runtime overlay. The combined-environment validator proved
+the exact 20-GPU plus 101-non-GPU lock union, all active cross-venv dependency constraints, interpreter
+and console-script routing, and the `.pth` bridge. The final image passed the container smoke and
+imports for Torch 2.12, Stable Retro, SB3, OpenCV, Numba, W&B, Breakout, and Mario. Remote acceptance
+of the cold non-GPU path and next natural source-only push remains pending a committed canary; local
+measurements alone do not declare the rollout accepted.
 
 Before readiness was split, exact-source run `29348722980` built the source-only image in about 8
 seconds but did not publish the usable runtime receipt until the CI image pull/contract smoke and

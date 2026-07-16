@@ -101,7 +101,8 @@ def run_training_process(
     wandb_enabled: bool = True,
     telemetry_transport: str = "legacy_local",
     configured_wandb_run_id: str | None = None,
-    command_file: Path | None = None,
+    command_inbox_dir: Path | None = None,
+    command_receipt_dir: Path | None = None,
     startup_timeout: float = TRAIN_STARTUP_TIMEOUT_SECONDS,
 ) -> int:
     """Run training while forwarding container termination as a graceful stop."""
@@ -204,10 +205,26 @@ def run_training_process(
                     f"returncode={failed_worker.returncode}; "
                     f"{worker_log_tail([failed_worker])}"
                 )
-            if command_file is not None and command_file.is_file() and process.poll() is None:
-                graceful_signal = getattr(signal, "SIGUSR1", signal.SIGTERM)
-                process.send_signal(graceful_signal)
-                command_file.unlink(missing_ok=True)
+            if command_inbox_dir is not None and process.poll() is None:
+                for command_path in sorted(command_inbox_dir.glob("*.json")):
+                    command = json.loads(command_path.read_text(encoding="utf-8"))
+                    command_id = str(command.get("command_id") or "")
+                    if not command_id:
+                        raise RuntimeError(f"invalid command inbox entry: {command_path}")
+                    graceful_signal = getattr(signal, "SIGUSR1", signal.SIGTERM)
+                    process.send_signal(graceful_signal)
+                    receipt_dir = command_receipt_dir or command_inbox_dir.parent / "receipts"
+                    write_atomic_json(
+                        receipt_dir / command_path.name,
+                        {
+                            "command_id": command_id,
+                            "command_type": str(command.get("command_type") or ""),
+                            "signal": int(graceful_signal),
+                            "signal_sent_at": datetime.now(UTC).isoformat(),
+                            "learner_pid": process.pid,
+                        },
+                    )
+                    command_path.unlink(missing_ok=True)
             if not readiness_written and time.monotonic() >= deadline:
                 process.terminate()
                 try:
@@ -413,7 +430,8 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 wandb_enabled=wandb_enabled,
                 telemetry_transport=telemetry_transport,
                 configured_wandb_run_id=str(config_document.get("wandb_run_id") or "") or None,
-                command_file=run_dir / "mailbox_command.json",
+                command_inbox_dir=run_dir / "mailbox_commands" / "inbox",
+                command_receipt_dir=run_dir / "mailbox_commands" / "receipts",
             )
     finally:
         producer_results = stop_workers(

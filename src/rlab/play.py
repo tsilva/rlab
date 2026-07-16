@@ -24,8 +24,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from rlab.artifacts import load_playback_env_config
+from rlab.artifacts import load_playback_env_config, playback_env_config
 from rlab.batch_runtime import StepDiagnostics
+from rlab.cli_args import explicit_arg_dests
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
@@ -37,7 +38,9 @@ from rlab.env import (
     task_max_episode_steps,
     task_reward,
     task_termination,
+    resolve_env_config,
 )
+from rlab.env_metadata import env_config_from_config_dict
 from rlab.eval_metrics import (
     batch_metrics_for_lane,
     drain_runtime_records,
@@ -51,6 +54,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.play_attribution import PolicyActionAttributor
+from rlab.policy_bundle import evaluation_contract
 from rlab.play_debug import (
     DebugCommandError,
     PolicyDecision,
@@ -446,10 +450,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--respect-task-termination",
         action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--continuous-play",
+        action="store_true",
         help=(
-            "End episodes on the checkpoint's configured task success, failure, stall, "
-            "and step-limit boundaries. By default playback only stops for native "
-            "environment termination."
+            "Ignore the recipe's task success, failure, stall, and step-limit boundaries. "
+            "This is a semantic deviation intended only for continuous interactive play."
         ),
     )
     parser.add_argument(
@@ -1367,7 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
-    args.seed = validate_eval_seed(args.seed)
+    explicit_dests = explicit_arg_dests(parser, argv_list)
     if args.attribution_interval is None:
         args.attribution_interval = 8 if args.attribution == "occlusion" else 1
     with startup_progress("Resolving model reference", disabled=args.no_progress):
@@ -1381,10 +1389,26 @@ def main(argv: list[str] | None = None) -> int:
     if ref is not None:
         print(f"Downloaded model: {args.model}", flush=True)
     with startup_progress("Loading playback metadata", disabled=args.no_progress):
-        artifact_config = load_playback_env_config(
-            source.model_path,
-            respect_task_termination=args.respect_task_termination,
-        )
+        if source.bundle is not None:
+            contract = evaluation_contract(source.bundle.recipe)
+            artifact_config = env_config_from_config_dict(contract["environment"])
+            if artifact_config is None:
+                raise ValueError("policy bundle recipe has no evaluation environment")
+            artifact_config = resolve_env_config(artifact_config)
+            if "seed" not in explicit_dests:
+                args.seed = int(contract["seed"])
+            if args.continuous_play:
+                artifact_config = playback_env_config(
+                    artifact_config,
+                    respect_task_termination=False,
+                )
+            args.respect_task_termination = not args.continuous_play
+        else:
+            artifact_config = load_playback_env_config(
+                source.model_path,
+                respect_task_termination=args.respect_task_termination,
+            )
+    args.seed = validate_eval_seed(args.seed)
     config = artifact_config
     display_config = display_replay_config(config)
     print_resolved_play_launch(

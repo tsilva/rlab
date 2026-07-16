@@ -27,6 +27,7 @@ from rlab.wandb_publisher import (
     project_payload_to_run,
 )
 from rlab.wandb_utils import load_wandb_env, resolve_wandb_namespace
+from rlab.metric_names import EVAL_ACCEPTANCE_PASS
 
 
 SUMMARY_CURSOR_KEY = "_rlab_telemetry_cursors"
@@ -100,6 +101,150 @@ def _remote_publication_state(
     return _cursor_mapping(raw), _summary_step_max(summary.get("global_step"))
 
 
+def _wandb_api_run(train_config: dict[str, Any]):
+    load_wandb_env()
+    import wandb
+
+    entity, project = resolve_wandb_namespace(
+        train_config.get("wandb_entity"),
+        train_config.get("wandb_project"),
+        str(train_config.get("game") or ""),
+        env_provider=train_config.get("env_provider"),
+    )
+    return wandb.Api().run(f"{entity}/{project}/{train_config['wandb_run_id']}")
+
+
+def _remote_has_promoted_artifact(remote, checkpoint_sha256: str) -> bool:
+    logged = getattr(remote, "logged_artifacts", None)
+    if not callable(logged):
+        return False
+    for artifact in logged():
+        aliases = {str(value) for value in (getattr(artifact, "aliases", ()) or ())}
+        metadata = dict(getattr(artifact, "metadata", {}) or {})
+        if "promoted" in aliases and str(metadata.get("checkpoint_sha256") or "") == str(
+            checkpoint_sha256
+        ):
+            return True
+    return False
+
+
+def finalize_finishing_run(conn, train_job_id: int) -> bool:
+    lock_key = f"rlab-wandb-run:{int(train_job_id)}"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%(key)s, 0)) AS acquired",
+            {"key": lock_key},
+        )
+        if not bool(cur.fetchone()["acquired"]):
+            return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.*, r.outcome, r.promotion_json
+                FROM train_jobs t
+                JOIN eval_runs r ON r.train_job_id = t.id
+                WHERE t.id = %(id)s AND t.live_publication_status = 'finishing'
+                """,
+                {"id": int(train_job_id)},
+            )
+            run = cur.fetchone()
+            if not run:
+                return False
+            run = dict(run)
+            cur.execute(
+                """
+                SELECT s.stream_id, s.final_sequence, s.published_sequence
+                FROM metric_streams s
+                JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                WHERE a.train_job_id = %(id)s
+                """,
+                {"id": int(train_job_id)},
+            )
+            streams = [dict(row) for row in cur.fetchall()]
+        if any(
+            row.get("final_sequence") is None
+            or int(row["published_sequence"]) < int(row["final_sequence"])
+            for row in streams
+        ):
+            return False
+        expected = {str(row["stream_id"]): int(row["final_sequence"]) for row in streams}
+        train_config = _train_config(run)
+        remote = _wandb_api_run(train_config)
+        remote_summary = dict(remote.summary)
+        remote_cursors = _cursor_mapping(remote_summary.get(SUMMARY_CURSOR_KEY) or {})
+        promotion = dict(run.get("promotion_json") or {})
+
+        def verified(candidate) -> bool:
+            summary = dict(candidate.summary)
+            cursors = _cursor_mapping(summary.get(SUMMARY_CURSOR_KEY) or {})
+            if str(getattr(candidate, "state", "")).lower() != "finished":
+                return False
+            if any(int(cursors.get(name, -1)) != sequence for name, sequence in expected.items()):
+                return False
+            if str(run.get("outcome")) == "accepted":
+                if float(summary.get(EVAL_ACCEPTANCE_PASS, 0.0) or 0.0) != 1.0:
+                    return False
+                if not _remote_has_promoted_artifact(
+                    candidate, str(promotion.get("checkpoint_sha256") or "")
+                ):
+                    return False
+            return True
+
+        if not verified(remote):
+            projector = WandbProjector.resume(
+                train_config,
+                allow_create=False,
+                update_finish_state=True,
+            )
+            projector.run.summary[SUMMARY_CURSOR_KEY] = {
+                **remote_cursors,
+                **expected,
+            }
+            projector.run.summary["rlab/goal/outcome"] = str(run.get("outcome") or "unknown")
+            projector.run.summary["rlab/operational/status"] = "finished"
+            projector.close()
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline:
+                remote = _wandb_api_run(train_config)
+                if verified(remote):
+                    break
+                time.sleep(1.0)
+            else:
+                raise RuntimeError(
+                    "W&B did not remotely confirm finished state, cursors, metrics, and artifact"
+                )
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET live_publication_status = 'complete',
+                        live_publication_error = NULL,
+                        live_publication_next_retry_at = NULL
+                    WHERE id = %(id)s AND live_publication_status = 'finishing'
+                    """,
+                    {"id": int(train_job_id)},
+                )
+                return cur.rowcount == 1
+    except Exception as exc:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET live_publication_error = %(error)s,
+                        live_publication_attempts = live_publication_attempts + 1,
+                        live_publication_next_retry_at = now() + interval '30 seconds'
+                    WHERE id = %(id)s AND live_publication_status = 'finishing'
+                    """,
+                    {"id": int(train_job_id), "error": repr(exc)[:4000]},
+                )
+        raise
+    finally:
+        release_wandb_run_lock(conn, int(train_job_id))
+
+
 def _partition_batches(
     batches: list[dict[str, Any]],
     remote: dict[str, int],
@@ -145,8 +290,8 @@ def _record_committed_effects(
                         WHERE a.train_job_id = t.id
                           AND (s.final_sequence IS NULL
                                OR s.published_sequence < s.final_sequence)
-                      ) THEN 'complete'
-                      ELSE 'pending'
+                      ) THEN 'pending'
+                      ELSE 'live'
                     END,
                     live_publication_error = NULL,
                     live_publication_next_retry_at = NULL,
@@ -242,7 +387,7 @@ def publish_claimed_run(
                         project_payload_to_run(
                             projector.run,
                             payload,
-                            allow_artifact_references=False,
+                            allow_artifact_references=True,
                         )
                     else:
                         _publish_frame(
@@ -345,6 +490,8 @@ def drain_once(
         train_job_id=train_job_id,
     )
     if claim is None:
+        if train_job_id is not None:
+            return int(finalize_finishing_run(conn, int(train_job_id)))
         return 0
     run, batches = claim
     return _drain_claim(conn, run, batches)
@@ -378,7 +525,7 @@ def drain_cycle_parallel(
     conn,
     *,
     repo_root: Path,
-    max_runs: int = 3,
+    max_runs: int = 100,
     limit: int = 20,
     deadline_monotonic: float | None = None,
 ) -> dict[str, int]:

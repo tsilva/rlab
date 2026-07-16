@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_EPISODES,
     CHECKPOINT_EVAL_CANDIDATE_PASS,
     CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX,
+    TRAIN_ARTIFACT_UPLOAD_SECONDS,
 )
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.modal_eval_protocol import (
@@ -29,6 +31,13 @@ from rlab.modal_eval_protocol import (
     stage_job_descriptor,
 )
 from rlab.modal_eval_storage import ObjectStore, file_sha256, object_store_base_uri
+from rlab.policy_bundle import (
+    evaluation_contract_sha256,
+    load_model_document,
+    load_recipe_document,
+    model_document_path,
+    recipe_document_path,
+)
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 
@@ -100,6 +109,9 @@ def _max_steps(args) -> int:
 
 
 def _eval_payload(args) -> dict[str, Any]:
+    acceptance_contract = getattr(args, "checkpoint_eval_contract", None)
+    if isinstance(acceptance_contract, dict):
+        return acceptance_contract
     environment = getattr(args, "checkpoint_eval_environment", None)
     stages = getattr(args, "checkpoint_eval_stages", None)
     asset = getattr(args, "checkpoint_eval_asset_manifest", None)
@@ -137,8 +149,12 @@ def checkpoint_announcement(
     model_uri: str,
     metadata_uri: str,
     metadata_sha256: str,
+    recipe_uri: str | None = None,
+    recipe_sha256: str | None = None,
+    recipe_format_version: int | None = None,
+    evaluation_contract_sha256_value: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    announcement = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
         "train_job_id": int(getattr(args, "queue_train_job_id", 0)),
         "ledger_id": int(row["id"]),
@@ -151,7 +167,21 @@ def checkpoint_announcement(
         "runtime_image_ref": str(getattr(args, "runtime_image_ref", "")),
         "wandb_run_id": str(getattr(args, "wandb_run_id", "")),
         "eval": _eval_payload(args),
+        "checkpoint_created_at": datetime.fromtimestamp(
+            float(row["created_at"]), tz=UTC
+        ).isoformat().replace("+00:00", "Z"),
+        "upload_completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+    if recipe_uri is not None:
+        announcement.update(
+            model_document_uri=metadata_uri,
+            model_document_sha256=metadata_sha256,
+            recipe_uri=recipe_uri,
+            recipe_sha256=recipe_sha256,
+            recipe_format_version=int(recipe_format_version or 0),
+            evaluation_contract_sha256=evaluation_contract_sha256_value,
+        )
+    return announcement
 
 
 def process_upload(
@@ -161,23 +191,47 @@ def process_upload(
     if not store.claim_artifact_upload(checkpoint_id):
         return False
     model_path = Path(str(row["path"]))
-    metadata_path = Path(str(row.get("metadata_path") or ""))
+    upload_started = time.perf_counter()
+    versioned_model_path = model_document_path(model_path)
+    recipe_path = recipe_document_path(model_path)
+    versioned_bundle = versioned_model_path.is_file() or recipe_path.is_file()
+    metadata_path = (
+        versioned_model_path
+        if versioned_bundle
+        else Path(str(row.get("metadata_path") or ""))
+    )
     try:
         sha256 = str(row.get("sha256") or "") or file_sha256(model_path)
         store.set_checkpoint_sha256(checkpoint_id, sha256)
         if not metadata_path.is_file():
-            raise FileNotFoundError(f"checkpoint metadata is missing: {metadata_path}")
+            raise FileNotFoundError(f"checkpoint model document is missing: {metadata_path}")
+        if versioned_bundle and not recipe_path.is_file():
+            raise FileNotFoundError(f"checkpoint recipe is missing: {recipe_path}")
+        model_document = load_model_document(metadata_path) if versioned_bundle else None
+        recipe_document = load_recipe_document(recipe_path) if versioned_bundle else None
         metadata_sha = file_sha256(metadata_path)
+        recipe_sha = file_sha256(recipe_path) if versioned_bundle else None
         prefix = f"checkpoints/{int(getattr(args, 'queue_train_job_id', 0))}/{sha256}"
         model_uri = object_store.put_file(
             f"{prefix}/model.zip", model_path, sha256=sha256, content_type="application/zip"
         )
         metadata_uri = object_store.put_file(
-            f"{prefix}/{metadata_sha}/metadata.json",
+            f"{prefix}/{metadata_sha}/model.json",
             metadata_path,
             sha256=metadata_sha,
             content_type="application/json",
         )
+        recipe_uri = None
+        if versioned_bundle:
+            assert recipe_sha is not None and model_document is not None
+            recipe_uri = object_store.put_file(
+                f"{prefix}/{recipe_sha}/recipe.json",
+                recipe_path,
+                sha256=recipe_sha,
+                content_type="application/json",
+            )
+            if str(model_document["recipe"]["sha256"]) != recipe_sha:
+                raise ValueError("checkpoint model document recipe binding mismatch")
         announcement = checkpoint_announcement(
             args,
             row,
@@ -185,6 +239,24 @@ def process_upload(
             model_uri=model_uri,
             metadata_uri=metadata_uri,
             metadata_sha256=metadata_sha,
+            recipe_uri=recipe_uri,
+            recipe_sha256=recipe_sha,
+            recipe_format_version=(
+                int(recipe_document["format_version"])
+                if recipe_document is not None
+                else None
+            ),
+            evaluation_contract_sha256_value=(
+                evaluation_contract_sha256(recipe_document)
+                if recipe_document is not None
+                else None
+            ),
+        )
+        store.append_metrics(
+            {TRAIN_ARTIFACT_UPLOAD_SECONDS: time.perf_counter() - upload_started},
+            step=int(row.get("step") or 0),
+            source=f"checkpoint-upload:{checkpoint_id}",
+            publish=bool(getattr(args, "wandb", True)),
         )
         if str(getattr(args, "telemetry_transport", "legacy_local")) == "neon_mailbox_v1":
             from rlab.telemetry_mailbox import WorkerMailbox
@@ -244,13 +316,21 @@ def import_decisions(store: MetricStore, object_store: ObjectStore, args) -> int
     for row in store.checkpoints():
         if str(row.get("kind")) != "checkpoint" or not row.get("sha256"):
             continue
+        model_path = Path(str(row["path"]))
+        recipe_path = recipe_document_path(model_path)
+        model_path_document = model_document_path(model_path)
+        recipe_document = load_recipe_document(recipe_path)
         artifact = checkpoint_announcement(
             args,
             row,
             sha256=str(row["sha256"]),
             model_uri="",
             metadata_uri="",
-            metadata_sha256=file_sha256(Path(str(row["metadata_path"]))),
+            metadata_sha256=file_sha256(model_path_document),
+            recipe_uri="",
+            recipe_sha256=file_sha256(recipe_path),
+            recipe_format_version=int(recipe_document["format_version"]),
+            evaluation_contract_sha256_value=evaluation_contract_sha256(recipe_document),
         )
         for stage_index, _stage in enumerate(artifact["eval"]["stages"]):
             descriptor = stage_job_descriptor(artifact, stage_index=stage_index)

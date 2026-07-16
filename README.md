@@ -209,7 +209,12 @@ Active research contracts live under `experiments/goals/`. For current Mario wor
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
-Promotion compares checkpoints by per-start completion minimum, then per-start completion mean, then least checkpoint timesteps once the completion goal is met, then eval reward. Workers never open W&B. They buffer metrics in SQLite, deliver acknowledged gzip batches to the transient Neon mailbox, and upload checkpoint bytes directly to R2. Fleet is the sole W&B writer for new runs and projects training plus late evaluation streams into the preassigned immutable run id. W&B is permanent metric history, R2 is permanent byte/evidence storage, and PostgreSQL is durable orchestration state plus a transient mailbox.
+For new queue-backed runs, `goal.eval` is the only acceptance source. Every periodic checkpoint and
+the natural final model receive one immutable 100-episode acceptance manifest. The Modal worker
+stops on the first valid failed episode; the first complete 100/100 result is atomically promoted and
+creates the learner stop command. Workers never open W&B or queue tables. W&B is the visibility
+layer, R2 is permanent byte/evidence storage, and PostgreSQL is durable orchestration state plus a
+transient telemetry mailbox.
 
 The Docker launch owns scarce training capacity. It becomes successful only after required R2
 handoffs and the final Neon watermark are acknowledged, then releases the GPU without waiting for
@@ -219,10 +224,11 @@ publication finish. `training_finished_at` reports the launch boundary;
 `finalization_failed` without changing the successful launch, and
 `rlab runs retry-finalization --run <id>` reopens only that phase.
 
-After promotion evaluation succeeds, the promoted checkpoint takes a dedicated W&B projection fast
-path and becomes playable without waiting for historical checkpoint backfill. It receives immutable
-`step-<n>` plus `promoted` and `latest` aliases; later historical projection uses only immutable step
-aliases and cannot move `latest` away from the promoted checkpoint.
+The accepted checkpoint itself becomes the promoted model, even if the learner advances slightly
+before observing the stop. Its artifact projection receives immutable `step-<n>` plus `promoted` and
+`latest` aliases; later results cannot replace the first accepted checkpoint. A run is reported
+successful only after W&B remotely confirms `finished`, final cursors, acceptance metrics, and the
+promoted artifact aliases.
 
 `rlab runs status --run <id> --json` reports `eval_status`, `promoted_step`,
 `artifact_status`, `artifact_ref`, `playable_at`, and `published_at`; `artifact_status=playable`
@@ -306,9 +312,10 @@ uv run python scripts/audit_huggingface_release.py \
 ## Fleet
 
 Queue-backed training is the supported GPU workflow. Every `rlab train` job
-names one registered machine. A single Mac-side launchd service performs short,
-bounded reconciliation passes for digest-pinned, one-job Docker containers on
-registered local or SSH Docker machines. Runner machines remain SSH/Docker-only.
+names one registered machine. Three launchd-supervised Mac controllers own
+machine reconciliation, evaluation/promotion, and isolated per-run W&B
+publication. They poll PostgreSQL every two seconds; runner machines remain
+SSH/Docker-only.
 
 ```bash
 rlab fleet service install
@@ -318,8 +325,8 @@ rlab runs status --machine beast-3 --json
 ```
 
 `rlab fleet service watch` is the read-only scheduler dashboard: it separates launchd health from
-workload health and shows active reconciliation phases, automatic retries, capacity waits, and
-conditions that need operator attention. Use `--once` for one human snapshot, `--plain` for an
+authoritative workload state and shows active phases, automatic retries, eval-load admission waits,
+and only conditions that still block an active run. Use `--once` for one human snapshot, `--plain` for an
 append-only stream, or `--json` for one structured snapshot. Use `rlab fleet service logs --follow`
 for raw service events and `rlab runs status ...` for full job evidence.
 
@@ -341,9 +348,9 @@ and beast host recommendations.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
-- Modal checkpoint evaluation is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
-  its only wait queue, and is the default for newly enqueued queue-backed jobs at effective
-  capacity 1. Use `rlab eval modal smoke-local` for the credential-free integration path.
+- Modal checkpoint acceptance is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
+  its only wait queue, and admits jobs against an effective capacity of 3 with an independent hard
+  safety cap of 20. Use `rlab eval modal smoke-local` for the credential-free integration path.
 - The train-image workflow publishes the exact immutable image receipt immediately after the image
   exists, then deploys and startup-probes the digest-specific Modal evaluator and publishes a
   separate Modal readiness receipt. Local and no-eval submissions do not wait for Modal. Modal-backed
@@ -357,12 +364,8 @@ and beast host recommendations.
 - Set `WORKER_MAILBOX_DATABASE_URL` to a pooled TLS Neon URL for the restricted mailbox role.
   Run `rlab runs setup --worker-mailbox-role <role>` as the control-plane role to grant only the
   three authenticated worker procedures; worker attempt tokens are generated and expired by Fleet.
-- Every normal queue-backed screen evaluation captures a lightweight policy-observation preview,
-  stores its immutable MP4 in R2, and exposes an external player as `eval/screen/preview` in the
-  producing W&B run. Set `MODAL_EVAL_PREVIEW_STORAGE_URI` to the public R2 bucket/prefix and
-  `MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL` to the matching HTTPS base URL. Configure that bucket to
-  serve `video/mp4` with byte ranges and allow the W&B application domain through CORS; Modal
-  preflight fails closed when this preview path is not ready.
+- Acceptance evaluation captures no video and performs no direct W&B operation. Release publishing
+  remains responsible for the representative replay.
 - Keep generated checkpoints, logs, videos, W&B files, caches, and scratch outputs out of source control.
 - Local eval outputs are written under `runs/local_evals/<run-name>/`.
 

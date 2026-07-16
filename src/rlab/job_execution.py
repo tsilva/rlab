@@ -14,6 +14,11 @@ from rlab.job_metadata import (
     normalize_wandb_tags,
 )
 from rlab.provider_config import provider_num_envs
+from rlab.policy_bundle import (
+    RECIPE_DOCUMENT_TYPE,
+    load_recipe_document,
+    write_canonical_json,
+)
 from rlab.recipe_schema import require_explicit_queue_train_config
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.seeds import validate_training_seed
@@ -82,6 +87,12 @@ def normalize_train_config(
         composition = recipe_payload.get("_composition")
         if isinstance(composition, Mapping):
             config["recipe_composition"] = dict(composition)
+        elif recipe_payload.get("document_type") == RECIPE_DOCUMENT_TYPE:
+            provenance = recipe_payload.get("provenance")
+            if isinstance(provenance, Mapping):
+                config["recipe_composition"] = {
+                    "source_files": list(provenance.get("source_files") or [])
+                }
     if job.get("seed") is not None:
         config["seed"] = int(job["seed"])
     if job.get("id") is not None:
@@ -117,6 +128,15 @@ def write_train_config_file(
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     config = normalize_train_config(job)
+    recipe_payload = job.get("recipe_payload_json")
+    if (
+        isinstance(recipe_payload, Mapping)
+        and recipe_payload.get("document_type") == RECIPE_DOCUMENT_TYPE
+    ):
+        recipe_path = path.with_name("recipe.json")
+        write_canonical_json(recipe_path, recipe_payload)
+        load_recipe_document(recipe_path)
+        config["recipe_json_path"] = str(recipe_path)
     if runs_dir is not None:
         config["runs_dir"] = str(runs_dir)
     path.write_text(

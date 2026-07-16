@@ -14,6 +14,7 @@ from rlab.bandit_env import BanditVectorEnv
 from rlab.env import EnvConfig, make_vec_envs
 from rlab.env_registry import resolve_env_id, resolve_env_provider
 from rlab.metric_store import MetricStore
+from rlab.policy_bundle import build_recipe_document, write_canonical_json
 from rlab.recipe_documents import compose_train_document
 from rlab.recipe_schema import validate_materialized_train_recipe
 from rlab.sb3_models import load_sb3_model
@@ -26,6 +27,20 @@ BANDIT_RECIPE = Path("experiments/recipes/bandit/ppo.yaml")
 
 def _bandit_recipe_document():
     return compose_train_document(BANDIT_GOAL, BANDIT_RECIPE)
+
+
+def _write_versioned_recipe(tmp_path: Path, document: dict) -> Path:
+    path = tmp_path / "recipe.json"
+    return write_canonical_json(
+        path,
+        build_recipe_document(
+            document,
+            repo_root=Path.cwd(),
+            source_commit="a" * 40,
+            run_description="ROM-free backend boundary smoke.",
+            runtime_image_ref="docker:ghcr.io/tsilva/rlab-runtime@sha256:" + "b" * 64,
+        ),
+    )
 
 
 def _native_env(num_envs: int = 3) -> BanditVectorEnv:
@@ -195,6 +210,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     document = _bandit_recipe_document()
+    recipe_path = _write_versioned_recipe(tmp_path, document)
     config = dict(document["train_config"])
     config.update(
         {
@@ -209,6 +225,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
             "post_train_eval_episodes": 0,
             "wandb": False,
             "wandb_mode": "disabled",
+            "recipe_json_path": str(recipe_path),
         }
     )
     backend = dict(config["training_backend"])
@@ -235,6 +252,7 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
     document = _bandit_recipe_document()
+    recipe_path = _write_versioned_recipe(tmp_path, document)
     config = dict(document["train_config"])
     config.update(
         {
@@ -249,6 +267,7 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
             "post_train_eval_episodes": 0,
             "wandb": False,
             "wandb_mode": "disabled",
+            "recipe_json_path": str(recipe_path),
             "training_backend": {
                 "id": "sb3.a2c",
                 "config": {

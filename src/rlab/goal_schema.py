@@ -9,14 +9,15 @@ GOAL_OBJECTIVE_FIELDS = frozenset({"rank", "states"})
 GOAL_TRAIN_FIELDS = frozenset(
     {
         "checkpoint_eval_backend",
-        "checkpoint_eval_stages",
         "checkpoint_freq",
-        "early_stop",
         "environment",
         "policy",
+        "stop_on_acceptance",
     }
 )
-GOAL_EVAL_FIELDS = frozenset({"env_config", "environment", "episodes", "policy"})
+GOAL_EVAL_FIELDS = frozenset(
+    {"acceptance", "env_config", "environment", "episodes", "policy"}
+)
 
 
 def _reject_unknown_fields(

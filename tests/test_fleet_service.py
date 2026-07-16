@@ -62,6 +62,67 @@ class FleetServiceTests(unittest.TestCase):
         )
         self.assertNotIn("DATABASE_URL", json.dumps(payload))
 
+    def test_split_controller_plists_are_persistent_isolated_and_secret_free(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            payloads = {
+                name: plistlib.loads(
+                    fleet_service.render_controller_launch_agent_plist(paths, name)
+                )
+                for name in fleet_service.CONTROLLER_NAMES
+            }
+
+        self.assertEqual(set(payloads), {"machine", "evaluation", "wandb"})
+        for name, payload in payloads.items():
+            self.assertIs(payload["KeepAlive"], True)
+            self.assertEqual(payload["ThrottleInterval"], 2)
+            self.assertNotIn("RunAtLoad", payload)
+            self.assertNotIn("StartInterval", payload)
+            self.assertNotIn("EnvironmentVariables", payload)
+            self.assertEqual(
+                payload["ProgramArguments"][1:4],
+                ["-m", "rlab.fleet_controllers", name],
+            )
+            self.assertNotIn("DATABASE_URL", json.dumps(payload))
+
+    def test_split_controller_install_bootstraps_three_labels_and_retires_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.plist.parent.mkdir(parents=True)
+            paths.plist.write_text("legacy", encoding="utf-8")
+            commands: list[list[str]] = []
+
+            def runner(argv, **_kwargs):
+                commands.append(list(argv))
+                if argv[:2] == ["launchctl", "print"]:
+                    target = str(argv[-1])
+                    return completed(
+                        argv,
+                        returncode=0 if target.endswith(paths.label) else 113,
+                    )
+                return completed(argv)
+
+            with mock.patch.object(fleet_service.shutil, "which", return_value=None):
+                result = fleet_service.install_controller_services(paths, runner=runner)
+
+            self.assertTrue(result.installed)
+            self.assertTrue(result.kicked)
+            self.assertFalse(paths.plist.exists())
+            for name in fleet_service.CONTROLLER_NAMES:
+                item = fleet_service.controller_service_paths(paths, name)
+                self.assertTrue(item.plist.is_file())
+                self.assertIn(
+                    ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(item.plist)],
+                    commands,
+                )
+                self.assertIn(
+                    ["launchctl", "kickstart", f"gui/{os.getuid()}/{item.label}"],
+                    commands,
+                )
+            self.assertIn(
+                ["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands
+            )
+
     def test_kick_never_uses_kill_flag(self) -> None:
         commands: list[list[str]] = []
 

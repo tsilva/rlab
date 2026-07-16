@@ -22,27 +22,8 @@ objective:
 train:
   # Run queue-backed checkpoint evaluation outside the training machine on Modal.
   checkpoint_eval_backend: modal
-  checkpoint_freq: 500000
-  early_stop:
-  - metric: eval/confirm/candidate/pass
-    operator: '>='
-    threshold: 1.0
-  checkpoint_eval_stages:
-  - name: screen
-    episodes: 10
-    n_envs: 2
-    pass:
-    - metric: eval/full/outcome/success/rate/min
-      operator: '>='
-      threshold: 1.0
-  - name: confirm
-    episodes: 30
-    n_envs: 4
-    pass:
-    - metric: eval/full/outcome/success/rate/min
-      operator: '>='
-      threshold: 1.0
-    candidate_stop: true
+  checkpoint_freq: 250000
+  stop_on_acceptance: true
   environment:
     env_provider: &mario_env_provider supermariobrosnes-turbo
     env_config:
@@ -121,6 +102,10 @@ train:
         - [0, 1]
 eval:
   episodes: 100
+  acceptance:
+  - metric: eval/full/outcome/success/rate/min
+    operator: '>='
+    threshold: 1.0
   environment:
     env_provider: *mario_env_provider
     env_config:

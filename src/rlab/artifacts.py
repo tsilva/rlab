@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -29,6 +30,19 @@ from rlab.metric_names import (
     METRICS_SCHEMA_VERSION,
     TRAIN_ARTIFACT_SAVE_SECONDS,
     TRAIN_ARTIFACT_UPLOAD_SECONDS,
+)
+from rlab.policy_bundle import (
+    CHECKPOINT_FILENAME,
+    MODEL_FILENAME,
+    RECIPE_FILENAME,
+    build_model_document,
+    load_model_document,
+    load_policy_bundle_from_checkpoint,
+    load_recipe_document,
+    model_document_as_metadata,
+    model_document_path,
+    recipe_document_path,
+    write_canonical_json,
 )
 from rlab.wandb_artifacts import artifact_collection_name, model_metadata_path, safe_artifact_stem
 from rlab.wandb_utils import (
@@ -117,16 +131,45 @@ def write_model_metadata(
 ) -> Path | None:
     if not model_path.is_file():
         return None
-    return write_model_metadata_payload(
+    metadata = build_model_metadata(
+        args,
+        config,
         model_path,
-        build_model_metadata(
-            args,
-            config,
-            model_path,
-            kind,
-            checkpoint_step_value=checkpoint_step_value,
-        ),
+        kind,
+        checkpoint_step_value=checkpoint_step_value,
     )
+    path = write_model_metadata_payload(
+        model_path,
+        metadata,
+    )
+    recipe_source = Path(str(getattr(args, "recipe_json_path", "") or ""))
+    if recipe_source.is_file():
+        write_policy_bundle_sidecars(model_path, recipe_source, metadata)
+    return path
+
+
+def write_policy_bundle_sidecars(
+    model_path: Path,
+    recipe_source: Path,
+    metadata: Mapping[str, Any],
+) -> tuple[Path, Path]:
+    load_recipe_document(recipe_source)
+    recipe_sidecar = recipe_document_path(model_path)
+    model_sidecar = model_document_path(model_path)
+    if model_sidecar.is_file() or recipe_sidecar.is_file():
+        existing = load_policy_bundle_from_checkpoint(model_path)
+        if existing is None:
+            raise ValueError(f"incomplete versioned policy sidecars for {model_path}")
+        if recipe_source.read_bytes() != recipe_sidecar.read_bytes():
+            raise ValueError(f"canonical recipe changed after checkpoint creation: {model_path}")
+        return model_sidecar, recipe_sidecar
+    shutil.copyfile(recipe_source, recipe_sidecar)
+    write_canonical_json(
+        model_sidecar,
+        build_model_document(model_path, recipe_sidecar, metadata),
+    )
+    load_model_document(model_sidecar)
+    return model_sidecar, recipe_sidecar
 
 
 def write_model_metadata_payload(
@@ -149,6 +192,12 @@ def write_model_metadata_payload(
 
 
 def load_model_metadata(model_path: Path) -> dict[str, Any]:
+    versioned_path = model_document_path(model_path)
+    canonical_path = model_path.with_name(MODEL_FILENAME)
+    if not versioned_path.is_file() and model_path.name == CHECKPOINT_FILENAME:
+        versioned_path = canonical_path
+    if versioned_path.is_file():
+        return model_document_as_metadata(load_model_document(versioned_path))
     path = model_metadata_path(model_path)
     if not path.is_file():
         return {}
@@ -411,11 +460,15 @@ def upload_s3_artifact(model_path: Path, destination_uri: str) -> None:
     if region:
         client_kwargs["region_name"] = region
     s3_client = boto3.client("s3", **client_kwargs)
+    content_type = {
+        ".zip": "application/zip",
+        ".json": "application/json",
+    }.get(model_path.suffix.lower(), "application/octet-stream")
     s3_client.upload_file(
         str(model_path),
         bucket,
         key,
-        ExtraArgs={"ContentType": "application/zip"},
+        ExtraArgs={"ContentType": content_type},
     )
 
 
@@ -489,13 +542,31 @@ def log_wandb_model_artifact(
         kind,
         checkpoint_step_value=artifact_step,
     )
-    sidecar_path = write_model_metadata_payload(model_path, metadata)
-    metadata_seconds = timer() - metadata_started_at
+    metadata["filename"] = CHECKPOINT_FILENAME
+    if run_id:
+        metadata["wandb_run_id"] = run_id
+    run_path = getattr(wandb_run, "path", None)
+    if run_path:
+        metadata["wandb_run_path"] = format_wandb_run_path(run_path)
+    write_model_metadata_payload(model_path, metadata)
 
     wandb_output_enabled = wandb_artifacts_enabled(wandb_run, args)
     storage_base_uri = (
         wandb_artifact_storage_uri(args) if not getattr(args, "no_wandb_artifacts", False) else ""
     )
+    recipe_source = Path(str(getattr(args, "recipe_json_path", "") or ""))
+    versioned_bundle = recipe_source.is_file()
+    if not versioned_bundle and int(getattr(args, "queue_train_job_id", 0) or 0) > 0:
+        raise ValueError(
+            "new checkpoint artifacts require the canonical recipe.json staged by the queue"
+        )
+    model_sidecar = None
+    recipe_sidecar = None
+    if versioned_bundle:
+        model_sidecar, recipe_sidecar = write_policy_bundle_sidecars(
+            model_path, recipe_source, metadata
+        )
+    metadata_seconds = timer() - metadata_started_at
     if not wandb_output_enabled and not storage_base_uri:
         finished_at = timer()
         return ArtifactLogTiming(
@@ -518,24 +589,37 @@ def log_wandb_model_artifact(
     if not artifact_name:
         raise ValueError("new artifact writes require an immutable W&B run id")
 
-    if run_id:
-        metadata["wandb_run_id"] = run_id
-    run_path = getattr(wandb_run, "path", None)
-    if run_path:
-        metadata["wandb_run_path"] = format_wandb_run_path(run_path)
-
     reference_uri = None
+    reference_uris: dict[str, str] = {}
     storage_upload_seconds = 0.0
     if storage_base_uri:
         reference_uri = build_s3_artifact_uri(
             storage_base_uri,
             args,
-            model_path,
+            Path(CHECKPOINT_FILENAME) if versioned_bundle else model_path,
             kind,
             run_id=run_id,
         )
         upload_started_at = timer()
-        upload_s3_artifact(model_path, reference_uri)
+        if versioned_bundle:
+            reference_uris = {
+                CHECKPOINT_FILENAME: reference_uri,
+                MODEL_FILENAME: build_s3_artifact_uri(
+                    storage_base_uri, args, Path(MODEL_FILENAME), kind, run_id=run_id
+                ),
+                RECIPE_FILENAME: build_s3_artifact_uri(
+                    storage_base_uri, args, Path(RECIPE_FILENAME), kind, run_id=run_id
+                ),
+            }
+            for filename, local_path in (
+                (CHECKPOINT_FILENAME, model_path),
+                (MODEL_FILENAME, model_sidecar),
+                (RECIPE_FILENAME, recipe_sidecar),
+            ):
+                assert local_path is not None
+                upload_s3_artifact(local_path, reference_uris[filename])
+        else:
+            upload_s3_artifact(model_path, reference_uri)
         storage_upload_seconds = timer() - upload_started_at
         metadata["artifact_storage_uri"] = reference_uri
 
@@ -572,12 +656,20 @@ def log_wandb_model_artifact(
         type="model",
         metadata=metadata,
     )
-    if reference_uri:
+    if reference_uri and versioned_bundle:
+        for filename, uri in reference_uris.items():
+            artifact.add_reference(uri, name=filename)
+    elif reference_uri:
         artifact.add_reference(reference_uri, name=model_path.name)
+        artifact.add_file(str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name)
+    elif versioned_bundle:
+        assert model_sidecar is not None and recipe_sidecar is not None
+        artifact.add_file(str(model_path), name=CHECKPOINT_FILENAME)
+        artifact.add_file(str(model_sidecar), name=MODEL_FILENAME)
+        artifact.add_file(str(recipe_sidecar), name=RECIPE_FILENAME)
     else:
         artifact.add_file(str(model_path), name=model_path.name)
-    if sidecar_path is not None:
-        artifact.add_file(str(sidecar_path), name=sidecar_path.name)
+        artifact.add_file(str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name)
     wandb_log_started_at = timer()
     logged_artifact = wandb_run.log_artifact(artifact, aliases=aliases)
     if logged_artifact is not None and hasattr(logged_artifact, "wait"):
@@ -617,7 +709,12 @@ def log_wandb_model_artifact(
 
 def purge_model_artifact_files(model_path: Path) -> tuple[Path, ...]:
     purged: list[Path] = []
-    for path in (model_path, model_metadata_path(model_path)):
+    for path in (
+        model_path,
+        model_metadata_path(model_path),
+        model_document_path(model_path),
+        recipe_document_path(model_path),
+    ):
         try:
             if path.is_file():
                 path.unlink()

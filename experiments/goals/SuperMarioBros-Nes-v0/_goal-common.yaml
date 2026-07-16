@@ -25,28 +25,9 @@ train:
   # Run queue-backed checkpoint evaluation outside the training machine on Modal.
   checkpoint_eval_backend: modal
   # Shared checkpoint cadence for Mario training jobs.
-  checkpoint_freq: 500000
-  # The metric itself owns the 100-attempt FIFO semantics.
-  early_stop:
-  - metric: eval/confirm/candidate/pass
-    operator: '>='
-    threshold: 1.0
-  checkpoint_eval_stages:
-  - name: screen
-    episodes: 10
-    n_envs: 2
-    pass:
-    - metric: eval/full/outcome/success/rate/min
-      operator: '>='
-      threshold: 1.0
-  - name: confirm
-    episodes: 30
-    n_envs: 4
-    pass:
-    - metric: eval/full/outcome/success/rate/min
-      operator: '>='
-      threshold: 1.0
-    candidate_stop: true
+  checkpoint_freq: 250000
+  # Acceptance is evaluated asynchronously and commands a graceful learner stop.
+  stop_on_acceptance: true
   environment:
     # SuperMarioBros-NES Turbo supplies SuperMarioBrosNesTurboVecEnv.
     env_provider: &mario_env_provider supermariobrosnes-turbo
@@ -126,6 +107,10 @@ train:
 # Goal-owned checkpoint eval protocol.
 eval:
   episodes: 100
+  acceptance:
+  - metric: eval/full/outcome/success/rate/min
+    operator: '>='
+    threshold: 1.0
   environment:
     # SuperMarioBros-NES Turbo supplies SuperMarioBrosNesTurboVecEnv.
     env_provider: *mario_env_provider
@@ -133,7 +118,7 @@ eval:
       <<: *mario_env_config
       # Eval must name the same start explicitly; it cannot inherit a provider default.
       state: "{state}"
-      # Promotion eval remains vectorized; the lane count is part of its reproducible protocol.
+      # Acceptance remains vectorized; the lane count is part of its reproducible protocol.
       n_envs: 16
     task:
       <<: *mario_task

@@ -332,6 +332,15 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
         label=f"{label}.eval",
     )
     _require_int(eval_section, "episodes", label=f"{label}.eval", minimum=1)
+    train = document.get("train")
+    acceptance_enabled = bool(
+        isinstance(train, Mapping) and train.get("stop_on_acceptance") is True
+    )
+    if acceptance_enabled:
+        normalize_early_stop_config(
+            _require_key(eval_section, "acceptance", label=f"{label}.eval"),
+            label=f"{label}.eval.acceptance",
+        )
     eval_environment = eval_section.get("environment")
     if isinstance(eval_environment, Mapping):
         eval_environment_keys = {
@@ -533,12 +542,24 @@ def validate_goal_contract_document(
             f"{label}.train.policy is retired; use train.backend with an explicit id and config"
         )
     if "early_stop" in train:
+        if train.get("stop_on_acceptance") is True:
+            raise ValueError(
+                f"{label}.train.early_stop is incompatible with stop_on_acceptance; "
+                "goal.eval.acceptance is the sole acceptance source"
+            )
         normalize_early_stop_config(train["early_stop"], label=f"{label}.train.early_stop")
     if "checkpoint_eval_stages" in train:
+        if train.get("stop_on_acceptance") is True:
+            raise ValueError(
+                f"{label}.train.checkpoint_eval_stages is incompatible with "
+                "stop_on_acceptance"
+            )
         normalize_checkpoint_eval_stages(
             train["checkpoint_eval_stages"],
             label=f"{label}.train.checkpoint_eval_stages",
         )
+    if "stop_on_acceptance" in train:
+        _require_bool(train, "stop_on_acceptance", label=f"{label}.train")
     environment = _goal_train_environment(document, train, label=label)
     _validate_environment_identity({"environment": environment}, label=f"{label}.train")
     env_config = (

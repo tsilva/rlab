@@ -1,0 +1,16 @@
+schema_version: 1
+backend: modal
+effective_capacity: 3
+hard_safety_cap: 20
+admission_utilization: 0.8
+workloads:
+  SuperMarioBros-Nes-v0:Level1-1:acceptance-v1:
+    # Replace these historical 100-episode canary facts with the acceptance-v1
+    # 4/8/16 CPU benchmark before the live rollout.
+    status: accepted
+    evidence: historical-100-episode-modal-canaries
+    cpu: 4
+    repetitions: 5
+    training_fps_upper_bound: 5500.0
+    full_eval_p95_seconds: 45.0
+    selected_checkpoint_interval_steps: 250000

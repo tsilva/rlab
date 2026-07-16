@@ -26,12 +26,32 @@ from rlab.metric_names import (
     EVAL_FULL_SUCCESS_RATE_MIN,
 )
 from rlab.targets import target_for_game
+from rlab.policy_bundle import (
+    PolicyDocumentError,
+    evaluation_contract_sha256,
+    load_policy_bundle,
+    model_document_as_metadata,
+    preflight_document,
+)
 
 
 HUGGINGFACE_NAMESPACE = "tsilva"
 REPO_NAMING_SCHEMA_VERSION = 1
+RELEASE_MANIFEST_DOCUMENT_TYPE = "rlab.release_manifest"
 RELEASE_MANIFEST_VERSION = 1
 HUGGINGFACE_RELEASE_FILES = frozenset(
+    {
+        ".gitattributes",
+        "README.md",
+        "LICENSE",
+        "model.zip",
+        "model.json",
+        "recipe.json",
+        "release_manifest.json",
+        "replay.mp4",
+    }
+)
+LEGACY_HUGGINGFACE_RELEASE_FILES = frozenset(
     {
         ".gitattributes",
         "README.md",
@@ -761,7 +781,8 @@ Action selection was `{action_sampling}` under the published evaluation environm
 | File | Purpose |
 |---|---|
 | `model.zip` | {model_file_description} |
-| `model_metadata.json` | Portable model, environment, runtime, and provenance metadata |
+| `model.json` | Versioned checkpoint identity, policy type, provenance, and recipe binding |
+| `recipe.json` | Versioned execution and evaluation contract |
 | `release_manifest.json` | {manifest_purpose} |
 | `replay.mp4` | Browser-safe representative episode |
 | `LICENSE` | License for rlab-authored policy weights and publication material |
@@ -888,7 +909,8 @@ def build_release_manifest(
     training = _require_mapping(model_metadata.get("training_metadata"), label="training_metadata")
     environment = _require_mapping(training.get("environment"), label="training environment")
     manifest: dict[str, Any] = {
-        "manifest_version": RELEASE_MANIFEST_VERSION,
+        "document_type": RELEASE_MANIFEST_DOCUMENT_TYPE,
+        "format_version": RELEASE_MANIFEST_VERSION,
         "repo_naming_schema": REPO_NAMING_SCHEMA_VERSION,
         "repository": {"repo_id": build_model_repo_id(identity), **asdict(identity)},
         "release": {"version": release_version, "published_at": published_at},
@@ -912,6 +934,123 @@ def build_release_manifest(
     return manifest
 
 
+def _validate_release_manifest_v1(
+    document: Mapping[str, Any], source: str
+) -> dict[str, Any]:
+    allowed = {
+        "document_type",
+        "format_version",
+        "repo_naming_schema",
+        "repository",
+        "release",
+        "model",
+        "source",
+        "evaluation",
+        "artifacts",
+    }
+    unknown = sorted(set(document) - allowed)
+    if unknown:
+        raise PolicyDocumentError(
+            f"{source} has unknown field(s): " + ", ".join(unknown)
+        )
+    required = allowed
+    missing = sorted(required - set(document))
+    if missing:
+        raise PolicyDocumentError(
+            f"{source} is missing required field(s): " + ", ".join(missing)
+        )
+    for field in ("repository", "release", "model", "source", "evaluation", "artifacts"):
+        if not isinstance(document.get(field), Mapping):
+            raise PolicyDocumentError(f"{source}.{field} must be an object")
+    nested_schemas = {
+        "repository": (
+            {"repo_id", "game_family", "goal", "policy_variant", "algorithm"},
+            set(),
+        ),
+        "release": ({"version", "published_at"}, {"youtube_url"}),
+        "model": (
+            {
+                "algorithm_id",
+                "model_class",
+                "qualified_env_id",
+                "environment_hash",
+                "preprocessing",
+                "action",
+            },
+            set(),
+        ),
+        "source": (
+            {
+                "repository",
+                "commit",
+                "run_id",
+                "run_name",
+                "wandb_project",
+                "recipe",
+                "seed",
+                "checkpoint_step",
+                "checkpoint_artifact",
+            },
+            set(),
+        ),
+        "evaluation": (
+            {
+                "action_sampling",
+                "protocol",
+                "checkpoint_step",
+                "checkpoint_artifact",
+                "episodes",
+                "success_rate_min",
+                "success_rate_mean",
+                "return_mean",
+                "by_start",
+                "checkpoint_sha256",
+                "recipe_sha256",
+                "recipe_format_version",
+                "evaluation_contract_sha256",
+                "exact_contract",
+            },
+            {"progress_max"},
+        ),
+    }
+    for field, (nested_required, nested_optional) in nested_schemas.items():
+        nested = document[field]
+        nested_unknown = sorted(set(nested) - nested_required - nested_optional)
+        nested_missing = sorted(nested_required - set(nested))
+        if nested_unknown:
+            raise PolicyDocumentError(
+                f"{source}.{field} has unknown field(s): " + ", ".join(nested_unknown)
+            )
+        if nested_missing:
+            raise PolicyDocumentError(
+                f"{source}.{field} is missing required field(s): "
+                + ", ".join(nested_missing)
+            )
+    artifacts = document["artifacts"]
+    if set(artifacts) != HASHED_RELEASE_FILES:
+        raise PolicyDocumentError(
+            f"{source}.artifacts must describe exactly: "
+            + ", ".join(sorted(HASHED_RELEASE_FILES))
+        )
+    for filename, raw_record in artifacts.items():
+        if not isinstance(raw_record, Mapping):
+            raise PolicyDocumentError(f"{source}.artifacts.{filename} must be an object")
+        if set(raw_record) != {"sha256", "size_bytes"}:
+            raise PolicyDocumentError(
+                f"{source}.artifacts.{filename} must contain only sha256 and size_bytes"
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", str(raw_record.get("sha256") or "")):
+            raise PolicyDocumentError(
+                f"{source}.artifacts.{filename}.sha256 must be a SHA-256 digest"
+            )
+        size = raw_record.get("size_bytes")
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise PolicyDocumentError(
+                f"{source}.artifacts.{filename}.size_bytes must be a positive integer"
+            )
+    return deepcopy(dict(document))
+
+
 def validate_release_bundle(root: Path) -> dict[str, Any]:
     actual_entries = {path.name for path in root.iterdir()}
     if actual_entries != HUGGINGFACE_RELEASE_FILES:
@@ -921,10 +1060,17 @@ def validate_release_bundle(root: Path) -> dict[str, Any]:
     non_files = sorted(path.name for path in root.iterdir() if not path.is_file())
     if non_files:
         raise ValueError(f"release entries must all be regular files: {non_files}")
-    model_metadata = json.loads((root / "model_metadata.json").read_text(encoding="utf-8"))
-    manifest = json.loads((root / "release_manifest.json").read_text(encoding="utf-8"))
+    manifest_path = root / "release_manifest.json"
+    manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = preflight_document(
+        manifest_value,
+        source=str(manifest_path),
+        expected_type=RELEASE_MANIFEST_DOCUMENT_TYPE,
+        handlers={RELEASE_MANIFEST_VERSION: _validate_release_manifest_v1},
+    )
+    bundle = load_policy_bundle(root, source=str(root))
+    model_metadata = model_document_as_metadata(bundle.model)
     card_text = (root / "README.md").read_text(encoding="utf-8")
-    _assert_no_absolute_paths(model_metadata, path="model_metadata")
     _assert_no_absolute_paths(manifest)
     repository = _require_mapping(manifest.get("repository"), label="manifest repository")
     identity = publication_identity_from_model_metadata(repository.get("goal"), model_metadata)
@@ -932,8 +1078,38 @@ def validate_release_bundle(root: Path) -> dict[str, Any]:
         raise ValueError("release manifest repository id does not match model metadata")
     if int(manifest.get("repo_naming_schema") or 0) != REPO_NAMING_SCHEMA_VERSION:
         raise ValueError("release manifest has an unsupported repository naming schema")
+    training = _require_mapping(
+        model_metadata.get("training_metadata"), label="model metadata training_metadata"
+    )
+    environment = _require_mapping(
+        training.get("environment"), label="model metadata training environment"
+    )
+    expected_model = {
+        "algorithm_id": model_metadata["algorithm_id"],
+        "model_class": model_metadata["model_class"],
+        "qualified_env_id": environment.get("env_id"),
+        "environment_hash": training.get("environment_hash"),
+        "preprocessing": training.get("preprocessing"),
+        "action": _require_mapping(
+            environment.get("task"), label="model metadata environment task"
+        ).get("action"),
+    }
+    if manifest.get("model") != expected_model:
+        raise ValueError("release manifest model contract does not match model.json")
     expected_records = release_artifact_records(root)
     if manifest.get("artifacts") != expected_records:
         raise ValueError("release manifest artifact hashes or sizes do not match the bundle")
+    evidence = _require_mapping(manifest.get("evaluation"), label="manifest evaluation")
+    expected_evidence = {
+        "checkpoint_sha256": bundle.checkpoint_sha256,
+        "recipe_sha256": bundle.recipe_sha256,
+        "recipe_format_version": bundle.recipe["format_version"],
+        "evaluation_contract_sha256": evaluation_contract_sha256(bundle.recipe),
+    }
+    for key, expected in expected_evidence.items():
+        if evidence.get(key) != expected:
+            raise ValueError(f"release evaluation {key} does not match the policy bundle")
+    if evidence.get("exact_contract") is not True:
+        raise ValueError("release evaluation evidence is not exact-contract")
     validate_model_card(card_text, manifest, model_metadata)
     return manifest

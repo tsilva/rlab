@@ -253,17 +253,62 @@ class WorkerMailbox:
         finally:
             conn.close()
 
-    def acknowledge_command(self, command_id: str) -> bool:
+    def acknowledge_command(
+        self, command_id: str, *, acknowledged_at: str | None = None
+    ) -> bool:
+        conn = mailbox_connect(self.database_url)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    if acknowledged_at is None:
+                        cur.execute(
+                            "SELECT worker_ack_attempt_command(%s, %s, %s) AS acknowledged",
+                            (self.attempt_id, self.token, str(command_id)),
+                        )
+                    else:
+                        cur.execute(
+                            "SELECT worker_ack_attempt_command(%s, %s, %s, %s::timestamptz) "
+                            "AS acknowledged",
+                            (
+                                self.attempt_id,
+                                self.token,
+                                str(command_id),
+                                str(acknowledged_at),
+                            ),
+                        )
+                    row = cur.fetchone()
+            return bool(row and row.get("acknowledged"))
+        finally:
+            conn.close()
+
+    def poll_commands(self) -> list[dict[str, Any]]:
         conn = mailbox_connect(self.database_url)
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT worker_ack_attempt_command(%s, %s, %s) AS acknowledged",
+                        "SELECT worker_poll_attempt_commands(%s, %s) AS commands",
+                        (self.attempt_id, self.token),
+                    )
+                    row = cur.fetchone()
+            commands = (row or {}).get("commands") or []
+            if not isinstance(commands, list):
+                raise MailboxProtocolError("mailbox command poll returned an invalid payload")
+            return [dict(value) for value in commands if isinstance(value, Mapping)]
+        finally:
+            conn.close()
+
+    def mark_command_delivered(self, command_id: str) -> bool:
+        conn = mailbox_connect(self.database_url)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT worker_mark_attempt_command_delivered(%s, %s, %s) AS delivered",
                         (self.attempt_id, self.token, str(command_id)),
                     )
                     row = cur.fetchone()
-            return bool(row and row.get("acknowledged"))
+            return bool(row and row.get("delivered"))
         finally:
             conn.close()
 
@@ -382,22 +427,32 @@ def claim_run_metric_batches(
         raise
 
 
-def pending_metric_run_ids(conn, *, limit: int = 3) -> list[int]:
+def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
     """Return independent W&B runs ready for parallel publication."""
 
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT t.id, min(b.created_at) AS oldest_batch
-            FROM metric_batches b
-            JOIN metric_streams s ON s.stream_id = b.stream_id
-            JOIN worker_attempts a ON a.attempt_id = s.attempt_id
-            JOIN train_jobs t ON t.id = a.train_job_id
-            WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
-              AND t.telemetry_transport = 'neon_mailbox_v1'
-              AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
-            GROUP BY t.id
-            ORDER BY oldest_batch, t.id
+            WITH candidates AS (
+              SELECT t.id, min(b.created_at) AS ready_at
+              FROM metric_batches b
+              JOIN metric_streams s ON s.stream_id = b.stream_id
+              JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+              JOIN train_jobs t ON t.id = a.train_job_id
+              WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
+                AND t.telemetry_transport = 'neon_mailbox_v1'
+                AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+              GROUP BY t.id
+              UNION ALL
+              SELECT t.id, t.created_at AS ready_at
+              FROM train_jobs t
+              WHERE t.telemetry_transport = 'neon_mailbox_v1'
+                AND t.live_publication_status = 'finishing'
+            )
+            SELECT id, min(ready_at) AS ready_at
+            FROM candidates
+            GROUP BY id
+            ORDER BY ready_at, id
             LIMIT %(limit)s
             """,
             {"limit": max(1, int(limit))},
@@ -580,7 +635,10 @@ def enqueue_projection_payload(
     *,
     eval_job_id: int,
     payload: Mapping[str, Any],
+    stream_kind: str = "evaluation",
 ) -> bool:
+    if stream_kind not in {"evaluation", "artifact"}:
+        raise ValueError("projection stream kind must be evaluation or artifact")
     stable_payload = dict(payload)
     stable_payload["eval_job_id"] = int(eval_job_id)
     event_id = hashlib.sha256(_json_bytes(stable_payload)).hexdigest()
@@ -593,7 +651,11 @@ def enqueue_projection_payload(
         "payload_json": json.dumps(stable_payload, sort_keys=True, default=str),
     }
     batch = encode_metric_batch([row])
-    stream_id = f"eval-projection-{int(eval_job_id)}"
+    stream_id = (
+        f"eval-projection-{int(eval_job_id)}"
+        if stream_kind == "evaluation"
+        else f"artifact-projection-{int(eval_job_id)}"
+    )
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -649,15 +711,16 @@ def enqueue_projection_payload(
                 {"stream_id": stream_id, "payload": psycopg2.Binary(batch.payload)},
             )
             inserted = cur.fetchone() is not None
-            cur.execute(
-                """
-                UPDATE eval_jobs
-                SET projection_enqueued_at = COALESCE(projection_enqueued_at, now()),
-                    projection_error = NULL, updated_at = now()
-                WHERE id = %(eval_job_id)s
-                """,
-                {"eval_job_id": int(eval_job_id)},
-            )
+            if stream_kind == "evaluation":
+                cur.execute(
+                    """
+                    UPDATE eval_jobs
+                    SET projection_enqueued_at = COALESCE(projection_enqueued_at, now()),
+                        projection_error = NULL, updated_at = now()
+                    WHERE id = %(eval_job_id)s
+                    """,
+                    {"eval_job_id": int(eval_job_id)},
+                )
             cur.execute(
                 """
                 UPDATE train_jobs

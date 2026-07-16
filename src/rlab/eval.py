@@ -22,7 +22,7 @@ from rlab.env import (
     task_action_set,
 )
 from rlab.env_config import env_config_from_args, parse_obs_crop
-from rlab.eval_runner import evaluate_model_episodes
+from rlab.eval_runner import evaluate_model_episodes, evaluate_policy_bundle
 from rlab.model_sources import (
     add_model_source_args,
     apply_model_source_defaults,
@@ -32,7 +32,7 @@ from rlab.model_sources import (
 from rlab.policy_models import load_policy_model, resolve_policy_algorithm
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.targets import target_for_game
-from rlab.train_config import add_env_config_args
+from rlab.train_config import add_env_config_args, env_config_arg_fields
 
 
 def json_default(value):
@@ -160,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.n_envs < 1:
         raise SystemExit("--n-envs must be >= 1")
     ref = model_source_ref(args)
+    source = None
     if ref is not None or args.model:
         if ref is not None:
             print(f"Downloading {ref}", flush=True)
@@ -167,6 +168,37 @@ def main(argv: list[str] | None = None) -> int:
         args.model = str(source.model_path)
         if ref is not None:
             print(f"Downloaded model: {args.model}", flush=True)
+        if source.bundle is not None:
+            semantic_overrides = {}
+            if "seed" in explicit_dests:
+                semantic_overrides["seed"] = args.seed
+            if "max_steps" in explicit_dests:
+                semantic_overrides["max_steps"] = args.max_steps
+            environment_overrides = {
+                field.dest: getattr(args, field.dest)
+                for field in env_config_arg_fields()
+                if field.dest in explicit_dests
+            }
+            if environment_overrides:
+                semantic_overrides["environment"] = environment_overrides
+            summary, _ = evaluate_policy_bundle(
+                source.bundle,
+                device=resolve_sb3_device(args.device),
+                episodes=args.episodes if "episodes" in explicit_dests else None,
+                n_envs=args.n_envs if "n_envs" in explicit_dests else None,
+                progress=args.progress,
+                semantic_overrides=semantic_overrides,
+            )
+            if args.summary_only:
+                summary.pop("episode_results", None)
+            print(json.dumps(summary, indent=2, default=json_default))
+            if args.output:
+                Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.output).write_text(
+                    json.dumps(summary, indent=2, default=json_default) + "\n",
+                    encoding="utf-8",
+                )
+            return 0
         apply_model_source_defaults(
             args,
             source,

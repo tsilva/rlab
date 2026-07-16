@@ -111,6 +111,11 @@ EVAL_FULL_CHECKPOINT_ARTIFACT = f"{EVAL_FULL_ROOT}/checkpoint/artifact"
 EVAL_FULL_DURATION_SECONDS = f"{EVAL_FULL_ROOT}/duration/seconds"
 EVAL_FULL_SOURCE = f"{EVAL_FULL_ROOT}/source"
 EVAL_SCREEN_PREVIEW = "eval/screen/preview"
+EVAL_ACCEPTANCE_PASS = "eval/acceptance/pass"
+EVAL_ACCEPTANCE_EPISODES_PLANNED = "eval/acceptance/episodes/planned"
+EVAL_ACCEPTANCE_EPISODES_COMPLETED = "eval/acceptance/episodes/completed"
+EVAL_ACCEPTANCE_FAILURE_COUNT = "eval/acceptance/failure/count"
+EVAL_ACCEPTANCE_DURATION_SECONDS = "eval/acceptance/duration/seconds"
 
 CHECKPOINT_EVAL_CANDIDATE_PASS = "eval/confirm/candidate/pass"
 CHECKPOINT_EVAL_CANDIDATE_STAGE_INDEX = "eval/confirm/candidate/stage_index"
@@ -437,41 +442,71 @@ METRIC_DEFINITIONS = (
     ),
     _definition("eval/{protocol}/source", "Evaluation execution source.", "text", "evaluation"),
     _definition(
+        EVAL_ACCEPTANCE_PASS,
+        "Whether this checkpoint produced complete valid acceptance evidence.",
+        "boolean",
+        "acceptance evaluation",
+    ),
+    _definition(
+        EVAL_ACCEPTANCE_EPISODES_PLANNED,
+        "Exact episode identities required by the acceptance manifest.",
+        "episodes",
+        "acceptance evaluation",
+    ),
+    _definition(
+        EVAL_ACCEPTANCE_EPISODES_COMPLETED,
+        "Valid planned episode rows completed before acceptance or fail-fast rejection.",
+        "episodes",
+        "acceptance evaluation",
+    ),
+    _definition(
+        EVAL_ACCEPTANCE_FAILURE_COUNT,
+        "Failed planned episodes; zero for acceptance and one for fail-fast rejection.",
+        "episodes",
+        "acceptance evaluation",
+    ),
+    _definition(
+        EVAL_ACCEPTANCE_DURATION_SECONDS,
+        "Acceptance-worker evaluation wall duration.",
+        "seconds",
+        "acceptance evaluation",
+    ),
+    _definition(
         EVAL_SCREEN_PREVIEW,
-        "External HTML player for the canonical R2 MP4 captured from policy observations during every normal queue-backed screen evaluation.",
+        "Historical checkpoint-screen preview; new acceptance jobs do not capture or publish previews.",
         "html",
-        "evaluation",
+        "historical evaluation",
         "media",
     ),
     *(
         _definition(
             f"eval/{protocol}/candidate/pass",
-            "Staged checkpoint pass signal.",
+            "Historical staged checkpoint pass signal.",
             "boolean",
-            "evaluation",
+            "historical evaluation",
         )
         for protocol in ("screen", "confirm")
     ),
     *(
         _definition(
             f"eval/{protocol}/candidate/stage_index",
-            "Staged checkpoint protocol index.",
+            "Historical staged checkpoint protocol index.",
             "index",
-            "evaluation",
+            "historical evaluation",
         )
         for protocol in ("screen", "confirm")
     ),
     _definition(
         CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
-        "Confirmed candidate checkpoint step.",
+        "Historical confirmed candidate checkpoint step.",
         "steps",
-        "evaluation",
+        "historical evaluation",
     ),
     _definition(
         CHECKPOINT_EVAL_CANDIDATE_EPISODES,
-        "Confirmed candidate evaluation episodes.",
+        "Historical confirmed candidate evaluation episodes.",
         "episodes",
-        "evaluation",
+        "historical evaluation",
     ),
     _definition(
         EVAL_FULL_BY_START,

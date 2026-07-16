@@ -12,8 +12,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
-from rlab.modal_eval_protocol import PROTOCOL_SCHEMA_VERSION, execution_key
+from rlab.modal_eval_protocol import PROTOCOL_SCHEMA_VERSION, canonical_json, execution_key
 from rlab.modal_eval_storage import file_sha256, write_downloaded_file
+from rlab.policy_bundle import (
+    evaluation_contract,
+    evaluation_contract_sha256,
+    load_policy_bundle,
+)
 from rlab.video import PolicyObservationPreview, write_preview_video
 
 
@@ -113,8 +118,8 @@ def _upload_preview(url: str, path: Path, request: Mapping[str, Any]) -> None:
 def run_child(input_path: Path, output_path: Path) -> int:
     request = json.loads(input_path.read_text(encoding="utf-8"))
     contract = request["contract"]
-    model_path = Path(request["model_path"])
-    model_metadata = request.get("model_metadata")
+    bundle_root = request.get("bundle_root")
+    bundle = load_policy_bundle(Path(bundle_root)) if bundle_root else None
     raw_rom_path = request.get("rom_path")
     if raw_rom_path:
         rom_dir = Path(str(raw_rom_path)).parent
@@ -125,16 +130,9 @@ def run_child(input_path: Path, output_path: Path) -> int:
             stderr=subprocess.PIPE,
             text=True,
         )
-    from rlab.env import resolve_env_config
-    from rlab.env_metadata import env_config_from_config_dict
-    from rlab.eval_runner import evaluate_model_episodes
-    from rlab.policy_models import load_policy_model
+    from rlab.eval_runner import evaluate_model_episodes, evaluate_policy_bundle
 
-    config = env_config_from_config_dict(dict(contract["environment"]))
-    if config is None:
-        raise ValueError("remote eval environment contract is invalid")
-    config = resolve_env_config(config)
-    model = load_policy_model(model_path, device="cpu", metadata=model_metadata)
+    acceptance_contract = contract if "acceptance" in contract else None
     preview_request = request.get("preview")
     preview_capture = (
         PolicyObservationPreview(
@@ -144,19 +142,57 @@ def run_child(input_path: Path, output_path: Path) -> int:
         if isinstance(preview_request, Mapping)
         else None
     )
-    metrics, _video = evaluate_model_episodes(
-        model=model,
-        config=config,
-        episodes=int(contract["episodes"]),
-        seed=int(contract["seed"]),
-        max_steps=int(contract["max_steps"]),
-        deterministic=False,
-        n_envs=int(contract["n_envs"]),
-        progress=True,
-        progress_description="modal checkpoint eval",
-        preview_capture=preview_capture,
-    )
+    if bundle is not None:
+        recipe_eval = evaluation_contract(bundle.recipe)
+        if canonical_json(recipe_eval["environment"]) != canonical_json(
+            contract["environment"]
+        ):
+            raise ValueError("remote eval environment differs from recipe contract")
+        if int(recipe_eval["seed"]) != int(contract["seed"]):
+            raise ValueError("remote eval seed differs from recipe contract")
+        if int(recipe_eval["max_steps"]) != int(contract["max_steps"]):
+            raise ValueError("remote eval step limit differs from recipe contract")
+        metrics, _video = evaluate_policy_bundle(
+            bundle,
+            device="cpu",
+            episodes=int(contract["episodes"]),
+            n_envs=int(contract["n_envs"]),
+            progress=True,
+            preview_capture=preview_capture,
+            acceptance_contract=acceptance_contract,
+        )
+    else:
+        from rlab.env import resolve_env_config
+        from rlab.env_metadata import env_config_from_config_dict
+        from rlab.policy_models import load_policy_model
+
+        config = env_config_from_config_dict(dict(contract["environment"]))
+        if config is None:
+            raise ValueError("remote eval environment contract is invalid")
+        model_path = Path(request["model_path"])
+        model = load_policy_model(
+            model_path,
+            device="cpu",
+            metadata=request.get("model_metadata"),
+        )
+        metrics, _video = evaluate_model_episodes(
+            model=model,
+            config=resolve_env_config(config),
+            episodes=int(contract["episodes"]),
+            seed=int(contract["seed"]),
+            max_steps=int(contract["max_steps"]),
+            deterministic=False,
+            n_envs=int(contract["n_envs"]),
+            progress=True,
+            progress_description="modal checkpoint eval",
+            preview_capture=preview_capture,
+            acceptance_contract=acceptance_contract,
+        )
     episode_results = metrics.pop("episode_results")
+    evaluation_evidence = metrics.pop("evaluation_evidence", None)
+    metrics.pop("episode_seeds", None)
+    verdict = metrics.pop("acceptance_verdict", None)
+    claimed_aggregates = metrics.pop("acceptance_aggregates", None)
     preview: dict[str, Any] | None = None
     if preview_capture is not None:
         preview = {
@@ -186,7 +222,14 @@ def run_child(input_path: Path, output_path: Path) -> int:
                 }
     _write_json(
         output_path,
-        {"metrics": metrics, "episode_results": episode_results, "preview": preview},
+        {
+            "metrics": metrics,
+            "episode_results": episode_results,
+            "evaluation_evidence": evaluation_evidence,
+            "verdict": verdict,
+            "claimed_aggregates": claimed_aggregates,
+            "preview": preview,
+        },
     )
     return 0
 
@@ -211,6 +254,13 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
         "n_envs": int(contract["n_envs"]),
         "episodes": int(contract["episodes"]),
     }
+    for key in (
+        "recipe_sha256",
+        "recipe_format_version",
+        "evaluation_contract_sha256",
+    ):
+        if key in contract:
+            result[key] = contract[key]
     if time.time() >= float(payload["expires_at"]):
         result.update(status="expired", error="attempt expired before execution")
         result_sha = _upload_json(str(payload["result_put_url"]), result)
@@ -222,12 +272,33 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             model_path = write_downloaded_file(str(payload["model_get_url"]), root / "model.zip")
             if file_sha256(model_path) != str(contract["checkpoint_sha256"]):
                 raise ValueError("downloaded checkpoint hash mismatch")
-            metadata_path = write_downloaded_file(
-                str(payload["metadata_get_url"]), root / "metadata.json"
-            )
-            if file_sha256(metadata_path) != str(payload["metadata_sha256"]):
-                raise ValueError("downloaded checkpoint metadata hash mismatch")
-            model_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            versioned_bundle = "recipe_sha256" in contract
+            model_metadata = None
+            if versioned_bundle:
+                metadata_path = write_downloaded_file(
+                    str(payload["model_document_get_url"]), root / "model.json"
+                )
+                if file_sha256(metadata_path) != str(payload["model_document_sha256"]):
+                    raise ValueError("downloaded model document hash mismatch")
+                recipe_path = write_downloaded_file(
+                    str(payload["recipe_get_url"]), root / "recipe.json"
+                )
+                if file_sha256(recipe_path) != str(contract["recipe_sha256"]):
+                    raise ValueError("downloaded recipe hash mismatch")
+                bundle = load_policy_bundle(root)
+                if bundle.recipe["format_version"] != int(contract["recipe_format_version"]):
+                    raise ValueError("downloaded recipe format version mismatch")
+                if evaluation_contract_sha256(bundle.recipe) != str(
+                    contract["evaluation_contract_sha256"]
+                ):
+                    raise ValueError("downloaded evaluation contract hash mismatch")
+            else:
+                metadata_path = write_downloaded_file(
+                    str(payload["metadata_get_url"]), root / "metadata.json"
+                )
+                if file_sha256(metadata_path) != str(payload["metadata_sha256"]):
+                    raise ValueError("downloaded checkpoint metadata hash mismatch")
+                model_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             asset = contract.get("asset")
             rom_path: Path | None = None
             if isinstance(asset, Mapping):
@@ -262,6 +333,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                 child_input,
                 {
                     "contract": contract,
+                    "bundle_root": str(root) if versioned_bundle else None,
                     "model_path": str(model_path),
                     "model_metadata": model_metadata,
                     "rom_path": str(rom_path) if rom_path is not None else None,
@@ -292,13 +364,14 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             child_preview = child_result.get("preview")
             preview_request = payload.get("preview")
             if isinstance(child_preview, Mapping) and isinstance(preview_request, Mapping):
-                preview = {str(key): value for key, value in child_preview.items() if key != "path"}
+                preview = {
+                    str(key): value
+                    for key, value in child_preview.items()
+                    if key != "path"
+                }
                 if str(child_preview.get("status")) == "ready":
                     preview_path = Path(str(child_preview.get("path") or "")).resolve()
-                    if (
-                        not preview_path.is_relative_to(root.resolve())
-                        or not preview_path.is_file()
-                    ):
+                    if not preview_path.is_relative_to(root.resolve()) or not preview_path.is_file():
                         preview = {"status": "failed", "error": "preview output path is invalid"}
                     else:
                         try:
@@ -320,6 +393,9 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                 duration_seconds=time.monotonic() - started,
                 metrics=child_result["metrics"],
                 episode_results=child_result["episode_results"],
+                evaluation_evidence=child_result.get("evaluation_evidence"),
+                verdict=child_result.get("verdict"),
+                claimed_aggregates=child_result.get("claimed_aggregates"),
                 preview=preview,
             )
     except subprocess.TimeoutExpired:
