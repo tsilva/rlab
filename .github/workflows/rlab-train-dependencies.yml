@@ -14,6 +14,7 @@ on:
       - containers/train/Dockerfile
       - containers/train/dependency_key.py
       - containers/train/dockerfile_inputs.py
+      - containers/train/environment_contract.py
       - containers/train/gpu-linux-amd64.lock
       - containers/train/gpu_key.py
       - containers/train/lock_projection.py

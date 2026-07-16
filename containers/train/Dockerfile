@@ -61,7 +61,7 @@ LABEL io.rlab.gpu-plan.sha256="${GPU_PLAN_SHA256}"
 # dependency-image-inputs-begin
 FROM ${PYTHON_IMAGE} AS dependency-overlay-build
 
-ENV UV_PROJECT_ENVIRONMENT=/root/rlab/.venv
+ENV UV_PROJECT_ENVIRONMENT=/opt/rlab-dependencies
 ENV UV_LINK_MODE=copy
 
 COPY --from=uv /uv /uvx /usr/local/bin/
@@ -76,13 +76,23 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
         --require-hashes \
         --no-deps \
-        -r /tmp/train-dependencies-linux-amd64.lock
+        -r /tmp/train-dependencies-linux-amd64.lock \
+    && printf '%s\n' \
+        '/root/rlab/.venv/lib/python3.14/site-packages' \
+        > "${UV_PROJECT_ENVIRONMENT}/lib/python3.14/site-packages/rlab-gpu.pth"
 
 FROM scratch AS dependency-overlay
 
-COPY --from=dependency-overlay-build /root/rlab/.venv /root/rlab/.venv
+ARG BUILDKIT_SBOM_SCAN_STAGE=true
+
+COPY --from=dependency-overlay-build /opt/rlab-dependencies /opt/rlab-dependencies
 
 FROM ${GPU_BASE} AS dependencies
+
+ARG BUILDKIT_SBOM_SCAN_STAGE=false
+
+ENV UV_PROJECT_ENVIRONMENT=/opt/rlab-dependencies
+ENV PATH="/opt/rlab-dependencies/bin:/root/rlab/.venv/bin:${PATH}"
 
 COPY --link --from=dependency-overlay / /
 

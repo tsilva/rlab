@@ -46,7 +46,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
 
 3. Prepare the generated model card and preview with `$model-card-author` as the quality standard.
    - Do not hand-author `README.md`. The repository-owned release helper renders it from the
-     release manifest, model metadata, and verified evaluation evidence.
+     release manifest, model document, recipe, and verified evaluation evidence.
    - For RL checkpoints with visual behavior, include a browser-safe `replay.mp4` in the model repo root.
    - Encode/verify `replay.mp4` as H.264/AVC, `yuv420p`, faststart, with valid duration and frames.
    - Let Hugging Face's reinforcement-learning widget render the root `replay.mp4` as the model page preview; do not also embed the same video in the README body unless the widget is unavailable.
@@ -61,7 +61,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
      `scripts/prepare_huggingface_release.py`; it fails closed on deterministic evaluation,
      invalid video, non-portable paths, inconsistent identity, or a nonstandard file set.
    - The bundle must contain exactly `.gitattributes`, `README.md`, `LICENSE`, `model.zip`,
-     `model_metadata.json`, `release_manifest.json`, and `replay.mp4`.
+     `model.json`, `recipe.json`, `release_manifest.json`, and `replay.mp4`.
    - Upload the bundle in one Hugging Face commit, then create the next sequential immutable
      `vN` tag. `main` is the latest promoted release.
    - Do not publish a new current release until stochastic evaluation and replay evidence exist.
@@ -86,7 +86,7 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
 - Tag each historical source revision as `legacy-deterministic` before moving it. A move does
   not make that historical revision a schema-v1 release.
 - Do not create `v1` until the checkpoint has new stochastic evaluation evidence, a validated
-  representative replay, and the exact seven-file release bundle.
+  representative replay, and the exact eight-file release bundle.
 - Create or update the game-family Collection only after all repository moves succeed.
 - For the already-moved Mario repositories, use
   `scripts/repair_huggingface_legacy_cards.py` to generate the canonical legacy cards and fill
@@ -117,8 +117,8 @@ If a required fact is ambiguous and cannot be safely inferred from source artifa
 Before final response, verify:
 
 - model card uploaded and readable on Hugging Face
-- generated repo id matches `model_metadata.json` and `release_manifest.json`
-- remote repo contains exactly the standardized seven-file allowlist
+- generated repo id matches `model.json` and `release_manifest.json`
+- remote repo contains exactly the standardized eight-file allowlist
 - immutable `vN` tag points to the verified release commit
 - checkpoint artifact present in the HF repo
 - `replay.mp4` present in the HF repo root and browser-safe

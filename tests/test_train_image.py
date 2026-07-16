@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from containers.train.dependency_key import dependency_key
+from containers.train.environment_contract import Distribution, validate_distribution_contract
 from containers.train.gpu_key import gpu_key
 from containers.train.lock_projection import projection_contents
 from containers.train.runtime_key import RUNTIME_INPUT_PATHS, overlay_key, runtime_key
@@ -163,6 +164,70 @@ class TrainImageTests(unittest.TestCase):
             [line for line in dependency_instructions if line.startswith("COPY ")],
             ["COPY --link --from=dependency-overlay / /"],
         )
+        dependency_build = dockerfile.split(
+            "FROM ${PYTHON_IMAGE} AS dependency-overlay-build", maxsplit=1
+        )[1].split("FROM scratch AS dependency-overlay", maxsplit=1)[0]
+        self.assertIn("ENV UV_PROJECT_ENVIRONMENT=/opt/rlab-dependencies", dependency_build)
+        self.assertIn("rlab-gpu.pth", dependency_build)
+        self.assertNotIn("uv venv \"/root/rlab/.venv\"", dependency_build)
+
+        dependency_overlay = dockerfile.split(
+            "FROM scratch AS dependency-overlay", maxsplit=1
+        )[1].split("FROM ${GPU_BASE} AS dependencies", maxsplit=1)[0]
+        self.assertIn("ARG BUILDKIT_SBOM_SCAN_STAGE=true", dependency_overlay)
+        self.assertEqual(
+            [line.strip() for line in dependency_overlay.splitlines() if line.startswith("COPY ")],
+            [
+                "COPY --from=dependency-overlay-build /opt/rlab-dependencies "
+                "/opt/rlab-dependencies"
+            ],
+        )
+        self.assertIn("ARG BUILDKIT_SBOM_SCAN_STAGE=false", dependencies)
+        self.assertIn("ENV UV_PROJECT_ENVIRONMENT=/opt/rlab-dependencies", dependencies)
+        self.assertIn(
+            'ENV PATH="/opt/rlab-dependencies/bin:/root/rlab/.venv/bin:${PATH}"',
+            dependencies,
+        )
+
+    def test_combined_environment_contract_accepts_cross_venv_requirements(self) -> None:
+        train = {"stable-baselines3": "2.8.0", "torch": "2.12.0"}
+        gpu = {"torch": "2.12.0"}
+        dependencies = {"stable-baselines3": "2.8.0"}
+        installed = (
+            Distribution("torch", "2.12.0", (), "gpu"),
+            Distribution(
+                "stable-baselines3",
+                "2.8.0",
+                ('torch>=2.11; python_version >= "3.10"',),
+                "dependencies",
+            ),
+        )
+
+        validate_distribution_contract(
+            train=train,
+            gpu=gpu,
+            dependencies=dependencies,
+            installed=installed,
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate installed distribution torch"):
+            validate_distribution_contract(
+                train=train,
+                gpu=gpu,
+                dependencies=dependencies,
+                installed=installed + (Distribution("torch", "2.12.0", (), "dependencies"),),
+            )
+
+        broken = installed[:-1] + (
+            Distribution("stable-baselines3", "2.8.0", ("torch>=2.13",), "dependencies"),
+        )
+        with self.assertRaisesRegex(ValueError, "unsatisfied installed requirements"):
+            validate_distribution_contract(
+                train=train,
+                gpu=gpu,
+                dependencies=dependencies,
+                installed=broken,
+            )
 
     def test_projections_exclude_host_tools_and_isolate_gpu_packages(self) -> None:
         root = Path(".").resolve()

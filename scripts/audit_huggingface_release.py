@@ -121,7 +121,7 @@ def audit_huggingface_release(
         "revision": revision,
         "commit": str(tagged.sha),
         "files": sorted(expected_files),
-        "manifest_version": manifest["manifest_version"],
+        "manifest_version": manifest.get("format_version", manifest.get("manifest_version")),
         "collection": str(collection.slug),
         "replay": replay,
         "status": "passed",

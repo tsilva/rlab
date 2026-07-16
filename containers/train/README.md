@@ -9,9 +9,13 @@ not contain ROMs, secrets, checkpoints, W&B data, or run outputs.
 The Dockerfile keeps the heavyweight stack in two cacheable images: a GPU
 foundation (`torch`, Triton, and CUDA/NVIDIA wheels), then the remaining train
 dependencies. The non-GPU packages are installed in a clean virtual environment
-at the final `/root/rlab/.venv` path, collapsed into a scratch overlay, and attached
-to the immutable GPU foundation with one `COPY --link`. No command executes after
-that merge. It assembles the small application filesystem in a separate scratch stage. Repository
+at `/opt/rlab-dependencies`, while the GPU foundation remains at
+`/root/rlab/.venv`. A `.pth` bridge makes the GPU site-packages visible to the
+non-GPU interpreter, and `PATH` selects non-GPU console scripts before GPU console
+scripts. Because the two environments occupy disjoint paths, the non-GPU tree can
+be collapsed into a scratch overlay and attached to the immutable GPU foundation
+with one `COPY --link` without reading or extracting the foundation filesystem. No
+command executes after that merge. It assembles the small application filesystem in a separate scratch stage. Repository
 documentation, tests, goals, and recipes are not embedded in the runtime; goals and
 fully composed recipes travel in each queue payload. For
 published builds, the workflow selects the immutable dependency-image digest as
@@ -115,8 +119,29 @@ receipt's full `docker:...@sha256:...` ref into queue creation with
 GPU and dependency images carry SBOM and provenance. There is no mutable maximal
 registry build cache: published content-addressed images are the reusable cache
 contract. Dependency images use the immutable GPU digest as their base and add only
-the linked non-GPU virtual-environment overlay. Runtime images use the immutable
-dependency digest as their base and add only linked application layers.
+the linked non-GPU virtual-environment overlay. The dependency SBOM scanner is
+explicitly scoped to that scratch overlay; the GPU foundation retains its own SBOM,
+and the final metadata-only composition is not rescanned. Runtime images use the
+immutable dependency digest as their base and add only linked application layers.
+
+Validate the two physical virtual environments as one exact logical lock after a
+merged image is available:
+
+```bash
+docker run --rm \
+  -v "$PWD:/contract:ro" \
+  --entrypoint /opt/rlab-dependencies/bin/python \
+  <merged-image> \
+  /contract/containers/train/environment_contract.py \
+  --train-lock /contract/containers/train/train-linux-amd64.lock \
+  --gpu-lock /contract/containers/train/gpu-linux-amd64.lock \
+  --dependency-lock /contract/containers/train/train-dependencies-linux-amd64.lock
+```
+
+This rejects missing, unexpected, duplicated, or wrong-version distributions,
+checks active `Requires-Dist` constraints across both environments, and verifies
+the `.pth`, interpreter, `PATH`, and console-script contracts. A single-venv
+`uv pip check` cannot model this deliberately split environment.
 
 ## Fleet Integration
 

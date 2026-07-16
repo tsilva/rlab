@@ -10,7 +10,7 @@ from pathlib import Path
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 
 from rlab.publication import (
-    HUGGINGFACE_RELEASE_FILES,
+    LEGACY_HUGGINGFACE_RELEASE_FILES,
     HUGGINGFACE_NAMESPACE,
     MIT_LICENSE_TEXT,
     assert_unique_repo_ids,
@@ -158,7 +158,7 @@ def _migration_plan(
         generated_id = build_model_repo_id(identity)
         destination_id = f"{target_namespace}/{generated_id.split('/', 1)[1]}"
         files = sorted(api.list_repo_files(source_id, repo_type="model"))
-        planned_deletes = sorted(set(files) - HUGGINGFACE_RELEASE_FILES)
+        planned_deletes = sorted(set(files) - LEGACY_HUGGINGFACE_RELEASE_FILES)
         mapping.append(
             {
                 "source": source_id,
@@ -173,7 +173,7 @@ def _migration_plan(
                 "source_files": files,
                 "planned_delete_files": planned_deletes,
                 "planned_add_or_update_files": ["LICENSE", "README.md"],
-                "result_files": sorted(HUGGINGFACE_RELEASE_FILES),
+                "result_files": sorted(LEGACY_HUGGINGFACE_RELEASE_FILES),
             }
         )
     assert_unique_repo_ids(identities)

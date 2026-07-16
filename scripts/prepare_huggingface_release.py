@@ -22,6 +22,13 @@ from rlab.publication import (
     validate_release_bundle,
     verify_replay,
 )
+from rlab.policy_bundle import (
+    build_model_document,
+    evaluation_contract_sha256,
+    load_recipe_document,
+    sha256_file,
+    write_canonical_json,
+)
 
 
 def _load_object(path: Path, *, label: str) -> dict:
@@ -39,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-metadata", type=Path, required=True)
     parser.add_argument("--identity-only", action="store_true")
     parser.add_argument("--model", type=Path)
+    parser.add_argument("--recipe", type=Path)
     parser.add_argument("--replay", type=Path)
     parser.add_argument("--evaluation-json", type=Path)
     parser.add_argument("--release-version")
@@ -61,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
 
     required = {
         "--model": args.model,
+        "--recipe": args.recipe,
         "--replay": args.replay,
         "--evaluation-json": args.evaluation_json,
         "--release-version": args.release_version,
@@ -71,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         raise ValueError("full bundle preparation requires " + ", ".join(missing))
     assert args.model is not None
+    assert args.recipe is not None
     assert args.replay is not None
     assert args.evaluation_json is not None
     assert args.release_version is not None
@@ -78,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     assert args.output_dir is not None
     for path in (
         args.model,
+        args.recipe,
         args.replay,
         args.evaluation_json,
     ):
@@ -86,24 +97,43 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise FileExistsError(f"release output directory is not empty: {args.output_dir}")
 
-    replay = verify_replay(args.replay)
-    evaluation = normalize_publication_evaluation(
-        _load_object(args.evaluation_json, label="evaluation")
-    )
+    verify_replay(args.replay)
+    evaluation_document = _load_object(args.evaluation_json, label="evaluation")
+    evaluation = normalize_publication_evaluation(evaluation_document)
     source = publication_source_from_model_metadata(metadata, evaluation)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.model, args.output_dir / "model.zip")
+    shutil.copy2(args.recipe, args.output_dir / "recipe.json")
+    recipe_document = load_recipe_document(args.output_dir / "recipe.json")
     shutil.copy2(args.replay, args.output_dir / "replay.mp4")
     (args.output_dir / ".gitattributes").write_text(GITATTRIBUTES_TEXT, encoding="utf-8")
     (args.output_dir / "LICENSE").write_text(MIT_LICENSE_TEXT, encoding="utf-8")
     publication_metadata = publication_model_metadata(metadata, identity)
-    (args.output_dir / "model_metadata.json").write_text(
-        json.dumps(publication_metadata, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    write_canonical_json(
+        args.output_dir / "model.json",
+        build_model_document(
+            args.output_dir / "model.zip",
+            args.output_dir / "recipe.json",
+            publication_metadata,
+        ),
     )
+    evidence = evaluation_document.get("evaluation_evidence")
+    if not isinstance(evidence, Mapping):
+        raise ValueError("release evaluation is missing evaluation_evidence")
+    expected_evidence = {
+        "checkpoint_sha256": sha256_file(args.output_dir / "model.zip"),
+        "recipe_sha256": sha256_file(args.output_dir / "recipe.json"),
+        "recipe_format_version": int(recipe_document["format_version"]),
+        "evaluation_contract_sha256": evaluation_contract_sha256(recipe_document),
+    }
+    for key, expected in expected_evidence.items():
+        if evidence.get(key) != expected:
+            raise ValueError(f"release evaluation {key} does not match the policy bundle")
+    if evidence.get("exact_contract") is not True:
+        raise ValueError("release evaluation must be exact-contract evidence")
     evaluation_value = evaluation.as_manifest_value()
-    evaluation_value["replay"] = replay
+    evaluation_value.update(expected_evidence, exact_contract=True)
     published_at = args.published_at or datetime.now(UTC).isoformat(timespec="seconds").replace(
         "+00:00", "Z"
     )

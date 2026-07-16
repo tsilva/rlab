@@ -15,7 +15,7 @@ from huggingface_hub import CommitOperationAdd, HfApi, ModelCard, hf_hub_downloa
 
 from rlab.publication import (
     HUGGINGFACE_NAMESPACE,
-    HUGGINGFACE_RELEASE_FILES,
+    LEGACY_HUGGINGFACE_RELEASE_FILES,
     build_model_repo_id,
     normalize_publication_evaluation,
     publication_identity_from_model_metadata,
@@ -219,7 +219,7 @@ def build_repair_plan(
         if LEGACY_TAG not in {str(tag.name) for tag in refs.tags}:
             raise ValueError(f"{repo_id} does not have the {LEGACY_TAG!r} tag")
         files = set(api.list_repo_files(repo_id, repo_type="model"))
-        if files != set(HUGGINGFACE_RELEASE_FILES):
+        if files != set(LEGACY_HUGGINGFACE_RELEASE_FILES):
             raise ValueError(f"{repo_id} does not have the exact legacy release file set")
         metadata = _load_json(repo_id, "model_metadata.json")
         if str(metadata.get("goal_slug") or "") != name_goal:
