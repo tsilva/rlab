@@ -13,7 +13,7 @@ limits:
   per_run_budget_usd: 5.0
   rolling_24h_budget_usd: 20.0
 resources:
-  cpu: 4.0
+  cpu: 8.0
   memory_mib: 4096
   min_containers: 0
   buffer_containers: 0

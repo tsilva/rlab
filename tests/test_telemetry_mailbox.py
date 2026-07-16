@@ -12,7 +12,7 @@ from rlab.telemetry_mailbox import (
     decode_metric_batch,
     encode_metric_batch,
 )
-from rlab.telemetry_relay import _handle_commands, main as relay_main
+from rlab.telemetry_relay import CommandRelay, _handle_commands, main as relay_main
 
 
 def frame(frame_id: int, *, step: int | None = None, payload: dict | None = None) -> dict:
@@ -171,6 +171,74 @@ class TelemetryBatchTests(unittest.TestCase):
             command = json.loads(command_file.read_text(encoding="utf-8"))
             self.assertEqual(command["command_id"], "stop-1")
             self.assertEqual(mailbox.acknowledged_commands, ["stop-1", "stop-1"])
+
+    def test_command_relay_uses_per_command_files_and_acks_only_signal_receipts(self) -> None:
+        class CommandMailbox(FakeMailbox):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivered: list[str] = []
+                self.acknowledged: list[tuple[str, str | None]] = []
+
+            def poll_commands(self):
+                return [
+                    {
+                        "command_id": "stop-1",
+                        "command_type": "stop",
+                        "payload": {},
+                    },
+                    {
+                        "command_id": "stop-2",
+                        "command_type": "stop",
+                        "payload": {},
+                    },
+                ]
+
+            def mark_command_delivered(self, command_id):
+                self.delivered.append(command_id)
+                return True
+
+            def acknowledge_command(self, command_id, *, acknowledged_at=None):
+                self.acknowledged.append((command_id, acknowledged_at))
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inbox = Path(tmp) / "inbox"
+            receipts = Path(tmp) / "receipts"
+            mailbox = CommandMailbox()
+            relay = CommandRelay(
+                mailbox,
+                inbox_dir=inbox,
+                receipt_dir=receipts,
+                poll_seconds=1.0,
+            )
+
+            relay._deliver()
+
+            inbox_entries = sorted(inbox.glob("*.json"))
+            self.assertEqual(len(inbox_entries), 2)
+            self.assertNotEqual(inbox_entries[0].name, inbox_entries[1].name)
+            self.assertEqual(mailbox.delivered, ["stop-1", "stop-2"])
+            self.assertEqual(mailbox.acknowledged, [])
+
+            receipts.mkdir(parents=True)
+            receipt = receipts / inbox_entries[0].name
+            command_id = json.loads(inbox_entries[0].read_text())["command_id"]
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "command_id": command_id,
+                        "signal_sent_at": "2026-07-16T14:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            relay._ack_receipts()
+
+            self.assertEqual(
+                mailbox.acknowledged,
+                [(command_id, "2026-07-16T14:00:00+00:00")],
+            )
+            self.assertFalse(receipt.exists())
 
     def test_final_flush_retries_without_deleting_sqlite_before_ack(self) -> None:
         class FlakyMailbox(FakeMailbox):

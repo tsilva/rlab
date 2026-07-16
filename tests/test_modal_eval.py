@@ -19,13 +19,18 @@ from rlab.modal_eval_orchestrator import (
     available_eval_slots,
     budget_allows,
     deterministic_eval_failure,
+    dispatch_pending,
     finalize_runs,
     project_eval_results,
     ingest_mailbox_announcements,
     project_artifact_references,
     promotion_candidate_key,
     reconcile_canceled_eval_state,
+    reconcile_definitive_non_acceptance,
+    reconcile_eval_run_failures,
+    reconcile_publication_finishing,
     reconcile_promotions,
+    reconcile_stop_delivery_slo,
     round_robin_jobs,
 )
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
@@ -367,7 +372,7 @@ class ModalEvalContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path("experiments/modal_eval.yaml").read_text(encoding="utf-8")
             unknown = Path(temporary) / "unknown.yaml"
-            unknown.write_text(source.replace("  cpu: 4.0", "  cpu: 4.0\n  surprise: true"))
+            unknown.write_text(source.replace("  cpu: 8.0", "  cpu: 8.0\n  surprise: true"))
             with self.assertRaisesRegex(ValueError, "resources has unknown"):
                 load_modal_eval_config(unknown)
             excessive = Path(temporary) / "excessive.yaml"
@@ -455,6 +460,107 @@ class ModalEvalContractTests(unittest.TestCase):
             validated = validate_attempt_result(result, contract=value, attempt_id="attempt")
 
         self.assertEqual(validated["preview"], result["preview"])
+
+    def test_first_accepted_result_wins_promotion_and_is_the_only_stop_creator(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        promotion_available = True
+
+        def execute(statement, _params=None):
+            nonlocal promotion_available
+            if "UPDATE eval_runs" in statement and "promoted_eval_job_id IS NULL" in statement:
+                cursor.rowcount = int(promotion_available)
+                promotion_available = False
+            else:
+                cursor.rowcount = 1
+
+        cursor.execute.side_effect = execute
+        base_attempt = {
+            "id": 101,
+            "attempt_id": "attempt-101",
+            "eval_job_id": 201,
+            "train_job_id": 7,
+            "ledger_id": 11,
+            "job_key": "job-201",
+            "execution_key": "execution",
+            "contract_json": {},
+            "decision_rules_json": [],
+            "purpose": "acceptance",
+            "stage_name": "acceptance",
+            "stage_index": 0,
+            "candidate_stop": True,
+            "checkpoint_sha256": "a" * 64,
+            "checkpoint_step": 500000,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "result_uri": "s3://bucket/result.json",
+            "train_config": {"telemetry_transport": "neon_mailbox_v1"},
+        }
+        validated = {
+            "metrics": {"eval/full/outcome/success/rate/min": 1.0},
+            "claimed_aggregates": {
+                "episodes_planned": 100,
+                "episodes_completed": 100,
+                "failure_count": 0,
+            },
+            "duration_seconds": 30.0,
+            "verdict": "accepted",
+            "episode_results": [],
+        }
+        second_attempt = {
+            **base_attempt,
+            "id": 102,
+            "attempt_id": "attempt-102",
+            "eval_job_id": 202,
+            "ledger_id": 12,
+            "job_key": "job-202",
+            "checkpoint_sha256": "b" * 64,
+            "checkpoint_step": 750000,
+            "checkpoint_uri": "s3://bucket/model-2.zip",
+            "result_uri": "s3://bucket/result-2.json",
+        }
+
+        with (
+            mock.patch(
+                "rlab.modal_eval_orchestrator.validate_attempt_result",
+                return_value=validated,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator._stage_metrics",
+                return_value={"eval/acceptance/pass": 1.0},
+            ),
+            mock.patch(
+                "rlab.telemetry_mailbox.enqueue_projection_payload",
+                return_value=1,
+            ) as enqueue,
+        ):
+            accept_attempt_result(
+                conn,
+                mock.MagicMock(),
+                attempt=base_attempt,
+                result={},
+            )
+            accept_attempt_result(
+                conn,
+                mock.MagicMock(),
+                attempt=second_attempt,
+                result={},
+            )
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        stop_inserts = [
+            statement for statement in statements if "INSERT INTO attempt_commands" in statement
+        ]
+        superseding_updates = [
+            statement
+            for statement in statements
+            if "superseded by accepted checkpoint" in statement
+        ]
+        self.assertEqual(len(stop_inserts), 1)
+        self.assertEqual(len(superseding_updates), 1)
+        self.assertIn("ON CONFLICT (command_id) DO NOTHING", stop_inserts[0])
+        self.assertEqual(enqueue.call_count, 2)
+        self.assertTrue(enqueue.call_args_list[0].kwargs["payload"]["canonical_promotion"])
+        self.assertFalse(enqueue.call_args_list[1].kwargs["payload"]["canonical_promotion"])
 
     def test_accepted_screen_decision_propagates_preview_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -747,6 +853,128 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             0,
         )
 
+    def test_modal_spawn_before_call_id_persistence_does_not_dispatch_twice(self) -> None:
+        job = {
+            "id": 1,
+            "train_job_id": 7,
+            "stage_index": 0,
+            "purpose": "acceptance",
+            "retry_round": 0,
+            "execution_key": "execution-key",
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "contract_json": {
+                "runtime_image_ref": "docker:example.invalid/rlab@sha256:" + "a" * 64,
+            },
+            "source_announcement_json": {
+                "eval": {"asset": None},
+                "model_document_sha256": "b" * 64,
+                "recipe_uri": "s3://bucket/recipe.json",
+            },
+        }
+
+        class Cursor:
+            def __init__(self) -> None:
+                self.row = None
+                self.rows = []
+                self.rowcount = 0
+                self.attempt_persisted = False
+                self.job_status = "pending"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, statement, _params=None):
+                compact = " ".join(statement.split())
+                self.row = None
+                self.rows = []
+                if compact.startswith("SELECT * FROM eval_backend_state"):
+                    self.row = {
+                        "drained": False,
+                        "effective_capacity": 3,
+                        "round_robin_after_train_job_id": 0,
+                    }
+                elif "FROM eval_attempts WHERE status IN" in compact:
+                    self.row = {"count": int(self.attempt_persisted)}
+                elif compact.startswith("SELECT j.* FROM eval_jobs"):
+                    self.rows = [job] if self.job_status == "pending" else []
+                elif "SELECT COALESCE(sum(CASE" in compact:
+                    self.row = {"total": 0.0}
+                elif compact.startswith("SELECT count(*) AS count FROM eval_attempts"):
+                    self.row = {"count": 0}
+                elif compact.startswith("INSERT INTO eval_attempts"):
+                    self.attempt_persisted = True
+                    self.row = {"id": 101}
+                    self.rowcount = 1
+                elif "UPDATE eval_jobs SET status = 'dispatching'" in compact:
+                    self.job_status = "dispatching"
+                    self.rowcount = 1
+                elif "UPDATE eval_attempts SET status = 'submitted'" in compact:
+                    raise RuntimeError("database disconnected after Modal spawn")
+                else:
+                    self.rowcount = 1
+
+            def fetchone(self):
+                return self.row
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def __init__(self) -> None:
+                self.cursor_obj = Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def cursor(self):
+                return self.cursor_obj
+
+        class Invoker:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def spawn(self, *_args):
+                self.calls += 1
+                return "modal-call-1"
+
+        conn = Connection()
+        invoker = Invoker()
+        store = mock.MagicMock()
+        store.uri.return_value = "s3://bucket/result.json"
+        store.presign_get.return_value = "https://get.invalid/object"
+        store.presign_put.return_value = "https://put.invalid/object"
+
+        with mock.patch("rlab.modal_eval_orchestrator._reuse_result", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "after Modal spawn"):
+                dispatch_pending(
+                    conn,
+                    store,
+                    invoker,
+                    load_modal_eval_config(),
+                    deadline_monotonic=time.monotonic() + 60,
+                )
+            self.assertEqual(
+                dispatch_pending(
+                    conn,
+                    store,
+                    invoker,
+                    load_modal_eval_config(),
+                    deadline_monotonic=time.monotonic() + 60,
+                ),
+                0,
+            )
+
+        self.assertEqual(invoker.calls, 1)
+        self.assertTrue(conn.cursor_obj.attempt_persisted)
+        self.assertEqual(conn.cursor_obj.job_status, "dispatching")
+
     def test_budget_reservation_is_fail_closed_at_both_limits(self) -> None:
         config = load_modal_eval_config(Path("experiments/modal_eval.yaml"))
         self.assertTrue(
@@ -933,6 +1161,37 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertIn("j.projected_at IS NULL", statement)
         self.assertIn("t.process_exited_at IS NOT NULL", statement)
         self.assertIn("t.live_publication_status IN ('complete', 'disabled')", statement)
+        self.assertIn("r.outcome = 'unknown'", statement)
+        self.assertIn("t.learner_stop_observed_at IS NULL", statement)
+        self.assertIn("r.stop_delivery_slo_met IS NOT TRUE", statement)
+        self.assertIn("THEN 'finalization_failed'", statement)
+
+    def test_terminal_reducers_distinguish_rejection_unknown_and_publication_finishing(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+
+        self.assertEqual(reconcile_definitive_non_acceptance(conn), 1)
+        non_acceptance = cursor.execute.call_args.args[0]
+        self.assertIn("outcome = 'not_accepted'", non_acceptance)
+        self.assertIn("'blocked_budget', 'failed'", non_acceptance)
+        self.assertIn("decision_json->>'verdict'", non_acceptance)
+
+        self.assertEqual(reconcile_eval_run_failures(conn), 1)
+        unknown = cursor.execute.call_args.args[0]
+        self.assertIn("outcome = 'unknown'", unknown)
+        self.assertIn("required evaluation exhausted retries", unknown)
+
+        self.assertEqual(reconcile_stop_delivery_slo(conn), 1)
+        stop_slo = cursor.execute.call_args.args[0]
+        self.assertIn("acknowledged_at", stop_slo)
+        self.assertIn("interval '5 seconds'", stop_slo)
+
+        self.assertEqual(reconcile_publication_finishing(conn), 1)
+        finishing = cursor.execute.call_args.args[0]
+        self.assertIn("live_publication_status = 'finishing'", finishing)
+        self.assertIn("r.artifacts_projected_at IS NOT NULL", finishing)
+        self.assertIn("s.published_sequence < s.final_sequence", finishing)
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):

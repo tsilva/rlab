@@ -11,6 +11,7 @@ from rlab.fleet_wandb_publisher import (
     _partition_batches,
     _summary_step_max,
     drain_cycle_parallel,
+    finalize_finishing_run,
 )
 from rlab.metric_store import MetricStore
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
@@ -134,6 +135,92 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in confirmed], [1])
         self.assertEqual([row["id"] for row in awaiting], [2])
         self.assertEqual([row["id"] for row in unpublished], [3])
+
+    def test_finishing_run_completes_only_after_remote_cursors_metrics_and_artifact(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 7,
+                "train_config": {
+                    "wandb_run_id": "run-7",
+                    "game": "SuperMarioBros-Nes-v0",
+                },
+                "outcome": "accepted",
+                "promotion_json": {"checkpoint_sha256": "a" * 64},
+            },
+        ]
+        cursor.fetchall.return_value = [
+            {
+                "stream_id": "train-7",
+                "final_sequence": 3,
+                "published_sequence": 3,
+            }
+        ]
+        cursor.rowcount = 1
+        artifact = SimpleNamespace(
+            aliases=["promoted"],
+            metadata={"checkpoint_sha256": "a" * 64},
+        )
+        remote = SimpleNamespace(
+            state="finished",
+            summary={
+                "_rlab_telemetry_cursors": {"train-7": 3},
+                "eval/acceptance/pass": 1.0,
+            },
+            logged_artifacts=lambda: [artifact],
+        )
+
+        with mock.patch(
+            "rlab.fleet_wandb_publisher._wandb_api_run",
+            return_value=remote,
+        ):
+            self.assertTrue(finalize_finishing_run(conn, 7))
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        complete = [statement for statement in statements if "live_publication_status = 'complete'" in statement]
+        self.assertEqual(len(complete), 1)
+
+    def test_wandb_failure_remains_retryable_finalization_work(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 7,
+                "train_config": {
+                    "wandb_run_id": "run-7",
+                    "game": "SuperMarioBros-Nes-v0",
+                },
+                "outcome": "accepted",
+                "promotion_json": {"checkpoint_sha256": "a" * 64},
+            },
+        ]
+        cursor.fetchall.return_value = [
+            {
+                "stream_id": "train-7",
+                "final_sequence": 3,
+                "published_sequence": 3,
+            }
+        ]
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                side_effect=RuntimeError("W&B unavailable"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "W&B unavailable"),
+        ):
+            finalize_finishing_run(conn, 7)
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(
+            any("live_publication_next_retry_at" in statement for statement in statements)
+        )
+        self.assertFalse(
+            any("live_publication_status = 'complete'" in statement for statement in statements)
+        )
 
     def test_late_evaluations_keep_their_checkpoint_steps_without_internal_step(self) -> None:
         run = FakeRun()

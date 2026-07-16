@@ -978,6 +978,20 @@ def eval_service_health(
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     """Return whether a recent fleet pass successfully reconciled evaluation."""
+    controllers = controller_services_status(paths, runner=runner)
+    if controllers["installed"]:
+        evaluation = dict(controllers["controllers"]["evaluation"])
+        ready = bool(evaluation.get("loaded") and evaluation.get("running"))
+        return {
+            "ready": ready,
+            "loaded": bool(evaluation.get("loaded")),
+            "last_pass_stale": False,
+            "last_pass_age_seconds": None,
+            "eval_status": "ok" if ready else "error",
+            "eval_detail_status": "ok" if ready else "unavailable",
+            "error": None if ready else "evaluation controller is not running",
+            "app_cleanup": None,
+        }
     status = service_status(paths, runner=runner)
     last_pass = status.get("last_pass") or {}
     eval_lane = last_pass.get("eval") or {}

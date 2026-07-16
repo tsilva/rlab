@@ -400,6 +400,26 @@ class FleetServiceTests(unittest.TestCase):
         self.assertFalse(health["ready"])
         self.assertEqual(health["eval_status"], "error")
 
+    def test_eval_health_uses_the_persistent_evaluation_controller(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            for name in fleet_service.CONTROLLER_NAMES:
+                controller = fleet_service.controller_service_paths(paths, name)
+                controller.plist.parent.mkdir(parents=True, exist_ok=True)
+                controller.plist.write_text("installed", encoding="utf-8")
+
+            def runner(argv, **_kwargs):
+                label = str(argv[-1])
+                if label.endswith(".evaluation"):
+                    return completed(argv, stdout="state = running")
+                return completed(argv, returncode=113)
+
+            health = fleet_service.eval_service_health(paths, runner=runner)
+
+        self.assertTrue(health["ready"])
+        self.assertTrue(health["loaded"])
+        self.assertEqual(health["eval_status"], "ok")
+
     def test_eval_health_requires_successful_eval_detail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))

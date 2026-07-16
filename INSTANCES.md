@@ -89,6 +89,18 @@ independent hard safety ceiling is 20 and the effective acceptance-eval capacity
 uses the checked-in workload policy in `experiments/eval_capacity.yaml`: an eval-enabled train job
 is claimed only when total reserved load remains at or below 80% of effective Modal capacity.
 
+The 2026-07-16 acceptance-v1 benchmark ran five complete 100-episode evaluations and five weak
+fail-fast evaluations at each of 4, 8, and 16 requested CPUs against the exact immutable Level1-1
+contract. Complete-eval median/p95 seconds were 50.272/57.886 at 4 CPUs, 35.664/39.866 at 8 CPUs,
+and 34.583/38.004 at 16 CPUs. Fail-fast median/p95 seconds were 25.428/27.641, 20.390/24.094, and
+19.020/24.763 respectively. Eight CPUs is the smallest request whose complete median and p95 are
+both within 5% of the fastest configuration, so it is the selected request. With the measured
+5,500 FPS upper bound, three-call capacity, and 1.25 safety factor, the derived minimum interval is
+91,360 steps. The selected 250,000-step interval reserves 0.8771 calls of load per run; the 80%
+admission ceiling is 2.4 calls, so two such runs may be admitted concurrently and a third waits.
+Immutable benchmark evidence is under
+`s3://wandb/rlab/benchmarks/acceptance-v1/20260716T135436Z-4610f913/`.
+
 ```bash
 rlab eval modal status
 rlab eval modal preflight \
