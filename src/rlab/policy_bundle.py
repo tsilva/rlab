@@ -583,6 +583,19 @@ def build_recipe_document(
         train_config,
         label="recipe.json train_config",
     )
+    # Derive the recipe's environment identity from the same effective EnvConfig
+    # path used by the learner. Sparse source config omits defaults such as empty
+    # state vectors; hashing that sparse identity makes otherwise identical model
+    # metadata fail the cross-document contract before evaluation can start.
+    from rlab.env import resolve_env_config
+    from rlab.env_config import env_config_from_mapping
+    from rlab.env_metadata import training_metadata
+
+    effective_training_metadata = training_metadata(
+        resolve_env_config(env_config_from_mapping(train_config))
+    )
+    recipe["environment"] = effective_training_metadata["environment"]
+    recipe["environment_hash"] = effective_training_metadata["environment_hash"]
     asset = train_config.get("checkpoint_eval_asset_manifest")
     portable_asset = None
     if isinstance(asset, Mapping):

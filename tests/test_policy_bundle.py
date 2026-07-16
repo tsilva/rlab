@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from rlab.env import resolve_env_config
+from rlab.env_config import env_config_from_mapping
+from rlab.env_metadata import training_metadata
 from rlab.policy_bundle import (
     MODEL_DOCUMENT_TYPE,
     PolicyDocumentError,
@@ -101,6 +104,19 @@ def test_recipe_materializes_the_backend_config_executed_by_the_learner() -> Non
         executed_train_config
     )
     assert training_backend_config(recipe_train_config)["device"] == "auto"
+
+
+def test_recipe_materializes_the_environment_identity_executed_by_the_learner() -> None:
+    document = level1_1_recipe_document()
+    recipe = document["recipe"]
+    effective_training_metadata = training_metadata(
+        resolve_env_config(env_config_from_mapping(recipe["train_config"]))
+    )
+
+    assert recipe["environment"] == effective_training_metadata["environment"]
+    assert recipe["environment_hash"] == effective_training_metadata["environment_hash"]
+    assert recipe["environment"]["states"] == []
+    assert recipe["environment"]["state_probs"] == []
 
 
 @pytest.mark.parametrize(
