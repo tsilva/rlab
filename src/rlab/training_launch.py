@@ -455,10 +455,25 @@ def evaluation_evidence(conn, job_id: int) -> dict[str, Any] | None:
             """
             SELECT r.outcome, r.acceptance_committed_at, r.stop_delivery_slo_met,
                    r.promoted_eval_job_id, j.checkpoint_step, j.checkpoint_uri,
-                   j.checkpoint_sha256, a.attempt_number, a.result_uri,
+                   j.checkpoint_sha256, a.attempt_id, a.attempt_number, a.result_uri,
                    a.result_json, j.contract_json
             FROM eval_runs r
-            LEFT JOIN eval_jobs j ON j.id=r.promoted_eval_job_id
+            LEFT JOIN LATERAL (
+              SELECT candidate.*
+              FROM eval_jobs candidate
+              WHERE candidate.train_job_id=r.train_job_id
+                AND (
+                  candidate.id=r.promoted_eval_job_id
+                  OR (
+                    r.promoted_eval_job_id IS NULL
+                    AND candidate.status='succeeded'
+                    AND candidate.purpose='acceptance'
+                    AND candidate.source_announcement_json->>'kind'='final'
+                  )
+                )
+              ORDER BY (candidate.id=r.promoted_eval_job_id) DESC, candidate.id DESC
+              LIMIT 1
+            ) j ON TRUE
             LEFT JOIN eval_attempts a ON a.id=j.accepted_attempt_id
             WHERE r.train_job_id=%(job)s
             """,
@@ -470,6 +485,20 @@ def evaluation_evidence(conn, job_id: int) -> dict[str, Any] | None:
     value = dict(row)
     result = value.pop("result_json", None) or {}
     contract = value.pop("contract_json", None) or {}
+    validation_error = None
+    if result and contract and value.get("attempt_id"):
+        from rlab.modal_eval_protocol import validate_attempt_result
+
+        try:
+            result = validate_attempt_result(
+                result,
+                contract=contract,
+                attempt_id=str(value["attempt_id"]),
+            )
+        except Exception as exc:
+            validation_error = str(exc)
+    else:
+        validation_error = "terminal evaluation evidence is incomplete"
     episodes = result.get("episode_results") or []
     planned = (contract.get("manifest") or {}).get("episodes") or []
     actual_ids = [str(item.get("episode_id")) for item in episodes]
@@ -477,6 +506,8 @@ def evaluation_evidence(conn, job_id: int) -> dict[str, Any] | None:
     value.update(
         {
             "verdict": result.get("verdict"),
+            "evidence_valid": validation_error is None,
+            "validation_error": validation_error,
             "episodes_completed": len(episodes),
             "unique_episode_ids": len(set(actual_ids)),
             "episodes_planned": len(planned),
@@ -489,6 +520,65 @@ def evaluation_evidence(conn, job_id: int) -> dict[str, Any] | None:
         }
     )
     return value
+
+
+def classify_terminal(
+    row: Mapping[str, Any],
+    *,
+    evidence: Mapping[str, Any] | None,
+    metrics: Mapping[str, Any],
+    durable_objects: bool,
+    best_artifact: Any,
+    operational_clean: bool,
+    wandb_state: Any,
+    audit_errors: Sequence[str],
+) -> str:
+    base_valid = bool(
+        row.get("status") == "succeeded"
+        and not row.get("error")
+        and row.get("live_publication_status") == "complete"
+        and wandb_state == "finished"
+        and evidence
+        and evidence.get("evidence_valid")
+        and durable_objects
+        and best_artifact
+        and operational_clean
+        and not audit_errors
+    )
+    accepted = bool(
+        base_valid
+        and evidence
+        and evidence.get("outcome") == "accepted"
+        and evidence.get("verdict") == "accepted"
+        and evidence.get("exact_manifest")
+        and int(evidence.get("episodes_planned") or 0) > 0
+        and int(evidence.get("episodes_completed") or 0)
+        == int(evidence.get("episodes_planned") or 0)
+        and int(evidence.get("successes") or 0)
+        == int(evidence.get("episodes_planned") or 0)
+        and int(evidence.get("failures") or 0) == 0
+        and metrics.get("eval/acceptance/pass") == 1
+        and metrics.get("eval/full/outcome/success/rate/min") == 1
+        and metrics.get("eval/acceptance/episodes/completed")
+        == metrics.get("eval/acceptance/episodes/planned")
+    )
+    if accepted:
+        return "accepted"
+    rejected = bool(
+        base_valid
+        and evidence
+        and evidence.get("outcome") == "not_accepted"
+        and evidence.get("verdict") == "rejected"
+        and int(evidence.get("episodes_planned") or 0) > 0
+        and 0 < int(evidence.get("episodes_completed") or 0)
+        < int(evidence.get("episodes_planned") or 0)
+        and int(evidence.get("failures") or 0) >= 1
+        and metrics.get("eval/acceptance/pass") == 0
+        and float(metrics.get("eval/acceptance/failure/count") or 0) >= 1
+        and float(metrics.get("eval/acceptance/episodes/completed") or 0)
+        < float(metrics.get("eval/acceptance/episodes/planned") or 0)
+    )
+    return "goal_rejected" if rejected else "operational_failure"
 
 
 def object_audit(evidence: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -542,43 +632,26 @@ def audit_terminal(conn, job_id: int) -> dict[str, Any]:
         else None
     )
     metrics = wandb_result.get("metrics") or {}
-    accepted_evidence = bool(
-        evidence
-        and evidence.get("outcome") == "accepted"
-        and evidence.get("verdict") == "accepted"
-        and evidence.get("exact_manifest")
-        and int(evidence.get("episodes_planned") or 0) > 0
-        and int(evidence.get("episodes_completed") or 0)
-        == int(evidence.get("episodes_planned") or 0)
-        and int(evidence.get("successes") or 0)
-        == int(evidence.get("episodes_planned") or 0)
-        and int(evidence.get("failures") or 0) == 0
-    )
-    remote_acceptance = bool(
-        metrics.get("eval/acceptance/pass") == 1
-        and metrics.get("eval/full/outcome/success/rate/min") == 1
-        and metrics.get("eval/acceptance/episodes/completed")
-        == metrics.get("eval/acceptance/episodes/planned")
-    )
     durable_objects = bool(
         objects.get("checkpoint", {}).get("size")
         and objects.get("result", {}).get("size")
     )
-    verified_success = bool(
-        row.get("status") == "succeeded"
-        and not row.get("error")
-        and row.get("live_publication_status") == "complete"
-        and wandb_result.get("state") == "finished"
-        and accepted_evidence
-        and remote_acceptance
-        and durable_objects
-        and best_artifact
-        and operational_clean
-        and not audit_errors
+    terminal_classification = classify_terminal(
+        row,
+        evidence=evidence,
+        metrics=metrics,
+        durable_objects=durable_objects,
+        best_artifact=best_artifact,
+        operational_clean=operational_clean,
+        wandb_state=wandb_result.get("state"),
+        audit_errors=audit_errors,
     )
+    verified_success = terminal_classification == "accepted"
     return {
         "job_id": job_id,
         "verified_success": verified_success,
+        "terminal_classification": terminal_classification,
+        "operationally_valid": terminal_classification != "operational_failure",
         "status": row.get("status"),
         "batch_id": row.get("batch_id"),
         "run_name": row.get("run_name"),
@@ -714,12 +787,12 @@ def monitor_jobs(
                             "status": status,
                             "audit_errors": [str(exc)],
                         }
-                    if not summary.get("verified_success"):
+                    if summary.get("terminal_classification") == "operational_failure":
                         reason_text = summary.get("audit_errors") or [
-                            "terminal run did not satisfy the verified-success contract"
+                            "terminal run has inconsistent or incomplete operational evidence"
                         ]
                         fingerprint = hashlib.sha256(
-                            json.dumps(reason_text, sort_keys=True).encode()
+                            f"{job_id}:terminal_operational_failure".encode()
                         ).hexdigest()[:12]
                         if fingerprint not in item["bug_fingerprints"]:
                             item["bug_fingerprints"].add(fingerprint)
@@ -728,6 +801,7 @@ def monitor_jobs(
                                 job_id=job_id,
                                 fingerprint=fingerprint,
                                 reasons=reason_text,
+                                category="terminal_operational_failure",
                                 snapshot=current_snapshot,
                             )
                     emit("terminal", **summary)

@@ -104,6 +104,95 @@ class TrainingLaunchTests(unittest.TestCase):
         self.assertIn("AS active_worker_attempts", statement)
         self.assertNotIn("AS nonterminal_worker_attempts", statement)
 
+    def test_rejected_final_evidence_uses_canonical_natural_final_job(self) -> None:
+        result = {
+            "verdict": "rejected",
+            "episode_results": [
+                {"episode_id": "episode-1", "outcome": "success"},
+                {"episode_id": "episode-2", "outcome": "failure"},
+            ],
+            "claimed_aggregates": {"episodes_completed": 2},
+        }
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            "outcome": "not_accepted",
+            "promoted_eval_job_id": None,
+            "attempt_id": "attempt-1",
+            "result_json": result,
+            "contract_json": {
+                "manifest": {
+                    "episodes": [
+                        {"episode_id": "episode-1"},
+                        {"episode_id": "episode-2"},
+                        {"episode_id": "episode-3"},
+                    ]
+                }
+            },
+        }
+
+        with mock.patch(
+            "rlab.modal_eval_protocol.validate_attempt_result",
+            return_value=result,
+        ):
+            evidence = training_launch.evaluation_evidence(conn, 54)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("LEFT JOIN LATERAL", statement)
+        self.assertIn("source_announcement_json->>'kind'='final'", statement)
+        self.assertTrue(evidence["evidence_valid"])
+        self.assertEqual(evidence["episodes_planned"], 3)
+        self.assertEqual(evidence["episodes_completed"], 2)
+        self.assertEqual(evidence["failures"], 1)
+
+    def test_clean_fail_fast_rejection_is_not_operational_failure(self) -> None:
+        classification = training_launch.classify_terminal(
+            {
+                "status": "succeeded",
+                "error": None,
+                "live_publication_status": "complete",
+            },
+            evidence={
+                "evidence_valid": True,
+                "outcome": "not_accepted",
+                "verdict": "rejected",
+                "episodes_planned": 100,
+                "episodes_completed": 9,
+                "failures": 1,
+            },
+            metrics={
+                "eval/acceptance/pass": 0,
+                "eval/acceptance/episodes/planned": 100,
+                "eval/acceptance/episodes/completed": 9,
+                "eval/acceptance/failure/count": 1,
+            },
+            durable_objects=True,
+            best_artifact="entity/project/model:latest",
+            operational_clean=True,
+            wandb_state="finished",
+            audit_errors=[],
+        )
+
+        self.assertEqual(classification, "goal_rejected")
+
+    def test_missing_rejection_evidence_is_operational_failure(self) -> None:
+        classification = training_launch.classify_terminal(
+            {
+                "status": "succeeded",
+                "error": None,
+                "live_publication_status": "complete",
+            },
+            evidence=None,
+            metrics={"eval/acceptance/pass": 0},
+            durable_objects=False,
+            best_artifact=None,
+            operational_clean=True,
+            wandb_state="finished",
+            audit_errors=[],
+        )
+
+        self.assertEqual(classification, "operational_failure")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,12 +45,21 @@ The helper emits compact JSON lines. Follow them literally:
 - `wandb_url`: immediately send the clickable URL to the user. Do not wait for another phase.
 - `progress`: normally keep silent. Give at most one short update every two minutes unless the user asks for more.
 - `potential_bug`: immediately spawn one `training_run_investigator` custom agent for that fingerprint. Pass the job ID, fingerprint, reasons, snapshot, and the repository path. Continue monitoring while it investigates.
-- `terminal`: retain its complete summary for the final response.
+- `terminal`: retain its complete summary for the final response. Follow
+  `terminal_classification` literally: `accepted` is verified success,
+  `goal_rejected` is a normal unsuccessful research outcome, and
+  `operational_failure` requires investigation.
 - `workflow_error`: report the concise error. If a `potential_bug` event preceded it, wait for that investigator; otherwise this is an input or preflight failure and no investigator is required.
 - `workspace_cleaned`: no action is required.
 - `complete`: the helper and temporary-worktree cleanup are done.
 
 For a repeated fingerprint, reuse or follow up with the existing investigator instead of spawning another. For a distinct fingerprint, spawn another investigator after any current one completes. Wait for investigator reports before the final response.
+
+When the requested outcome requires an accepted run, do not stop after
+`goal_rejected`. Wait for `complete`, then invoke the helper again with the next
+explicit training seed in the `rlab.seeds` training range. Preserve any finite
+`--set train.timesteps=...` cap the user requested. A validated fail-fast
+rejection is not a bug and does not get an investigator.
 
 ## Bug boundary
 
