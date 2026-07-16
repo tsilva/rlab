@@ -18,6 +18,7 @@ from rlab.modal_eval_orchestrator import (
     accept_attempt_result,
     available_eval_slots,
     budget_allows,
+    cancel_requested_attempts,
     deterministic_eval_failure,
     dispatch_pending,
     finalize_runs,
@@ -158,6 +159,37 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertIn("t.status = 'canceled'", runs_sql)
         self.assertIn("outcome = 'canceled'", runs_sql)
         self.assertIn("r.status NOT IN ('complete', 'failed', 'canceled')", runs_sql)
+
+    def test_canceling_eval_attempt_also_terminalizes_worker(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [
+            {
+                "id": 101,
+                "attempt_id": "attempt-101",
+                "modal_call_id": "fc-101",
+            }
+        ]
+        cursor.rowcount = 1
+        invoker = mock.MagicMock()
+
+        changed = cancel_requested_attempts(
+            conn,
+            invoker,
+            deadline_monotonic=time.monotonic() + 1,
+        )
+
+        self.assertEqual(changed, 1)
+        invoker.cancel.assert_called_once_with("fc-101")
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertIn("a.attempt_id", statements[0])
+        self.assertTrue(
+            any(
+                "UPDATE worker_attempts" in statement
+                and "status = 'canceled'" in statement
+                for statement in statements
+            )
+        )
 
     def test_operator_retry_starts_a_fresh_attempt_round(self) -> None:
         conn = mock.MagicMock()
@@ -877,6 +909,17 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             state, detail = DefaultModalInvoker().poll("fc-test")
         self.assertEqual(state, "failed")
         self.assertIn("remote worker failed", str(detail))
+
+    def test_output_expired_is_ambiguous_until_durable_result_arrives(self) -> None:
+        import modal
+
+        call = mock.MagicMock()
+        call.get.side_effect = modal.exception.OutputExpiredError()
+        with mock.patch("modal.FunctionCall.from_id", return_value=call):
+            state, detail = DefaultModalInvoker().poll("fc-test")
+
+        self.assertEqual(state, "pending")
+        self.assertIsNone(detail)
 
     def test_only_transient_failures_are_retryable(self) -> None:
         self.assertTrue(deterministic_eval_failure("checkpoint hash mismatch"))

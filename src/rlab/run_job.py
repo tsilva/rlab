@@ -53,6 +53,18 @@ def worker_modules(
     return producer, publisher
 
 
+def publication_attempt_count(
+    *,
+    telemetry_transport: str,
+    publisher_results: list[Mapping[str, Any]],
+) -> int:
+    """Count W&B attempts without treating mailbox relay execution as publication."""
+
+    if telemetry_transport == "neon_mailbox_v1":
+        return 0
+    return int(bool(publisher_results))
+
+
 def load_payload(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -487,7 +499,10 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 if publisher_drained
                 else "pending"
             ),
-            "attempts": int(bool(publisher_results)),
+            "attempts": publication_attempt_count(
+                telemetry_transport=telemetry_transport,
+                publisher_results=publisher_results,
+            ),
             "error": publication_error,
         },
         "evaluation": {

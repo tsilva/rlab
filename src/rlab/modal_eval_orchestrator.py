@@ -146,11 +146,10 @@ class DefaultModalInvoker:
         call = modal.FunctionCall.from_id(call_id)
         try:
             return "finished", call.get(timeout=0)
-        except TimeoutError:
+        except (TimeoutError, modal.exception.TimeoutError):
             return "pending", None
         except (
             modal.exception.FunctionTimeoutError,
-            modal.exception.OutputExpiredError,
             modal.exception.RemoteError,
             modal.exception.UserCodeException,
             RuntimeError,
@@ -1056,7 +1055,7 @@ def cancel_requested_attempts(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT a.id, a.modal_call_id
+            SELECT a.id, a.attempt_id, a.modal_call_id
             FROM eval_attempts a
             JOIN eval_jobs j ON j.id = a.eval_job_id
             JOIN train_jobs t ON t.id = j.train_job_id
@@ -1087,7 +1086,20 @@ def cancel_requested_attempts(
                     """,
                     {"id": int(attempt["id"]), "error": error},
                 )
-                changed += cur.rowcount
+                attempt_changed = cur.rowcount
+                cur.execute(
+                    """
+                    UPDATE worker_attempts
+                    SET status = 'canceled', finished_at = now(), error = %(error)s
+                    WHERE attempt_id = %(attempt_id)s
+                      AND status IN ('launching', 'running')
+                    """,
+                    {
+                        "attempt_id": str(attempt["attempt_id"]),
+                        "error": error,
+                    },
+                )
+                changed += attempt_changed
     return changed
 
 
