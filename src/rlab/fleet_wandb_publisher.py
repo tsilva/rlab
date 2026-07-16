@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import os
 import subprocess
 import sys
@@ -383,56 +382,57 @@ def drain_cycle_parallel(
     limit: int = 20,
     deadline_monotonic: float | None = None,
 ) -> dict[str, int]:
-    """Publish independent W&B runs in isolated processes.
+    """Launch independent W&B publishers without blocking eval reconciliation.
 
     W&B owns process-global SDK state, so process isolation preserves the per-run
-    advisory-lock contract while allowing active runs to drain concurrently.
+    advisory-lock contract while allowing active runs to drain concurrently. The
+    child records publication failure durably; the service observes it next pass.
     """
 
     run_ids = pending_metric_run_ids(conn, limit=max_runs)
     if not run_ids:
-        return {"runs_attempted": 0, "batches_published": 0, "runs_failed": 0}
-    timeout = None
-    if deadline_monotonic is not None:
-        timeout = max(1.0, deadline_monotonic - time.monotonic())
-
-    def publish(train_job_id: int) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "rlab.fleet_wandb_publisher",
-                "--limit",
-                str(max(1, int(limit))),
-                "--train-job-id",
-                str(train_job_id),
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-    published = 0
+        return {
+            "runs_attempted": 0,
+            "runs_started": 0,
+            "batches_published": 0,
+            "runs_failed": 0,
+        }
+    if deadline_monotonic is not None and deadline_monotonic <= time.monotonic():
+        return {
+            "runs_attempted": len(run_ids),
+            "runs_started": 0,
+            "batches_published": 0,
+            "runs_failed": len(run_ids),
+        }
+    started = 0
     failed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(run_ids)) as executor:
-        futures = [executor.submit(publish, train_job_id) for train_job_id in run_ids]
-        for future in futures:
-            try:
-                completed = future.result()
-            except (OSError, subprocess.TimeoutExpired):
-                failed += 1
-                continue
-            if completed.returncode:
-                failed += 1
-                continue
-            for line in completed.stdout.splitlines():
-                if line.startswith("published_batches="):
-                    published += int(line.partition("=")[2])
-                    break
+    for train_job_id in run_ids:
+        try:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "rlab.fleet_wandb_publisher",
+                    "--limit",
+                    str(max(1, int(limit))),
+                    "--train-job-id",
+                    str(train_job_id),
+                ],
+                cwd=repo_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError:
+            failed += 1
+        else:
+            started += 1
     return {
         "runs_attempted": len(run_ids),
-        "batches_published": published,
+        "runs_started": started,
+        "batches_published": 0,
         "runs_failed": failed,
     }
 

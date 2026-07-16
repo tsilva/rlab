@@ -6,24 +6,26 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+if __package__:
+    from .dockerfile_inputs import runtime_dockerfile_bytes
+else:
+    from dockerfile_inputs import runtime_dockerfile_bytes
+
 
 RUNTIME_INPUT_PATHS = (
     ".dockerignore",
-    "containers/train/Dockerfile",
-    "containers/train/dependency_key.py",
     "containers/train/entrypoint.sh",
     "containers/train/rlab",
-    "containers/train/runtime_key.py",
     "containers/train/smoke.py",
     "experiments/machines.yaml",
     "experiments/modal_eval.yaml",
     "pyproject.toml",
     "scripts",
     "src",
-    "uv.lock",
 )
 
-RUNTIME_KEY_SCHEMA = b"rlab-runtime-input-v1\0"
+OVERLAY_KEY_SCHEMA = b"rlab-runtime-overlay-key-v2\0"
+RUNTIME_KEY_SCHEMA = b"rlab-runtime-input-v2\0"
 
 
 def _indexed_blob_contents(
@@ -64,7 +66,7 @@ def _indexed_blob_contents(
     return contents
 
 
-def runtime_key(*, repo_root: Path) -> str:
+def overlay_key(*, repo_root: Path) -> str:
     result = subprocess.run(
         ["git", "ls-files", "--stage", "-z", "--", *RUNTIME_INPUT_PATHS],
         cwd=repo_root,
@@ -77,7 +79,7 @@ def runtime_key(*, repo_root: Path) -> str:
             result.stderr.decode("utf-8", errors="replace").strip()
             or "failed to enumerate runtime inputs"
         )
-    digest = hashlib.sha256(RUNTIME_KEY_SCHEMA)
+    digest = hashlib.sha256(OVERLAY_KEY_SCHEMA)
     entries = [entry for entry in result.stdout.split(b"\0") if entry]
     if not entries:
         raise RuntimeError("runtime input set is empty")
@@ -101,6 +103,28 @@ def runtime_key(*, repo_root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
         digest.update(b"\0")
+    dockerfile = repo_root / "containers/train/Dockerfile"
+    dockerfile_content = runtime_dockerfile_bytes(dockerfile)
+    digest.update(b"Dockerfile.runtime\0")
+    digest.update(len(dockerfile_content).to_bytes(8, "big"))
+    digest.update(dockerfile_content)
+    digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _normalized_digest(value: str) -> str:
+    normalized = value.removeprefix("sha256:").lower()
+    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+        raise ValueError("dependency digest must be a sha256 digest")
+    return f"sha256:{normalized}"
+
+
+def runtime_key(*, repo_root: Path, dependency_digest: str) -> str:
+    digest = hashlib.sha256(RUNTIME_KEY_SCHEMA)
+    digest.update(f"sha256:{overlay_key(repo_root=repo_root)}".encode())
+    digest.update(b"\0")
+    digest.update(_normalized_digest(dependency_digest).encode())
+    digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -111,8 +135,16 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parents[2],
     )
+    parser.add_argument("--dependency-digest")
+    parser.add_argument("--overlay-only", action="store_true")
     args = parser.parse_args()
-    print(runtime_key(repo_root=args.repo_root.resolve()))
+    repo_root = args.repo_root.resolve()
+    if args.overlay_only:
+        print(overlay_key(repo_root=repo_root))
+        return
+    if not args.dependency_digest:
+        parser.error("--dependency-digest is required unless --overlay-only is used")
+    print(runtime_key(repo_root=repo_root, dependency_digest=args.dependency_digest))
 
 
 if __name__ == "__main__":

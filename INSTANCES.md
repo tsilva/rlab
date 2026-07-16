@@ -110,11 +110,12 @@ ROM object, preview R2/public-URL path, local Modal credentials, and exact runti
 deployment are all present. Every normal screen evaluation captures a bounded policy-observation
 MP4 in R2 and projects it as `eval/screen/preview` in the producing W&B run.
 
-The train-image workflow runs on every push to `main` and publishes an exact-source version-4
-`rlab-train-image.json` as soon as the immutable image exists. Runtime images are keyed by a
-fingerprint of their complete runtime inputs rather than by commit: goal, recipe, test, and
-unrelated documentation changes therefore reuse a proven digest. A reused runtime preserves its
-original `runtime_build_source_sha`; the new receipt still records the exact pushed `source_sha`.
+The train-image workflow runs on every push to `main` and publishes an exact-source version-5
+`rlab-train-image.json` as soon as the immutable image exists. Runtime images are keyed by the
+runtime overlay plus the immutable dependency digest rather than by commit: goal, recipe, test, and
+unrelated documentation changes therefore reuse a proven digest. The receipt also records the GPU,
+dependency, and overlay keys and exact plan/base hashes. A reused runtime preserves its original
+`runtime_build_source_sha`; the new receipt still records the exact pushed `source_sha`.
 New fingerprints build an image and deploy the digest-specific Modal app. Reused fingerprints skip
 both operations but still startup-probe the existing app and publish an exact-source
 `rlab-modal-eval-readiness.json`. Local and `none` submissions may proceed from the early image
@@ -141,8 +142,11 @@ single-use containers impose the full cold-start cost on every evaluation; the g
 dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
 Modal supports `max_inputs > 1`.
 
-Ready promotion projections are enqueued in bounded batches rather than one per service pass, and
-the service drains up to three independent W&B runs concurrently in isolated publisher processes.
+Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches
+rather than one per service pass, and the service drains up to three independent W&B runs
+concurrently in isolated background publisher processes. Publisher launch does not block eval
+reconciliation; publication completion and failure remain durable mailbox state observed by later
+passes.
 Each run retains its session advisory lock, so concurrent publication cannot interleave writers for
 the same W&B run. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
@@ -184,6 +188,10 @@ directories, `.env.runner` permissions, digest pulls, and the container smoke
 path. The beast hosts should remain simple Docker/GPU hosts; they do not run a
 queue service and do not schedule experiments.
 
+Drain a host before intentionally powering it off. A drained host with no active launches is not
+contacted by reconciliation, so an offline spare does not degrade unrelated active work; active
+launches remain observable and prevent that skip until they become terminal.
+
 ## beast-3 / RTX4090
 
 - Machine: `beast-3`.
@@ -205,7 +213,9 @@ queue service and do not schedule experiments.
 - Prewarming: enabled. The Mac fleet service pulls and probes the latest successful main-runtime
   receipt without reserving a training slot. Exactly that latest digest is temporary cleanup
   demand; a superseded digest is pruned once no queued or active job requires it. Prewarm failures
-  appear in fleet-service health and do not stop running jobs.
+  appear in fleet-service health and do not stop running jobs. A failed prewarm also suppresses
+  runtime-image pruning for that pass, preserving the last known good host image while inactive
+  container cleanup continues.
 
 Use beast-3 for the run that decides the main research loop unless you are
 intentionally testing small-GPU behavior.
@@ -287,6 +297,20 @@ After collapsing the application files into one scratch overlay, fresh-runner ru
 skipped the dependency build, built and pushed the runtime image in 10 seconds, and completed the
 workflow in 37 seconds. That is an approximately 88% runtime-step reduction from the prior median;
 the accepted build transferred no 3.12 GB dependency blob and exported no runtime cache.
+
+The 3.12 GB blob is the Linux x86-64 Python artifact set, not rlab source. For the current lock,
+the 121 selected archives total 3.108 GB: the 20 PyTorch/Triton/CUDA/NVIDIA archives contribute
+2.732 GB and the other 101 train-runtime archives contribute 0.376 GB. The largest individual
+archives are Torch (532 MB), cuBLAS (423 MB), cuDNN (366 MB), cuFFT (214 MB), NCCL (206 MB),
+Triton (202 MB), and cuSOLVER (201 MB).
+The current image contract isolates those packages in the content-addressed
+`rlab-train-gpu:build-<gpu-key>` foundation, installs the remaining projected train dependencies
+in `rlab-train-dependencies:build-<dependency-key>`, and adds source as a linked runtime overlay.
+Branch pushes prebuild changed foundations before merge. Keys depend only on their own layer inputs
+and the immutable digest directly below them; mutable maximal `buildcache` tags are not used.
+Therefore source changes should publish a small overlay, ordinary dependency changes should retain
+the GPU foundation, and only an actual GPU plan or GPU-stage change should require the multi-GB
+transfer again on a host that does not already contain that digest.
 
 Before readiness was split, exact-source run `29348722980` built the source-only image in about 8
 seconds but did not publish the usable runtime receipt until the CI image pull/contract smoke and

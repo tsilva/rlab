@@ -344,6 +344,7 @@ def ingest_mailbox_announcements(
     limit: int = 50,
 ) -> int:
     ingested = 0
+    next_announcement_ids: dict[int, int] = {}
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -400,7 +401,10 @@ def ingest_mailbox_announcements(
             ingested += 1
             continue
         ledger_id = int(payload.get("ledger_id") or 0)
-        if ledger_id != int(event["next_announcement_id"]):
+        expected_ledger_id = next_announcement_ids.setdefault(
+            train_job_id, int(event["next_announcement_id"])
+        )
+        if ledger_id != expected_ledger_id:
             continue
         announcement: Mapping[str, Any] = payload
         if event_type == "checkpoint_ready":
@@ -469,6 +473,7 @@ def ingest_mailbox_announcements(
                         "DELETE FROM attempt_events WHERE id = %(id)s",
                         {"id": int(event["id"])},
                     )
+                    next_announcement_ids[train_job_id] = ledger_id + 1
         ingested += 1
     return ingested
 

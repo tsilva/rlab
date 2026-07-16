@@ -12,15 +12,13 @@ on:
   pull_request:
     paths:
       - .dockerignore
+      - .github/workflows/rlab-train-dependencies.yml
       - .github/workflows/rlab-train-image.yml
       - containers/train/**
       - experiments/machines.yaml
       - experiments/modal_eval.yaml
       - scripts/**
       - src/**
-      - INSTANCES.md
-      - METRICS.md
-      - README.md
       - pyproject.toml
       - uv.lock
 
@@ -35,41 +33,85 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/rlab-train
+  GPU_IMAGE_NAME: ${{ github.repository }}/rlab-train-gpu
   DEPENDENCY_IMAGE_NAME: ${{ github.repository }}/rlab-train-dependencies
   SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
 
 jobs:
+  dependencies:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/rlab-train-dependencies.yml
+    with:
+      source_sha: ${{ inputs.source_sha || github.sha }}
+    secrets: inherit
+
   build:
+    needs: dependencies
+    if: always() && (github.event_name == 'pull_request' || needs.dependencies.result == 'success')
     runs-on: ubuntu-24.04
     outputs:
-      dependency_digest: ${{ steps.dependency_base.outputs.digest }}
       digest: ${{ steps.published_image.outputs.digest }}
-      python_image: ${{ steps.build_meta.outputs.python_image }}
       runtime_image_ref: ${{ steps.published_image.outputs.runtime_image_ref }}
       runtime_input_sha256: ${{ steps.build_meta.outputs.runtime_input_sha256 }}
       runtime_build_source_sha: ${{ steps.runtime_identity.outputs.runtime_build_source_sha }}
       deploy_required: ${{ steps.runtime_identity.outputs.deploy_required }}
-      uv_image: ${{ steps.build_meta.outputs.uv_image }}
-      uv_lock_sha256: ${{ steps.build_meta.outputs.uv_lock_sha256 }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
-
-      - name: Validate exact source checkout
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+      - run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: astral-sh/setup-uv@v7
+      - name: Validate deterministic lock projections
+        run: uv run --frozen --only-group train-image-build python containers/train/lock_projection.py --check
+      - uses: docker/setup-buildx-action@v3
+      - if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve dependency identity
+        id: dependency
+        env:
+          PUBLISHED_DEPENDENCY_DIGEST: ${{ needs.dependencies.outputs.dependency_digest }}
+          PUBLISHED_DEPENDENCY_KEY: ${{ needs.dependencies.outputs.dependency_key }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            gpu_key=$(python containers/train/gpu_key.py)
+            gpu_image="${REGISTRY}/${GPU_IMAGE_NAME}:build-${gpu_key}"
+            gpu_digest=""
+            if metadata=$(docker buildx imagetools inspect "$gpu_image" 2>/dev/null); then
+              gpu_digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
+            fi
+            gpu_identity="${gpu_digest:-sha256:${gpu_key}}"
+            dependency_key=$(python containers/train/dependency_key.py --gpu-digest "$gpu_identity")
+            dependency_image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}:build-${dependency_key}"
+            dependency_digest=""
+            if [[ -n "$gpu_digest" ]] \
+              && metadata=$(docker buildx imagetools inspect "$dependency_image" 2>/dev/null); then
+              dependency_digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
+            fi
+            if [[ -n "$dependency_digest" ]]; then
+              runtime_base="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}@${dependency_digest}"
+            else
+              dependency_digest="sha256:${dependency_key}"
+              runtime_base="dependencies"
+            fi
+            {
+              echo "digest=${dependency_digest}"
+              echo "key=${dependency_key}"
+              echo "runtime_base=${runtime_base}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            test -n "$PUBLISHED_DEPENDENCY_DIGEST"
+            test -n "$PUBLISHED_DEPENDENCY_KEY"
+            {
+              echo "digest=$PUBLISHED_DEPENDENCY_DIGEST"
+              echo "key=$PUBLISHED_DEPENDENCY_KEY"
+              echo "runtime_base=${REGISTRY}/${DEPENDENCY_IMAGE_NAME}@${PUBLISHED_DEPENDENCY_DIGEST}"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build metadata
         id: build_meta
@@ -77,84 +119,19 @@ jobs:
           {
             echo "created=$(git show -s --format=%cI HEAD)"
             echo "uv_lock_sha256=$(sha256sum uv.lock | awk '{print $1}')"
-            echo "dependency_key=$(python containers/train/dependency_key.py)"
-            echo "runtime_input_sha256=$(python containers/train/runtime_key.py)"
+            echo "overlay_key=$(python containers/train/runtime_key.py --overlay-only)"
+            echo "runtime_input_sha256=$(python containers/train/runtime_key.py --dependency-digest '${{ steps.dependency.outputs.digest }}')"
             echo "python_image=$(awk -F= '/^ARG PYTHON_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
             echo "uv_image=$(awk -F= '/^ARG UV_IMAGE=/ {print $2; exit}' containers/train/Dockerfile)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Resolve immutable dependency image
-        id: existing_dependencies
-        run: |
-          set -euo pipefail
-          image="${REGISTRY}/${DEPENDENCY_IMAGE_NAME}"
-          tag="build-${{ steps.build_meta.outputs.dependency_key }}"
-          if metadata=$(docker buildx imagetools inspect "${image}:${tag}" 2>/dev/null); then
-            digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
-            test -n "$digest"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
-            echo "Reusing immutable dependency image ${image}:${tag}@${digest}"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build dependency image
-        id: build_dependencies
-        if: github.event_name != 'pull_request' && steps.existing_dependencies.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: containers/train/Dockerfile
-          target: dependencies
-          platforms: linux/amd64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:build-${{ steps.build_meta.outputs.dependency_key }}
-          build-args: |
-            UV_LOCK_SHA256=${{ steps.build_meta.outputs.uv_lock_sha256 }}
-          cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
-            type=gha
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
-
-      - name: Resolve dependency base
-        id: dependency_base
-        env:
-          BUILT_DIGEST: ${{ steps.build_dependencies.outputs.digest }}
-          EXISTING_DIGEST: ${{ steps.existing_dependencies.outputs.digest }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
-          if [[ -n "$digest" ]]; then
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
-            echo "runtime_base=${REGISTRY}/${DEPENDENCY_IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
-          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            echo "digest=unknown" >> "$GITHUB_OUTPUT"
-            echo "runtime_base=dependencies" >> "$GITHUB_OUTPUT"
-            echo "No published dependency image matches this pull request; using the internal stage"
-          else
-            echo "::error::No immutable dependency image is available"
-            exit 1
-          fi
-
-      - name: Resolve immutable image
+      - name: Resolve immutable runtime image
         id: existing_image
         if: github.event_name != 'pull_request'
         run: |
-          set -euo pipefail
-          image="${REGISTRY}/${IMAGE_NAME}"
-          tag="runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}"
-          if metadata=$(docker buildx imagetools inspect "${image}:${tag}" 2>/dev/null); then
-            digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")
-            test -n "$digest"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
-            echo "Reusing immutable image ${image}:${tag}@${digest}"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          image="${REGISTRY}/${IMAGE_NAME}:runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}"
+          if metadata=$(docker buildx imagetools inspect "$image" 2>/dev/null); then
+            echo "digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$metadata")" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Docker metadata
@@ -162,12 +139,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}
+          tags: type=raw,value=runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}
 
       - name: Build image
         id: build
-        if: github.event_name == 'pull_request' || steps.existing_image.outputs.exists != 'true'
+        if: github.event_name == 'pull_request' || steps.existing_image.outputs.digest == ''
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -179,24 +155,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            RUNTIME_BASE=${{ steps.dependency_base.outputs.runtime_base }}
+            RUNTIME_BASE=${{ steps.dependency.outputs.runtime_base }}
             BUILD_DATE=${{ steps.build_meta.outputs.created }}
             VCS_REF=${{ env.SOURCE_SHA }}
             RUNTIME_INPUT_SHA256=${{ steps.build_meta.outputs.runtime_input_sha256 }}
-            UV_LOCK_SHA256=${{ steps.build_meta.outputs.uv_lock_sha256 }}
             DEPENDENCY_IMAGE=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}
-            DEPENDENCY_IMAGE_DIGEST=${{ steps.dependency_base.outputs.digest }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.DEPENDENCY_IMAGE_NAME }}:buildcache
+            DEPENDENCY_IMAGE_DIGEST=${{ steps.dependency.outputs.digest }}
 
       - name: Resolve published digest
         id: published_image
         if: github.event_name != 'pull_request'
         env:
-          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
-          EXISTING_DIGEST: ${{ steps.existing_image.outputs.digest }}
+          BUILT: ${{ steps.build.outputs.digest }}
+          EXISTING: ${{ steps.existing_image.outputs.digest }}
         run: |
-          set -euo pipefail
-          digest="${BUILT_DIGEST:-${EXISTING_DIGEST:-}}"
+          digest="${BUILT:-${EXISTING:-}}"
           test -n "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "runtime_image_ref=docker:${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
@@ -205,58 +178,63 @@ jobs:
         id: runtime_identity
         if: github.event_name != 'pull_request'
         env:
-          EXISTING: ${{ steps.existing_image.outputs.exists }}
-          RUNTIME_INPUT_SHA256: ${{ steps.build_meta.outputs.runtime_input_sha256 }}
+          EXISTING: ${{ steps.existing_image.outputs.digest }}
         run: |
-          set -euo pipefail
-          if [[ "$EXISTING" == "true" ]]; then
-            image="${REGISTRY}/${IMAGE_NAME}:runtime-${RUNTIME_INPUT_SHA256}"
+          if [[ -n "$EXISTING" ]]; then
+            image="${REGISTRY}/${IMAGE_NAME}:runtime-${{ steps.build_meta.outputs.runtime_input_sha256 }}"
             labels=$(docker buildx imagetools inspect "$image" --format '{{json .Image.Config.Labels}}')
             source_sha=$(jq -r '."org.opencontainers.image.revision" // empty' <<<"$labels")
+            echo "deploy_required=false" >> "$GITHUB_OUTPUT"
           else
             source_sha="$SOURCE_SHA"
+            echo "deploy_required=true" >> "$GITHUB_OUTPUT"
           fi
           test -n "$source_sha"
           echo "runtime_build_source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-          if [[ "$EXISTING" == "true" ]]; then
-            echo "deploy_required=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy_required=true" >> "$GITHUB_OUTPUT"
-          fi
 
-      - name: Write early image receipt
+      - name: Write image receipt
         if: github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.published_image.outputs.digest }}
           RUNTIME_IMAGE_REF: ${{ steps.published_image.outputs.runtime_image_ref }}
+          RUNTIME_INPUT_SHA256: ${{ steps.build_meta.outputs.runtime_input_sha256 }}
+          OVERLAY_KEY: ${{ steps.build_meta.outputs.overlay_key }}
           UV_LOCK_SHA256: ${{ steps.build_meta.outputs.uv_lock_sha256 }}
           PYTHON_IMAGE: ${{ steps.build_meta.outputs.python_image }}
           UV_IMAGE: ${{ steps.build_meta.outputs.uv_image }}
-          DEPENDENCY_DIGEST: ${{ steps.dependency_base.outputs.digest }}
-          RUNTIME_INPUT_SHA256: ${{ steps.build_meta.outputs.runtime_input_sha256 }}
+          DEPENDENCY_DIGEST: ${{ steps.dependency.outputs.digest }}
+          DEPENDENCY_KEY: ${{ steps.dependency.outputs.key }}
+          GPU_DIGEST: ${{ needs.dependencies.outputs.gpu_digest }}
+          GPU_KEY: ${{ needs.dependencies.outputs.gpu_key }}
+          GPU_PLAN_SHA256: ${{ needs.dependencies.outputs.gpu_plan_sha256 }}
+          TRAIN_PLAN_SHA256: ${{ needs.dependencies.outputs.train_plan_sha256 }}
           RUNTIME_BUILD_SOURCE_SHA: ${{ steps.runtime_identity.outputs.runtime_build_source_sha }}
         run: |
           python - <<'PY'
           import json
           import os
 
+          registry = os.environ["REGISTRY"]
           payload = {
-              "schema_version": 4,
-              "image": f"{os.environ['REGISTRY']}/{os.environ['IMAGE_NAME']}",
+              "schema_version": 5,
+              "image": f"{registry}/{os.environ['IMAGE_NAME']}",
               "digest": os.environ["DIGEST"],
               "runtime_image_ref": os.environ["RUNTIME_IMAGE_REF"],
               "source_sha": os.environ["SOURCE_SHA"],
               "tags": [f"runtime-{os.environ['RUNTIME_INPUT_SHA256']}"],
               "runtime_input_sha256": os.environ["RUNTIME_INPUT_SHA256"],
+              "overlay_key": os.environ["OVERLAY_KEY"],
+              "dependency_key": os.environ["DEPENDENCY_KEY"],
+              "gpu_key": os.environ["GPU_KEY"],
               "runtime_build_source_sha": os.environ["RUNTIME_BUILD_SOURCE_SHA"],
               "uv_lock_sha256": os.environ["UV_LOCK_SHA256"],
+              "train_plan_sha256": os.environ["TRAIN_PLAN_SHA256"],
+              "gpu_plan_sha256": os.environ["GPU_PLAN_SHA256"],
               "base_images": {
                   "python": os.environ["PYTHON_IMAGE"],
                   "uv": os.environ["UV_IMAGE"],
-                  "dependencies": (
-                      f"docker:{os.environ['REGISTRY']}/{os.environ['DEPENDENCY_IMAGE_NAME']}"
-                      f"@{os.environ['DEPENDENCY_DIGEST']}"
-                  ),
+                  "gpu": f"docker:{registry}/{os.environ['GPU_IMAGE_NAME']}@{os.environ['GPU_DIGEST']}",
+                  "dependencies": f"docker:{registry}/{os.environ['DEPENDENCY_IMAGE_NAME']}@{os.environ['DEPENDENCY_DIGEST']}",
               },
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
@@ -267,7 +245,7 @@ jobs:
           PY
           python -m json.tool rlab-train-image.json
 
-      - name: Upload early image receipt
+      - name: Upload image receipt
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:

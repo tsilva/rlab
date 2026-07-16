@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -51,6 +52,79 @@ def ssh_machine():
 
 
 class FleetHostTests(unittest.TestCase):
+    def test_drained_idle_machine_is_not_contacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            machines_path = Path(temporary_dir) / "machines.yaml"
+            write_machine_registry(
+                machines_path,
+                backend="docker_ssh",
+                max_parallel_containers=4,
+                host_root="/home/tsilva/rlab",
+                machine_name="beast-2",
+            )
+            conn = mock.MagicMock()
+            with (
+                mock.patch.object(fleet, "connect", return_value=conn),
+                mock.patch.object(fleet, "machine_mutation_lock", return_value=nullcontext()),
+                mock.patch.object(fleet, "machine_control", return_value={"drained": True}),
+                mock.patch.object(fleet, "active_job_launches", return_value=[]),
+                mock.patch.object(fleet, "DockerRunnerHost") as host,
+            ):
+                result = fleet.run_service_machine_pass(
+                    machine_name="beast-2",
+                    machines_path=machines_path,
+                    repo_root=Path(temporary_dir),
+                    deadline_monotonic=10**12,
+                )
+
+        self.assertEqual(result["prewarm"]["status"], "skipped_drained")
+        self.assertIn("drained", result["maintenance_skipped"])
+        self.assertEqual(host.return_value.method_calls, [])
+
+    def test_failed_prewarm_preserves_host_runtime_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            machines_path = root / "machines.yaml"
+            write_machine_registry(
+                machines_path,
+                backend="docker_ssh",
+                max_parallel_containers=4,
+                host_root="/home/tsilva/rlab",
+                machine_name="beast-3",
+            )
+            payload = json.loads(machines_path.read_text(encoding="utf-8"))
+            payload["machines"]["beast-3"]["prewarm_latest_runtime"] = True
+            machines_path.write_text(json.dumps(payload), encoding="utf-8")
+            conn = mock.MagicMock()
+            release = SimpleNamespace(runtime_image_ref=RUNTIME_IMAGE_REF)
+            with (
+                mock.patch.object(fleet, "connect", return_value=conn),
+                mock.patch.object(fleet, "machine_mutation_lock", return_value=nullcontext()),
+                mock.patch.object(fleet, "machine_control", return_value={"drained": False}),
+                mock.patch.object(fleet, "run_reconcile_fill_pass", return_value=(0, 0)),
+                mock.patch.object(fleet, "recover_live_publication", return_value=0),
+                mock.patch.object(fleet, "recent_runtime_images", return_value=(release,)),
+                mock.patch.object(
+                    fleet, "prewarm_latest_runtime", side_effect=RuntimeError("pull failed")
+                ),
+                mock.patch.object(
+                    fleet, "prune_inactive_job_containers", return_value=2
+                ) as prune_containers,
+                mock.patch.object(fleet, "prune_stale_runtime_images") as prune_images,
+            ):
+                result = fleet.run_service_machine_pass(
+                    machine_name="beast-3",
+                    machines_path=machines_path,
+                    repo_root=root,
+                    deadline_monotonic=10**12,
+                )
+
+        self.assertEqual(result["prewarm"]["status"], "error")
+        self.assertEqual(result["removed_containers"], 2)
+        self.assertIn("prewarm failed", result["image_pruning_skipped"])
+        prune_containers.assert_called_once()
+        prune_images.assert_not_called()
+
     def test_machine_registry_rejects_unknown_nested_and_root_fields(self) -> None:
         cases = {
             "root": "surprise: true\n",

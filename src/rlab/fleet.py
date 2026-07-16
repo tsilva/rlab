@@ -819,6 +819,19 @@ def run_service_machine_pass(
         # to the pool and block an unrelated client indefinitely.
         conn = connect(database_url(use_direct=True))
         with machine_mutation_lock(conn, machine.name):
+            control = machine_control(conn, machine=machine.name)
+            if bool(control.get("drained")) and not active_job_launches(
+                conn, machine=machine.name
+            ):
+                return {
+                    "reconciled": 0,
+                    "launched": 0,
+                    "recovered_publications": 0,
+                    "removed_containers": 0,
+                    "pruned_images": 0,
+                    "prewarm": {"status": "skipped_drained"},
+                    "maintenance_skipped": "machine is drained with no active launches",
+                }
             if progress:
                 progress(
                     "RECONCILING TRAIN", "Observing active containers and filling available slots"
@@ -864,6 +877,7 @@ def run_service_machine_pass(
             maintenance_marker = repo_root / "logs" / "fleet" / f"maintenance-{machine.name}.stamp"
             pruned = 0
             removed_containers = 0
+            image_pruning_skipped = ""
             if reconciled or launched or _maintenance_due(maintenance_marker):
                 if progress:
                     progress(
@@ -871,13 +885,16 @@ def run_service_machine_pass(
                         "Pruning inactive containers and unused runtime images safely",
                     )
                 removed_containers = prune_inactive_job_containers(conn, host)
-                pruned = prune_stale_runtime_images(
-                    conn,
-                    host,
-                    extra_protected_refs=(prewarmed_ref,) if prewarmed_ref else (),
-                )
-                maintenance_marker.parent.mkdir(parents=True, exist_ok=True)
-                maintenance_marker.touch()
+                if prewarm.get("status") == "error":
+                    image_pruning_skipped = "latest runtime prewarm failed"
+                else:
+                    pruned = prune_stale_runtime_images(
+                        conn,
+                        host,
+                        extra_protected_refs=(prewarmed_ref,) if prewarmed_ref else (),
+                    )
+                    maintenance_marker.parent.mkdir(parents=True, exist_ok=True)
+                    maintenance_marker.touch()
             return {
                 "reconciled": reconciled,
                 "launched": launched,
@@ -885,6 +902,7 @@ def run_service_machine_pass(
                 "removed_containers": removed_containers,
                 "pruned_images": pruned,
                 "prewarm": prewarm,
+                "image_pruning_skipped": image_pruning_skipped,
             }
     finally:
         if conn is not None:

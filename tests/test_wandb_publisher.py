@@ -33,20 +33,14 @@ class FakeHtml:
 
 class WandbPublisherTests(unittest.TestCase):
     def test_parallel_cycle_uses_one_isolated_process_per_run(self) -> None:
-        completed = [
-            SimpleNamespace(returncode=0, stdout="published_batches=2\n"),
-            SimpleNamespace(returncode=0, stdout="published_batches=3\n"),
-            SimpleNamespace(returncode=1, stdout=""),
-        ]
         with (
             mock.patch(
                 "rlab.fleet_wandb_publisher.pending_metric_run_ids",
                 return_value=[41, 42, 43],
             ),
             mock.patch(
-                "rlab.fleet_wandb_publisher.subprocess.run",
-                side_effect=completed,
-            ) as run,
+                "rlab.fleet_wandb_publisher.subprocess.Popen",
+            ) as popen,
         ):
             result = drain_cycle_parallel(
                 mock.MagicMock(),
@@ -57,14 +51,20 @@ class WandbPublisherTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"runs_attempted": 3, "batches_published": 5, "runs_failed": 1},
+            {
+                "runs_attempted": 3,
+                "runs_started": 3,
+                "batches_published": 0,
+                "runs_failed": 0,
+            },
         )
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(popen.call_count, 3)
         train_ids = {
             call.args[0][call.args[0].index("--train-job-id") + 1]
-            for call in run.call_args_list
+            for call in popen.call_args_list
         }
         self.assertEqual(train_ids, {"41", "42", "43"})
+        self.assertTrue(all(call.kwargs["start_new_session"] for call in popen.call_args_list))
 
     def test_resumed_projection_can_flush_without_finishing_active_run(self) -> None:
         captured: dict[str, object] = {}

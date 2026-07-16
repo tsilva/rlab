@@ -21,6 +21,7 @@ from rlab.modal_eval_orchestrator import (
     deterministic_eval_failure,
     finalize_runs,
     project_eval_results,
+    ingest_mailbox_announcements,
     project_artifact_references,
     promotion_candidate_key,
     reconcile_canceled_eval_state,
@@ -699,6 +700,36 @@ class ModalEvalRecoveryTests(unittest.TestCase):
 
 
 class ModalEvalSchedulingTests(unittest.TestCase):
+    def test_mailbox_ingestion_advances_ordering_cursor_within_batch(self) -> None:
+        events = [
+            {
+                "id": ledger_id,
+                "event_type": "checkpoint_tombstone",
+                "payload_json": {
+                    "train_job_id": 44,
+                    "ledger_id": ledger_id,
+                    "kind": "tombstone",
+                },
+                "next_announcement_id": 1,
+                "contract_json": {},
+            }
+            for ledger_id in (1, 2, 3)
+        ]
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = events
+        cursor.rowcount = 1
+
+        count = ingest_mailbox_announcements(conn, mock.MagicMock())
+
+        self.assertEqual(count, 3)
+        delete_calls = [
+            call
+            for call in cursor.execute.call_args_list
+            if "DELETE FROM attempt_events" in call.args[0]
+        ]
+        self.assertEqual(len(delete_calls), 3)
+
     def test_plain_runtime_error_from_modal_is_a_terminal_call_failure(self) -> None:
         call = mock.MagicMock()
         call.get.side_effect = RuntimeError("remote worker failed")

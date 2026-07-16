@@ -14,7 +14,7 @@ from rlab.train_config import TRAIN_CONFIG_FIELDS, validate_and_normalize_train_
 from rlab.training_backend import training_backend_contract_payload
 
 
-RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 4
+RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 5
 
 
 def train_config_contract_payload() -> dict[str, Any]:

@@ -29,6 +29,7 @@ DEFAULT_MODAL_ARTIFACT = "rlab-modal-eval-readiness"
 DEFAULT_MODAL_ARTIFACT_FILE = "rlab-modal-eval-readiness.json"
 MODAL_READINESS_SCHEMA_VERSION = 2
 LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 3
+DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION = 4
 LEGACY_MODAL_READINESS_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS = 20 * 60
 
@@ -46,6 +47,11 @@ class RuntimeImageInfo:
     schema_version: int = 0
     runtime_input_sha256: str = ""
     runtime_build_source_sha: str = ""
+    overlay_key: str = ""
+    dependency_key: str = ""
+    gpu_key: str = ""
+    train_plan_sha256: str = ""
+    gpu_plan_sha256: str = ""
     train_config_contract_sha256: str = ""
     modal_app_name: str = ""
     startup_probe: dict[str, Any] | None = None
@@ -116,11 +122,13 @@ def runtime_release_from_payload(
     schema_version = int(payload.get("schema_version") or 0)
     if schema_version not in {
         LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+        DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
         RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
     }:
         raise ValueError(
             f"{label} schema_version must be "
             f"{LEGACY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION} or "
+            f"{DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION} or "
             f"{RUNTIME_DESCRIPTOR_SCHEMA_VERSION}"
         )
     runtime_image_ref = runtime_image_ref_from_payload(payload, label=label)
@@ -135,7 +143,10 @@ def runtime_release_from_payload(
         raise ValueError(f"{label} digest does not match runtime_image_ref")
     runtime_input_sha256 = str(payload.get("runtime_input_sha256") or "").strip().lower()
     runtime_build_source_sha = str(payload.get("runtime_build_source_sha") or source_sha).strip()
-    if schema_version == RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
+    if schema_version in {
+        DEPENDENCY_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+        RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+    }:
         if not re.fullmatch(r"[0-9a-f]{64}", runtime_input_sha256):
             raise ValueError(f"{label} must include a valid runtime_input_sha256")
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", runtime_build_source_sha):
@@ -161,6 +172,29 @@ def runtime_release_from_payload(
             ) from exc
         if not str(payload.get("workflow_run_id") or "").strip():
             raise ValueError(f"{label} must include workflow_run_id")
+    image_keys: dict[str, str] = {}
+    if schema_version == RUNTIME_DESCRIPTOR_SCHEMA_VERSION:
+        for field in (
+            "overlay_key",
+            "dependency_key",
+            "gpu_key",
+            "train_plan_sha256",
+            "gpu_plan_sha256",
+        ):
+            value = str(payload.get(field) or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ValueError(f"{label} must include a valid {field}")
+            image_keys[field] = value
+        base_images = payload.get("base_images")
+        gpu_image = (
+            str(base_images.get("gpu") or "").strip()
+            if isinstance(base_images, Mapping)
+            else ""
+        )
+        try:
+            normalize_runtime_image_ref(gpu_image)
+        except ValueError as exc:
+            raise ValueError(f"{label} must include an immutable GPU image identity") from exc
     return RuntimeImageInfo(
         runtime_image_ref=runtime_image_ref,
         source_sha=source_sha,
@@ -175,6 +209,11 @@ def runtime_release_from_payload(
         schema_version=schema_version,
         runtime_input_sha256=runtime_input_sha256,
         runtime_build_source_sha=runtime_build_source_sha,
+        overlay_key=image_keys.get("overlay_key", ""),
+        dependency_key=image_keys.get("dependency_key", ""),
+        gpu_key=image_keys.get("gpu_key", ""),
+        train_plan_sha256=image_keys.get("train_plan_sha256", ""),
+        gpu_plan_sha256=image_keys.get("gpu_plan_sha256", ""),
         train_config_contract_sha256=train_config_contract_sha256(),
     )
 
