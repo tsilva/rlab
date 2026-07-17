@@ -358,13 +358,14 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
-        self.assertEqual(installed, Version("0.3.0"))
+        self.assertGreaterEqual(installed, Version("0.3.1"))
         self.assertEqual(Version(retro.__version__), Version("1.0.1.post30"))
 
     def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
         config = self.config(
             env_args={
-                "use_restricted_actions": "filtered",
+                "action_set": None,
+                "use_restricted_actions": "all",
                 "inttype": "stable",
                 "obs_type": "image",
             }
@@ -377,7 +378,8 @@ class MarioNativeProviderTests(unittest.TestCase):
             state_weight_mapping=lambda _config: {},
         )
 
-        self.assertIs(kwargs["use_restricted_actions"], retro.Actions.FILTERED)
+        self.assertIsNone(kwargs["action_set"])
+        self.assertIs(kwargs["use_restricted_actions"], retro.Actions.ALL)
         self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
         self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
 

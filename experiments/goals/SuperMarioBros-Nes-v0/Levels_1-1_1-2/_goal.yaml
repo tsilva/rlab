@@ -31,9 +31,12 @@ train:
         game: SuperMarioBros-Nes-v0
         n_envs: 16
         env_args:
+          # Keep provider action-set conveniences disabled; rlab owns the task codec.
+          action_set: null
           scenario: scenario
           info: data
-          use_restricted_actions: filtered
+          # rlab owns the goal-level discrete codec and sends native button masks.
+          use_restricted_actions: all
           record: false
           players: 1
           inttype: stable

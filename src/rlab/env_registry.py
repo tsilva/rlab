@@ -131,6 +131,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
         ),
         explicit_env_args=frozenset(
             {
+                "action_set",
                 "frame_stack",
                 "info",
                 "info_filter",
@@ -150,7 +151,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
                 "use_restricted_actions",
             }
         ),
-        required_values={},
+        required_values={"action_set": None},
     ),
 )
 
