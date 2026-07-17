@@ -137,6 +137,51 @@ class FleetServiceTests(unittest.TestCase):
         )
         self.assertNotIn("-k", commands[0])
 
+    def test_controller_reload_is_quiescent_and_restarts_only_requested_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            item = fleet_service.controller_service_paths(paths, "evaluation")
+            item.plist.parent.mkdir(parents=True)
+            item.plist.write_text("installed", encoding="utf-8")
+            commands: list[list[str]] = []
+
+            def runner(argv, **_kwargs):
+                commands.append(list(argv))
+                if argv[:2] == ["launchctl", "print"]:
+                    return completed(argv, stdout="state = running")
+                return completed(argv)
+
+            reloaded = fleet_service.reload_controller_service(
+                paths,
+                "evaluation",
+                count_nonterminal_jobs=lambda _root: 0,
+                runner=runner,
+            )
+
+        self.assertTrue(reloaded)
+        target = f"gui/{os.getuid()}/{item.label}"
+        self.assertIn(["launchctl", "bootout", target], commands)
+        self.assertIn(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(item.plist)],
+            commands,
+        )
+        self.assertFalse(any("machine" in " ".join(command) for command in commands))
+
+    def test_controller_reload_refuses_while_jobs_are_nonterminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            runner = mock.MagicMock()
+
+            with self.assertRaisesRegex(RuntimeError, "2 nonterminal job"):
+                fleet_service.reload_controller_service(
+                    paths,
+                    "evaluation",
+                    count_nonterminal_jobs=lambda _root: 2,
+                    runner=runner,
+                )
+
+        runner.assert_not_called()
+
     def test_redaction_removes_presigned_url_queries_and_url_fields(self) -> None:
         url = "https://r2.example/checkpoint?X-Amz-Credential=secret&X-Amz-Signature=value"
         self.assertEqual(
@@ -619,6 +664,10 @@ class FleetServiceTests(unittest.TestCase):
         for argv, function in (
             (["service", "install"], fleet_service.cmd_install),
             (["service", "status"], fleet_service.cmd_status),
+            (
+                ["service", "reload", "--controller", "evaluation"],
+                fleet_service.cmd_reload,
+            ),
             (["service", "doctor"], fleet_service.cmd_doctor),
             (["service", "logs"], fleet_service.cmd_logs),
             (["service", "watch"], fleet_service.cmd_watch),

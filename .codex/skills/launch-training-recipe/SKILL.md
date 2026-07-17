@@ -33,6 +33,8 @@ uv run python .codex/skills/launch-training-recipe/scripts/launch_training.py \
 
 The helper creates an isolated clean worktree at the current commit, preserves the caller's dirty worktree, performs exact-source preflight, launches through `rlab train`, monitors authoritative queue state, verifies the terminal result, then removes its temporary worktree. Do not create another worktree or call `rlab train` separately.
 
+Before submission, the helper safely reloads the persistent evaluation controller so the run cannot be reconciled by stale in-memory code. Reload is allowed only when the queue has no nonterminal jobs; a refusal is a preflight failure, not a training bug. Do not restart controllers by hand.
+
 Start the helper as a yielded terminal process. Poll that same process every 30-60 seconds. Do not repeatedly run verbose `rlab runs status`, W&B history queries, or log dumps in the main thread.
 
 ## Event handling
@@ -40,6 +42,7 @@ Start the helper as a yielded terminal process. Poll that same process every 30-
 The helper emits compact JSON lines. Follow them literally:
 
 - `workspace_ready`: the helper is using the reported commit. If `caller_dirty` is true, mention once that unrelated local changes are excluded from the run.
+- `controller_reloaded`: the persistent evaluation controller now uses current repository code. No action is required.
 - `launch_started` or `launch_waiting`: keep waiting. A short user update is enough if 60 seconds pass.
 - `submitted`: report the job ID, batch, machine, source commit, and runtime when present.
 - `wandb_url`: immediately send the clickable URL to the user. Do not wait for another phase.

@@ -145,20 +145,25 @@ class ModalEvalContractTests(unittest.TestCase):
         )
 
     def test_canceled_train_reconciliation_closes_late_eval_rows(self) -> None:
-        conn = FakeConnection(results=[{"rowcount": 3}, {"rowcount": 1}])
+        conn = FakeConnection(
+            results=[{"rowcount": 3}, {"rowcount": 1}, {"rowcount": 2}]
+        )
 
         self.assertEqual(
             reconcile_canceled_eval_state(conn),
-            {"jobs": 3, "runs": 1},
+            {"jobs": 3, "runs": 1, "workers": 2},
         )
 
-        jobs_sql, runs_sql = conn.cursor_obj.executed_sqls
+        jobs_sql, runs_sql, workers_sql = conn.cursor_obj.executed_sqls
         self.assertIn("t.status = 'canceled'", jobs_sql)
         self.assertIn("r.outcome = 'canceled'", jobs_sql)
         self.assertIn("'pending', 'dispatching', 'submitted', 'blocked_budget'", jobs_sql)
         self.assertIn("t.status = 'canceled'", runs_sql)
         self.assertIn("outcome = 'canceled'", runs_sql)
         self.assertIn("r.status NOT IN ('complete', 'failed', 'canceled')", runs_sql)
+        self.assertIn("FROM eval_attempts a", workers_sql)
+        self.assertIn("a.status = 'canceled'", workers_sql)
+        self.assertIn("w.status IN ('launching', 'running')", workers_sql)
 
     def test_canceling_eval_attempt_also_terminalizes_worker(self) -> None:
         conn = mock.MagicMock()
@@ -1247,6 +1252,11 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertIn("r.outcome = 'unknown'", statement)
         self.assertIn("t.learner_stop_observed_at IS NULL", statement)
         self.assertIn("r.stop_delivery_slo_met IS NOT TRUE", statement)
+        self.assertIn("r.acceptance_committed_at IS NULL", statement)
+        self.assertIn(
+            "r.acceptance_committed_at < t.process_exited_at",
+            statement,
+        )
         self.assertIn("THEN 'finalization_failed'", statement)
 
     def test_terminal_reducers_distinguish_rejection_unknown_and_publication_finishing(self) -> None:

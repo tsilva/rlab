@@ -1109,7 +1109,8 @@ def reconcile_canceled_eval_state(conn) -> dict[str, int]:
     The operator cancellation transaction closes eval rows that already exist,
     but checkpoint announcements can be ingested after that transaction while
     the training container is shutting down. Those late rows must not remain
-    pending/submitted forever or keep appearing as queued work.
+    pending/submitted forever or keep appearing as queued work. Also repair worker rows left active
+    by controllers that terminalized the paired eval attempt before worker synchronization existed.
     """
 
     with conn:
@@ -1139,7 +1140,21 @@ def reconcile_canceled_eval_state(conn) -> dict[str, int]:
                 """
             )
             runs = int(cur.rowcount)
-    return {"jobs": jobs, "runs": runs}
+            cur.execute(
+                """
+                UPDATE worker_attempts w
+                SET status = 'canceled',
+                    finished_at = COALESCE(w.finished_at, a.finished_at, now()),
+                    error = COALESCE(w.error, a.error, 'evaluation attempt canceled')
+                FROM eval_attempts a
+                WHERE w.attempt_id = a.attempt_id
+                  AND w.task_kind = 'eval'
+                  AND a.status = 'canceled'
+                  AND w.status IN ('launching', 'running')
+                """
+            )
+            workers = int(cur.rowcount)
+    return {"jobs": jobs, "runs": runs, "workers": workers}
 
 
 def _reuse_result(conn, store: ObjectStore, job: Mapping[str, Any]) -> bool:
@@ -1507,9 +1522,10 @@ def terminalize_runs(conn) -> int:
     """Apply the one authoritative, idempotent terminal state reduction.
 
     Goal outcome and operational state remain separate: a valid not-accepted run is
-    operationally successful, while unknown evidence or an unobserved acceptance stop is a
-    finalization failure. Nothing becomes terminal before the process exit, durable evidence,
-    closed metric streams, projections, and remote W&B completion are all confirmed.
+    operationally successful, while unknown evidence or a required but unobserved acceptance stop
+    is a finalization failure. Acceptance committed after natural process exit needs no stop
+    callback. Nothing becomes terminal before the process exit, durable evidence, closed metric
+    streams, projections, and remote W&B completion are all confirmed.
     """
 
     with conn:
@@ -1523,18 +1539,30 @@ def terminalize_runs(conn) -> int:
                     CASE
                       WHEN r.outcome = 'canceled' THEN 'canceled'
                       WHEN r.outcome = 'unknown' THEN 'finalization_failed'
-                      WHEN r.outcome = 'accepted' AND (
-                        t.learner_stop_observed_at IS NULL
-                        OR r.stop_delivery_slo_met IS NOT TRUE
-                      ) THEN 'finalization_failed'
+                      WHEN r.outcome = 'accepted'
+                        AND r.acceptance_committed_at IS NULL
+                        THEN 'finalization_failed'
+                      WHEN r.outcome = 'accepted'
+                        AND r.acceptance_committed_at < t.process_exited_at
+                        AND (
+                          t.learner_stop_observed_at IS NULL
+                          OR r.stop_delivery_slo_met IS NOT TRUE
+                        ) THEN 'finalization_failed'
                       ELSE 'succeeded'
                     END AS terminal_status,
                     CASE
                       WHEN r.outcome = 'unknown' THEN
                         COALESCE(r.error, 'acceptance outcome is unknown')
-                      WHEN r.outcome = 'accepted' AND t.learner_stop_observed_at IS NULL THEN
+                      WHEN r.outcome = 'accepted'
+                        AND r.acceptance_committed_at IS NULL THEN
+                        'accepted outcome is missing its commit timestamp'
+                      WHEN r.outcome = 'accepted'
+                        AND r.acceptance_committed_at < t.process_exited_at
+                        AND t.learner_stop_observed_at IS NULL THEN
                         'accepted checkpoint was not observed by the learner stop callback'
-                      WHEN r.outcome = 'accepted' AND r.stop_delivery_slo_met IS NOT TRUE THEN
+                      WHEN r.outcome = 'accepted'
+                        AND r.acceptance_committed_at < t.process_exited_at
+                        AND r.stop_delivery_slo_met IS NOT TRUE THEN
                         'acceptance stop delivery exceeded five seconds'
                       ELSE NULL
                     END AS terminal_error
@@ -2472,6 +2500,7 @@ def run_service_eval_pass(
             "canceled_attempts": canceled_attempts,
             "canceled_eval_jobs": canceled_eval_state["jobs"],
             "canceled_eval_runs": canceled_eval_state["runs"],
+            "canceled_eval_workers": canceled_eval_state["workers"],
             "ingested": ingested,
             "mailbox_ingested": mailbox_ingested,
             "skipped_decisions": skipped_decisions,

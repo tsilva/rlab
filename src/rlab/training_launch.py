@@ -110,6 +110,16 @@ def source_branch(root: Path) -> str:
     return current_git_branch(root)
 
 
+def reload_evaluation_controller(root: Path) -> None:
+    from rlab.fleet_service import default_service_paths, reload_controller_service
+
+    reload_controller_service(
+        default_service_paths(repo_root=root),
+        "evaluation",
+    )
+    emit("controller_reloaded", controller="evaluation")
+
+
 def dirty(root: Path) -> bool:
     result = command(
         ["git", "status", "--porcelain", "--untracked-files=all"],
@@ -332,20 +342,34 @@ def potential_bug_incidents(
     incidents: dict[str, str] = {}
     status = str(row.get("status") or "")
     if status in ERROR_STATUSES:
-        incidents["terminal_job_error"] = f"terminal job status is {status}"
+        terminal_error_fields = []
+        for key in (
+            "error",
+            "launch_error",
+            "eval_error",
+            "live_publication_error",
+            "promoted_projection_error",
+        ):
+            if row.get(key):
+                terminal_error_fields.append(key)
+        detail = f"terminal job status is {status}"
+        if terminal_error_fields:
+            detail += f"; error fields set: {', '.join(terminal_error_fields)}"
+        incidents["terminal_operational_failure"] = detail
     if status == "canceled" and not row.get("cancel_requested"):
         incidents["unexpected_cancellation"] = (
             "job became canceled without a recorded cancel request"
         )
-    for key in (
-        "error",
-        "launch_error",
-        "eval_error",
-        "live_publication_error",
-        "promoted_projection_error",
-    ):
-        if row.get(key):
-            incidents[f"queue_error:{key}"] = f"{key} is set"
+    if status not in ERROR_STATUSES:
+        for key in (
+            "error",
+            "launch_error",
+            "eval_error",
+            "live_publication_error",
+            "promoted_projection_error",
+        ):
+            if row.get(key):
+                incidents[f"queue_error:{key}"] = f"{key} is set"
     eval_counters = {
         "failed eval jobs": int(diag.get("failed_eval_jobs") or 0),
         "eval retries": int(diag.get("eval_retries") or 0),
@@ -893,6 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summaries: list[dict[str, Any]] = []
     success = False
     try:
+        reload_evaluation_controller(root)
         with isolated_worktree(root, branch=branch) as worktree:
             launch_argv = build_launch_command(args, root, branch=branch)
             report = launch(launch_argv, cwd=worktree)

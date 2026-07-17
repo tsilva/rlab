@@ -895,6 +895,44 @@ def controller_services_status(
     }
 
 
+def reload_controller_service(
+    paths: ServicePaths,
+    controller: str,
+    *,
+    count_nonterminal_jobs: CountNonterminalJobs | None = None,
+    runner: CommandRunner = _run_command,
+) -> bool:
+    """Reload one persistent controller only while the queue is quiescent."""
+
+    if controller not in CONTROLLER_NAMES:
+        raise ValueError(f"unknown fleet controller: {controller}")
+    counter = count_nonterminal_jobs or _default_count_nonterminal_jobs
+    nonterminal = int(counter(paths.repo_root))
+    if nonterminal:
+        raise RuntimeError(
+            f"refusing to reload the {controller} controller with "
+            f"{nonterminal} nonterminal job(s)"
+        )
+    item = controller_service_paths(paths, controller)
+    if not item.plist.is_file():
+        raise FileNotFoundError(f"fleet controller is not installed: {item.plist}")
+    was_loaded = service_is_loaded(item.label, runner=runner)
+    if was_loaded:
+        runner(
+            ["launchctl", "bootout", _target(item.label)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
+    deadline = time.monotonic() + 5
+    while not service_is_running(item.label, runner=runner):
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"reloaded {controller} controller did not start")
+        time.sleep(0.1)
+    return True
+
+
 def _default_service_notifier(title: str, message: str) -> None:
     script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
     subprocess.run(
@@ -2124,6 +2162,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if status["installed"] and status["loaded"] and status["healthy"] else 1
 
 
+def cmd_reload(args: argparse.Namespace) -> int:
+    controller = str(args.controller)
+    reloaded = reload_controller_service(_paths_from_args(args), controller)
+    print(json.dumps({"controller": controller, "reloaded": reloaded}, sort_keys=True))
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     report = controller_services_doctor(_paths_from_args(args))
     if args.json:
@@ -2206,6 +2251,13 @@ def add_service_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     _add_path_arguments(status)
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
+
+    reload_controller = commands.add_parser(
+        "reload", help="Reload one idle persistent fleet controller."
+    )
+    _add_path_arguments(reload_controller)
+    reload_controller.add_argument("--controller", choices=CONTROLLER_NAMES, required=True)
+    reload_controller.set_defaults(func=cmd_reload)
 
     doctor = commands.add_parser("doctor", help="Validate the service installation.")
     _add_path_arguments(doctor)

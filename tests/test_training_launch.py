@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
@@ -54,6 +55,39 @@ class TrainingLaunchTests(unittest.TestCase):
 
         worktree.assert_not_called()
 
+    def test_launch_reloads_evaluation_controller_before_worktree(self) -> None:
+        args = ["--goal", GOAL, "--recipe", RECIPE]
+        events: list[str] = []
+
+        @contextmanager
+        def worktree(_root: Path, *, branch: str):
+            self.assertEqual(branch, "main")
+            events.append("worktree")
+            yield ROOT
+
+        with (
+            mock.patch.object(training_launch, "repository_root", return_value=ROOT),
+            mock.patch.object(training_launch, "source_branch", return_value="main"),
+            mock.patch.object(training_launch, "reload_evaluation_controller") as reload,
+            mock.patch.object(training_launch, "isolated_worktree", side_effect=worktree),
+            mock.patch.object(training_launch, "build_launch_command", return_value=["rlab"]),
+            mock.patch.object(
+                training_launch,
+                "launch",
+                side_effect=lambda *_args, **_kwargs: events.append("launch")
+                or {"job_ids": [1]},
+            ),
+            mock.patch.object(
+                training_launch,
+                "monitor_jobs",
+                return_value=([{"job_id": 1}], True),
+            ),
+        ):
+            self.assertEqual(training_launch.main(args), 0)
+
+        reload.assert_called_once_with(ROOT)
+        self.assertEqual(events, ["worktree", "launch"])
+
     def test_eval_retry_and_failed_attempt_share_one_stable_incident(self) -> None:
         incidents = training_launch.potential_bug_incidents(
             {"status": "running", "ready_at": None},
@@ -91,6 +125,27 @@ class TrainingLaunchTests(unittest.TestCase):
             incidents,
             {"wandb_publication_retry": "W&B publication retries=1"},
         )
+
+    def test_terminal_error_projections_share_one_semantic_incident(self) -> None:
+        error = "accepted checkpoint was not observed by the learner stop callback"
+        incidents = training_launch.potential_bug_incidents(
+            {
+                "status": "finalization_failed",
+                "error": error,
+                "eval_error": error,
+                "ready_at": datetime.now(UTC),
+            },
+            {},
+            now=10.0,
+            progress_changed_at=10.0,
+            backlog_started_at=None,
+            stale_seconds=300,
+        )
+
+        self.assertEqual(list(incidents), ["terminal_operational_failure"])
+        self.assertIn("finalization_failed", incidents["terminal_operational_failure"])
+        self.assertIn("error, eval_error", incidents["terminal_operational_failure"])
+        self.assertNotIn(error, incidents["terminal_operational_failure"])
 
     def test_worker_diagnostic_counts_only_active_statuses(self) -> None:
         conn = mock.MagicMock()
