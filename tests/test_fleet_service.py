@@ -473,6 +473,49 @@ class FleetServiceTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_compatible"])
         self.assertFalse(status["healthy"])
 
+    def test_protocol_two_rejects_degraded_controller_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            with mock.patch.object(fleet_service, "CONTROL_PLANE_PROTOCOL_VERSION", 2):
+                fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
+                for name in fleet_service.CONTROLLER_NAMES:
+                    item = fleet_service.controller_service_paths(paths, name)
+                    item.plist.parent.mkdir(parents=True, exist_ok=True)
+                    item.plist.write_bytes(
+                        fleet_service.render_controller_launch_agent_plist(paths, name)
+                    )
+                    item.state_dir.mkdir(parents=True, exist_ok=True)
+                    (item.state_dir / "heartbeat.json").write_text(
+                        json.dumps(
+                            {
+                                "pid": 100,
+                                "controller": name,
+                                "protocol_version": 2,
+                                "source_fingerprint": fingerprint,
+                                "phase": "degraded" if name == "machine" else "idle",
+                                "updated_at": time.time(),
+                                "last_success_at": time.time(),
+                                "last_error": (
+                                    "stale runtime image could not be removed"
+                                    if name == "machine"
+                                    else None
+                                ),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+                status = fleet_service.controller_services_status(
+                    paths,
+                    runner=lambda argv, **_kwargs: completed(
+                        argv, stdout="state = running\npid = 100\n"
+                    ),
+                )
+
+        self.assertFalse(status["controllers"]["machine"]["heartbeat_compatible"])
+        self.assertFalse(status["heartbeat_compatible"])
+        self.assertFalse(status["healthy"])
+
     def test_controller_replacement_refuses_active_control_plane_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
@@ -571,6 +614,84 @@ class FleetServiceTests(unittest.TestCase):
         reconcile.assert_called_once()
         self.assertEqual(saved["phase"], "error")
         self.assertIn("database unavailable", saved["last_error"])
+
+    def test_machine_controller_latches_failure_during_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            heartbeat = root / "heartbeat.json"
+            readiness = root / "readiness.json"
+            observed_retry: dict[str, object] = {}
+
+            def fail_then_observe(**_kwargs):
+                if not observed_retry:
+                    observed_retry["first"] = True
+                    raise RuntimeError("cleanup blocked")
+                observed_retry.update(json.loads(heartbeat.read_text(encoding="utf-8")))
+                raise KeyboardInterrupt
+
+            with (
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_state_paths",
+                    return_value=(heartbeat, readiness),
+                ),
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_machines",
+                    return_value=("beast-3",),
+                ),
+                mock.patch.object(
+                    fleet_controllers, "controller_source_fingerprint", return_value="source"
+                ),
+                mock.patch.object(fleet_controllers, "SleepAssertion"),
+                mock.patch.object(fleet_controllers.time, "sleep"),
+                mock.patch(
+                    "rlab.fleet.run_service_machine_pass",
+                    side_effect=fail_then_observe,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                fleet_controllers.run_machine_controller(root)
+
+        self.assertEqual(observed_retry["phase"], "reconciling")
+        self.assertIn("cleanup blocked", str(observed_retry["last_error"]))
+
+    def test_evaluation_controller_latches_failure_during_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            heartbeat = root / "heartbeat.json"
+            readiness = root / "readiness.json"
+            observed_retry: dict[str, object] = {}
+
+            def fail_then_observe(**_kwargs):
+                if not observed_retry:
+                    observed_retry["first"] = True
+                    raise RuntimeError("modal unavailable")
+                observed_retry.update(json.loads(heartbeat.read_text(encoding="utf-8")))
+                raise KeyboardInterrupt
+
+            with (
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_state_paths",
+                    return_value=(heartbeat, readiness),
+                ),
+                mock.patch.object(
+                    fleet_controllers, "controller_source_fingerprint", return_value="source"
+                ),
+                mock.patch.object(fleet_controllers, "SleepAssertion"),
+                mock.patch.object(fleet_controllers, "_has_work", return_value=True),
+                mock.patch.object(fleet_controllers.time, "sleep"),
+                mock.patch(
+                    "rlab.modal_eval_orchestrator.run_service_eval_pass",
+                    side_effect=fail_then_observe,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                fleet_controllers.run_evaluation_controller(root)
+
+        self.assertEqual(observed_retry["phase"], "reconciling")
+        self.assertIn("modal unavailable", str(observed_retry["last_error"]))
 
     def test_schema_guard_refuses_nonterminal_work_before_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

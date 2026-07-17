@@ -931,7 +931,8 @@ def _controller_heartbeat_runtime_matches(
             and int(heartbeat.get("pid") or 0) == int(pid or 0)
             and int(pid or 0) > 0
             and heartbeat.get("last_success_at") is not None
-            and str(heartbeat.get("phase") or "") not in {"starting", "error"}
+            and str(heartbeat.get("phase") or "") in {"idle", "reconciling"}
+            and not heartbeat.get("last_error")
             and (
                 updated_after is None
                 or float(heartbeat.get("updated_at") or 0.0) >= float(updated_after)

@@ -237,7 +237,7 @@ def protected_runtime_image_refs(
             continue
         protected.add(normalize_runtime_image_ref(demand.runtime_image_ref))
     for container in containers:
-        if container.state in {"removing", "dead"}:
+        if container.state in {"exited", "removing", "dead"}:
             continue
         runtime_image_ref = container.labels.get(f"{LABEL_PREFIX}runtime-image-ref")
         if not runtime_image_ref:
@@ -279,9 +279,18 @@ def prune_stale_runtime_images(
     )
     stale_images = tuple(image for image in images if image.runtime_image_ref not in protected)
     pruned = 0
+    failures: list[str] = []
     for image in stale_images:
-        if host.remove_runtime_image(image.image_ref).ok:
+        result = host.remove_runtime_image(image.image_ref)
+        if result.ok:
             pruned += 1
+        else:
+            detail = str(result.detail or "remove failed").strip()
+            failures.append(f"{image.image_ref}: {detail}")
+    if failures:
+        raise RuntimeError(
+            f"failed to prune stale runtime images on {machine.name}: {'; '.join(failures)}"
+        )
     return pruned
 
 
@@ -290,8 +299,12 @@ def prune_inactive_job_containers(conn, host: DockerRunnerHost) -> int:
     active_launch_ids = {
         str(launch["launch_id"]) for launch in active_job_launches(conn, machine=machine.name)
     }
+    containers = {container.name: container for container in host.list_job_containers()}
+    for container in host.list_runtime_image_containers():
+        if container.labels.get(MANAGED_LABEL) == "true":
+            containers.setdefault(container.name, container)
     removed = 0
-    for container in host.list_job_containers():
+    for container in containers.values():
         if container.state not in {"exited", "dead"}:
             continue
         if container.launch_id and container.launch_id in active_launch_ids:

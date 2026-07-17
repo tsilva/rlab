@@ -177,6 +177,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
     source_fingerprint = controller_source_fingerprint(repo_root)
     started_at = time.time()
     last_success_at: float | None = None
+    last_error: str | None = None
     backoff = POLL_SECONDS
     try:
         _write_controller_heartbeat(
@@ -192,6 +193,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
             try:
                 machines = _controller_machines(repo_root)
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"[:4000]
                 _write_controller_heartbeat(
                     heartbeat,
                     controller="machine",
@@ -199,7 +201,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                     started_at=started_at,
                     phase="error",
                     last_success_at=last_success_at,
-                    last_error=f"{type(exc).__name__}: {exc}"[:4000],
+                    last_error=last_error,
                 )
                 if once:
                     raise
@@ -214,7 +216,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                 started_at=started_at,
                 phase="reconciling" if machines else "idle",
                 last_success_at=last_success_at,
-                last_error=None,
+                last_error=last_error,
             )
             errors: list[str] = []
             database_error: DatabaseError | None = None
@@ -231,6 +233,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                     break
                 except Exception as exc:
                     errors.append(f"{machine}:{type(exc).__name__}:{exc}")
+                    last_error = "; ".join(errors)[:4000]
                     _write_controller_heartbeat(
                         heartbeat,
                         controller="machine",
@@ -238,7 +241,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                         started_at=started_at,
                         phase="degraded",
                         last_success_at=last_success_at,
-                        last_error="; ".join(errors)[:4000],
+                        last_error=last_error,
                     )
                 else:
                     last_success_at = time.time()
@@ -249,9 +252,10 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                         started_at=started_at,
                         phase="reconciling",
                         last_success_at=last_success_at,
-                        last_error="; ".join(errors)[:4000] or None,
+                        last_error="; ".join(errors)[:4000] or last_error,
                     )
             if database_error is not None:
+                last_error = f"{type(database_error).__name__}: {database_error}"[:4000]
                 _write_controller_heartbeat(
                     heartbeat,
                     controller="machine",
@@ -259,9 +263,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                     started_at=started_at,
                     phase="error",
                     last_success_at=last_success_at,
-                    last_error=(
-                        f"{type(database_error).__name__}: {database_error}"
-                    )[:4000],
+                    last_error=last_error,
                 )
                 if once:
                     raise database_error
@@ -270,6 +272,7 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                 continue
             if not machines:
                 last_success_at = time.time()
+            last_error = "; ".join(errors)[:4000] or None
             _write_controller_heartbeat(
                 heartbeat,
                 controller="machine",
@@ -277,12 +280,16 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
                 started_at=started_at,
                 phase="degraded" if errors else "idle",
                 last_success_at=last_success_at,
-                last_error="; ".join(errors)[:4000] or None,
+                last_error=last_error,
             )
-            backoff = POLL_SECONDS
             if once:
                 return 0
-            time.sleep(POLL_SECONDS)
+            if errors:
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+            else:
+                backoff = POLL_SECONDS
+                time.sleep(POLL_SECONDS)
     finally:
         assertion.close()
 
@@ -300,6 +307,7 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
     source_fingerprint = controller_source_fingerprint(repo_root)
     started_at = time.time()
     last_success_at: float | None = None
+    last_error: str | None = None
     backoff = POLL_SECONDS
     try:
         _write_controller_heartbeat(
@@ -321,7 +329,7 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
                     started_at=started_at,
                     phase="reconciling",
                     last_success_at=last_success_at,
-                    last_error=None,
+                    last_error=last_error,
                 )
                 deadline = time.monotonic() + REMOTE_PASS_BUDGET_SECONDS
                 run_service_eval_pass(repo_root=repo_root, deadline_monotonic=deadline)
@@ -333,6 +341,7 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
                 finally:
                     conn.close()
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"[:4000]
                 _write_controller_heartbeat(
                     heartbeat,
                     controller="evaluation",
@@ -340,7 +349,7 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
                     started_at=started_at,
                     phase="error",
                     last_success_at=last_success_at,
-                    last_error=f"{type(exc).__name__}: {exc}"[:4000],
+                    last_error=last_error,
                 )
                 if once:
                     raise
@@ -348,6 +357,7 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
                 backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
                 continue
             last_success_at = time.time()
+            last_error = None
             _write_controller_heartbeat(
                 heartbeat,
                 controller="evaluation",

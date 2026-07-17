@@ -224,7 +224,7 @@ class ContainerContractTests(unittest.TestCase):
             machine=target,
             list_runtime_image_containers=lambda: [],
             list_runtime_images=lambda _repos: [keep, remove],
-            remove_runtime_image=mock.Mock(return_value=SimpleNamespace(ok=True)),
+            remove_runtime_image=mock.Mock(return_value=SimpleNamespace(ok=True, detail="")),
         )
         with mock.patch.object(fleet, "queue_demands", return_value=[]):
             pruned = fleet.prune_stale_runtime_images(
@@ -235,6 +235,52 @@ class ContainerContractTests(unittest.TestCase):
 
         self.assertEqual(pruned, 1)
         host.remove_runtime_image.assert_called_once_with(remove.image_ref)
+
+    def test_runtime_cleanup_surfaces_image_removal_failure(self) -> None:
+        target = local_machine()
+        stale = RuntimeHostImage(
+            machine=target.name,
+            repository="ghcr.io/tsilva/rlab/rlab-train",
+            digest="sha256:" + "d" * 64,
+            image_id="sha256:stale",
+        )
+        host = SimpleNamespace(
+            machine=target,
+            list_runtime_image_containers=lambda: [],
+            list_runtime_images=lambda _repos: [stale],
+            remove_runtime_image=mock.Mock(
+                return_value=SimpleNamespace(
+                    ok=False, detail="image is used by a stopped container"
+                )
+            ),
+        )
+
+        with (
+            mock.patch.object(fleet, "queue_demands", return_value=[]),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "failed to prune stale runtime images.*used by a stopped container",
+            ),
+        ):
+            fleet.prune_stale_runtime_images(FakeConnection(), host)
+
+    def test_terminal_container_does_not_protect_runtime_image(self) -> None:
+        target = local_machine()
+        exited = fleet.JobContainer(
+            machine=target.name,
+            name="old",
+            state="exited",
+            status="Exited",
+            labels={f"{fleet.LABEL_PREFIX}runtime-image-ref": RUNTIME_IMAGE_REF},
+        )
+
+        protected = fleet.protected_runtime_image_refs(
+            machine=target,
+            demands=[],
+            containers=[exited],
+        )
+
+        self.assertEqual(protected, set())
 
     def test_prewarm_pulls_and_probes_only_the_latest_new_runtime(self) -> None:
         target = local_machine()
@@ -350,12 +396,45 @@ class ContainerContractTests(unittest.TestCase):
             host = SimpleNamespace(
                 machine=target,
                 list_job_containers=lambda: [exited, active],
+                list_runtime_image_containers=lambda: [exited, active],
                 remove_container=mock.Mock(return_value=SimpleNamespace(ok=True)),
             )
             removed = fleet.prune_inactive_job_containers(FakeConnection(), host)
 
         self.assertEqual(removed, 1)
         host.remove_container.assert_called_once_with("old")
+
+    def test_maintenance_removes_terminal_legacy_managed_runtime_container(self) -> None:
+        target = local_machine()
+        legacy = fleet.JobContainer(
+            machine=target.name,
+            name="legacy",
+            state="exited",
+            status="Exited",
+            labels={
+                fleet.MANAGED_LABEL: "true",
+                f"{fleet.LABEL_PREFIX}runtime-image-ref": RUNTIME_IMAGE_REF,
+            },
+        )
+        unmanaged = fleet.JobContainer(
+            machine=target.name,
+            name="unmanaged",
+            state="exited",
+            status="Exited",
+            labels={f"{fleet.LABEL_PREFIX}runtime-image-ref": OTHER_IMAGE_REF},
+        )
+        host = SimpleNamespace(
+            machine=target,
+            list_job_containers=lambda: [],
+            list_runtime_image_containers=lambda: [legacy, unmanaged],
+            remove_container=mock.Mock(return_value=SimpleNamespace(ok=True)),
+        )
+
+        with mock.patch.object(fleet, "active_job_launches", return_value=[]):
+            removed = fleet.prune_inactive_job_containers(FakeConnection(), host)
+
+        self.assertEqual(removed, 1)
+        host.remove_container.assert_called_once_with("legacy")
 
     def test_runtime_image_backoff_does_not_block_unrelated_pending_job(self) -> None:
         target = local_machine(capacity=2)
