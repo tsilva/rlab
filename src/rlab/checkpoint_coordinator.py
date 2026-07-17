@@ -16,7 +16,6 @@ from rlab.artifacts import (
 )
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
-from rlab.env_registry import resolve_env_provider
 from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
     CHECKPOINT_EVAL_CANDIDATE_EPISODES,
@@ -27,7 +26,7 @@ from rlab.metric_names import (
 from rlab.metric_store import MetricStore, metric_store_path
 from rlab.modal_eval_protocol import (
     PROTOCOL_SCHEMA_VERSION,
-    SEED_PROTOCOL,
+    checkpoint_announcement_eval_payload,
     stage_job_descriptor,
 )
 from rlab.modal_eval_storage import ObjectStore, file_sha256, object_store_base_uri
@@ -38,7 +37,6 @@ from rlab.policy_bundle import (
     model_document_path,
     recipe_document_path,
 )
-from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 
 
@@ -92,53 +90,8 @@ def _storage_uri(args) -> str:
     return configured or object_store_base_uri()
 
 
-def _max_steps(args) -> int:
-    explicit = int(getattr(args, "post_train_eval_max_steps", 0) or 0)
-    if explicit > 0:
-        return explicit
-    environment = getattr(args, "checkpoint_eval_environment", None)
-    if isinstance(environment, dict):
-        task = environment.get("task")
-        if isinstance(task, dict):
-            termination = task.get("termination")
-            if isinstance(termination, dict):
-                value = int(termination.get("max_episode_steps") or 0)
-                if value > 0:
-                    return value
-    raise ValueError("checkpoint eval max steps are not materialized")
-
-
 def _eval_payload(args) -> dict[str, Any]:
-    acceptance_contract = getattr(args, "checkpoint_eval_contract", None)
-    if isinstance(acceptance_contract, dict):
-        return acceptance_contract
-    environment = getattr(args, "checkpoint_eval_environment", None)
-    stages = getattr(args, "checkpoint_eval_stages", None)
-    asset = getattr(args, "checkpoint_eval_asset_manifest", None)
-    if not isinstance(environment, dict):
-        raise ValueError("Modal checkpoint eval requires a materialized environment")
-    provider = str(getattr(args, "env_provider", "") or "").strip()
-    requires_rom_asset = (
-        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
-    )
-    if requires_rom_asset and not isinstance(asset, dict):
-        raise ValueError("Modal checkpoint eval requires a materialized asset manifest")
-    if not requires_rom_asset:
-        asset = None
-    if stages is None:
-        stages = []
-    if not isinstance(stages, list):
-        raise ValueError("Modal checkpoint eval stages must be a list")
-    return {
-        "environment": environment,
-        "stages": stages,
-        "n_envs": int(getattr(args, "checkpoint_eval_n_envs", 1)),
-        "max_steps": _max_steps(args),
-        "seed": int(getattr(args, "checkpoint_eval_seed", DEFAULT_EVAL_SEED)),
-        "seed_protocol": str(getattr(args, "checkpoint_eval_seed_protocol", SEED_PROTOCOL)),
-        "asset": asset,
-        "promotion_episodes": int(getattr(args, "post_train_eval_episodes", 100)),
-    }
+    return checkpoint_announcement_eval_payload(vars(args))
 
 
 def checkpoint_announcement(

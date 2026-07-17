@@ -1,22 +1,25 @@
 # Experiments
 
-This directory holds shared machine config, active experiment scripts, and
-goal-scoped experiment capsules.
+This directory holds shared machine config, active goal contracts, training
+recipes, benchmark profiles, report declarations, and experiment utilities.
 Keep broad repo rules in the top-level runbooks:
 
 - `../AGENTS.md` for repo rules and stable-retro runtime cautions.
 - `../INSTANCES.md` for the human-facing hardware runbook.
 
-Use `goals/<env-id>/` for durable goal-family contracts, provider-specific
-environment fragments named `_env-<provider>.yaml`, checked-in train recipes, recipe
-evidence, reports, and decisions. Generated local run logs and outputs belong
-under ignored paths such as `runs/`, `logs/`, `models/`, or goal-local ignored
-scratch directories.
+Use `goals/<env-id>/` for durable goal-family contracts and provider-specific
+environment fragments named `_env-<provider>.yaml`. Active training recipes live
+under `recipes/`; report declarations live under `reports/`; benchmark profiles
+live under `benchmarks/`. Generated local run logs and outputs belong under ignored
+paths such as `runs/`, `logs/`, and `models/`.
 
 Current machine-readable research state:
 
-- `goals/`: active goal capsules, including contracts and checked-in recipes.
-- `scripts/`: active experiment utilities used by benchmark profiles and tooling.
+- `goals/`: active goal contracts and provider-specific environment fragments.
+- `recipes/`: active checked-in training recipes and presets.
+- `reports/`: source-controlled report declarations.
+- `benchmarks/`: reproducible benchmark profiles and supporting documentation.
+- `scripts/`: active experiment utilities used by benchmarks and tooling.
 
-Historical goal reports, old recipe fragments, and the former `history/` tree
+Historical goal reports, decisions, old recipe fragments, and the former `history/` tree
 live under repo-root `.deprecated/` for local reference only.

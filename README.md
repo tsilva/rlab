@@ -222,7 +222,12 @@ W&B. The logical run remains `finalizing` while Modal evaluation, promotion, and
 publication finish. `training_finished_at` reports the launch boundary;
 `finished_at` reports overall completion. Exhausted post-train retries produce
 `finalization_failed` without changing the successful launch, and
-`rlab experiment retry-finalization --run <id>` reopens only that phase.
+`rlab experiment retry-finalization --run <id>` reopens only that phase. W&B cursor
+confirmation is bounded: submitted mailbox batches that remain unconfirmed for two minutes, or
+are missing from a terminal W&B run, exhaust three finalization attempts instead of polling
+forever. The retry command first rechecks W&B, then replays only residual unconfirmed batches;
+that explicit repair is at-least-once and can duplicate W&B history if frames persisted without
+their summary cursor.
 
 The accepted checkpoint itself becomes the promoted model, even if the learner advances slightly
 before observing the stop. Its artifact projection receives immutable `step-<n>` plus `promoted` and
@@ -293,7 +298,7 @@ uv run python scripts/prepare_huggingface_release.py \
 ```
 
 The complete workflow requires stochastic evaluation evidence, a browser-safe `replay.mp4`, the
-matching public YouTube preview, and the exact seven-file Hugging Face release bundle. The helper
+matching public YouTube preview, and the exact eight-file Hugging Face release bundle. The helper
 rejects unknown families, inconsistent model classes, manual names, non-portable paths, extra
 files, and invalid hashes before upload.
 

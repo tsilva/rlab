@@ -141,8 +141,11 @@ timstepz: 10
             [command.label for command in commands],
             ["train-local-smoke"],
         )
-        self.assertEqual(commands[0].argv[:2], ("rlab", "train"))
-        self.assertNotIn("local", commands[0].argv[:3])
+        self.assertEqual(
+            commands[0].argv[:4],
+            ("rlab", "experiment", "launch", "--from-head"),
+        )
+        self.assertNotIn("local", commands[0].argv[:4])
         self.assertIn("--machine", commands[0].argv)
         self.assertIn("local-macbook", commands[0].argv)
         self.assertIn("--wait", commands[0].argv)
@@ -153,6 +156,15 @@ timstepz: 10
         )
         self.assertIn("--json", commands[0].argv)
         self.assertEqual(commands[0].argv[commands[0].argv.index("--seed") + 1], "123")
+
+        from rlab.experiment_cli import build_parser as build_experiment_parser
+
+        parsed = build_experiment_parser().parse_args(list(commands[0].argv[2:]))
+        self.assertEqual(parsed.command, "launch")
+        self.assertTrue(parsed.from_head)
+        self.assertEqual(parsed.machine, "local-macbook")
+        self.assertEqual(parsed.wait, "terminal")
+        self.assertTrue(parsed.output_json)
 
     def test_env_throughput_generates_mode_env_matrix(self) -> None:
         profile = find_benchmark_profile("mario-env-throughput-l11")
@@ -314,7 +326,10 @@ required_metrics: [train/throughput/not_real]
         self.assertEqual(exit_code, 0)
         payload = json.loads(stdout.getvalue())
         self.assertNotIn("execution_mode", payload)
-        self.assertEqual(payload["commands"][0]["argv"][:2], ["rlab", "train"])
+        self.assertEqual(
+            payload["commands"][0]["argv"][:4],
+            ["rlab", "experiment", "launch", "--from-head"],
+        )
 
 
 if __name__ == "__main__":

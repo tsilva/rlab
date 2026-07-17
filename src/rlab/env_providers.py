@@ -66,8 +66,16 @@ def _require_disabled_autoreset_mode(env: Any, provider_id: str):
     return env
 
 
+def _native_start_catalog(env: Any) -> tuple[str, ...]:
+    values = getattr(env, "state_catalog", None)
+    if values is None:
+        values = getattr(env, "initial_state_names", ())
+    values = values() if callable(values) else values
+    return tuple(str(value) for value in values or ())
+
+
 class _StartInfoAdapter:
-    """Add canonical reset start identities from a provider's native tracker."""
+    """Translate provider-generic start IDs to native catalog indices."""
 
     def __init__(self, env: Any):
         self.env = env
@@ -80,33 +88,66 @@ class _StartInfoAdapter:
     def reset(self, *, seed=None, options=None):
         native_options = dict(options or {})
         start_ids = native_options.pop("start_ids", None)
+        uses_state_catalog = hasattr(self.env, "state_catalog")
+        values = getattr(
+            self.env,
+            "state_catalog" if uses_state_catalog else "initial_state_names",
+            (),
+        )
+        values = values() if callable(values) else values
+        catalog = tuple(str(value) for value in values or ())
+        mask = np.ones(self.env.num_envs, dtype=np.bool_)
+        if native_options.get("reset_mask") is not None:
+            mask = np.asarray(native_options["reset_mask"], dtype=np.bool_)
         if start_ids is not None:
-            values = getattr(self.env, "initial_state_names", ())
-            values = values() if callable(values) else values
-            catalog = tuple(str(value) for value in values or ())
+            start_ids = np.asarray(start_ids, dtype=object)
+            if start_ids.shape != (self.env.num_envs,):
+                raise ValueError(
+                    f"start_ids must have shape ({self.env.num_envs},), got {start_ids.shape}"
+                )
             catalog_indices = {name: index for index, name in enumerate(catalog)}
-            start_indices = np.full(self.env.num_envs, -1, dtype=np.int32)
-            for lane, start_id in enumerate(np.asarray(start_ids, dtype=object)):
-                if start_id is None:
+            state_indices = np.full(self.env.num_envs, -1, dtype=np.int32)
+            for lane, start_id in enumerate(start_ids):
+                if not bool(mask[lane]):
                     continue
+                if start_id is None:
+                    raise ValueError(f"selected lane {lane} has no start id")
                 try:
-                    start_indices[lane] = catalog_indices[str(start_id)]
+                    state_indices[lane] = catalog_indices[str(start_id)]
                 except KeyError as exc:
                     raise ValueError(
                         f"unknown provider start id {start_id!r}; expected one of {catalog}"
                     ) from exc
-            native_options["start_indices"] = start_indices
+            native_options[
+                "state_indices" if uses_state_catalog else "start_indices"
+            ] = state_indices
         observations, infos = self.env.reset(seed=seed, options=native_options)
         if not isinstance(infos, Mapping):
             return observations, infos
-        active_states = getattr(self.env, "active_states", None)
-        if not callable(active_states):
+        state_indices = infos.get("state_index")
+        if state_indices is None:
+            active_state_indices = getattr(self.env, "active_state_indices", None)
+            if callable(active_state_indices):
+                state_indices = active_state_indices()
+        if state_indices is None:
+            active_states = getattr(self.env, "active_states", None)
+            if callable(active_states):
+                result = dict(infos)
+                result["start_id"] = np.asarray(active_states(), dtype=object)
+                result["_start_id"] = mask.copy()
+                return observations, result
+        if state_indices is None:
             return observations, infos
-        mask = np.ones(self.env.num_envs, dtype=np.bool_)
-        if native_options.get("reset_mask") is not None:
-            mask = np.asarray(native_options["reset_mask"], dtype=np.bool_)
+        state_indices = np.asarray(state_indices, dtype=np.int32)
+        if state_indices.shape != (self.env.num_envs,):
+            raise ValueError("provider state_index must contain one value per lane")
+        active_starts = np.empty(self.env.num_envs, dtype=object)
+        for lane, state_index in enumerate(state_indices):
+            active_starts[lane] = (
+                catalog[int(state_index)] if 0 <= int(state_index) < len(catalog) else None
+            )
         result = dict(infos)
-        result["start_id"] = np.asarray(active_states(), dtype=object)
+        result["start_id"] = active_starts
         result["_start_id"] = mask.copy()
         return observations, result
 
@@ -278,9 +319,7 @@ def provider_native_vec_kwargs(
         "obs_layout": "chw",
     }
     if config.states:
-        defaults["state"] = (
-            state_weight_mapping(config) if config.state_probs else list(config.states)
-        )
+        defaults["state_catalog"] = tuple(dict.fromkeys(config.states))
     else:
         defaults["state"] = config.state or None
     defaults.update(native_kwargs)
@@ -370,9 +409,7 @@ def provider_descriptor(
     if missing_source_names:
         reset_mask = np.ones(native_env.num_envs, dtype=np.bool_)
         reset_options: dict[str, Any] = {"reset_mask": reset_mask}
-        values = getattr(native_env, "initial_state_names", ())
-        values = values() if callable(values) else values
-        start_catalog = tuple(str(value) for value in values or ())
+        start_catalog = _native_start_catalog(native_env)
         if config.state and config.state in start_catalog:
             reset_options["start_ids"] = np.asarray(
                 [config.state for _ in range(native_env.num_envs)],
@@ -434,9 +471,7 @@ def provider_descriptor(
         }:
             raise ValueError(f"provider {provider.provider_id!r} does not implement the Mario task")
 
-    values = getattr(native_env, "initial_state_names", ())
-    values = values() if callable(values) else values
-    start_catalog = tuple(str(value) for value in values) if values else ()
+    start_catalog = _native_start_catalog(native_env)
     start_probabilities: tuple[float, ...] = ()
     lane_start_ids: tuple[str, ...] = ()
     if config.states and config.state_probs:

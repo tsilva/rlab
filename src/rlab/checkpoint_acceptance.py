@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
 from rlab.early_stop import evaluate_early_stop_config, normalize_early_stop_config
 from rlab.eval_metrics import episode_is_complete, episode_start_state
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MEAN, EVAL_FULL_SUCCESS_RATE_MIN
@@ -131,23 +132,11 @@ def checkpoint_eval_contract_from_train_config(
         raise ValueError("checkpoint eval environment is not materialized")
     if not isinstance(acceptance, list):
         raise ValueError("checkpoint eval acceptance rules are not materialized")
-    max_steps = int(train_config.get("post_train_eval_max_steps") or 0)
-    if max_steps <= 0:
-        task = environment.get("task")
-        termination = task.get("termination") if isinstance(task, Mapping) else None
-        max_steps = int(
-            termination.get("max_episode_steps")
-            if isinstance(termination, Mapping)
-            and termination.get("max_episode_steps") is not None
-            else 0
-        )
-    if max_steps <= 0:
-        raise ValueError("checkpoint eval max steps are not materialized")
     return build_checkpoint_eval_contract(
         environment=environment,
         episodes=int(train_config.get("post_train_eval_episodes") or 0),
         n_envs=int(train_config.get("checkpoint_eval_n_envs") or 0),
-        max_steps=max_steps,
+        max_steps=checkpoint_eval_max_steps(train_config),
         seed=int(train_config.get("checkpoint_eval_seed") or 10_000),
         seed_protocol=str(train_config.get("checkpoint_eval_seed_protocol") or ""),
         acceptance=acceptance,

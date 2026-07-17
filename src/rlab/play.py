@@ -448,11 +448,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open an interactive policy debugger; press Enter to advance one step.",
     )
     parser.add_argument(
-        "--respect-task-termination",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
         "--continuous-play",
         action="store_true",
         help=(
@@ -1375,6 +1370,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
+    args.respect_task_termination = not args.continuous_play
     explicit_dests = explicit_arg_dests(parser, argv_list)
     if args.attribution_interval is None:
         args.attribution_interval = 8 if args.attribution == "occlusion" else 1
@@ -1402,7 +1398,6 @@ def main(argv: list[str] | None = None) -> int:
                     artifact_config,
                     respect_task_termination=False,
                 )
-            args.respect_task_termination = not args.continuous_play
         else:
             artifact_config = load_playback_env_config(
                 source.model_path,

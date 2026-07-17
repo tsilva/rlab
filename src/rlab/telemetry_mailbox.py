@@ -32,6 +32,7 @@ DEFAULT_FINAL_FLUSH_SECONDS = 120.0
 DEFAULT_LOCAL_OUTBOX_LIMIT_BYTES = 256 * 1024 * 1024
 LEASE_SECONDS = 180
 REMOTE_CONFIRM_POLL_SECONDS = 5.0
+REMOTE_CONFIRM_TIMEOUT_SECONDS = 120.0
 
 
 class MailboxProtocolError(RuntimeError):
@@ -257,9 +258,7 @@ class WorkerMailbox:
         finally:
             conn.close()
 
-    def acknowledge_command(
-        self, command_id: str, *, acknowledged_at: str | None = None
-    ) -> bool:
+    def acknowledge_command(self, command_id: str, *, acknowledged_at: str | None = None) -> bool:
         conn = mailbox_connect(self.database_url)
         try:
             with conn:
@@ -370,6 +369,7 @@ def claim_run_metric_batches(
             WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
               AND t.telemetry_transport = 'neon_mailbox_v1'
               AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+              AND t.live_publication_status NOT IN ('complete', 'disabled', 'failed')
               AND (t.live_publication_next_retry_at IS NULL
                    OR t.live_publication_next_retry_at <= now())
               AND t.id <> ALL(%(excluded_ids)s)
@@ -403,7 +403,9 @@ def claim_run_metric_batches(
                     FROM metric_batches b
                     JOIN metric_streams s ON s.stream_id = b.stream_id
                     JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    JOIN train_jobs t ON t.id = a.train_job_id
                     WHERE a.train_job_id = %(train_job_id)s
+                      AND t.live_publication_status NOT IN ('complete', 'disabled', 'failed')
                       AND (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
                     ORDER BY b.created_at, b.id
                     FOR UPDATE OF b SKIP LOCKED
@@ -448,6 +450,7 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
               WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
                 AND t.telemetry_transport = 'neon_mailbox_v1'
                 AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                AND t.live_publication_status NOT IN ('complete', 'disabled', 'failed')
                 AND (t.live_publication_next_retry_at IS NULL
                      OR t.live_publication_next_retry_at <= now())
               GROUP BY t.id
@@ -556,7 +559,8 @@ def mark_submitted_batches(
                 UPDATE metric_batches
                 SET lease_owner = NULL,
                     lease_expires_at = now() + (%(delay)s * interval '1 second'),
-                    last_error = NULL
+                    last_error = NULL,
+                    submitted_at = COALESCE(submitted_at, now())
                 WHERE id = ANY(%(ids)s)
                 """,
                 {

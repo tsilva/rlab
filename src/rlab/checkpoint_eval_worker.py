@@ -10,11 +10,12 @@ from typing import Any
 
 from rlab.wandb_artifacts import artifact_write_ref
 from rlab.checkpoint_eval_config import (
+    checkpoint_eval_max_steps,
     normalize_checkpoint_eval_stages,
 )
 from rlab.device import resolve_sb3_device
 from rlab.early_stop import evaluate_early_stop_config
-from rlab.env import EnvConfig, resolve_env_config, task_max_episode_steps
+from rlab.env import EnvConfig, resolve_env_config
 from rlab.env_metadata import env_config_from_config_dict
 from rlab.eval_runner import evaluate_model_episodes
 from rlab.eval_metrics import eval_by_start_rows
@@ -377,7 +378,7 @@ def process_staged_eval(
             device=resolve_sb3_device(args.device),
         )
         episodes = int(stage["episodes"])
-        max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
+        max_steps = checkpoint_eval_max_steps(vars(args))
         n_envs = int(stage.get("n_envs") or getattr(args, "checkpoint_eval_n_envs", 20))
         metrics, _video_path = evaluate_model_episodes(
             model=eval_model,
@@ -531,7 +532,7 @@ def process_eval(
             device=resolve_sb3_device(args.device),
         )
         episodes = int(args.post_train_eval_episodes)
-        max_steps = int(args.post_train_eval_max_steps or task_max_episode_steps(config))
+        max_steps = checkpoint_eval_max_steps(vars(args))
         n_envs = int(args.checkpoint_eval_n_envs)
         metrics, _video_path = evaluate_model_episodes(
             model=eval_model,

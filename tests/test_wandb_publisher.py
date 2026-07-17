@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from rlab.fleet_wandb_publisher import (
+    WandbCursorConfirmationError,
     WandbFinalizationVerificationError,
+    WandbPublicationState,
     _canonical_goal_summary,
     _cursor_mapping,
+    _drain_claim,
     _partition_batches,
+    _raise_for_stalled_confirmations,
+    _remote_publication_state,
     _summary_step_max,
     drain_cycle_parallel,
     finalize_finishing_run,
@@ -295,6 +301,21 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual(_summary_step_max({"max": 2000000}), 2000000.0)
         self.assertIsNone(_summary_step_max({}))
 
+    def test_remote_publication_api_errors_are_not_converted_to_empty_cursors(self) -> None:
+        fake_wandb = SimpleNamespace(
+            Api=lambda: SimpleNamespace(run=mock.Mock(side_effect=TimeoutError("offline")))
+        )
+        with (
+            mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
+            mock.patch("rlab.fleet_wandb_publisher.load_wandb_env"),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.resolve_wandb_namespace",
+                return_value=("entity", "project"),
+            ),
+            self.assertRaisesRegex(TimeoutError, "offline"),
+        ):
+            _remote_publication_state({"wandb_run_id": "run-7", "game": "SuperMarioBros-Nes-v0"})
+
     def test_mailbox_batches_have_distinct_confirmed_submitted_and_new_states(self) -> None:
         batches = [
             {"id": 1, "stream_id": "train-7", "batch_sequence": 1, "submitted_sequence": 2},
@@ -310,6 +331,108 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in confirmed], [1])
         self.assertEqual([row["id"] for row in awaiting], [2])
         self.assertEqual([row["id"] for row in unpublished], [3])
+
+    def test_crashed_run_with_eight_missing_cursors_fails_confirmation(self) -> None:
+        batches = [
+            {
+                "id": index,
+                "stream_id": f"eval-{index}",
+                "batch_sequence": 1,
+                "submitted_at": None,
+            }
+            for index in range(1, 9)
+        ]
+        remote = WandbPublicationState(state="crashed", cursors={}, step_max=None)
+
+        with self.assertRaisesRegex(
+            WandbCursorConfirmationError,
+            "remote_state=crashed",
+        ) as caught:
+            _raise_for_stalled_confirmations(batches, remote)
+
+        self.assertIn("eval-1:expected=1:observed=0", str(caught.exception))
+        self.assertIn("eval-8:expected=1:observed=0", str(caught.exception))
+
+    def test_running_run_confirmation_is_bounded_at_two_minutes(self) -> None:
+        now = datetime.now(UTC)
+        remote = WandbPublicationState(state="running", cursors={}, step_max=None)
+        recent = {
+            "stream_id": "eval-recent",
+            "batch_sequence": 1,
+            "submitted_at": now - timedelta(seconds=119),
+        }
+        stale = {
+            "stream_id": "eval-stale",
+            "batch_sequence": 1,
+            "submitted_at": now - timedelta(seconds=120),
+        }
+
+        _raise_for_stalled_confirmations([recent], remote, now=now)
+        with self.assertRaisesRegex(
+            WandbCursorConfirmationError,
+            "reason=confirmation_timeout",
+        ):
+            _raise_for_stalled_confirmations([stale], remote, now=now)
+
+    def test_third_finalizing_publication_failure_is_terminal_and_preserves_batches(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        run = {
+            "id": 63,
+            "status": "finalizing",
+            "live_publication_attempts": 2,
+        }
+        batches = [{"id": 1, "stream_id": "eval-1", "batch_sequence": 1}]
+        error = WandbCursorConfirmationError("cursor missing")
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.publish_claimed_run",
+                side_effect=error,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.release_metric_batch_claims") as release,
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+            mock.patch("rlab.fleet_wandb_publisher.release_wandb_run_lock"),
+            self.assertRaises(WandbCursorConfirmationError),
+        ):
+            _drain_claim(conn, run, batches)
+
+        release.assert_called_once_with(conn, batches, error=repr(error))
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertEqual(update.args[1]["attempts"], 3)
+        self.assertTrue(update.args[1]["terminal"])
+        self.assertNotIn("DELETE FROM metric_batches", update.args[0])
+        event.assert_called_once()
+
+    def test_active_training_publication_failure_never_terminalizes_learner(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        run = {"id": 7, "status": "running", "live_publication_attempts": 99}
+        batches = [{"id": 1, "stream_id": "train-7", "batch_sequence": 1}]
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.publish_claimed_run",
+                side_effect=RuntimeError("W&B unavailable"),
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.release_metric_batch_claims"),
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event"),
+            mock.patch("rlab.fleet_wandb_publisher.release_wandb_run_lock"),
+            self.assertRaisesRegex(RuntimeError, "W&B unavailable"),
+        ):
+            _drain_claim(conn, run, batches)
+
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertFalse(update.args[1]["terminal"])
+        self.assertEqual(update.args[1]["retry_delay"], 30)
 
     def test_finishing_run_completes_only_after_remote_cursors_metrics_and_artifact(self) -> None:
         conn = mock.MagicMock()

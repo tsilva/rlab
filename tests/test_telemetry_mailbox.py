@@ -10,6 +10,7 @@ from rlab.metric_store import MetricStore, metric_store_path
 from rlab.telemetry_mailbox import (
     MailboxProtocolError,
     WorkerMailbox,
+    claim_run_metric_batches,
     decode_metric_batch,
     encode_metric_batch,
     mark_submitted_batches,
@@ -69,6 +70,19 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    def test_terminal_publications_are_not_claimable(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = None
+
+        self.assertIsNone(claim_run_metric_batches(conn, owner="publisher"))
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn(
+            "live_publication_status NOT IN ('complete', 'disabled', 'failed')",
+            statement,
+        )
+
     def test_finishing_publishers_wait_until_their_retry_deadline(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -78,6 +92,10 @@ class TelemetryBatchTests(unittest.TestCase):
 
         statement = cursor.execute.call_args.args[0]
         self.assertEqual(statement.count("live_publication_next_retry_at <= now()"), 2)
+        self.assertIn(
+            "live_publication_status NOT IN ('complete', 'disabled', 'failed')",
+            statement,
+        )
 
     def test_worker_preflight_checks_the_command_poll_procedure(self) -> None:
         mailbox = WorkerMailbox("postgresql://worker/db", "train-7", "token")
@@ -105,14 +123,11 @@ class TelemetryBatchTests(unittest.TestCase):
         calls = conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
         self.assertEqual(lease_update.args[1]["delay"], 5.0)
+        self.assertIn("submitted_at = COALESCE(submitted_at, now())", lease_update.args[0])
 
     def test_batch_is_deterministic_gzip_and_preserves_explicit_global_steps(self) -> None:
-        batch = encode_metric_batch(
-            [frame(1, step=300), frame(2, step=100), frame(3, step=200)]
-        )
-        again = encode_metric_batch(
-            [frame(1, step=300), frame(2, step=100), frame(3, step=200)]
-        )
+        batch = encode_metric_batch([frame(1, step=300), frame(2, step=100), frame(3, step=200)])
+        again = encode_metric_batch([frame(1, step=300), frame(2, step=100), frame(3, step=200)])
 
         self.assertEqual(batch.payload, again.payload)
         self.assertEqual(
@@ -152,9 +167,7 @@ class TelemetryBatchTests(unittest.TestCase):
             )
             mailbox = FakeMailbox()
 
-            with mock.patch(
-                "rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox
-            ):
+            with mock.patch("rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox):
                 result = relay_main(
                     [
                         "--run-dir",
@@ -183,9 +196,7 @@ class TelemetryBatchTests(unittest.TestCase):
             MetricStore(metric_store_path(run_dir)).init()
             mailbox = FakeMailbox()
 
-            with mock.patch(
-                "rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox
-            ):
+            with mock.patch("rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox):
                 relay_main(["--run-dir", str(run_dir), "--stop-file", str(stop_file)])
 
             self.assertEqual(mailbox.batches[0]["frames"], [])
@@ -290,9 +301,7 @@ class TelemetryBatchTests(unittest.TestCase):
             MetricStore(metric_store_path(run_dir)).init()
             mailbox = BrokenCommandMailbox()
 
-            with mock.patch(
-                "rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox
-            ):
+            with mock.patch("rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox):
                 with self.assertRaisesRegex(RuntimeError, "dedicated command relay failed"):
                     relay_main(
                         [
@@ -334,9 +343,7 @@ class TelemetryBatchTests(unittest.TestCase):
             )
             mailbox = FlakyMailbox()
 
-            with mock.patch(
-                "rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox
-            ):
+            with mock.patch("rlab.telemetry_relay.WorkerMailbox.from_env", return_value=mailbox):
                 relay_main(
                     [
                         "--run-dir",

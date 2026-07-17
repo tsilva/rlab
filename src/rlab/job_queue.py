@@ -300,6 +300,7 @@ CREATE TABLE IF NOT EXISTS metric_batches (
   lease_expires_at TIMESTAMPTZ,
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   last_error TEXT,
+  submitted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (stream_id, batch_sequence)
 );
@@ -398,6 +399,7 @@ ALTER TABLE attempt_commands ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 ALTER TABLE attempt_events DROP CONSTRAINT IF EXISTS attempt_events_attempts_check;
 ALTER TABLE attempt_events ADD CONSTRAINT attempt_events_attempts_check CHECK (attempts >= 0);
 ALTER TABLE metric_streams ADD COLUMN IF NOT EXISTS submitted_sequence BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE metric_batches ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
 UPDATE metric_streams
 SET submitted_sequence = GREATEST(submitted_sequence, published_sequence);
 ALTER TABLE metric_streams DROP CONSTRAINT IF EXISTS metric_streams_sequence_order_check;
@@ -2696,9 +2698,38 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 )
                 return dict(row)
             if str(source["status"]) != "finalization_failed":
-                raise ValueError(
-                    f"job {job_id} is not finalization_failed or succeeded"
+                raise ValueError(f"job {job_id} is not finalization_failed or succeeded")
+            cur.execute(
+                """
+                WITH residual_streams AS MATERIALIZED (
+                  SELECT DISTINCT s.stream_id
+                  FROM metric_batches b
+                  JOIN metric_streams s ON s.stream_id = b.stream_id
+                  JOIN worker_attempts w ON w.attempt_id = s.attempt_id
+                  WHERE w.train_job_id = %(job_id)s
+                ), reset_streams AS (
+                  UPDATE metric_streams s
+                  SET submitted_sequence = published_sequence, updated_at = now()
+                  FROM residual_streams r
+                  WHERE s.stream_id = r.stream_id
+                  RETURNING s.stream_id
+                ), reset_batches AS (
+                  UPDATE metric_batches b
+                  SET lease_owner = NULL, lease_expires_at = NULL,
+                    attempts = 0, last_error = NULL, submitted_at = NULL
+                  FROM metric_streams s
+                  JOIN worker_attempts w ON w.attempt_id = s.attempt_id
+                  WHERE b.stream_id = s.stream_id
+                    AND w.train_job_id = %(job_id)s
+                  RETURNING b.id
                 )
+                SELECT
+                  (SELECT COUNT(*) FROM reset_streams) AS residual_streams,
+                  (SELECT COUNT(*) FROM reset_batches) AS residual_batches
+                """,
+                {"job_id": int(job_id)},
+            )
+            reset = dict(cur.fetchone() or {})
             cur.execute(
                 """
                 UPDATE eval_runs
@@ -2758,7 +2789,12 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 job_id=int(job_id),
                 event_type="finalization_retried",
                 message="operator reopened failed finalization work",
-                metadata={"launch_state": "succeeded"},
+                metadata={
+                    "launch_state": "succeeded",
+                    "residual_streams": int(reset.get("residual_streams") or 0),
+                    "residual_batches": int(reset.get("residual_batches") or 0),
+                    "publication_delivery": "at_least_once",
+                },
             )
             return dict(row)
 

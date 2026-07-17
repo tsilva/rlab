@@ -17,8 +17,8 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 ## Stable Retro
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
-- Current required forward runtime is `stable-retro-turbo==1.0.1.post30`.
-- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.3.1`.
+- Current required forward runtime is `stable-retro-turbo==1.0.1.post31`.
+- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.3.3`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime version source of truth: `pyproject.toml` minimums and the resolved versions in `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.
 - Native-vector obs may be channel-last `(n_envs, 84, 84, 4)` or channel-first `(n_envs, 4, 84, 84)`. Detect shape; skip `VecTransposeImage` for channel-first; transpose only channel-last.
@@ -26,7 +26,7 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 
 ## Training Runs
 
-- When asked to launch, run, start, execute, or monitor a queue-backed training recipe, use the project-level `$launch-training-recipe` skill in `.codex/skills/launch-training-recipe`. It defaults to `beast-3`, reports the W&B URL as soon as it appears, monitors compactly, and delegates potential-bug diagnosis to the read-only `training_run_investigator` custom agent without applying fixes.
+- When asked to launch, run, start, execute, or monitor a queue-backed training recipe, use the project-level `$launch-experiment` skill in `.codex/skills/launch-experiment`. It defaults to `beast-3`, reports the W&B URL as soon as it appears, monitors compactly, and delegates potential-bug diagnosis to the read-only `training_run_investigator` custom agent without applying fixes.
 - Active research goal contracts live under goal-scoped folders in `experiments/goals/`. For current Mario Level1-1 work, read `experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria. Seed ranges are owned by `rlab.seeds`, not goal files.
 - Legacy goal-local `decisions/`, `recipes/`, `reports/`, `best.yml`, and old `experiments/history/` artifacts live under repo-root `.deprecated/` with their source-relative folder structure. That directory is gitignored and should be treated only as historical context about past experiments, not as active contract, recipe, or promotion state.
 - Keep generated artifacts out of source control; use `runs/`, `logs/`, and `models/`.

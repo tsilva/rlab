@@ -212,7 +212,7 @@ def load_model_metadata(model_path: Path) -> dict[str, Any]:
 def playback_env_config(
     config: EnvConfig,
     *,
-    respect_task_termination: bool = False,
+    respect_task_termination: bool = True,
 ) -> EnvConfig:
     if respect_task_termination:
         return config
@@ -239,7 +239,7 @@ def playback_env_config(
 def load_playback_env_config(
     model_path: Path,
     *,
-    respect_task_termination: bool = False,
+    respect_task_termination: bool = True,
 ) -> EnvConfig:
     metadata = load_model_metadata(model_path)
     assert_metadata_runtime_versions(metadata)

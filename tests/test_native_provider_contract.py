@@ -358,8 +358,8 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
-        self.assertGreaterEqual(installed, Version("0.3.1"))
-        self.assertEqual(Version(retro.__version__), Version("1.0.1.post30"))
+        self.assertGreaterEqual(installed, Version("0.3.3"))
+        self.assertEqual(Version(retro.__version__), Version("1.0.1.post31"))
 
     def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
         config = self.config(
@@ -405,8 +405,9 @@ class MarioNativeProviderTests(unittest.TestCase):
                 self.action_space = gym.vector.utils.batch_space(
                     self.single_action_space, num_envs
                 )
-                self.initial_state_names = ("Level1-1",)
+                self.state_catalog = ("Level1-1",)
                 self._states = ["Level1-1" for _ in range(num_envs)]
+                self._state_indices = np.zeros(num_envs, dtype=np.int32)
 
             def reset(self, *, seed=None, options=None):
                 del seed
@@ -416,11 +417,12 @@ class MarioNativeProviderTests(unittest.TestCase):
                     dtype=np.bool_,
                 )
                 starts = np.asarray(
-                    options.get("start_indices", np.full(self.num_envs, -1, dtype=np.int32))
+                    options.get("state_indices", np.zeros(self.num_envs, dtype=np.int32))
                 )
                 for lane in np.flatnonzero(mask):
                     if starts[lane] >= 0:
-                        self._states[int(lane)] = self.initial_state_names[int(starts[lane])]
+                        self._state_indices[int(lane)] = int(starts[lane])
+                        self._states[int(lane)] = self.state_catalog[int(starts[lane])]
                 infos = {
                     "xscrollHi": np.zeros(self.num_envs, dtype=np.int64),
                     "xscrollLo": np.zeros(self.num_envs, dtype=np.int64),
@@ -428,11 +430,13 @@ class MarioNativeProviderTests(unittest.TestCase):
                     "lives": np.full(self.num_envs, 3, dtype=np.int64),
                     "levelHi": np.zeros(self.num_envs, dtype=np.int64),
                     "levelLo": np.zeros(self.num_envs, dtype=np.int64),
+                    "state_index": self._state_indices.copy(),
+                    "_state_index": mask.copy(),
                 }
                 return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), infos
 
-            def active_states(self):
-                return tuple(self._states)
+            def active_state_indices(self):
+                return self._state_indices
 
         config = self.config(env_args={"rom_path": None})
         kwargs = provider_native_vec_kwargs(
@@ -510,7 +514,7 @@ class MarioNativeProviderTests(unittest.TestCase):
             single_action_space = gym.spaces.MultiBinary(9)
             observation_space = gym.vector.utils.batch_space(single_observation_space, 2)
             action_space = gym.vector.utils.batch_space(single_action_space, 2)
-            initial_state_names = ("Level1-1",)
+            state_catalog = ("Level1-1",)
 
             def reset(self, *, seed=None, options=None):
                 del seed, options
@@ -612,6 +616,93 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertEqual(env.kwargs["obs_crop_fill"], 0)
         self.assertNotIn("done_on", env.kwargs)
         self.assertNotIn("autoreset_mode", env.kwargs)
+
+    def test_stable_retro_receives_catalog_without_sampling_weights(self) -> None:
+        config = self.config(
+            env_provider="stable-retro-turbo",
+            state="",
+            states=("Level1-1", "Level1-4"),
+            state_probs=(0.25, 0.75),
+        )
+
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=3,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda value: dict(
+                zip(value.states, value.state_probs, strict=True)
+            ),
+        )
+
+        self.assertEqual(kwargs["state_catalog"], ("Level1-1", "Level1-4"))
+        self.assertNotIn("state", kwargs)
+        self.assertNotIn("state_probs", kwargs)
+
+    def test_smb_turbo_receives_catalog_without_sampling_weights(self) -> None:
+        config = self.config(
+            state="",
+            states=("Level1-1", "Level1-4"),
+            state_probs=(0.25, 0.75),
+        )
+
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=3,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda value: dict(
+                zip(value.states, value.state_probs, strict=True)
+            ),
+        )
+
+        self.assertEqual(kwargs["state_catalog"], ("Level1-1", "Level1-4"))
+        self.assertNotIn("state", kwargs)
+        self.assertNotIn("state_probs", kwargs)
+
+    def test_stable_retro_adapter_translates_exact_start_ids_to_state_indices(self) -> None:
+        class ManualRetroVectorEnv:
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
+
+            def __init__(self, game, *, num_envs, **kwargs):
+                del game, kwargs
+                self.num_envs = num_envs
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
+                self.state_catalog = ("Level1-1", "Level1-4")
+                self.indices = np.zeros(num_envs, dtype=np.int32)
+                self.reset_options = None
+
+            def reset(self, *, seed=None, options=None):
+                del seed
+                self.reset_options = dict(options or {})
+                mask = np.asarray(self.reset_options["reset_mask"], dtype=np.bool_)
+                requested = np.asarray(self.reset_options["state_indices"], dtype=np.int32)
+                self.indices[mask] = requested[mask]
+                infos = {
+                    "state_index": self.indices.copy(),
+                    "_state_index": mask.copy(),
+                }
+                return np.zeros((self.num_envs, 1), dtype=np.uint8), infos
+
+            def active_state_indices(self):
+                return self.indices
+
+        config = self.config(env_provider="stable-retro-turbo")
+        env = make_provider_vec_env(
+            config,
+            native_kwargs={"num_envs": 2},
+            retro_vec_env_type=ManualRetroVectorEnv,
+        )
+        mask = np.asarray([True, False], dtype=np.bool_)
+
+        _observations, infos = env.reset(
+            options={
+                "reset_mask": mask,
+                "start_ids": np.asarray(["Level1-4", None], dtype=object),
+            }
+        )
+
+        np.testing.assert_array_equal(env.env.reset_options["state_indices"], [1, -1])
+        self.assertEqual(infos["start_id"].tolist(), ["Level1-4", "Level1-1"])
+        np.testing.assert_array_equal(infos["_start_id"], mask)
 
     def test_stable_retro_atari_uses_retro_vec_env_contract(self) -> None:
         class ManualRetroVectorEnv:

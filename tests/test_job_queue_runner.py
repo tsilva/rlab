@@ -621,6 +621,11 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS metric_streams", job_queue.SCHEMA_SQL)
         self.assertIn("submitted_sequence BIGINT", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS metric_batches", job_queue.SCHEMA_SQL)
+        self.assertIn("submitted_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
+        self.assertIn(
+            "ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ",
+            job_queue.SCHEMA_SQL,
+        )
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_events", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_commands", job_queue.SCHEMA_SQL)
         self.assertIn("worker_submit_metric_batch", job_queue.SCHEMA_SQL)
@@ -1387,6 +1392,7 @@ class JobQueueTests(unittest.TestCase):
         conn = FakeConnection(
             results=[
                 {"row": source},
+                {"row": {"residual_streams": 8, "residual_batches": 8}},
                 {},
                 {},
                 {"row": reopened},
@@ -1399,6 +1405,8 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(result["status"], "finalizing")
         statements = conn.cursor_obj.executed_sqls
         self.assertTrue(any("retry_round + 1" in statement for statement in statements))
+        self.assertTrue(any("submitted_sequence = published_sequence" in sql for sql in statements))
+        self.assertTrue(any("submitted_at = NULL" in sql for sql in statements))
         self.assertFalse(any("UPDATE job_launches" in statement for statement in statements))
 
     def test_retry_finalization_restamps_a_succeeded_run_without_reopening_training(self) -> None:

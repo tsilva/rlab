@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from rlab.json_utils import json_safe
+from rlab.telemetry_mailbox import REMOTE_CONFIRM_TIMEOUT_SECONDS
 
 
 SCHEMA_VERSION = 1
@@ -102,6 +103,8 @@ def _diagnostics(conn, run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND (a.attempt_number>1 OR a.retry_round>0)) AS eval_retries,
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND a.status IN ('failed','expired')) AS failed_eval_attempts,
               (SELECT COUNT(*) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s) AS pending_metric_batches,
+              (SELECT COUNT(*) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence) AS unconfirmed_metric_batches,
+              (SELECT MIN(b.submitted_at) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence) AS oldest_unconfirmed_submitted_at,
               (SELECT COUNT(*) FROM attempt_events e JOIN worker_attempts w ON w.attempt_id=e.attempt_id WHERE w.train_job_id=%(run)s AND (e.last_error IS NOT NULL OR e.attempts>0)) AS errored_mailbox_events,
               (SELECT COUNT(*) FROM attempt_commands c JOIN worker_attempts w ON w.attempt_id=c.attempt_id WHERE w.train_job_id=%(run)s AND (c.delivered_at IS NULL OR c.acknowledged_at IS NULL)) AS unhandled_commands,
               (SELECT COUNT(*) FROM metric_streams s JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND NOT (s.accepted_sequence=s.submitted_sequence AND s.submitted_sequence=s.published_sequence AND s.final_sequence IS NOT NULL AND s.published_sequence=s.final_sequence)) AS incomplete_streams,
@@ -178,6 +181,23 @@ def current_incidents(
                 "mailbox_delivery_error",
                 "worker_mailbox",
                 f"errored_mailbox_events={int(diagnostics['errored_mailbox_events'])}",
+            )
+        )
+    unconfirmed_batches = int(diagnostics.get("unconfirmed_metric_batches") or 0)
+    oldest_unconfirmed = diagnostics.get("oldest_unconfirmed_submitted_at")
+    confirmation_age = _seconds_between(oldest_unconfirmed, datetime.now(UTC))
+    if (
+        unconfirmed_batches
+        and confirmation_age is not None
+        and confirmation_age >= REMOTE_CONFIRM_TIMEOUT_SECONDS
+    ):
+        incidents.append(
+            _incident(
+                run_id,
+                "wandb_cursor_confirmation_stalled",
+                "wandb",
+                f"unconfirmed_batches={unconfirmed_batches}, "
+                f"oldest_confirmation_age_seconds={confirmation_age:.1f}",
             )
         )
     if (
@@ -306,6 +326,8 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
             "status": row.get("live_publication_status"),
             "attempts": int(row.get("live_publication_attempts") or 0),
             "error": row.get("live_publication_error"),
+            "unconfirmed_batches": int(diagnostics.get("unconfirmed_metric_batches") or 0),
+            "oldest_unconfirmed_submitted_at": diagnostics.get("oldest_unconfirmed_submitted_at"),
             "artifact_status": row.get("artifact_status"),
             "artifact_projection_attempts": int(row.get("artifact_projection_attempts") or 0),
         },

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Launch Training Recipe"
-  short_description: "Launch and monitor an rlab training recipe"
-  default_prompt: "Use $launch-training-recipe to launch and monitor this training recipe on beast-3."

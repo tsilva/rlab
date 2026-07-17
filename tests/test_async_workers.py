@@ -46,6 +46,9 @@ def worker_args(**overrides: object) -> argparse.Namespace:
         "post_train_eval_episodes": 100,
         "post_train_eval_max_steps": 0,
         "max_episode_steps": 4500,
+        "checkpoint_eval_environment": {
+            "task": {"termination": {"max_episode_steps": 4500}}
+        },
         "checkpoint_eval_n_envs": 1,
         "post_train_eval_stochastic": True,
         "selection_rank": [

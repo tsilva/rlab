@@ -267,7 +267,9 @@ def _local_smoke_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     machine = str(profile.get("machine") or "local-macbook")
     enqueue = [
         "rlab",
-        "train",
+        "experiment",
+        "launch",
+        "--from-head",
         "--goal-file",
         goal_file,
         "--recipe-file",

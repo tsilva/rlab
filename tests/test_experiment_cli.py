@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -198,6 +199,54 @@ class RunObservabilityTests(unittest.TestCase):
         second = run_observability.current_incidents(row, diagnostics)
         self.assertEqual(first, second)
         self.assertEqual(first[0]["category"], "eval_execution_failure")
+
+    def test_stalled_cursor_confirmation_is_a_potential_bug_once(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 63,
+                "status": "finalizing",
+                "eval_status": "finalizing",
+                "live_publication_status": "pending",
+            },
+            {
+                "unconfirmed_metric_batches": 8,
+                "oldest_unconfirmed_submitted_at": datetime.now(UTC) - timedelta(seconds=121),
+            },
+        )
+        stalled = next(
+            incident
+            for incident in incidents
+            if incident["category"] == "wandb_cursor_confirmation_stalled"
+        )
+        active = {
+            **self.projection(status="succeeded", outcome="accepted"),
+            "status": "finalizing",
+            "terminal_classification": None,
+            "incidents": {"current": [stalled], "history": []},
+        }
+        terminal = self.projection(status="succeeded", outcome="accepted")
+        events: list[dict] = []
+
+        with mock.patch.object(
+            run_observability,
+            "run_projection",
+            side_effect=[active, active, terminal],
+        ):
+            code = run_observability.follow_run(
+                mock.MagicMock(),
+                63,
+                emit=lambda event: events.append(dict(event)),
+                sleep=lambda _seconds: None,
+                wandb_reader=lambda _url: {"state": "finished", "metrics": {}},
+            )
+
+        self.assertEqual(code, 0)
+        potential_bugs = [event for event in events if event["event"] == "potential_bug"]
+        self.assertEqual(len(potential_bugs), 1)
+        self.assertEqual(
+            potential_bugs[0]["incident"]["category"],
+            "wandb_cursor_confirmation_stalled",
+        )
 
     def test_completed_publication_attempts_are_history_not_a_current_incident(self) -> None:
         incidents = run_observability.current_incidents(

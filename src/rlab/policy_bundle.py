@@ -626,15 +626,9 @@ def build_recipe_document(
     evaluation_environment = deepcopy(train_config.get("checkpoint_eval_environment"))
     if not isinstance(evaluation_environment, Mapping):
         raise PolicyDocumentError("materialized recipe is missing checkpoint_eval_environment")
-    max_steps = int(train_config.get("post_train_eval_max_steps") or 0)
-    if max_steps <= 0:
-        task = evaluation_environment.get("task")
-        termination = task.get("termination") if isinstance(task, Mapping) else None
-        max_steps = int(
-            termination.get("max_episode_steps")
-            if isinstance(termination, Mapping) and termination.get("max_episode_steps")
-            else 0
-        )
+    from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
+
+    max_steps = checkpoint_eval_max_steps(train_config)
     recipe["eval"] = {
         "environment": evaluation_environment,
         "action_sampling": "stochastic",

@@ -147,8 +147,13 @@ Checkpoint mailbox announcements and ready promotion projections are ingested in
 The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
 concurrency is independent of the 10-call Modal limit. The actor survives idle producer gaps,
 drains up to 100 ordered durable batches per claim, and rechecks remotely submitted cursors after
-five seconds. Publisher work never blocks eval reconciliation or stop delivery; publication
-completion and failure remain durable finalization-only state. A lifetime actor advisory lock plus
+five seconds. A submitted cursor may remain pending for at most two minutes; a missing cursor on a
+terminal W&B run fails immediately. Finalizing runs exhaust publication after three failed passes,
+retain their mailbox payloads, and can re-arm only residual batches with
+`rlab experiment retry-finalization --run <run-id>`. That explicit replay is at-least-once because
+W&B cannot atomically commit history and summary cursors. Publisher work never blocks eval
+reconciliation or stop delivery; publication completion and failure remain durable
+finalization-only state. A lifetime actor advisory lock plus
 the narrower per-session lock prevent duplicate owners or interleaved writers after a manager or Mac
 restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh

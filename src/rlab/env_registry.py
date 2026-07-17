@@ -78,6 +78,7 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
                 "obs_resize",
                 "obs_resize_algorithm",
                 "state",
+                "state_catalog",
                 "sticky_action_prob",
             }
         ),
@@ -126,6 +127,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
                 "obs_resize",
                 "obs_resize_algorithm",
                 "state",
+                "state_catalog",
                 "sticky_action_prob",
             }
         ),
@@ -148,6 +150,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
                 "reward_clip",
                 "rom_path",
                 "scenario",
+                "state_dir",
                 "use_restricted_actions",
             }
         ),

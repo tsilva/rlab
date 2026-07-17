@@ -51,6 +51,7 @@ train:
           render_mode: rgb_array
           num_threads: 16
           rom_path: null
+          state_dir: null
           obs_copy: safe_view
           obs_grayscale: true
           obs_layout: chw

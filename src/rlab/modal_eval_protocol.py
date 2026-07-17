@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
 from rlab.early_stop import evaluate_early_stop_config
 from rlab.env_registry import resolve_env_provider
 from rlab.checkpoint_acceptance import (
@@ -26,6 +27,48 @@ def _sha256(value: object, *, label: str) -> str:
     if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
         raise ValueError(f"{label} must be a SHA-256 hex digest")
     return text
+
+
+def checkpoint_announcement_eval_payload(
+    materialized_train_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    acceptance_contract = materialized_train_config.get("checkpoint_eval_contract")
+    if isinstance(acceptance_contract, Mapping):
+        return dict(acceptance_contract)
+
+    environment = materialized_train_config.get("checkpoint_eval_environment")
+    stages = materialized_train_config.get("checkpoint_eval_stages")
+    asset = materialized_train_config.get("checkpoint_eval_asset_manifest")
+    if not isinstance(environment, Mapping):
+        raise ValueError("Modal checkpoint eval requires a materialized environment")
+    if stages is None:
+        stages = []
+    if not isinstance(stages, list):
+        raise ValueError("Modal checkpoint eval stages must be a list")
+    provider = str(
+        materialized_train_config.get("env_provider") or environment.get("env_provider") or ""
+    ).strip()
+    requires_rom_asset = (
+        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    )
+    if requires_rom_asset and not isinstance(asset, Mapping):
+        raise ValueError("Modal checkpoint eval requires a materialized asset manifest")
+    if not requires_rom_asset:
+        asset = None
+    return {
+        "environment": dict(environment),
+        "stages": stages,
+        "n_envs": int(materialized_train_config.get("checkpoint_eval_n_envs") or 1),
+        "max_steps": checkpoint_eval_max_steps(materialized_train_config),
+        "seed": int(materialized_train_config.get("checkpoint_eval_seed") or 10_000),
+        "seed_protocol": str(
+            materialized_train_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
+        ),
+        "asset": dict(asset) if isinstance(asset, Mapping) else None,
+        "promotion_episodes": int(
+            materialized_train_config.get("post_train_eval_episodes") or 100
+        ),
+    }
 
 
 def validate_announcement(
@@ -66,9 +109,9 @@ def validate_announcement(
             raise ValueError("checkpoint announcement asset identity is incomplete")
     elif asset is not None:
         raise ValueError("checkpoint announcement asset contract must be an object or null")
+    expected_contract = checkpoint_announcement_eval_payload(materialized_train_config)
     if "acceptance" in eval_contract:
-        expected_contract = materialized_train_config.get("checkpoint_eval_contract")
-        if not isinstance(expected_contract, Mapping):
+        if "acceptance" not in expected_contract:
             raise ValueError("queued acceptance contract is missing")
         if canonical_json(dict(eval_contract)) != canonical_json(dict(expected_contract)):
             raise ValueError(
@@ -76,34 +119,7 @@ def validate_announcement(
             )
         manifest_index(eval_contract)
         return dict(announcement)
-    expected_environment = materialized_train_config.get("checkpoint_eval_environment")
-    expected_stages = materialized_train_config.get("checkpoint_eval_stages") or []
-    expected_asset = materialized_train_config.get("checkpoint_eval_asset_manifest")
-    expected_max_steps = int(materialized_train_config.get("post_train_eval_max_steps") or 0)
-    if expected_max_steps <= 0 and isinstance(expected_environment, Mapping):
-        task = expected_environment.get("task")
-        termination = task.get("termination") if isinstance(task, Mapping) else None
-        expected_max_steps = int(
-            termination.get("max_episode_steps")
-            if isinstance(termination, Mapping)
-            and termination.get("max_episode_steps") is not None
-            else 0
-        )
-    expected = {
-        "environment": expected_environment,
-        "stages": expected_stages,
-        "n_envs": int(materialized_train_config.get("checkpoint_eval_n_envs") or 1),
-        "max_steps": expected_max_steps,
-        "seed": int(materialized_train_config.get("checkpoint_eval_seed") or 10_000),
-        "seed_protocol": str(
-            materialized_train_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
-        ),
-        "asset": expected_asset,
-        "promotion_episodes": int(
-            materialized_train_config.get("post_train_eval_episodes") or 100
-        ),
-    }
-    if canonical_json(dict(eval_contract)) != canonical_json(expected):
+    if canonical_json(dict(eval_contract)) != canonical_json(expected_contract):
         raise ValueError("checkpoint announcement eval contract does not match the queued contract")
     return dict(announcement)
 

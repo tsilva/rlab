@@ -6,6 +6,8 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +16,7 @@ from rlab.checkpoint_eval_worker import update_best_checkpoint_summary
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.telemetry_mailbox import (
+    REMOTE_CONFIRM_TIMEOUT_SECONDS,
     claim_run_metric_batches,
     commit_published_batches,
     decode_metric_batch,
@@ -22,6 +25,7 @@ from rlab.telemetry_mailbox import (
     release_metric_batch_claims,
     release_wandb_run_lock,
 )
+from rlab.job_queue import record_job_event
 from rlab.wandb_publisher import (
     WandbProjector,
     _publish_frame,
@@ -45,6 +49,7 @@ DEFAULT_BATCH_LIMIT = 100
 ACTOR_POLL_SECONDS = 2.0
 MAX_FINALIZATION_ATTEMPTS = 3
 FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
+TERMINAL_WANDB_STATES = frozenset({"finished", "crashed", "failed", "killed"})
 SUPPORTED_FRAME_KINDS = {
     "history",
     "histogram",
@@ -61,9 +66,18 @@ class InvalidTelemetryBatchError(RuntimeError):
 class WandbFinalizationVerificationError(RuntimeError):
     def __init__(self, predicates: list[str]) -> None:
         self.predicates = tuple(predicates)
-        super().__init__(
-            "W&B finalization verification failed: " + ", ".join(self.predicates)
-        )
+        super().__init__("W&B finalization verification failed: " + ", ".join(self.predicates))
+
+
+@dataclass(frozen=True)
+class WandbPublicationState:
+    state: str
+    cursors: dict[str, int]
+    step_max: float | None
+
+
+class WandbCursorConfirmationError(RuntimeError):
+    pass
 
 
 def _cursor_mapping(raw: object) -> dict[str, int]:
@@ -103,7 +117,7 @@ def _train_config(run: dict[str, Any]) -> dict[str, Any]:
 
 def _remote_publication_state(
     train_config: dict[str, Any],
-) -> tuple[dict[str, int], float | None]:
+) -> WandbPublicationState:
     load_wandb_env()
     import wandb
 
@@ -114,13 +128,14 @@ def _remote_publication_state(
         env_provider=train_config.get("env_provider"),
     )
     run_id = str(train_config["wandb_run_id"])
-    try:
-        remote = wandb.Api().run(f"{entity}/{project}/{run_id}")
-    except Exception:
-        return {}, None
+    remote = wandb.Api().run(f"{entity}/{project}/{run_id}")
     summary = dict(remote.summary)
     raw = summary.get(SUMMARY_CURSOR_KEY) or {}
-    return _cursor_mapping(raw), _summary_step_max(summary.get("global_step"))
+    return WandbPublicationState(
+        state=str(getattr(remote, "state", "") or "").lower(),
+        cursors=_cursor_mapping(raw),
+        step_max=_summary_step_max(summary.get("global_step")),
+    )
 
 
 def _wandb_api_run(train_config: dict[str, Any]):
@@ -234,9 +249,7 @@ def _wandb_finalization_failures(
         if leader_step != expected_step:
             failures.append("leader_step")
         try:
-            acceptance_pass = float(
-                summary.get(LEADER_CHECKPOINT_ACCEPTANCE_PASS, 0.0) or 0.0
-            )
+            acceptance_pass = float(summary.get(LEADER_CHECKPOINT_ACCEPTANCE_PASS, 0.0) or 0.0)
         except TypeError, ValueError:
             acceptance_pass = 0.0
         if acceptance_pass != 1.0:
@@ -396,6 +409,52 @@ def _partition_batches(
     return confirmed, awaiting_confirmation, unpublished
 
 
+def _submitted_at(value: object) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _raise_for_stalled_confirmations(
+    batches: list[dict[str, Any]],
+    remote: WandbPublicationState,
+    *,
+    now: datetime | None = None,
+) -> None:
+    if not batches:
+        return
+    now = now or datetime.now(UTC)
+    stalled: list[tuple[dict[str, Any], float | None]] = []
+    terminal_remote = remote.state in TERMINAL_WANDB_STATES
+    for batch in batches:
+        submitted_at = _submitted_at(batch.get("submitted_at"))
+        age = None if submitted_at is None else max(0.0, (now - submitted_at).total_seconds())
+        if terminal_remote or (age is not None and age >= REMOTE_CONFIRM_TIMEOUT_SECONDS):
+            stalled.append((batch, age))
+    if not stalled:
+        return
+    reason = "terminal_remote_state" if terminal_remote else "confirmation_timeout"
+    details = []
+    for batch, age in stalled:
+        stream_id = str(batch["stream_id"])
+        expected = int(batch["batch_sequence"])
+        observed = int(remote.cursors.get(stream_id, 0))
+        age_text = "unknown" if age is None else f"{age:.1f}"
+        details.append(
+            f"{stream_id}:expected={expected}:observed={observed}:age_seconds={age_text}"
+        )
+    raise WandbCursorConfirmationError(
+        "W&B cursor confirmation failed: "
+        f"reason={reason}, remote_state={remote.state or 'unknown'}, "
+        f"streams=[{', '.join(details)}]"
+    )
+
+
 def _record_committed_effects(
     conn,
     *,
@@ -426,6 +485,7 @@ def _record_committed_effects(
                       ELSE 'live'
                     END,
                     live_publication_error = NULL,
+                    live_publication_attempts = 0,
                     live_publication_next_retry_at = NULL,
                     wandb_url = COALESCE(wandb_url, %(wandb_url)s)
                 WHERE t.id = %(train_job_id)s
@@ -475,7 +535,8 @@ def publish_claimed_run(
                 f"unsupported telemetry frame kinds: {sorted(unsupported)}"
             )
         decoded[int(batch["id"])] = frames
-    remote, remote_step_max = _remote_publication_state(train_config)
+    remote_state = _remote_publication_state(train_config)
+    remote = remote_state.cursors
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
         commit_published_batches(conn, confirmed)
@@ -486,11 +547,13 @@ def publish_claimed_run(
             decoded=decoded,
             wandb_url=None,
         )
+        run["live_publication_attempts"] = 0
     if awaiting_confirmation:
+        _raise_for_stalled_confirmations(awaiting_confirmation, remote_state)
         mark_submitted_batches(conn, awaiting_confirmation)
     wandb_url: str | None = None
     if unpublished:
-        session_step_max = remote_step_max
+        session_step_max = remote_state.step_max
         expected: dict[str, int] = {}
         for row in unpublished:
             stream_id = str(row["stream_id"])
@@ -568,38 +631,59 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
         return publish_claimed_run(conn, run, batches)
     except Exception as exc:
         release_metric_batch_claims(conn, batches, error=repr(exc))
+        attempts = int(run.get("live_publication_attempts") or 0) + 1
+        invalid_batch = isinstance(exc, InvalidTelemetryBatchError)
+        finalizing = str(run.get("status") or "") == "finalizing"
+        terminal = finalizing and (invalid_batch or attempts >= MAX_FINALIZATION_ATTEMPTS)
+        retry_delay = (
+            FINALIZATION_RETRY_DELAYS_SECONDS[
+                min(attempts - 1, len(FINALIZATION_RETRY_DELAYS_SECONDS) - 1)
+            ]
+            if finalizing
+            else 30
+        )
+        error = (str(exc) if isinstance(exc, WandbCursorConfirmationError) else repr(exc))[:4000]
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE train_jobs
-                    SET live_publication_status = %(publication_status)s,
+                    SET live_publication_status = CASE WHEN %(terminal)s
+                          THEN 'failed' ELSE 'pending' END,
                         live_publication_error = %(error)s,
-                        live_publication_attempts = live_publication_attempts + 1,
-                        live_publication_next_retry_at = now() + interval '30 seconds'
+                        live_publication_attempts = %(attempts)s,
+                        live_publication_next_retry_at = CASE WHEN %(terminal)s
+                          THEN NULL
+                          ELSE now() + (%(retry_delay)s * interval '1 second') END,
+                        status = CASE WHEN %(terminal)s AND status = 'finalizing'
+                          THEN 'finalization_failed' ELSE status END,
+                        finished_at = CASE WHEN %(terminal)s AND status = 'finalizing'
+                          THEN now() ELSE finished_at END,
+                        error = CASE WHEN %(terminal)s AND status = 'finalizing'
+                          THEN %(error)s ELSE error END
                     WHERE id = %(train_job_id)s
                     """,
                     {
                         "train_job_id": int(run["id"]),
-                        "error": repr(exc)[:4000],
-                        "publication_status": (
-                            "failed" if isinstance(exc, InvalidTelemetryBatchError) else "pending"
-                        ),
+                        "error": error,
+                        "attempts": attempts,
+                        "terminal": terminal,
+                        "retry_delay": retry_delay,
                     },
                 )
-                if isinstance(exc, InvalidTelemetryBatchError):
-                    cur.execute(
-                        """
-                        UPDATE train_jobs
-                        SET status = 'finalization_failed', finished_at = now(),
-                            error = %(error)s
-                        WHERE id = %(train_job_id)s AND status = 'finalizing'
-                        """,
-                        {
-                            "train_job_id": int(run["id"]),
-                            "error": repr(exc)[:4000],
-                        },
-                    )
+                record_job_event(
+                    conn,
+                    job_id=int(run["id"]),
+                    event_type=(
+                        "live_publication_failed" if terminal else "live_publication_retry"
+                    ),
+                    message=error,
+                    metadata={
+                        "attempts": attempts,
+                        "terminal": terminal,
+                        "run_status": str(run.get("status") or ""),
+                    },
+                )
         raise
     finally:
         release_wandb_run_lock(conn, int(run["id"]))

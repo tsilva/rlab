@@ -504,14 +504,14 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(config.state, "Level2-1")
             self.assertFalse(config.max_pool_frames)
-            self.assertEqual(config.task["termination"]["max_episode_steps"], 0)
+            self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
+            self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
+            self.assertEqual(config.task["termination"]["success"], ["level_change"])
             self.assertEqual(config.observation_size, 96)
             self.assertEqual(config.obs_crop, (32, 0, 0, 0))
             self.assertEqual(config.obs_crop_mode, "mask")
             self.assertEqual(config.obs_crop_fill, 7)
             self.assertTrue(config.task["reward"]["score_progress_clipped"])
-            self.assertEqual(config.task["termination"]["failure"], [])
-            self.assertEqual(config.task["termination"]["success"], [])
 
     def test_playback_requires_model_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -658,7 +658,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("action_set=simple", text)
         self.assertIn("termination_events=life_loss,level_change", text)
 
-    def test_playback_env_config_disables_task_termination(self) -> None:
+    def test_playback_env_config_preserves_task_termination_by_default(self) -> None:
         task = mario_task()
         task["events"]["stalled"] = {
             "signal": "x",
@@ -672,22 +672,24 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         playback_config = playback_env_config(config)
 
-        self.assertEqual(playback_config.task["termination"]["failure"], [])
-        self.assertEqual(playback_config.task["termination"]["success"], [])
-        self.assertEqual(playback_config.task["termination"]["timeout"], [])
-        self.assertEqual(playback_config.task["termination"]["max_episode_steps"], 0)
-        self.assertNotIn("stalled", playback_config.task["events"])
+        self.assertEqual(playback_config.task["termination"]["failure"], ["life_loss"])
+        self.assertEqual(playback_config.task["termination"]["success"], ["level_change"])
+        self.assertEqual(playback_config.task["termination"]["max_episode_steps"], 2345)
+        self.assertIn("stalled", playback_config.task["events"])
         self.assertIn("level_change", playback_config.task["events"])
         self.assertEqual(config.task["termination"]["failure"], ["life_loss"])
         self.assertEqual(config.task["termination"]["max_episode_steps"], 2345)
         self.assertIn("stalled", config.task["events"])
 
-        contract_config = playback_env_config(
+        continuous_config = playback_env_config(
             config,
-            respect_task_termination=True,
+            respect_task_termination=False,
         )
-        self.assertEqual(contract_config.task["termination"]["failure"], ["life_loss"])
-        self.assertEqual(contract_config.task["termination"]["success"], ["level_change"])
+        self.assertEqual(continuous_config.task["termination"]["failure"], [])
+        self.assertEqual(continuous_config.task["termination"]["success"], [])
+        self.assertEqual(continuous_config.task["termination"]["timeout"], [])
+        self.assertEqual(continuous_config.task["termination"]["max_episode_steps"], 0)
+        self.assertNotIn("stalled", continuous_config.task["events"])
 
     def test_model_observation_wraps_task_conditioned_policy_input(self) -> None:
         class FakeModel:
@@ -816,8 +818,11 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertFalse(hasattr(parser.parse_args([]), "deterministic"))
         self.assertFalse(parser.parse_args([]).debug)
         self.assertTrue(parser.parse_args(["--debug"]).debug)
-        self.assertFalse(parser.parse_args([]).respect_task_termination)
-        self.assertTrue(parser.parse_args(["--respect-task-termination"]).respect_task_termination)
+        self.assertFalse(hasattr(parser.parse_args([]), "respect_task_termination"))
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--respect-task-termination"])
+        self.assertFalse(parser.parse_args([]).continuous_play)
+        self.assertTrue(parser.parse_args(["--continuous-play"]).continuous_play)
         self.assertFalse(parser.parse_args([]).no_progress)
         self.assertTrue(parser.parse_args(["--no-progress"]).no_progress)
         self.assertEqual(parser.parse_args([]).episodes, 0)
@@ -872,6 +877,123 @@ class CommandAndArtifactTests(unittest.TestCase):
             runtime_config = assert_runtime.call_args.args[0]
             self.assertEqual(runtime_config.env_provider, "supermariobrosnes-turbo")
             self.assertEqual(runtime_config.game, "SuperMarioBros-Nes-v0")
+
+    def test_play_main_raw_sources_respect_task_termination_by_default(self) -> None:
+        class StopPlayback(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_path = Path(tmp_dir) / "ppo_test_100_steps.zip"
+            model_path.write_bytes(b"zip")
+            write_model_metadata(
+                model_path,
+                argparse.Namespace(run_name="run", run_description="description"),
+                EnvConfig(
+                    env_provider="supermariobrosnes-turbo",
+                    game="SuperMarioBros-Nes-v0",
+                    state="Level1-1",
+                    task=mario_task(),
+                ),
+                kind="checkpoint",
+            )
+
+            cases = (
+                (["--model", str(model_path)], True),
+                (["tsilva/SuperMarioBros-NES/run-checkpoint:latest"], True),
+                (["hf://tsilva/SuperMarioBros-NES_Level1-1"], True),
+                (["--model", str(model_path), "--continuous-play"], False),
+            )
+            for argv, respects_termination in cases:
+                with self.subTest(argv=argv, respects_termination=respects_termination):
+                    output = io.StringIO()
+                    with (
+                        patch(
+                            "rlab.play.resolve_single_model_source",
+                            return_value=ResolvedModelSource(model_path=model_path),
+                        ),
+                        patch(
+                            "rlab.play.assert_provider_runtime_available",
+                            side_effect=StopPlayback,
+                        ) as assert_runtime,
+                        patch.object(sys, "stdout", output),
+                    ):
+                        with self.assertRaises(StopPlayback):
+                            play_main([*argv, "--no-progress"])
+
+                    runtime_config = assert_runtime.call_args.args[0]
+                    expected_failure = ["life_loss"] if respects_termination else []
+                    expected_success = ["level_change"] if respects_termination else []
+                    expected_max_steps = 2345 if respects_termination else 0
+                    self.assertEqual(
+                        runtime_config.task["termination"]["failure"], expected_failure
+                    )
+                    self.assertEqual(
+                        runtime_config.task["termination"]["success"], expected_success
+                    )
+                    self.assertEqual(
+                        runtime_config.task["termination"]["max_episode_steps"],
+                        expected_max_steps,
+                    )
+                    self.assertIn(
+                        f"respect_task_termination={respects_termination}",
+                        output.getvalue(),
+                    )
+
+    def test_play_main_bundle_continuous_play_is_explicit_semantic_override(self) -> None:
+        class StopPlayback(Exception):
+            pass
+
+        config = EnvConfig(
+            env_provider="supermariobrosnes-turbo",
+            game="SuperMarioBros-Nes-v0",
+            state="Level1-1",
+            task=mario_task(),
+        )
+        source = ResolvedModelSource(
+            model_path=Path("model.zip"),
+            bundle=types.SimpleNamespace(recipe={}),
+        )
+        cases = (
+            (["tsilva/SuperMarioBros-NES/run-checkpoint:latest"], True),
+            (["hf://tsilva/SuperMarioBros-NES_Level1-1", "--continuous-play"], False),
+        )
+        for argv, respects_termination in cases:
+            with self.subTest(argv=argv, respects_termination=respects_termination):
+                output = io.StringIO()
+                with (
+                    patch("rlab.play.resolve_single_model_source", return_value=source),
+                    patch(
+                        "rlab.play.evaluation_contract",
+                        return_value={"environment": {}, "seed": DEFAULT_EVAL_SEED},
+                    ),
+                    patch("rlab.play.env_config_from_config_dict", return_value=config),
+                    patch("rlab.play.resolve_env_config", return_value=config),
+                    patch(
+                        "rlab.play.assert_provider_runtime_available",
+                        side_effect=StopPlayback,
+                    ) as assert_runtime,
+                    patch.object(sys, "stdout", output),
+                ):
+                    with self.assertRaises(StopPlayback):
+                        play_main([*argv, "--no-progress"])
+
+                runtime_config = assert_runtime.call_args.args[0]
+                expected_failure = ["life_loss"] if respects_termination else []
+                expected_success = ["level_change"] if respects_termination else []
+                expected_max_steps = 2345 if respects_termination else 0
+                self.assertEqual(
+                    runtime_config.task["termination"]["failure"], expected_failure
+                )
+                self.assertEqual(
+                    runtime_config.task["termination"]["success"], expected_success
+                )
+                self.assertEqual(
+                    runtime_config.task["termination"]["max_episode_steps"],
+                    expected_max_steps,
+                )
+                self.assertIn(
+                    f"respect_task_termination={respects_termination}", output.getvalue()
+                )
 
     def test_play_main_constructs_one_environment_for_policy_and_viewer(self) -> None:
         class FakeEnv:

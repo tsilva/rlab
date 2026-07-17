@@ -534,6 +534,136 @@ class BatchRuntimeTests(unittest.TestCase):
         self.assertEqual(provider.reset_calls[0]["start_ids"], ("Level1-2", "Level1-1"))
         self.assertEqual(provider.reset_calls[1]["start_ids"][0], "Level1-2")
 
+    def test_weighted_start_sampling_is_deterministic_per_global_lane_and_episode(self):
+        provider_a = DeterministicNativeVectorProvider()
+        provider_b = DeterministicNativeVectorProvider()
+        descriptor = ProviderDescriptor(
+            provider_id="fake-native",
+            native_observation_space=provider_a.single_observation_space,
+            native_action_space=provider_a.single_action_space,
+            start_catalog=("Level1-1", "Level1-2"),
+            start_probabilities=(0.2, 0.8),
+        )
+        runtime_a = BatchRuntime(
+            provider_a,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, 2),
+            run_seed=123,
+            global_lane_ids=(4, 9),
+        )
+        runtime_b = BatchRuntime(
+            provider_b,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, 2),
+            run_seed=123,
+            global_lane_ids=(4, 9),
+        )
+
+        samples_a = [
+            runtime_a._start_for(lane, episode)
+            for episode in range(20)
+            for lane in range(2)
+        ]
+        samples_b = [
+            runtime_b._start_for(lane, episode)
+            for episode in range(20)
+            for lane in range(2)
+        ]
+
+        self.assertEqual(samples_a, samples_b)
+        self.assertGreater(samples_a.count("Level1-2"), samples_a.count("Level1-1"))
+
+    def test_forced_live_lane_reset_is_a_neutral_truncation(self):
+        provider, runtime = self.make_identity_runtime()
+        runtime.reset()
+        runtime.request_resets(
+            np.asarray([True, False], dtype=np.bool_),
+            reason="curriculum",
+        )
+        provider.queue_step(
+            image=[[9, 9], [4, 4]],
+            rewards=[2.5, 1.0],
+        )
+
+        step = runtime.step(np.zeros((2, 3), dtype=np.int8))
+
+        np.testing.assert_array_equal(step.terminated, [False, False])
+        np.testing.assert_array_equal(step.truncated, [True, False])
+        np.testing.assert_array_equal(step.final_observations["image"][0], [9, 9])
+        np.testing.assert_array_equal(step.observations["image"], [[0, 0], [4, 4]])
+        np.testing.assert_array_equal(provider.reset_calls[-1]["mask"], [True, False])
+        self.assertEqual(
+            provider.reset_calls[-1]["start_ids"][0],
+            runtime._start_for(0, 1),
+        )
+        self.assertEqual(step.transition_info["rlab_boundary_reason"][0], "forced_reset")
+        self.assertEqual(step.transition_info["rlab_reset_reason"][0], "curriculum")
+        record = next(
+            record
+            for record in runtime.drain_records()
+            if isinstance(record, EpisodeRecord)
+        )
+        self.assertEqual(record.outcome, Outcome.NEUTRAL)
+        self.assertEqual(record.boundary_reason, "forced_reset")
+        self.assertEqual(record.reset_reason, "curriculum")
+        self.assertEqual(record.episode_return, 2.5)
+        self.assertEqual(record.episode_length, 1)
+        self.assertEqual(runtime._episode_indices.tolist(), [1, 0])
+
+        runtime.request_resets(np.asarray([True, False], dtype=np.bool_))
+
+    def test_forced_exact_starts_override_sampling_and_natural_outcome_wins(self):
+        provider, runtime = self.make_identity_runtime()
+        runtime.reset()
+        mask = np.asarray([True, True], dtype=np.bool_)
+        runtime.request_resets(
+            mask,
+            start_ids=np.asarray(["Level1-2", "Level1-1"], dtype=object),
+            reason="operator",
+        )
+        with self.assertRaisesRegex(ValueError, "pending reset"):
+            runtime.request_resets(np.asarray([False, True], dtype=np.bool_))
+        provider.queue_step(terminated=[True, False])
+
+        step = runtime.step(np.zeros((2, 3), dtype=np.int8))
+
+        np.testing.assert_array_equal(step.terminated, [True, False])
+        np.testing.assert_array_equal(step.truncated, [False, True])
+        self.assertEqual(
+            provider.reset_calls[-1]["start_ids"],
+            ("Level1-2", "Level1-1"),
+        )
+        records = sorted(
+            (
+                record
+                for record in runtime.drain_records()
+                if isinstance(record, EpisodeRecord)
+            ),
+            key=lambda record: record.lane,
+        )
+        self.assertEqual(records[0].boundary_reason, "terminated")
+        self.assertIsNone(records[0].reset_reason)
+        self.assertEqual(records[1].boundary_reason, "forced_reset")
+        self.assertEqual(records[1].reset_reason, "operator")
+
+    def test_reset_request_validation_is_atomic(self):
+        _provider, runtime = self.make_identity_runtime()
+        runtime.reset()
+        with self.assertRaisesRegex(TypeError, "NumPy"):
+            runtime.request_resets([True, False])
+        with self.assertRaisesRegex(TypeError, "dtype"):
+            runtime.request_resets(np.asarray([1, 0], dtype=np.int8))
+        with self.assertRaisesRegex(ValueError, "shape"):
+            runtime.request_resets(np.asarray([True], dtype=np.bool_))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            runtime.request_resets(np.asarray([False, False], dtype=np.bool_))
+        with self.assertRaisesRegex(ValueError, "unknown requested start"):
+            runtime.request_resets(
+                np.asarray([True, False], dtype=np.bool_),
+                start_ids=np.asarray(["missing", None], dtype=object),
+            )
+        self.assertFalse(np.any(runtime._pending_reset_mask))
+
     def test_identity_task_timeout_is_kernel_derived(self):
         provider = DeterministicNativeVectorProvider()
         descriptor = descriptor_for(provider)
@@ -736,6 +866,34 @@ class MarioKernelTests(unittest.TestCase):
 
 
 class RlabVecEnvTests(unittest.TestCase):
+    def test_sb3_facade_exposes_forced_reset_as_done_with_terminal_observation(self):
+        provider = DeterministicNativeVectorProvider()
+        descriptor = descriptor_for(provider)
+        runtime = BatchRuntime(
+            provider,
+            descriptor,
+            IdentityTaskDefinition().bind(descriptor, provider.num_envs),
+            run_seed=11,
+        )
+        env = RlabVecEnv(runtime)
+        env.reset()
+        runtime.request_resets(
+            np.asarray([False, True], dtype=np.bool_),
+            reason="external",
+        )
+        provider.queue_step(image=[[3, 3], [8, 8]])
+
+        observations, _rewards, dones, infos = env.step(
+            np.zeros((2, 3), dtype=np.int8)
+        )
+
+        np.testing.assert_array_equal(dones, [False, True])
+        np.testing.assert_array_equal(observations["image"], [[3, 3], [0, 0]])
+        np.testing.assert_array_equal(infos[1]["terminal_observation"]["image"], [8, 8])
+        self.assertTrue(infos[1]["TimeLimit.truncated"])
+        self.assertEqual(infos[1]["rlab_boundary_reason"], "forced_reset")
+        self.assertEqual(infos[1]["rlab_reset_reason"], "external")
+
     def test_identity_equals_for_failure_resets_only_the_stalled_lane(self):
         provider = DeterministicNativeVectorProvider()
         descriptor = descriptor_for(provider)

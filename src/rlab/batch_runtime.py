@@ -142,6 +142,8 @@ class EpisodeRecord:
     outcome: Outcome
     events: tuple[str, ...]
     metrics: Mapping[str, Any]
+    boundary_reason: str = "natural"
+    reset_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -372,6 +374,10 @@ class BatchRuntime:
         self._episode_seeds: list[int | None] = [None for _ in range(self.num_envs)]
         self._start_ids: list[str | None] = [None for _ in range(self.num_envs)]
         self._records: list[EpisodeRecord | TaskEventRecord] = []
+        self._pending_reset_mask = np.zeros(self.num_envs, dtype=np.bool_)
+        self._pending_start_ids = np.full(self.num_envs, None, dtype=object)
+        self._pending_reset_reasons = np.full(self.num_envs, None, dtype=object)
+        self._has_pending_resets = False
         self._latest_metric_record: BatchMetricRecord | None = None
         self._combined_terminated = [np.zeros(self.num_envs, dtype=bool) for _ in range(2)]
         self._combined_truncated = [np.zeros(self.num_envs, dtype=bool) for _ in range(2)]
@@ -414,6 +420,52 @@ class BatchRuntime:
         self._native_step_seconds_total = 0.0
         self._native_step_calls_total = 0
         self._closed = False
+
+    def request_resets(
+        self,
+        mask: np.ndarray,
+        *,
+        start_ids: Sequence[str | None] | np.ndarray | None = None,
+        reason: str = "external",
+    ) -> None:
+        """Queue lane resets for the boundary after the next completed vector step."""
+
+        if not self._observation_buffers:
+            raise RuntimeError("BatchRuntime.reset() must be called before request_resets()")
+        if not isinstance(mask, np.ndarray):
+            raise TypeError("reset request mask must be a NumPy array")
+        if mask.shape != (self.num_envs,):
+            raise ValueError(f"reset request mask must have shape ({self.num_envs},)")
+        if mask.dtype != np.bool_:
+            raise TypeError("reset request mask must have dtype np.bool_")
+        if not np.any(mask):
+            raise ValueError("reset request mask must select at least one lane")
+        if np.any(mask & self._pending_reset_mask):
+            lanes = np.flatnonzero(mask & self._pending_reset_mask).tolist()
+            raise ValueError(f"lanes already have pending reset requests: {lanes}")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reset request reason must be a non-empty string")
+
+        requested_starts = np.full(self.num_envs, None, dtype=object)
+        if start_ids is not None:
+            requested_starts = np.asarray(start_ids, dtype=object)
+            if requested_starts.shape != (self.num_envs,):
+                raise ValueError(
+                    f"reset request start_ids must have shape ({self.num_envs},)"
+                )
+            catalog = set(self.descriptor.start_catalog)
+            for lane in np.flatnonzero(mask):
+                start_id = requested_starts[int(lane)]
+                if start_id is None or str(start_id) not in catalog:
+                    raise ValueError(
+                        f"unknown requested start id {start_id!r} for lane {int(lane)}"
+                    )
+                requested_starts[int(lane)] = str(start_id)
+
+        self._pending_reset_mask[mask] = True
+        self._pending_start_ids[mask] = requested_starts[mask]
+        self._pending_reset_reasons[mask] = reason.strip()
+        self._has_pending_resets = True
 
     def _seed_for(self, lane: int, episode_index: int) -> int:
         sequence = np.random.SeedSequence(
@@ -611,13 +663,27 @@ class BatchRuntime:
             self._episode_returns,
             self._episode_lengths,
         )
+        forced_reset_mask = self._pending_reset_mask
+        forced_only_mask = self._pending_reset_mask
+        if self._has_pending_resets:
+            forced_reset_mask = self._pending_reset_mask.copy()
+            forced_only_mask = forced_reset_mask & ~dones
+            if np.any(forced_only_mask):
+                terminated[forced_only_mask] = False
+                truncated[forced_only_mask] = True
+                dones[forced_only_mask] = True
+                any_done = True
         done_indices = np.flatnonzero(dones) if any_done else self._empty_indices
 
         diagnostics = None
         if self.capture_step_diagnostics:
             lane = 0
             outcome = Outcome(int(np.asarray(task_step.outcomes)[lane]))
-            if outcome == Outcome.NEUTRAL and bool(truncated[lane]):
+            if (
+                outcome == Outcome.NEUTRAL
+                and bool(truncated[lane])
+                and not bool(forced_only_mask[lane])
+            ):
                 outcome = Outcome.TIMEOUT
             event_bits = int(np.asarray(task_step.event_bits, dtype=np.uint64)[lane])
             events = event_names_from_bits(event_bits, self.kernel.event_names)
@@ -690,6 +756,21 @@ class BatchRuntime:
             ):
                 owned_transition_info[name] = values
                 owned_transition_info[f"_{name}"] = dones.copy()
+            boundary_reasons = np.full(self.num_envs, None, dtype=object)
+            reset_reasons = np.full(self.num_envs, None, dtype=object)
+            for lane in done_indices:
+                lane_index = int(lane)
+                if bool(forced_only_mask[lane_index]):
+                    boundary_reasons[lane_index] = "forced_reset"
+                    reset_reasons[lane_index] = self._pending_reset_reasons[lane_index]
+                elif bool(terminated[lane_index]):
+                    boundary_reasons[lane_index] = "terminated"
+                else:
+                    boundary_reasons[lane_index] = "truncated"
+            owned_transition_info["rlab_boundary_reason"] = boundary_reasons
+            owned_transition_info["_rlab_boundary_reason"] = dones.copy()
+            owned_transition_info["rlab_reset_reason"] = reset_reasons
+            owned_transition_info["_rlab_reset_reason"] = forced_only_mask.copy()
             transition_info = owned_transition_info
             for lane in done_indices:
                 lane_index = int(lane)
@@ -698,6 +779,12 @@ class BatchRuntime:
                     bool(terminated[lane_index]),
                     bool(truncated[lane_index]),
                     task_step,
+                    forced_reset=bool(forced_only_mask[lane_index]),
+                    reset_reason=(
+                        str(self._pending_reset_reasons[lane_index])
+                        if bool(forced_only_mask[lane_index])
+                        else None
+                    ),
                 )
 
         if done_indices.size:
@@ -706,6 +793,11 @@ class BatchRuntime:
                 self._start_for(lane, int(self._episode_indices[lane]))
                 for lane in range(self.num_envs)
             ]
+            for lane in np.flatnonzero(forced_reset_mask):
+                lane_index = int(lane)
+                requested_start = self._pending_start_ids[lane_index]
+                if requested_start is not None:
+                    starts[lane_index] = str(requested_start)
             seeds: list[int | None] = [
                 self._seed_for(lane, int(self._episode_indices[lane]))
                 if bool(dones[lane])
@@ -732,6 +824,10 @@ class BatchRuntime:
                 self._episode_seeds[lane_index] = seeds[lane_index]
                 self._episode_returns[lane_index] = 0.0
                 self._episode_lengths[lane_index] = 0
+            self._pending_reset_mask[dones] = False
+            self._pending_start_ids[dones] = None
+            self._pending_reset_reasons[dones] = None
+            self._has_pending_resets = bool(np.any(self._pending_reset_mask))
 
         self._current_observation_buffer = next_buffer_index
         batch_step = self._batch_steps[next_buffer_index]
@@ -748,9 +844,14 @@ class BatchRuntime:
         terminated: bool,
         truncated: bool,
         task_step: Any,
+        *,
+        forced_reset: bool = False,
+        reset_reason: str | None = None,
     ) -> None:
         outcome = Outcome(int(np.asarray(task_step.outcomes)[lane]))
-        if outcome == Outcome.NEUTRAL and truncated:
+        if forced_reset:
+            outcome = Outcome.NEUTRAL
+        elif outcome == Outcome.NEUTRAL and truncated:
             outcome = Outcome.TIMEOUT
         event_bits = int(np.asarray(task_step.event_bits, dtype=np.uint64)[lane])
         metrics = self._lane_metrics(task_step.metrics, lane)
@@ -766,6 +867,10 @@ class BatchRuntime:
                 outcome=outcome,
                 events=event_names_from_bits(event_bits, self.kernel.event_names),
                 metrics=metrics,
+                boundary_reason=(
+                    "forced_reset" if forced_reset else "terminated" if terminated else "truncated"
+                ),
+                reset_reason=reset_reason,
             )
         )
 
