@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from rlab.checkpoint_acceptance import (
+    CheckpointEvalContractCompiler,
     acceptance_aggregates,
     aggregates_match,
     build_checkpoint_eval_contract,
@@ -136,6 +137,52 @@ def test_checkpoint_eval_max_steps_prefers_explicit_then_environment() -> None:
         checkpoint_eval_max_steps({"post_train_eval_max_steps": 0})
 
 
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("post_train_eval_episodes", "post_train_eval_episodes must be an integer"),
+        ("checkpoint_eval_n_envs", "checkpoint_eval_n_envs must be an integer"),
+        ("checkpoint_eval_seed", "checkpoint_eval_seed must be an integer"),
+        ("checkpoint_eval_seed_protocol", "unsupported checkpoint eval seed protocol"),
+    ],
+)
+def test_checkpoint_eval_compiler_rejects_missing_materialized_fields(
+    field: str, expected: str
+) -> None:
+    config = {
+        "checkpoint_eval_environment": {
+            "env_provider": "rlab",
+            "game": "Bandit-v0",
+            "task": {"termination": {"max_episode_steps": 50}},
+        },
+        "post_train_eval_episodes": 3,
+        "checkpoint_eval_n_envs": 2,
+        "checkpoint_eval_seed": 10_000,
+        "checkpoint_eval_seed_protocol": SEED_PROTOCOL,
+    }
+    config.pop(field)
+
+    with pytest.raises(ValueError, match=expected):
+        CheckpointEvalContractCompiler.from_train_config(config)
+
+
+def test_checkpoint_eval_compiler_rejects_more_lanes_than_episodes() -> None:
+    with pytest.raises(ValueError, match="n_envs must not exceed episodes"):
+        CheckpointEvalContractCompiler.from_train_config(
+            {
+                "checkpoint_eval_environment": {
+                    "env_provider": "rlab",
+                    "game": "Bandit-v0",
+                    "task": {"termination": {"max_episode_steps": 50}},
+                },
+                "post_train_eval_episodes": 1,
+                "checkpoint_eval_n_envs": 2,
+                "checkpoint_eval_seed": 10_000,
+                "checkpoint_eval_seed_protocol": SEED_PROTOCOL,
+            }
+        )
+
+
 def test_checkpoint_announcement_staged_payload_preserves_canonical_hash() -> None:
     environment = {
         "env_provider": "rlab",
@@ -197,6 +244,24 @@ def test_checkpoint_announcement_staged_payload_preserves_canonical_hash() -> No
     changed["eval"]["max_steps"] = 51
     with pytest.raises(ValueError, match="does not match"):
         validate_announcement(changed, materialized_train_config=materialized)
+
+
+def test_checkpoint_announcement_payload_materializes_historical_seed_default() -> None:
+    payload = checkpoint_announcement_eval_payload(
+        {
+            "checkpoint_eval_environment": {
+                "env_provider": "rlab",
+                "game": "Bandit-v0",
+                "task": {"termination": {"max_episode_steps": 1}},
+            },
+            "checkpoint_eval_n_envs": 2,
+            "post_train_eval_episodes": 2,
+            "post_train_eval_max_steps": 1,
+        }
+    )
+
+    assert payload["seed"] == 10_000
+    assert payload["seed_protocol"] == SEED_PROTOCOL
 
 
 def test_checkpoint_announcement_acceptance_payload_preserves_canonical_hash() -> None:

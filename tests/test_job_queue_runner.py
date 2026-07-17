@@ -633,8 +633,24 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("r.status <> 'complete'", job_queue.SCHEMA_SQL)
         self.assertIn("'starting'", job_queue.SCHEMA_SQL)
         self.assertIn("machine TEXT NOT NULL", job_queue.SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS runtime_image_states", job_queue.SCHEMA_SQL)
+        self.assertIn("retry_count INTEGER NOT NULL DEFAULT 0", job_queue.SCHEMA_SQL)
+        self.assertIn("next_retry_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
+        self.assertIn("last_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
+
+    def test_quiescence_count_includes_orphaned_active_execution_records(self) -> None:
+        conn = FakeConnection(row={"count": 0})
+
+        self.assertEqual(job_queue.count_nonterminal_jobs(conn), 0)
+
+        statement = conn.cursor_obj.executed_sql
+        self.assertIn("FROM job_launches", statement)
+        self.assertIn("FROM eval_attempts", statement)
+        self.assertIn("FROM worker_attempts", statement)
+        self.assertIn("state IN ('launching', 'running')", statement)
+        self.assertIn("status IN ('launching', 'running')", statement)
 
     def test_runtime_validator_receives_execution_complete_config_before_insert(self) -> None:
         validated = []
@@ -656,6 +672,27 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("batch_id", validated[0])
         self.assertIn("queue_train_job_id", validated[0])
         self.assertIn("wandb_run_id", validated[0])
+
+    def test_modal_enqueue_materializes_checkpoint_eval_seed(self) -> None:
+        conn = FakeConnection(row={"id": 9})
+
+        with patch.object(
+            job_queue,
+            "asset_manifest_for_game",
+            return_value={"game": "SuperMarioBros-Nes-v0"},
+        ):
+            job_queue.enqueue_train_job(
+                conn,
+                goal_slug="Level1-1",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+                train_config=explicit_train_config(checkpoint_eval_backend="modal"),
+                _modal_readiness_validated=True,
+            )
+
+        persisted = conn.cursor_obj.executed_params_list[0]["train_config"].adapted
+        self.assertEqual(persisted["checkpoint_eval_seed"], 10_000)
+        self.assertEqual(persisted["checkpoint_eval_seed_protocol"], "vector-lane-v1")
 
     def test_runtime_validator_runs_for_every_materialized_seed_payload(self) -> None:
         validated = []
@@ -1395,6 +1432,7 @@ class JobQueueTests(unittest.TestCase):
                 {"row": {"residual_streams": 8, "residual_batches": 8}},
                 {},
                 {},
+                {},
                 {"row": reopened},
                 {},
             ]
@@ -1405,6 +1443,9 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(result["status"], "finalizing")
         statements = conn.cursor_obj.executed_sqls
         self.assertTrue(any("retry_round + 1" in statement for statement in statements))
+        self.assertTrue(any("UPDATE attempt_events" in statement for statement in statements))
+        self.assertTrue(any("next_retry_at = NULL" in statement for statement in statements))
+        self.assertTrue(any("checkpoint_eval_seed" in statement for statement in statements))
         self.assertTrue(any("submitted_sequence = published_sequence" in sql for sql in statements))
         self.assertTrue(any("submitted_at = NULL" in sql for sql in statements))
         self.assertFalse(any("UPDATE job_launches" in statement for statement in statements))
@@ -1437,6 +1478,71 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(any("live_publication_status = 'finishing'" in sql for sql in statements))
         self.assertFalse(any("UPDATE eval_jobs" in sql for sql in statements))
         self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
+
+    def test_retry_canceled_finalization_reopens_only_publication(self) -> None:
+        source = {
+            "id": 64,
+            "status": "finalization_failed",
+            "launch_state": "canceled",
+            "cancel_requested": True,
+            "process_exited_at": "2026-07-17T14:22:37Z",
+            "live_publication_status": "failed",
+            "eval_status": "finalizing",
+            "eval_outcome": "canceled",
+            "complete_announcement_seen": True,
+            "active_eval_jobs": 0,
+            "active_eval_attempts": 0,
+            "active_eval_workers": 0,
+            "active_train_workers": 0,
+        }
+        reopened = {
+            **source,
+            "status": "finalizing",
+            "live_publication_status": "pending",
+        }
+        conn = FakeConnection(
+            results=[
+                {"row": source},
+                {
+                    "row": {
+                        "residual_streams": 18,
+                        "residual_batches": 18,
+                        "incomplete_streams": 18,
+                    }
+                },
+                {"row": reopened},
+                {},
+            ]
+        )
+
+        result = job_queue.retry_train_job_finalization(conn, job_id=64)
+
+        self.assertTrue(result["cancel_requested"])
+        statements = conn.cursor_obj.executed_sqls
+        self.assertFalse(any("UPDATE eval_runs" in statement for statement in statements))
+        self.assertFalse(any("UPDATE eval_jobs" in statement for statement in statements))
+        self.assertFalse(any("cancel_requested = FALSE" in statement for statement in statements))
+        self.assertTrue(any("publication_status" in statement for statement in statements))
+
+    def test_retry_canceled_finalization_rejects_active_eval_work_atomically(self) -> None:
+        source = {
+            "id": 64,
+            "status": "finalization_failed",
+            "launch_state": "canceled",
+            "cancel_requested": True,
+            "process_exited_at": "2026-07-17T14:22:37Z",
+            "live_publication_status": "failed",
+            "eval_status": "finalizing",
+            "eval_outcome": "canceled",
+            "complete_announcement_seen": True,
+            "active_eval_jobs": 1,
+        }
+        conn = FakeConnection(results=[{"row": source}])
+
+        with self.assertRaisesRegex(ValueError, "active=active_eval_jobs"):
+            job_queue.retry_train_job_finalization(conn, job_id=64)
+
+        self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
 
     def test_cancel_intent_dominates_success_result(self) -> None:
         launch = {

@@ -15,11 +15,14 @@ from rlab.fleet_wandb_publisher import (
     _cursor_mapping,
     _drain_claim,
     _partition_batches,
+    _publication_is_pristine,
+    _reconcile_non_modal_publication_finishing,
     _raise_for_stalled_confirmations,
     _remote_publication_state,
     _summary_step_max,
     drain_cycle_parallel,
     finalize_finishing_run,
+    publish_claimed_run,
     run_publisher_actor,
 )
 from rlab.metric_names import (
@@ -212,7 +215,7 @@ class WandbPublisherTests(unittest.TestCase):
             call.args[0]
             for call in conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         ]
-        self.assertTrue(any("pg_advisory_lock" in statement for statement in statements))
+        self.assertTrue(any("pg_try_advisory_lock" in statement for statement in statements))
         self.assertTrue(any("pg_advisory_unlock" in statement for statement in statements))
 
     def test_parallel_cycle_uses_one_isolated_process_per_run(self) -> None:
@@ -303,7 +306,7 @@ class WandbPublisherTests(unittest.TestCase):
 
     def test_remote_publication_api_errors_are_not_converted_to_empty_cursors(self) -> None:
         fake_wandb = SimpleNamespace(
-            Api=lambda: SimpleNamespace(run=mock.Mock(side_effect=TimeoutError("offline")))
+            Api=lambda **_kwargs: SimpleNamespace(run=mock.Mock(side_effect=TimeoutError("offline")))
         )
         with (
             mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
@@ -315,6 +318,168 @@ class WandbPublisherTests(unittest.TestCase):
             self.assertRaisesRegex(TimeoutError, "offline"),
         ):
             _remote_publication_state({"wandb_run_id": "run-7", "game": "SuperMarioBros-Nes-v0"})
+
+    def test_pristine_publication_requires_run_wide_absence_of_submission_evidence(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            "streams_unpublished": True,
+            "batches_unsubmitted": True,
+        }
+        run = {"id": 66, "wandb_url": None, "train_config": {"wandb": True}}
+
+        self.assertTrue(_publication_is_pristine(conn, run))
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("s.submitted_sequence <> 0", statement)
+        self.assertIn("b.submitted_at IS NOT NULL", statement)
+
+        cursor.fetchone.return_value = {
+            "streams_unpublished": False,
+            "batches_unsubmitted": True,
+        }
+        self.assertFalse(_publication_is_pristine(conn, run))
+        self.assertFalse(_publication_is_pristine(conn, {**run, "wandb_url": "https://wandb"}))
+
+    def test_pristine_first_cycle_creates_without_remote_preflight(self) -> None:
+        conn = mock.MagicMock()
+        run = {
+            "id": 66,
+            "status": "running",
+            "wandb_url": None,
+            "wandb_run_id": "rlab-pristine",
+            "train_config": {"wandb": True, "game": "game"},
+        }
+        batches = [
+            {
+                "id": 1,
+                "stream_id": "train-66",
+                "batch_sequence": 1,
+                "submitted_sequence": 0,
+                "payload": b"payload",
+            }
+        ]
+        projector = SimpleNamespace(
+            run=SimpleNamespace(url="https://wandb/run", summary={}),
+            close=mock.Mock(),
+        )
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine", return_value=True
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state"
+            ) as remote_state,
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ) as resume,
+            mock.patch("rlab.fleet_wandb_publisher.decode_metric_batch", return_value=[]),
+            mock.patch("rlab.fleet_wandb_publisher.resolve_env_config", return_value={}),
+            mock.patch("rlab.fleet_wandb_publisher.env_config_from_args", return_value={}),
+            mock.patch("rlab.fleet_wandb_publisher.mark_submitted_batches") as submitted,
+        ):
+            publish_claimed_run(conn, run, batches)
+
+        remote_state.assert_not_called()
+        self.assertTrue(resume.call_args.kwargs["allow_create"])
+        submitted.assert_called_once_with(conn, batches)
+
+    def test_non_modal_terminal_outbox_moves_to_finishing_only_when_drained(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+
+        self.assertTrue(_reconcile_non_modal_publication_finishing(conn, 70))
+
+        statement, params = cursor.execute.call_args.args
+        self.assertIn("t.process_exited_at IS NOT NULL", statement)
+        self.assertIn("checkpoint_eval_backend", statement)
+        self.assertIn("<> 'modal'", statement)
+        self.assertIn("s.final_sequence IS NULL", statement)
+        self.assertIn("s.published_sequence < s.final_sequence", statement)
+        self.assertEqual(params, {"train_job_id": 70})
+
+    def test_pristine_zero_batch_finalization_creates_preassigned_run(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 70,
+                "wandb_url": None,
+                "live_publication_attempts": 0,
+                "train_config": {
+                    "wandb": True,
+                    "wandb_run_id": "rlab-pristine-final",
+                    "game": "Bandit-v0",
+                },
+                "outcome": "unknown",
+                "promotion_json": None,
+            },
+            {"streams_unpublished": True, "batches_unsubmitted": True},
+        ]
+        cursor.fetchall.return_value = []
+        cursor.rowcount = 1
+        remote = SimpleNamespace(
+            url="https://wandb/run",
+            state="finished",
+            summary={},
+            logged_artifacts=lambda: [],
+        )
+        projector = SimpleNamespace(run=remote, close=mock.Mock())
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ) as resume,
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                return_value=remote,
+            ) as api_run,
+        ):
+            self.assertTrue(finalize_finishing_run(conn, 70))
+
+        self.assertTrue(resume.call_args.kwargs["allow_create"])
+        self.assertTrue(resume.call_args.kwargs["update_finish_state"])
+        api_run.assert_called_once()
+        complete = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_status = 'complete'" in call.args[0]
+        )
+        self.assertEqual(complete.args[1]["wandb_url"], "https://wandb/run")
+        select = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "LEFT JOIN eval_runs" in call.args[0]
+        )
+        self.assertIn("COALESCE(r.outcome, 'unknown')", select.args[0])
+
+    def test_nonpristine_api_failure_never_falls_back_to_creation(self) -> None:
+        run = {
+            "id": 66,
+            "status": "running",
+            "wandb_run_id": "rlab-existing",
+            "train_config": {"wandb": True, "game": "game"},
+        }
+        batches = [{"id": 1, "payload": b"payload"}]
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine", return_value=False
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state",
+                side_effect=TimeoutError("offline"),
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume"
+            ) as resume,
+            mock.patch("rlab.fleet_wandb_publisher.decode_metric_batch", return_value=[]),
+            self.assertRaisesRegex(TimeoutError, "offline"),
+        ):
+            publish_claimed_run(mock.MagicMock(), run, batches)
+        resume.assert_not_called()
 
     def test_mailbox_batches_have_distinct_confirmed_submitted_and_new_states(self) -> None:
         batches = [

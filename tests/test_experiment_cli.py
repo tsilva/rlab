@@ -30,6 +30,21 @@ class ExperimentCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["status", "--job", "42"])
 
+    def test_cancel_uses_runtime_current_preflight_without_source_gate(self) -> None:
+        args = experiment_cli.build_parser().parse_args(["cancel", "--run", "9"])
+        with (
+            mock.patch(
+                "rlab.fleet_service.require_compatible_controller_services"
+            ) as preflight,
+            mock.patch(
+                "rlab.job_queue.cmd_cancel",
+                side_effect=lambda _args: (print('{"job_ids":[9]}') or 0),
+            ),
+        ):
+            self.assertEqual(experiment_cli.cmd_cancel(args), 0)
+
+        preflight.assert_called_once_with(require_source_current=False)
+
     def test_launch_requires_machine_and_supports_from_head(self) -> None:
         args = experiment_cli.build_parser().parse_args(
             [
@@ -194,7 +209,7 @@ class RunObservabilityTests(unittest.TestCase):
 
     def test_incident_fingerprint_is_stable(self) -> None:
         row = {"id": 3, "status": "running", "eval_status": "active"}
-        diagnostics = {"eval_retries": 1}
+        diagnostics = {"failed_eval_jobs": 1, "eval_outcome": None}
         first = run_observability.current_incidents(row, diagnostics)
         second = run_observability.current_incidents(row, diagnostics)
         self.assertEqual(first, second)
@@ -207,6 +222,7 @@ class RunObservabilityTests(unittest.TestCase):
                 "status": "finalizing",
                 "eval_status": "finalizing",
                 "live_publication_status": "pending",
+                "train_config": {"wandb": True},
             },
             {
                 "unconfirmed_metric_batches": 8,
@@ -263,6 +279,47 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertNotIn(
             "wandb_publication_retry",
             [incident["category"] for incident in incidents],
+        )
+
+    def test_expected_cancellation_and_historical_eval_failures_are_not_incidents(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 64,
+                "status": "finalizing",
+                "launch_state": "canceled",
+                "launch_error": "cancel requested",
+                "cancel_requested": True,
+                "eval_status": "finalizing",
+                "train_config": {"wandb": True},
+                "live_publication_status": "pending",
+            },
+            {
+                "eval_outcome": "canceled",
+                "eval_retries": 1,
+                "failed_eval_attempts": 1,
+                "failed_eval_jobs": 0,
+            },
+        )
+
+        self.assertEqual(incidents, [])
+
+    def test_publication_failure_suppresses_duplicate_terminal_failure(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 64,
+                "status": "finalization_failed",
+                "error": "remote failed",
+                "train_config": {"wandb": True},
+                "live_publication_status": "failed",
+                "live_publication_attempts": 3,
+                "live_publication_error": "remote failed",
+            },
+            {},
+        )
+
+        self.assertEqual(
+            [incident["category"] for incident in incidents],
+            ["wandb_publication_failed"],
         )
 
 

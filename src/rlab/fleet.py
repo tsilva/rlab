@@ -37,6 +37,9 @@ from rlab.job_queue import (
     next_pending_train_job,
     queue_demands,
     record_job_launch_error,
+    record_runtime_image_failure,
+    reset_runtime_image_retry,
+    runtime_image_retry_state,
     set_machine_control,
 )
 from rlab.telemetry_mailbox import (
@@ -393,8 +396,19 @@ def _start_or_resume_launch(
     job = _load_train_job(conn, int(launch["job_id"]))
     try:
         if not image_ready and not host.ensure_runtime_image(str(launch["runtime_image_ref"])):
+            record_runtime_image_failure(
+                conn,
+                machine=machine.name,
+                runtime_image_ref=str(launch["runtime_image_ref"]),
+                error="runtime image is unavailable",
+            )
             _record_launch_error(conn, launch_id, "runtime image is unavailable")
             return False
+        reset_runtime_image_retry(
+            conn,
+            machine=machine.name,
+            runtime_image_ref=str(launch["runtime_image_ref"]),
+        )
         telemetry_transport = str(
             job.get("telemetry_transport")
             or (job.get("train_config") or {}).get("telemetry_transport")
@@ -678,18 +692,37 @@ def launch_next_jobs(
     machine = host.machine
     launched = 0
     available_images: set[str] = set()
+    unavailable_images: set[str] = set()
     control = machine_control(conn, machine=machine.name)
     if bool(control.get("drained")):
         return 0
     _used, _capacity, slots = train_container_slot_usage(conn, host)
-    for _ in range(slots):
-        pending = next_pending_train_job(conn, machine=machine.name)
+    while launched < slots:
+        pending = next_pending_train_job(
+            conn,
+            machine=machine.name,
+            exclude_runtime_image_refs=tuple(sorted(unavailable_images)),
+        )
         if pending is None:
             break
         runtime_image_ref = str(pending["runtime_image_ref"])
+        if runtime_image_ref in unavailable_images:
+            break
         if runtime_image_ref not in available_images:
             if not host.ensure_runtime_image(runtime_image_ref):
-                break
+                record_runtime_image_failure(
+                    conn,
+                    machine=machine.name,
+                    runtime_image_ref=runtime_image_ref,
+                    error="runtime image is unavailable",
+                )
+                unavailable_images.add(runtime_image_ref)
+                continue
+            reset_runtime_image_retry(
+                conn,
+                machine=machine.name,
+                runtime_image_ref=runtime_image_ref,
+            )
             available_images.add(runtime_image_ref)
         job_id = int(pending["id"])
         launch_id = new_train_launch_id(job_id)
@@ -855,12 +888,44 @@ def run_service_machine_pass(
                         )
                     release = recent_runtime_images(limit=1)[0]
                     prewarmed_ref = release.runtime_image_ref
-                    prewarm, prewarmed_ref = prewarm_latest_runtime(
-                        host,
-                        state_path=(repo_root / "logs" / "fleet" / f"prewarm-{machine.name}.json"),
-                        release=release,
+                    retry_state = runtime_image_retry_state(
+                        conn,
+                        machine=machine.name,
+                        runtime_image_ref=prewarmed_ref,
                     )
+                    next_retry_at = (retry_state or {}).get("next_retry_at")
+                    if next_retry_at is not None and next_retry_at > datetime.now(UTC):
+                        prewarm = {
+                            "status": "backoff",
+                            "runtime_image_ref": prewarmed_ref,
+                            "retry_count": int((retry_state or {}).get("retry_count") or 0),
+                            "next_retry_at": next_retry_at.isoformat(),
+                            "error": str((retry_state or {}).get("last_error") or ""),
+                        }
+                    else:
+                        prewarm, prewarmed_ref = prewarm_latest_runtime(
+                            host,
+                            state_path=(
+                                repo_root
+                                / "logs"
+                                / "fleet"
+                                / f"prewarm-{machine.name}.json"
+                            ),
+                            release=release,
+                        )
+                        reset_runtime_image_retry(
+                            conn,
+                            machine=machine.name,
+                            runtime_image_ref=prewarmed_ref,
+                        )
                 except Exception as exc:
+                    if prewarmed_ref:
+                        record_runtime_image_failure(
+                            conn,
+                            machine=machine.name,
+                            runtime_image_ref=prewarmed_ref,
+                            error=str(exc),
+                        )
                     prewarm = {"status": "error", "error": str(exc)}
             if time.monotonic() >= deadline_monotonic:
                 return {

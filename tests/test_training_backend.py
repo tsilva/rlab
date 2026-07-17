@@ -89,6 +89,33 @@ def test_sb3_a2c_schema_is_strict_and_rejects_ppo_only_fields() -> None:
         validate_and_normalize_train_config(backend_config("sb3.a2c", clip_range=0.2))
 
 
+@pytest.mark.parametrize("backend_id", ["sb3.ppo", "sb3.a2c"])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("n_steps", 0, "n_steps must be positive"),
+        (
+            "learning_rate_schedule_timesteps",
+            -1,
+            "learning_rate_schedule_timesteps must be non-negative",
+        ),
+        ("learning_rate", "fast", "learning_rate must be a number or null"),
+        ("device", "tpu", "device must be one of auto, cpu, cuda, mps"),
+        ("policy_net_arch", [], "policy_net_arch must be a string"),
+        ("normalize_advantage", 1, "normalize_advantage must be a boolean"),
+        ("resume", 1, "resume must be a string or null"),
+    ],
+)
+def test_sb3_on_policy_backends_share_common_field_validation(
+    backend_id: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_and_normalize_train_config(backend_config(backend_id, **{field: value}))
+
+
 def test_jerk_backend_schema_is_strict_and_available() -> None:
     normalized = validate_and_normalize_train_config(
         {

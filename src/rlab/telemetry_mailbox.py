@@ -461,6 +461,16 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
                 AND t.live_publication_status = 'finishing'
                 AND (t.live_publication_next_retry_at IS NULL
                      OR t.live_publication_next_retry_at <= now())
+              UNION ALL
+              SELECT t.id, COALESCE(t.process_exited_at, t.created_at) AS ready_at
+              FROM train_jobs t
+              WHERE t.status = 'finalizing'
+                AND t.process_exited_at IS NOT NULL
+                AND t.telemetry_transport = 'neon_mailbox_v1'
+                AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local')
+                    <> 'modal'
+                AND t.live_publication_status IN ('pending', 'live')
             )
             SELECT id, min(ready_at) AS ready_at
             FROM candidates
@@ -619,10 +629,22 @@ def finalize_mailbox_runs_without_eval(conn) -> int:
             cur.execute(
                 """
                 UPDATE train_jobs t
-                SET status = 'succeeded', finished_at = now(), error = NULL,
+                SET status = CASE
+                      WHEN l.state = 'canceled' THEN 'canceled'
+                      WHEN l.state = 'failed' THEN 'failed'
+                      ELSE 'succeeded'
+                    END,
+                    finished_at = now(),
+                    error = CASE
+                      WHEN l.state = 'failed' THEN COALESCE(l.error, t.error)
+                      ELSE NULL
+                    END,
                     live_publication_error = NULL,
                     live_publication_next_retry_at = NULL
+                FROM job_launches l
                 WHERE t.status = 'finalizing'
+                  AND l.job_id = t.id
+                  AND l.state IN ('succeeded', 'failed', 'canceled')
                   AND t.telemetry_transport = 'neon_mailbox_v1'
                   AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
                   AND t.live_publication_status IN ('complete', 'disabled')

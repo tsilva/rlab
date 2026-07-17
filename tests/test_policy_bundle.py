@@ -119,6 +119,36 @@ def test_recipe_materializes_the_environment_identity_executed_by_the_learner() 
     assert recipe["environment"]["state_probs"] == []
 
 
+def test_recipe_keeps_eval_asset_identity_but_removes_private_locations() -> None:
+    materialized = compose_train_document(GOAL, RECIPE)
+    materialized["train_config"]["checkpoint_eval_asset_manifest"] = {
+        "game": "SuperMarioBros-Nes-v0",
+        "sha256": "c" * 64,
+        "provider_rom_identity": "d" * 40,
+        "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+        "object_uri": "s3://private-bucket/mario.nes",
+        "local_path": "/private/roms/mario.nes",
+    }
+
+    document = build_recipe_document(
+        materialized,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="portable evaluation asset",
+        seed=7,
+        runtime_image_ref=RUNTIME,
+    )
+
+    expected_asset = {
+        "game": "SuperMarioBros-Nes-v0",
+        "sha256": "c" * 64,
+        "provider_rom_identity": "d" * 40,
+        "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+    }
+    assert evaluation_contract(document)["asset"] == expected_asset
+    assert document["provenance"]["asset"] == expected_asset
+
+
 @pytest.mark.parametrize(
     "provider",
     ["supermariobrosnes-turbo", "stable-retro-turbo"],

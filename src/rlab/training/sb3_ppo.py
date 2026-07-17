@@ -5,6 +5,7 @@ from typing import Any
 
 from rlab.training.sb3_on_policy import (
     checkpoint_save_frequency as checkpoint_save_frequency,
+    normalize_on_policy_config,
     policy_kwargs_from_args,
     policy_name_for_observation_space,
     run_sb3_on_policy,
@@ -39,20 +40,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 _INTEGER_FIELDS = {
-    "learning_rate_schedule_timesteps",
-    "n_steps",
     "batch_size",
     "n_epochs",
-    "ent_coef_schedule_timesteps",
 }
 _NUMBER_FIELDS = {
-    "learning_rate",
-    "learning_rate_final",
-    "gamma",
-    "gae_lambda",
-    "ent_coef",
-    "ent_coef_final",
-    "vf_coef",
     "clip_range",
     "clip_range_vf",
     "adam_eps",
@@ -61,40 +52,24 @@ _NUMBER_FIELDS = {
 
 
 def normalize_config(config: Mapping[str, Any], *, label: str) -> dict[str, Any]:
-    unexpected = sorted(set(config) - set(DEFAULT_CONFIG))
-    if unexpected:
-        raise ValueError(f"{label} has unexpected fields: {unexpected}")
-    normalized = {**DEFAULT_CONFIG, **dict(config)}
+    normalized = normalize_on_policy_config(config, defaults=DEFAULT_CONFIG, label=label)
     for key in _INTEGER_FIELDS:
         value = normalized[key]
         if not isinstance(value, int) or isinstance(value, bool):
             raise ValueError(f"{label}.{key} must be an integer")
-    for key in ("n_steps", "batch_size", "n_epochs"):
+    for key in ("batch_size", "n_epochs"):
         if normalized[key] <= 0:
             raise ValueError(f"{label}.{key} must be positive")
-    for key in ("learning_rate_schedule_timesteps", "ent_coef_schedule_timesteps"):
-        if normalized[key] < 0:
-            raise ValueError(f"{label}.{key} must be non-negative")
     for key in _NUMBER_FIELDS:
         value = normalized[key]
         if value is None:
             continue
         if not isinstance(value, int | float) or isinstance(value, bool):
             raise ValueError(f"{label}.{key} must be a number or null")
-    if normalized["device"] not in {"auto", "cpu", "cuda", "mps"}:
-        raise ValueError(f"{label}.device must be one of auto, cpu, cuda, mps")
     if normalized["advantage_normalization"] not in {"auto", "none", "global", "per-task"}:
         raise ValueError(
             f"{label}.advantage_normalization must be one of auto, none, global, per-task"
         )
-    for key in ("policy_net_arch", "value_net_arch"):
-        if not isinstance(normalized[key], str):
-            raise ValueError(f"{label}.{key} must be a string")
-    if not isinstance(normalized["normalize_advantage"], bool):
-        raise ValueError(f"{label}.normalize_advantage must be a boolean")
-    resume = normalized["resume"]
-    if resume is not None and not isinstance(resume, str):
-        raise ValueError(f"{label}.resume must be a string or null")
     return normalized
 
 

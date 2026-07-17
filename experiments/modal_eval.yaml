@@ -31,13 +31,3 @@ cost:
   estimated_hourly_usd: 0.30
 protocol:
   max_attempts: 2
-preview:
-  # Historical compatibility only; acceptance workers never capture previews.
-  enabled: false
-  max_frames: 450
-  fps: 15
-  max_lanes: 4
-  scale: 2
-  max_bytes: 2097152
-  encode_timeout_seconds: 2
-  upload_timeout_seconds: 3

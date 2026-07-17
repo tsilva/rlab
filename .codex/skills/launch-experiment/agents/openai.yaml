@@ -1,4 +1,4 @@
 interface:
   display_name: "Launch Experiment"
-  short_description: "Launch and follow rlab runs through completion"
-  default_prompt: "Use $launch-experiment to launch this training recipe on beast-3 and keep monitoring every run until its terminal event."
+  short_description: "Launch, monitor, and explicitly repair rlab runs"
+  default_prompt: "Use $launch-experiment to launch this training recipe, monitor every run through its terminal event, and repair failures only if I explicitly authorize fixes."

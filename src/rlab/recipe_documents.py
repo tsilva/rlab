@@ -25,6 +25,7 @@ from rlab.env_identity import (
     train_config_from_source_environment,
     validate_task_config,
 )
+from rlab.file_utils import file_sha256
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_schema import (
     TRAIN_RECIPE_SCHEMA_VERSION,
@@ -555,14 +556,6 @@ def compose_train_document(
         label=f"{label} train_config",
     )
     return document
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _git_text(args: Sequence[str], *, cwd: Path = Path(".")) -> str | None:

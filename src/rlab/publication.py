@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shutil
@@ -16,6 +15,7 @@ from huggingface_hub.utils import validate_repo_id
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from rlab.env_registry import game_family_for_environment
+from rlab.file_utils import file_sha256 as sha256_file
 from rlab.metric_names import (
     EVAL_FULL_BY_START,
     EVAL_FULL_CHECKPOINT_ARTIFACT,
@@ -808,14 +808,6 @@ def verify_replay(path: Path) -> dict[str, object]:
     if moov < 0 or mdat < 0 or moov > mdat:
         raise ValueError("replay video must use faststart with moov before mdat")
     return {"duration_seconds": duration, "frames": frames, **expected}
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def release_artifact_records(root: Path) -> dict[str, dict[str, int | str]]:

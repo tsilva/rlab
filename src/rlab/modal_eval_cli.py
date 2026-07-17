@@ -13,12 +13,7 @@ from rlab.env_registry import resolve_env_provider
 from rlab.job_queue import connect, database_url
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
-from rlab.modal_eval_storage import (
-    ObjectStore,
-    object_store_base_uri,
-    preview_public_base_url,
-    preview_storage_base_uri,
-)
+from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
 from rlab.runtime_refs import normalize_runtime_image_ref
 
 
@@ -165,24 +160,6 @@ def modal_preflight(
         )
     except Exception as exc:
         add("fleet_eval_service", False, type(exc).__name__)
-    if config.preview_enabled:
-        try:
-            preview_store = ObjectStore(preview_storage_base_uri())
-            public_base = preview_public_base_url()
-            preview_store.presign_put(
-                "eval-previews/preflight.mp4",
-                expires_seconds=60,
-                content_type="video/mp4",
-                cache_control="public, max-age=31536000, immutable",
-            )
-            add(
-                "preview_storage",
-                preview_store.scheme == "s3",
-                f"storage={preview_store.base_uri} public={public_base}",
-            )
-        except Exception as exc:
-            add("preview_storage", False, type(exc).__name__)
-
     conn = None
     try:
         conn = _conn()

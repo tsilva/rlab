@@ -1,18 +1,142 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from psycopg2 import Error as DatabaseError
+
 from rlab.job_queue import connect, count_nonterminal_jobs, database_url
-from rlab.fleet_service import CONTROL_PLANE_PROTOCOL_VERSION
+from rlab.fleet_service import (
+    CONTROL_PLANE_PROTOCOL_VERSION,
+    controller_service_paths,
+    controller_source_fingerprint,
+    default_service_paths,
+)
 
 
 POLL_SECONDS = 2.0
 REMOTE_PASS_BUDGET_SECONDS = 55.0
+MAX_WANDB_ACTORS = 16
+WANDB_ACTOR_SHUTDOWN_SECONDS = 5.0
+WANDB_ACTOR_CONTENTION_BACKOFF_SECONDS = 30.0
+WANDB_ACTOR_LOCK_BUSY_EXIT_CODE = 75
+CONTROLLER_MAX_BACKOFF_SECONDS = 60.0
+
+
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _write_controller_readiness(
+    path: Path,
+    *,
+    source_fingerprint: str,
+    started_at: float,
+    phase: str,
+) -> None:
+    _atomic_write_json(
+        path,
+        {
+            "pid": os.getpid(),
+            "started_at": started_at,
+            "source_fingerprint": source_fingerprint,
+            "protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
+            "phase": phase,
+            "last_reconciled_at": time.time(),
+        },
+    )
+
+
+def _write_controller_heartbeat(
+    path: Path,
+    *,
+    controller: str,
+    source_fingerprint: str,
+    started_at: float,
+    phase: str,
+    last_success_at: float | None,
+    last_error: str | None,
+) -> None:
+    _atomic_write_json(
+        path,
+        {
+            "pid": os.getpid(),
+            "controller": controller,
+            "started_at": started_at,
+            "updated_at": time.time(),
+            "source_fingerprint": source_fingerprint,
+            "protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
+            "phase": phase,
+            "last_success_at": last_success_at,
+            "last_error": last_error,
+        },
+    )
+
+
+def _controller_state_paths(repo_root: Path, controller: str) -> tuple[Path, Path]:
+    state = controller_service_paths(
+        default_service_paths(repo_root=repo_root), controller
+    ).state_dir
+    return state / "heartbeat.json", state / "readiness.json"
+
+
+def _controller_machines(repo_root: Path) -> tuple[str, ...]:
+    from rlab.job_queue import machines_with_service_work
+    from rlab.machines import load_machine_registry
+
+    conn = connect(database_url(use_direct=True))
+    try:
+        selected = set(machines_with_service_work(conn))
+    finally:
+        conn.close()
+    registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
+    now = time.time()
+    for name in registry.machines:
+        marker = repo_root / "logs" / "fleet" / f"maintenance-{name}.stamp"
+        try:
+            maintenance_due = now - marker.stat().st_mtime >= 3600.0
+        except FileNotFoundError:
+            maintenance_due = True
+        if maintenance_due:
+            selected.add(name)
+    return tuple(sorted(selected))
+
+
+def _shutdown_wandb_actors(actors: dict[int, subprocess.Popen]) -> None:
+    live = {run_id: process for run_id, process in actors.items() if process.poll() is None}
+    for process in live.values():
+        process.terminate()
+    deadline = time.monotonic() + WANDB_ACTOR_SHUTDOWN_SECONDS
+    while live and time.monotonic() < deadline:
+        live = {
+            run_id: process for run_id, process in live.items() if process.poll() is None
+        }
+        if live:
+            time.sleep(0.05)
+    if live:
+        print(
+            "force-killing W&B publisher actors: "
+            + ", ".join(f"train/{run_id}=pid/{process.pid}" for run_id, process in live.items()),
+            file=sys.stderr,
+            flush=True,
+        )
+        for process in live.values():
+            process.kill()
+    for process in actors.values():
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
 
 
 class SleepAssertion:
@@ -47,25 +171,115 @@ def _has_work() -> bool:
 
 def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
     from rlab.fleet import run_service_machine_pass
-    from rlab.job_queue import machines_with_service_work
 
     assertion = SleepAssertion()
+    heartbeat, _readiness = _controller_state_paths(repo_root, "machine")
+    source_fingerprint = controller_source_fingerprint(repo_root)
+    started_at = time.time()
+    last_success_at: float | None = None
+    backoff = POLL_SECONDS
     try:
+        _write_controller_heartbeat(
+            heartbeat,
+            controller="machine",
+            source_fingerprint=source_fingerprint,
+            started_at=started_at,
+            phase="starting",
+            last_success_at=None,
+            last_error=None,
+        )
         while True:
-            conn = connect(database_url(use_direct=True))
             try:
-                machines = machines_with_service_work(conn)
-            finally:
-                conn.close()
-            assertion.update(bool(machines))
-            deadline = time.monotonic() + REMOTE_PASS_BUDGET_SECONDS
-            for machine in machines:
-                run_service_machine_pass(
-                    machine_name=machine,
-                    machines_path=repo_root / "experiments" / "machines.yaml",
-                    repo_root=repo_root,
-                    deadline_monotonic=deadline,
+                machines = _controller_machines(repo_root)
+            except Exception as exc:
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="machine",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                    last_success_at=last_success_at,
+                    last_error=f"{type(exc).__name__}: {exc}"[:4000],
                 )
+                if once:
+                    raise
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+                continue
+            assertion.update(bool(machines))
+            _write_controller_heartbeat(
+                heartbeat,
+                controller="machine",
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase="reconciling" if machines else "idle",
+                last_success_at=last_success_at,
+                last_error=None,
+            )
+            errors: list[str] = []
+            database_error: DatabaseError | None = None
+            for machine in machines:
+                try:
+                    run_service_machine_pass(
+                        machine_name=machine,
+                        machines_path=repo_root / "experiments" / "machines.yaml",
+                        repo_root=repo_root,
+                        deadline_monotonic=time.monotonic() + REMOTE_PASS_BUDGET_SECONDS,
+                    )
+                except DatabaseError as exc:
+                    database_error = exc
+                    break
+                except Exception as exc:
+                    errors.append(f"{machine}:{type(exc).__name__}:{exc}")
+                    _write_controller_heartbeat(
+                        heartbeat,
+                        controller="machine",
+                        source_fingerprint=source_fingerprint,
+                        started_at=started_at,
+                        phase="degraded",
+                        last_success_at=last_success_at,
+                        last_error="; ".join(errors)[:4000],
+                    )
+                else:
+                    last_success_at = time.time()
+                    _write_controller_heartbeat(
+                        heartbeat,
+                        controller="machine",
+                        source_fingerprint=source_fingerprint,
+                        started_at=started_at,
+                        phase="reconciling",
+                        last_success_at=last_success_at,
+                        last_error="; ".join(errors)[:4000] or None,
+                    )
+            if database_error is not None:
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="machine",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                    last_success_at=last_success_at,
+                    last_error=(
+                        f"{type(database_error).__name__}: {database_error}"
+                    )[:4000],
+                )
+                if once:
+                    raise database_error
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+                continue
+            if not machines:
+                last_success_at = time.time()
+            _write_controller_heartbeat(
+                heartbeat,
+                controller="machine",
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase="degraded" if errors else "idle",
+                last_success_at=last_success_at,
+                last_error="; ".join(errors)[:4000] or None,
+            )
+            backoff = POLL_SECONDS
             if once:
                 return 0
             time.sleep(POLL_SECONDS)
@@ -82,18 +296,68 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
     )
 
     assertion = SleepAssertion()
+    heartbeat, _readiness = _controller_state_paths(repo_root, "evaluation")
+    source_fingerprint = controller_source_fingerprint(repo_root)
+    started_at = time.time()
+    last_success_at: float | None = None
+    backoff = POLL_SECONDS
     try:
+        _write_controller_heartbeat(
+            heartbeat,
+            controller="evaluation",
+            source_fingerprint=source_fingerprint,
+            started_at=started_at,
+            phase="starting",
+            last_success_at=None,
+            last_error=None,
+        )
         while True:
-            assertion.update(_has_work())
-            deadline = time.monotonic() + REMOTE_PASS_BUDGET_SECONDS
-            run_service_eval_pass(repo_root=repo_root, deadline_monotonic=deadline)
-            conn = connect(database_url(use_direct=True))
             try:
-                consume_attempt_events(conn)
-                discard_disabled_metric_batches(conn)
-                finalize_mailbox_runs_without_eval(conn)
-            finally:
-                conn.close()
+                assertion.update(_has_work())
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="evaluation",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="reconciling",
+                    last_success_at=last_success_at,
+                    last_error=None,
+                )
+                deadline = time.monotonic() + REMOTE_PASS_BUDGET_SECONDS
+                run_service_eval_pass(repo_root=repo_root, deadline_monotonic=deadline)
+                conn = connect(database_url(use_direct=True))
+                try:
+                    consume_attempt_events(conn)
+                    discard_disabled_metric_batches(conn)
+                    finalize_mailbox_runs_without_eval(conn)
+                finally:
+                    conn.close()
+            except Exception as exc:
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="evaluation",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                    last_success_at=last_success_at,
+                    last_error=f"{type(exc).__name__}: {exc}"[:4000],
+                )
+                if once:
+                    raise
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+                continue
+            last_success_at = time.time()
+            _write_controller_heartbeat(
+                heartbeat,
+                controller="evaluation",
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase="idle",
+                last_success_at=last_success_at,
+                last_error=None,
+            )
+            backoff = POLL_SECONDS
             if once:
                 return 0
             time.sleep(POLL_SECONDS)
@@ -105,21 +369,68 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
     from rlab.telemetry_mailbox import pending_metric_run_ids
 
     actors: dict[int, subprocess.Popen] = {}
+    ownership_backoff: dict[int, float] = {}
     assertion = SleepAssertion()
+    heartbeat, readiness = _controller_state_paths(repo_root, "wandb")
+    source_fingerprint = controller_source_fingerprint(repo_root)
+    started_at = time.time()
+    last_success_at: float | None = None
+    backoff = POLL_SECONDS
     try:
+        _write_controller_heartbeat(
+            heartbeat,
+            controller="wandb",
+            source_fingerprint=source_fingerprint,
+            started_at=started_at,
+            phase="starting",
+            last_success_at=None,
+            last_error=None,
+        )
+        _write_controller_readiness(
+            readiness,
+            source_fingerprint=source_fingerprint,
+            started_at=started_at,
+            phase="starting",
+        )
         while True:
-            actors = {
-                run_id: process for run_id, process in actors.items() if process.poll() is None
-            }
-            conn = connect(database_url(use_direct=True))
+            now = time.monotonic()
+            for run_id, process in list(actors.items()):
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                actors.pop(run_id, None)
+                if returncode == WANDB_ACTOR_LOCK_BUSY_EXIT_CODE:
+                    ownership_backoff[run_id] = now + WANDB_ACTOR_CONTENTION_BACKOFF_SECONDS
             try:
-                run_ids = pending_metric_run_ids(conn, limit=10_000)
-            finally:
-                conn.close()
+                conn = connect(database_url(use_direct=True))
+                try:
+                    run_ids = pending_metric_run_ids(conn, limit=10_000)
+                finally:
+                    conn.close()
+            except Exception as exc:
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="wandb",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                    last_success_at=last_success_at,
+                    last_error=f"{type(exc).__name__}: {exc}"[:4000],
+                )
+                if once:
+                    raise
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+                continue
             assertion.update(bool(run_ids or actors))
             for run_id in run_ids:
+                if len(actors) >= MAX_WANDB_ACTORS:
+                    break
                 if run_id in actors:
                     continue
+                if ownership_backoff.get(run_id, 0.0) > now:
+                    continue
+                ownership_backoff.pop(run_id, None)
                 actors[run_id] = subprocess.Popen(
                     [
                         sys.executable,
@@ -130,18 +441,35 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                     ],
                     cwd=repo_root,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
                     close_fds=True,
                 )
+            _write_controller_readiness(
+                readiness,
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase="reconciling" if run_ids or actors else "idle",
+            )
+            last_success_at = time.time()
+            _write_controller_heartbeat(
+                heartbeat,
+                controller="wandb",
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase="reconciling" if run_ids or actors else "idle",
+                last_success_at=last_success_at,
+                last_error=None,
+            )
+            backoff = POLL_SECONDS
             if once:
                 for process in actors.values():
                     process.wait(timeout=60)
                 return 0
             time.sleep(POLL_SECONDS)
     finally:
-        assertion.close()
+        try:
+            _shutdown_wandb_actors(actors)
+        finally:
+            assertion.close()
 
 
 def build_parser() -> argparse.ArgumentParser:

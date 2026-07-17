@@ -138,7 +138,65 @@ def current_incidents(
     incidents: list[dict[str, Any]] = []
     status = str(row.get("status") or "")
     eval_status = str(row.get("eval_status") or "")
-    if status in {"failed", "finalization_failed"}:
+    train_config = row.get("train_config") or {}
+    wandb_enabled = isinstance(train_config, Mapping) and bool(train_config.get("wandb", False))
+    publication_status = str(row.get("live_publication_status") or "")
+    publication_attempts = int(row.get("live_publication_attempts") or 0)
+    publication_incident: dict[str, Any] | None = None
+    unconfirmed_batches = int(diagnostics.get("unconfirmed_metric_batches") or 0)
+    oldest_unconfirmed = diagnostics.get("oldest_unconfirmed_submitted_at")
+    confirmation_age = _seconds_between(oldest_unconfirmed, datetime.now(UTC))
+    ready_at = row.get("learner_ready_at") or row.get("ready_at")
+    ready_age = _seconds_between(ready_at, datetime.now(UTC))
+    if wandb_enabled and publication_status not in {"complete", "disabled"}:
+        if publication_status == "failed":
+            publication_incident = _incident(
+                run_id,
+                "wandb_publication_failed",
+                "wandb",
+                str(
+                    row.get("live_publication_error")
+                    or row.get("error")
+                    or f"publication failed after {publication_attempts} attempt(s)"
+                ),
+            )
+        elif (
+            unconfirmed_batches
+            and confirmation_age is not None
+            and confirmation_age >= REMOTE_CONFIRM_TIMEOUT_SECONDS
+        ):
+            publication_incident = _incident(
+                run_id,
+                "wandb_cursor_confirmation_stalled",
+                "wandb",
+                f"unconfirmed_batches={unconfirmed_batches}, "
+                f"oldest_confirmation_age_seconds={confirmation_age:.1f}",
+            )
+        elif (
+            ready_age is not None
+            and ready_age >= 180
+            and (
+                not row.get("wandb_url")
+                or publication_attempts
+            )
+        ):
+            publication_incident = _incident(
+                run_id,
+                "wandb_publication_stalled",
+                "wandb",
+                f"publication unresolved {ready_age:.1f} seconds after learner readiness; "
+                f"attempts={publication_attempts}",
+            )
+        elif publication_attempts:
+            publication_incident = _incident(
+                run_id,
+                "wandb_publication_retry",
+                "wandb",
+                f"attempts={publication_attempts}",
+            )
+    if publication_incident is not None:
+        incidents.append(publication_incident)
+    if status in {"failed", "finalization_failed"} and publication_incident is None:
         incidents.append(
             _incident(
                 run_id,
@@ -156,23 +214,30 @@ def current_incidents(
                 "run was canceled without a recorded cancellation request",
             )
         )
-    for field in (
-        "launch_error",
-        "eval_error",
-        "live_publication_error",
-        "promoted_projection_error",
-    ):
+    expected_cancel_error = str(row.get("launch_error") or "") in {
+        "cancel requested",
+        "cancel requested; container authoritatively absent",
+    }
+    for field in ("launch_error", "eval_error", "promoted_projection_error"):
+        if not row.get(field):
+            continue
+        if field == "launch_error" and expected_cancel_error and bool(row.get("cancel_requested")):
+            if str(row.get("launch_state") or "") == "canceled":
+                continue
+        if field == "eval_error" and diagnostics.get("eval_outcome") is not None:
+            if not int(diagnostics.get("failed_eval_jobs") or 0):
+                continue
         if row.get(field):
             incidents.append(
                 _incident(run_id, "state_error", field, f"{field} is set: {row[field]}")
             )
-    failures = {
-        "failed_eval_jobs": int(diagnostics.get("failed_eval_jobs") or 0),
-        "eval_retries": int(diagnostics.get("eval_retries") or 0),
-        "failed_eval_attempts": int(diagnostics.get("failed_eval_attempts") or 0),
-    }
-    if any(failures.values()):
-        detail = ", ".join(f"{key}={value}" for key, value in failures.items() if value)
+    unresolved_failed_eval_jobs = (
+        int(diagnostics.get("failed_eval_jobs") or 0)
+        if diagnostics.get("eval_outcome") is None
+        else 0
+    )
+    if unresolved_failed_eval_jobs:
+        detail = f"failed_eval_jobs={unresolved_failed_eval_jobs}"
         incidents.append(_incident(run_id, "eval_execution_failure", "acceptance", detail))
     if int(diagnostics.get("errored_mailbox_events") or 0):
         incidents.append(
@@ -181,35 +246,6 @@ def current_incidents(
                 "mailbox_delivery_error",
                 "worker_mailbox",
                 f"errored_mailbox_events={int(diagnostics['errored_mailbox_events'])}",
-            )
-        )
-    unconfirmed_batches = int(diagnostics.get("unconfirmed_metric_batches") or 0)
-    oldest_unconfirmed = diagnostics.get("oldest_unconfirmed_submitted_at")
-    confirmation_age = _seconds_between(oldest_unconfirmed, datetime.now(UTC))
-    if (
-        unconfirmed_batches
-        and confirmation_age is not None
-        and confirmation_age >= REMOTE_CONFIRM_TIMEOUT_SECONDS
-    ):
-        incidents.append(
-            _incident(
-                run_id,
-                "wandb_cursor_confirmation_stalled",
-                "wandb",
-                f"unconfirmed_batches={unconfirmed_batches}, "
-                f"oldest_confirmation_age_seconds={confirmation_age:.1f}",
-            )
-        )
-    if (
-        int(row.get("live_publication_attempts") or 0)
-        and str(row.get("live_publication_status") or "") != "complete"
-    ):
-        incidents.append(
-            _incident(
-                run_id,
-                "wandb_publication_retry",
-                "wandb",
-                f"attempts={int(row['live_publication_attempts'])}",
             )
         )
     if int(row.get("artifact_projection_attempts") or 0):
@@ -230,28 +266,12 @@ def current_incidents(
                 f"training is {status} while evaluation remains {eval_status}",
             )
         )
-    ready_at = row.get("ready_at")
-    if (
-        status == "running"
-        and isinstance(ready_at, datetime)
-        and not row.get("wandb_url")
-        and (datetime.now(ready_at.tzinfo or UTC) - ready_at).total_seconds() >= 180
-    ):
-        incidents.append(
-            _incident(
-                run_id,
-                "wandb_url_missing",
-                "wandb",
-                "W&B URL is missing more than 180 seconds after learner readiness",
-            )
-        )
     if status in TERMINAL_STATUSES:
         terminal_counters = {
             "pending_metric_batches": int(diagnostics.get("pending_metric_batches") or 0),
             "unhandled_commands": int(diagnostics.get("unhandled_commands") or 0),
             "incomplete_streams": int(diagnostics.get("incomplete_streams") or 0),
             "active_worker_attempts": int(diagnostics.get("active_worker_attempts") or 0),
-            "active_reservations": int(row.get("active_reservations") or 0),
         }
         if any(terminal_counters.values()):
             detail = ", ".join(

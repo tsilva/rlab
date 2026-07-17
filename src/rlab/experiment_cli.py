@@ -260,7 +260,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     from rlab.fleet_service import require_compatible_controller_services
     from rlab.job_queue import cmd_cancel as queue_cancel
 
-    require_compatible_controller_services()
+    require_compatible_controller_services(require_source_current=False)
     code, payload = _call_json_command(queue_cancel, _queue_namespace(args))
     print(json.dumps(json_safe(payload), sort_keys=True))
     return code
@@ -282,7 +282,7 @@ def cmd_retry_finalization(args: argparse.Namespace) -> int:
     from rlab.fleet_service import require_compatible_controller_services
     from rlab.job_queue import cmd_retry_finalization as queue_retry_finalization
 
-    require_compatible_controller_services()
+    require_compatible_controller_services(require_source_current=False)
     args.job_id = args.run_id
     args.json = True
     code, payload = _call_json_command(queue_retry_finalization, args)

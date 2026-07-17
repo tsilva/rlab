@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
+from rlab.file_utils import file_sha256 as sha256_file
+
 
 RECIPE_DOCUMENT_TYPE = "rlab.recipe"
 RECIPE_FORMAT_VERSION = 1
@@ -188,14 +190,6 @@ class PolicyBundle:
     @property
     def recipe_sha256(self) -> str:
         return str(self.model["recipe"]["sha256"])
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -596,14 +590,16 @@ def build_recipe_document(
     )
     recipe["environment"] = effective_training_metadata["environment"]
     recipe["environment_hash"] = effective_training_metadata["environment_hash"]
-    asset = train_config.get("checkpoint_eval_asset_manifest")
-    portable_asset = None
-    if isinstance(asset, Mapping):
-        portable_asset = {
-            key: deepcopy(value)
-            for key, value in asset.items()
-            if key not in {"object_uri", "local_path"}
-        }
+    from rlab.checkpoint_acceptance import CheckpointEvalContractCompiler
+
+    eval_compiler = CheckpointEvalContractCompiler.from_train_config(
+        train_config,
+        portable_asset=True,
+        require_asset=False,
+        materialize_seed_defaults=True,
+    )
+    portable_asset = eval_compiler.asset
+    stop_on_acceptance = bool(train_config.get("stop_on_acceptance"))
     for key in _OPERATIONAL_TRAIN_FIELDS:
         train_config.pop(key, None)
     train_config.pop("checkpoint_eval_asset_manifest", None)
@@ -623,36 +619,7 @@ def build_recipe_document(
         )
     )
     recipe["schema_version"] = int(recipe.get("schema_version") or 2)
-    evaluation_environment = deepcopy(train_config.get("checkpoint_eval_environment"))
-    if not isinstance(evaluation_environment, Mapping):
-        raise PolicyDocumentError("materialized recipe is missing checkpoint_eval_environment")
-    from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
-
-    max_steps = checkpoint_eval_max_steps(train_config)
-    recipe["eval"] = {
-        "environment": evaluation_environment,
-        "action_sampling": "stochastic",
-        "episodes": int(train_config.get("post_train_eval_episodes") or 100),
-        "n_envs": int(train_config.get("checkpoint_eval_n_envs") or 1),
-        "max_steps": max_steps,
-        "seed": int(train_config.get("checkpoint_eval_seed") or 10_000),
-        "seed_protocol": str(
-            train_config.get("checkpoint_eval_seed_protocol") or "vector-lane-v1"
-        ),
-    }
-    if train_config.get("stop_on_acceptance"):
-        from rlab.checkpoint_acceptance import checkpoint_eval_contract_from_train_config
-        from rlab.modal_eval_protocol import SEED_PROTOCOL
-
-        portable_contract_config = dict(train_config)
-        portable_contract_config["checkpoint_eval_seed_protocol"] = str(
-            portable_contract_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
-        )
-        if portable_asset is not None:
-            portable_contract_config["checkpoint_eval_asset_manifest"] = portable_asset
-        recipe["eval"] = checkpoint_eval_contract_from_train_config(
-            portable_contract_config
-        )
+    recipe["eval"] = eval_compiler.contract(require_acceptance=stop_on_acceptance)
     source_files = []
     if isinstance(composition, Mapping):
         for item in composition.get("source_files") or []:

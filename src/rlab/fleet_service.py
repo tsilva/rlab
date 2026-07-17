@@ -7,7 +7,9 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,7 +40,11 @@ SERVICE_LABEL = "com.rlab.fleet-service"
 SERVICE_INTERVAL_SECONDS = 30
 CONTROLLER_NAMES = ("machine", "evaluation", "wandb")
 CONTROLLER_POLL_SECONDS = 2
-CONTROL_PLANE_PROTOCOL_VERSION = 1
+CONTROL_PLANE_PROTOCOL_VERSION = 2
+CONTROLLER_READINESS_TIMEOUT_SECONDS = 10.0
+CONTROLLER_INSTALL_HEARTBEAT_TIMEOUT_SECONDS = 180.0
+CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS = 70.0
+CONTROLLER_HEARTBEAT_PROTOCOL_VERSION = 2
 DEFAULT_LANE_TIMEOUT_SECONDS = 120.0
 DEFAULT_PASS_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_MACHINE_LANES = 4
@@ -110,6 +116,10 @@ class ServicePaths:
     def health(self) -> Path:
         return self.state_dir / "health.json"
 
+    @property
+    def readiness(self) -> Path:
+        return self.state_dir / "readiness.json"
+
 
 def default_service_paths(
     *,
@@ -137,6 +147,27 @@ def default_service_paths(
         launch_agents_dir=agents.expanduser().resolve(),
         label=label,
     )
+
+
+def controller_source_fingerprint(repo_root: Path | str) -> str:
+    """Hash the local runtime inputs loaded by persistent fleet controllers."""
+
+    root = Path(repo_root).expanduser().resolve()
+    candidates = sorted(
+        path
+        for path in (root / "src" / "rlab").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    )
+    candidates.extend(path for path in (root / "pyproject.toml", root / "uv.lock") if path.is_file())
+    digest = hashlib.sha256()
+    for path in candidates:
+        if not path.is_file():
+            continue
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def launch_agent_payload(paths: ServicePaths) -> dict[str, Any]:
@@ -729,6 +760,7 @@ def install_controller_services(
     are loaded successfully.
     """
 
+    install_started_at = time.time()
     if not paths.repo_root.is_dir():
         raise FileNotFoundError(f"repository root does not exist: {paths.repo_root}")
     if not paths.python.is_file() or not os.access(paths.python, os.X_OK):
@@ -741,6 +773,18 @@ def install_controller_services(
         if old_data is not None and not replace:
             raise FileExistsError(f"launch agent already exists: {item.plist}; use --replace")
         previous[name] = (old_data, service_is_loaded(item.label, runner=runner))
+
+    legacy_loaded = service_is_loaded(paths.label, runner=runner)
+    replacing_loaded_control_plane = legacy_loaded or any(
+        was_loaded for _old_data, was_loaded in previous.values()
+    )
+    if replace and replacing_loaded_control_plane:
+        count = _default_count_nonterminal_jobs(paths.repo_root)
+        if count:
+            raise RuntimeError(
+                "refusing to replace machine/evaluation controllers with "
+                f"{count} nonterminal job(s); wait for quiescence"
+            )
 
     paths.launch_agents_dir.mkdir(parents=True, exist_ok=True)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
@@ -767,6 +811,38 @@ def install_controller_services(
                 _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
             finally:
                 candidate.unlink(missing_ok=True)
+        kicked = True
+        for item in controller_paths:
+            result = runner(
+                ["launchctl", "kickstart", _target(item.label)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            kicked = kicked and result.returncode == 0
+        if CONTROL_PLANE_PROTOCOL_VERSION >= CONTROLLER_HEARTBEAT_PROTOCOL_VERSION:
+            deadline = time.monotonic() + CONTROLLER_INSTALL_HEARTBEAT_TIMEOUT_SECONDS
+            expected_fingerprint = controller_source_fingerprint(paths.repo_root)
+            while time.monotonic() < deadline:
+                ready = True
+                for name, item in zip(CONTROLLER_NAMES, controller_paths, strict=True):
+                    heartbeat = _load_last_pass(item.state_dir / "heartbeat.json") or {}
+                    pid = _service_pid(item.label, runner=runner)
+                    matches, _age = _controller_heartbeat_matches(
+                        heartbeat,
+                        controller=name,
+                        pid=pid,
+                        source_fingerprint=expected_fingerprint,
+                        updated_after=install_started_at,
+                    )
+                    ready = ready and matches
+                if ready:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(
+                    "fleet controllers did not publish matching heartbeat evidence"
+                )
     except Exception:
         for name, item in reversed(installed):
             runner(
@@ -789,7 +865,6 @@ def install_controller_services(
                     )
         raise
 
-    legacy_loaded = service_is_loaded(paths.label, runner=runner)
     if legacy_loaded:
         runner(
             ["launchctl", "bootout", _target(paths.label)],
@@ -798,15 +873,6 @@ def install_controller_services(
             text=True,
         )
     paths.plist.unlink(missing_ok=True)
-    kicked = True
-    for item in controller_paths:
-        result = runner(
-            ["launchctl", "kickstart", _target(item.label)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        kicked = kicked and result.returncode == 0
     return InstallResult(
         installed=True,
         replaced=replace and any(value[0] is not None for value in previous.values()),
@@ -842,6 +908,59 @@ def _installed_controller_protocol_version(item: ServicePaths) -> int | None:
         return int(arguments[index + 1])
     except OSError, ValueError, TypeError, IndexError, plistlib.InvalidFileException:
         return None
+
+
+def _controller_heartbeat_runtime_matches(
+    heartbeat: Mapping[str, Any],
+    *,
+    controller: str,
+    pid: int | None,
+    updated_after: float | None = None,
+) -> tuple[bool, float | None]:
+    updated_at = heartbeat.get("updated_at")
+    try:
+        heartbeat_age = max(0.0, time.time() - float(updated_at))
+    except (TypeError, ValueError):
+        return False, None
+    try:
+        matches = bool(
+            heartbeat_age <= CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS
+            and str(heartbeat.get("controller") or "") == controller
+            and int(heartbeat.get("protocol_version") or 0)
+            == CONTROL_PLANE_PROTOCOL_VERSION
+            and int(heartbeat.get("pid") or 0) == int(pid or 0)
+            and int(pid or 0) > 0
+            and heartbeat.get("last_success_at") is not None
+            and str(heartbeat.get("phase") or "") not in {"starting", "error"}
+            and (
+                updated_after is None
+                or float(heartbeat.get("updated_at") or 0.0) >= float(updated_after)
+            )
+        )
+    except (TypeError, ValueError):
+        matches = False
+    return matches, heartbeat_age
+
+
+def _controller_heartbeat_matches(
+    heartbeat: Mapping[str, Any],
+    *,
+    controller: str,
+    pid: int | None,
+    source_fingerprint: str,
+    updated_after: float | None = None,
+) -> tuple[bool, float | None]:
+    matches, heartbeat_age = _controller_heartbeat_runtime_matches(
+        heartbeat,
+        controller=controller,
+        pid=pid,
+        updated_after=updated_after,
+    )
+    return (
+        matches
+        and str(heartbeat.get("source_fingerprint") or "") == source_fingerprint,
+        heartbeat_age,
+    )
 
 
 def service_status(
@@ -883,6 +1002,8 @@ def controller_services_status(
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
     controllers: dict[str, dict[str, Any]] = {}
+    expected_fingerprint = controller_source_fingerprint(paths.repo_root)
+    heartbeat_required = CONTROL_PLANE_PROTOCOL_VERSION >= CONTROLLER_HEARTBEAT_PROTOCOL_VERSION
     for name in CONTROLLER_NAMES:
         item = controller_service_paths(paths, name)
         installed_protocol_version = _installed_controller_protocol_version(item)
@@ -891,29 +1012,53 @@ def controller_services_status(
             running = service_is_running(item.label, runner=runner) if loaded else False
         except OSError:
             running = False
+        controller_pid = _service_pid(item.label, runner=runner) if loaded else None
+        heartbeat = _load_last_pass(item.state_dir / "heartbeat.json") or {}
+        heartbeat_compatible, heartbeat_age = _controller_heartbeat_matches(
+            heartbeat,
+            controller=name,
+            pid=controller_pid,
+            source_fingerprint=expected_fingerprint,
+        )
         controllers[name] = {
             "label": item.label,
             "installed": item.plist.is_file(),
             "loaded": loaded,
             "running": running,
+            "pid": controller_pid,
             "plist": str(item.plist),
             "stdout": str(item.bootstrap_stdout),
             "stderr": str(item.bootstrap_stderr),
             "installed_protocol_version": installed_protocol_version,
             "expected_protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
             "protocol_compatible": (installed_protocol_version == CONTROL_PLANE_PROTOCOL_VERSION),
+            "heartbeat": heartbeat or None,
+            "heartbeat_age_seconds": heartbeat_age,
+            "heartbeat_required": heartbeat_required,
+            "heartbeat_compatible": heartbeat_compatible,
         }
     installed = all(row["installed"] for row in controllers.values())
     loaded = all(row["loaded"] for row in controllers.values())
     running = all(row["running"] for row in controllers.values())
     protocol_compatible = all(row["protocol_compatible"] for row in controllers.values())
+    heartbeat_compatible = all(
+        row["heartbeat_compatible"] for row in controllers.values()
+    )
     return {
         "label": paths.label,
         "installed": installed,
         "loaded": loaded,
         "running": running,
-        "healthy": installed and loaded and running and protocol_compatible,
+        "healthy": (
+            installed
+            and loaded
+            and running
+            and protocol_compatible
+            and (heartbeat_compatible or not heartbeat_required)
+        ),
         "protocol_compatible": protocol_compatible,
+        "heartbeat_compatible": heartbeat_compatible,
+        "heartbeat_required": heartbeat_required,
         "expected_protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
         "poll_seconds": CONTROLLER_POLL_SECONDS,
         "repo_root": str(paths.repo_root),
@@ -926,6 +1071,7 @@ def require_compatible_controller_services(
     paths: ServicePaths | None = None,
     *,
     runner: CommandRunner = _run_command,
+    require_source_current: bool = True,
 ) -> dict[str, Any]:
     """Fail closed before queue mutation when the persistent control plane is stale."""
 
@@ -936,25 +1082,209 @@ def require_compatible_controller_services(
         raise RuntimeError(
             "fleet controllers are unavailable; run `rlab fleet service install --replace`"
         ) from exc
-    if not (
-        status["installed"]
-        and status["loaded"]
-        and status["running"]
-        and status["protocol_compatible"]
-    ):
+    def row_compatible(name: str, row: Mapping[str, Any]) -> bool:
+        heartbeat_ok = bool(row.get("heartbeat_compatible"))
+        if row.get("heartbeat_required") and not require_source_current:
+            heartbeat_ok, _age = _controller_heartbeat_runtime_matches(
+                row.get("heartbeat") or {},
+                controller=name,
+                pid=row.get("pid"),
+            )
+        return bool(
+            row.get("installed")
+            and row.get("loaded")
+            and row.get("running")
+            and row.get("protocol_compatible")
+            and (heartbeat_ok or not row.get("heartbeat_required"))
+        )
+
+    compatible = all(
+        row_compatible(name, row)
+        for name, row in status["controllers"].items()
+    )
+    if not compatible:
         incompatible = [
             name
             for name, row in status["controllers"].items()
-            if not (
-                row["installed"] and row["loaded"] and row["running"] and row["protocol_compatible"]
-            )
+            if not row_compatible(name, row)
         ]
         raise RuntimeError(
-            "fleet controllers are not installed, running, and protocol-compatible "
+            "fleet controllers are not installed, running, protocol-compatible, and healthy "
             f"({', '.join(incompatible) or 'unknown'}); run "
             "`rlab fleet service install --replace`"
         )
     return status
+
+
+@dataclass(frozen=True)
+class _PublisherProcess:
+    pid: int
+    ppid: int
+    pgid: int
+    command: str
+
+
+def _service_pid(label: str, *, runner: CommandRunner = _run_command) -> int | None:
+    result = runner(
+        ["launchctl", "print", _target(label)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        return None
+    matched = re.search(r"(?m)^\s*pid\s*=\s*(\d+)\s*$", result.stdout or "")
+    return int(matched.group(1)) if matched else None
+
+
+def _process_cwd(pid: int, *, runner: CommandRunner = _run_command) -> Path | None:
+    executable = shutil.which("lsof") or "/usr/sbin/lsof"
+    result = runner(
+        [executable, "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        return None
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return Path(line[1:]).expanduser().resolve()
+    return None
+
+
+def _publisher_processes(
+    repo_root: Path,
+    *,
+    parent_pid: int | None = None,
+    expected_process_groups: Sequence[int] = (),
+    runner: CommandRunner = _run_command,
+) -> list[_PublisherProcess]:
+    result = runner(
+        ["ps", "-axo", "pid=,ppid=,pgid=,command="],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    found: list[_PublisherProcess] = []
+    for raw in (result.stdout or "").splitlines():
+        parts = raw.strip().split(maxsplit=3)
+        if len(parts) != 4:
+            continue
+        try:
+            pid, ppid, pgid = (int(parts[index]) for index in range(3))
+            argv = shlex.split(parts[3])
+        except (ValueError, IndexError):
+            continue
+        if parent_pid is not None and ppid != int(parent_pid):
+            continue
+        try:
+            module_index = argv.index("-m")
+        except ValueError:
+            continue
+        if argv[module_index + 1 : module_index + 2] != ["rlab.fleet_wandb_publisher"]:
+            continue
+        module_args = argv[module_index + 1 :]
+        if len(module_args) != 3 or module_args[1] != "--train-job-id":
+            raise RuntimeError(
+                f"refusing to stop W&B publisher pid {pid}: unverified module arguments"
+            )
+        try:
+            if int(module_args[2]) <= 0:
+                raise ValueError
+        except ValueError as exc:
+            raise RuntimeError(
+                f"refusing to stop W&B publisher pid {pid}: invalid train job id"
+            ) from exc
+        cwd = _process_cwd(pid, runner=runner)
+        if cwd != repo_root.resolve():
+            raise RuntimeError(
+                f"refusing to stop unverified W&B publisher pid {pid}: cwd={cwd}"
+            )
+        expected_groups = {int(value) for value in expected_process_groups}
+        actor_owned_group = pgid == pid
+        manager_owned_group = (
+            parent_pid is not None and ppid == int(parent_pid) and pgid == int(parent_pid)
+        )
+        previously_verified_group = pgid in expected_groups
+        if not (actor_owned_group or manager_owned_group or previously_verified_group):
+            raise RuntimeError(
+                f"refusing to stop W&B publisher pid {pid}: unverified process group {pgid}"
+            )
+        found.append(_PublisherProcess(pid=pid, ppid=ppid, pgid=pgid, command=parts[3]))
+    return found
+
+
+def _stop_legacy_wandb_publishers(
+    repo_root: Path,
+    captured: Sequence[_PublisherProcess],
+    *,
+    expected_process_groups: Sequence[int] = (),
+    runner: CommandRunner = _run_command,
+    timeout_seconds: float = 5.0,
+) -> None:
+    processes = {item.pid: item for item in captured}
+    verified_groups = {
+        *(int(item.pgid) for item in captured),
+        *(int(value) for value in expected_process_groups),
+    }
+    for item in _publisher_processes(
+        repo_root,
+        expected_process_groups=tuple(sorted(verified_groups)),
+        runner=runner,
+    ):
+        processes[item.pid] = item
+    for pgid in {item.pgid for item in processes.values()}:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    remaining = set(processes)
+    while remaining and time.monotonic() < deadline:
+        for pid in list(remaining):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                remaining.discard(pid)
+        if remaining:
+            time.sleep(0.05)
+    for pgid in {processes[pid].pgid for pid in remaining}:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    lingering = _publisher_processes(
+        repo_root,
+        expected_process_groups=tuple(sorted(verified_groups)),
+        runner=runner,
+    )
+    if lingering:
+        raise RuntimeError(
+            "W&B publisher cleanup did not complete: "
+            + ", ".join(str(item.pid) for item in lingering)
+        )
+
+
+def _wandb_readiness_matches(
+    item: ServicePaths,
+    *,
+    source_fingerprint: str,
+    started_after: float,
+) -> bool:
+    payload = _load_last_pass(item.readiness)
+    if not payload:
+        return False
+    try:
+        return (
+            int(payload.get("pid") or 0) > 0
+            and float(payload.get("started_at") or 0.0) >= float(started_after)
+            and float(payload.get("last_reconciled_at") or 0.0) >= float(started_after)
+            and str(payload.get("source_fingerprint") or "") == source_fingerprint
+            and int(payload.get("protocol_version") or 0) == CONTROL_PLANE_PROTOCOL_VERSION
+        )
+    except TypeError, ValueError:
+        return False
 
 
 def reload_controller_service(
@@ -964,20 +1294,33 @@ def reload_controller_service(
     count_nonterminal_jobs: CountNonterminalJobs | None = None,
     runner: CommandRunner = _run_command,
 ) -> bool:
-    """Reload one persistent controller only while the queue is quiescent."""
+    """Reload one persistent controller, allowing the durable W&B lane to stay active."""
 
     if controller not in CONTROLLER_NAMES:
         raise ValueError(f"unknown fleet controller: {controller}")
-    counter = count_nonterminal_jobs or _default_count_nonterminal_jobs
-    nonterminal = int(counter(paths.repo_root))
-    if nonterminal:
-        raise RuntimeError(
-            f"refusing to reload the {controller} controller with {nonterminal} nonterminal job(s)"
-        )
+    if controller != "wandb":
+        counter = count_nonterminal_jobs or _default_count_nonterminal_jobs
+        nonterminal = int(counter(paths.repo_root))
+        if nonterminal:
+            raise RuntimeError(
+                f"refusing to reload the {controller} controller with {nonterminal} nonterminal job(s)"
+            )
     item = controller_service_paths(paths, controller)
     if not item.plist.is_file():
         raise FileNotFoundError(f"fleet controller is not installed: {item.plist}")
     was_loaded = service_is_loaded(item.label, runner=runner)
+    captured: list[_PublisherProcess] = []
+    manager_pid: int | None = None
+    if controller == "wandb" and was_loaded:
+        manager_pid = _service_pid(item.label, runner=runner)
+        if manager_pid is None:
+            raise RuntimeError("cannot verify the active W&B manager pid before reload")
+        captured = _publisher_processes(
+            paths.repo_root,
+            parent_pid=manager_pid,
+            runner=runner,
+        )
+        item.readiness.unlink(missing_ok=True)
     if was_loaded:
         runner(
             ["launchctl", "bootout", _target(item.label)],
@@ -985,12 +1328,32 @@ def reload_controller_service(
             capture_output=True,
             text=True,
         )
+    if controller == "wandb":
+        _stop_legacy_wandb_publishers(
+            paths.repo_root,
+            captured,
+            expected_process_groups=(manager_pid,) if manager_pid is not None else (),
+            runner=runner,
+        )
+    started_after = time.time()
     _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
-    deadline = time.monotonic() + 5
+    expected_fingerprint = controller_source_fingerprint(paths.repo_root)
+    deadline = time.monotonic() + CONTROLLER_READINESS_TIMEOUT_SECONDS
     while not service_is_running(item.label, runner=runner):
         if time.monotonic() >= deadline:
             raise RuntimeError(f"reloaded {controller} controller did not start")
         time.sleep(0.1)
+    if controller == "wandb":
+        while not _wandb_readiness_matches(
+            item,
+            source_fingerprint=expected_fingerprint,
+            started_after=started_after,
+        ):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "reloaded W&B controller did not publish matching readiness evidence"
+                )
+            time.sleep(0.1)
     return True
 
 
@@ -1090,7 +1453,17 @@ def eval_service_health(
     controllers = controller_services_status(paths, runner=runner)
     if controllers["installed"]:
         evaluation = dict(controllers["controllers"]["evaluation"])
-        ready = bool(evaluation.get("loaded") and evaluation.get("running"))
+        ready = bool(
+            evaluation.get("loaded")
+            and evaluation.get("running")
+            and (
+                not evaluation.get("heartbeat_required")
+                or (
+                    evaluation.get("protocol_compatible")
+                    and evaluation.get("heartbeat_compatible")
+                )
+            )
+        )
         return {
             "ready": ready,
             "loaded": bool(evaluation.get("loaded")),
@@ -1189,6 +1562,7 @@ def controller_services_doctor(
         paths.python.is_file() and os.access(paths.python, os.X_OK),
         str(paths.python),
     )
+    expected_fingerprint = controller_source_fingerprint(paths.repo_root)
     for name in CONTROLLER_NAMES:
         item = controller_service_paths(paths, name)
         payload_ok = False
@@ -1211,6 +1585,20 @@ def controller_services_doctor(
             installed_protocol_version == CONTROL_PLANE_PROTOCOL_VERSION,
             (f"installed={installed_protocol_version} expected={CONTROL_PLANE_PROTOCOL_VERSION}"),
         )
+        if CONTROL_PLANE_PROTOCOL_VERSION >= CONTROLLER_HEARTBEAT_PROTOCOL_VERSION:
+            heartbeat = _load_last_pass(item.state_dir / "heartbeat.json") or {}
+            controller_pid = _service_pid(item.label, runner=runner) if loaded else None
+            compatible, age = _controller_heartbeat_matches(
+                heartbeat,
+                controller=name,
+                pid=controller_pid,
+                source_fingerprint=expected_fingerprint,
+            )
+            add(
+                f"{name}_heartbeat",
+                compatible,
+                f"age={age} path={item.state_dir / 'heartbeat.json'}",
+            )
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
 
 
@@ -1273,34 +1661,66 @@ def schema_change_service_guard(
     runner: CommandRunner = _run_command,
     timeout_seconds: float = DEFAULT_PASS_TIMEOUT_SECONDS + 30,
 ):
-    loaded = service_is_loaded(paths.label, runner=runner)
+    candidates = [paths, *(controller_service_paths(paths, name) for name in CONTROLLER_NAMES)]
+    loaded = [item for item in candidates if service_is_loaded(item.label, runner=runner)]
+    count = _default_count_nonterminal_jobs(paths.repo_root)
+    if count:
+        raise RuntimeError(
+            f"refusing schema reset with {count} nonterminal job(s); wait for quiescence"
+        )
     if not loaded:
         yield
         return
-    target = _target(paths.label)
-    runner(["launchctl", "disable", target], check=True, capture_output=True, text=True)
+    stopped: list[ServicePaths] = []
+    captured_publishers: list[_PublisherProcess] = []
+    publisher_manager_groups: tuple[int, ...] = ()
     try:
-        deadline = time.monotonic() + timeout_seconds
-        while service_is_running(paths.label, runner=runner):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("timed out waiting for the active fleet service pass")
-            time.sleep(0.25)
-        runner(["launchctl", "bootout", target], check=True, capture_output=True, text=True)
-        yield
-    finally:
-        runner(["launchctl", "enable", target], check=False, capture_output=True, text=True)
-        if paths.plist.is_file():
+        wandb_item = controller_service_paths(paths, "wandb")
+        if any(item.label == wandb_item.label for item in loaded):
+            manager_pid = _service_pid(wandb_item.label, runner=runner)
+            if manager_pid is None:
+                raise RuntimeError("cannot verify the active W&B manager pid before schema reset")
+            captured_publishers = _publisher_processes(
+                paths.repo_root,
+                parent_pid=manager_pid,
+                runner=runner,
+            )
+            publisher_manager_groups = (manager_pid,)
+        for item in loaded:
             runner(
-                ["launchctl", "bootstrap", _domain(), str(paths.plist)],
-                check=False,
+                ["launchctl", "bootout", _target(item.label)],
+                check=True,
                 capture_output=True,
                 text=True,
             )
-            kick_service(
-                paths.label,
-                reason="schema_reload",
-                state_dir=paths.state_dir,
-                runner=runner,
+            stopped.append(item)
+        deadline = time.monotonic() + timeout_seconds
+        while any(service_is_running(item.label, runner=runner) for item in stopped):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("timed out stopping fleet controllers for schema reset")
+            time.sleep(0.25)
+        _stop_legacy_wandb_publishers(
+            paths.repo_root,
+            captured_publishers,
+            expected_process_groups=publisher_manager_groups,
+            runner=runner,
+        )
+        if _publisher_processes(
+            paths.repo_root,
+            expected_process_groups=publisher_manager_groups,
+            runner=runner,
+        ):
+            raise RuntimeError("publisher processes remain after controller shutdown")
+        yield
+    finally:
+        for item in stopped:
+            if not item.plist.is_file():
+                continue
+            runner(
+                ["launchctl", "bootstrap", _domain(), str(item.plist)],
+                check=True,
+                capture_output=True,
+                text=True,
             )
 
 
@@ -1392,18 +1812,14 @@ def _default_discover_machines(repo_root: Path) -> Sequence[str]:
         conn.close()
     registry = load_machine_registry(repo_root / "experiments" / "machines.yaml")
     now = time.time()
-    for machine_name, machine in registry.machines.items():
-        if machine.prewarm_latest_runtime:
-            work.add(machine_name)
-        marker = repo_root / "logs" / "fleet" / f"maintenance-attempt-{machine_name}.stamp"
+    for machine_name in registry.machines:
+        marker = repo_root / "logs" / "fleet" / f"maintenance-{machine_name}.stamp"
         try:
             maintenance_due = now - marker.stat().st_mtime >= 3600
         except FileNotFoundError:
             maintenance_due = True
         if maintenance_due:
             work.add(machine_name)
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch()
     return tuple(sorted(work))
 
 

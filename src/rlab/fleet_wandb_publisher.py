@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -49,6 +51,8 @@ DEFAULT_BATCH_LIMIT = 100
 ACTOR_POLL_SECONDS = 2.0
 MAX_FINALIZATION_ATTEMPTS = 3
 FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
+WANDB_API_TIMEOUT_SECONDS = 30
+ACTOR_LOCK_BUSY_EXIT_CODE = 75
 TERMINAL_WANDB_STATES = frozenset({"finished", "crashed", "failed", "killed"})
 SUPPORTED_FRAME_KINDS = {
     "history",
@@ -77,6 +81,10 @@ class WandbPublicationState:
 
 
 class WandbCursorConfirmationError(RuntimeError):
+    pass
+
+
+class WandbPublisherActorLockBusy(RuntimeError):
     pass
 
 
@@ -128,7 +136,9 @@ def _remote_publication_state(
         env_provider=train_config.get("env_provider"),
     )
     run_id = str(train_config["wandb_run_id"])
-    remote = wandb.Api().run(f"{entity}/{project}/{run_id}")
+    remote = wandb.Api(timeout=WANDB_API_TIMEOUT_SECONDS).run(
+        f"{entity}/{project}/{run_id}"
+    )
     summary = dict(remote.summary)
     raw = summary.get(SUMMARY_CURSOR_KEY) or {}
     return WandbPublicationState(
@@ -148,7 +158,44 @@ def _wandb_api_run(train_config: dict[str, Any]):
         str(train_config.get("game") or ""),
         env_provider=train_config.get("env_provider"),
     )
-    return wandb.Api().run(f"{entity}/{project}/{train_config['wandb_run_id']}")
+    return wandb.Api(timeout=WANDB_API_TIMEOUT_SECONDS).run(
+        f"{entity}/{project}/{train_config['wandb_run_id']}"
+    )
+
+
+def _publication_is_pristine(conn, run: dict[str, Any]) -> bool:
+    """Return whether durable state permits first creation of the assigned W&B id."""
+
+    if not bool((run.get("train_config") or {}).get("wandb", False)):
+        return False
+    if str(run.get("wandb_url") or "").strip():
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              NOT EXISTS (
+                SELECT 1
+                FROM metric_streams s
+                JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                WHERE a.train_job_id = %(train_job_id)s
+                  AND (s.submitted_sequence <> 0 OR s.published_sequence <> 0)
+              ) AS streams_unpublished,
+              NOT EXISTS (
+                SELECT 1
+                FROM metric_batches b
+                JOIN metric_streams s ON s.stream_id = b.stream_id
+                JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                WHERE a.train_job_id = %(train_job_id)s
+                  AND b.submitted_at IS NOT NULL
+              ) AS batches_unsubmitted
+            """,
+            {"train_job_id": int(run["id"])},
+        )
+        evidence = cur.fetchone() or {}
+    return bool(evidence.get("streams_unpublished")) and bool(
+        evidence.get("batches_unsubmitted")
+    )
 
 
 def _remote_has_promoted_artifact(remote, checkpoint_sha256: str) -> bool:
@@ -274,9 +321,10 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT t.*, r.outcome, r.promotion_json
+                SELECT t.*, COALESCE(r.outcome, 'unknown') AS outcome,
+                  r.promotion_json
                 FROM train_jobs t
-                JOIN eval_runs r ON r.train_job_id = t.id
+                LEFT JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = %(id)s AND t.live_publication_status = 'finishing'
                   AND (t.live_publication_next_retry_at IS NULL
                        OR t.live_publication_next_retry_at <= now())
@@ -305,16 +353,23 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
             return False
         expected = {str(row["stream_id"]): int(row["final_sequence"]) for row in streams}
         train_config = _train_config(run)
-        remote = _wandb_api_run(train_config)
-        remote_summary = dict(remote.summary)
-        remote_cursors = _cursor_mapping(remote_summary.get(SUMMARY_CURSOR_KEY) or {})
-        failures = _wandb_finalization_failures(run, remote, expected)
-        if failures:
+        pristine = _publication_is_pristine(conn, run)
+        if pristine:
+            remote_cursors: dict[str, int] = {}
+            failures = ["remote_run"]
+        else:
+            remote = _wandb_api_run(train_config)
+            remote_summary = dict(remote.summary)
+            remote_cursors = _cursor_mapping(remote_summary.get(SUMMARY_CURSOR_KEY) or {})
+            failures = _wandb_finalization_failures(run, remote, expected)
+        wandb_url: str | None = None
+        if pristine or failures:
             projector = WandbProjector.resume(
                 train_config,
-                allow_create=False,
+                allow_create=pristine,
                 update_finish_state=True,
             )
+            wandb_url = str(getattr(projector.run, "url", "") or "") or None
             projector.run.summary[SUMMARY_CURSOR_KEY] = {
                 **remote_cursors,
                 **expected,
@@ -338,10 +393,11 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
                     UPDATE train_jobs
                     SET live_publication_status = 'complete',
                         live_publication_error = NULL,
-                        live_publication_next_retry_at = NULL
+                        live_publication_next_retry_at = NULL,
+                        wandb_url = COALESCE(wandb_url, %(wandb_url)s)
                     WHERE id = %(id)s AND live_publication_status = 'finishing'
                     """,
-                    {"id": int(train_job_id)},
+                    {"id": int(train_job_id), "wandb_url": wandb_url},
                 )
                 return cur.rowcount == 1
     except Exception as exc:
@@ -407,6 +463,47 @@ def _partition_batches(
         else:
             unpublished.append(row)
     return confirmed, awaiting_confirmation, unpublished
+
+
+def _reconcile_non_modal_publication_finishing(conn, train_job_id: int) -> bool:
+    """Close a terminal non-Modal producer only after its durable outbox is complete."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs t
+                SET live_publication_status = 'finishing',
+                    live_publication_attempts = 0,
+                    live_publication_error = NULL,
+                    live_publication_next_retry_at = NULL
+                WHERE t.id = %(train_job_id)s
+                  AND t.status = 'finalizing'
+                  AND t.process_exited_at IS NOT NULL
+                  AND t.telemetry_transport = 'neon_mailbox_v1'
+                  AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                  AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local')
+                      <> 'modal'
+                  AND t.live_publication_status IN ('pending', 'live')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_batches b
+                    JOIN metric_streams s ON s.stream_id = b.stream_id
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = t.id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_streams s
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = t.id
+                      AND (
+                        s.final_sequence IS NULL
+                        OR s.published_sequence < s.final_sequence
+                      )
+                  )
+                """,
+                {"train_job_id": int(train_job_id)},
+            )
+            return cur.rowcount == 1
 
 
 def _submitted_at(value: object) -> datetime | None:
@@ -535,7 +632,12 @@ def publish_claimed_run(
                 f"unsupported telemetry frame kinds: {sorted(unsupported)}"
             )
         decoded[int(batch["id"])] = frames
-    remote_state = _remote_publication_state(train_config)
+    pristine = _publication_is_pristine(conn, run)
+    remote_state = (
+        WandbPublicationState(state="", cursors={}, step_max=None)
+        if pristine
+        else _remote_publication_state(train_config)
+    )
     remote = remote_state.cursors
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
@@ -560,7 +662,7 @@ def publish_claimed_run(
             expected[stream_id] = max(expected.get(stream_id, 0), int(row["batch_sequence"]))
         projector = WandbProjector.resume(
             train_config,
-            allow_create=True,
+            allow_create=pristine,
             update_finish_state=str(run.get("status") or "")
             in {"succeeded", "failed", "finalization_failed", "canceled"},
         )
@@ -707,6 +809,7 @@ def drain_once(
     )
     if claim is None:
         if train_job_id is not None:
+            _reconcile_non_modal_publication_finishing(conn, int(train_job_id))
             return int(finalize_finishing_run(conn, int(train_job_id)))
         return 0
     run, batches = claim
@@ -738,6 +841,7 @@ def run_publisher_actor(
     limit: int = DEFAULT_BATCH_LIMIT,
     poll_seconds: float = ACTOR_POLL_SECONDS,
     once: bool = False,
+    stop_requested: Any | None = None,
 ) -> int:
     """Own one run until publication completes, surviving idle producer gaps.
 
@@ -749,12 +853,19 @@ def run_publisher_actor(
     actor_key = f"rlab-wandb-actor:{int(train_job_id)}"
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT pg_advisory_lock(hashtextextended(%(key)s, 0))",
+            "SELECT pg_try_advisory_lock(hashtextextended(%(key)s, 0)) AS acquired",
             {"key": actor_key},
         )
+        if not bool(cur.fetchone()["acquired"]):
+            conn.rollback()
+            raise WandbPublisherActorLockBusy(
+                f"publisher actor already owns train/{int(train_job_id)}"
+            )
     published = 0
     try:
         while True:
+            if callable(stop_requested) and stop_requested():
+                return published
             published += drain_once(
                 conn,
                 limit=max(1, int(limit)),
@@ -764,6 +875,8 @@ def run_publisher_actor(
             # Do not leave a read transaction open while an active producer is idle.
             conn.rollback()
             if done or once:
+                return published
+            if callable(stop_requested) and stop_requested():
                 return published
             time.sleep(max(float(poll_seconds), 0.01))
     finally:
@@ -876,17 +989,25 @@ def main(argv: list[str] | None = None) -> int:
 
     # Publishing holds a session-scoped per-run lock for the whole W&B
     # session, so it must not use a PgBouncer-backed connection.
+    stop_event = threading.Event()
+    if args.train_job_id is not None and not args.once:
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_event.set())
     conn = connect(database_url(use_direct=True))
     try:
-        if args.train_job_id is not None:
-            published = run_publisher_actor(
-                conn,
-                int(args.train_job_id),
-                limit=max(1, args.limit),
-                once=bool(args.once),
-            )
-        else:
-            published = drain_once(conn, limit=max(1, args.limit))
+        try:
+            if args.train_job_id is not None:
+                published = run_publisher_actor(
+                    conn,
+                    int(args.train_job_id),
+                    limit=max(1, args.limit),
+                    once=bool(args.once),
+                    stop_requested=stop_event.is_set,
+                )
+            else:
+                published = drain_once(conn, limit=max(1, args.limit))
+        except WandbPublisherActorLockBusy as exc:
+            print(str(exc), file=sys.stderr)
+            return ACTOR_LOCK_BUSY_EXIT_CODE
         print(f"published_batches={published}")
     finally:
         conn.close()

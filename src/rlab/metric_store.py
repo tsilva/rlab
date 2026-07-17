@@ -10,7 +10,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from rlab.file_utils import file_sha256 as _file_sha256
 from rlab.metric_names import validate_metric_payload
+
+
+file_sha256 = _file_sha256
 
 
 SCHEMA_SQL = """
@@ -1260,11 +1264,3 @@ class MetricStore:
 
 def metric_store_path(run_dir: str | Path) -> Path:
     return Path(run_dir) / "rlab.sqlite"
-
-
-def file_sha256(path: Path | str) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

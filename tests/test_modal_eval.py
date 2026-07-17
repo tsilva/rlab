@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -22,7 +23,6 @@ from rlab.modal_eval_orchestrator import (
     cancel_requested_attempts,
     deterministic_eval_failure,
     dispatch_pending,
-    finalize_runs,
     project_eval_results,
     ingest_mailbox_announcements,
     poll_attempts,
@@ -36,6 +36,8 @@ from rlab.modal_eval_orchestrator import (
     reconcile_stop_delivery_slo,
     round_robin_jobs,
     run_service_eval_pass,
+    terminalize_failed_eval_runs,
+    terminalize_runs,
 )
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.modal_eval_projection import project_payload
@@ -109,6 +111,45 @@ def successful_result(eval_contract: dict, *, attempt_id: str = "attempt") -> di
 
 
 class ModalEvalContractTests(unittest.TestCase):
+    def test_poll_attempt_provider_failure_does_not_block_later_record(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [
+            {
+                "id": 1,
+                "attempt_id": "attempt-1",
+                "eval_job_id": 11,
+                "retry_round": 0,
+                "result_uri": "s3://bucket/one.json",
+                "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+            },
+            {
+                "id": 2,
+                "attempt_id": "attempt-2",
+                "eval_job_id": 12,
+                "retry_round": 0,
+                "result_uri": "s3://bucket/two.json",
+                "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+            },
+        ]
+        store = mock.MagicMock()
+        store.get_json_optional.side_effect = [RuntimeError("provider down"), None]
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator._mark_attempt_failure"
+        ) as mark_failure:
+            changed = poll_attempts(
+                conn,
+                store,
+                mock.MagicMock(),
+                mock.MagicMock(),
+                deadline_monotonic=time.monotonic() + 1,
+            )
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(store.get_json_optional.call_count, 2)
+        self.assertIn("result observation failed", mark_failure.call_args.kwargs["error"])
+
     def test_poll_attempts_loads_checkpoint_hash_for_accepted_commit(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -334,16 +375,6 @@ class ModalEvalContractTests(unittest.TestCase):
             mock.patch.object(modal_eval_cli, "_missing_schema_tables", return_value=[]),
             mock.patch.object(modal_eval_cli, "asset_manifest_for_game", return_value=manifest),
             mock.patch.object(modal_eval_cli, "object_store_base_uri", return_value="s3://bucket"),
-            mock.patch.object(
-                modal_eval_cli,
-                "preview_storage_base_uri",
-                return_value="s3://preview-bucket",
-            ),
-            mock.patch.object(
-                modal_eval_cli,
-                "preview_public_base_url",
-                return_value="https://preview.example",
-            ),
             mock.patch.object(modal_eval_cli, "ObjectStore") as object_store,
             mock.patch(
                 "rlab.fleet_service.eval_service_health",
@@ -357,8 +388,6 @@ class ModalEvalContractTests(unittest.TestCase):
                 "size": 1024,
                 "metadata": {"sha256": manifest["sha256"]},
             }
-            object_store.return_value.scheme = "s3"
-            object_store.return_value.base_uri = "s3://preview-bucket"
             function.remote.return_value = {
                 "schema_version": 1,
                 "app_name": "rlab-eval-" + "b" * 12,
@@ -398,10 +427,6 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.max_containers, 10)
         self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
-        self.assertFalse(config.preview_enabled)
-        self.assertEqual(config.preview_max_frames, 450)
-        self.assertEqual(config.preview_fps, 15)
-        self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
 
     def test_resume_only_clears_the_drain(self) -> None:
         conn = mock.MagicMock()
@@ -434,13 +459,10 @@ class ModalEvalContractTests(unittest.TestCase):
             mismatched.write_text(source.replace("  max_containers: 10", "  max_containers: 11"))
             with self.assertRaisesRegex(ValueError, "must equal"):
                 load_modal_eval_config(mismatched)
-            oversized_preview = Path(temporary) / "oversized-preview.yaml"
-            oversized_preview.write_text(source.replace("  max_lanes: 4", "  max_lanes: 5"))
-            with self.assertRaisesRegex(ValueError, "must not exceed 4"):
-                load_modal_eval_config(oversized_preview)
-            disabled_preview = Path(temporary) / "disabled-preview.yaml"
-            disabled_preview.write_text(source)
-            self.assertFalse(load_modal_eval_config(disabled_preview).preview_enabled)
+            retired_preview = Path(temporary) / "retired-preview.yaml"
+            retired_preview.write_text(source + "preview:\n  enabled: false\n")
+            with self.assertRaisesRegex(ValueError, "unknown field.*preview"):
+                load_modal_eval_config(retired_preview)
             invalid_cleanup = Path(temporary) / "invalid-cleanup.yaml"
             invalid_cleanup.write_text(
                 source.replace("  grace_seconds: 86400", "  grace_seconds: 0")
@@ -934,6 +956,10 @@ class ModalEvalSchedulingTests(unittest.TestCase):
                 return_value=0,
             ),
             mock.patch(
+                "rlab.modal_eval_orchestrator.terminalize_failed_eval_runs",
+                return_value=0,
+            ),
+            mock.patch(
                 "rlab.modal_eval_orchestrator.reconcile_publication_finishing",
                 return_value=0,
             ),
@@ -990,6 +1016,42 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             if "DELETE FROM attempt_events" in call.args[0]
         ]
         self.assertEqual(len(delete_calls), 3)
+
+    def test_mailbox_ingestion_defers_malformed_record_and_continues(self) -> None:
+        events = [
+            {
+                "id": 1,
+                "event_type": "checkpoint_ready",
+                "payload_json": "malformed",
+                "authoritative_train_job_id": 44,
+                "next_announcement_id": 1,
+                "contract_json": {},
+            },
+            {
+                "id": 2,
+                "event_type": "checkpoint_tombstone",
+                "payload_json": {
+                    "train_job_id": 44,
+                    "ledger_id": 1,
+                    "kind": "tombstone",
+                },
+                "authoritative_train_job_id": 44,
+                "next_announcement_id": 1,
+                "contract_json": {},
+            },
+        ]
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = events
+        cursor.rowcount = 1
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator._defer_attempt_event", return_value=1
+        ) as defer:
+            count = ingest_mailbox_announcements(conn, mock.MagicMock())
+
+        self.assertEqual(count, 1)
+        defer.assert_called_once()
 
     def test_mailbox_ingestion_time_slices_a_large_backlog(self) -> None:
         events = [
@@ -1356,7 +1418,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         cursor = conn.cursor.return_value.__enter__.return_value
         cursor.rowcount = 0
 
-        finalize_runs(conn)
+        terminalize_runs(conn)
 
         statement = cursor.execute.call_args.args[0]
         self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
@@ -1382,13 +1444,25 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(reconcile_definitive_non_acceptance(conn), 1)
         non_acceptance = cursor.execute.call_args.args[0]
         self.assertIn("outcome = 'not_accepted'", non_acceptance)
+        self.assertIn("t.status = 'finalizing'", non_acceptance)
         self.assertIn("'blocked_budget', 'failed'", non_acceptance)
         self.assertIn("decision_json->>'verdict'", non_acceptance)
+        self.assertIn("j.projected_at IS NULL", non_acceptance)
+        self.assertIn("j.status = 'succeeded'", non_acceptance)
 
         self.assertEqual(reconcile_eval_run_failures(conn), 1)
         unknown = cursor.execute.call_args.args[0]
         self.assertIn("outcome = 'unknown'", unknown)
+        self.assertIn("t.status = 'finalizing'", unknown)
         self.assertIn("required evaluation exhausted retries", unknown)
+        self.assertIn("checkpoint stream closed without evaluable evidence", unknown)
+
+        self.assertEqual(terminalize_failed_eval_runs(conn), 1)
+        failed = cursor.execute.call_args.args[0]
+        self.assertIn("status = 'finalization_failed'", failed)
+        self.assertIn("r.status = 'failed'", failed)
+        self.assertIn("a.status IN ('dispatching', 'submitted')", failed)
+        self.assertIn("w.status IN ('launching', 'running')", failed)
 
         self.assertEqual(reconcile_stop_delivery_slo(conn), 1)
         stop_slo = cursor.execute.call_args.args[0]
@@ -1732,10 +1806,20 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             args = SimpleNamespace(
                 queue_train_job_id=9,
                 env_provider="stable-retro-turbo",
-                checkpoint_eval_environment={},
+                checkpoint_eval_environment={
+                    "env_provider": "stable-retro-turbo",
+                    "game": "Game-Nes-v0",
+                },
                 checkpoint_eval_stages=[],
-                checkpoint_eval_asset_manifest={"game": "Game-Nes-v0"},
+                checkpoint_eval_asset_manifest={
+                    "game": "Game-Nes-v0",
+                    "sha256": "a" * 64,
+                    "provider_rom_identity": "b" * 40,
+                    "object_uri": "s3://bucket/Game-Nes-v0.rom",
+                },
                 checkpoint_eval_n_envs=1,
+                checkpoint_eval_seed=10_000,
+                checkpoint_eval_seed_protocol="vector-lane-v1",
                 post_train_eval_episodes=1,
                 post_train_eval_max_steps=10,
             )

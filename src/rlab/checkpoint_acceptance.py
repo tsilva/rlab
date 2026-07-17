@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -9,12 +11,171 @@ import numpy as np
 from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
 from rlab.early_stop import evaluate_early_stop_config, normalize_early_stop_config
 from rlab.eval_metrics import episode_is_complete, episode_start_state
+from rlab.env_registry import resolve_env_provider
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MEAN, EVAL_FULL_SUCCESS_RATE_MIN
+from rlab.seeds import EVAL_SEED_START
 
 
 ACCEPTANCE_PROTOCOL_VERSION = 1
 EPISODE_MANIFEST_VERSION = 1
 EVIDENCE_POLICY_VERSION = 1
+SEED_PROTOCOL = "vector-lane-v1"
+
+
+def _required_int(
+    value: Mapping[str, Any],
+    key: str,
+    *,
+    label: str,
+    minimum: int,
+) -> int:
+    raw = value.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{label}.{key} must be an integer")
+    parsed = int(raw)
+    if parsed < minimum:
+        raise ValueError(f"{label}.{key} must be at least {minimum}")
+    return parsed
+
+
+@dataclass(frozen=True)
+class CheckpointEvalContractCompiler:
+    """Strict accessor and serializer for one materialized checkpoint-eval contract."""
+
+    environment: dict[str, Any]
+    episodes: int
+    n_envs: int
+    max_steps: int
+    seed: int
+    seed_protocol: str
+    acceptance: list[dict[str, Any]] | None
+    asset: dict[str, Any] | None
+
+    @classmethod
+    def from_train_config(
+        cls,
+        train_config: Mapping[str, Any],
+        *,
+        portable_asset: bool = False,
+        require_asset: bool = True,
+        materialize_seed_defaults: bool = False,
+    ) -> CheckpointEvalContractCompiler:
+        label = "checkpoint eval config"
+        environment = train_config.get("checkpoint_eval_environment")
+        if not isinstance(environment, Mapping):
+            raise ValueError("checkpoint eval environment is not materialized")
+        environment = deepcopy(dict(environment))
+        provider = str(environment.get("env_provider") or "").strip()
+        if not provider:
+            raise ValueError("checkpoint eval environment provider is not materialized")
+
+        episodes = _required_int(
+            train_config,
+            "post_train_eval_episodes",
+            label=label,
+            minimum=1,
+        )
+        n_envs = _required_int(
+            train_config,
+            "checkpoint_eval_n_envs",
+            label=label,
+            minimum=1,
+        )
+        if n_envs > episodes:
+            raise ValueError("checkpoint eval n_envs must not exceed episodes")
+        seed_config = dict(train_config)
+        if materialize_seed_defaults:
+            seed_config.setdefault("checkpoint_eval_seed", EVAL_SEED_START)
+            seed_config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
+        seed = _required_int(
+            seed_config,
+            "checkpoint_eval_seed",
+            label=label,
+            minimum=0,
+        )
+        seed_protocol = str(seed_config.get("checkpoint_eval_seed_protocol") or "")
+        if seed_protocol != SEED_PROTOCOL:
+            raise ValueError(f"unsupported checkpoint eval seed protocol: {seed_protocol!r}")
+
+        acceptance_value = train_config.get("checkpoint_eval_acceptance")
+        acceptance: list[dict[str, Any]] | None = None
+        if acceptance_value is not None:
+            if not isinstance(acceptance_value, list):
+                raise ValueError("checkpoint eval acceptance rules must be a list")
+            acceptance = [deepcopy(dict(rule)) for rule in acceptance_value]
+
+        asset_value = train_config.get("checkpoint_eval_asset_manifest")
+        requires_asset = resolve_env_provider(provider).uses_stable_retro_roms
+        asset: dict[str, Any] | None = None
+        if requires_asset:
+            if not isinstance(asset_value, Mapping):
+                if require_asset:
+                    raise ValueError("checkpoint eval asset manifest is not materialized")
+            else:
+                asset = deepcopy(dict(asset_value))
+                if not str(asset.get("sha256") or ""):
+                    raise ValueError("checkpoint eval asset manifest must include sha256")
+                if not str(asset.get("provider_rom_identity") or ""):
+                    raise ValueError(
+                        "checkpoint eval asset manifest must include provider_rom_identity"
+                    )
+                if portable_asset:
+                    asset = {
+                        key: value
+                        for key, value in asset.items()
+                        if key not in {"object_uri", "local_path"}
+                    }
+                elif not str(asset.get("object_uri") or ""):
+                    raise ValueError("checkpoint eval asset manifest must include object_uri")
+        elif asset_value is not None and not isinstance(asset_value, Mapping):
+            raise ValueError("checkpoint eval asset manifest must be an object or null")
+
+        return cls(
+            environment=environment,
+            episodes=episodes,
+            n_envs=n_envs,
+            max_steps=checkpoint_eval_max_steps(train_config),
+            seed=seed,
+            seed_protocol=seed_protocol,
+            acceptance=acceptance,
+            asset=asset,
+        )
+
+    def contract(self, *, require_acceptance: bool) -> dict[str, Any]:
+        if require_acceptance:
+            if not self.acceptance:
+                raise ValueError("checkpoint eval acceptance rules are not materialized")
+            return build_checkpoint_eval_contract(
+                environment=self.environment,
+                episodes=self.episodes,
+                n_envs=self.n_envs,
+                max_steps=self.max_steps,
+                seed=self.seed,
+                seed_protocol=self.seed_protocol,
+                acceptance=self.acceptance,
+                asset=self.asset,
+            )
+        return {
+            "environment": deepcopy(self.environment),
+            "action_sampling": "stochastic",
+            "episodes": self.episodes,
+            "n_envs": self.n_envs,
+            "max_steps": self.max_steps,
+            "seed": self.seed,
+            "seed_protocol": self.seed_protocol,
+        }
+
+    def announcement_payload(self, *, stages: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "environment": deepcopy(self.environment),
+            "stages": deepcopy(stages),
+            "n_envs": self.n_envs,
+            "max_steps": self.max_steps,
+            "seed": self.seed,
+            "seed_protocol": self.seed_protocol,
+            "asset": deepcopy(self.asset),
+            "promotion_episodes": self.episodes,
+        }
 
 
 def _episode_seed(base_seed: int, lane: int, ordinal: int) -> int:
@@ -91,6 +252,12 @@ def build_checkpoint_eval_contract(
     acceptance: Sequence[Mapping[str, Any]],
     asset: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if int(max_steps) < 1:
+        raise ValueError("acceptance max_steps must be positive")
+    if int(seed) < 0:
+        raise ValueError("acceptance seed must be non-negative")
+    if str(seed_protocol) != SEED_PROTOCOL:
+        raise ValueError(f"unsupported checkpoint eval seed protocol: {seed_protocol!r}")
     rules = normalize_early_stop_config(acceptance, label="goal.eval.acceptance")
     if not rules:
         raise ValueError("goal.eval.acceptance must contain at least one rule")
@@ -124,28 +291,48 @@ def build_checkpoint_eval_contract(
 
 
 def checkpoint_eval_contract_from_train_config(
-    train_config: Mapping[str, Any],
+    train_config: Mapping[str, Any], *, portable_asset: bool = False
 ) -> dict[str, Any]:
-    environment = train_config.get("checkpoint_eval_environment")
-    acceptance = train_config.get("checkpoint_eval_acceptance")
-    if not isinstance(environment, Mapping):
-        raise ValueError("checkpoint eval environment is not materialized")
-    if not isinstance(acceptance, list):
-        raise ValueError("checkpoint eval acceptance rules are not materialized")
-    return build_checkpoint_eval_contract(
-        environment=environment,
-        episodes=int(train_config.get("post_train_eval_episodes") or 0),
-        n_envs=int(train_config.get("checkpoint_eval_n_envs") or 0),
-        max_steps=checkpoint_eval_max_steps(train_config),
-        seed=int(train_config.get("checkpoint_eval_seed") or 10_000),
-        seed_protocol=str(train_config.get("checkpoint_eval_seed_protocol") or ""),
-        acceptance=acceptance,
-        asset=(
-            train_config.get("checkpoint_eval_asset_manifest")
-            if isinstance(train_config.get("checkpoint_eval_asset_manifest"), Mapping)
-            else None
-        ),
+    compiler = CheckpointEvalContractCompiler.from_train_config(
+        train_config,
+        portable_asset=portable_asset,
+        require_asset=not portable_asset,
     )
+    return compiler.contract(require_acceptance=True)
+
+
+def validate_checkpoint_eval_contract(
+    contract: Mapping[str, Any], *, portable_asset: bool = False
+) -> dict[str, Any]:
+    """Validate a serialized acceptance contract without changing its bytes or shape."""
+
+    environment = contract.get("environment")
+    acceptance = contract.get("acceptance")
+    if not isinstance(environment, Mapping):
+        raise ValueError("checkpoint eval contract environment is invalid")
+    if not isinstance(acceptance, list):
+        raise ValueError("checkpoint eval contract acceptance rules are invalid")
+    if int(contract.get("protocol_version") or 0) != ACCEPTANCE_PROTOCOL_VERSION:
+        raise ValueError("checkpoint eval contract protocol version mismatch")
+    serialized = dict(contract)
+    compiler = CheckpointEvalContractCompiler.from_train_config(
+        {
+            "checkpoint_eval_environment": environment,
+            "post_train_eval_episodes": contract.get("episodes"),
+            "checkpoint_eval_n_envs": contract.get("n_envs"),
+            "post_train_eval_max_steps": contract.get("max_steps"),
+            "checkpoint_eval_seed": contract.get("seed"),
+            "checkpoint_eval_seed_protocol": contract.get("seed_protocol"),
+            "checkpoint_eval_acceptance": acceptance,
+            "checkpoint_eval_asset_manifest": contract.get("asset"),
+        },
+        portable_asset=portable_asset,
+        require_asset=not portable_asset,
+    )
+    if compiler.contract(require_acceptance=True) != serialized:
+        raise ValueError("checkpoint eval contract is not canonical")
+    manifest_index(serialized)
+    return deepcopy(serialized)
 
 
 def manifest_index(contract: Mapping[str, Any]) -> dict[tuple[int, int], dict[str, Any]]:

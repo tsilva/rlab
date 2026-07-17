@@ -34,35 +34,6 @@ def _command_filename(command_id: str) -> str:
     return hashlib.sha256(command_id.encode("utf-8")).hexdigest() + ".json"
 
 
-def _handle_commands(
-    mailbox: WorkerMailbox,
-    receipt: dict[str, object],
-    *,
-    command_file: Path,
-) -> None:
-    """Legacy receipt adapter retained for old workers; new workers use CommandRelay."""
-
-    raw_commands = receipt.get("commands") or []
-    if not isinstance(raw_commands, list):
-        return
-    for raw in raw_commands:
-        if not isinstance(raw, dict):
-            continue
-        command_id = str(raw.get("command_id") or "")
-        command_type = str(raw.get("command_type") or "")
-        if not command_id or command_type not in {"stop", "cancel"}:
-            continue
-        _write_atomic(
-            command_file,
-            {
-                "command_id": command_id,
-                "command_type": command_type,
-                "payload": raw.get("payload") or {},
-            },
-        )
-        mailbox.acknowledge_command(command_id)
-
-
 class CommandRelay(threading.Thread):
     def __init__(
         self,

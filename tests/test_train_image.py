@@ -229,7 +229,7 @@ class TrainImageTests(unittest.TestCase):
                 installed=broken,
             )
 
-    def test_projections_exclude_host_tools_and_isolate_gpu_packages(self) -> None:
+    def test_projections_include_runtime_dependencies_and_isolate_gpu_packages(self) -> None:
         root = Path(".").resolve()
         first = projection_contents(root)
         second = projection_contents(root)
@@ -246,7 +246,8 @@ class TrainImageTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertNotIn("textual==", train)
+        # supermariobrosnes-turbo uses Textual for its runtime state tooling.
+        self.assertIn("textual==", dependencies)
         self.assertNotIn("wandb-workspaces==", train)
         self.assertIn("torch==2.12.0", gpu)
         train_lines = set(train.splitlines())

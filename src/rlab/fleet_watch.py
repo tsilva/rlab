@@ -332,10 +332,20 @@ def _collect_authoritative_snapshot(
                 eval_jobs = [dict(row) for row in cur.fetchall()]
                 cur.execute(
                     """
-                    SELECT e.job_id, e.event_type, e.message, e.created_at
-                    FROM job_events e
-                    ORDER BY e.id DESC
-                    LIMIT 5
+                    WITH recent AS MATERIALIZED (
+                      SELECT e.id, e.job_id, e.event_type, e.message, e.created_at
+                      FROM job_events e ORDER BY e.id DESC LIMIT 100
+                    ), grouped AS (
+                      SELECT recent.*,
+                        COUNT(*) OVER (PARTITION BY job_id, event_type) AS occurrence_count,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY job_id, event_type ORDER BY id DESC
+                        ) AS event_rank
+                      FROM recent
+                    )
+                    SELECT job_id, event_type, message, created_at, occurrence_count
+                    FROM grouped WHERE event_rank = 1
+                    ORDER BY id DESC LIMIT 5
                     """
                 )
                 events = [dict(row) for row in cur.fetchall()]
@@ -413,6 +423,9 @@ def _collect_authoritative_snapshot(
             else:
                 if category in {
                     "wandb_publication_retry",
+                    "wandb_publication_failed",
+                    "wandb_publication_stalled",
+                    "wandb_cursor_confirmation_stalled",
                     "artifact_projection_retry",
                     "terminal_operational_failure",
                 }:
@@ -448,23 +461,23 @@ def _collect_authoritative_snapshot(
         if status == "failed":
             item["detail"] = str(row.get("error") or item["detail"])
             needs_action.append(item)
-        elif int(row.get("failures") or 0) > 0:
-            retrying.append(item)
         elif status in {"pending", "blocked_budget"}:
             waiting.append(item)
         else:
             now_items.append(item)
 
     for row in events:
-        recent.append(
-            {
-                "id": f"event/{row['job_id']}/{row['event_type']}",
-                "entity": f"train/{row['job_id']}",
-                "title": str(row["event_type"]).replace("_", " ").title(),
-                "detail": str(row.get("message") or ""),
-                "timestamp": row.get("created_at"),
-            }
-        )
+        item = {
+            "id": f"event/{row['job_id']}/{row['event_type']}",
+            "entity": f"train/{row['job_id']}",
+            "title": str(row["event_type"]).replace("_", " ").title(),
+            "detail": str(row.get("message") or ""),
+            "timestamp": row.get("created_at"),
+        }
+        occurrence_count = int(row.get("occurrence_count") or 1)
+        if occurrence_count > 1:
+            item["occurrence_count"] = occurrence_count
+        recent.append(item)
     loaded = bool(controller_status.get("loaded"))
     running = bool(controller_status.get("running"))
     healthy = bool(controller_status.get("healthy")) and not errors
@@ -572,7 +585,9 @@ def render_plain_snapshot(snapshot: Mapping[str, Any]) -> str:
             entity = str(item.get("entity") or item.get("id") or "scheduler")
             detail = str(item.get("detail") or "")
             resolution = str(item.get("resolution") or "")
-            suffix = f" · {resolution}" if resolution else ""
+            occurrences = int(item.get("occurrence_count") or 1)
+            occurrence_suffix = f" · ×{occurrences}" if occurrences > 1 else ""
+            suffix = (f" · {resolution}" if resolution else "") + occurrence_suffix
             lines.append(f"  {entity}  {item.get('title') or 'State changed'}{suffix}")
             if detail:
                 lines.append(f"    {detail}")
@@ -753,6 +768,9 @@ def _section_panel(
             style=selection_style,
         )
         body = Text(str(item.get("title") or "State changed"), style=selection_style)
+        occurrences = int(item.get("occurrence_count") or 1)
+        if occurrences > 1:
+            body.append(f" · ×{occurrences}", style="dim underline" if selected else "dim")
         detail = str(item.get("detail") or "")
         resolution = str(item.get("resolution") or "")
         if detail:

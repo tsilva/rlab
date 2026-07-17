@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from psycopg2 import Error as DatabaseError
+
 from rlab.job_queue import connect, database_url, json_arg
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.eval_metrics import eval_by_start_rows
@@ -213,6 +215,28 @@ def _mark_eval_run_failed(conn, train_job_id: int, error: object) -> None:
             )
 
 
+def _defer_attempt_event(conn, event: Mapping[str, Any], error: object) -> int:
+    attempts = int(event.get("attempts") or 0) + 1
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE attempt_events
+                SET attempts = %(attempts)s, last_error = %(error)s,
+                    next_retry_at = now() + (
+                      LEAST(300, 30 * %(attempts)s) * interval '1 second'
+                    )
+                WHERE id = %(id)s
+                """,
+                {
+                    "id": int(event["id"]),
+                    "attempts": attempts,
+                    "error": repr(error)[:4000],
+                },
+            )
+    return attempts
+
+
 def _insert_eval_job(
     conn, announcement: Mapping[str, Any], descriptor: Mapping[str, Any]
 ) -> int | None:
@@ -286,13 +310,56 @@ def ingest_announcements(
         while ingested < limit and time.monotonic() < deadline_monotonic:
             ordinal = int(run["next_announcement_id"])
             key = f"artifact-announcements/{int(run['train_job_id'])}/{ordinal:08d}.json"
-            announcement = store.get_json_optional(key)
+            try:
+                announcement = store.get_json_optional(key)
+            except Exception as exc:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE eval_runs SET error = %(error)s, updated_at = now()
+                            WHERE train_job_id = %(job_id)s
+                            """,
+                            {
+                                "job_id": int(run["train_job_id"]),
+                                "error": f"announcement observation failed: {exc!r}"[:4000],
+                            },
+                        )
+                break
             if announcement is None:
-                complete = store.get_json_optional(
-                    f"artifact-announcements/{int(run['train_job_id'])}/complete.json"
-                )
+                try:
+                    complete = store.get_json_optional(
+                        f"artifact-announcements/{int(run['train_job_id'])}/complete.json"
+                    )
+                except Exception as exc:
+                    with conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE eval_runs SET error = %(error)s, updated_at = now()
+                                WHERE train_job_id = %(job_id)s
+                                """,
+                                {
+                                    "job_id": int(run["train_job_id"]),
+                                    "error": (
+                                        f"complete announcement observation failed: {exc!r}"
+                                    )[:4000],
+                                },
+                            )
+                    break
                 if complete is not None:
-                    last_id = int(complete.get("last_ledger_id") or 0)
+                    if not isinstance(complete, Mapping):
+                        _mark_eval_run_failed(
+                            conn,
+                            int(run["train_job_id"]),
+                            "complete announcement is not a mapping",
+                        )
+                        break
+                    try:
+                        last_id = int(complete.get("last_ledger_id") or 0)
+                    except (TypeError, ValueError) as exc:
+                        _mark_eval_run_failed(conn, int(run["train_job_id"]), exc)
+                        break
                     seen = ordinal > last_id
                     with conn:
                         with conn.cursor() as cur:
@@ -327,12 +394,25 @@ def ingest_announcements(
                                     {"job_id": int(run["train_job_id"])},
                                 )
                 break
-            if int(announcement.get("train_job_id") or 0) != int(run["train_job_id"]):
+            if not isinstance(announcement, Mapping):
+                _mark_eval_run_failed(
+                    conn,
+                    int(run["train_job_id"]),
+                    "checkpoint announcement is not a mapping",
+                )
+                break
+            try:
+                announced_train_job_id = int(announcement.get("train_job_id") or 0)
+                announced_ledger_id = int(announcement.get("ledger_id") or 0)
+            except (TypeError, ValueError) as exc:
+                _mark_eval_run_failed(conn, int(run["train_job_id"]), exc)
+                break
+            if announced_train_job_id != int(run["train_job_id"]):
                 _mark_eval_run_failed(
                     conn, int(run["train_job_id"]), "checkpoint announcement train job id mismatch"
                 )
                 break
-            if int(announcement.get("ledger_id") or 0) != ordinal:
+            if announced_ledger_id != ordinal:
                 _mark_eval_run_failed(
                     conn, int(run["train_job_id"]), "checkpoint announcement ledger id mismatch"
                 )
@@ -404,7 +484,8 @@ def ingest_mailbox_announcements(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT e.*, r.contract_json, r.next_announcement_id
+            SELECT e.*, r.contract_json, r.next_announcement_id,
+              r.train_job_id AS authoritative_train_job_id
             FROM attempt_events e
             JOIN worker_attempts a ON a.attempt_id = e.attempt_id
             JOIN eval_runs r ON r.train_job_id = a.train_job_id
@@ -423,13 +504,41 @@ def ingest_mailbox_announcements(
     for event in events:
         if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
             break
-        payload = dict(event.get("payload_json") or {})
-        event_type = str(event["event_type"])
-        train_job_id = int(payload.get("train_job_id") or 0)
-        if not train_job_id:
-            raise ValueError("checkpoint mailbox event is missing train_job_id")
+        try:
+            raw_payload = event.get("payload_json") or {}
+            if not isinstance(raw_payload, Mapping):
+                raise ValueError("checkpoint mailbox event payload is not a mapping")
+            payload = dict(raw_payload)
+            event_type = str(event["event_type"])
+            train_job_id = int(
+                event.get("authoritative_train_job_id") or payload.get("train_job_id") or 0
+            )
+            payload_train_job_id = int(payload.get("train_job_id") or 0)
+        except Exception as exc:
+            attempts = _defer_attempt_event(conn, event, exc)
+            authoritative_train_job_id = event.get("authoritative_train_job_id")
+            if attempts >= 3 and authoritative_train_job_id is not None:
+                _mark_eval_run_failed(conn, int(authoritative_train_job_id), exc)
+            continue
+        if payload_train_job_id != train_job_id:
+            attempts = _defer_attempt_event(
+                conn,
+                event,
+                "checkpoint mailbox event train_job_id does not match its worker attempt",
+            )
+            if attempts >= 3:
+                _mark_eval_run_failed(
+                    conn,
+                    train_job_id,
+                    "checkpoint mailbox event has inconsistent train_job_id",
+                )
+            continue
         if event_type == "checkpoint_stream_closed":
-            last_id = int(payload.get("last_ledger_id") or 0)
+            try:
+                last_id = int(payload.get("last_ledger_id") or 0)
+            except (TypeError, ValueError) as exc:
+                _defer_attempt_event(conn, event, exc)
+                continue
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -458,11 +567,20 @@ def ingest_mailbox_announcements(
                         )
             ingested += 1
             continue
-        ledger_id = int(payload.get("ledger_id") or 0)
+        try:
+            ledger_id = int(payload.get("ledger_id") or 0)
+        except (TypeError, ValueError) as exc:
+            _defer_attempt_event(conn, event, exc)
+            continue
         expected_ledger_id = next_announcement_ids.setdefault(
             train_job_id, int(event["next_announcement_id"])
         )
         if ledger_id != expected_ledger_id:
+            _defer_attempt_event(
+                conn,
+                event,
+                f"checkpoint mailbox ledger gap: expected={expected_ledger_id} got={ledger_id}",
+            )
             continue
         announcement: Mapping[str, Any] = payload
         if event_type == "checkpoint_ready":
@@ -473,24 +591,9 @@ def ingest_mailbox_announcements(
                 )
                 _verify_checkpoint_artifacts(store, announcement)
             except Exception as exc:
-                attempts = int(event.get("attempts") or 0) + 1
+                attempts = _defer_attempt_event(conn, event, exc)
                 with conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE attempt_events
-                            SET attempts = %(attempts)s, last_error = %(error)s,
-                                next_retry_at = now() + (
-                                  LEAST(300, 30 * %(attempts)s) * interval '1 second'
-                                )
-                            WHERE id = %(id)s
-                            """,
-                            {
-                                "id": int(event["id"]),
-                                "attempts": attempts,
-                                "error": repr(exc)[:4000],
-                            },
-                        )
                         if attempts >= 3:
                             cur.execute(
                                 """
@@ -966,7 +1069,17 @@ def poll_attempts(
     for attempt in attempts:
         if time.monotonic() >= deadline_monotonic:
             break
-        result = store.get_json_optional(str(attempt["result_uri"]))
+        try:
+            result = store.get_json_optional(str(attempt["result_uri"]))
+        except Exception as exc:
+            _mark_attempt_failure(
+                conn,
+                attempt=attempt,
+                error=f"result observation failed: {exc!r}",
+                config=config,
+            )
+            changed += 1
+            continue
         if result is not None:
             try:
                 receipt = attempt.get("receipt_json")
@@ -993,6 +1106,8 @@ def poll_attempts(
                         str(attempt["purpose"]), int(attempt["stage_index"])
                     ),
                 )
+            except DatabaseError:
+                raise
             except Exception as exc:
                 terminal = deterministic_eval_failure(exc)
                 _mark_attempt_failure(
@@ -1000,9 +1115,20 @@ def poll_attempts(
                 )
             changed += 1
             continue
-        expires_at = attempt["expires_at"]
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
+        try:
+            expires_at = attempt["expires_at"]
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+        except Exception as exc:
+            _mark_attempt_failure(
+                conn,
+                attempt=attempt,
+                error=f"terminal: malformed attempt expiry: {exc!r}",
+                config=config,
+                terminal=True,
+            )
+            changed += 1
+            continue
         if now >= expires_at:
             if attempt.get("modal_call_id"):
                 try:
@@ -1015,7 +1141,17 @@ def poll_attempts(
             changed += 1
             continue
         if attempt.get("modal_call_id"):
-            state, detail = invoker.poll(str(attempt["modal_call_id"]))
+            try:
+                state, detail = invoker.poll(str(attempt["modal_call_id"]))
+            except Exception as exc:
+                _mark_attempt_failure(
+                    conn,
+                    attempt=attempt,
+                    error=f"Modal poll failed: {exc!r}",
+                    config=config,
+                )
+                changed += 1
+                continue
             if state == "failed":
                 _mark_attempt_failure(conn, attempt=attempt, error=str(detail), config=config)
                 changed += 1
@@ -1245,6 +1381,29 @@ def budget_allows(
     )
 
 
+def _record_eval_job_record_error(
+    conn, *, job_id: int, error: object, terminal: bool
+) -> None:
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE eval_jobs
+                SET status = CASE WHEN %(terminal)s THEN 'failed' ELSE 'pending' END,
+                    error = %(error)s,
+                    finished_at = CASE WHEN %(terminal)s THEN now() ELSE NULL END,
+                    updated_at = now()
+                WHERE id = %(job_id)s
+                  AND status IN ('pending', 'blocked_budget', 'dispatching')
+                """,
+                {
+                    "job_id": int(job_id),
+                    "error": str(error)[:4000],
+                    "terminal": bool(terminal),
+                },
+            )
+
+
 def dispatch_pending(
     conn,
     store: ObjectStore,
@@ -1293,10 +1452,35 @@ def dispatch_pending(
     for job in ordered:
         if dispatched >= slots or time.monotonic() >= deadline_monotonic:
             break
-        if _reuse_result(conn, store, job):
+        try:
+            reused = _reuse_result(conn, store, job)
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            _record_eval_job_record_error(
+                conn,
+                job_id=int(job["id"]),
+                error=f"result reuse observation failed: {exc!r}",
+                terminal=deterministic_eval_failure(exc),
+            )
             continue
-        timeout = config.timeout_for(str(job["purpose"]), int(job["stage_index"]))
-        reserved = config.reserved_cost(timeout)
+        if reused:
+            continue
+        try:
+            timeout = config.timeout_for(str(job["purpose"]), int(job["stage_index"]))
+            reserved = config.reserved_cost(timeout)
+            app_name = modal_app_name(
+                config.app_name_prefix,
+                str(job["contract_json"]["runtime_image_ref"]),
+            )
+        except Exception as exc:
+            _record_eval_job_record_error(
+                conn,
+                job_id=int(job["id"]),
+                error=f"malformed evaluation record: {exc!r}",
+                terminal=True,
+            )
+            continue
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1354,13 +1538,23 @@ def dispatch_pending(
                     )
             continue
         attempt_id = uuid.uuid4().hex
-        app_name = modal_app_name(
-            config.app_name_prefix, str(job["contract_json"]["runtime_image_ref"])
-        )
-        result_uri = store.uri(f"eval-attempts/{job['execution_key']}/{attempt_id}.json")
-        expires_at = datetime.now(UTC) + timedelta(
-            seconds=config.startup_timeout_seconds + timeout + config.expiry_margin_seconds
-        )
+        try:
+            result_uri = store.uri(
+                f"eval-attempts/{job['execution_key']}/{attempt_id}.json"
+            )
+            expires_at = datetime.now(UTC) + timedelta(
+                seconds=config.startup_timeout_seconds
+                + timeout
+                + config.expiry_margin_seconds
+            )
+        except Exception as exc:
+            _record_eval_job_record_error(
+                conn,
+                job_id=int(job["id"]),
+                error=f"evaluation dispatch preparation failed: {exc!r}",
+                terminal=deterministic_eval_failure(exc),
+            )
+            continue
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1408,33 +1602,52 @@ def dispatch_pending(
                     "UPDATE eval_jobs SET status = 'dispatching', updated_at = now(), error = NULL WHERE id = %(id)s",
                     {"id": int(job["id"])},
                 )
-        seconds_to_expiry = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
-        asset = job["source_announcement_json"]["eval"].get("asset")
-        payload = {
-            "attempt_id": attempt_id,
-            "contract": job["contract_json"],
-            "expires_at": expires_at.timestamp(),
-            "child_timeout_seconds": max(1, timeout - config.child_margin_seconds),
-            "model_get_url": store.presign_get(
-                str(job["checkpoint_uri"]), expires_seconds=seconds_to_expiry
-            ),
-            "model_document_get_url": store.presign_get(
-                str(job["metadata_uri"]), expires_seconds=seconds_to_expiry
-            ),
-            "model_document_sha256": str(
-                job["source_announcement_json"]["model_document_sha256"]
-            ),
-            "recipe_get_url": store.presign_get(
-                str(job["source_announcement_json"]["recipe_uri"]),
-                expires_seconds=seconds_to_expiry,
-            ),
-            "result_uri": result_uri,
-            "result_put_url": store.presign_put(result_uri, expires_seconds=seconds_to_expiry),
-        }
-        if isinstance(asset, Mapping):
-            payload["rom_get_url"] = store.presign_get(
-                str(asset["object_uri"]), expires_seconds=seconds_to_expiry
+        try:
+            seconds_to_expiry = max(
+                1, int((expires_at - datetime.now(UTC)).total_seconds())
             )
+            asset = job["source_announcement_json"]["eval"].get("asset")
+            payload = {
+                "attempt_id": attempt_id,
+                "contract": job["contract_json"],
+                "expires_at": expires_at.timestamp(),
+                "child_timeout_seconds": max(1, timeout - config.child_margin_seconds),
+                "model_get_url": store.presign_get(
+                    str(job["checkpoint_uri"]), expires_seconds=seconds_to_expiry
+                ),
+                "model_document_get_url": store.presign_get(
+                    str(job["metadata_uri"]), expires_seconds=seconds_to_expiry
+                ),
+                "model_document_sha256": str(
+                    job["source_announcement_json"]["model_document_sha256"]
+                ),
+                "recipe_get_url": store.presign_get(
+                    str(job["source_announcement_json"]["recipe_uri"]),
+                    expires_seconds=seconds_to_expiry,
+                ),
+                "result_uri": result_uri,
+                "result_put_url": store.presign_put(
+                    result_uri, expires_seconds=seconds_to_expiry
+                ),
+            }
+            if isinstance(asset, Mapping):
+                payload["rom_get_url"] = store.presign_get(
+                    str(asset["object_uri"]), expires_seconds=seconds_to_expiry
+                )
+        except Exception as exc:
+            _mark_attempt_failure(
+                conn,
+                attempt={
+                    "id": attempt_row_id,
+                    "attempt_id": attempt_id,
+                    "eval_job_id": int(job["id"]),
+                    "retry_round": int(job.get("retry_round") or 0),
+                },
+                error=f"dispatch payload preparation failed: {exc!r}",
+                config=config,
+                terminal=deterministic_eval_failure(exc),
+            )
+            continue
         try:
             call_id = invoker.spawn(app_name, config.function_name, payload)
         except Exception as exc:
@@ -1640,12 +1853,6 @@ def terminalize_runs(conn) -> int:
             return cur.rowcount
 
 
-def finalize_runs(conn) -> int:
-    """Compatibility alias for callers and historical tests."""
-
-    return terminalize_runs(conn)
-
-
 def reconcile_publication_finishing(conn) -> int:
     """Close producer side of W&B publication only after every projection is durable."""
 
@@ -1710,14 +1917,69 @@ def reconcile_eval_run_failures(conn) -> int:
                     (SELECT j.error FROM eval_jobs j
                      WHERE j.train_job_id = r.train_job_id AND j.status = 'failed'
                      ORDER BY j.updated_at DESC LIMIT 1),
-                    'required evaluation exhausted retries'
+                    CASE
+                      WHEN NOT EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                      ) THEN 'checkpoint stream closed without evaluable evidence'
+                      ELSE 'required evaluation exhausted retries'
+                    END
                   )
                 WHERE r.status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
                   AND r.outcome IS NULL
                   AND r.complete_announcement_seen = TRUE
                   AND EXISTS (
+                    SELECT 1 FROM train_jobs t
+                    WHERE t.id = r.train_job_id AND t.status = 'finalizing'
+                  )
+                  AND (
+                    EXISTS (
+                      SELECT 1 FROM eval_jobs j
+                      WHERE j.train_job_id = r.train_job_id AND j.status = 'failed'
+                    )
+                    OR NOT EXISTS (
+                      SELECT 1 FROM eval_jobs j
+                      WHERE j.train_job_id = r.train_job_id
+                    )
+                  )
+                """
+            )
+            return cur.rowcount
+
+
+def terminalize_failed_eval_runs(conn) -> int:
+    """Bound failed evaluation state once no evaluation execution remains active."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs t
+                SET status = 'finalization_failed', finished_at = now(),
+                  error = COALESCE(r.error, 'evaluation finalization failed')
+                FROM eval_runs r
+                WHERE r.train_job_id = t.id
+                  AND t.status = 'finalizing'
+                  AND t.process_exited_at IS NOT NULL
+                  AND r.status = 'failed'
+                  AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j
-                    WHERE j.train_job_id = r.train_job_id AND j.status = 'failed'
+                    WHERE j.train_job_id = t.id
+                      AND j.status IN (
+                        'pending', 'dispatching', 'submitted', 'blocked_budget'
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM eval_attempts a
+                    JOIN eval_jobs j ON j.id = a.eval_job_id
+                    WHERE j.train_job_id = t.id
+                      AND a.status IN ('dispatching', 'submitted')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM worker_attempts w
+                    WHERE w.train_job_id = t.id
+                      AND w.task_kind = 'eval'
+                      AND w.status IN ('launching', 'running')
                   )
                 """
             )
@@ -1725,7 +1987,13 @@ def reconcile_eval_run_failures(conn) -> int:
 
 
 def reconcile_definitive_non_acceptance(conn) -> int:
-    """Close a finished stream whose every acceptance attempt was a valid rejection."""
+    """Close a finished stream that cannot establish goal acceptance.
+
+    Current contracts reach this state after every acceptance attempt is rejected.
+    Historical promotion-only contracts also need a bounded outcome once all of their
+    durable evaluation evidence has been projected; otherwise they remain finalizing
+    forever despite having no work left to perform.
+    """
 
     with conn:
         with conn.cursor() as cur:
@@ -1736,6 +2004,10 @@ def reconcile_definitive_non_acceptance(conn) -> int:
                     updated_at = now(), error = NULL
                 WHERE r.outcome IS NULL
                   AND r.complete_announcement_seen = TRUE
+                  AND EXISTS (
+                    SELECT 1 FROM train_jobs t
+                    WHERE t.id = r.train_job_id AND t.status = 'finalizing'
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j
                     WHERE j.train_job_id = r.train_job_id
@@ -1743,16 +2015,38 @@ def reconcile_definitive_non_acceptance(conn) -> int:
                         'pending', 'dispatching', 'submitted', 'blocked_budget', 'failed'
                       )
                   )
-                  AND EXISTS (
-                    SELECT 1 FROM eval_jobs j
-                    WHERE j.train_job_id = r.train_job_id
-                      AND j.purpose = 'acceptance'
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM eval_jobs j
-                    WHERE j.train_job_id = r.train_job_id
-                      AND j.purpose = 'acceptance'
-                      AND COALESCE(j.decision_json->>'verdict', '') <> 'rejected'
+                  AND (
+                    (
+                      EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                          AND j.purpose = 'acceptance'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                          AND j.purpose = 'acceptance'
+                          AND COALESCE(j.decision_json->>'verdict', '') <> 'rejected'
+                      )
+                    )
+                    OR (
+                      NOT EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                          AND j.purpose = 'acceptance'
+                      )
+                      AND EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                          AND j.status = 'succeeded'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM eval_jobs j
+                        WHERE j.train_job_id = r.train_job_id
+                          AND j.status = 'succeeded'
+                          AND j.projected_at IS NULL
+                      )
+                    )
                   )
                 """
             )
@@ -2464,6 +2758,8 @@ def run_service_eval_pass(
                 store,
                 deadline_monotonic=ingestion_deadline,
             )
+        except DatabaseError:
+            raise
         except Exception as exc:
             conn.rollback()
             mailbox_ingested = 0
@@ -2474,6 +2770,8 @@ def run_service_eval_pass(
                 store,
                 deadline_monotonic=ingestion_deadline,
             )
+        except DatabaseError:
+            raise
         except Exception as exc:
             conn.rollback()
             ingested = 0
@@ -2508,6 +2806,7 @@ def run_service_eval_pass(
         stop_delivery_slo = reconcile_stop_delivery_slo(conn)
         non_acceptance = reconcile_definitive_non_acceptance(conn)
         eval_run_failures = reconcile_eval_run_failures(conn)
+        failed_terminalizations = terminalize_failed_eval_runs(conn)
         publication_finishing = reconcile_publication_finishing(conn)
         finalized = terminalize_runs(conn)
         try:
@@ -2520,6 +2819,8 @@ def run_service_eval_pass(
                 deadline_monotonic=deadline_monotonic,
                 client=app_client,
             )
+        except DatabaseError:
+            raise
         except Exception as exc:
             app_cleanup = {
                 "status": "error",
@@ -2553,6 +2854,7 @@ def run_service_eval_pass(
             "stop_delivery_slo": stop_delivery_slo,
             "non_acceptance": non_acceptance,
             "eval_run_failures": eval_run_failures,
+            "failed_terminalizations": failed_terminalizations,
             "publication_finishing": publication_finishing,
             "finalized": finalized,
             "finalization_failures": 0,

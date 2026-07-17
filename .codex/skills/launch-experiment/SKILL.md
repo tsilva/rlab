@@ -1,11 +1,18 @@
 ---
 name: launch-experiment
-description: Launch and continuously monitor queue-backed rlab training from a checked-in goal and recipe, defaulting to beast-3. Use when the user asks to launch, run, start, execute, follow, watch, or monitor an rlab training recipe, run, or research goal. Stay attached through the terminal event, report the W&B URL immediately, escalate potential bugs read-only, and return final statistics, the best artifact, and the exact playback command.
+description: Launch, continuously monitor, and when explicitly authorized repair queue-backed rlab training from a checked-in goal and recipe, defaulting to beast-3. Use when the user asks to launch, run, start, execute, follow, watch, monitor, diagnose, fix, or harden an rlab training recipe, run, or research goal. Stay attached through terminal events, report W&B URLs immediately, preserve failed-run evidence, and return final statistics, the best artifact, and the exact playback command.
 ---
 
 # Launch Experiment
 
-Use the repository CLI only. Never reload, replace, install, or restart controllers.
+Use the repository CLI for training and fleet operations. Never reload, replace, install, or restart controllers unless the current user request separately authorizes that live control-plane action.
+
+## Choose safety mode
+
+- **Observe mode (default):** Use when the user asks only to launch, run, follow, watch, or monitor. Diagnose potential bugs read-only and do not edit, repair, retry, cancel, restart, clean up, or mutate infrastructure.
+- **Repair mode (explicit opt-in):** Use only when the current user request explicitly authorizes fixing or hardening failures, making changes until the workflow works, or diagnosing and repairing a run. A bare request to launch or monitor does not authorize repair mode. Repair mode carries through an active persistent goal until the user edits, pauses, clears, or replaces that goal.
+
+Repair mode authorizes in-scope repository code, configuration, and test changes plus fresh verification launches. It does not by itself authorize destructive cleanup, canceling unrelated work, changing credentials, relaxing goal or acceptance semantics, editing `SPECS.md`, committing, pushing, controller reload/replacement/restart, or materially expanding external cost. Obtain separate explicit authorization when one of those actions is required.
 
 ## Non-negotiable completion rule
 
@@ -15,6 +22,8 @@ Do not send the final response until:
 
 1. every monitored run emitted one `terminal` event; and
 2. every dispatched investigator returned.
+
+In repair mode, one terminal run is not completion when the user requested a working or hardened end-to-end flow. Continue the evidence-fix-test-fresh-launch cycle until the user's measurable completion criteria pass or progress requires new authority or an external-state change.
 
 Keep the monitor processes alive while doing all other work. An empty poll means "still waiting," not "monitoring is done."
 
@@ -51,7 +60,7 @@ rlab experiment launch \
 
 This launches committed `HEAD` from an isolated worktree and excludes unrelated local changes. Parse the returned JSON. Immediately report `run_ids`, `batch_id`, machine, source SHA, source branch, runtime image, and `local_changes_excluded`.
 
-If launch reports an incompatible control plane, stop and give the user the exact printed remediation. Never perform that remediation in this skill.
+If launch reports an incompatible control plane, preserve the exact output. In observe mode, stop and give the user the printed remediation. In repair mode, apply only an in-scope, non-destructive repository repair; request authorization before controller replacement, reload, restart, or other live control-plane mutation.
 
 ## Start persistent monitors
 
@@ -79,9 +88,9 @@ Repeat these steps until every run has a stored `terminal` payload:
 2. Parse every complete JSON line received. Handle events using the table below.
 3. If no line arrived and the process is still running, do nothing except continue the loop.
 4. If the process exited, parse its buffered lines before considering its exit code.
-5. If it exited without a `terminal` event, report an observer failure and stop. Do not relaunch, repair, or switch to ad hoc status commands.
+5. If it exited without a `terminal` event, preserve the buffered lines and classify it as an observer failure. In observe mode, report it and stop without ad hoc status commands. In repair mode, diagnose and repair the observer, use the minimum read-only status or log checks needed to avoid losing the underlying run, and attach one replacement follow process if necessary. Never infer a terminal state.
 
-Do not use separate status, W&B-history, or log commands during ordinary monitoring. The follow stream is authoritative. Extra read-only diagnostics are allowed only after a `potential_bug` event and belong to the investigator.
+Do not use separate status, W&B-history, or log commands during ordinary monitoring. The follow stream is authoritative. During an active run, extra read-only diagnostics are allowed only after a `potential_bug` event and belong to the investigator, except for the minimum repair-mode observer recovery described above. After a run is terminal, the repair-mode root-cause cycle may use the diagnostics needed to reproduce and verify the defect.
 
 | Event | Required action | Continue monitoring? |
 | --- | --- | --- |
@@ -97,19 +106,32 @@ For a repeated bug fingerprint, reuse or follow up with its existing investigato
 
 ## Relaunch boundary
 
-Launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. Never automatically retry after `canceled`, `operational_failure`, `potential_bug`, or observer failure. A valid fail-fast rejection is not a bug.
+In observe mode, launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. Never automatically retry after `canceled`, `operational_failure`, `potential_bug`, or observer failure.
 
-## Read-only bug boundary
+In repair mode, never blindly retry. Preserve the failed attempt and its evidence, establish and repair a supported root cause, add regression coverage, and pass relevant tests before submitting a fresh launch with a new batch and run identity. Preserve the original goal, recipe, seed, and overrides unless the diagnosed defect is in that configuration; never weaken the research or acceptance contract to manufacture success. A valid fail-fast rejection is not a system bug and permits another seed only when the user requested repeated research attempts.
 
-Use only the project custom agent at `.codex/agents/training-run-investigator.toml` for bug diagnosis. It pins `gpt-5.6-sol`, high reasoning, and read-only mode.
+## Bug handling boundary
 
-After any potential bug appears, neither the main agent nor investigator may fix, edit, commit, push, retry, cancel, restart, clean up, or mutate infrastructure. Continue monitoring and report:
+For a run-backed `potential_bug` event, use only the project custom agent at `.codex/agents/training-run-investigator.toml` for diagnosis while the run is active. It pins `gpt-5.6-sol`, high reasoning, and read-only mode. Diagnose pre-queue failures locally because no run exists to investigate.
+
+After any potential bug appears, continue monitoring the current run and preserve:
 
 - observed symptom
 - root cause, or narrowest supported hypothesis
 - concrete evidence
 - suggested fix
 - confidence and remaining unknowns
+
+In observe mode, neither the main agent nor investigator may fix, edit, commit, push, retry, cancel, restart, clean up, or mutate infrastructure.
+
+In repair mode:
+
+1. Keep the investigator read-only and keep the current run monitor attached through its terminal event.
+2. Do not mutate the isolated source, queue record, runtime, container, evaluation work, or publication state of the failed attempt.
+3. After the run is terminal and its investigator has returned, reproduce the defect as narrowly as practical, implement the root-cause repair in the current worktree, and add deterministic regression coverage. A failure before queue mutation may be repaired immediately after preserving its output because no run exists to monitor.
+4. Run targeted verification and every broader test surface materially affected by the repair.
+5. Submit a fresh launch and monitor it under the same rules. Repeat for newly observed defects until the explicit completion criteria pass.
+6. Stop and request direction when the repair requires a separately protected action listed under the safety modes, conflicts with `SPECS.md`, cannot preserve unrelated user changes, or cannot make progress without external coordination.
 
 Do not call a valid fail-fast checkpoint rejection a bug. Infrastructure failures, retries, publication errors, inconsistent terminal state, stalled progress, missing W&B visibility, mailbox errors, exhausted eval work, or failed remote verification are potential bugs.
 
@@ -126,6 +148,8 @@ For every run, state its terminal classification. For every successful run, copy
 - immutable best W&B artifact reference
 - W&B run URL
 - exact `play_command`
+
+In repair mode, also summarize each failure fingerprint, root cause, repair, regression test, superseding verification run, and any residual risk or protected action that still needs user authorization.
 
 Call an acceptance run successful only when `verified_success` is true, `terminal_classification` is `accepted`, and the user-required early-stop condition is satisfied. Use the emitted immutable `wandb_artifact` and exact `play_command`; never substitute an R2 URI or mutable alias.
 

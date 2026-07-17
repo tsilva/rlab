@@ -14,6 +14,63 @@ from rlab.training_backend import BackendContext
 
 ModelFactory = Callable[[BackendContext, Any, Any, str], Any]
 
+_INTEGER_FIELDS = (
+    "learning_rate_schedule_timesteps",
+    "n_steps",
+    "ent_coef_schedule_timesteps",
+)
+_NON_NEGATIVE_INTEGER_FIELDS = (
+    "learning_rate_schedule_timesteps",
+    "ent_coef_schedule_timesteps",
+)
+_NUMBER_FIELDS = (
+    "learning_rate",
+    "learning_rate_final",
+    "gamma",
+    "gae_lambda",
+    "ent_coef",
+    "ent_coef_final",
+    "vf_coef",
+)
+
+
+def normalize_on_policy_config(
+    config: Mapping[str, Any],
+    *,
+    defaults: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    unexpected = sorted(set(config) - set(defaults))
+    if unexpected:
+        raise ValueError(f"{label} has unexpected fields: {unexpected}")
+    normalized = {**defaults, **dict(config)}
+    for key in _INTEGER_FIELDS:
+        value = normalized[key]
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{label}.{key} must be an integer")
+    if normalized["n_steps"] <= 0:
+        raise ValueError(f"{label}.n_steps must be positive")
+    for key in _NON_NEGATIVE_INTEGER_FIELDS:
+        if normalized[key] < 0:
+            raise ValueError(f"{label}.{key} must be non-negative")
+    for key in _NUMBER_FIELDS:
+        value = normalized[key]
+        if value is None:
+            continue
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            raise ValueError(f"{label}.{key} must be a number or null")
+    if normalized["device"] not in {"auto", "cpu", "cuda", "mps"}:
+        raise ValueError(f"{label}.device must be one of auto, cpu, cuda, mps")
+    for key in ("policy_net_arch", "value_net_arch"):
+        if not isinstance(normalized[key], str):
+            raise ValueError(f"{label}.{key} must be a string")
+    if not isinstance(normalized["normalize_advantage"], bool):
+        raise ValueError(f"{label}.normalize_advantage must be a boolean")
+    resume = normalized["resume"]
+    if resume is not None and not isinstance(resume, str):
+        raise ValueError(f"{label}.resume must be a string or null")
+    return normalized
+
 
 def active_reward_components(task: Mapping[str, object]) -> tuple[str, ...]:
     reward = task.get("reward")

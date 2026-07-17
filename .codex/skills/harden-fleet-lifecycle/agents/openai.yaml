@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harden Fleet Lifecycle"
+  short_description: "Stress-test and repair fleet experiment runs"
+  default_prompt: "Use $harden-fleet-lifecycle to start a persistent goal that stress-tests and repairs the Mario fleet experiment lifecycle."

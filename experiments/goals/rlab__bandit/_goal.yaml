@@ -13,6 +13,7 @@ objective:
 train:
   checkpoint_eval_backend: modal
   checkpoint_freq: 128
+  stop_on_acceptance: true
   environment:
     env_provider: &bandit_provider rlab
     env_config:
@@ -45,6 +46,10 @@ train:
         reward_mode: native
 eval:
   episodes: 256
+  acceptance:
+  - metric: eval/full/episode/return/mean
+    operator: '>='
+    threshold: 0.9
   policy:
     stochastic: true
   environment:

@@ -202,6 +202,14 @@ def test_bandit_recipe_materializes_fixed_train_and_eval_contracts() -> None:
     assert train_config["checkpoint_eval_backend"] == "modal"
     assert train_config["post_train_eval_episodes"] == 256
     assert train_config["checkpoint_eval_n_envs"] == 32
+    assert train_config["stop_on_acceptance"] is True
+    assert train_config["checkpoint_eval_acceptance"] == [
+        {
+            "metric": "eval/full/episode/return/mean",
+            "operator": ">=",
+            "threshold": 0.9,
+        }
+    ]
     assert train_config["env_args"] == {"autoreset_mode": "disabled"}
     assert train_config["training_backend"]["id"] == "sb3.ppo"
 

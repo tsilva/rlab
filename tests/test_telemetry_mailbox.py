@@ -13,10 +13,11 @@ from rlab.telemetry_mailbox import (
     claim_run_metric_batches,
     decode_metric_batch,
     encode_metric_batch,
+    finalize_mailbox_runs_without_eval,
     mark_submitted_batches,
     pending_metric_run_ids,
 )
-from rlab.telemetry_relay import CommandRelay, _handle_commands, main as relay_main
+from rlab.telemetry_relay import CommandRelay, main as relay_main
 
 
 def frame(frame_id: int, *, step: int | None = None, payload: dict | None = None) -> dict:
@@ -70,6 +71,20 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    def test_non_modal_finalization_uses_authoritative_launch_result(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 3
+
+        changed = finalize_mailbox_runs_without_eval(conn)
+
+        self.assertEqual(changed, 3)
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("WHEN l.state = 'canceled' THEN 'canceled'", statement)
+        self.assertIn("WHEN l.state = 'failed' THEN 'failed'", statement)
+        self.assertIn("FROM job_launches l", statement)
+        self.assertIn("l.state IN ('succeeded', 'failed', 'canceled')", statement)
+
     def test_terminal_publications_are_not_claimable(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -96,6 +111,9 @@ class TelemetryBatchTests(unittest.TestCase):
             "live_publication_status NOT IN ('complete', 'disabled', 'failed')",
             statement,
         )
+        self.assertIn("t.status = 'finalizing'", statement)
+        self.assertIn("checkpoint_eval_backend", statement)
+        self.assertIn("<> 'modal'", statement)
 
     def test_worker_preflight_checks_the_command_poll_procedure(self) -> None:
         mailbox = WorkerMailbox("postgresql://worker/db", "train-7", "token")
@@ -201,27 +219,6 @@ class TelemetryBatchTests(unittest.TestCase):
 
             self.assertEqual(mailbox.batches[0]["frames"], [])
             self.assertTrue(mailbox.batches[0]["final"])
-
-    def test_stop_command_is_written_and_acknowledged_idempotently(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            command_file = Path(tmp) / "command.json"
-            mailbox = FakeMailbox()
-            receipt = {
-                "commands": [
-                    {
-                        "command_id": "stop-1",
-                        "command_type": "stop",
-                        "payload": {"reason": "candidate passed"},
-                    }
-                ]
-            }
-
-            _handle_commands(mailbox, receipt, command_file=command_file)
-            _handle_commands(mailbox, receipt, command_file=command_file)
-
-            command = json.loads(command_file.read_text(encoding="utf-8"))
-            self.assertEqual(command["command_id"], "stop-1")
-            self.assertEqual(mailbox.acknowledged_commands, ["stop-1", "stop-1"])
 
     def test_command_relay_uses_per_command_files_and_acks_only_signal_receipts(self) -> None:
         class CommandMailbox(FakeMailbox):

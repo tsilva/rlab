@@ -357,6 +357,46 @@ class ContainerContractTests(unittest.TestCase):
         self.assertEqual(removed, 1)
         host.remove_container.assert_called_once_with("old")
 
+    def test_runtime_image_backoff_does_not_block_unrelated_pending_job(self) -> None:
+        target = local_machine(capacity=2)
+        bad = {"id": 1, "runtime_image_ref": RUNTIME_IMAGE_REF}
+        good = {"id": 2, "runtime_image_ref": OTHER_IMAGE_REF}
+        host = SimpleNamespace(
+            machine=target,
+            ensure_runtime_image=mock.Mock(side_effect=[False, True]),
+            output_host_path=lambda launch_id: f"/output/{launch_id}",
+        )
+        with (
+            mock.patch.object(fleet, "machine_control", return_value={"drained": False}),
+            mock.patch.object(fleet, "train_container_slot_usage", return_value=(0, 2, 2)),
+            mock.patch.object(
+                fleet, "next_pending_train_job", side_effect=[bad, good, None]
+            ),
+            mock.patch.object(fleet, "record_runtime_image_failure") as failed,
+            mock.patch.object(fleet, "reset_runtime_image_retry") as reset,
+            mock.patch.object(
+                fleet,
+                "claim_job_launch",
+                return_value=(good, {"launch_id": "train-2"}),
+            ) as claim,
+            mock.patch.object(fleet, "_start_or_resume_launch", return_value=True),
+        ):
+            launched = fleet.launch_next_jobs(FakeConnection(), host=host)
+
+        self.assertEqual(launched, 1)
+        failed.assert_called_once_with(
+            mock.ANY,
+            machine=target.name,
+            runtime_image_ref=RUNTIME_IMAGE_REF,
+            error="runtime image is unavailable",
+        )
+        reset.assert_called_once_with(
+            mock.ANY,
+            machine=target.name,
+            runtime_image_ref=OTHER_IMAGE_REF,
+        )
+        self.assertEqual(claim.call_args.kwargs["job_id"], 2)
+
     def test_missing_launching_container_reuses_same_launch(self) -> None:
         launch = {
             "launch_id": "train-12",

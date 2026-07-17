@@ -80,14 +80,6 @@ class ModalEvalConfig:
     expiry_margin_seconds: int
     estimated_hourly_usd: float
     max_attempts: int
-    preview_enabled: bool
-    preview_max_frames: int
-    preview_fps: int
-    preview_max_lanes: int
-    preview_scale: int
-    preview_max_bytes: int
-    preview_encode_timeout_seconds: int
-    preview_upload_timeout_seconds: int
 
     def timeout_for(self, purpose: str, stage_index: int) -> int:
         if purpose == "acceptance":
@@ -113,7 +105,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         "timeouts",
         "cost",
         "protocol",
-        "preview",
     }
     unknown = sorted(set(document) - allowed)
     if unknown:
@@ -125,7 +116,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
     timeouts = _mapping(document.get("timeouts"), label="timeouts")
     cost = _mapping(document.get("cost"), label="cost")
     protocol = _mapping(document.get("protocol"), label="protocol")
-    preview = _mapping(document.get("preview"), label="preview")
     sections = {
         "deployment": (deployment, {"app_name_prefix", "function_name"}),
         "cleanup": (
@@ -166,19 +156,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         ),
         "cost": (cost, {"estimated_hourly_usd"}),
         "protocol": (protocol, {"max_attempts"}),
-        "preview": (
-            preview,
-            {
-                "enabled",
-                "max_frames",
-                "fps",
-                "max_lanes",
-                "scale",
-                "max_bytes",
-                "encode_timeout_seconds",
-                "upload_timeout_seconds",
-            },
-        ),
     }
     for section_name, (section, section_allowed) in sections.items():
         section_unknown = sorted(set(section) - section_allowed)
@@ -261,20 +238,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             cost.get("estimated_hourly_usd"), label="cost.estimated_hourly_usd"
         ),
         max_attempts=max_attempts,
-        preview_enabled=_bool(preview.get("enabled", False), label="preview.enabled"),
-        preview_max_frames=_positive_int(preview.get("max_frames"), label="preview.max_frames"),
-        preview_fps=_positive_int(preview.get("fps"), label="preview.fps"),
-        preview_max_lanes=_positive_int(preview.get("max_lanes"), label="preview.max_lanes"),
-        preview_scale=_positive_int(preview.get("scale"), label="preview.scale"),
-        preview_max_bytes=_positive_int(preview.get("max_bytes"), label="preview.max_bytes"),
-        preview_encode_timeout_seconds=_positive_int(
-            preview.get("encode_timeout_seconds"),
-            label="preview.encode_timeout_seconds",
-        ),
-        preview_upload_timeout_seconds=_positive_int(
-            preview.get("upload_timeout_seconds"),
-            label="preview.upload_timeout_seconds",
-        ),
     )
     if result.child_margin_seconds >= min(
         result.screen_timeout_seconds,
@@ -283,18 +246,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
         result.acceptance_timeout_seconds,
     ):
         raise ValueError("timeouts.child_margin_seconds must be smaller than every eval timeout")
-    if result.preview_max_frames > 450:
-        raise ValueError("preview.max_frames must not exceed 450")
-    if result.preview_fps > 15:
-        raise ValueError("preview.fps must not exceed 15")
-    if result.preview_max_lanes > 4:
-        raise ValueError("preview.max_lanes must not exceed 4")
-    if result.preview_scale > 2:
-        raise ValueError("preview.scale must not exceed 2")
-    if result.preview_max_bytes > 2 * 1024 * 1024:
-        raise ValueError("preview.max_bytes must not exceed 2 MiB")
-    if result.preview_encode_timeout_seconds + result.preview_upload_timeout_seconds > 5:
-        raise ValueError("preview encode and upload timeouts must total no more than 5 seconds")
     return result
 
 

@@ -55,7 +55,10 @@ from rlab.policy_bundle import build_recipe_document
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.training_backend import accepts_first_training_success
 from rlab.modal_eval_assets import asset_manifest_for_game
-from rlab.checkpoint_acceptance import checkpoint_eval_contract_from_train_config
+from rlab.checkpoint_acceptance import (
+    EVAL_SEED_START,
+    checkpoint_eval_contract_from_train_config,
+)
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 
@@ -141,6 +144,18 @@ CREATE TABLE IF NOT EXISTS machine_controls (
   effective_capacity INTEGER CHECK (effective_capacity IS NULL OR effective_capacity >= 1),
   reason TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS runtime_image_states (
+  machine TEXT NOT NULL,
+  runtime_image_ref TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+  next_retry_at TIMESTAMPTZ,
+  last_error TEXT,
+  last_attempt_at TIMESTAMPTZ,
+  last_ready_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (machine, runtime_image_ref)
 );
 
 CREATE TABLE IF NOT EXISTS job_events (
@@ -471,6 +486,9 @@ CREATE INDEX IF NOT EXISTS train_jobs_claim_idx
 CREATE INDEX IF NOT EXISTS train_jobs_runtime_claim_idx
   ON train_jobs (machine, runtime_image_ref, status, id)
   WHERE status IN ('pending', 'launching', 'starting', 'running');
+
+CREATE INDEX IF NOT EXISTS runtime_image_states_retry_idx
+  ON runtime_image_states (machine, next_retry_at);
 
 CREATE INDEX IF NOT EXISTS train_jobs_goal_status_idx
   ON train_jobs (goal_slug, status);
@@ -807,6 +825,7 @@ RESET_TABLES = (
     "job_events",
     "job_launches",
     "train_jobs",
+    "runtime_image_states",
     "machine_controls",
 )
 TRAIN_JOB_KIND = "train"
@@ -1008,7 +1027,7 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
         path = export_dir / f"{table_name}.jsonl"
         order_column = (
             "machine"
-            if table_name == "machine_controls"
+            if table_name in {"machine_controls", "runtime_image_states"}
             else "backend"
             if table_name == "eval_backend_state"
             else "train_job_id"
@@ -1053,6 +1072,7 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                   job_events,
                   job_launches,
                   train_jobs,
+                  runtime_image_states,
                   machine_controls
                 CASCADE
                 """
@@ -1065,6 +1085,7 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                   IF to_regclass('train_jobs') IS NULL
                      OR to_regclass('job_launches') IS NULL
                      OR to_regclass('machine_controls') IS NULL
+                     OR to_regclass('runtime_image_states') IS NULL
                      OR to_regclass('job_events') IS NULL
                      OR to_regclass('eval_runs') IS NULL
                      OR to_regclass('eval_jobs') IS NULL
@@ -1604,6 +1625,7 @@ def enqueue_train_job(
             )
         elif not requires_rom_asset:
             config.pop("checkpoint_eval_asset_manifest", None)
+        config.setdefault("checkpoint_eval_seed", EVAL_SEED_START)
         config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
         if config.get("stop_on_acceptance"):
             config["checkpoint_eval_contract"] = checkpoint_eval_contract_from_train_config(config)
@@ -2245,6 +2267,15 @@ def count_nonterminal_jobs(conn=None) -> int:
                   +
                   (SELECT COUNT(*) FROM eval_jobs
                    WHERE status IN ('pending', 'dispatching', 'submitted', 'blocked_budget'))
+                  +
+                  (SELECT COUNT(*) FROM job_launches
+                   WHERE state IN ('launching', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM eval_attempts
+                   WHERE status IN ('dispatching', 'submitted'))
+                  +
+                  (SELECT COUNT(*) FROM worker_attempts
+                   WHERE status IN ('launching', 'running'))
                   AS count
                 """
             )
@@ -2373,29 +2404,138 @@ def finish_live_publication_recovery(
             return result
 
 
-def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
+def runtime_image_retry_state(
+    conn, *, machine: str, runtime_image_ref: str
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM runtime_image_states
+            WHERE machine = %(machine)s AND runtime_image_ref = %(runtime_image_ref)s
+            """,
+            {
+                "machine": normalize_machine(machine),
+                "runtime_image_ref": normalize_runtime_image_ref(runtime_image_ref),
+            },
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def record_runtime_image_failure(
+    conn,
+    *,
+    machine: str,
+    runtime_image_ref: str,
+    error: str,
+    base_retry_seconds: int = 30,
+    max_retry_seconds: int = 900,
+) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO runtime_image_states (
+                  machine, runtime_image_ref, retry_count, next_retry_at,
+                  last_error, last_attempt_at
+                ) VALUES (
+                  %(machine)s, %(runtime_image_ref)s, 1,
+                  now() + (%(base_retry_seconds)s * interval '1 second'),
+                  %(error)s, now()
+                )
+                ON CONFLICT (machine, runtime_image_ref) DO UPDATE
+                SET retry_count = runtime_image_states.retry_count + 1,
+                    next_retry_at = now() + (
+                      LEAST(
+                        %(max_retry_seconds)s,
+                        %(base_retry_seconds)s * power(
+                          2, LEAST(runtime_image_states.retry_count, 5)
+                        )
+                      ) * interval '1 second'
+                    ),
+                    last_error = EXCLUDED.last_error,
+                    last_attempt_at = now(),
+                    updated_at = now()
+                RETURNING *
+                """,
+                {
+                    "machine": machine,
+                    "runtime_image_ref": runtime_image_ref,
+                    "error": str(error)[:4000],
+                    "base_retry_seconds": max(1, int(base_retry_seconds)),
+                    "max_retry_seconds": max(1, int(max_retry_seconds)),
+                },
+            )
+            return dict(cur.fetchone() or {})
+
+
+def reset_runtime_image_retry(
+    conn, *, machine: str, runtime_image_ref: str
+) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO runtime_image_states (
+                  machine, runtime_image_ref, retry_count, next_retry_at,
+                  last_error, last_attempt_at, last_ready_at
+                ) VALUES (
+                  %(machine)s, %(runtime_image_ref)s, 0, NULL, NULL, now(), now()
+                )
+                ON CONFLICT (machine, runtime_image_ref) DO UPDATE
+                SET retry_count = 0, next_retry_at = NULL, last_error = NULL,
+                    last_attempt_at = now(), last_ready_at = now(), updated_at = now()
+                RETURNING *
+                """,
+                {"machine": machine, "runtime_image_ref": runtime_image_ref},
+            )
+            return dict(cur.fetchone() or {})
+
+
+def next_pending_train_job(
+    conn,
+    *,
+    machine: str,
+    exclude_runtime_image_refs: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    excluded = [normalize_runtime_image_ref(value) for value in exclude_runtime_image_refs]
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT job.*
             FROM train_jobs AS job
             LEFT JOIN machine_controls AS control ON control.machine = job.machine
+            LEFT JOIN runtime_image_states AS image_state
+              ON image_state.machine = job.machine
+             AND image_state.runtime_image_ref = job.runtime_image_ref
             WHERE job.machine = %(machine)s
               AND job.status = 'pending'
               AND job.cancel_requested = FALSE
+              AND NOT (job.runtime_image_ref = ANY(%(excluded_runtime_images)s))
               AND (
                 SELECT pg_total_relation_size('metric_batches')
                      + pg_total_relation_size('attempt_events')
                      + pg_total_relation_size('attempt_commands')
               ) < 5368709120
               AND COALESCE(control.drained, FALSE) = FALSE
+              AND (
+                image_state.next_retry_at IS NULL
+                OR image_state.next_retry_at <= now()
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM job_launches AS launch WHERE launch.job_id = job.id
               )
             ORDER BY job.id
             LIMIT 1
             """,
-            {"machine": normalize_machine(machine)},
+            {
+                "machine": normalize_machine(machine),
+                "excluded_runtime_images": excluded,
+            },
         )
         row = cur.fetchone()
     return dict(row) if row else None
@@ -2655,20 +2795,39 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT t.*, l.state AS launch_state
+                SELECT t.*, l.state AS launch_state,
+                  r.status AS eval_status, r.outcome AS eval_outcome,
+                  r.complete_announcement_seen,
+                  r.artifacts_projected_at, r.promoted_eval_job_id,
+                  r.promoted_artifact_projected_at,
+                  (SELECT COUNT(*) FROM eval_jobs j
+                    WHERE j.train_job_id=t.id
+                      AND j.status IN ('pending','dispatching','submitted','blocked_budget'))
+                    AS active_eval_jobs,
+                  (SELECT COUNT(*) FROM eval_attempts a
+                    JOIN eval_jobs j ON j.id=a.eval_job_id
+                    WHERE j.train_job_id=t.id AND a.status IN ('dispatching','submitted'))
+                    AS active_eval_attempts,
+                  (SELECT COUNT(*) FROM worker_attempts w
+                    WHERE w.train_job_id=t.id AND w.task_kind='eval'
+                      AND w.status IN ('launching','running')) AS active_eval_workers,
+                  (SELECT COUNT(*) FROM worker_attempts w
+                    WHERE w.train_job_id=t.id AND w.task_kind='train'
+                      AND w.status IN ('launching','running')) AS active_train_workers
                 FROM train_jobs t
                 JOIN job_launches l ON l.job_id = t.id
+                LEFT JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = %(job_id)s
-                FOR UPDATE OF t
+                FOR UPDATE OF t, l
                 """,
                 {"job_id": int(job_id)},
             )
             source = cur.fetchone()
             if not source:
                 raise ValueError(f"job {job_id} does not exist")
-            if str(source["launch_state"]) != "succeeded":
-                raise ValueError(f"job {job_id} does not have a successful training launch")
             if str(source["status"]) == "succeeded":
+                if str(source["launch_state"]) != "succeeded":
+                    raise ValueError(f"job {job_id} does not have a successful training launch")
                 if str(source.get("live_publication_status") or "") != "complete":
                     raise ValueError(
                         f"succeeded job {job_id} does not have a complete W&B publication"
@@ -2699,6 +2858,58 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 return dict(row)
             if str(source["status"]) != "finalization_failed":
                 raise ValueError(f"job {job_id} is not finalization_failed or succeeded")
+            launch_state = str(source.get("launch_state") or "")
+            publication_failed = str(source.get("live_publication_status") or "") == "failed"
+            active_counts = {
+                key: int(source.get(key) or 0)
+                for key in (
+                    "active_eval_jobs",
+                    "active_eval_attempts",
+                    "active_eval_workers",
+                    "active_train_workers",
+                )
+            }
+            no_active_work = not any(active_counts.values())
+            canceled_publication_only = (
+                launch_state == "canceled"
+                and publication_failed
+                and bool(source.get("cancel_requested"))
+                and source.get("process_exited_at") is not None
+                and str(source.get("eval_outcome") or "") == "canceled"
+                and bool(source.get("complete_announcement_seen"))
+                and str(source.get("eval_status") or "") in {"finalizing", "canceled"}
+                and no_active_work
+            )
+            successful_publication_only = (
+                launch_state == "succeeded"
+                and publication_failed
+                and source.get("process_exited_at") is not None
+                and no_active_work
+                and (
+                    (
+                        str(source.get("eval_outcome") or "") in {"accepted", "not_accepted"}
+                        and bool(source.get("complete_announcement_seen"))
+                        and source.get("artifacts_projected_at") is not None
+                        and (
+                            source.get("promoted_eval_job_id") is None
+                            or source.get("promoted_artifact_projected_at") is not None
+                        )
+                    )
+                    or str((source.get("train_config") or {}).get("checkpoint_eval_backend") or "local")
+                    != "modal"
+                )
+            )
+            publication_only = canceled_publication_only or successful_publication_only
+            if launch_state == "canceled" and not canceled_publication_only:
+                missing = [key for key, value in active_counts.items() if value]
+                raise ValueError(
+                    f"canceled job {job_id} lacks publication-only recovery evidence"
+                    + (f"; active={','.join(missing)}" if missing else "")
+                )
+            if launch_state not in {"succeeded", "canceled"}:
+                raise ValueError(
+                    f"job {job_id} launch state {launch_state!r} cannot retry finalization"
+                )
             cur.execute(
                 """
                 WITH residual_streams AS MATERIALIZED (
@@ -2725,23 +2936,82 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 )
                 SELECT
                   (SELECT COUNT(*) FROM reset_streams) AS residual_streams,
-                  (SELECT COUNT(*) FROM reset_batches) AS residual_batches
+                  (SELECT COUNT(*) FROM reset_batches) AS residual_batches,
+                  (SELECT COUNT(*) FROM metric_streams s
+                    JOIN worker_attempts w ON w.attempt_id=s.attempt_id
+                    WHERE w.train_job_id=%(job_id)s
+                      AND (s.final_sequence IS NULL OR s.published_sequence < s.final_sequence)
+                  ) AS incomplete_streams
                 """,
                 {"job_id": int(job_id)},
             )
             reset = dict(cur.fetchone() or {})
+            residual_batches = int(reset.get("residual_batches") or 0)
+            incomplete_streams = int(reset.get("incomplete_streams") or 0)
+            if residual_batches == 0 and incomplete_streams:
+                raise RuntimeError(
+                    f"job {job_id} has {incomplete_streams} incomplete stream(s) without retained batches"
+                )
+            if publication_only:
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET status = 'finalizing', finished_at = NULL, error = NULL,
+                      live_publication_status = %(publication_status)s,
+                      live_publication_attempts = 0,
+                      live_publication_next_retry_at = now(),
+                      live_publication_error = NULL
+                    WHERE id = %(job_id)s AND status = 'finalization_failed'
+                    RETURNING *
+                    """,
+                    {
+                        "job_id": int(job_id),
+                        "publication_status": "pending" if residual_batches else "finishing",
+                    },
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError(f"job {job_id} changed while retrying publication")
+                record_job_event(
+                    conn,
+                    job_id=int(job_id),
+                    event_type="finalization_retried",
+                    message="operator reopened publication-only finalization work",
+                    metadata={
+                        "launch_state": launch_state,
+                        "recovery_mode": "publication_only",
+                        "residual_streams": int(reset.get("residual_streams") or 0),
+                        "residual_batches": residual_batches,
+                        "publication_delivery": "at_least_once",
+                    },
+                )
+                return dict(row)
             cur.execute(
                 """
                 UPDATE eval_runs
                 SET status = CASE WHEN complete_announcement_seen
                     THEN 'finalizing' ELSE 'active' END,
+                  contract_json = contract_json || jsonb_build_object(
+                    'checkpoint_eval_seed', COALESCE(
+                      NULLIF(contract_json->>'checkpoint_eval_seed', '')::integer,
+                      %(checkpoint_eval_seed)s
+                    ),
+                    'checkpoint_eval_seed_protocol', COALESCE(
+                      NULLIF(contract_json->>'checkpoint_eval_seed_protocol', ''),
+                      %(checkpoint_eval_seed_protocol)s
+                    )
+                  ),
                   artifact_projection_attempts = 0,
                   artifact_projection_next_retry_at = NULL,
                   error = NULL,
                   updated_at = now()
                 WHERE train_job_id = %(job_id)s AND status = 'failed'
                 """,
-                {"job_id": int(job_id)},
+                {
+                    "job_id": int(job_id),
+                    "checkpoint_eval_seed": EVAL_SEED_START,
+                    "checkpoint_eval_seed_protocol": SEED_PROTOCOL,
+                },
             )
             cur.execute(
                 """
@@ -2758,6 +3028,26 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 """,
                 {"job_id": int(job_id)},
             )
+            cur.execute(
+                """
+                UPDATE attempt_events e
+                SET attempts = 0, next_retry_at = NULL, last_error = NULL
+                FROM worker_attempts w
+                WHERE w.attempt_id = e.attempt_id
+                  AND w.train_job_id = %(job_id)s
+                  AND e.event_type IN (
+                    'checkpoint_ready', 'checkpoint_tombstone',
+                    'checkpoint_stream_closed'
+                  )
+                  AND (
+                    e.attempts <> 0
+                    OR e.next_retry_at IS NOT NULL
+                    OR e.last_error IS NOT NULL
+                  )
+                """,
+                {"job_id": int(job_id)},
+            )
+            reset_attempt_events = cur.rowcount
             cur.execute(
                 """
                 UPDATE train_jobs
@@ -2791,8 +3081,10 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 message="operator reopened failed finalization work",
                 metadata={
                     "launch_state": "succeeded",
+                    "recovery_mode": "full_post_training",
                     "residual_streams": int(reset.get("residual_streams") or 0),
                     "residual_batches": int(reset.get("residual_batches") or 0),
+                    "reset_attempt_events": reset_attempt_events,
                     "publication_delivery": "at_least_once",
                 },
             )

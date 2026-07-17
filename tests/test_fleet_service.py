@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from rlab import fleet_service
+from rlab import fleet_controllers, fleet_service
 
 
 def completed(argv, returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -95,15 +95,62 @@ class FleetServiceTests(unittest.TestCase):
             paths.plist.parent.mkdir(parents=True)
             paths.plist.write_text("legacy", encoding="utf-8")
             commands: list[list[str]] = []
+            controller_items = {
+                name: fleet_service.controller_service_paths(paths, name)
+                for name in fleet_service.CONTROLLER_NAMES
+            }
+            controller_pids = {
+                name: 100 + index
+                for index, name in enumerate(fleet_service.CONTROLLER_NAMES)
+            }
+            loaded = {paths.label}
+            fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
 
             def runner(argv, **_kwargs):
                 commands.append(list(argv))
                 if argv[:2] == ["launchctl", "print"]:
-                    target = str(argv[-1])
-                    return completed(
-                        argv,
-                        returncode=0 if target.endswith(paths.label) else 113,
+                    label = str(argv[-1]).removeprefix(f"gui/{os.getuid()}/")
+                    if label not in loaded:
+                        return completed(argv, returncode=113)
+                    pid = next(
+                        (
+                            controller_pids[name]
+                            for name, item in controller_items.items()
+                            if item.label == label
+                        ),
+                        99,
                     )
+                    return completed(argv, stdout=f"state = running\npid = {pid}\n")
+                if argv[:2] == ["launchctl", "bootstrap"]:
+                    plist = Path(argv[-1])
+                    for item in controller_items.values():
+                        if item.plist == plist:
+                            loaded.add(item.label)
+                            break
+                if argv[:2] == ["launchctl", "bootout"]:
+                    loaded.discard(str(argv[-1]).removeprefix(f"gui/{os.getuid()}/"))
+                if argv[:2] == ["launchctl", "kickstart"]:
+                    label = str(argv[-1]).removeprefix(f"gui/{os.getuid()}/")
+                    for name, item in controller_items.items():
+                        if item.label != label:
+                            continue
+                        item.state_dir.mkdir(parents=True, exist_ok=True)
+                        (item.state_dir / "heartbeat.json").write_text(
+                            json.dumps(
+                                {
+                                    "pid": controller_pids[name],
+                                    "controller": name,
+                                    "protocol_version": fleet_service.CONTROL_PLANE_PROTOCOL_VERSION,
+                                    "source_fingerprint": fingerprint,
+                                    "phase": "idle",
+                                    "updated_at": time.time(),
+                                    "last_success_at": time.time(),
+                                    "last_error": None,
+                                }
+                            ),
+                            encoding="utf-8",
+                        )
+                        break
                 return completed(argv)
 
             with mock.patch.object(fleet_service.shutil, "which", return_value=None):
@@ -184,6 +231,81 @@ class FleetServiceTests(unittest.TestCase):
 
         runner.assert_not_called()
 
+    def test_wandb_reload_allows_active_jobs_and_requires_new_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            item = fleet_service.controller_service_paths(paths, "wandb")
+            item.plist.parent.mkdir(parents=True)
+            item.plist.write_text("installed", encoding="utf-8")
+            commands: list[list[str]] = []
+
+            def runner(argv, **_kwargs):
+                commands.append(list(argv))
+                if argv[:2] == ["launchctl", "print"]:
+                    return completed(argv, stdout="state = running\npid = 42\n")
+                return completed(argv)
+
+            with (
+                mock.patch.object(fleet_service, "_publisher_processes", return_value=[]),
+                mock.patch.object(fleet_service, "_stop_legacy_wandb_publishers") as cleanup,
+                mock.patch.object(fleet_service, "_wandb_readiness_matches", return_value=True),
+            ):
+                reloaded = fleet_service.reload_controller_service(
+                    paths,
+                    "wandb",
+                    count_nonterminal_jobs=mock.Mock(
+                        side_effect=AssertionError("W&B reload inspected active jobs")
+                    ),
+                    runner=runner,
+                )
+
+        self.assertTrue(reloaded)
+        cleanup.assert_called_once()
+        self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{item.label}"], commands)
+
+    def test_publisher_validation_accepts_manager_owned_and_verified_orphan_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+
+            def runner(argv, **_kwargs):
+                if argv[:2] == ["ps", "-axo"]:
+                    return completed(
+                        argv,
+                        stdout=(
+                            "43 42 42 python -m rlab.fleet_wandb_publisher "
+                            "--train-job-id 67\n"
+                        ),
+                    )
+                return completed(argv, stdout=f"p43\nn{root}\n")
+
+            direct = fleet_service._publisher_processes(
+                root, parent_pid=42, runner=runner
+            )
+            orphan = fleet_service._publisher_processes(
+                root, expected_process_groups=(42,), runner=runner
+            )
+            with self.assertRaisesRegex(RuntimeError, "unverified process group"):
+                fleet_service._publisher_processes(root, runner=runner)
+
+            def invalid_runner(argv, **_kwargs):
+                if argv[:2] == ["ps", "-axo"]:
+                    return completed(
+                        argv,
+                        stdout=(
+                            "43 42 42 python -m rlab.fleet_wandb_publisher "
+                            "--train-job-id 67 --once\n"
+                        ),
+                    )
+                return completed(argv, stdout=f"p43\nn{root}\n")
+
+            with self.assertRaisesRegex(RuntimeError, "unverified module arguments"):
+                fleet_service._publisher_processes(
+                    root, parent_pid=42, runner=invalid_runner
+                )
+
+        self.assertEqual([item.pid for item in direct], [43])
+        self.assertEqual([item.pgid for item in orphan], [42])
+
     def test_launch_preflight_accepts_compatible_controllers_with_active_jobs(self) -> None:
         status = {
             "installed": True,
@@ -229,6 +351,296 @@ class FleetServiceTests(unittest.TestCase):
         with mock.patch.object(fleet_service, "controller_services_status", return_value=status):
             with self.assertRaisesRegex(RuntimeError, "rlab fleet service install --replace"):
                 fleet_service.require_compatible_controller_services()
+
+    def test_recovery_preflight_allows_source_stale_but_runtime_current_controllers(self) -> None:
+        controllers = {}
+        for name in fleet_service.CONTROLLER_NAMES:
+            controllers[name] = {
+                "installed": True,
+                "loaded": True,
+                "running": True,
+                "protocol_compatible": True,
+                "heartbeat_required": True,
+                "heartbeat_compatible": False,
+                "pid": 100,
+                "heartbeat": {
+                    "controller": name,
+                    "pid": 100,
+                    "protocol_version": fleet_service.CONTROL_PLANE_PROTOCOL_VERSION,
+                    "source_fingerprint": "stale",
+                    "phase": "idle",
+                    "updated_at": time.time(),
+                    "last_success_at": time.time(),
+                },
+            }
+        status = {"controllers": controllers}
+        with mock.patch.object(
+            fleet_service, "controller_services_status", return_value=status
+        ):
+            self.assertIs(
+                fleet_service.require_compatible_controller_services(
+                    require_source_current=False
+                ),
+                status,
+            )
+            with self.assertRaisesRegex(RuntimeError, "install --replace"):
+                fleet_service.require_compatible_controller_services()
+
+    def test_protocol_two_health_requires_fresh_matching_controller_heartbeats(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            with mock.patch.object(fleet_service, "CONTROL_PLANE_PROTOCOL_VERSION", 2):
+                fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
+                for name in fleet_service.CONTROLLER_NAMES:
+                    item = fleet_service.controller_service_paths(paths, name)
+                    item.plist.parent.mkdir(parents=True, exist_ok=True)
+                    item.plist.write_bytes(
+                        fleet_service.render_controller_launch_agent_plist(paths, name)
+                    )
+                    item.state_dir.mkdir(parents=True, exist_ok=True)
+                    (item.state_dir / "heartbeat.json").write_text(
+                        json.dumps(
+                            {
+                                "pid": 100,
+                                "controller": name,
+                                "protocol_version": 2,
+                                "source_fingerprint": fingerprint,
+                                "phase": "idle",
+                                "updated_at": time.time(),
+                                "last_success_at": time.time(),
+                                "last_error": None,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+                status = fleet_service.controller_services_status(
+                    paths,
+                    runner=lambda argv, **_kwargs: completed(
+                        argv, stdout="state = running\npid = 100\n"
+                    ),
+                )
+
+        self.assertTrue(status["heartbeat_required"])
+        self.assertTrue(status["heartbeat_compatible"])
+        self.assertTrue(status["healthy"])
+
+    def test_protocol_two_rejects_stale_or_wrong_controller_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            with mock.patch.object(fleet_service, "CONTROL_PLANE_PROTOCOL_VERSION", 2):
+                fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
+                for name in fleet_service.CONTROLLER_NAMES:
+                    item = fleet_service.controller_service_paths(paths, name)
+                    item.plist.parent.mkdir(parents=True, exist_ok=True)
+                    item.plist.write_bytes(
+                        fleet_service.render_controller_launch_agent_plist(paths, name)
+                    )
+                    item.state_dir.mkdir(parents=True, exist_ok=True)
+                    (item.state_dir / "heartbeat.json").write_text(
+                        json.dumps(
+                            {
+                                "pid": 100,
+                                "controller": name,
+                                "protocol_version": 2,
+                                "source_fingerprint": fingerprint,
+                                "phase": "idle",
+                                "updated_at": time.time(),
+                                "last_success_at": time.time(),
+                                "last_error": None,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                evaluation = fleet_service.controller_service_paths(paths, "evaluation")
+                heartbeat = json.loads(
+                    (evaluation.state_dir / "heartbeat.json").read_text(encoding="utf-8")
+                )
+                heartbeat["controller"] = "machine"
+                heartbeat["updated_at"] = time.time() - 120
+                (evaluation.state_dir / "heartbeat.json").write_text(
+                    json.dumps(heartbeat), encoding="utf-8"
+                )
+
+                status = fleet_service.controller_services_status(
+                    paths,
+                    runner=lambda argv, **_kwargs: completed(
+                        argv, stdout="state = running\npid = 100\n"
+                    ),
+                )
+
+        self.assertFalse(status["controllers"]["evaluation"]["heartbeat_compatible"])
+        self.assertFalse(status["heartbeat_compatible"])
+        self.assertFalse(status["healthy"])
+
+    def test_controller_replacement_refuses_active_control_plane_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            for name in fleet_service.CONTROLLER_NAMES:
+                item = fleet_service.controller_service_paths(paths, name)
+                item.plist.parent.mkdir(parents=True, exist_ok=True)
+                item.plist.write_bytes(
+                    fleet_service.render_controller_launch_agent_plist(paths, name)
+                )
+
+            with (
+                mock.patch.object(
+                    fleet_service, "_default_count_nonterminal_jobs", return_value=4
+                ),
+                self.assertRaisesRegex(RuntimeError, "4 nonterminal job"),
+            ):
+                fleet_service.install_controller_services(
+                    paths,
+                    replace=True,
+                    runner=lambda argv, **_kwargs: completed(
+                        argv, stdout="state = running"
+                    ),
+                )
+
+    def test_machine_controller_isolates_one_machine_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            heartbeat = root / "heartbeat.json"
+            readiness = root / "readiness.json"
+            assertion = mock.MagicMock()
+            with (
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_state_paths",
+                    return_value=(heartbeat, readiness),
+                ),
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_machines",
+                    return_value=("bad", "good"),
+                ),
+                mock.patch.object(
+                    fleet_controllers, "controller_source_fingerprint", return_value="source"
+                ),
+                mock.patch.object(
+                    fleet_controllers, "SleepAssertion", return_value=assertion
+                ),
+                mock.patch(
+                    "rlab.fleet.run_service_machine_pass",
+                    side_effect=[RuntimeError("provider failed"), {"launched": 1}],
+                ) as reconcile,
+            ):
+                result = fleet_controllers.run_machine_controller(root, once=True)
+
+            saved = json.loads(heartbeat.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(reconcile.call_count, 2)
+        self.assertEqual(saved["phase"], "degraded")
+        self.assertIn("bad:RuntimeError:provider failed", saved["last_error"])
+
+    def test_machine_controller_escalates_database_failure_to_controller_level(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            heartbeat = root / "heartbeat.json"
+            readiness = root / "readiness.json"
+            assertion = mock.MagicMock()
+            database_error = fleet_controllers.DatabaseError("database unavailable")
+            with (
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_state_paths",
+                    return_value=(heartbeat, readiness),
+                ),
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_machines",
+                    return_value=("first", "second"),
+                ),
+                mock.patch.object(
+                    fleet_controllers, "controller_source_fingerprint", return_value="source"
+                ),
+                mock.patch.object(
+                    fleet_controllers, "SleepAssertion", return_value=assertion
+                ),
+                mock.patch(
+                    "rlab.fleet.run_service_machine_pass",
+                    side_effect=database_error,
+                ) as reconcile,
+                self.assertRaises(fleet_controllers.DatabaseError),
+            ):
+                fleet_controllers.run_machine_controller(root, once=True)
+
+            saved = json.loads(heartbeat.read_text(encoding="utf-8"))
+
+        reconcile.assert_called_once()
+        self.assertEqual(saved["phase"], "error")
+        self.assertIn("database unavailable", saved["last_error"])
+
+    def test_schema_guard_refuses_nonterminal_work_before_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            runner = mock.MagicMock(return_value=completed([]))
+            with (
+                mock.patch.object(
+                    fleet_service, "service_is_loaded", return_value=False
+                ),
+                mock.patch.object(
+                    fleet_service, "_default_count_nonterminal_jobs", return_value=1
+                ),
+                self.assertRaisesRegex(RuntimeError, "wait for quiescence"),
+            ):
+                with fleet_service.schema_change_service_guard(paths, runner=runner):
+                    self.fail("schema guard must not yield")
+
+        self.assertFalse(
+            any(call.args[0][:2] == ["launchctl", "bootout"] for call in runner.call_args_list)
+        )
+
+    def test_schema_guard_restores_exactly_the_loaded_controller_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            machine = fleet_service.controller_service_paths(paths, "machine")
+            wandb = fleet_service.controller_service_paths(paths, "wandb")
+            for item in (machine, wandb):
+                item.plist.parent.mkdir(parents=True, exist_ok=True)
+                item.plist.write_text("plist", encoding="utf-8")
+            loaded_labels = {machine.label, wandb.label}
+            commands: list[list[str]] = []
+
+            def runner(argv, **_kwargs):
+                commands.append(list(argv))
+                return completed(argv)
+
+            with (
+                mock.patch.object(
+                    fleet_service,
+                    "service_is_loaded",
+                    side_effect=lambda label, **_kwargs: label in loaded_labels,
+                ),
+                mock.patch.object(fleet_service, "service_is_running", return_value=False),
+                mock.patch.object(
+                    fleet_service, "_default_count_nonterminal_jobs", return_value=0
+                ),
+                mock.patch.object(fleet_service, "_service_pid", return_value=42),
+                mock.patch.object(fleet_service, "_publisher_processes", return_value=[]),
+            ):
+                with fleet_service.schema_change_service_guard(paths, runner=runner):
+                    pass
+
+        booted_out = {
+            command[2]
+            for command in commands
+            if command[:2] == ["launchctl", "bootout"]
+        }
+        bootstrapped = {
+            command[-1]
+            for command in commands
+            if command[:2] == ["launchctl", "bootstrap"]
+        }
+        self.assertEqual(
+            booted_out,
+            {
+                fleet_service._target(machine.label),
+                fleet_service._target(wandb.label),
+            },
+        )
+        self.assertEqual(bootstrapped, {str(machine.plist), str(wandb.plist)})
 
     def test_redaction_removes_presigned_url_queries_and_url_fields(self) -> None:
         url = "https://r2.example/checkpoint?X-Amz-Credential=secret&X-Amz-Signature=value"
@@ -389,7 +801,7 @@ class FleetServiceTests(unittest.TestCase):
         machines_with_service_work.assert_called_once_with(connection)
         connection.close.assert_called_once_with()
 
-    def test_idle_machine_maintenance_failure_is_not_retried_every_pass(self) -> None:
+    def test_idle_machine_maintenance_failure_remains_due_until_success(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             connection = mock.Mock()
@@ -404,7 +816,7 @@ class FleetServiceTests(unittest.TestCase):
                 second = fleet_service._default_discover_machines(repo)
 
         self.assertEqual(first, ("beast-2",))
-        self.assertEqual(second, ())
+        self.assertEqual(second, ("beast-2",))
 
     def test_default_reconcile_machine_delegates_to_fleet_api(self) -> None:
         expected = {"reconciled": 1}
@@ -496,15 +908,34 @@ class FleetServiceTests(unittest.TestCase):
     def test_eval_health_uses_the_persistent_evaluation_controller(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
+            fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
             for name in fleet_service.CONTROLLER_NAMES:
                 controller = fleet_service.controller_service_paths(paths, name)
                 controller.plist.parent.mkdir(parents=True, exist_ok=True)
-                controller.plist.write_text("installed", encoding="utf-8")
+                controller.plist.write_bytes(
+                    fleet_service.render_controller_launch_agent_plist(paths, name)
+                )
+                controller.state_dir.mkdir(parents=True, exist_ok=True)
+                (controller.state_dir / "heartbeat.json").write_text(
+                    json.dumps(
+                        {
+                            "pid": 100,
+                            "controller": name,
+                            "protocol_version": fleet_service.CONTROL_PLANE_PROTOCOL_VERSION,
+                            "source_fingerprint": fingerprint,
+                            "phase": "idle",
+                            "updated_at": time.time(),
+                            "last_success_at": time.time(),
+                            "last_error": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
 
             def runner(argv, **_kwargs):
                 label = str(argv[-1])
                 if label.endswith(".evaluation"):
-                    return completed(argv, stdout="state = running")
+                    return completed(argv, stdout="state = running\npid = 100\n")
                 return completed(argv, returncode=113)
 
             health = fleet_service.eval_service_health(paths, runner=runner)

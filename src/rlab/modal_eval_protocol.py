@@ -6,20 +6,21 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from rlab.checkpoint_eval_config import checkpoint_eval_max_steps
 from rlab.early_stop import evaluate_early_stop_config
 from rlab.env_registry import resolve_env_provider
 from rlab.checkpoint_acceptance import (
+    CheckpointEvalContractCompiler,
+    SEED_PROTOCOL,
     acceptance_aggregates,
     aggregates_match,
     evaluate_acceptance,
     manifest_index,
+    validate_checkpoint_eval_contract,
     validate_episode_rows,
 )
 
 
 PROTOCOL_SCHEMA_VERSION = 3
-SEED_PROTOCOL = "vector-lane-v1"
 
 
 def _sha256(value: object, *, label: str) -> str:
@@ -34,41 +35,18 @@ def checkpoint_announcement_eval_payload(
 ) -> dict[str, Any]:
     acceptance_contract = materialized_train_config.get("checkpoint_eval_contract")
     if isinstance(acceptance_contract, Mapping):
-        return dict(acceptance_contract)
+        return validate_checkpoint_eval_contract(acceptance_contract)
 
-    environment = materialized_train_config.get("checkpoint_eval_environment")
     stages = materialized_train_config.get("checkpoint_eval_stages")
-    asset = materialized_train_config.get("checkpoint_eval_asset_manifest")
-    if not isinstance(environment, Mapping):
-        raise ValueError("Modal checkpoint eval requires a materialized environment")
     if stages is None:
         stages = []
     if not isinstance(stages, list):
         raise ValueError("Modal checkpoint eval stages must be a list")
-    provider = str(
-        materialized_train_config.get("env_provider") or environment.get("env_provider") or ""
-    ).strip()
-    requires_rom_asset = (
-        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+    compiler = CheckpointEvalContractCompiler.from_train_config(
+        materialized_train_config,
+        materialize_seed_defaults=True,
     )
-    if requires_rom_asset and not isinstance(asset, Mapping):
-        raise ValueError("Modal checkpoint eval requires a materialized asset manifest")
-    if not requires_rom_asset:
-        asset = None
-    return {
-        "environment": dict(environment),
-        "stages": stages,
-        "n_envs": int(materialized_train_config.get("checkpoint_eval_n_envs") or 1),
-        "max_steps": checkpoint_eval_max_steps(materialized_train_config),
-        "seed": int(materialized_train_config.get("checkpoint_eval_seed") or 10_000),
-        "seed_protocol": str(
-            materialized_train_config.get("checkpoint_eval_seed_protocol") or SEED_PROTOCOL
-        ),
-        "asset": dict(asset) if isinstance(asset, Mapping) else None,
-        "promotion_episodes": int(
-            materialized_train_config.get("post_train_eval_episodes") or 100
-        ),
-    }
+    return compiler.announcement_payload(stages=stages)
 
 
 def validate_announcement(

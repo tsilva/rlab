@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -10,18 +9,14 @@ from typing import Any, Mapping
 from urllib.parse import quote, unquote, urlparse
 
 from rlab.artifacts import parse_s3_uri, strip_env_file_quotes
+from rlab.file_utils import file_sha256 as _file_sha256
+
+
+file_sha256 = _file_sha256
 
 
 class ObjectNotFound(FileNotFoundError):
     pass
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def object_store_base_uri(environment: Mapping[str, str] | None = None) -> str:
@@ -32,25 +27,6 @@ def object_store_base_uri(environment: Mapping[str, str] | None = None) -> str:
     if not uri:
         raise RuntimeError("MODAL_EVAL_STORAGE_URI or CHECKPOINT_BUCKET_URI must be set")
     return uri.rstrip("/")
-
-
-def preview_storage_base_uri(environment: Mapping[str, str] | None = None) -> str:
-    values = os.environ if environment is None else environment
-    uri = strip_env_file_quotes(values.get("MODAL_EVAL_PREVIEW_STORAGE_URI", ""))
-    if not uri:
-        raise RuntimeError("MODAL_EVAL_PREVIEW_STORAGE_URI must be set when previews are enabled")
-    return uri.rstrip("/")
-
-
-def preview_public_base_url(environment: Mapping[str, str] | None = None) -> str:
-    values = os.environ if environment is None else environment
-    url = strip_env_file_quotes(values.get("MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL", ""))
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise RuntimeError(
-            "MODAL_EVAL_PREVIEW_PUBLIC_BASE_URL must be an absolute HTTPS URL when previews are enabled"
-        )
-    return url.rstrip("/")
 
 
 class ObjectStore:

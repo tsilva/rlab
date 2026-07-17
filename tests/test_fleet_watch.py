@@ -81,6 +81,7 @@ def sample_snapshot() -> dict:
                 "entity": "train/31",
                 "title": "Claimed by beast-3",
                 "timestamp": "2026-07-15T11:59:50Z",
+                "occurrence_count": 3,
             }
         ],
     }
@@ -225,6 +226,8 @@ class FleetWatchTests(unittest.TestCase):
 
         statements = "\n".join(call.args[0] for call in cursor.execute.call_args_list)
         self.assertNotIn("t.updated_at", statements)
+        self.assertIn("LIMIT 100", statements)
+        self.assertIn("PARTITION BY job_id, event_type", statements)
         self.assertEqual(snapshot["service"]["state"], "HEALTHY")
         self.assertEqual(snapshot["work"]["needs_action"], 0)
 
@@ -263,6 +266,7 @@ class FleetWatchTests(unittest.TestCase):
         rendered = fleet_watch.render_plain_snapshot(sample_snapshot())
         self.assertIn("SERVICE HEALTHY", rendered)
         self.assertIn("Artifact recovery required", rendered)
+        self.assertIn("×3", rendered)
         self.assertNotIn("\x1b", rendered)
 
     def test_plain_stream_suppresses_noop_polls(self) -> None:
