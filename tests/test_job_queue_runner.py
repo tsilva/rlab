@@ -343,6 +343,38 @@ class JobQueueTests(unittest.TestCase):
                     all(len(source["sha256"]) == 64 for source in composition["source_files"])
                 )
 
+    def test_composed_recipe_provenance_uses_the_explicit_launch_repo_root(self) -> None:
+        document = compose_train_document(MARIO_L11_GOAL, MARIO_SINGLE_PPO)
+        source_root = Path.cwd().resolve()
+        captured: list[dict] = []
+
+        def fake_enqueue(_conn, **kwargs):
+            captured.append(kwargs)
+            return {"id": 1, "run_name": kwargs["run_name"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            launch_root = Path(temporary).resolve()
+            for source in document["_composition"]["source_files"]:
+                relative = Path(source["path"]).resolve().relative_to(source_root)
+                source["path"] = str(launch_root / relative)
+            with patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue):
+                job_queue.enqueue_train_jobs_from_recipe_document(
+                    FakeConnection(),
+                    document=document,
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                    machine="beast-3",
+                    repo_git_commit="d" * 40,
+                    seeds=[123],
+                    _modal_readiness_validated=True,
+                    repo_root=launch_root,
+                )
+
+        provenance = captured[0]["recipe_payload"]["provenance"]
+        self.assertTrue(provenance["source_files"])
+        self.assertTrue(
+            all(not Path(source["path"]).is_absolute() for source in provenance["source_files"])
+        )
+
     def test_submission_backend_override_is_materialized_before_enqueue(self) -> None:
         calls = []
         old_enqueue = job_queue.enqueue_train_job

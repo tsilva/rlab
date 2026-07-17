@@ -1340,6 +1340,7 @@ def enqueue_train_jobs_from_recipe_document(
     runtime_config_validator: Callable[[Mapping[str, Any]], Any] | None = None,
     _modal_readiness_validated: bool = False,
     readiness_barrier: Callable[[], Any] | None = None,
+    repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
@@ -1468,7 +1469,7 @@ def enqueue_train_jobs_from_recipe_document(
                     )
                 recipe_payload = build_recipe_document(
                     document,
-                    repo_root=Path(__file__).resolve().parents[2],
+                    repo_root=repo_root or Path(__file__).resolve().parents[2],
                     source_commit=source_commit,
                     run_description=run_description,
                     seed=seed,
@@ -3368,6 +3369,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
             runtime_config_validator=validate_runtime_config,
             _modal_readiness_validated=backend == "modal",
             readiness_barrier=readiness_barrier,
+            repo_root=default_repo_root(),
         )
         timings["enqueue_preflight_seconds"] = time.perf_counter() - enqueue_started
         dispatch_started = time.perf_counter()
