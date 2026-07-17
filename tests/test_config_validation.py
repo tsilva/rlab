@@ -26,6 +26,7 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 
 class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/breakout-turbo-env__breakout/_goal.yaml")
+    BREAKOUT_RECIPE = Path("experiments/recipes/breakout-turbo-env/ppo.yaml")
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
     MARIO_SINGLE_RECIPES = Path("experiments/recipes/mario/single")
 
@@ -59,13 +60,16 @@ class ConfigValidationTests(unittest.TestCase):
                 covered_args = set(contract.canonical_args) | set(contract.explicit_env_args)
                 self.assertEqual(covered_args, signature_args)
 
-    def test_breakout_turbo_goal_composes_with_atari_ppo(self) -> None:
+    def test_breakout_turbo_goal_composes_with_dedicated_ppo_recipe(self) -> None:
         document = compose_train_document(
             self.BREAKOUT_GOAL,
-            Path("experiments/recipes/atari/ppo.yaml"),
+            self.BREAKOUT_RECIPE,
         )
 
         train_config = document["train_config"]
+        self.assertEqual(document["recipe_id"], "ppo")
+        self.assertEqual(train_config["timesteps"], 100_000_000)
+        self.assertEqual(train_config["training_backend"]["id"], "sb3.ppo")
         self.assertEqual(train_config["env_provider"], "breakout-turbo-env")
         self.assertEqual(train_config["game"], "BreakoutTurbo-v0")
         self.assertEqual(train_config["state"], "full")
