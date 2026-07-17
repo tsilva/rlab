@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -75,6 +76,9 @@ def test_legacy_repair_card_uses_canonical_renderer_and_marks_evidence() -> None
     assert "99.0%" in card
     assert "supermariobrosnes-turbo" in card
     assert manifest["source"]["seed"] == 7
+    assert hashlib.sha256(card.encode()).hexdigest() == (
+        "abf75cd1f933c05a0472de2791d29ab117431ae92269cb6130f0ff17b1df74b7"
+    )
 
 
 def test_repair_plan_digest_ignores_embedded_readme_but_hashes_public_plan() -> None:

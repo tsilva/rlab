@@ -56,6 +56,9 @@ EVAL_RECONCILE_LOCK = "rlab-fleet-reconciler:eval:modal-cpu"
 ACTIVE_ATTEMPT_STATES = ("dispatching", "submitted")
 MAX_PROJECTION_ATTEMPTS = 3
 PROJECTION_RETRY_DELAYS_SECONDS = (30, 120, 300)
+CANCEL_ATTEMPT_BUDGET_SECONDS = 2.0
+ATTEMPT_POLL_BUDGET_SECONDS = 5.0
+ANNOUNCEMENT_INGEST_BUDGET_SECONDS = 5.0
 
 
 def deterministic_eval_failure(error: object) -> bool:
@@ -394,6 +397,7 @@ def ingest_mailbox_announcements(
     store: ObjectStore,
     *,
     limit: int = 50,
+    deadline_monotonic: float | None = None,
 ) -> int:
     ingested = 0
     next_announcement_ids: dict[int, int] = {}
@@ -417,6 +421,8 @@ def ingest_mailbox_announcements(
         )
         events = [dict(row) for row in cur.fetchall()]
     for event in events:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            break
         payload = dict(event.get("payload_json") or {})
         event_type = str(event["event_type"])
         train_job_id = int(payload.get("train_job_id") or 0)
@@ -1649,6 +1655,7 @@ def reconcile_publication_finishing(conn) -> int:
                 """
                 UPDATE train_jobs t
                 SET live_publication_status = 'finishing',
+                    live_publication_attempts = 0,
                     live_publication_error = NULL,
                     live_publication_next_retry_at = NULL
                 FROM eval_runs r
@@ -2424,24 +2431,55 @@ def run_service_eval_pass(
         if not _try_lock(conn):
             return {"status": "locked"}
         if progress:
-            progress("INGESTING EVALUATION", "Reading checkpoint announcements and mailbox events")
-        created_runs = ensure_eval_runs(conn)
-        canceled_attempts = cancel_requested_attempts(
-            conn, invoker, deadline_monotonic=deadline_monotonic
-        )
-        mailbox_ingested = ingest_mailbox_announcements(conn, store)
-        ingested = ingest_announcements(conn, store, deadline_monotonic=deadline_monotonic)
-        canceled_eval_state = reconcile_canceled_eval_state(conn)
-        skipped_decisions = publish_skipped_decisions(conn, store)
-        if progress:
             progress("POLLING EVALUATION", "Observing submitted Modal attempts and durable results")
+        created_runs = ensure_eval_runs(conn)
+        cancel_deadline = min(
+            deadline_monotonic,
+            time.monotonic() + CANCEL_ATTEMPT_BUDGET_SECONDS,
+        )
+        canceled_attempts = cancel_requested_attempts(
+            conn, invoker, deadline_monotonic=cancel_deadline
+        )
+        poll_deadline = min(
+            deadline_monotonic,
+            time.monotonic() + ATTEMPT_POLL_BUDGET_SECONDS,
+        )
         polled = poll_attempts(
             conn,
             store,
             invoker,
             config,
-            deadline_monotonic=deadline_monotonic,
+            deadline_monotonic=poll_deadline,
         )
+        if progress:
+            progress("INGESTING EVALUATION", "Reading checkpoint announcements and mailbox events")
+        ingestion_deadline = min(
+            deadline_monotonic,
+            time.monotonic() + ANNOUNCEMENT_INGEST_BUDGET_SECONDS,
+        )
+        ingestion_errors: list[str] = []
+        try:
+            mailbox_ingested = ingest_mailbox_announcements(
+                conn,
+                store,
+                deadline_monotonic=ingestion_deadline,
+            )
+        except Exception as exc:
+            conn.rollback()
+            mailbox_ingested = 0
+            ingestion_errors.append(f"mailbox:{type(exc).__name__}:{exc}")
+        try:
+            ingested = ingest_announcements(
+                conn,
+                store,
+                deadline_monotonic=ingestion_deadline,
+            )
+        except Exception as exc:
+            conn.rollback()
+            ingested = 0
+            ingestion_errors.append(f"object_store:{type(exc).__name__}:{exc}")
+        canceled_eval_state = reconcile_canceled_eval_state(conn)
+        skipped_decisions = publish_skipped_decisions(conn, store)
         recovered_projections = enqueue_missing_mailbox_projections(conn)
         promotions = enqueue_post_train_promotions(conn)
         if progress:
@@ -2501,6 +2539,7 @@ def run_service_eval_pass(
             "canceled_eval_workers": canceled_eval_state["workers"],
             "ingested": ingested,
             "mailbox_ingested": mailbox_ingested,
+            "ingestion_errors": ingestion_errors,
             "skipped_decisions": skipped_decisions,
             "polled": polled,
             "recovered_projections": recovered_projections,

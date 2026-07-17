@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rlab.dotenv import load_env_file
 from rlab.env_registry import game_family_for_environment, wandb_project_for_environment
+from rlab.metric_names import EVAL_ACCEPTANCE_PASS
 
 DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-Nes-v0"
@@ -99,5 +100,10 @@ def resolve_wandb_namespace(
 def configure_wandb_metrics(run):
     if run is not None:
         run.define_metric("global_step", summary="max")
+        run.define_metric(
+            EVAL_ACCEPTANCE_PASS,
+            step_metric="global_step",
+            summary="max",
+        )
         run.define_metric("*", step_metric="global_step")
     return run

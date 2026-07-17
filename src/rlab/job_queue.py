@@ -2647,7 +2647,7 @@ def retry_train_job(
 
 
 def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
-    """Reopen only failed post-train work; never create or rerun a Docker launch."""
+    """Reopen post-train work or restamp a completed publication without retraining."""
 
     with conn:
         with conn.cursor() as cur:
@@ -2662,10 +2662,43 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                 {"job_id": int(job_id)},
             )
             source = cur.fetchone()
-            if not source or str(source["status"]) != "finalization_failed":
-                raise ValueError(f"job {job_id} is not finalization_failed or does not exist")
+            if not source:
+                raise ValueError(f"job {job_id} does not exist")
             if str(source["launch_state"]) != "succeeded":
                 raise ValueError(f"job {job_id} does not have a successful training launch")
+            if str(source["status"]) == "succeeded":
+                if str(source.get("live_publication_status") or "") != "complete":
+                    raise ValueError(
+                        f"succeeded job {job_id} does not have a complete W&B publication"
+                    )
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET live_publication_status = 'finishing',
+                      live_publication_attempts = 0,
+                      live_publication_next_retry_at = now(),
+                      live_publication_error = NULL
+                    WHERE id = %(job_id)s AND status = 'succeeded'
+                      AND live_publication_status = 'complete'
+                    RETURNING *
+                    """,
+                    {"job_id": int(job_id)},
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError(f"job {job_id} changed while restamping publication")
+                record_job_event(
+                    conn,
+                    job_id=int(job_id),
+                    event_type="finalization_retried",
+                    message="operator requested canonical W&B publication restamp",
+                    metadata={"launch_state": "succeeded", "restamp_only": True},
+                )
+                return dict(row)
+            if str(source["status"]) != "finalization_failed":
+                raise ValueError(
+                    f"job {job_id} is not finalization_failed or succeeded"
+                )
             cur.execute(
                 """
                 UPDATE eval_runs

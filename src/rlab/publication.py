@@ -13,6 +13,7 @@ from typing import Any
 
 from huggingface_hub import ModelCard
 from huggingface_hub.utils import validate_repo_id
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from rlab.env_registry import game_family_for_environment
 from rlab.metric_names import (
@@ -595,6 +596,18 @@ def _percent(value: object) -> str:
     return f"{100.0 * float(value):.1f}%"
 
 
+_MODEL_CARD_TEMPLATE_ENV = Environment(
+    loader=FileSystemLoader(Path(__file__).with_name("templates")),
+    undefined=StrictUndefined,
+    autoescape=False,
+    keep_trailing_newline=True,
+)
+
+
+def _render_model_card_template(context: Mapping[str, Any]) -> str:
+    return _MODEL_CARD_TEMPLATE_ENV.get_template("model_card.md.j2").render(**context)
+
+
 def render_model_card(
     manifest: Mapping[str, Any],
     model_metadata: Mapping[str, Any],
@@ -693,104 +706,54 @@ not a schema-v1 release and has no `v1` tag. A current release requires new stoc
         if is_jerk
         else "Stable-Baselines3 policy checkpoint"
     )
-    card = f"""---
-library_name: {library_name}
-pipeline_tag: reinforcement-learning
-license: mit
-tags:
-  - reinforcement-learning
-  - {library_tag}
-  - {algorithm}
-  - {provider}
-  - rlab
-  - {game}
-metrics:
-  - success-rate
----
-
-# {game} — {goal} — {algorithm.upper()}
-
-{policy_description}
-[`rlab`](https://github.com/tsilva/rlab).
-
-## At a Glance
-
-| Item | Value |
-|---|---|
-| Task | Complete `{game}` `{goal}` |
-| Provider | `{provider}` |
-| Algorithm | `{algorithm}` |
-| Checkpoint | Step `{checkpoint_step}` |
-| Evaluation | `{action_sampling}` full evaluation, `{episodes}` episodes |
-| Success | minimum `{_percent(success_min)}`, mean `{_percent(success_mean)}` |
-| Mean return | `{return_mean:.3f}` |
-| Release | `{version or "legacy-deterministic"}` |
-| Preview | Root `replay.mp4` |
-| YouTube | {youtube_value} |
-
-## Quick Start
-
-{install}
-
-Import the ROM, then play or evaluate the immutable checkpoint:
-
-```bash
-uv run rlab import-roms ~/roms --game {game}
-uv run rlab play {model_ref}
-uv run rlab eval run {model_ref}
-```
-
-## Evaluation
-
-Action selection was `{action_sampling}` under the published evaluation environment contract.
-
-| Start | Episodes | Successes | Success rate | Mean return |
-|---|---:|---:|---:|---:|
-{rows}
-
-## Environment and Policy Contract
-
-| Item | Value |
-|---|---|
-| Environment | `{qualified_env_id}` |
-| Environment hash | `{_markdown_value(model.get("environment_hash"))}` |
-| Preprocessing | `{_markdown_value(json.dumps(preprocessing, sort_keys=True, separators=(",", ":")))}` |
-| Action contract | `{_markdown_value(json.dumps(action, sort_keys=True, separators=(",", ":")))}` |
-
-## Provenance
-
-| Item | Value |
-|---|---|
-| Source | [rlab](https://github.com/tsilva/rlab) |
-| Run | {f"[{_markdown_value(source.get('run_name'))}]({wandb_url})" if wandb_url else _markdown_value(source.get("run_name") or "Legacy run")} |
-| Recipe | `{_markdown_value(source.get("recipe") or "legacy")}` |
-| Seed | `{_markdown_value(source.get("seed") if source.get("seed") is not None else "legacy")}` |
-| Source commit | `{_markdown_value(source.get("commit") or "not recorded")}` |
-| Evaluated artifact | `{_markdown_value(source.get("checkpoint_artifact") or evaluation.get("checkpoint_artifact"))}` |
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `model.zip` | {model_file_description} |
-| `model.json` | Versioned checkpoint identity, policy type, provenance, and recipe binding |
-| `recipe.json` | Versioned execution and evaluation contract |
-| `release_manifest.json` | {manifest_purpose} |
-| `replay.mp4` | Browser-safe representative episode |
-| `LICENSE` | License for rlab-authored policy weights and publication material |
-
-## Limitations
-
-Evaluation establishes performance only for the published environment hash, start distribution,
-policy preprocessing, and action-selection protocol. It does not establish generalization to
-other levels, environments, ROM revisions, or contracts.
-{status}
-## Licensing
-
-The rlab-authored policy weights and publication material are licensed under the MIT License in
-`LICENSE`. Emulator/runtime software and game assets remain governed by their own licenses and
-terms. This repository does not redistribute a game ROM.
-"""
+    run_value = (
+        f"[{_markdown_value(source.get('run_name'))}]({wandb_url})"
+        if wandb_url
+        else _markdown_value(source.get("run_name") or "Legacy run")
+    )
+    card = _render_model_card_template(
+        {
+            "library_name": library_name,
+            "library_tag": library_tag,
+            "algorithm": algorithm,
+            "algorithm_upper": algorithm.upper(),
+            "provider": provider,
+            "game": game,
+            "goal": goal,
+            "policy_description": policy_description,
+            "checkpoint_step": checkpoint_step,
+            "action_sampling": action_sampling,
+            "episodes": episodes,
+            "success_min": _percent(success_min),
+            "success_mean": _percent(success_mean),
+            "return_mean": f"{return_mean:.3f}",
+            "version": version or "legacy-deterministic",
+            "youtube_value": youtube_value,
+            "install": install,
+            "model_ref": model_ref,
+            "rows": rows,
+            "qualified_env_id": qualified_env_id,
+            "environment_hash": _markdown_value(model.get("environment_hash")),
+            "preprocessing": _markdown_value(
+                json.dumps(preprocessing, sort_keys=True, separators=(",", ":"))
+            ),
+            "action": _markdown_value(
+                json.dumps(action, sort_keys=True, separators=(",", ":"))
+            ),
+            "run_value": run_value,
+            "recipe": _markdown_value(source.get("recipe") or "legacy"),
+            "seed": _markdown_value(
+                source.get("seed") if source.get("seed") is not None else "legacy"
+            ),
+            "source_commit": _markdown_value(source.get("commit") or "not recorded"),
+            "checkpoint_artifact": _markdown_value(
+                source.get("checkpoint_artifact") or evaluation.get("checkpoint_artifact")
+            ),
+            "model_file_description": model_file_description,
+            "manifest_purpose": manifest_purpose,
+            "status": status,
+        }
+    )
     return card.strip() + "\n"
 
 

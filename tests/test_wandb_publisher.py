@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab.fleet_wandb_publisher import (
+    WandbFinalizationVerificationError,
     _canonical_goal_summary,
     _cursor_mapping,
     _partition_batches,
@@ -15,14 +16,22 @@ from rlab.fleet_wandb_publisher import (
     finalize_finishing_run,
     run_publisher_actor,
 )
+from rlab.metric_names import (
+    EVAL_ACCEPTANCE_PASS,
+    LEADER_CHECKPOINT_ACCEPTANCE_PASS,
+    LEADER_CHECKPOINT_ARTIFACT_REF,
+    LEADER_CHECKPOINT_STEP,
+)
 from rlab.metric_store import MetricStore
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
 from rlab import wandb_publisher
+from rlab.wandb_utils import configure_wandb_metrics
 
 
 class FakeRun:
     def __init__(self) -> None:
         self.logged: list[dict[str, object]] = []
+        self.summary: dict[str, object] = {}
 
     def log(self, payload: dict[str, object]) -> None:
         self.logged.append(dict(payload))
@@ -35,12 +44,65 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    @staticmethod
+    def _acceptance_payload(
+        checkpoint_step: int,
+        *,
+        passed: bool,
+        canonical: bool,
+    ) -> dict[str, object]:
+        metrics = {
+            "global_step": checkpoint_step,
+            EVAL_ACCEPTANCE_PASS: 1.0 if passed else 0.0,
+        }
+        raw_metrics = (
+            {
+                "checkpoint_step": checkpoint_step,
+                "eval/full/outcome/success/rate/min": 1.0,
+                "eval/full/outcome/success/rate/mean": 1.0,
+                "eval/full/episode/return/mean": 3144.17,
+                "eval/full/episode/return/best": 4000.0,
+                "eval/full/progress/x/max": 3160,
+            }
+            if passed
+            else {"checkpoint_step": checkpoint_step}
+        )
+        return {
+            "train_config": {
+                "wandb_run_id": "rlab-test",
+                "selection_rank": [
+                    "max(eval/full/outcome/success/rate/min)",
+                    "max(eval/full/outcome/success/rate/mean)",
+                    "min(leader/checkpoint/steps_to_goal)",
+                    "max(eval/full/episode/return/mean)",
+                ],
+            },
+            "purpose": "acceptance",
+            "checkpoint_uri": f"s3://bucket/{checkpoint_step}/model.zip",
+            "checkpoint_step": checkpoint_step,
+            "canonical_promotion": canonical,
+            "decision": {
+                "passed": passed,
+                "metrics": metrics,
+                "raw_metrics": raw_metrics,
+            },
+        }
+
     def test_terminal_goal_summary_uses_the_promoted_acceptance_evidence(self) -> None:
         summary = _canonical_goal_summary(
             {
                 "outcome": "accepted",
+                "train_config": {
+                    "selection_rank": [
+                        "max(eval/full/outcome/success/rate/min)",
+                        "max(eval/full/outcome/success/rate/mean)",
+                        "min(leader/checkpoint/steps_to_goal)",
+                        "max(eval/full/episode/return/mean)",
+                    ]
+                },
                 "promotion_json": {
                     "checkpoint_step": 8_000_000,
+                    "checkpoint_uri": "s3://bucket/8000000/model.zip",
                     "raw_metrics": {
                         "episodes": 100,
                         "_acceptance_duration_seconds": 33.75,
@@ -63,6 +125,55 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual(summary["eval/acceptance/failure/count"], 0)
         self.assertEqual(summary["eval/full/checkpoint/step"], 8_000_000)
         self.assertEqual(summary["eval/full/outcome/success/rate/min"], 1.0)
+        self.assertEqual(summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS], 1.0)
+        self.assertEqual(summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+        self.assertEqual(
+            summary[LEADER_CHECKPOINT_ARTIFACT_REF],
+            "s3://bucket/8000000/model.zip",
+        )
+
+    def test_canonical_acceptance_survives_later_noncanonical_rejection(self) -> None:
+        run = FakeRun()
+        with mock.patch.dict("sys.modules", {"wandb": SimpleNamespace()}):
+            project_payload_to_run(
+                run,
+                self._acceptance_payload(8_000_000, passed=True, canonical=True),
+            )
+            project_payload_to_run(
+                run,
+                self._acceptance_payload(11_750_000, passed=False, canonical=False),
+            )
+
+        self.assertEqual(run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS], 1.0)
+        self.assertEqual(run.summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+        self.assertEqual(run.summary["rlab/goal/outcome"], "accepted")
+        self.assertEqual(
+            [row[EVAL_ACCEPTANCE_PASS] for row in run.logged],
+            [1.0, 0.0],
+        )
+
+    def test_reverse_order_batch_still_projects_the_canonical_acceptance(self) -> None:
+        run = FakeRun()
+        with mock.patch.dict("sys.modules", {"wandb": SimpleNamespace()}):
+            for payload in (
+                self._acceptance_payload(11_750_000, passed=False, canonical=False),
+                self._acceptance_payload(8_000_000, passed=True, canonical=True),
+            ):
+                project_payload_to_run(run, payload)
+
+        self.assertEqual(run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS], 1.0)
+        self.assertEqual(run.summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+
+    def test_acceptance_history_summary_uses_max(self) -> None:
+        run = mock.MagicMock()
+
+        configure_wandb_metrics(run)
+
+        run.define_metric.assert_any_call(
+            EVAL_ACCEPTANCE_PASS,
+            step_metric="global_step",
+            summary="max",
+        )
 
     def test_publisher_actor_survives_idle_gaps_until_remote_completion(self) -> None:
         conn = mock.MagicMock()
@@ -212,7 +323,10 @@ class WandbPublisherTests(unittest.TestCase):
                     "game": "SuperMarioBros-Nes-v0",
                 },
                 "outcome": "accepted",
-                "promotion_json": {"checkpoint_sha256": "a" * 64},
+                "promotion_json": {
+                    "checkpoint_sha256": "a" * 64,
+                    "checkpoint_step": 8_000_000,
+                },
             },
         ]
         cursor.fetchall.return_value = [
@@ -231,7 +345,10 @@ class WandbPublisherTests(unittest.TestCase):
             state="finished",
             summary={
                 "_rlab_telemetry_cursors": {"train-7": 3},
-                "eval/acceptance/pass": 1.0,
+                "eval/acceptance/pass": 0.0,
+                "rlab/goal/outcome": "accepted",
+                LEADER_CHECKPOINT_ACCEPTANCE_PASS: 1.0,
+                LEADER_CHECKPOINT_STEP: 8_000_000,
             },
             logged_artifacts=lambda: [artifact],
         )
@@ -289,6 +406,139 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertFalse(
             any("live_publication_status = 'complete'" in statement for statement in statements)
         )
+
+    def test_stale_remote_summary_is_restamped_from_database_promotion(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 7,
+                "live_publication_attempts": 0,
+                "train_config": {
+                    "wandb_run_id": "run-7",
+                    "game": "SuperMarioBros-Nes-v0",
+                    "selection_rank": [
+                        "max(eval/full/outcome/success/rate/min)",
+                        "max(eval/full/outcome/success/rate/mean)",
+                        "min(leader/checkpoint/steps_to_goal)",
+                        "max(eval/full/episode/return/mean)",
+                    ],
+                },
+                "outcome": "accepted",
+                "promotion_json": {
+                    "checkpoint_sha256": "a" * 64,
+                    "checkpoint_step": 8_000_000,
+                    "checkpoint_uri": "s3://bucket/8000000/model.zip",
+                    "raw_metrics": {
+                        "checkpoint_step": 8_000_000,
+                        "eval/full/outcome/success/rate/min": 1.0,
+                        "eval/full/outcome/success/rate/mean": 1.0,
+                        "eval/full/episode/return/mean": 3144.17,
+                    },
+                },
+            },
+        ]
+        cursor.fetchall.return_value = [
+            {"stream_id": "train-7", "final_sequence": 3, "published_sequence": 3}
+        ]
+        cursor.rowcount = 1
+        artifact = SimpleNamespace(
+            aliases=["promoted"],
+            metadata={"checkpoint_sha256": "a" * 64},
+        )
+        remote = SimpleNamespace(
+            state="finished",
+            summary={
+                "_rlab_telemetry_cursors": {"train-7": 3},
+                EVAL_ACCEPTANCE_PASS: 0.0,
+            },
+            logged_artifacts=lambda: [artifact],
+        )
+        projector = SimpleNamespace(run=remote, close=lambda: None)
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                return_value=remote,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ),
+        ):
+            self.assertTrue(finalize_finishing_run(conn, 7))
+
+        self.assertEqual(remote.summary["rlab/goal/outcome"], "accepted")
+        self.assertEqual(remote.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS], 1.0)
+        self.assertEqual(remote.summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+
+    def test_persistent_artifact_mismatch_is_bounded_and_precise(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [
+            {"acquired": True},
+            {
+                "id": 7,
+                "live_publication_attempts": 2,
+                "train_config": {
+                    "wandb_run_id": "run-7",
+                    "game": "SuperMarioBros-Nes-v0",
+                    "selection_rank": ["max(eval/full/outcome/success/rate/min)"],
+                },
+                "outcome": "accepted",
+                "promotion_json": {
+                    "checkpoint_sha256": "a" * 64,
+                    "checkpoint_step": 8_000_000,
+                    "checkpoint_uri": "s3://bucket/model.zip",
+                    "raw_metrics": {
+                        "checkpoint_step": 8_000_000,
+                        "eval/full/outcome/success/rate/min": 1.0,
+                        "eval/full/outcome/success/rate/mean": 1.0,
+                    },
+                },
+            },
+        ]
+        cursor.fetchall.return_value = [
+            {"stream_id": "train-7", "final_sequence": 3, "published_sequence": 3}
+        ]
+        remote = SimpleNamespace(
+            state="finished",
+            summary={
+                "_rlab_telemetry_cursors": {"train-7": 3},
+                "rlab/goal/outcome": "accepted",
+                LEADER_CHECKPOINT_ACCEPTANCE_PASS: 1.0,
+                LEADER_CHECKPOINT_STEP: 8_000_000,
+            },
+            logged_artifacts=lambda: [],
+        )
+        projector = SimpleNamespace(run=remote, close=lambda: None)
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                return_value=remote,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.time.monotonic",
+                side_effect=[0.0, 21.0],
+            ),
+            self.assertRaisesRegex(WandbFinalizationVerificationError, "artifact"),
+        ):
+            finalize_finishing_run(conn, 7)
+
+        failure_update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertEqual(failure_update.args[1]["attempts"], 3)
+        self.assertTrue(failure_update.args[1]["terminal"])
+        self.assertIn("artifact", failure_update.args[1]["error"])
 
     def test_late_evaluations_keep_their_checkpoint_steps_without_internal_step(self) -> None:
         run = FakeRun()

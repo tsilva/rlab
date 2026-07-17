@@ -18,13 +18,19 @@ from rlab.artifacts import (
     wandb_artifact_storage_uri,
     write_wandb_url,
 )
-from rlab.checkpoint_eval_worker import log_checkpoint_eval_metrics
+from rlab.checkpoint_eval_worker import (
+    log_checkpoint_eval_metrics,
+    update_best_checkpoint_summary,
+)
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.env_metadata import env_config_from_config_dict
 from rlab.metric_store import MetricStore, metric_store_path
-from rlab.metric_names import validate_metric_payload
-from rlab.metric_names import EVAL_SCREEN_PREVIEW
+from rlab.metric_names import (
+    EVAL_SCREEN_PREVIEW,
+    LEADER_CHECKPOINT_ACCEPTANCE_PASS,
+    validate_metric_payload,
+)
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import (
     configure_wandb_metrics,
@@ -181,6 +187,21 @@ def project_payload_to_run(
         )
     else:
         run.log(dict(decision["metrics"]))
+        if purpose == "acceptance" and bool(payload.get("canonical_promotion", False)):
+            if not bool(decision.get("passed", False)):
+                raise ValueError("canonical acceptance projection must contain a passed decision")
+            update_best_checkpoint_summary(
+                run,
+                metrics=dict(decision["raw_metrics"]),
+                checkpoint_path=checkpoint_uri,
+                checkpoint_step_value=int(payload["checkpoint_step"]),
+                artifact_ref=checkpoint_uri,
+                eval_source="modal:acceptance",
+                selection_rank=train_config.get("selection_rank") or (),
+                force=True,
+            )
+            run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
+            run.summary["rlab/goal/outcome"] = "accepted"
         preview = decision.get("preview")
         if (
             purpose == "screen"

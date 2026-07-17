@@ -1,0 +1,97 @@
+---
+library_name: {{ library_name }}
+pipeline_tag: reinforcement-learning
+license: mit
+tags:
+  - reinforcement-learning
+  - {{ library_tag }}
+  - {{ algorithm }}
+  - {{ provider }}
+  - rlab
+  - {{ game }}
+metrics:
+  - success-rate
+---
+
+# {{ game }} — {{ goal }} — {{ algorithm_upper }}
+
+{{ policy_description }}
+[`rlab`](https://github.com/tsilva/rlab).
+
+## At a Glance
+
+| Item | Value |
+|---|---|
+| Task | Complete `{{ game }}` `{{ goal }}` |
+| Provider | `{{ provider }}` |
+| Algorithm | `{{ algorithm }}` |
+| Checkpoint | Step `{{ checkpoint_step }}` |
+| Evaluation | `{{ action_sampling }}` full evaluation, `{{ episodes }}` episodes |
+| Success | minimum `{{ success_min }}`, mean `{{ success_mean }}` |
+| Mean return | `{{ return_mean }}` |
+| Release | `{{ version }}` |
+| Preview | Root `replay.mp4` |
+| YouTube | {{ youtube_value }} |
+
+## Quick Start
+
+{{ install }}
+
+Import the ROM, then play or evaluate the immutable checkpoint:
+
+```bash
+uv run rlab import-roms ~/roms --game {{ game }}
+uv run rlab play {{ model_ref }}
+uv run rlab eval run {{ model_ref }}
+```
+
+## Evaluation
+
+Action selection was `{{ action_sampling }}` under the published evaluation environment contract.
+
+| Start | Episodes | Successes | Success rate | Mean return |
+|---|---:|---:|---:|---:|
+{{ rows }}
+
+## Environment and Policy Contract
+
+| Item | Value |
+|---|---|
+| Environment | `{{ qualified_env_id }}` |
+| Environment hash | `{{ environment_hash }}` |
+| Preprocessing | `{{ preprocessing }}` |
+| Action contract | `{{ action }}` |
+
+## Provenance
+
+| Item | Value |
+|---|---|
+| Source | [rlab](https://github.com/tsilva/rlab) |
+| Run | {{ run_value }} |
+| Recipe | `{{ recipe }}` |
+| Seed | `{{ seed }}` |
+| Source commit | `{{ source_commit }}` |
+| Evaluated artifact | `{{ checkpoint_artifact }}` |
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `model.zip` | {{ model_file_description }} |
+| `model.json` | Versioned checkpoint identity, policy type, provenance, and recipe binding |
+| `recipe.json` | Versioned execution and evaluation contract |
+| `release_manifest.json` | {{ manifest_purpose }} |
+| `replay.mp4` | Browser-safe representative episode |
+| `LICENSE` | License for rlab-authored policy weights and publication material |
+
+## Limitations
+
+Evaluation establishes performance only for the published environment hash, start distribution,
+policy preprocessing, and action-selection protocol. It does not establish generalization to
+other levels, environments, ROM revisions, or contracts.
+{{ status }}
+## Licensing
+
+The rlab-authored policy weights and publication material are licensed under the MIT License in
+`LICENSE`. Emulator/runtime software and game assets remain governed by their own licenses and
+terms. This repository does not redistribute a game ROM.

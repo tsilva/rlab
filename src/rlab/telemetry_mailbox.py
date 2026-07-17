@@ -370,6 +370,8 @@ def claim_run_metric_batches(
             WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
               AND t.telemetry_transport = 'neon_mailbox_v1'
               AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+              AND (t.live_publication_next_retry_at IS NULL
+                   OR t.live_publication_next_retry_at <= now())
               AND t.id <> ALL(%(excluded_ids)s)
               AND (%(train_job_id)s IS NULL OR t.id = %(train_job_id)s)
             ORDER BY b.created_at, b.id
@@ -446,12 +448,16 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
               WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
                 AND t.telemetry_transport = 'neon_mailbox_v1'
                 AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                AND (t.live_publication_next_retry_at IS NULL
+                     OR t.live_publication_next_retry_at <= now())
               GROUP BY t.id
               UNION ALL
               SELECT t.id, t.created_at AS ready_at
               FROM train_jobs t
               WHERE t.telemetry_transport = 'neon_mailbox_v1'
                 AND t.live_publication_status = 'finishing'
+                AND (t.live_publication_next_retry_at IS NULL
+                     OR t.live_publication_next_retry_at <= now())
             )
             SELECT id, min(ready_at) AS ready_at
             FROM candidates

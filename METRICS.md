@@ -71,9 +71,13 @@ An acceptance rejection is complete evidence of failure, but not a complete 100-
 evaluation. It emits `eval/acceptance/*` counters only. `eval/full/*` is emitted only after every
 manifest identity appears exactly once and all 100 episodes succeed.
 
-At terminal publication, W&B summary fields for an accepted run are rewritten from the immutable
-promoted acceptance evidence. Later rejected checkpoint projections remain in history but cannot
-replace the accepted checkpoint's `eval/acceptance/*` or `eval/full/*` summary values.
+`eval/acceptance/pass` is per-checkpoint history. W&B summarizes that history with `max`, so the
+summary means that some checkpoint passed; it is not the run verdict. The authoritative verdict is
+the database promotion record (`eval_runs.outcome`, `promoted_eval_job_id`, and `promotion_json`).
+At terminal publication, that record restamps `rlab/goal/outcome`, `leader/checkpoint/*`, and the
+accepted `eval/acceptance/*` and `eval/full/*` compatibility summaries. In particular,
+`leader/checkpoint/acceptance_pass=1` identifies the canonical promoted checkpoint. Later rejected
+checkpoint projections remain in history and never modify canonical leader fields.
 
 ## Registry
 
@@ -162,7 +166,7 @@ replace the accepted checkpoint's `eval/acceptance/*` or `eval/full/*` summary v
 | `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
-| `eval/acceptance/pass` | Whether this checkpoint produced complete valid acceptance evidence. | boolean | acceptance evaluation | history |
+| `eval/acceptance/pass` | Per-checkpoint acceptance result; W&B summarizes its history with max, not as the verdict. | boolean | acceptance evaluation | history |
 | `eval/acceptance/episodes/planned` | Exact episode identities required by the acceptance manifest. | episodes | acceptance evaluation | history |
 | `eval/acceptance/episodes/completed` | Valid planned episode rows completed before acceptance or fail-fast rejection. | episodes | acceptance evaluation | history |
 | `eval/acceptance/failure/count` | Failed planned episodes; zero for acceptance and one for fail-fast rejection. | episodes | acceptance evaluation | history |
@@ -175,6 +179,7 @@ replace the accepted checkpoint's `eval/acceptance/*` or `eval/full/*` summary v
 | `eval/confirm/candidate/checkpoint_step` | Historical confirmed candidate checkpoint step. | steps | historical evaluation | history |
 | `eval/confirm/candidate/episodes` | Historical confirmed candidate evaluation episodes. | episodes | historical evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
+| `leader/checkpoint/acceptance_pass` | Canonical promoted-checkpoint acceptance verdict restamped from database promotion state. | boolean | selection | summary |
 | `leader/checkpoint/success_rate_min` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/success_rate_mean` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/objective` | Selected checkpoint summary field. | summary | selection | summary |

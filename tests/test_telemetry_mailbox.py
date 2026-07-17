@@ -13,6 +13,7 @@ from rlab.telemetry_mailbox import (
     decode_metric_batch,
     encode_metric_batch,
     mark_submitted_batches,
+    pending_metric_run_ids,
 )
 from rlab.telemetry_relay import CommandRelay, _handle_commands, main as relay_main
 
@@ -68,6 +69,16 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    def test_finishing_publishers_wait_until_their_retry_deadline(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+
+        self.assertEqual(pending_metric_run_ids(conn), [])
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertEqual(statement.count("live_publication_next_retry_at <= now()"), 2)
+
     def test_worker_preflight_checks_the_command_poll_procedure(self) -> None:
         mailbox = WorkerMailbox("postgresql://worker/db", "train-7", "token")
         conn = mock.MagicMock()

@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -34,6 +35,7 @@ from rlab.modal_eval_orchestrator import (
     reconcile_promotions,
     reconcile_stop_delivery_slo,
     round_robin_jobs,
+    run_service_eval_pass,
 )
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.modal_eval_projection import project_payload
@@ -851,6 +853,114 @@ class ModalEvalRecoveryTests(unittest.TestCase):
 
 
 class ModalEvalSchedulingTests(unittest.TestCase):
+    def test_completed_attempt_polling_precedes_and_survives_ingestion_failure(self) -> None:
+        order: list[str] = []
+        conn = mock.MagicMock()
+        config = SimpleNamespace(enabled=True, hard_max_active=20)
+
+        def poll(*_args, **_kwargs):
+            order.append("poll")
+            return 1
+
+        def mailbox(*_args, **_kwargs):
+            order.append("mailbox")
+            raise RuntimeError("announcement backlog unavailable")
+
+        def legacy(*_args, **_kwargs):
+            order.append("legacy")
+            return 0
+
+        patchers = (
+            mock.patch(
+                "rlab.modal_eval_orchestrator.load_modal_eval_config",
+                return_value=config,
+            ),
+            mock.patch("rlab.modal_eval_orchestrator.database_url", return_value="postgres://db"),
+            mock.patch("rlab.modal_eval_orchestrator.connect", return_value=conn),
+            mock.patch("rlab.modal_eval_orchestrator._try_lock", return_value=True),
+            mock.patch("rlab.modal_eval_orchestrator._unlock"),
+            mock.patch("rlab.modal_eval_orchestrator.ensure_eval_runs", return_value=0),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.cancel_requested_attempts",
+                return_value=0,
+            ),
+            mock.patch("rlab.modal_eval_orchestrator.poll_attempts", side_effect=poll),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.ingest_mailbox_announcements",
+                side_effect=mailbox,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.ingest_announcements",
+                side_effect=legacy,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_canceled_eval_state",
+                return_value={"jobs": 0, "runs": 0, "workers": 0},
+            ),
+            mock.patch("rlab.modal_eval_orchestrator.publish_skipped_decisions", return_value=0),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.enqueue_missing_mailbox_projections",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.enqueue_post_train_promotions",
+                return_value=0,
+            ),
+            mock.patch("rlab.modal_eval_orchestrator.dispatch_pending", return_value=0),
+            mock.patch("rlab.modal_eval_orchestrator.reconcile_promotions", return_value=0),
+            mock.patch("rlab.modal_eval_orchestrator.project_eval_results", return_value=0),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.project_artifact_references",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_published_mailbox_projections",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_learner_stop_observation",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_stop_delivery_slo",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_definitive_non_acceptance",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_eval_run_failures",
+                return_value=0,
+            ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.reconcile_publication_finishing",
+                return_value=0,
+            ),
+            mock.patch("rlab.modal_eval_orchestrator.terminalize_runs", return_value=0),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.run_modal_app_cleanup",
+                return_value={"status": "ok"},
+            ),
+        )
+        with ExitStack() as stack:
+            for patcher in patchers:
+                stack.enter_context(patcher)
+            result = run_service_eval_pass(
+                repo_root=Path.cwd(),
+                deadline_monotonic=time.monotonic() + 60,
+                invoker=mock.MagicMock(),
+                store=mock.MagicMock(),
+            )
+
+        self.assertEqual(order, ["poll", "mailbox", "legacy"])
+        self.assertEqual(result["polled"], 1)
+        self.assertEqual(result["mailbox_ingested"], 0)
+        self.assertEqual(
+            result["ingestion_errors"],
+            ["mailbox:RuntimeError:announcement backlog unavailable"],
+        )
+
     def test_mailbox_ingestion_advances_ordering_cursor_within_batch(self) -> None:
         events = [
             {
@@ -880,6 +990,38 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             if "DELETE FROM attempt_events" in call.args[0]
         ]
         self.assertEqual(len(delete_calls), 3)
+
+    def test_mailbox_ingestion_time_slices_a_large_backlog(self) -> None:
+        events = [
+            {
+                "id": ledger_id,
+                "event_type": "checkpoint_tombstone",
+                "payload_json": {
+                    "train_job_id": 44,
+                    "ledger_id": ledger_id,
+                    "kind": "tombstone",
+                },
+                "next_announcement_id": 1,
+                "contract_json": {},
+            }
+            for ledger_id in range(1, 51)
+        ]
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = events
+        cursor.rowcount = 1
+
+        with mock.patch(
+            "rlab.modal_eval_orchestrator.time.monotonic",
+            side_effect=[0.0, 2.0],
+        ):
+            count = ingest_mailbox_announcements(
+                conn,
+                mock.MagicMock(),
+                deadline_monotonic=1.0,
+            )
+
+        self.assertEqual(count, 1)
 
     def test_plain_runtime_error_from_modal_is_a_terminal_call_failure(self) -> None:
         call = mock.MagicMock()
@@ -1256,6 +1398,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(reconcile_publication_finishing(conn), 1)
         finishing = cursor.execute.call_args.args[0]
         self.assertIn("live_publication_status = 'finishing'", finishing)
+        self.assertIn("live_publication_attempts = 0", finishing)
         self.assertIn("r.artifacts_projected_at IS NOT NULL", finishing)
         self.assertIn("s.published_sequence < s.final_sequence", finishing)
 

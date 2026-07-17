@@ -199,6 +199,23 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first[0]["category"], "eval_execution_failure")
 
+    def test_completed_publication_attempts_are_history_not_a_current_incident(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 61,
+                "status": "succeeded",
+                "eval_status": "complete",
+                "live_publication_status": "complete",
+                "live_publication_attempts": 82,
+            },
+            {},
+        )
+
+        self.assertNotIn(
+            "wandb_publication_retry",
+            [incident["category"] for incident in incidents],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

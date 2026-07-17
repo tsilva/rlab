@@ -180,7 +180,10 @@ def current_incidents(
                 f"errored_mailbox_events={int(diagnostics['errored_mailbox_events'])}",
             )
         )
-    if int(row.get("live_publication_attempts") or 0):
+    if (
+        int(row.get("live_publication_attempts") or 0)
+        and str(row.get("live_publication_status") or "") != "complete"
+    ):
         incidents.append(
             _incident(
                 run_id,

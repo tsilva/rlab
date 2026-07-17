@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from rlab.checkpoint_eval_worker import update_best_checkpoint_summary
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_args
 from rlab.telemetry_mailbox import (
@@ -34,12 +35,16 @@ from rlab.metric_names import (
     EVAL_ACCEPTANCE_FAILURE_COUNT,
     EVAL_ACCEPTANCE_PASS,
     EVAL_FULL_CHECKPOINT_STEP,
+    LEADER_CHECKPOINT_ACCEPTANCE_PASS,
+    LEADER_CHECKPOINT_STEP,
 )
 
 
 SUMMARY_CURSOR_KEY = "_rlab_telemetry_cursors"
 DEFAULT_BATCH_LIMIT = 100
 ACTOR_POLL_SECONDS = 2.0
+MAX_FINALIZATION_ATTEMPTS = 3
+FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
 SUPPORTED_FRAME_KINDS = {
     "history",
     "histogram",
@@ -51,6 +56,14 @@ SUPPORTED_FRAME_KINDS = {
 
 class InvalidTelemetryBatchError(RuntimeError):
     pass
+
+
+class WandbFinalizationVerificationError(RuntimeError):
+    def __init__(self, predicates: list[str]) -> None:
+        self.predicates = tuple(predicates)
+        super().__init__(
+            "W&B finalization verification failed: " + ", ".join(self.predicates)
+        )
 
 
 def _cursor_mapping(raw: object) -> dict[str, int]:
@@ -150,6 +163,10 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
     promotion = dict(run.get("promotion_json") or {})
     raw_metrics = dict(promotion.get("raw_metrics") or {})
     aggregates = dict(raw_metrics.get("_acceptance_aggregates") or {})
+    checkpoint_step = int(
+        promotion.get("checkpoint_step") or raw_metrics.get("checkpoint_step") or 0
+    )
+    raw_metrics.setdefault("checkpoint_step", checkpoint_step)
     summary.update(
         {
             EVAL_ACCEPTANCE_PASS: 1.0,
@@ -165,9 +182,7 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
                 or raw_metrics.get("eval/full/duration/seconds")
                 or 0.0
             ),
-            EVAL_FULL_CHECKPOINT_STEP: int(
-                promotion.get("checkpoint_step") or raw_metrics.get("checkpoint_step") or 0
-            ),
+            EVAL_FULL_CHECKPOINT_STEP: checkpoint_step,
         }
     )
     for key, value in raw_metrics.items():
@@ -177,7 +192,60 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
             and not isinstance(value, bool)
         ):
             summary[str(key)] = value
+    leader = SimpleNamespace(summary={})
+    update_best_checkpoint_summary(
+        leader,
+        metrics=raw_metrics,
+        checkpoint_path=str(promotion.get("checkpoint_uri") or ""),
+        checkpoint_step_value=checkpoint_step,
+        artifact_ref=str(promotion.get("checkpoint_uri") or ""),
+        eval_source="modal:acceptance",
+        selection_rank=_train_config(run).get("selection_rank") or (),
+        force=True,
+    )
+    summary.update(leader.summary)
+    summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
     return summary
+
+
+def _wandb_finalization_failures(
+    run: dict[str, Any],
+    candidate,
+    expected_cursors: dict[str, int],
+) -> list[str]:
+    summary = dict(candidate.summary)
+    cursors = _cursor_mapping(summary.get(SUMMARY_CURSOR_KEY) or {})
+    failures: list[str] = []
+    if str(getattr(candidate, "state", "")).lower() != "finished":
+        failures.append("remote_state")
+    for name, sequence in expected_cursors.items():
+        if int(cursors.get(name, -1)) != sequence:
+            failures.append(f"cursor:{name}")
+    outcome = str(run.get("outcome") or "unknown")
+    if str(summary.get("rlab/goal/outcome") or "") != outcome:
+        failures.append("outcome")
+    if outcome == "accepted":
+        promotion = dict(run.get("promotion_json") or {})
+        expected_step = int(promotion.get("checkpoint_step") or 0)
+        try:
+            leader_step = int(summary.get(LEADER_CHECKPOINT_STEP))
+        except TypeError, ValueError:
+            leader_step = -1
+        if leader_step != expected_step:
+            failures.append("leader_step")
+        try:
+            acceptance_pass = float(
+                summary.get(LEADER_CHECKPOINT_ACCEPTANCE_PASS, 0.0) or 0.0
+            )
+        except TypeError, ValueError:
+            acceptance_pass = 0.0
+        if acceptance_pass != 1.0:
+            failures.append("acceptance")
+        if not _remote_has_promoted_artifact(
+            candidate, str(promotion.get("checkpoint_sha256") or "")
+        ):
+            failures.append("artifact")
+    return failures
 
 
 def finalize_finishing_run(conn, train_job_id: int) -> bool:
@@ -197,6 +265,8 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
                 FROM train_jobs t
                 JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = %(id)s AND t.live_publication_status = 'finishing'
+                  AND (t.live_publication_next_retry_at IS NULL
+                       OR t.live_publication_next_retry_at <= now())
                 """,
                 {"id": int(train_job_id)},
             )
@@ -225,25 +295,8 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
         remote = _wandb_api_run(train_config)
         remote_summary = dict(remote.summary)
         remote_cursors = _cursor_mapping(remote_summary.get(SUMMARY_CURSOR_KEY) or {})
-        promotion = dict(run.get("promotion_json") or {})
-
-        def verified(candidate) -> bool:
-            summary = dict(candidate.summary)
-            cursors = _cursor_mapping(summary.get(SUMMARY_CURSOR_KEY) or {})
-            if str(getattr(candidate, "state", "")).lower() != "finished":
-                return False
-            if any(int(cursors.get(name, -1)) != sequence for name, sequence in expected.items()):
-                return False
-            if str(run.get("outcome")) == "accepted":
-                if float(summary.get(EVAL_ACCEPTANCE_PASS, 0.0) or 0.0) != 1.0:
-                    return False
-                if not _remote_has_promoted_artifact(
-                    candidate, str(promotion.get("checkpoint_sha256") or "")
-                ):
-                    return False
-            return True
-
-        if not verified(remote):
+        failures = _wandb_finalization_failures(run, remote, expected)
+        if failures:
             projector = WandbProjector.resume(
                 train_config,
                 allow_create=False,
@@ -259,13 +312,12 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
             deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
                 remote = _wandb_api_run(train_config)
-                if verified(remote):
+                failures = _wandb_finalization_failures(run, remote, expected)
+                if not failures:
                     break
                 time.sleep(1.0)
             else:
-                raise RuntimeError(
-                    "W&B did not remotely confirm finished state, cursors, metrics, and artifact"
-                )
+                raise WandbFinalizationVerificationError(failures)
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -280,17 +332,45 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
                 )
                 return cur.rowcount == 1
     except Exception as exc:
+        attempts = int((locals().get("run") or {}).get("live_publication_attempts") or 0) + 1
+        terminal = attempts >= MAX_FINALIZATION_ATTEMPTS
+        retry_delay = FINALIZATION_RETRY_DELAYS_SECONDS[
+            min(attempts - 1, len(FINALIZATION_RETRY_DELAYS_SECONDS) - 1)
+        ]
+        if isinstance(exc, WandbFinalizationVerificationError):
+            error = str(exc)
+        else:
+            error = f"W&B finalization remote_api failed: {type(exc).__name__}: {exc}"
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE train_jobs
                     SET live_publication_error = %(error)s,
-                        live_publication_attempts = live_publication_attempts + 1,
-                        live_publication_next_retry_at = now() + interval '30 seconds'
+                        live_publication_attempts = %(attempts)s,
+                        live_publication_status = CASE WHEN %(terminal)s
+                          THEN 'failed' ELSE 'finishing' END,
+                        live_publication_next_retry_at = CASE WHEN %(terminal)s
+                          THEN NULL
+                          ELSE now() + (%(retry_delay)s * interval '1 second') END,
+                        status = CASE WHEN %(terminal)s
+                          AND status IN ('finalizing', 'succeeded')
+                          THEN 'finalization_failed' ELSE status END,
+                        finished_at = CASE WHEN %(terminal)s
+                          AND status IN ('finalizing', 'succeeded')
+                          THEN now() ELSE finished_at END,
+                        error = CASE WHEN %(terminal)s
+                          AND status IN ('finalizing', 'succeeded')
+                          THEN %(error)s ELSE error END
                     WHERE id = %(id)s AND live_publication_status = 'finishing'
                     """,
-                    {"id": int(train_job_id), "error": repr(exc)[:4000]},
+                    {
+                        "id": int(train_job_id),
+                        "error": error[:4000],
+                        "attempts": attempts,
+                        "terminal": terminal,
+                        "retry_delay": retry_delay,
+                    },
                 )
         raise
     finally:

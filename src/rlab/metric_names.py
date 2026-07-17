@@ -124,6 +124,7 @@ CHECKPOINT_EVAL_CANDIDATE_EPISODES = "eval/confirm/candidate/episodes"
 
 LEADER_CHECKPOINT_SUCCESS_RATE_MIN = "leader/checkpoint/success_rate_min"
 LEADER_CHECKPOINT_SUCCESS_RATE_MEAN = "leader/checkpoint/success_rate_mean"
+LEADER_CHECKPOINT_ACCEPTANCE_PASS = "leader/checkpoint/acceptance_pass"
 LEADER_CHECKPOINT_OBJECTIVE = "leader/checkpoint/objective"
 LEADER_CHECKPOINT_OBJECTIVE_NAME = "leader/checkpoint/objective_name"
 LEADER_CHECKPOINT_RETURN_MEAN = "leader/checkpoint/return_mean"
@@ -443,7 +444,7 @@ METRIC_DEFINITIONS = (
     _definition("eval/{protocol}/source", "Evaluation execution source.", "text", "evaluation"),
     _definition(
         EVAL_ACCEPTANCE_PASS,
-        "Whether this checkpoint produced complete valid acceptance evidence.",
+        "Per-checkpoint acceptance result; W&B summarizes its history with max, not as the verdict.",
         "boolean",
         "acceptance evaluation",
     ),
@@ -513,6 +514,13 @@ METRIC_DEFINITIONS = (
         "Structured full-evaluation evidence by start and reason.",
         "table",
         "evaluation",
+    ),
+    _definition(
+        LEADER_CHECKPOINT_ACCEPTANCE_PASS,
+        "Canonical promoted-checkpoint acceptance verdict restamped from database promotion state.",
+        "boolean",
+        "selection",
+        "summary",
     ),
     *(
         _definition(name, "Selected checkpoint summary field.", "summary", "selection", "summary")

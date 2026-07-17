@@ -1401,6 +1401,35 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(any("retry_round + 1" in statement for statement in statements))
         self.assertFalse(any("UPDATE job_launches" in statement for statement in statements))
 
+    def test_retry_finalization_restamps_a_succeeded_run_without_reopening_training(self) -> None:
+        source = {
+            "id": 61,
+            "status": "succeeded",
+            "launch_state": "succeeded",
+            "live_publication_status": "complete",
+        }
+        restamping = {
+            **source,
+            "live_publication_status": "finishing",
+            "live_publication_attempts": 0,
+        }
+        conn = FakeConnection(
+            results=[
+                {"row": source},
+                {"row": restamping},
+                {},
+            ]
+        )
+
+        result = job_queue.retry_train_job_finalization(conn, job_id=61)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["live_publication_status"], "finishing")
+        statements = conn.cursor_obj.executed_sqls
+        self.assertTrue(any("live_publication_status = 'finishing'" in sql for sql in statements))
+        self.assertFalse(any("UPDATE eval_jobs" in sql for sql in statements))
+        self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
+
     def test_cancel_intent_dominates_success_result(self) -> None:
         launch = {
             "launch_id": "train-7",

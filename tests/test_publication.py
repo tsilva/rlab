@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from copy import deepcopy
@@ -7,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from huggingface_hub import ModelCard
+from jinja2 import UndefinedError
 
 from rlab.preprocessing import preprocessing_contract
 from rlab.policy_bundle import (
@@ -25,6 +28,7 @@ from rlab.publication import (
     HUGGINGFACE_RELEASE_FILES,
     MIT_LICENSE_TEXT,
     PublicationIdentity,
+    _render_model_card_template,
     build_model_repo_id,
     build_release_manifest,
     normalize_publication_evaluation,
@@ -36,6 +40,30 @@ from rlab.publication import (
     upgrade_legacy_model_metadata_for_publication,
     validate_release_bundle,
 )
+
+
+def _render_current_model_card_fixture(
+    *,
+    algorithm: str = "ppo",
+    model_class: str = "stable_baselines3.ppo.ppo.PPO",
+    youtube_url: str | None = "https://www.youtube.com/watch?v=example",
+) -> str:
+    raw_metadata = model_metadata(algorithm=algorithm, model_class=model_class)
+    identity = publication_identity_from_model_metadata("Level1-1", raw_metadata)
+    metadata = publication_model_metadata(raw_metadata, identity)
+    evaluation = normalize_publication_evaluation(evaluation_payload())
+    source = publication_source_from_model_metadata(metadata, evaluation)
+    manifest = build_release_manifest(
+        identity,
+        metadata,
+        release_version="v1",
+        published_at="2026-07-14T12:00:00Z",
+        source=source,
+        evaluation=evaluation.as_manifest_value(),
+        artifacts={},
+        youtube_url=youtube_url,
+    )
+    return render_model_card(manifest, metadata)
 
 
 def model_metadata(
@@ -283,6 +311,33 @@ def test_publication_source_requires_explicit_seed_commit_and_matching_step() ->
     metadata["checkpoint_step"] = 1
     with pytest.raises(ValueError, match="checkpoint_step disagrees"):
         publication_source_from_model_metadata(metadata, evaluation)
+
+
+def test_model_card_template_preserves_current_sb3_golden_output() -> None:
+    card = _render_current_model_card_fixture()
+
+    ModelCard(card).validate(repo_type="model")
+    assert hashlib.sha256(card.encode()).hexdigest() == (
+        "17db58fae0e6022eb5f1f5b3f445815145d0ff3ee720bcf706a145d98e8d6a4c"
+    )
+
+
+def test_model_card_template_preserves_current_jerk_golden_output() -> None:
+    card = _render_current_model_card_fixture(
+        algorithm="jerk",
+        model_class="rlab.jerk.JerkPolicy",
+        youtube_url=None,
+    )
+
+    ModelCard(card).validate(repo_type="model")
+    assert hashlib.sha256(card.encode()).hexdigest() == (
+        "43670c208a96044ec3f8468737eb361c94045f4591d85ddef10cf2b23dd49c61"
+    )
+
+
+def test_model_card_template_rejects_missing_context() -> None:
+    with pytest.raises(UndefinedError):
+        _render_model_card_template({})
 
 
 def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
