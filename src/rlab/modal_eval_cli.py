@@ -40,7 +40,7 @@ MODAL_SCHEMA_COLUMNS = {
         "retry_round",
     },
     "eval_attempts": {"eval_job_id", "modal_call_id", "result_uri", "retry_round"},
-    "eval_backend_state": {"backend", "effective_capacity"},
+    "eval_backend_state": {"backend", "drained"},
 }
 
 
@@ -151,7 +151,7 @@ def modal_preflight(
 
     add(
         "config_guards",
-        config.hard_max_active == config.max_containers and config.initial_effective_capacity == 3,
+        config.hard_max_active == 10 and config.max_containers == 10,
         f"enabled={str(config.enabled).lower()} hard_cap={config.hard_max_active} max_containers={config.max_containers}",
     )
     try:
@@ -194,12 +194,9 @@ def modal_preflight(
                 backend = dict(cur.fetchone() or {})
             add(
                 "backend_state",
-                bool(backend)
-                and not bool(backend.get("drained"))
-                and int(backend.get("effective_capacity") or 0) >= 1,
+                bool(backend) and not bool(backend.get("drained")),
                 (
-                    f"drained={str(bool(backend.get('drained'))).lower()} "
-                    f"capacity={int(backend.get('effective_capacity') or 0)}"
+                    f"drained={str(bool(backend.get('drained'))).lower()}"
                     if backend
                     else "missing"
                 ),
@@ -284,48 +281,20 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     return 0 if report["ready"] else 1
 
 
-def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> int:
-    config = load_modal_eval_config()
-    capacity_stages = tuple(
-        sorted(
-            {
-                1,
-                min(2, config.hard_max_active),
-                min(3, config.hard_max_active),
-                config.hard_max_active,
-            }
-        )
-    )
-    allowed_capacities = set(capacity_stages)
-    if capacity is not None and capacity not in allowed_capacities:
-        raise ValueError(f"capacity must be one of {sorted(allowed_capacities)}")
+def _set_backend(*, drained: bool, reason: str | None) -> int:
     conn = _conn()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT effective_capacity FROM eval_backend_state WHERE backend = 'modal' FOR UPDATE"
-                )
-                current = int(cur.fetchone()["effective_capacity"])
-                if capacity is not None and capacity > current:
-                    allowed_increase = (current, capacity) in set(
-                        zip(capacity_stages[:-1], capacity_stages[1:], strict=True)
-                    )
-                    if not allowed_increase:
-                        raise ValueError(
-                            "capacity rollout must progress through "
-                            + " to ".join(str(stage) for stage in capacity_stages)
-                        )
-                cur.execute(
                     """
                     UPDATE eval_backend_state
                     SET drained = %(drained)s,
-                        effective_capacity = COALESCE(%(capacity)s, effective_capacity),
                         reason = %(reason)s, updated_at = now()
                     WHERE backend = 'modal'
                     RETURNING *
                     """,
-                    {"drained": drained, "capacity": capacity, "reason": reason},
+                    {"drained": drained, "reason": reason},
                 )
                 row = dict(cur.fetchone())
         print(json.dumps(row, sort_keys=True, default=str))
@@ -338,11 +307,11 @@ def _set_backend(*, drained: bool, capacity: int | None, reason: str | None) -> 
 
 
 def cmd_drain(args: argparse.Namespace) -> int:
-    return _set_backend(drained=True, capacity=None, reason=args.reason or "operator drain")
+    return _set_backend(drained=True, reason=args.reason or "operator drain")
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    return _set_backend(drained=False, capacity=args.capacity, reason=args.reason)
+    return _set_backend(drained=False, reason=args.reason)
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
@@ -786,7 +755,6 @@ def build_parser() -> argparse.ArgumentParser:
     drain.add_argument("--reason", default="")
     drain.set_defaults(func=cmd_drain)
     resume = commands.add_parser("resume")
-    resume.add_argument("--capacity", type=int, default=None)
     resume.add_argument("--reason", default="")
     resume.set_defaults(func=cmd_resume)
     retry = commands.add_parser("retry")

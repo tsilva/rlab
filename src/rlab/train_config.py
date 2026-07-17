@@ -753,16 +753,6 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Immutable acceptance evidence contract materialized by the queue.",
     ),
     TrainConfigField(
-        "eval_load_reservation",
-        "--eval-load-reservation",
-        type_name="json",
-        default=None,
-        serialize="json",
-        mapping_value=True,
-        cli_exposed=False,
-        help="Immutable benchmark-derived Modal load reservation materialized by the queue.",
-    ),
-    TrainConfigField(
         "stop_on_acceptance",
         "--stop-on-acceptance",
         kind="bool_optional",

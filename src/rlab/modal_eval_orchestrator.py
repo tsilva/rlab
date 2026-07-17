@@ -1222,8 +1222,8 @@ def round_robin_jobs(
     return selected
 
 
-def available_eval_slots(*, effective_capacity: int, active_calls: int, hard_cap: int) -> int:
-    return max(0, min(int(effective_capacity), int(hard_cap)) - max(0, int(active_calls)))
+def available_eval_slots(*, active_calls: int, hard_cap: int) -> int:
+    return max(0, int(hard_cap) - max(0, int(active_calls)))
 
 
 def budget_allows(
@@ -1252,13 +1252,11 @@ def dispatch_pending(
         state = dict(cur.fetchone())
         if state["drained"]:
             return 0
-        effective = min(int(state["effective_capacity"]), config.hard_max_active)
         cur.execute(
             "SELECT count(*) AS count FROM eval_attempts WHERE status IN ('dispatching', 'submitted')"
         )
         active = int(cur.fetchone()["count"])
     slots = available_eval_slots(
-        effective_capacity=effective,
         active_calls=active,
         hard_cap=config.hard_max_active,
     )

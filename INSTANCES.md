@@ -85,25 +85,8 @@ needs them.
 Modal is a backend-bound evaluation lane owned by the Mac evaluation controller; it is not a
 registered training machine and must not be added to `experiments/machines.yaml`. Its checked-in
 deployment, timeout, budget, and concurrency contract is `experiments/modal_eval.yaml`. The
-independent hard safety ceiling is 20 and the effective acceptance-eval capacity is 3. Admission
-uses the checked-in workload policy in `experiments/eval_capacity.yaml`: an eval-enabled train job
-is claimed only when total reserved load remains at or below 80% of effective Modal capacity.
-
-The 2026-07-16 acceptance-v1 benchmark ran five complete 100-episode evaluations and five weak
-fail-fast evaluations at each of 4, 8, and 16 requested CPUs against the exact immutable Level1-1
-contract. Complete-eval median/p95 seconds were 50.272/57.886 at 4 CPUs, 35.664/39.866 at 8 CPUs,
-and 34.583/38.004 at 16 CPUs. Fail-fast median/p95 seconds were 25.428/27.641, 20.390/24.094, and
-19.020/24.763 respectively. Eight CPUs is the smallest request whose complete median and p95 are
-both within 5% of the fastest configuration, so it is the selected request. The 2026-07-16 job 49
-canary measured 1,068 learner-loop samples: 7,291 FPS median, 7,517 FPS p95, and 14,028 FPS maximum.
-The workload policy rounds that observed peak up to a 15,000 FPS operating upper bound. With
-three-call capacity and the 1.25 safety factor, the derived minimum interval is 249,164 steps. The
-selected 250,000-step interval reserves 2.392 calls of load per run, just below the 2.4-call
-admission ceiling, so only one such run is admitted at a time. The same canary's 34 checkpoint
-saves took 0.041 seconds median and 0.048 seconds maximum, about 0.3% of even the fastest expected
-checkpoint interval and therefore comfortably below the 2% learner-throughput gate.
-Immutable benchmark evidence is under
-`s3://wandb/rlab/benchmarks/acceptance-v1/20260716T135436Z-4610f913/`.
+evaluation controller dispatches at most 10 active Modal calls. There is no estimated-load
+admission layer; excess evaluation work remains pending in PostgreSQL until a call slot is free.
 
 ```bash
 rlab eval modal status
@@ -111,7 +94,7 @@ rlab eval modal preflight \
   --runtime-image-ref docker:ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   --game <game-id>
 rlab eval modal drain
-rlab eval modal resume --capacity 3
+rlab eval modal resume
 rlab eval modal retry <eval-job-id>
 rlab eval modal retry-projection <train-job-id>
 rlab eval modal recover <train-job-id>
@@ -148,8 +131,8 @@ canceled train whose evaluation remains nonterminal. It preserves uploaded evide
 undispatched evaluation work and closes the evaluation run with the matching terminal outcome.
 
 PostgreSQL is the wait queue, orchestration authority, and transient telemetry mailbox. The
-evaluation controller never submits beyond effective capacity, reserves worst-case cost before
-dispatch, and leaves budget-blocked jobs pending for operator inspection. Draining stops new Modal
+evaluation controller never submits beyond the 10-call hard cap and leaves budget-blocked jobs
+pending for operator inspection. Draining stops new Modal
 calls without stopping training. Checkpoint models, metadata, immutable episode evidence, and raw
 Modal results are immutable R2 objects; accepted attempts, retained stop commands, artifact
 locations, decisions, and publication cursors live in PostgreSQL. Each checkpoint has one logical
@@ -163,7 +146,7 @@ Modal supports `max_inputs > 1`.
 
 Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches.
 The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
-concurrency is independent of the three-call Modal limit. The actor survives idle producer gaps,
+concurrency is independent of the 10-call Modal limit. The actor survives idle producer gaps,
 drains up to 100 ordered durable batches per claim, and rechecks remotely submitted cursors after
 five seconds. Publisher work never blocks eval reconciliation or stop delivery; publication
 completion and failure remain durable finalization-only state. A lifetime actor advisory lock plus

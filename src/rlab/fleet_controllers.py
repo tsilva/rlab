@@ -73,7 +73,6 @@ def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
 
 
 def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
-    from rlab.job_queue import admit_pending_eval_load
     from rlab.modal_eval_orchestrator import run_service_eval_pass
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
@@ -85,11 +84,6 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
     try:
         while True:
             assertion.update(_has_work())
-            conn = connect(database_url(use_direct=True))
-            try:
-                admit_pending_eval_load(conn)
-            finally:
-                conn.close()
             deadline = time.monotonic() + REMOTE_PASS_BUDGET_SECONDS
             run_service_eval_pass(repo_root=repo_root, deadline_monotonic=deadline)
             conn = connect(database_url(use_direct=True))

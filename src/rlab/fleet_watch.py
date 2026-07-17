@@ -287,7 +287,7 @@ def _collect_authoritative_snapshot(
                 cur.execute(
                     """
                     SELECT t.id, t.status, t.machine, t.created_at, t.started_at,
-                      t.finished_at, t.error, t.eval_load, t.eval_load_admitted_at,
+                      t.finished_at, t.error,
                       r.status AS eval_status, r.outcome AS eval_outcome,
                       r.updated_at
                     FROM train_jobs t
@@ -363,8 +363,6 @@ def _collect_authoritative_snapshot(
             "blast_radius": f"train/{row['id']}",
         }
         if status == "pending":
-            if row.get("eval_load") is not None and row.get("eval_load_admitted_at") is None:
-                item["title"] = "WAITING FOR EVAL CAPACITY"
             waiting.append(item)
         elif status == "finalization_failed":
             item["detail"] = str(row.get("error") or item["detail"])

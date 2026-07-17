@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +11,6 @@ from rlab.checkpoint_acceptance import (
     manifest_index,
     validate_episode_rows,
 )
-from rlab.eval_capacity_policy import load_eval_capacity_policy
 from rlab.modal_eval_protocol import execution_key
 
 
@@ -110,40 +107,3 @@ def test_execution_key_changes_for_acceptance_or_evidence_changes(mutation) -> N
     mutation(changed)
 
     assert execution_key(changed) != execution_key(baseline)
-
-
-def test_capacity_policy_derives_immutable_load_and_minimum_interval() -> None:
-    with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "policy.yaml"
-        path.write_text(
-            """
-schema_version: 1
-backend: modal
-effective_capacity: 3
-hard_safety_cap: 20
-admission_utilization: 0.8
-workloads:
-  SuperMarioBros-Nes-v0:Level1-1:acceptance-v1:
-    status: accepted
-    training_fps_upper_bound: 6000
-    full_eval_p95_seconds: 40
-    selected_checkpoint_interval_steps: 250000
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        policy = load_eval_capacity_policy(path)
-        reservation = policy.reservation(
-            {
-                "game": "SuperMarioBros-Nes-v0",
-                "state": "Level1-1",
-                "checkpoint_eval_backend": "modal",
-                "stop_on_acceptance": True,
-                "checkpoint_freq": 250_000,
-            }
-        )
-
-    assert reservation is not None
-    assert reservation["minimum_interval_steps"] == 100_000
-    assert reservation["eval_load"] == pytest.approx(0.96)
-    assert reservation["policy_sha256"] == policy.sha256

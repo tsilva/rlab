@@ -1370,14 +1370,7 @@ def _default_reconcile_eval(
     if not config_path.is_file() and not (repo_root / ".env").is_file():
         return {"status": "unconfigured"}
     if config_path.is_file():
-        from rlab.job_queue import admit_pending_eval_load
         from rlab.modal_eval_orchestrator import run_service_eval_pass
-
-        admission_conn = _connect_queue(repo_root)
-        try:
-            admitted = admit_pending_eval_load(admission_conn)
-        finally:
-            admission_conn.close()
 
         kwargs: dict[str, Any] = {
             "repo_root": repo_root,
@@ -1386,7 +1379,6 @@ def _default_reconcile_eval(
         if progress is not None:
             kwargs["progress"] = progress
         detail = dict(run_service_eval_pass(**kwargs) or {})
-        detail["eval_load_admitted"] = admitted
     else:
         detail = {"status": "unconfigured"}
     from rlab.fleet_wandb_publisher import drain_cycle_parallel
@@ -1503,7 +1495,6 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                       j.projection_error, j.error, j.created_at,
                       t.status AS train_status, r.status AS eval_run_status,
                       backend.drained AS backend_drained,
-                      backend.effective_capacity,
                       (SELECT COUNT(*) FROM eval_attempts a
                        WHERE a.eval_job_id = j.id
                          AND a.status IN ('dispatching', 'submitted')) AS active_attempts

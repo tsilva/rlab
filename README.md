@@ -349,8 +349,8 @@ and beast host recommendations.
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
 - Modal checkpoint acceptance is configured in `experiments/modal_eval.yaml`, uses PostgreSQL as
-  its only wait queue, and admits jobs against an effective capacity of 3 with an independent hard
-  safety cap of 20. Use `rlab eval modal smoke-local` for the credential-free integration path.
+  its only wait queue, and dispatches at most 10 evaluation calls concurrently. Use
+  `rlab eval modal smoke-local` for the credential-free integration path.
 - The train-image workflow publishes the exact immutable image receipt immediately after the image
   exists, then deploys and startup-probes the digest-specific Modal evaluator and publishes a
   separate Modal readiness receipt. Local and no-eval submissions do not wait for Modal. Modal-backed

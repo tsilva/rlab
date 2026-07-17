@@ -317,7 +317,7 @@ class ModalEvalContractTests(unittest.TestCase):
     def test_preflight_checks_schema_asset_backend_and_exact_deployment(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = {"drained": False, "effective_capacity": 1}
+        cursor.fetchone.return_value = {"drained": False}
         function = mock.MagicMock()
         image_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
         manifest = {
@@ -385,16 +385,15 @@ class ModalEvalContractTests(unittest.TestCase):
         )
         function.hydrate.assert_called_once_with()
 
-    def test_checked_in_config_has_independent_twenty_call_guards(self) -> None:
+    def test_checked_in_config_has_ten_call_hard_cap(self) -> None:
         config = load_modal_eval_config(Path("experiments/modal_eval.yaml"))
         self.assertTrue(config.enabled)
         self.assertTrue(config.cleanup_enabled)
         self.assertEqual(config.cleanup_interval_seconds, 3600)
         self.assertEqual(config.cleanup_grace_seconds, 86400)
         self.assertEqual(config.cleanup_max_stops_per_pass, 10)
-        self.assertEqual(config.hard_max_active, 20)
-        self.assertEqual(config.max_containers, 20)
-        self.assertEqual(config.initial_effective_capacity, 3)
+        self.assertEqual(config.hard_max_active, 10)
+        self.assertEqual(config.max_containers, 10)
         self.assertFalse(config.single_use_containers)
         self.assertEqual(config.max_attempts, 2)
         self.assertFalse(config.preview_enabled)
@@ -402,41 +401,18 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertEqual(config.preview_fps, 15)
         self.assertEqual(config.preview_max_bytes, 2 * 1024 * 1024)
 
-    def test_capacity_rollout_accepts_two_to_three(self) -> None:
+    def test_resume_only_clears_the_drain(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.side_effect = [
-            {"effective_capacity": 2},
-            {"backend": "modal", "drained": False, "effective_capacity": 3},
-        ]
+        cursor.fetchone.return_value = {"backend": "modal", "drained": False}
         with (
-            mock.patch.object(
-                modal_eval_cli,
-                "load_modal_eval_config",
-                return_value=SimpleNamespace(hard_max_active=20),
-            ),
             mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
             mock.patch.object(modal_eval_cli, "_kick"),
         ):
             self.assertEqual(
-                modal_eval_cli._set_backend(drained=False, capacity=3, reason="cap-3 canary"),
+                modal_eval_cli._set_backend(drained=False, reason="operator resume"),
                 0,
             )
-
-    def test_capacity_rollout_rejects_skipping_three(self) -> None:
-        conn = mock.MagicMock()
-        cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = {"effective_capacity": 2}
-        with (
-            mock.patch.object(
-                modal_eval_cli,
-                "load_modal_eval_config",
-                return_value=SimpleNamespace(hard_max_active=20),
-            ),
-            mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
-        ):
-            with self.assertRaisesRegex(ValueError, "1 to 2 to 3 to 20"):
-                modal_eval_cli._set_backend(drained=False, capacity=20, reason=None)
 
     def test_train_image_packages_modal_contract_at_expected_path(self) -> None:
         dockerfile = Path("containers/train/Dockerfile").read_text(encoding="utf-8")
@@ -452,12 +428,10 @@ class ModalEvalContractTests(unittest.TestCase):
             unknown.write_text(source.replace("  cpu: 8.0", "  cpu: 8.0\n  surprise: true"))
             with self.assertRaisesRegex(ValueError, "resources has unknown"):
                 load_modal_eval_config(unknown)
-            excessive = Path(temporary) / "excessive.yaml"
-            excessive.write_text(
-                source.replace("initial_effective_capacity: 3", "initial_effective_capacity: 21")
-            )
-            with self.assertRaisesRegex(ValueError, "exceeds the hard cap"):
-                load_modal_eval_config(excessive)
+            mismatched = Path(temporary) / "mismatched.yaml"
+            mismatched.write_text(source.replace("  max_containers: 10", "  max_containers: 11"))
+            with self.assertRaisesRegex(ValueError, "must equal"):
+                load_modal_eval_config(mismatched)
             oversized_preview = Path(temporary) / "oversized-preview.yaml"
             oversized_preview.write_text(source.replace("  max_lanes: 4", "  max_lanes: 5"))
             with self.assertRaisesRegex(ValueError, "must not exceed 4"):
@@ -933,11 +907,11 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
     def test_available_slots_never_exceed_hard_cap_and_count_unknown_calls(self) -> None:
         self.assertEqual(
-            available_eval_slots(effective_capacity=100, active_calls=19, hard_cap=20),
+            available_eval_slots(active_calls=9, hard_cap=10),
             1,
         )
         self.assertEqual(
-            available_eval_slots(effective_capacity=20, active_calls=20, hard_cap=20),
+            available_eval_slots(active_calls=10, hard_cap=10),
             0,
         )
 
@@ -982,7 +956,6 @@ class ModalEvalSchedulingTests(unittest.TestCase):
                 if compact.startswith("SELECT * FROM eval_backend_state"):
                     self.row = {
                         "drained": False,
-                        "effective_capacity": 3,
                         "round_robin_after_train_job_id": 0,
                     }
                 elif "FROM eval_attempts WHERE status IN" in compact:

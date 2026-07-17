@@ -8,8 +8,7 @@ cleanup:
   grace_seconds: 86400
   max_stops_per_pass: 10
 limits:
-  hard_max_active: 20
-  initial_effective_capacity: 3
+  hard_max_active: 10
   per_run_budget_usd: 5.0
   rolling_24h_budget_usd: 20.0
 resources:
@@ -17,7 +16,7 @@ resources:
   memory_mib: 4096
   min_containers: 0
   buffer_containers: 0
-  max_containers: 20
+  max_containers: 10
   single_use_containers: false
   scaledown_window_seconds: 60
   startup_timeout_seconds: 120

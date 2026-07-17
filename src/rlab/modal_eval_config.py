@@ -62,7 +62,6 @@ class ModalEvalConfig:
     cleanup_grace_seconds: int
     cleanup_max_stops_per_pass: int
     hard_max_active: int
-    initial_effective_capacity: int
     per_run_budget_usd: float
     rolling_24h_budget_usd: float
     cpu: float
@@ -137,7 +136,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             limits,
             {
                 "hard_max_active",
-                "initial_effective_capacity",
                 "per_run_budget_usd",
                 "rolling_24h_budget_usd",
             },
@@ -189,14 +187,9 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
                 f"{path} {section_name} has unknown field(s): {', '.join(section_unknown)}"
             )
     hard_cap = _positive_int(limits.get("hard_max_active"), label="limits.hard_max_active")
-    effective = _positive_int(
-        limits.get("initial_effective_capacity"), label="limits.initial_effective_capacity"
-    )
     modal_cap = _positive_int(resources.get("max_containers"), label="resources.max_containers")
     if hard_cap != modal_cap:
         raise ValueError("limits.hard_max_active must equal resources.max_containers")
-    if effective > hard_cap:
-        raise ValueError("limits.initial_effective_capacity exceeds the hard cap")
     max_attempts = _positive_int(protocol.get("max_attempts"), label="protocol.max_attempts")
     if max_attempts > 2:
         raise ValueError("protocol.max_attempts must not exceed 2")
@@ -219,7 +212,6 @@ def load_modal_eval_config(path: Path = DEFAULT_MODAL_EVAL_CONFIG) -> ModalEvalC
             cleanup.get("max_stops_per_pass"), label="cleanup.max_stops_per_pass"
         ),
         hard_max_active=hard_cap,
-        initial_effective_capacity=effective,
         per_run_budget_usd=_positive_float(
             limits.get("per_run_budget_usd"), label="limits.per_run_budget_usd"
         ),

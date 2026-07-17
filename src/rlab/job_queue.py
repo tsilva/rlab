@@ -56,7 +56,6 @@ from rlab.train_config import validate_and_normalize_train_config
 from rlab.training_backend import accepts_first_training_success
 from rlab.modal_eval_assets import asset_manifest_for_game
 from rlab.checkpoint_acceptance import checkpoint_eval_contract_from_train_config
-from rlab.eval_capacity_policy import load_eval_capacity_policy
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 
@@ -109,9 +108,6 @@ CREATE TABLE IF NOT EXISTS train_jobs (
     CHECK (live_publication_attempts >= 0),
   live_publication_next_retry_at TIMESTAMPTZ,
   live_publication_error TEXT,
-  eval_load DOUBLE PRECISION CHECK (eval_load IS NULL OR eval_load >= 0),
-  eval_capacity_policy_sha256 TEXT,
-  eval_load_admitted_at TIMESTAMPTZ,
   error TEXT,
   UNIQUE (submission_key, submission_ordinal)
 );
@@ -334,14 +330,15 @@ CREATE TABLE IF NOT EXISTS attempt_commands (
 CREATE TABLE IF NOT EXISTS eval_backend_state (
   backend TEXT PRIMARY KEY CHECK (backend = 'modal'),
   drained BOOLEAN NOT NULL DEFAULT FALSE,
-  effective_capacity INTEGER NOT NULL CHECK (effective_capacity >= 1),
   round_robin_after_train_job_id BIGINT NOT NULL DEFAULT 0,
   reason TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO eval_backend_state (backend, effective_capacity)
-VALUES ('modal', 3)
+ALTER TABLE eval_backend_state DROP COLUMN IF EXISTS effective_capacity;
+
+INSERT INTO eval_backend_state (backend)
+VALUES ('modal')
 ON CONFLICT (backend) DO NOTHING;
 
 DROP INDEX IF EXISTS train_jobs_runtime_claim_idx;
@@ -379,9 +376,10 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_next_retry_at T
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_error TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS learner_stop_observed_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS process_exited_at TIMESTAMPTZ;
-ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_load DOUBLE PRECISION;
-ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_capacity_policy_sha256 TEXT;
-ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS eval_load_admitted_at TIMESTAMPTZ;
+ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_eval_load_check;
+ALTER TABLE train_jobs DROP COLUMN IF EXISTS eval_load;
+ALTER TABLE train_jobs DROP COLUMN IF EXISTS eval_capacity_policy_sha256;
+ALTER TABLE train_jobs DROP COLUMN IF EXISTS eval_load_admitted_at;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS artifact_projection_next_retry_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projected_at TIMESTAMPTZ;
@@ -435,9 +433,6 @@ ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_status_check
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_live_publication_attempts_check;
 ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_live_publication_attempts_check
   CHECK (live_publication_attempts >= 0);
-ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_eval_load_check;
-ALTER TABLE train_jobs ADD CONSTRAINT train_jobs_eval_load_check
-  CHECK (eval_load IS NULL OR eval_load >= 0);
 ALTER TABLE eval_runs DROP CONSTRAINT IF EXISTS eval_runs_status_check;
 ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_status_check
   CHECK (status IN (
@@ -449,8 +444,6 @@ ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_outcome_check
 ALTER TABLE eval_jobs DROP CONSTRAINT IF EXISTS eval_jobs_purpose_check;
 ALTER TABLE eval_jobs ADD CONSTRAINT eval_jobs_purpose_check
   CHECK (purpose IN ('screen', 'confirm', 'promotion', 'acceptance'));
-
-UPDATE eval_backend_state SET effective_capacity = 3 WHERE backend = 'modal';
 
 UPDATE train_jobs
 SET live_publication_status = CASE
@@ -1615,11 +1608,6 @@ def enqueue_train_job(
             config["checkpoint_eval_contract"] = (
                 checkpoint_eval_contract_from_train_config(config)
             )
-            config["eval_load_reservation"] = load_eval_capacity_policy().reservation(config)
-        else:
-            config.pop("eval_load_reservation", None)
-    else:
-        config.pop("eval_load_reservation", None)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -1694,7 +1682,6 @@ def enqueue_train_job(
                   repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
                   telemetry_transport,
-                  eval_load, eval_capacity_policy_sha256,
                   batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
                   retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
@@ -1705,7 +1692,6 @@ def enqueue_train_job(
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
                   %(telemetry_transport)s,
-                  %(eval_load)s, %(eval_capacity_policy_sha256)s,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
@@ -1727,16 +1713,6 @@ def enqueue_train_job(
                     "machine": machine,
                     "train_config": json_arg(config),
                     "telemetry_transport": str(config["telemetry_transport"]),
-                    "eval_load": (
-                        float(config["eval_load_reservation"]["eval_load"])
-                        if isinstance(config.get("eval_load_reservation"), Mapping)
-                        else None
-                    ),
-                    "eval_capacity_policy_sha256": (
-                        str(config["eval_load_reservation"]["policy_sha256"])
-                        if isinstance(config.get("eval_load_reservation"), Mapping)
-                        else None
-                    ),
                     "batch_id": batch_id,
                     "campaign_id": campaign_id,
                     "submission_key": submission_key,
@@ -2414,7 +2390,6 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
                      + pg_total_relation_size('attempt_commands')
               ) < 5368709120
               AND COALESCE(control.drained, FALSE) = FALSE
-              AND (job.eval_load IS NULL OR job.eval_load_admitted_at IS NOT NULL)
               AND NOT EXISTS (
                 SELECT 1 FROM job_launches AS launch WHERE launch.job_id = job.id
               )
@@ -2425,80 +2400,6 @@ def next_pending_train_job(conn, *, machine: str) -> dict[str, Any] | None:
         )
         row = cur.fetchone()
     return dict(row) if row else None
-
-
-def admit_pending_eval_load(conn, *, limit: int = 100) -> int:
-    """Atomically reserve Modal load before an eval-enabled job may consume a GPU."""
-
-    admitted = 0
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended('rlab-modal-eval-admission', 0))"
-            )
-            cur.execute(
-                """
-                SELECT effective_capacity
-                FROM eval_backend_state
-                WHERE backend = 'modal'
-                FOR UPDATE
-                """
-            )
-            state = cur.fetchone()
-            if not state:
-                return 0
-            capacity_limit = float(state["effective_capacity"]) * 0.8
-            cur.execute(
-                """
-                SELECT COALESCE(sum(eval_load), 0.0) AS reserved
-                FROM train_jobs
-                WHERE eval_load_admitted_at IS NOT NULL
-                  AND status IN ('pending', 'launching', 'starting', 'running', 'finalizing')
-                """
-            )
-            reserved = float(cur.fetchone()["reserved"] or 0.0)
-            cur.execute(
-                """
-                SELECT id, eval_load
-                FROM train_jobs
-                WHERE status = 'pending'
-                  AND cancel_requested = FALSE
-                  AND eval_load IS NOT NULL
-                  AND eval_load_admitted_at IS NULL
-                ORDER BY id
-                FOR UPDATE SKIP LOCKED
-                LIMIT %(limit)s
-                """,
-                {"limit": max(1, int(limit))},
-            )
-            for row in cur.fetchall():
-                load = float(row["eval_load"])
-                if reserved + load > capacity_limit + 1e-12:
-                    continue
-                cur.execute(
-                    """
-                    UPDATE train_jobs
-                    SET eval_load_admitted_at = now()
-                    WHERE id = %(id)s AND eval_load_admitted_at IS NULL
-                    """,
-                    {"id": int(row["id"])},
-                )
-                if cur.rowcount != 1:
-                    continue
-                reserved += load
-                admitted += 1
-                record_job_event(
-                    conn,
-                    job_id=int(row["id"]),
-                    event_type="eval_load_admitted",
-                    message="Modal evaluation load reservation admitted",
-                    metadata={
-                        "eval_load": load,
-                        "reserved_after": reserved,
-                        "capacity_limit": capacity_limit,
-                    },
-                )
-    return admitted
 
 
 def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) -> dict[str, Any]:
