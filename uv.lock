@@ -19,7 +19,7 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 supermariobrosnes-turbo = "2026-07-17T15:00:00Z"
 breakout-turbo-env = "2026-07-15T10:58:00Z"
-stable-retro-turbo = "2026-07-17T14:54:00Z"
+stable-retro-turbo = "2026-07-17T19:52:14Z"
 
 [manifest]
 constraints = [
@@ -1707,8 +1707,8 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rich", specifier = ">=15,<16" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post31" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post31" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post32" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post32" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.3.3" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.3.3" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
@@ -1740,7 +1740,7 @@ train-runtime = [
     { name = "psycopg2-binary", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post31" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post32" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.3.3" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.12.0" },
@@ -1865,7 +1865,7 @@ extra = [
 
 [[package]]
 name = "stable-retro-turbo"
-version = "1.0.1.post31"
+version = "1.0.1.post32"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
@@ -1873,8 +1873,8 @@ dependencies = [
     { name = "pyglet", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/18/446404e64de3361831c7276b3486ff4c24e7346ac85bef318a4abc918691/stable_retro_turbo-1.0.1.post31-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:82167c5f2dc2e18a6dbc054f7301b527a8a320846e8725632827280f7a447709", size = 85880085, upload-time = "2026-07-17T14:52:56.557Z" },
-    { url = "https://files.pythonhosted.org/packages/83/eb/13f675f3492c08717704a85d5d9ec2a30f0cd5985277f0b3eeddc88f76d3/stable_retro_turbo-1.0.1.post31-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:019743b970b5af486192fbc97dc16bf279b458b17ec700aef294ae45f75cf854", size = 91552046, upload-time = "2026-07-17T14:53:00.601Z" },
+    { url = "https://files.pythonhosted.org/packages/02/6f/99472ccd9fd8ac951a91e9cd55681a69b5fbd4d4af9d0e604c0111f45e5c/stable_retro_turbo-1.0.1.post32-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:4491874babd7d3b8bc13e842d9b4b3cd7b2287622768b0ea910281c6ee9821fc", size = 85882905, upload-time = "2026-07-17T19:09:38.031Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/03/2880c310ba6d683afe93915f55fde9495689bebf4ad0df5f7cd897a006e9/stable_retro_turbo-1.0.1.post32-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c3892d68370ff3be2e0b43739b2d45cf33db4b3502fd713ac7c1895c0d60bdb", size = 91554823, upload-time = "2026-07-17T19:09:43.539Z" },
 ]
 
 [[package]]
