@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from rlab.job_queue import connect, count_nonterminal_jobs, database_url
+from rlab.fleet_service import CONTROL_PLANE_PROTOCOL_VERSION
 
 
 POLL_SECONDS = 2.0
@@ -108,9 +109,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
     try:
         while True:
             actors = {
-                run_id: process
-                for run_id, process in actors.items()
-                if process.poll() is None
+                run_id: process for run_id, process in actors.items() if process.poll() is None
             }
             conn = connect(database_url(use_direct=True))
             try:
@@ -149,12 +148,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one isolated rlab fleet controller.")
     parser.add_argument("controller", choices=("machine", "evaluation", "wandb"))
     parser.add_argument("--repo-root", type=Path, required=True)
+    parser.add_argument("--protocol-version", type=int, required=True)
     parser.add_argument("--once", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.protocol_version != CONTROL_PLANE_PROTOCOL_VERSION:
+        raise SystemExit(
+            "fleet controller protocol mismatch: "
+            f"installed={args.protocol_version} expected={CONTROL_PLANE_PROTOCOL_VERSION}"
+        )
     repo_root = args.repo_root.expanduser().resolve()
     from rlab.fleet_service import _load_repo_environment
 

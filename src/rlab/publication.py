@@ -99,9 +99,7 @@ ALGORITHM_MODEL_CLASSES: dict[str, frozenset[str]] = {
     ),
     "a2c": frozenset({"stable_baselines3.a2c.a2c.A2C"}),
     "dqn": frozenset({"stable_baselines3.dqn.dqn.DQN"}),
-    "recurrent-ppo": frozenset(
-        {"sb3_contrib.ppo_recurrent.ppo_recurrent.RecurrentPPO"}
-    ),
+    "recurrent-ppo": frozenset({"sb3_contrib.ppo_recurrent.ppo_recurrent.RecurrentPPO"}),
 }
 
 
@@ -461,9 +459,7 @@ def _normalize_by_start_rows(value: object) -> tuple[dict[str, Any], ...]:
         start_id = _required_text(row.get("start_id"), label=f"by_start[{index}].start_id")
         normalized = {
             "start_id": start_id,
-            "episodes": _required_int(
-                row.get("episodes"), label=f"by_start[{index}].episodes"
-            ),
+            "episodes": _required_int(row.get("episodes"), label=f"by_start[{index}].episodes"),
             "success_count": _required_int(
                 row.get("success_count"), label=f"by_start[{index}].success_count"
             ),
@@ -527,8 +523,10 @@ def normalize_publication_evaluation(
         label="evaluation return_mean",
     )
     progress_value = _first_present(evaluation, "progress_max", EVAL_FULL_PROGRESS_X_MAX)
-    progress_max = None if progress_value is None else _required_float(
-        progress_value, label="evaluation progress_max"
+    progress_max = (
+        None
+        if progress_value is None
+        else _required_float(progress_value, label="evaluation progress_max")
     )
     by_start = _normalize_by_start_rows(
         _first_present(evaluation, "by_start", "_eval_by_start_rows", EVAL_FULL_BY_START)
@@ -576,9 +574,7 @@ def publication_source_from_model_metadata(
         "run_id": _required_text(
             model_metadata.get("wandb_run_id"), label="model metadata wandb_run_id"
         ),
-        "run_name": _required_text(
-            model_metadata.get("run_name"), label="model metadata run_name"
-        ),
+        "run_name": _required_text(model_metadata.get("run_name"), label="model metadata run_name"),
         "wandb_project": _required_text(
             model_metadata.get("wandb_project"), label="model metadata wandb_project"
         ),
@@ -640,13 +636,9 @@ def render_model_card(
     action = _require_mapping(model.get("action"), label="manifest action")
     run_id = str(source.get("run_id") or "").strip()
     project = str(source.get("wandb_project") or "").strip()
-    wandb_url = (
-        f"https://wandb.ai/tsilva/{project}/runs/{run_id}" if project and run_id else ""
-    )
+    wandb_url = f"https://wandb.ai/tsilva/{project}/runs/{run_id}" if project and run_id else ""
     if legacy:
-        model_ref = (
-            f"https://huggingface.co/{repo_id}/resolve/legacy-deterministic/model.zip"
-        )
+        model_ref = f"https://huggingface.co/{repo_id}/resolve/legacy-deterministic/model.zip"
         install = "Follow the current rlab installation instructions in the source repository."
     else:
         if not re.fullmatch(r"v[1-9][0-9]*", version):
@@ -732,7 +724,7 @@ metrics:
 | Evaluation | `{action_sampling}` full evaluation, `{episodes}` episodes |
 | Success | minimum `{_percent(success_min)}`, mean `{_percent(success_mean)}` |
 | Mean return | `{return_mean:.3f}` |
-| Release | `{version or 'legacy-deterministic'}` |
+| Release | `{version or "legacy-deterministic"}` |
 | Preview | Root `replay.mp4` |
 | YouTube | {youtube_value} |
 
@@ -745,7 +737,7 @@ Import the ROM, then play or evaluate the immutable checkpoint:
 ```bash
 uv run rlab import-roms ~/roms --game {game}
 uv run rlab play {model_ref}
-uv run rlab eval {model_ref}
+uv run rlab eval run {model_ref}
 ```
 
 ## Evaluation
@@ -761,20 +753,20 @@ Action selection was `{action_sampling}` under the published evaluation environm
 | Item | Value |
 |---|---|
 | Environment | `{qualified_env_id}` |
-| Environment hash | `{_markdown_value(model.get('environment_hash'))}` |
-| Preprocessing | `{_markdown_value(json.dumps(preprocessing, sort_keys=True, separators=(',', ':')))}` |
-| Action contract | `{_markdown_value(json.dumps(action, sort_keys=True, separators=(',', ':')))}` |
+| Environment hash | `{_markdown_value(model.get("environment_hash"))}` |
+| Preprocessing | `{_markdown_value(json.dumps(preprocessing, sort_keys=True, separators=(",", ":")))}` |
+| Action contract | `{_markdown_value(json.dumps(action, sort_keys=True, separators=(",", ":")))}` |
 
 ## Provenance
 
 | Item | Value |
 |---|---|
 | Source | [rlab](https://github.com/tsilva/rlab) |
-| Run | {f'[{_markdown_value(source.get("run_name"))}]({wandb_url})' if wandb_url else _markdown_value(source.get('run_name') or 'Legacy run')} |
-| Recipe | `{_markdown_value(source.get('recipe') or 'legacy')}` |
-| Seed | `{_markdown_value(source.get('seed') if source.get('seed') is not None else 'legacy')}` |
-| Source commit | `{_markdown_value(source.get('commit') or 'not recorded')}` |
-| Evaluated artifact | `{_markdown_value(source.get('checkpoint_artifact') or evaluation.get('checkpoint_artifact'))}` |
+| Run | {f"[{_markdown_value(source.get('run_name'))}]({wandb_url})" if wandb_url else _markdown_value(source.get("run_name") or "Legacy run")} |
+| Recipe | `{_markdown_value(source.get("recipe") or "legacy")}` |
+| Seed | `{_markdown_value(source.get("seed") if source.get("seed") is not None else "legacy")}` |
+| Source commit | `{_markdown_value(source.get("commit") or "not recorded")}` |
+| Evaluated artifact | `{_markdown_value(source.get("checkpoint_artifact") or evaluation.get("checkpoint_artifact"))}` |
 
 ## Files
 
@@ -886,7 +878,11 @@ def _assert_no_absolute_paths(value: object, *, path: str = "manifest") -> None:
         return
     if value.startswith(("http://", "https://", "hf://", "s3://", "r2://")):
         return
-    if value.startswith("file://") or Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+    if (
+        value.startswith("file://")
+        or Path(value).is_absolute()
+        or PureWindowsPath(value).is_absolute()
+    ):
         raise ValueError(f"{path} contains an absolute local path")
 
 
@@ -934,9 +930,7 @@ def build_release_manifest(
     return manifest
 
 
-def _validate_release_manifest_v1(
-    document: Mapping[str, Any], source: str
-) -> dict[str, Any]:
+def _validate_release_manifest_v1(document: Mapping[str, Any], source: str) -> dict[str, Any]:
     allowed = {
         "document_type",
         "format_version",
@@ -950,15 +944,11 @@ def _validate_release_manifest_v1(
     }
     unknown = sorted(set(document) - allowed)
     if unknown:
-        raise PolicyDocumentError(
-            f"{source} has unknown field(s): " + ", ".join(unknown)
-        )
+        raise PolicyDocumentError(f"{source} has unknown field(s): " + ", ".join(unknown))
     required = allowed
     missing = sorted(required - set(document))
     if missing:
-        raise PolicyDocumentError(
-            f"{source} is missing required field(s): " + ", ".join(missing)
-        )
+        raise PolicyDocumentError(f"{source} is missing required field(s): " + ", ".join(missing))
     for field in ("repository", "release", "model", "source", "evaluation", "artifacts"):
         if not isinstance(document.get(field), Mapping):
             raise PolicyDocumentError(f"{source}.{field} must be an object")
@@ -1023,14 +1013,12 @@ def _validate_release_manifest_v1(
             )
         if nested_missing:
             raise PolicyDocumentError(
-                f"{source}.{field} is missing required field(s): "
-                + ", ".join(nested_missing)
+                f"{source}.{field} is missing required field(s): " + ", ".join(nested_missing)
             )
     artifacts = document["artifacts"]
     if set(artifacts) != HASHED_RELEASE_FILES:
         raise PolicyDocumentError(
-            f"{source}.artifacts must describe exactly: "
-            + ", ".join(sorted(HASHED_RELEASE_FILES))
+            f"{source}.artifacts must describe exactly: " + ", ".join(sorted(HASHED_RELEASE_FILES))
         )
     for filename, raw_record in artifacts.items():
         if not isinstance(raw_record, Mapping):

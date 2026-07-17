@@ -95,15 +95,13 @@ def install_graceful_stop_handler(stop_flag: GracefulStopFlag) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     if os.environ.get(INTERNAL_LEARNER_ENV) != "1":
         raise RuntimeError(
-            "rlab.train is an internal learner entrypoint; use `rlab train` to launch "
+            "rlab.train is an internal learner entrypoint; use `rlab experiment launch` to launch "
             "a queue-backed Docker job"
         )
     args = parse_train_args(argv)
     recipe_json_path = Path(str(getattr(args, "recipe_json_path", "") or ""))
     if not recipe_json_path.is_file():
-        raise RuntimeError(
-            "queue-backed training requires the canonical versioned recipe.json"
-        )
+        raise RuntimeError("queue-backed training requires the canonical versioned recipe.json")
     load_recipe_document(recipe_json_path)
     train_config = dict(args._materialized_train_config)
     backend_id = training_backend_id(train_config)

@@ -820,9 +820,7 @@ def run_service_machine_pass(
         conn = connect(database_url(use_direct=True))
         with machine_mutation_lock(conn, machine.name):
             control = machine_control(conn, machine=machine.name)
-            if bool(control.get("drained")) and not active_job_launches(
-                conn, machine=machine.name
-            ):
+            if bool(control.get("drained")) and not active_job_launches(conn, machine=machine.name):
                 return {
                     "reconciled": 0,
                     "launched": 0,
@@ -1069,6 +1067,26 @@ def build_parser() -> argparse.ArgumentParser:
     from rlab.fleet_service import add_service_parser
 
     add_service_parser(subparsers)
+
+    queue = subparsers.add_parser("queue", help="Maintain the PostgreSQL queue schema.")
+    queue_commands = queue.add_subparsers(dest="queue_command", required=True)
+    from rlab.job_queue import cmd_reset_schema, cmd_setup
+
+    queue_setup = queue_commands.add_parser("setup", help="Create queue tables.")
+    add_database_arg(queue_setup)
+    queue_setup.add_argument(
+        "--worker-mailbox-role",
+        default=os.environ.get("WORKER_MAILBOX_ROLE"),
+    )
+    queue_setup.set_defaults(func=cmd_setup)
+
+    queue_reset = queue_commands.add_parser(
+        "reset-schema", help="Export, drop, and recreate the queue schema."
+    )
+    add_database_arg(queue_reset)
+    queue_reset.add_argument("--export-dir", type=Path, default=None)
+    add_dry_run_arg(queue_reset)
+    queue_reset.set_defaults(func=cmd_reset_schema)
 
     return parser
 

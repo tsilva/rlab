@@ -97,9 +97,9 @@ def load_eval_model(model_path: str | Path, *, device: str) -> tuple[object, str
     return model, algorithm_id
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, prog: str = "rlab eval run") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="rlab eval",
+        prog=prog,
         description="Evaluate an rlab policy artifact or scripted provider baseline",
     )
     add_model_source_args(

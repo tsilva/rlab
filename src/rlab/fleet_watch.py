@@ -280,6 +280,7 @@ def _collect_authoritative_snapshot(
     recent: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     source_at: object = None
+    projections: dict[int, dict[str, Any]] = {}
     try:
         conn = _connect_queue(paths.repo_root)
         try:
@@ -304,6 +305,9 @@ def _collect_authoritative_snapshot(
                     """
                 )
                 jobs = [dict(row) for row in cur.fetchall()]
+                from rlab.run_observability import run_projection
+
+                projections = {int(row["id"]): run_projection(conn, int(row["id"])) for row in jobs}
                 cur.execute(
                     """
                     SELECT j.id, j.train_job_id, j.status, j.purpose, j.checkpoint_step,
@@ -344,9 +348,21 @@ def _collect_authoritative_snapshot(
         events = []
 
     for row in jobs:
-        status = str(row["status"])
+        projection = projections.get(int(row["id"]), {})
+        status = str(projection.get("status") or row["status"])
+        evaluation = dict(projection.get("evaluation") or {})
         source_at = max(
-            [value for value in (source_at, row.get("updated_at"), row.get("finished_at"), row.get("started_at"), row.get("created_at")) if value is not None],
+            [
+                value
+                for value in (
+                    source_at,
+                    row.get("updated_at"),
+                    row.get("finished_at"),
+                    row.get("started_at"),
+                    row.get("created_at"),
+                )
+                if value is not None
+            ],
             default=source_at,
         )
         counts[status] = counts.get(status, 0) + 1
@@ -355,8 +371,12 @@ def _collect_authoritative_snapshot(
             "entity": f"train/{row['id']}",
             "title": status.replace("_", " ").upper(),
             "detail": (
-                f"machine={row['machine']} · eval={row.get('eval_status') or 'not created'}"
-                + (f" · outcome={row['eval_outcome']}" if row.get("eval_outcome") else "")
+                f"machine={row['machine']} · eval={evaluation.get('status') or row.get('eval_status') or 'not created'}"
+                + (
+                    f" · outcome={evaluation.get('outcome') or row.get('eval_outcome')}"
+                    if evaluation.get("outcome") or row.get("eval_outcome")
+                    else ""
+                )
             ),
             "started_at": row.get("started_at") or row.get("created_at"),
             "resolution": "automatic" if status != "finalization_failed" else "manual inspection",
@@ -364,16 +384,56 @@ def _collect_authoritative_snapshot(
         }
         if status == "pending":
             waiting.append(item)
-        elif status == "finalization_failed":
-            item["detail"] = str(row.get("error") or item["detail"])
-            needs_action.append(item)
-        else:
+        elif status != "finalization_failed":
             now_items.append(item)
+        current_incidents = list((projection.get("incidents") or {}).get("current") or [])
+        if status == "finalization_failed" and not current_incidents:
+            current_incidents = [
+                {
+                    "fingerprint": f"terminal:{row['id']}",
+                    "category": "terminal_operational_failure",
+                    "detail": str(row.get("error") or item["detail"]),
+                }
+            ]
+        for incident in current_incidents:
+            category = str(incident.get("category") or "potential_bug")
+            incident_item = {
+                **item,
+                "id": str(incident.get("fingerprint") or item["id"]),
+                "title": category.replace("_", " ").title(),
+                "detail": str(incident.get("detail") or item["detail"]),
+                "resolution": "manual inspection",
+            }
+            if category in {
+                "wandb_publication_retry",
+                "artifact_projection_retry",
+            } and status not in {"failed", "finalization_failed", "canceled"}:
+                incident_item["resolution"] = "automatic"
+                retrying.append(incident_item)
+            else:
+                if category in {
+                    "wandb_publication_retry",
+                    "artifact_projection_retry",
+                    "terminal_operational_failure",
+                }:
+                    from rlab.cli_commands import (
+                        experiment_retry_finalization_command,
+                        render_command,
+                    )
+
+                    incident_item["command"] = render_command(
+                        experiment_retry_finalization_command(int(row["id"]))
+                    )
+                needs_action.append(incident_item)
 
     for row in eval_jobs:
         status = str(row["status"])
         source_at = max(
-            [value for value in (source_at, row.get("updated_at"), row.get("created_at")) if value is not None],
+            [
+                value
+                for value in (source_at, row.get("updated_at"), row.get("created_at"))
+                if value is not None
+            ],
             default=source_at,
         )
         item = {

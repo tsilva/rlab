@@ -152,7 +152,7 @@ the canonical service, job-status, host-setup, capacity, and cleanup commands:
 
 ```bash
 rlab fleet service status --json
-rlab runs status --machine beast-3 --json
+rlab experiment status --machine beast-3 --json
 rlab fleet capacity --machine beast-3 --set 4
 rlab fleet drain --machine beast-3
 rlab fleet resume --machine beast-3

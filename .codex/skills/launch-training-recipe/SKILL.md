@@ -5,7 +5,7 @@ description: Launch and monitor queue-backed rlab training from a checked-in goa
 
 # Launch Training Recipe
 
-Run the bundled helper. Do not reconstruct this workflow from ad-hoc shell commands.
+Use the repository CLI only. Do not reload, replace, install, or restart controllers as part of a launch.
 
 ## Inputs
 
@@ -18,51 +18,44 @@ Resolve from the request and checked-in files:
 
 Read `SPECS.md`, `INSTANCES.md`, the selected goal, and the selected recipe before launch. If either file cannot be resolved uniquely, ask one concise question. Never guess between multiple candidates. Do not ask about the machine when none is given; use `beast-3`.
 
-## Start
+## Launch
 
 From the repository root, run:
 
 ```bash
-uv run python .codex/skills/launch-training-recipe/scripts/launch_training.py \
-  --goal <goal-file> \
-  --recipe <recipe-file> \
-  [--machine <machine>] \
+uv run rlab experiment launch \
+  --from-head \
+  --goal-file <goal-file> \
+  --recipe-file <recipe-file> \
+  --machine <machine> \
   [--seed <seed>] \
-  [--set <key=value> ...]
+  [--set <key=value> ...] \
+  --json
 ```
 
-The helper creates an isolated clean worktree at the current commit, preserves the caller's dirty worktree, performs exact-source preflight, launches through `rlab train`, monitors authoritative queue state, verifies the terminal result, then removes its temporary worktree. Do not create another worktree or call `rlab train` separately.
+The command launches committed `HEAD` from an isolated worktree and excludes unrelated local changes. Report `run_ids`, `batch_id`, machine, source SHA, source branch, runtime image, and `local_changes_excluded`. If the command reports an incompatible control plane, stop and tell the user to run the exact remediation it prints. Never repair the service during this skill.
 
-Before submission, the helper safely reloads the persistent evaluation controller so the run cannot be reconciled by stale in-memory code. Reload is allowed only when the queue has no nonterminal jobs; a refusal is a preflight failure, not a training bug. Do not restart controllers by hand.
+For each returned run, start one yielded monitor:
 
-Start the helper as a yielded terminal process. Poll that same process every 30-60 seconds. Do not repeatedly run verbose `rlab runs status`, W&B history queries, or log dumps in the main thread.
+```bash
+uv run rlab experiment follow --run <run-id> --jsonl
+```
+
+Poll that same process every 30-60 seconds. Do not run extra status, W&B history, or log commands unless investigating an emitted bug.
 
 ## Event handling
 
-The helper emits compact JSON lines. Follow them literally:
+`experiment follow` emits compact JSON lines. Follow them literally:
 
-- `workspace_ready`: the helper is using the reported commit. If `caller_dirty` is true, mention once that unrelated local changes are excluded from the run.
-- `controller_reloaded`: the persistent evaluation controller now uses current repository code. No action is required.
-- `launch_started` or `launch_waiting`: keep waiting. A short user update is enough if 60 seconds pass.
-- `submitted`: report the job ID, batch, machine, source commit, and runtime when present.
 - `wandb_url`: immediately send the clickable URL to the user. Do not wait for another phase.
-- `progress`: normally keep silent. Give at most one short update every two minutes unless the user asks for more.
-- `potential_bug`: immediately spawn one `training_run_investigator` custom agent for that fingerprint. Pass the job ID, fingerprint, reasons, snapshot, and the repository path. Continue monitoring while it investigates.
-- `terminal`: retain its complete summary for the final response. Follow
-  `terminal_classification` literally: `accepted` is verified success,
-  `goal_rejected` is a normal unsuccessful research outcome, and
-  `operational_failure` requires investigation.
-- `workflow_error`: report the concise error. If a `potential_bug` event preceded it, wait for that investigator; otherwise this is an input or preflight failure and no investigator is required.
-- `workspace_cleaned`: no action is required.
-- `complete`: the helper and temporary-worktree cleanup are done.
+- `progress`: normally stay silent. Give at most one short update every two minutes.
+- `potential_bug`: immediately dispatch the `training_run_investigator` custom agent for that fingerprint. Pass the run ID, incident, projection, and repo path. Keep monitoring.
+- `reporting_warning`: report that terminal presentation data was unavailable; do not change the authoritative terminal classification.
+- `terminal`: retain the full payload. `accepted` and `completed` exit 0, `goal_rejected` exits 2, `canceled` exits 3, and `operational_failure` exits 1.
 
 For a repeated fingerprint, reuse or follow up with the existing investigator instead of spawning another. For a distinct fingerprint, spawn another investigator after any current one completes. Wait for investigator reports before the final response.
 
-When the requested outcome requires an accepted run, do not stop after
-`goal_rejected`. Wait for `complete`, then invoke the helper again with the next
-explicit training seed in the `rlab.seeds` training range. Preserve any finite
-`--set train.timesteps=...` cap the user requested. A validated fail-fast
-rejection is not a bug and does not get an investigator.
+Only launch the next explicit seed after `goal_rejected` when the user asked for repeated attempts. Preserve all overrides. Never automatically relaunch after `canceled`, `operational_failure`, `potential_bug`, or observer failure. A valid fail-fast rejection is not a bug.
 
 ## Bug boundary
 
@@ -80,9 +73,9 @@ Do not call a valid fail-fast checkpoint rejection a bug. Treat infrastructure f
 
 ## Final response
 
-For every successful job, report from the `terminal` event:
+For every successful run, report from the `terminal` event:
 
-- job, batch, run name, machine, source, and runtime
+- run, batch, run name, machine, source, and runtime
 - submission-to-finish duration
 - terminal and evaluation outcomes
 - promoted/best checkpoint step and exact evidence counts when applicable
@@ -92,15 +85,14 @@ For every successful job, report from the `terminal` event:
 - W&B run URL again
 - the exact `play_command`
 
-Only call a run successful when `verified_success` is true. If it is false, report the terminal state and investigator findings without inventing a playback recommendation.
+Only call an acceptance run successful when `verified_success` is true, `terminal_classification` is `accepted`, and the user-required early-stop condition is satisfied. Use the exact immutable `wandb_artifact` and emitted `play_command`; never substitute the R2 checkpoint URI or a mutable alias.
 
 Keep the final answer concise. Do not expose credentials or raw presigned URLs.
 
-## Resume monitoring
+## Monitor an existing run
 
-To monitor an existing job without launching anything:
+Do not launch anything. Run:
 
 ```bash
-uv run python .codex/skills/launch-training-recipe/scripts/launch_training.py \
-  --monitor-job <job-id>
+uv run rlab experiment follow --run <run-id> --jsonl
 ```

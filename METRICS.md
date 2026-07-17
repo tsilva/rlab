@@ -71,6 +71,10 @@ An acceptance rejection is complete evidence of failure, but not a complete 100-
 evaluation. It emits `eval/acceptance/*` counters only. `eval/full/*` is emitted only after every
 manifest identity appears exactly once and all 100 episodes succeed.
 
+At terminal publication, W&B summary fields for an accepted run are rewritten from the immutable
+promoted acceptance evidence. Later rejected checkpoint projections remain in history but cannot
+replace the accepted checkpoint's `eval/acceptance/*` or `eval/full/*` summary values.
+
 ## Registry
 
 <!-- METRIC_REGISTRY_START -->

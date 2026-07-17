@@ -13,10 +13,10 @@ def _run(command: CommandMain, argv: Sequence[str]) -> int:
     return int(result) if isinstance(result, int) else 0
 
 
-def _train(argv: Sequence[str]) -> int:
-    from rlab.job_queue import build_train_enqueue_parser, cmd_enqueue_train
+def _experiment(argv: Sequence[str]) -> int:
+    from rlab.experiment_cli import main as experiment_main
 
-    return int(cmd_enqueue_train(build_train_enqueue_parser().parse_args(list(argv))))
+    return _run(experiment_main, argv)
 
 
 def _eval(argv: Sequence[str]) -> int:
@@ -24,21 +24,24 @@ def _eval(argv: Sequence[str]) -> int:
         from rlab.modal_eval_cli import main as modal_eval_main
 
         return _run(modal_eval_main, argv[1:])
-    from rlab.eval import main as eval_main
+    if argv and argv[0] == "run":
+        from rlab.eval import main as eval_main
 
-    return _run(eval_main, argv)
-
-
-def _jobs(argv: Sequence[str]) -> int:
-    from rlab.job_queue import main as queue_main
-
-    return _run(queue_main, argv)
-
-
-def _runs(argv: Sequence[str]) -> int:
-    from rlab.job_queue import main as queue_main
-
-    return int(queue_main(list(argv), prog="rlab runs"))
+        return _run(eval_main, argv[1:])
+    parser = argparse.ArgumentParser(
+        prog="rlab eval",
+        description="Run an ad-hoc evaluation locally or use the Modal evaluation backend.",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="<command>")
+    commands.add_parser("run", help="Evaluate one model against an environment contract.")
+    commands.add_parser("modal", help="Operate the Modal acceptance-evaluation backend.")
+    if argv and argv[0] in {"-h", "--help"}:
+        parser.parse_args(["--help"])
+    if not argv:
+        parser.print_help()
+        return 2
+    parser.error(f"unknown eval command: {argv[0]}")
+    return 2
 
 
 def _fleet(argv: Sequence[str]) -> int:
@@ -96,15 +99,16 @@ def _env(argv: Sequence[str]) -> int:
 
 
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
-    "train": ("enqueue queue-backed train jobs from checked-in recipes", _train),
-    "eval": ("run local evals", _eval),
+    "experiment": ("launch and observe queue-backed training experiments", _experiment),
+    "eval": ("run direct or Modal-backed evaluations", _eval),
     "play": ("render a local, W&B, or Hugging Face model in a GUI window", _play),
     "import-roms": ("import ROMs into the installed rlab runtime", _import_roms),
     "benchmark": ("run gated local-smoke and throughput profiles", _benchmark),
-    "validate": ("validate checked-in YAML experiments, recipes, benchmarks, and ops configs", _validate),
+    "validate": (
+        "validate checked-in YAML experiments, recipes, benchmarks, and ops configs",
+        _validate,
+    ),
     "env": ("list, inspect, and preflight environment providers", _env),
-    "runs": ("manage training runs, worker attempts, status, and cancellation", _runs),
-    "jobs": ("legacy alias for rlab runs", _jobs),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "reports": ("plan, synchronize, and verify declarative W&B reports", _reports),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
@@ -117,6 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab",
         description="Unified command surface for rlab training, eval, playback, and ops.",
+        epilog=(
+            "Research: experiment, eval, play, validate.  Environments: env, import-roms, "
+            "benchmark.  Results: leaders, reports.  Infrastructure: fleet."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
     for name in (name for name in COMMANDS if name not in INTERNAL_COMMANDS):

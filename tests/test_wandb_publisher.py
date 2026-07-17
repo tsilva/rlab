@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab.fleet_wandb_publisher import (
+    _canonical_goal_summary,
     _cursor_mapping,
     _partition_batches,
     _summary_step_max,
@@ -34,6 +35,35 @@ class FakeHtml:
 
 
 class WandbPublisherTests(unittest.TestCase):
+    def test_terminal_goal_summary_uses_the_promoted_acceptance_evidence(self) -> None:
+        summary = _canonical_goal_summary(
+            {
+                "outcome": "accepted",
+                "promotion_json": {
+                    "checkpoint_step": 8_000_000,
+                    "raw_metrics": {
+                        "episodes": 100,
+                        "_acceptance_duration_seconds": 33.75,
+                        "_acceptance_aggregates": {
+                            "episodes_planned": 100,
+                            "episodes_completed": 100,
+                            "failure_count": 0,
+                        },
+                        "eval/full/outcome/success/rate/min": 1.0,
+                        "eval/full/outcome/success/rate/mean": 1.0,
+                        "eval/full/episode/return/mean": 3144.17,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(summary["eval/acceptance/pass"], 1.0)
+        self.assertEqual(summary["eval/acceptance/episodes/planned"], 100)
+        self.assertEqual(summary["eval/acceptance/episodes/completed"], 100)
+        self.assertEqual(summary["eval/acceptance/failure/count"], 0)
+        self.assertEqual(summary["eval/full/checkpoint/step"], 8_000_000)
+        self.assertEqual(summary["eval/full/outcome/success/rate/min"], 1.0)
+
     def test_publisher_actor_survives_idle_gaps_until_remote_completion(self) -> None:
         conn = mock.MagicMock()
         with (
@@ -96,8 +126,7 @@ class WandbPublisherTests(unittest.TestCase):
         )
         self.assertEqual(popen.call_count, 3)
         train_ids = {
-            call.args[0][call.args[0].index("--train-job-id") + 1]
-            for call in popen.call_args_list
+            call.args[0][call.args[0].index("--train-job-id") + 1] for call in popen.call_args_list
         }
         self.assertEqual(train_ids, {"41", "42", "43"})
         self.assertTrue(all(call.kwargs["start_new_session"] for call in popen.call_args_list))
@@ -214,7 +243,11 @@ class WandbPublisherTests(unittest.TestCase):
             self.assertTrue(finalize_finishing_run(conn, 7))
 
         statements = [call.args[0] for call in cursor.execute.call_args_list]
-        complete = [statement for statement in statements if "live_publication_status = 'complete'" in statement]
+        complete = [
+            statement
+            for statement in statements
+            if "live_publication_status = 'complete'" in statement
+        ]
         self.assertEqual(len(complete), 1)
 
     def test_wandb_failure_remains_retryable_finalization_work(self) -> None:

@@ -1,7 +1,7 @@
 # GPU Instances
 
 This repo supports one-job Docker containers on registered local or SSH Docker
-machines. Every queued `rlab train` job names one exact machine. A single
+machines. Every queued `rlab experiment launch` run names one exact machine. Three
 Mac-side launchd controllers continuously reconcile machine, evaluation, and
 W&B publication state for `local-macbook`, `beast-3`, and `beast-2`; the runner
 machines remain simple SSH/Docker hosts.
@@ -29,7 +29,7 @@ needs a smaller operating shape.
 Queue work by composing one checked-in goal contract with one reusable recipe:
 
 ```bash
-rlab train \
+rlab experiment launch --from-head \
   --goal-file experiments/goals/<goal-slug>/_goal.yaml \
   --recipe-file experiments/recipes/<family>/<recipe>.yaml \
   --machine beast-3
@@ -41,7 +41,7 @@ Install and inspect the Mac-side service, then observe jobs:
 rlab fleet service install
 rlab fleet service watch
 rlab fleet service status --json
-rlab runs status --machine beast-3 --json
+rlab experiment status --machine beast-3 --json
 ```
 
 launchd supervises three independent controllers: machine reconciliation,
@@ -55,7 +55,7 @@ opens a responsive dashboard; `--once`, `--plain`, and `--json` provide scriptab
 The dashboard reads launchd registration plus authoritative PostgreSQL state; it never mutates or
 repairs queue, Docker, SSH, Modal, or W&B state. It reports only failures that still block an active
 run as needing attention. Use
-`rlab fleet service logs --follow` for raw events and `rlab runs status` for exact job history.
+`rlab fleet service logs --follow` for raw events and `rlab experiment status` for exact run history.
 
 `rlab fleet service status --json` exits nonzero when the last pass is stale or degraded, and
 `rlab fleet service doctor` includes the last-pass result rather than treating a merely loaded
@@ -75,7 +75,7 @@ rlab fleet capacity --machine beast-3 --reset
 
 Use `rlab fleet drain --machine <name>` to stop new claims without killing
 running jobs and `rlab fleet resume --machine <name>` to admit work again.
-`rlab runs status` is observational. The three controllers are the only normal
+`rlab experiment status` is observational. The three controllers are the only normal
 mutating reconcilers. The machine controller claims and launches jobs and prunes
 stale Docker images after no active container or exact-machine queued demand
 needs them.
@@ -95,16 +95,15 @@ rlab eval modal preflight \
   --game <game-id>
 rlab eval modal drain
 rlab eval modal resume
-rlab eval modal retry <eval-job-id>
-rlab eval modal retry-projection <train-job-id>
-rlab eval modal recover <train-job-id>
-rlab eval modal abandon <train-job-id>
+rlab eval modal retry --eval-job <eval-job-id>
+rlab eval modal recover --run <run-id>
+rlab eval modal abandon --run <run-id>
 rlab eval modal assets sync --game <game-id>
 rlab eval modal smoke-local
 ```
 
 The selected backend is materialized in the queue row and never changes for that job. Use
-`rlab train ... --checkpoint-eval-backend local` only for an explicit fallback. Use `none` only for
+`rlab experiment launch ... --checkpoint-eval-backend local` only for an explicit fallback. Use `none` only for
 a smoke/debug submission that does not need eval-owned early stopping, checkpoint promotion, or goal
 acceptance. `preflight` fails closed unless the additive PostgreSQL schema, active capacity, private
 ROM object, R2 evidence path, local Modal credentials, and exact runtime-specific deployment are
@@ -123,10 +122,10 @@ both operations but still startup-probe the existing app and publish an exact-so
 receipt; Modal submissions wait for matching readiness and repeat the full live preflight before
 writing queue rows. Image workflow failure during the later Modal stage does not invalidate an
 already published image receipt, but it does block Modal-backed submissions for that digest.
-Use `rlab eval modal recover <train-job-id>` only after a terminal train job reports
+Use `rlab eval modal recover --run <run-id>` only after a terminal run reports
 `awaiting_artifact_recovery`. Recovery drains pending artifacts inside the runtime container and
 rejects active, finalizing, complete, or otherwise ineligible eval runs without changing their state.
-Use `rlab eval modal abandon <train-job-id>` after inspecting a failed, finalization-failed, or
+Use `rlab eval modal abandon --run <run-id>` after inspecting a failed, finalization-failed, or
 canceled train whose evaluation remains nonterminal. It preserves uploaded evidence while canceling
 undispatched evaluation work and closes the evaluation run with the matching terminal outcome.
 
@@ -153,7 +152,7 @@ completion and failure remain durable finalization-only state. A lifetime actor 
 the narrower per-session lock prevent duplicate owners or interleaved writers after a manager or Mac
 restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
-connection. `rlab runs setup` resolves the restricted role from
+connection. `rlab fleet queue setup` resolves the restricted role from
 `WORKER_MAILBOX_DATABASE_URL` and grants every mailbox procedure after applying the schema.
 Worker readiness also executes the authenticated command poll, so a missing command grant fails
 the launch before training can be reported ready. The dedicated command relay retries transient

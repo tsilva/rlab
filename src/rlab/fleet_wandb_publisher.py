@@ -27,7 +27,14 @@ from rlab.wandb_publisher import (
     project_payload_to_run,
 )
 from rlab.wandb_utils import load_wandb_env, resolve_wandb_namespace
-from rlab.metric_names import EVAL_ACCEPTANCE_PASS
+from rlab.metric_names import (
+    EVAL_ACCEPTANCE_DURATION_SECONDS,
+    EVAL_ACCEPTANCE_EPISODES_COMPLETED,
+    EVAL_ACCEPTANCE_EPISODES_PLANNED,
+    EVAL_ACCEPTANCE_FAILURE_COUNT,
+    EVAL_ACCEPTANCE_PASS,
+    EVAL_FULL_CHECKPOINT_STEP,
+)
 
 
 SUMMARY_CURSOR_KEY = "_rlab_telemetry_cursors"
@@ -130,6 +137,49 @@ def _remote_has_promoted_artifact(remote, checkpoint_sha256: str) -> bool:
     return False
 
 
+def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
+    """Return the terminal goal evidence that must win over later eval projections."""
+
+    outcome = str(run.get("outcome") or "unknown")
+    summary: dict[str, Any] = {
+        "rlab/goal/outcome": outcome,
+        "rlab/operational/status": "finished",
+    }
+    if outcome != "accepted":
+        return summary
+    promotion = dict(run.get("promotion_json") or {})
+    raw_metrics = dict(promotion.get("raw_metrics") or {})
+    aggregates = dict(raw_metrics.get("_acceptance_aggregates") or {})
+    summary.update(
+        {
+            EVAL_ACCEPTANCE_PASS: 1.0,
+            EVAL_ACCEPTANCE_EPISODES_PLANNED: int(
+                aggregates.get("episodes_planned") or raw_metrics.get("episodes") or 0
+            ),
+            EVAL_ACCEPTANCE_EPISODES_COMPLETED: int(
+                aggregates.get("episodes_completed") or raw_metrics.get("episodes") or 0
+            ),
+            EVAL_ACCEPTANCE_FAILURE_COUNT: int(aggregates.get("failure_count") or 0),
+            EVAL_ACCEPTANCE_DURATION_SECONDS: float(
+                raw_metrics.get("_acceptance_duration_seconds")
+                or raw_metrics.get("eval/full/duration/seconds")
+                or 0.0
+            ),
+            EVAL_FULL_CHECKPOINT_STEP: int(
+                promotion.get("checkpoint_step") or raw_metrics.get("checkpoint_step") or 0
+            ),
+        }
+    )
+    for key, value in raw_metrics.items():
+        if (
+            str(key).startswith("eval/full/")
+            and isinstance(value, int | float)
+            and not isinstance(value, bool)
+        ):
+            summary[str(key)] = value
+    return summary
+
+
 def finalize_finishing_run(conn, train_job_id: int) -> bool:
     lock_key = f"rlab-wandb-run:{int(train_job_id)}"
     with conn.cursor() as cur:
@@ -203,8 +253,8 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
                 **remote_cursors,
                 **expected,
             }
-            projector.run.summary["rlab/goal/outcome"] = str(run.get("outcome") or "unknown")
-            projector.run.summary["rlab/operational/status"] = "finished"
+            for key, value in _canonical_goal_summary(run).items():
+                projector.run.summary[key] = value
             projector.close()
             deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
@@ -673,10 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             published = drain_once(conn, limit=max(1, args.limit))
-        print(
-            "published_batches="
-            f"{published}"
-        )
+        print(f"published_batches={published}")
     finally:
         conn.close()
     return 0

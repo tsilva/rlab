@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import psycopg2
 import psycopg2.extras
 
-from rlab.cli_args import add_direct_database_arg, add_dry_run_arg
+from rlab.cli_args import add_direct_database_arg
 from rlab.dotenv import load_env_file
 from rlab.env_registry import resolve_env_provider
 from rlab.json_utils import json_safe
@@ -1451,9 +1451,7 @@ def enqueue_train_jobs_from_recipe_document(
                 )
             for row_owned_key in ("seed", "recipe_slug", "recipe_path", "machine"):
                 train_config.pop(row_owned_key, None)
-            run_name = _format_default_run_name(
-                batch_id, label=document_slug, seed=seed, utc=utc
-            )
+            run_name = _format_default_run_name(batch_id, label=document_slug, seed=seed, utc=utc)
             run_description = _format_queue_template(
                 document.get("description"),
                 seed=seed,
@@ -1605,9 +1603,7 @@ def enqueue_train_job(
             config.pop("checkpoint_eval_asset_manifest", None)
         config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
         if config.get("stop_on_acceptance"):
-            config["checkpoint_eval_contract"] = (
-                checkpoint_eval_contract_from_train_config(config)
-            )
+            config["checkpoint_eval_contract"] = checkpoint_eval_contract_from_train_config(config)
     assert_no_secrets(config, label="train_config")
     assert_no_secrets(recipe_payload or {}, label="recipe_payload")
     require_explicit_queue_train_config(config)
@@ -3094,29 +3090,24 @@ def queue_status(
         else:
             artifact_status = "pending"
         row["artifact_status"] = artifact_status
-        row["artifact_ref"] = None
-        if (
-            str(row.get("telemetry_transport") or "legacy_local") == "neon_mailbox_v1"
-            and artifact_status in {"playable", "published"}
-            and row.get("promoted_checkpoint_uri")
-        ):
-            row["artifact_ref"] = str(row["promoted_checkpoint_uri"])
+        row["r2_checkpoint_uri"] = row.get("promoted_checkpoint_uri")
+        row["wandb_artifact_ref"] = None
         wandb_url = str(row.get("wandb_url") or "")
         wandb_run_id = str(row.get("wandb_run_id") or "")
         if (
-            row["artifact_ref"] is None
-            and artifact_status in {"playable", "published"}
+            artifact_status in {"playable", "published"}
             and wandb_url
             and wandb_run_id
+            and row.get("promoted_step") is not None
         ):
             parts = [part for part in urlparse(wandb_url).path.split("/") if part]
             if len(parts) >= 2:
-                alias = (
-                    f"step-{int(row['promoted_step'])}"
-                    if row.get("promoted_step") is not None
-                    else "latest"
+                alias = f"step-{int(row['promoted_step'])}"
+                row["wandb_artifact_ref"] = (
+                    f"{parts[0]}/{parts[1]}/{wandb_run_id}-checkpoint:{alias}"
                 )
-                row["artifact_ref"] = f"{parts[0]}/{parts[1]}/{wandb_run_id}-checkpoint:{alias}"
+        # Internal compatibility only. Public experiment JSON exposes the two stores separately.
+        row["artifact_ref"] = row["wandb_artifact_ref"]
     counts: dict[str, int] = {}
     for row in jobs:
         counts[str(row["status"])] = counts.get(str(row["status"]), 0) + 1
@@ -3142,7 +3133,7 @@ def print_status(report: Mapping[str, Any]) -> None:
 
 def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="rlab train",
+        prog="rlab experiment launch",
         description=(
             "Create queue-backed train jobs from one checked-in goal contract and recipe."
         ),
@@ -3203,92 +3194,6 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_parser(*, prog: str = "rlab jobs") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog=prog,
-        description="Manage rlab training runs and their worker attempts.",
-    )
-    parser.add_argument("--direct", action="store_true", help="Use DIRECT_DATABASE_URL.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    setup = subparsers.add_parser("setup", help="Create queue tables")
-    setup.add_argument(
-        "--worker-mailbox-role",
-        default=os.environ.get("WORKER_MAILBOX_ROLE"),
-        help="Restricted PostgreSQL role allowed to call worker mailbox procedures.",
-    )
-    setup.set_defaults(func=cmd_setup)
-
-    reset = subparsers.add_parser(
-        "reset-schema",
-        help="Export old queue tables, then drop and recreate the queue schema.",
-    )
-    reset.add_argument(
-        "--export-dir",
-        type=Path,
-        help="Directory for JSONL exports; defaults to logs/campaign-db-export-<utc>.",
-    )
-    add_dry_run_arg(reset)
-    reset.set_defaults(func=cmd_reset_schema)
-
-    status = subparsers.add_parser("status", help="Inspect runs by run, batch, machine, or goal.")
-    add_job_selector(status, include_machine=True, include_goal=True)
-    status.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
-    status.add_argument("--json", action="store_true")
-    status.set_defaults(func=cmd_status)
-
-    wait = subparsers.add_parser("wait", help="Wait for jobs to run or become terminal.")
-    add_job_selector(wait, include_machine=False, include_goal=False)
-    wait.add_argument("--until", choices=("running", "terminal"), required=True)
-    wait.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
-    wait.add_argument("--json", action="store_true")
-    wait.set_defaults(func=cmd_wait)
-
-    cancel = subparsers.add_parser("cancel", help="Request idempotent job cancellation.")
-    add_job_selector(cancel, include_machine=True, include_goal=False)
-    cancel.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
-    cancel.add_argument("--all-active", action="store_true")
-    cancel.add_argument("--drain", action="store_true")
-    cancel.add_argument("--wait", action="store_true")
-    cancel.add_argument("--timeout", type=parse_duration_seconds, default=10 * 60)
-    cancel.add_argument("--json", action="store_true")
-    cancel.set_defaults(func=cmd_cancel)
-
-    retry = subparsers.add_parser("retry", help="Create a new job from a terminal job.")
-    retry.add_argument("--run", "--job", dest="job_id", type=int, required=True)
-    retry.add_argument("--request-id", dest="submission_key")
-    retry.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
-    retry.add_argument("--runtime-image-ref-file", type=Path)
-    retry.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
-    retry.add_argument("--image-branch")
-    retry.add_argument("--image-artifact", default=DEFAULT_IMAGE_ARTIFACT)
-    retry.add_argument(
-        "--runtime-readiness-timeout",
-        type=parse_duration_seconds,
-        default=DEFAULT_RUNTIME_READINESS_TIMEOUT_SECONDS,
-    )
-    retry.add_argument("--wait", choices=("running", "terminal"))
-    retry.add_argument("--timeout", type=parse_duration_seconds, default=12 * 60 * 60)
-    retry.add_argument("--json", action="store_true")
-    retry.set_defaults(func=cmd_retry)
-
-    retry_finalization = subparsers.add_parser(
-        "retry-finalization",
-        help="Reopen failed publication/evaluation finalization without rerunning training.",
-    )
-    retry_finalization.add_argument("--run", "--job", dest="job_id", type=int, required=True)
-    retry_finalization.add_argument("--json", action="store_true")
-    retry_finalization.set_defaults(func=cmd_retry_finalization)
-
-    logs = subparsers.add_parser("logs", help="Read durable output logs for one job.")
-    logs.add_argument("--run", "--job", dest="job_id", type=int, required=True)
-    logs.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
-    logs.add_argument("--tail", type=int, default=100)
-    logs.add_argument("--follow", action="store_true")
-    logs.set_defaults(func=cmd_logs)
-    return parser
-
-
 def parse_duration_seconds(value: str | int | float) -> float:
     if isinstance(value, int | float):
         return float(value)
@@ -3300,29 +3205,6 @@ def parse_duration_seconds(value: str | int | float) -> float:
     amount = float(match.group(1))
     multiplier = {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0}[match.group(2)]
     return amount * multiplier
-
-
-def add_job_selector(
-    parser: argparse.ArgumentParser,
-    *,
-    include_machine: bool,
-    include_goal: bool,
-) -> None:
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--run", "--job", dest="job_id", type=int)
-    group.add_argument("--batch", dest="batch_id")
-    if include_machine:
-        group.add_argument("--machine")
-    if include_goal:
-        group.add_argument("--goal", dest="goal_slug")
-
-
-def selector_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        key: getattr(args, key, None)
-        for key in ("job_id", "batch_id", "machine", "goal_slug")
-        if getattr(args, key, None) is not None
-    }
 
 
 def _connect_from_args(args: argparse.Namespace):
@@ -3399,7 +3281,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     runtime_image_ref = release.runtime_image_ref
     if clean_git_source_sha() != release.source_sha:
         raise RuntimeError(
-            "Git source changed while waiting for runtime readiness; rerun rlab train"
+            "Git source changed while waiting for runtime readiness; rerun rlab experiment launch"
         )
     metadata = recipe_metadata(args.goal_file, args.recipe_file, document)
     from rlab.docker_host import DockerRunnerHost
@@ -3444,7 +3326,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
     def validate_runtime_config(train_config: Mapping[str, Any]) -> dict[str, Any]:
         if clean_git_source_sha() != release.source_sha:
             raise RuntimeError(
-                "Git source changed before target-machine preflight; rerun rlab train"
+                "Git source changed before target-machine preflight; rerun rlab experiment launch"
             )
         started = time.perf_counter()
         try:
@@ -3569,26 +3451,6 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         if wait_result:
             print(json.dumps(json_safe(wait_result), sort_keys=True))
     return 0 if not wait_result or wait_result["reached"] else 1
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    capacities = _machine_capacities(args.machines)
-    if args.machine:
-        resolve_machine(load_machine_registry(args.machines), args.machine)
-    conn = _connect_from_args(args)
-    try:
-        report = queue_status(
-            conn,
-            **selector_from_args(args),
-            machine_capacities=capacities,
-        )
-    finally:
-        conn.close()
-    if args.json:
-        print(json.dumps(json_safe(report), sort_keys=True))
-    else:
-        print_status(report)
-    return 0
 
 
 def dispatch_fleet_service(
@@ -3866,12 +3728,3 @@ def cmd_logs(args: argparse.Namespace) -> int:
         tail=int(args.tail),
         follow=bool(args.follow),
     )
-
-
-def main(argv: list[str] | None = None, *, prog: str = "rlab jobs") -> int:
-    args = build_parser(prog=prog).parse_args(argv)
-    return int(args.func(args))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

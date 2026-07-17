@@ -83,6 +83,10 @@ class FleetServiceTests(unittest.TestCase):
                 payload["ProgramArguments"][1:4],
                 ["-m", "rlab.fleet_controllers", name],
             )
+            self.assertEqual(
+                payload["ProgramArguments"][-2:],
+                ["--protocol-version", str(fleet_service.CONTROL_PLANE_PROTOCOL_VERSION)],
+            )
             self.assertNotIn("DATABASE_URL", json.dumps(payload))
 
     def test_split_controller_install_bootstraps_three_labels_and_retires_combined(self) -> None:
@@ -119,9 +123,7 @@ class FleetServiceTests(unittest.TestCase):
                     ["launchctl", "kickstart", f"gui/{os.getuid()}/{item.label}"],
                     commands,
                 )
-            self.assertIn(
-                ["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands
-            )
+            self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands)
 
     def test_kick_never_uses_kill_flag(self) -> None:
         commands: list[list[str]] = []
@@ -181,6 +183,52 @@ class FleetServiceTests(unittest.TestCase):
                 )
 
         runner.assert_not_called()
+
+    def test_launch_preflight_accepts_compatible_controllers_with_active_jobs(self) -> None:
+        status = {
+            "installed": True,
+            "loaded": True,
+            "running": True,
+            "protocol_compatible": True,
+            "controllers": {
+                name: {
+                    "installed": True,
+                    "loaded": True,
+                    "running": True,
+                    "protocol_compatible": True,
+                }
+                for name in fleet_service.CONTROLLER_NAMES
+            },
+        }
+        with (
+            mock.patch.object(fleet_service, "controller_services_status", return_value=status),
+            mock.patch.object(
+                fleet_service,
+                "_default_count_nonterminal_jobs",
+                side_effect=AssertionError("preflight inspected active jobs"),
+            ),
+        ):
+            self.assertIs(fleet_service.require_compatible_controller_services(), status)
+
+    def test_launch_preflight_rejects_protocol_mismatch_with_exact_remediation(self) -> None:
+        status = {
+            "installed": True,
+            "loaded": True,
+            "running": True,
+            "protocol_compatible": False,
+            "controllers": {
+                name: {
+                    "installed": True,
+                    "loaded": True,
+                    "running": True,
+                    "protocol_compatible": name != "evaluation",
+                }
+                for name in fleet_service.CONTROLLER_NAMES
+            },
+        }
+        with mock.patch.object(fleet_service, "controller_services_status", return_value=status):
+            with self.assertRaisesRegex(RuntimeError, "rlab fleet service install --replace"):
+                fleet_service.require_compatible_controller_services()
 
     def test_redaction_removes_presigned_url_queries_and_url_fields(self) -> None:
         url = "https://r2.example/checkpoint?X-Amz-Credential=secret&X-Amz-Signature=value"
@@ -641,12 +689,8 @@ class FleetServiceTests(unittest.TestCase):
             self.assertTrue(
                 fleet_service.kick_service(entity_kind=entity_kind, runner=runner, uid=501)
             )
-        self.assertTrue(
-            fleet_service.kick_service(entity_kind="eval", runner=runner, uid=501)
-        )
-        self.assertTrue(
-            fleet_service.kick_service(entity_kind="wandb", runner=runner, uid=501)
-        )
+        self.assertTrue(fleet_service.kick_service(entity_kind="eval", runner=runner, uid=501))
+        self.assertTrue(fleet_service.kick_service(entity_kind="wandb", runner=runner, uid=501))
 
         self.assertEqual(
             [command[-1] for command in commands],

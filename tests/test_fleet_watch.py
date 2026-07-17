@@ -45,7 +45,7 @@ def sample_snapshot() -> dict:
                 "detail": "Evaluation cannot continue",
                 "resolution": "manual action",
                 "blast_radius": "promotion only",
-                "command": "rlab eval modal recover 15",
+                "command": "rlab eval modal recover --run 15",
             }
         ],
         "now": [

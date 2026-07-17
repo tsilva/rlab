@@ -10,7 +10,7 @@ from typing import Any
 
 from rlab.dotenv import load_env_file
 from rlab.env_registry import resolve_env_provider
-from rlab.job_queue import connect, database_url, retry_train_job_finalization
+from rlab.job_queue import connect, database_url
 from rlab.modal_eval_assets import asset_manifest_for_game, sync_rom_asset
 from rlab.modal_eval_config import load_modal_eval_config, modal_app_name
 from rlab.modal_eval_storage import (
@@ -86,7 +86,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
                     {
                         "ready": False,
                         "missing_tables": missing,
-                        "remediation": "run: rlab jobs setup",
+                        "remediation": "run: rlab fleet queue setup",
                     },
                     indent=2,
                     sort_keys=True,
@@ -195,11 +195,7 @@ def modal_preflight(
             add(
                 "backend_state",
                 bool(backend) and not bool(backend.get("drained")),
-                (
-                    f"drained={str(bool(backend.get('drained'))).lower()}"
-                    if backend
-                    else "missing"
-                ),
+                (f"drained={str(bool(backend.get('drained'))).lower()}" if backend else "missing"),
             )
     except Exception as exc:
         add("postgres_schema", False, type(exc).__name__)
@@ -353,17 +349,6 @@ def cmd_retry(args: argparse.Namespace) -> int:
             raise ValueError("eval job is not retryable")
         print(json.dumps(dict(row), sort_keys=True, default=str))
         _kick("modal_eval_retry", entity_id=int(args.eval_job_id))
-        return 0
-    finally:
-        conn.close()
-
-
-def cmd_retry_projection(args: argparse.Namespace) -> int:
-    conn = _conn()
-    try:
-        retry_train_job_finalization(conn, job_id=int(args.train_job_id))
-        print(json.dumps({"train_job_id": int(args.train_job_id), "projection_retried": True}))
-        _kick("modal_projection_retry", entity_kind="train", entity_id=int(args.train_job_id))
         return 0
     finally:
         conn.close()
@@ -758,16 +743,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--reason", default="")
     resume.set_defaults(func=cmd_resume)
     retry = commands.add_parser("retry")
-    retry.add_argument("eval_job_id", type=int)
+    retry.add_argument("--eval-job", dest="eval_job_id", type=int, required=True)
     retry.set_defaults(func=cmd_retry)
-    retry_projection = commands.add_parser("retry-projection")
-    retry_projection.add_argument("train_job_id", type=int)
-    retry_projection.set_defaults(func=cmd_retry_projection)
     recover = commands.add_parser("recover")
-    recover.add_argument("train_job_id", type=int)
+    recover.add_argument("--run", dest="train_job_id", type=int, required=True)
     recover.set_defaults(func=cmd_recover)
     abandon = commands.add_parser("abandon")
-    abandon.add_argument("train_job_id", type=int)
+    abandon.add_argument("--run", dest="train_job_id", type=int, required=True)
     abandon.set_defaults(func=cmd_abandon)
     assets = commands.add_parser("assets")
     asset_commands = assets.add_subparsers(dest="asset_command", required=True)

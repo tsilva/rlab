@@ -10,15 +10,16 @@ from rlab.main import main
 class PublicCliHelpTests(unittest.TestCase):
     def test_delegated_help_uses_complete_public_command(self) -> None:
         cases = (
-            (("train", "--help"), "usage: rlab train"),
+            (("experiment", "launch", "--help"), "usage: rlab experiment launch"),
+            (("experiment", "follow", "--help"), "usage: rlab experiment follow"),
             (("eval", "--help"), "usage: rlab eval"),
+            (("eval", "run", "--help"), "usage: rlab eval run"),
             (("eval", "modal", "status", "--help"), "usage: rlab eval modal status"),
             (("play", "--help"), "usage: rlab play"),
             (("import-roms", "--help"), "usage: rlab import-roms"),
             (("benchmark", "run", "--help"), "usage: rlab benchmark run"),
             (("validate", "--help"), "usage: rlab validate"),
-            (("env", "check", "--help"), "usage: rlab env check"),
-            (("jobs", "cancel", "--help"), "usage: rlab jobs cancel"),
+            (("env", "preflight", "--help"), "usage: rlab env preflight"),
             (("leaders", "runs", "--help"), "usage: rlab leaders runs"),
             (("reports", "plan", "--help"), "usage: rlab reports plan"),
             (("fleet", "service", "status", "--help"), "usage: rlab fleet service status"),
@@ -32,10 +33,10 @@ class PublicCliHelpTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 0)
                 self.assertTrue(stdout.getvalue().startswith(expected_usage), stdout.getvalue())
 
-    def test_train_help_describes_exact_source_runtime_resolution(self) -> None:
+    def test_launch_help_describes_exact_source_runtime_resolution(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
-            main(["train", "--help"])
+            main(["experiment", "launch", "--help"])
         self.assertEqual(raised.exception.code, 0)
         help_text = stdout.getvalue()
         normalized_help = " ".join(help_text.split())
@@ -44,11 +45,11 @@ class PublicCliHelpTests(unittest.TestCase):
         self.assertNotIn("defaults to latest", normalized_help)
 
     def test_eval_and_play_help_are_sb3_backend_neutral(self) -> None:
-        for command in ("eval", "play"):
+        for command in (("eval", "run"), ("play",)):
             with self.subTest(command=command):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
-                    main([command, "--help"])
+                    main([*command, "--help"])
                 self.assertEqual(raised.exception.code, 0)
                 help_text = stdout.getvalue()
                 self.assertIn("rlab", help_text)

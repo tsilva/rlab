@@ -54,7 +54,7 @@ def test_learner_backend_context_is_wandb_blind() -> None:
 def test_direct_learner_entrypoint_is_guarded() -> None:
     with (
         mock.patch.dict("os.environ", {}, clear=True),
-        pytest.raises(RuntimeError, match="use `rlab train`"),
+        pytest.raises(RuntimeError, match="use `rlab experiment launch`"),
     ):
         train_main([])
 

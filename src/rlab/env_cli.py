@@ -611,7 +611,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_check(args: argparse.Namespace) -> int:
+def _cmd_preflight(args: argparse.Namespace) -> int:
     if args.json:
         with redirect_stdout(sys.stderr):
             report = _check_report(args)
@@ -635,13 +635,15 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--json", action="store_true")
     inspect_parser.set_defaults(handler=_cmd_inspect)
 
-    check_parser = commands.add_parser("check", help="Run a recipe-backed environment preflight.")
-    check_parser.add_argument("--goal-file", type=Path, required=True)
-    check_parser.add_argument("--recipe-file", type=Path, required=True)
-    check_parser.add_argument("--set", dest="recipe_overrides", action="append", default=[])
-    check_parser.add_argument("--seed", type=int, default=0)
-    check_parser.add_argument("--json", action="store_true")
-    check_parser.set_defaults(handler=_cmd_check)
+    preflight_parser = commands.add_parser(
+        "preflight", help="Run a recipe-backed environment preflight."
+    )
+    preflight_parser.add_argument("--goal-file", type=Path, required=True)
+    preflight_parser.add_argument("--recipe-file", type=Path, required=True)
+    preflight_parser.add_argument("--set", dest="recipe_overrides", action="append", default=[])
+    preflight_parser.add_argument("--seed", type=int, default=0)
+    preflight_parser.add_argument("--json", action="store_true")
+    preflight_parser.set_defaults(handler=_cmd_preflight)
     return parser
 
 

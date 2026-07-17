@@ -197,7 +197,7 @@ def _run_fake_check(
         patch("importlib.import_module", side_effect=import_module),
     ):
         argv = [
-            "check",
+            "preflight",
             "--goal-file",
             str(MARIO_GOAL),
             "--recipe-file",
@@ -243,7 +243,7 @@ assert 'breakout_turbo_env' not in sys.modules
 
 def test_env_check_requires_goal_file() -> None:
     with pytest.raises(SystemExit):
-        env_main(["check", "--recipe-file", str(MARIO_RECIPE)])
+        env_main(["preflight", "--recipe-file", str(MARIO_RECIPE)])
 
 
 def test_inspect_reports_dynamic_gymnasium_contract() -> None:

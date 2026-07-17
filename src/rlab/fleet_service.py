@@ -26,11 +26,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from rlab.cli_commands import (
+    eval_modal_abandon_command,
+    eval_modal_recover_command,
+    experiment_retry_finalization_command,
+    render_command,
+)
+
 
 SERVICE_LABEL = "com.rlab.fleet-service"
 SERVICE_INTERVAL_SECONDS = 30
 CONTROLLER_NAMES = ("machine", "evaluation", "wandb")
 CONTROLLER_POLL_SECONDS = 2
+CONTROL_PLANE_PROTOCOL_VERSION = 1
 DEFAULT_LANE_TIMEOUT_SECONDS = 120.0
 DEFAULT_PASS_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_MACHINE_LANES = 4
@@ -199,9 +207,7 @@ def controller_service_paths(paths: ServicePaths, controller: str) -> ServicePat
     )
 
 
-def controller_launch_agent_payload(
-    paths: ServicePaths, controller: str
-) -> dict[str, Any]:
+def controller_launch_agent_payload(paths: ServicePaths, controller: str) -> dict[str, Any]:
     controller_paths = controller_service_paths(paths, controller)
     return {
         "Label": controller_paths.label,
@@ -212,6 +218,8 @@ def controller_launch_agent_payload(
             controller,
             "--repo-root",
             str(paths.repo_root),
+            "--protocol-version",
+            str(CONTROL_PLANE_PROTOCOL_VERSION),
         ],
         "WorkingDirectory": str(paths.repo_root),
         "KeepAlive": True,
@@ -824,6 +832,18 @@ def _last_pass_age_seconds(last_pass: Mapping[str, Any] | None) -> float | None:
     return max(0.0, (_utc_now() - finished.astimezone(UTC)).total_seconds())
 
 
+def _installed_controller_protocol_version(item: ServicePaths) -> int | None:
+    if not item.plist.is_file():
+        return None
+    try:
+        payload = plistlib.loads(item.plist.read_bytes())
+        arguments = list(payload.get("ProgramArguments") or [])
+        index = arguments.index("--protocol-version")
+        return int(arguments[index + 1])
+    except OSError, ValueError, TypeError, IndexError, plistlib.InvalidFileException:
+        return None
+
+
 def service_status(
     paths: ServicePaths,
     *,
@@ -865,6 +885,7 @@ def controller_services_status(
     controllers: dict[str, dict[str, Any]] = {}
     for name in CONTROLLER_NAMES:
         item = controller_service_paths(paths, name)
+        installed_protocol_version = _installed_controller_protocol_version(item)
         loaded = service_is_loaded(item.label, runner=runner)
         try:
             running = service_is_running(item.label, runner=runner) if loaded else False
@@ -878,21 +899,62 @@ def controller_services_status(
             "plist": str(item.plist),
             "stdout": str(item.bootstrap_stdout),
             "stderr": str(item.bootstrap_stderr),
+            "installed_protocol_version": installed_protocol_version,
+            "expected_protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
+            "protocol_compatible": (installed_protocol_version == CONTROL_PLANE_PROTOCOL_VERSION),
         }
     installed = all(row["installed"] for row in controllers.values())
     loaded = all(row["loaded"] for row in controllers.values())
     running = all(row["running"] for row in controllers.values())
+    protocol_compatible = all(row["protocol_compatible"] for row in controllers.values())
     return {
         "label": paths.label,
         "installed": installed,
         "loaded": loaded,
         "running": running,
-        "healthy": installed and loaded and running,
+        "healthy": installed and loaded and running and protocol_compatible,
+        "protocol_compatible": protocol_compatible,
+        "expected_protocol_version": CONTROL_PLANE_PROTOCOL_VERSION,
         "poll_seconds": CONTROLLER_POLL_SECONDS,
         "repo_root": str(paths.repo_root),
         "python": str(paths.python),
         "controllers": controllers,
     }
+
+
+def require_compatible_controller_services(
+    paths: ServicePaths | None = None,
+    *,
+    runner: CommandRunner = _run_command,
+) -> dict[str, Any]:
+    """Fail closed before queue mutation when the persistent control plane is stale."""
+
+    selected = paths or default_service_paths()
+    try:
+        status = controller_services_status(selected, runner=runner)
+    except OSError as exc:
+        raise RuntimeError(
+            "fleet controllers are unavailable; run `rlab fleet service install --replace`"
+        ) from exc
+    if not (
+        status["installed"]
+        and status["loaded"]
+        and status["running"]
+        and status["protocol_compatible"]
+    ):
+        incompatible = [
+            name
+            for name, row in status["controllers"].items()
+            if not (
+                row["installed"] and row["loaded"] and row["running"] and row["protocol_compatible"]
+            )
+        ]
+        raise RuntimeError(
+            "fleet controllers are not installed, running, and protocol-compatible "
+            f"({', '.join(incompatible) or 'unknown'}); run "
+            "`rlab fleet service install --replace`"
+        )
+    return status
 
 
 def reload_controller_service(
@@ -910,8 +972,7 @@ def reload_controller_service(
     nonterminal = int(counter(paths.repo_root))
     if nonterminal:
         raise RuntimeError(
-            f"refusing to reload the {controller} controller with "
-            f"{nonterminal} nonterminal job(s)"
+            f"refusing to reload the {controller} controller with {nonterminal} nonterminal job(s)"
         )
     item = controller_service_paths(paths, controller)
     if not item.plist.is_file():
@@ -1144,6 +1205,12 @@ def controller_services_doctor(
         add(f"{name}_loaded", loaded, item.label)
         running = service_is_running(item.label, runner=runner) if loaded else False
         add(f"{name}_running", running, item.label)
+        installed_protocol_version = _installed_controller_protocol_version(item)
+        add(
+            f"{name}_protocol",
+            installed_protocol_version == CONTROL_PLANE_PROTOCOL_VERSION,
+            (f"installed={installed_protocol_version} expected={CONTROL_PLANE_PROTOCOL_VERSION}"),
+        )
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
 
 
@@ -1561,7 +1628,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         reason_code="orphaned_eval",
                         resolution="manual action",
                         blast_radius="evaluation and promotion for this train job",
-                        command=f"rlab eval modal abandon {job_id}",
+                        command=render_command(eval_modal_abandon_command(job_id)),
                         timestamp=row.get("started_at"),
                     )
                 )
@@ -1574,7 +1641,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         reason_code="artifact_recovery",
                         resolution="manual action",
                         blast_radius="checkpoint promotion and publication",
-                        command=f"rlab eval modal recover {job_id}",
+                        command=render_command(eval_modal_recover_command(job_id)),
                         timestamp=row.get("started_at"),
                     )
                 )
@@ -1587,7 +1654,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         reason_code="orphaned_eval",
                         resolution="manual action",
                         blast_radius="evaluation and promotion for this train job",
-                        command=f"rlab eval modal abandon {job_id}",
+                        command=render_command(eval_modal_abandon_command(job_id)),
                     )
                 )
             if str(row.get("live_publication_status") or "") == "failed":
@@ -1599,7 +1666,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         reason_code="publication_failed",
                         resolution="manual action",
                         blast_radius="W&B publication for this train job",
-                        command=f"rlab runs retry-finalization {job_id}",
+                        command=render_command(experiment_retry_finalization_command(job_id)),
                     )
                 )
             elif row.get("live_publication_next_retry_at"):
@@ -1709,7 +1776,7 @@ def _default_workload_snapshot(repo_root: Path) -> dict[str, Any]:
                         reason_code="ineligible_promotion",
                         resolution="manual action",
                         blast_radius=f"promotion for train/{train_job_id}",
-                        command=f"rlab eval modal abandon {train_job_id}",
+                        command=render_command(eval_modal_abandon_command(train_job_id)),
                     )
                 )
                 continue
@@ -2148,7 +2215,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         for name, row in status["controllers"].items():
             print(
                 f"  {name}: loaded={row['loaded']} running={row['running']} "
-                f"label={row['label']}"
+                f"protocol={row['installed_protocol_version']}/"
+                f"{row['expected_protocol_version']} label={row['label']}"
             )
     return 0 if status["installed"] and status["loaded"] and status["healthy"] else 1
 
