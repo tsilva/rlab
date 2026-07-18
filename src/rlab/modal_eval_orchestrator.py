@@ -16,7 +16,12 @@ from typing import Any, Protocol
 
 from psycopg2 import Error as DatabaseError
 
-from rlab.job_queue import connect, database_url, json_arg
+from rlab.job_queue import (
+    acquire_fleet_admission_xact_lock,
+    connect,
+    database_url,
+    json_arg,
+)
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
 from rlab.eval_metrics import eval_by_start_rows
 from rlab.metric_names import (
@@ -84,17 +89,11 @@ def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, 
         (str(announcement["model_uri"]), str(announcement["sha256"])),
         (
             str(announcement["metadata_uri"]),
-            str(
-                announcement[
-                    "model_document_sha256" if versioned_bundle else "metadata_sha256"
-                ]
-            ),
+            str(announcement["model_document_sha256" if versioned_bundle else "metadata_sha256"]),
         ),
     ]
     if versioned_bundle:
-        artifacts.append(
-            (str(announcement["recipe_uri"]), str(announcement["recipe_sha256"]))
-        )
+        artifacts.append((str(announcement["recipe_uri"]), str(announcement["recipe_sha256"])))
     asset = announcement["eval"].get("asset")
     if isinstance(asset, Mapping):
         artifacts.append((str(asset["object_uri"]), str(asset["sha256"])))
@@ -125,9 +124,7 @@ def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, 
         raise ValueError("model document checkpoint binding mismatch")
     if str(model_document["recipe"]["sha256"]) != str(announcement["recipe_sha256"]):
         raise ValueError("model document recipe binding mismatch")
-    if evaluation_contract_sha256(recipe) != str(
-        announcement["evaluation_contract_sha256"]
-    ):
+    if evaluation_contract_sha256(recipe) != str(announcement["evaluation_contract_sha256"]):
         raise ValueError("recipe evaluation contract binding mismatch")
 
 
@@ -151,7 +148,7 @@ class DefaultModalInvoker:
         call = modal.FunctionCall.from_id(call_id)
         try:
             return "finished", call.get(timeout=0)
-        except (TimeoutError, modal.exception.TimeoutError):
+        except TimeoutError, modal.exception.TimeoutError:
             return "pending", None
         except (
             modal.exception.FunctionTimeoutError,
@@ -341,9 +338,9 @@ def ingest_announcements(
                                 """,
                                 {
                                     "job_id": int(run["train_job_id"]),
-                                    "error": (
-                                        f"complete announcement observation failed: {exc!r}"
-                                    )[:4000],
+                                    "error": (f"complete announcement observation failed: {exc!r}")[
+                                        :4000
+                                    ],
                                 },
                             )
                     break
@@ -470,6 +467,93 @@ def ingest_announcements(
             run["next_announcement_id"] = ordinal + 1
             ingested += 1
     return ingested
+
+
+def _persist_artifact_announcement(
+    conn,
+    *,
+    train_job_id: int,
+    ledger_id: int,
+    event_type: str,
+    announcement: Mapping[str, Any],
+) -> None:
+    """Persist an ordered artifact event before its mailbox source is acknowledged."""
+
+    payload = dict(announcement)
+    disposition = "tombstone" if event_type == "checkpoint_tombstone" else "ready"
+    artifact_kind = str(payload.get("kind") or "")
+    if disposition == "tombstone":
+        if artifact_kind != "tombstone":
+            raise ValueError("checkpoint tombstone event must declare kind=tombstone")
+    elif artifact_kind not in {"checkpoint", "final", "interrupted"}:
+        raise ValueError(f"unsupported checkpoint artifact kind: {artifact_kind or 'missing'}")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    announcement_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    metadata_sha256 = str(
+        payload.get("model_document_sha256") or payload.get("metadata_sha256") or ""
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO artifact_announcement_ledger (
+              train_job_id, ledger_id, disposition, artifact_kind, checkpoint_step,
+              checkpoint_sha256, checkpoint_uri, metadata_uri, metadata_sha256,
+              recipe_uri, recipe_sha256, evaluation_contract_sha256,
+              announcement_sha256, announcement_json
+            ) VALUES (
+              %(train_job_id)s, %(ledger_id)s, %(disposition)s, %(artifact_kind)s,
+              %(checkpoint_step)s, %(checkpoint_sha256)s, %(checkpoint_uri)s,
+              %(metadata_uri)s, %(metadata_sha256)s, %(recipe_uri)s,
+              %(recipe_sha256)s, %(evaluation_contract_sha256)s,
+              %(announcement_sha256)s, %(announcement_json)s
+            )
+            ON CONFLICT (train_job_id, ledger_id) DO NOTHING
+            RETURNING announcement_sha256
+            """,
+            {
+                "train_job_id": int(train_job_id),
+                "ledger_id": int(ledger_id),
+                "disposition": disposition,
+                "artifact_kind": artifact_kind,
+                "checkpoint_step": (
+                    int(payload.get("step") or 0) if disposition == "ready" else None
+                ),
+                "checkpoint_sha256": (
+                    str(payload.get("sha256") or "") if disposition == "ready" else None
+                ),
+                "checkpoint_uri": (
+                    str(payload.get("model_uri") or "") if disposition == "ready" else None
+                ),
+                "metadata_uri": (
+                    str(payload.get("metadata_uri") or "") if disposition == "ready" else None
+                ),
+                "metadata_sha256": metadata_sha256 if disposition == "ready" else None,
+                "recipe_uri": str(payload.get("recipe_uri") or "") or None,
+                "recipe_sha256": str(payload.get("recipe_sha256") or "") or None,
+                "evaluation_contract_sha256": (
+                    str(payload.get("evaluation_contract_sha256") or "") or None
+                ),
+                "announcement_sha256": announcement_sha256,
+                "announcement_json": json_arg(payload),
+            },
+        )
+        inserted = cur.fetchone()
+        if inserted:
+            return
+        cur.execute(
+            """
+            SELECT announcement_sha256
+            FROM artifact_announcement_ledger
+            WHERE train_job_id = %(train_job_id)s AND ledger_id = %(ledger_id)s
+            """,
+            {"train_job_id": int(train_job_id), "ledger_id": int(ledger_id)},
+        )
+        existing = cur.fetchone()
+    if not existing or str(existing["announcement_sha256"]) != announcement_sha256:
+        raise RuntimeError(
+            "artifact announcement ledger conflict: "
+            f"train_job_id={int(train_job_id)} ledger_id={int(ledger_id)}"
+        )
 
 
 def ingest_mailbox_announcements(
@@ -610,6 +694,13 @@ def ingest_mailbox_announcements(
                             )
                 continue
         with conn:
+            _persist_artifact_announcement(
+                conn,
+                train_job_id=train_job_id,
+                ledger_id=ledger_id,
+                event_type=event_type,
+                announcement=announcement,
+            )
             if event_type == "checkpoint_ready" and str(announcement.get("kind")) in {
                 "checkpoint",
                 "final",
@@ -682,6 +773,7 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
                 create_only=True,
             )
         with conn:
+            acquire_fleet_admission_xact_lock(conn)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -716,9 +808,7 @@ def _stage_metrics(
             {
                 EVAL_ACCEPTANCE_PASS: 1.0 if passed else 0.0,
                 EVAL_ACCEPTANCE_EPISODES_PLANNED: int(aggregates["episodes_planned"]),
-                EVAL_ACCEPTANCE_EPISODES_COMPLETED: int(
-                    aggregates["episodes_completed"]
-                ),
+                EVAL_ACCEPTANCE_EPISODES_COMPLETED: int(aggregates["episodes_completed"]),
                 EVAL_ACCEPTANCE_FAILURE_COUNT: int(aggregates["failure_count"]),
                 EVAL_ACCEPTANCE_DURATION_SECONDS: float(
                     raw_metrics.get("_acceptance_duration_seconds") or 0.0
@@ -881,9 +971,7 @@ def accept_attempt_result(
         "purpose": str(attempt["purpose"]),
         "passed": passed,
         "verdict": (
-            str(validated.get("verdict"))
-            if acceptance
-            else "accepted" if passed else "rejected"
+            str(validated.get("verdict")) if acceptance else "accepted" if passed else "rejected"
         ),
         "candidate_stop": bool(attempt["candidate_stop"]),
         "observed_rules": observed,
@@ -958,11 +1046,15 @@ def accept_attempt_result(
                     """
                     UPDATE eval_runs
                     SET promoted_eval_job_id = %(eval_job_id)s,
-                        promotion_json = %(promotion)s,
+                        promotion_revision = promotion_revision + 1,
+                        promotion_json = %(promotion)s::jsonb || jsonb_build_object(
+                          'promotion_revision', promotion_revision + 1
+                        ),
                         outcome = 'accepted',
                         acceptance_committed_at = now(),
                         updated_at = now(), error = NULL
                     WHERE train_job_id = %(train_job_id)s
+                      AND status IN ('active', 'finalizing')
                       AND promoted_eval_job_id IS NULL
                     """,
                     {
@@ -1381,9 +1473,7 @@ def budget_allows(
     )
 
 
-def _record_eval_job_record_error(
-    conn, *, job_id: int, error: object, terminal: bool
-) -> None:
+def _record_eval_job_record_error(conn, *, job_id: int, error: object, terminal: bool) -> None:
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1539,13 +1629,9 @@ def dispatch_pending(
             continue
         attempt_id = uuid.uuid4().hex
         try:
-            result_uri = store.uri(
-                f"eval-attempts/{job['execution_key']}/{attempt_id}.json"
-            )
+            result_uri = store.uri(f"eval-attempts/{job['execution_key']}/{attempt_id}.json")
             expires_at = datetime.now(UTC) + timedelta(
-                seconds=config.startup_timeout_seconds
-                + timeout
-                + config.expiry_margin_seconds
+                seconds=config.startup_timeout_seconds + timeout + config.expiry_margin_seconds
             )
         except Exception as exc:
             _record_eval_job_record_error(
@@ -1556,6 +1642,7 @@ def dispatch_pending(
             )
             continue
         with conn:
+            acquire_fleet_admission_xact_lock(conn)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -1603,9 +1690,7 @@ def dispatch_pending(
                     {"id": int(job["id"])},
                 )
         try:
-            seconds_to_expiry = max(
-                1, int((expires_at - datetime.now(UTC)).total_seconds())
-            )
+            seconds_to_expiry = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
             asset = job["source_announcement_json"]["eval"].get("asset")
             payload = {
                 "attempt_id": attempt_id,
@@ -1626,9 +1711,7 @@ def dispatch_pending(
                     expires_seconds=seconds_to_expiry,
                 ),
                 "result_uri": result_uri,
-                "result_put_url": store.presign_put(
-                    result_uri, expires_seconds=seconds_to_expiry
-                ),
+                "result_put_url": store.presign_put(result_uri, expires_seconds=seconds_to_expiry),
             }
             if isinstance(asset, Mapping):
                 payload["rom_get_url"] = store.presign_get(
@@ -1719,6 +1802,7 @@ def enqueue_post_train_promotions(conn) -> int:
               ) - 1
               AND (j.decision_json->>'passed')::boolean = TRUE
               AND r.complete_announcement_seen = TRUE
+              AND r.outcome IS NULL
               AND t.status = 'finalizing'
             ORDER BY j.train_job_id, j.ledger_id, j.checkpoint_step
             """
@@ -1788,11 +1872,35 @@ def terminalize_runs(conn) -> int:
                   WHERE t.status = 'finalizing'
                     AND t.process_exited_at IS NOT NULL
                     AND r.complete_announcement_seen = TRUE
+                    AND (
+                      SELECT count(*)
+                      FROM artifact_announcement_ledger ledger
+                      WHERE ledger.train_job_id = r.train_job_id
+                    ) = GREATEST(r.next_announcement_id - 1, 0)
                     AND r.outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
-                    AND r.artifacts_projected_at IS NOT NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM artifact_announcement_ledger ledger
+                      WHERE ledger.train_job_id = r.train_job_id
+                        AND ledger.disposition = 'ready'
+                        AND NOT EXISTS (
+                          SELECT 1 FROM artifact_publication_receipts receipt
+                          WHERE receipt.train_job_id = ledger.train_job_id
+                            AND receipt.ledger_id = ledger.ledger_id
+                            AND receipt.role = 'availability'
+                            AND receipt.promotion_revision = 0
+                        )
+                    )
                     AND (
                       r.promoted_eval_job_id IS NULL
-                      OR r.promoted_artifact_projected_at IS NOT NULL
+                      OR EXISTS (
+                        SELECT 1 FROM eval_jobs promoted
+                        JOIN artifact_publication_receipts receipt
+                          ON receipt.train_job_id = promoted.train_job_id
+                         AND receipt.ledger_id = promoted.ledger_id
+                         AND receipt.role = 'promotion'
+                         AND receipt.promotion_revision = r.promotion_revision
+                        WHERE promoted.id = r.promoted_eval_job_id
+                      )
                     )
                     AND NOT EXISTS (
                       SELECT 1 FROM eval_jobs j
@@ -1868,15 +1976,53 @@ def reconcile_publication_finishing(conn) -> int:
                 FROM eval_runs r
                 WHERE r.train_job_id = t.id
                   AND t.status = 'finalizing'
-                  AND t.telemetry_transport = 'neon_mailbox_v1'
+                  AND (
+                    t.telemetry_transport = 'neon_mailbox_v1'
+                    OR EXISTS (
+                      SELECT 1 FROM metric_streams artifact_stream
+                      JOIN worker_attempts artifact_attempt
+                        ON artifact_attempt.attempt_id = artifact_stream.attempt_id
+                      WHERE artifact_attempt.train_job_id = t.id
+                        AND artifact_stream.stream_id LIKE 'artifact-v2-%%'
+                    )
+                  )
                   AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
                   AND t.live_publication_status IN ('pending', 'live')
                   AND r.complete_announcement_seen = TRUE
+                  AND (
+                    SELECT count(*)
+                    FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id = r.train_job_id
+                  ) = GREATEST(r.next_announcement_id - 1, 0)
                   AND r.outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
-                  AND r.artifacts_projected_at IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id = r.train_job_id
+                      AND ledger.disposition = 'ready'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM artifact_publication_receipts receipt
+                        WHERE receipt.train_job_id = ledger.train_job_id
+                          AND receipt.ledger_id = ledger.ledger_id
+                          AND receipt.role = 'availability'
+                          AND receipt.promotion_revision = 0
+                      )
+                  )
                   AND (
                     r.promoted_eval_job_id IS NULL
-                    OR r.promoted_artifact_projected_at IS NOT NULL
+                    OR EXISTS (
+                      SELECT 1 FROM eval_jobs promoted
+                      JOIN artifact_publication_receipts receipt
+                        ON receipt.train_job_id = promoted.train_job_id
+                       AND receipt.ledger_id = promoted.ledger_id
+                       AND receipt.role = 'promotion'
+                       AND receipt.promotion_revision = r.promotion_revision
+                      WHERE promoted.id = r.promoted_eval_job_id
+                    )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM eval_jobs j
+                    WHERE j.train_job_id = t.id
+                      AND j.status IN ('pending', 'dispatching', 'submitted', 'blocked_budget')
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j
@@ -1927,7 +2073,12 @@ def reconcile_eval_run_failures(conn) -> int:
                   )
                 WHERE r.status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
                   AND r.outcome IS NULL
-                  AND r.complete_announcement_seen = TRUE
+                    AND r.complete_announcement_seen = TRUE
+                    AND (
+                      SELECT count(*)
+                      FROM artifact_announcement_ledger ledger
+                      WHERE ledger.train_job_id = r.train_job_id
+                    ) = GREATEST(r.next_announcement_id - 1, 0)
                   AND EXISTS (
                     SELECT 1 FROM train_jobs t
                     WHERE t.id = r.train_job_id AND t.status = 'finalizing'
@@ -1962,6 +2113,36 @@ def terminalize_failed_eval_runs(conn) -> int:
                   AND t.status = 'finalizing'
                   AND t.process_exited_at IS NOT NULL
                   AND r.status = 'failed'
+                  AND r.complete_announcement_seen = TRUE
+                  AND (
+                    SELECT count(*)
+                    FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id = r.train_job_id
+                  ) = GREATEST(r.next_announcement_id - 1, 0)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id = r.train_job_id
+                      AND ledger.disposition = 'ready'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM artifact_publication_receipts receipt
+                        WHERE receipt.train_job_id = ledger.train_job_id
+                          AND receipt.ledger_id = ledger.ledger_id
+                          AND receipt.role = 'availability'
+                          AND receipt.promotion_revision = 0
+                      )
+                  )
+                  AND (
+                    r.promoted_eval_job_id IS NULL
+                    OR EXISTS (
+                      SELECT 1 FROM eval_jobs promoted
+                      JOIN artifact_publication_receipts receipt
+                        ON receipt.train_job_id = promoted.train_job_id
+                       AND receipt.ledger_id = promoted.ledger_id
+                       AND receipt.role = 'promotion'
+                       AND receipt.promotion_revision = r.promotion_revision
+                      WHERE promoted.id = r.promoted_eval_job_id
+                    )
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM eval_jobs j
                     WHERE j.train_job_id = t.id
@@ -1981,6 +2162,13 @@ def terminalize_failed_eval_runs(conn) -> int:
                       AND w.task_kind = 'eval'
                       AND w.status IN ('launching', 'running')
                   )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_batches b
+                    JOIN metric_streams s ON s.stream_id = b.stream_id
+                    JOIN worker_attempts w ON w.attempt_id = s.attempt_id
+                    WHERE w.train_job_id = t.id
+                  )
+                  AND t.live_publication_status IN ('complete', 'disabled')
                 """
             )
             return cur.rowcount
@@ -2123,58 +2311,86 @@ def reconcile_promotions(conn) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT j.*, t.train_config
-            FROM eval_jobs j JOIN train_jobs t ON t.id = j.train_job_id
+            SELECT DISTINCT j.train_job_id
+            FROM eval_jobs j
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.purpose = 'promotion' AND j.status = 'succeeded'
               AND r.status = 'finalizing'
-            ORDER BY j.train_job_id, j.id
+            ORDER BY j.train_job_id
             """
         )
-        jobs = [dict(row) for row in cur.fetchall()]
-    by_run: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for job in jobs:
-        by_run[int(job["train_job_id"])].append(job)
+        train_job_ids = [int(row["train_job_id"]) for row in cur.fetchall()]
     updated = 0
-    for train_job_id, candidates in by_run.items():
-        try:
-            winner = max(candidates, key=promotion_candidate_key)
-        except (KeyError, TypeError, ValueError) as exc:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE eval_runs SET status = 'failed', error = %(error)s,
-                          updated_at = now() WHERE train_job_id = %(train_job_id)s
-                        """,
-                        {
-                            "error": f"promotion reconciliation failed: {exc}"[:4000],
-                            "train_job_id": train_job_id,
-                        },
-                    )
-            continue
-        promotion = {
-            "eval_job_id": int(winner["id"]),
-            "accepted_attempt_id": int(winner["accepted_attempt_id"]),
-            "checkpoint_sha256": str(winner["checkpoint_sha256"]),
-            "checkpoint_step": int(winner["checkpoint_step"]),
-            "checkpoint_uri": str(winner["checkpoint_uri"]),
-            "result_uri": str(winner["decision_json"]["result_uri"]),
-            "raw_metrics": dict(winner["decision_json"]["raw_metrics"]),
-        }
+    for train_job_id in train_job_ids:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    SELECT status, promotion_revision
+                    FROM eval_runs
+                    WHERE train_job_id = %(train_job_id)s
+                    FOR UPDATE
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+                eval_run = cur.fetchone()
+                if not eval_run or str(eval_run["status"]) != "finalizing":
+                    continue
+                expected_revision = int(eval_run.get("promotion_revision") or 0)
+                cur.execute(
+                    """
+                    SELECT j.*, t.train_config
+                    FROM eval_jobs j JOIN train_jobs t ON t.id = j.train_job_id
+                    WHERE j.train_job_id = %(train_job_id)s
+                      AND j.purpose = 'promotion' AND j.status = 'succeeded'
+                    ORDER BY j.id
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+                candidates = [dict(row) for row in cur.fetchall()]
+                try:
+                    winner = max(candidates, key=promotion_candidate_key)
+                except (KeyError, TypeError, ValueError) as exc:
+                    cur.execute(
+                        """
+                        UPDATE eval_runs SET status = 'failed', error = %(error)s,
+                          updated_at = now()
+                        WHERE train_job_id = %(train_job_id)s
+                          AND status = 'finalizing'
+                          AND promotion_revision = %(expected_revision)s
+                        """,
+                        {
+                            "error": f"promotion reconciliation failed: {exc}"[:4000],
+                            "train_job_id": train_job_id,
+                            "expected_revision": expected_revision,
+                        },
+                    )
+                    continue
+                promotion = {
+                    "eval_job_id": int(winner["id"]),
+                    "accepted_attempt_id": int(winner["accepted_attempt_id"]),
+                    "checkpoint_sha256": str(winner["checkpoint_sha256"]),
+                    "checkpoint_step": int(winner["checkpoint_step"]),
+                    "checkpoint_uri": str(winner["checkpoint_uri"]),
+                    "result_uri": str(winner["decision_json"]["result_uri"]),
+                    "raw_metrics": dict(winner["decision_json"]["raw_metrics"]),
+                    "promotion_revision": expected_revision + 1,
+                }
+                cur.execute(
+                    """
                     UPDATE eval_runs SET promoted_eval_job_id = %(job_id)s,
+                      promotion_revision = promotion_revision + 1,
                       promotion_json = %(promotion)s, updated_at = now()
                     WHERE train_job_id = %(train_job_id)s
+                      AND status = 'finalizing'
+                      AND promotion_revision = %(expected_revision)s
                       AND promoted_eval_job_id IS DISTINCT FROM %(job_id)s
                     """,
                     {
                         "job_id": int(winner["id"]),
                         "promotion": json_arg(promotion),
                         "train_job_id": train_job_id,
+                        "expected_revision": expected_revision,
                     },
                 )
                 updated += cur.rowcount
@@ -2417,6 +2633,7 @@ def project_artifact_references(
             FROM eval_runs r JOIN train_jobs t ON t.id = r.train_job_id
             LEFT JOIN eval_jobs promoted ON promoted.id = r.promoted_eval_job_id
             WHERE r.complete_announcement_seen = TRUE
+              AND t.telemetry_transport <> 'neon_mailbox_v1'
               AND (
                 r.artifacts_projected_at IS NULL
                 OR (

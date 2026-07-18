@@ -335,6 +335,161 @@ def _artifact_exists(ref: str) -> bool:
     return True
 
 
+_RUN_PLAYABLE_KINDS = ("checkpoint", "final", "interrupted")
+_RUN_KIND_TIE_PRIORITY = {"checkpoint": 0, "interrupted": 1, "final": 2}
+
+
+def _artifact_alias_set(artifact: Any) -> set[str]:
+    return {
+        str(getattr(alias, "alias", alias)) for alias in (getattr(artifact, "aliases", ()) or ())
+    }
+
+
+def _artifact_numeric_version(artifact: Any) -> int:
+    version = str(getattr(artifact, "version", "") or "")
+    qualified = str(getattr(artifact, "qualified_name", "") or "")
+    if not version and ":" in qualified:
+        version = qualified.rsplit(":", 1)[-1]
+    return int(version[1:]) if version.startswith("v") and version[1:].isdigit() else -1
+
+
+def _artifact_concrete_ref(artifact: Any) -> str | None:
+    qualified = str(getattr(artifact, "qualified_name", "") or "")
+    version = _artifact_numeric_version(artifact)
+    if qualified and version >= 0:
+        return f"{qualified.rsplit(':', 1)[0]}:v{version}"
+    name = str(getattr(artifact, "name", "") or "")
+    return f"{name}:v{version}" if name and version >= 0 else None
+
+
+def _artifact_collection_name(artifact: Any) -> str:
+    concrete = _artifact_concrete_ref(artifact)
+    if concrete:
+        return concrete.rsplit("/", 1)[-1].rsplit(":", 1)[0]
+    return str(getattr(artifact, "name", "") or "").rsplit("/", 1)[-1]
+
+
+def _artifact_kind_from_collection(collection: str) -> str | None:
+    for kind in _RUN_PLAYABLE_KINDS:
+        if collection.endswith(f"-{kind}"):
+            return kind
+    return None
+
+
+def _materialized_logged_model_artifacts(run: Any) -> list[Any]:
+    return [
+        artifact
+        for artifact in list(run.logged_artifacts())
+        if str(getattr(artifact, "type", "") or "") == "model"
+    ]
+
+
+def _preferred_run_artifact_ref(run: Any) -> str | None:
+    """Return the best currently API-visible run artifact as an immutable version."""
+
+    artifacts = _materialized_logged_model_artifacts(run)
+    run_id = str(
+        _wandb_run_config_value(run, "wandb_run_id") or getattr(run, "id", "") or ""
+    ).strip()
+    canonical_names = {f"{safe_artifact_stem(run_id)}-{kind}" for kind in _RUN_PLAYABLE_KINDS}
+    canonical = [
+        artifact for artifact in artifacts if _artifact_collection_name(artifact) in canonical_names
+    ]
+    candidates = canonical or [
+        artifact
+        for artifact in artifacts
+        if _artifact_kind_from_collection(_artifact_collection_name(artifact)) is not None
+    ]
+    candidates = [artifact for artifact in candidates if _artifact_concrete_ref(artifact)]
+    if not candidates:
+        return None
+
+    promoted = []
+    for artifact in candidates:
+        metadata = dict(getattr(artifact, "metadata", {}) or {})
+        if (
+            str(metadata.get("artifact_publication_schema") or "") == "v2"
+            and str(metadata.get("publication_role") or "") == "promotion"
+            and int(metadata.get("promotion_revision") or 0) >= 1
+        ):
+            promoted.append(artifact)
+    if promoted:
+        selected = max(
+            promoted,
+            key=lambda artifact: (
+                int((getattr(artifact, "metadata", {}) or {}).get("promotion_revision") or 0),
+                _artifact_numeric_version(artifact),
+            ),
+        )
+        return _artifact_concrete_ref(selected)
+
+    legacy_promoted = [
+        artifact for artifact in candidates if "promoted" in _artifact_alias_set(artifact)
+    ]
+    if legacy_promoted:
+        selected = max(legacy_promoted, key=_artifact_numeric_version)
+        return _artifact_concrete_ref(selected)
+
+    summary = getattr(run, "summary", {}) or {}
+    getter = getattr(summary, "get", None)
+    leader_uri = str(getter("leader/checkpoint/artifact_ref") or "") if callable(getter) else ""
+    raw_step = getter("leader/checkpoint/step") if callable(getter) else None
+    leader_step = (
+        int(raw_step)
+        if isinstance(raw_step, int | float) and not isinstance(raw_step, bool)
+        else None
+    )
+    if leader_step is not None:
+        leader_matches = []
+        for artifact in candidates:
+            metadata = dict(getattr(artifact, "metadata", {}) or {})
+            if checkpoint_step_from_artifact(artifact) != leader_step:
+                continue
+            if leader_uri and str(metadata.get("artifact_storage_uri") or "") != leader_uri:
+                continue
+            leader_matches.append(artifact)
+        if leader_matches:
+            selected = max(
+                leader_matches,
+                key=lambda artifact: (
+                    _RUN_KIND_TIE_PRIORITY.get(
+                        _artifact_kind_from_collection(_artifact_collection_name(artifact)) or "",
+                        -1,
+                    ),
+                    _artifact_numeric_version(artifact),
+                ),
+            )
+            return _artifact_concrete_ref(selected)
+
+    stepped = [
+        artifact for artifact in candidates if checkpoint_step_from_artifact(artifact) is not None
+    ]
+    if stepped:
+        selected = max(
+            stepped,
+            key=lambda artifact: (
+                int(checkpoint_step_from_artifact(artifact) or -1),
+                _RUN_KIND_TIE_PRIORITY.get(
+                    _artifact_kind_from_collection(_artifact_collection_name(artifact)) or "",
+                    -1,
+                ),
+                _artifact_numeric_version(artifact),
+            ),
+        )
+        return _artifact_concrete_ref(selected)
+
+    legacy_latest = [
+        artifact
+        for artifact in candidates
+        if _artifact_kind_from_collection(_artifact_collection_name(artifact)) == "checkpoint"
+        and "latest" in _artifact_alias_set(artifact)
+    ]
+    if legacy_latest:
+        selected = max(legacy_latest, key=_artifact_numeric_version)
+        return _artifact_concrete_ref(selected)
+    return None
+
+
 def _logged_run_artifact_ref(run: Any, *, kind: str, version: str) -> str | None:
     """Return the requested model collection actually logged by a W&B run.
 
@@ -366,38 +521,10 @@ def _promoted_run_artifact_ref(
     kind: str,
     version: str,
 ) -> tuple[str | None, int | None]:
-    """Resolve the promoted checkpoint instead of a moving latest alias.
-
-    The terminal projector publishes checkpoint memberships in ledger order, so
-    ``checkpoint:latest`` temporarily points at progressively newer historical
-    checkpoints. A run-level playback request must bind to the promoted leader
-    step or report that its membership is still pending.
-    """
+    """Resolve an unqualified run to its best currently visible immutable artifact."""
     if kind != "checkpoint" or version != "latest":
         return None, None
-    try:
-        summary = getattr(run, "summary", {}) or {}
-        raw_step = summary.get("leader/checkpoint/step")
-    except Exception:
-        return None, None
-    if isinstance(raw_step, bool) or not isinstance(raw_step, int | float):
-        return None, None
-    step = int(raw_step)
-    try:
-        artifacts = run.logged_artifacts()
-    except Exception:
-        return None, step
-    suffix = f"-{kind}:"
-    for artifact in artifacts:
-        if str(getattr(artifact, "type", "")) != "model":
-            continue
-        qualified_name = str(getattr(artifact, "qualified_name", "") or "")
-        if suffix not in qualified_name:
-            continue
-        if checkpoint_step_from_artifact(artifact) != step:
-            continue
-        return f"{qualified_name.rsplit(':', 1)[0]}:step-{step}", step
-    return None, step
+    return _preferred_run_artifact_ref(run), None
 
 
 def _promoted_run_artifact_ref_by_name(
@@ -492,36 +619,46 @@ def resolve_unique_bare_run_artifact_ref(
 
     load_wandb_env()
 
-    promoted_matches: list[str] = []
-    promoted_pending: list[tuple[str, int]] = []
     if kind == "checkpoint" and version == "latest":
+        import wandb
+
+        matched_runs: list[tuple[str, Any]] = []
+        lookup_errors: list[Exception] = []
         for project in artifact_lookup_project_paths(default_project, run_name):
-            ref, step = _promoted_run_artifact_ref_by_name(
-                run_name,
-                project=project,
-                kind=kind,
-                version=version,
-            )
-            if ref is not None:
-                promoted_matches.append(ref)
-            elif step is not None:
-                promoted_pending.append((project, step))
-        unique_promoted = sorted(set(promoted_matches))
-        if len(unique_promoted) == 1:
-            return unique_promoted[0]
-        if len(unique_promoted) > 1:
-            choices = ", ".join(unique_promoted)
+            try:
+                runs = wandb.Api().runs(project, filters={"display_name": run_name})
+                for run in runs:
+                    if (
+                        getattr(run, "name", None) == run_name
+                        or _wandb_run_config_value(run, "run_name") == run_name
+                    ):
+                        matched_runs.append((project, run))
+            except Exception as exc:
+                lookup_errors.append(exc)
+        preferred = [
+            (project, ref)
+            for project, run in matched_runs
+            if (ref := _preferred_run_artifact_ref(run)) is not None
+        ]
+        unique_preferred = sorted({ref for _project, ref in preferred})
+        if len(unique_preferred) == 1:
+            return unique_preferred[0]
+        if len(unique_preferred) > 1:
+            choices = ", ".join(unique_preferred)
             raise SystemExit(
                 f"Run name {run_name!r} is ambiguous across W&B projects; pass a run URL. "
                 f"Matches: {choices}"
             )
-        unique_pending = sorted(set(promoted_pending))
-        if unique_pending:
-            choices = ", ".join(f"{project} step-{step}" for project, step in unique_pending)
+        if matched_runs:
             raise SystemExit(
-                f"Promoted checkpoint for run {run_name!r} is not available as a W&B "
-                f"artifact yet; retry after artifact projection completes. Pending: {choices}"
+                f"No W&B checkpoint artifact is available for run {run_name!r} yet; retry "
+                "after the first checkpoint upload is confirmed."
             )
+        # A bare token predates run-URL resolution and may be a direct artifact
+        # collection name. Preserve that fallback when one or more candidate
+        # projects cannot be listed; explicit run URLs still surface API errors.
+        if lookup_errors:
+            return None
 
     matches: list[str] = []
     if _artifact_exists(candidates[0]):
@@ -644,6 +781,25 @@ def wandb_run_artifact_ref(
         run = wandb.Api().run(run_path)
     except Exception as exc:
         raise SystemExit(f"Could not resolve W&B run {run_path}: {exc}") from exc
+    if kind == "checkpoint" and version == "latest":
+        try:
+            preferred = _preferred_run_artifact_ref(run)
+        except Exception as exc:
+            raise SystemExit(f"Could not inspect W&B run artifacts for {run_path}: {exc}") from exc
+        if preferred is not None:
+            return preferred
+        wandb_enabled = _wandb_run_config_value(run, "wandb")
+        disabled = wandb_enabled is False or bool(
+            _wandb_run_config_value(run, "no_wandb_artifacts")
+        )
+        if disabled:
+            raise SystemExit(
+                f"W&B artifacts are disabled for run {run_path}; no remote checkpoint is available."
+            )
+        raise SystemExit(
+            f"No W&B checkpoint artifact is available for run {run_path} yet; retry after "
+            "the first checkpoint upload is confirmed."
+        )
     promoted_ref, promoted_step = _promoted_run_artifact_ref(
         run,
         kind=kind,
@@ -756,9 +912,7 @@ def _mapping_value(mapping: Any, key: str) -> Any:
 
 def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
     model_path, revision = download_model_artifact_with_revision(ref, root)
-    bundle = load_policy_bundle_from_checkpoint(
-        model_path, source=ref, revision=revision or None
-    )
+    bundle = load_policy_bundle_from_checkpoint(model_path, source=ref, revision=revision or None)
     return ResolvedModelSource(
         model_path=model_path,
         artifact_ref=ref,
@@ -865,8 +1019,7 @@ def download_huggingface_model_source(
     if MODEL_FILENAME in repo_files:
         try:
             immutable_revision = str(
-                api.model_info(repo_id=repo_id, revision=resolved_revision).sha
-                or resolved_revision
+                api.model_info(repo_id=repo_id, revision=resolved_revision).sha or resolved_revision
             )
         except Exception as exc:
             raise SystemExit(

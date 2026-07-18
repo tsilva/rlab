@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   complete_announcement_seen BOOLEAN NOT NULL DEFAULT FALSE,
   last_scheduled_at TIMESTAMPTZ,
   promoted_eval_job_id BIGINT,
+  promotion_revision BIGINT NOT NULL DEFAULT 0 CHECK (promotion_revision >= 0),
   promotion_json JSONB,
   outcome TEXT CHECK (
     outcome IS NULL OR outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
@@ -195,6 +196,75 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS artifact_announcement_ledger (
+  train_job_id BIGINT NOT NULL REFERENCES eval_runs(train_job_id) ON DELETE CASCADE,
+  ledger_id BIGINT NOT NULL CHECK (ledger_id >= 1),
+  disposition TEXT NOT NULL CHECK (disposition IN ('ready', 'tombstone')),
+  artifact_kind TEXT NOT NULL,
+  checkpoint_step BIGINT,
+  checkpoint_sha256 TEXT,
+  checkpoint_uri TEXT,
+  metadata_uri TEXT,
+  metadata_sha256 TEXT,
+  recipe_uri TEXT,
+  recipe_sha256 TEXT,
+  evaluation_contract_sha256 TEXT,
+  announcement_sha256 TEXT NOT NULL,
+  announcement_json JSONB NOT NULL,
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (train_job_id, ledger_id),
+  CHECK (
+    (disposition = 'tombstone' AND artifact_kind = 'tombstone')
+    OR (
+      disposition = 'ready'
+      AND artifact_kind IN ('checkpoint', 'final', 'interrupted')
+      AND checkpoint_step IS NOT NULL
+      AND checkpoint_sha256 IS NOT NULL
+      AND checkpoint_uri IS NOT NULL
+      AND metadata_uri IS NOT NULL
+      AND metadata_sha256 IS NOT NULL
+    )
+  )
+);
+
+CREATE TABLE IF NOT EXISTS artifact_publication_receipts (
+  train_job_id BIGINT NOT NULL,
+  ledger_id BIGINT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('availability', 'promotion')),
+  promotion_revision BIGINT NOT NULL DEFAULT 0 CHECK (promotion_revision >= 0),
+  disposition TEXT NOT NULL CHECK (disposition IN ('confirmed', 'opted_out')),
+  artifact_kind TEXT NOT NULL,
+  checkpoint_step BIGINT NOT NULL,
+  checkpoint_sha256 TEXT NOT NULL,
+  checkpoint_uri TEXT NOT NULL,
+  metadata_uri TEXT NOT NULL,
+  metadata_sha256 TEXT NOT NULL,
+  recipe_uri TEXT,
+  recipe_sha256 TEXT,
+  announcement_sha256 TEXT NOT NULL,
+  collection_name TEXT,
+  artifact_version TEXT,
+  artifact_ref TEXT,
+  stream_id TEXT,
+  expected_aliases TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  confirmed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (train_job_id, ledger_id, role, promotion_revision),
+  FOREIGN KEY (train_job_id, ledger_id)
+    REFERENCES artifact_announcement_ledger(train_job_id, ledger_id) ON DELETE CASCADE,
+  CHECK (
+    (role = 'availability' AND promotion_revision = 0)
+    OR (role = 'promotion' AND promotion_revision >= 1)
+  ),
+  CHECK (
+    (disposition = 'opted_out'
+      AND collection_name IS NULL AND artifact_version IS NULL AND artifact_ref IS NULL)
+    OR (disposition = 'confirmed'
+      AND collection_name IS NOT NULL AND artifact_version IS NOT NULL
+      AND artifact_ref IS NOT NULL AND stream_id IS NOT NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS eval_jobs (
@@ -392,6 +462,14 @@ ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_next_retry_at T
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS live_publication_error TEXT;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS learner_stop_observed_at TIMESTAMPTZ;
 ALTER TABLE train_jobs ADD COLUMN IF NOT EXISTS process_exited_at TIMESTAMPTZ;
+UPDATE train_jobs t
+SET process_exited_at = l.finished_at
+FROM job_launches l
+WHERE l.job_kind = 'train'
+  AND l.job_id = t.id
+  AND l.state IN ('succeeded', 'failed', 'canceled')
+  AND l.finished_at IS NOT NULL
+  AND t.process_exited_at IS NULL;
 ALTER TABLE train_jobs DROP CONSTRAINT IF EXISTS train_jobs_eval_load_check;
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS eval_load;
 ALTER TABLE train_jobs DROP COLUMN IF EXISTS eval_capacity_policy_sha256;
@@ -403,6 +481,10 @@ ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS outcome TEXT;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS acceptance_committed_at TIMESTAMPTZ;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS stop_delivery_slo_met BOOLEAN;
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promoted_artifact_projection_enqueued_at TIMESTAMPTZ;
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS promotion_revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE eval_runs DROP CONSTRAINT IF EXISTS eval_runs_promotion_revision_check;
+ALTER TABLE eval_runs ADD CONSTRAINT eval_runs_promotion_revision_check
+  CHECK (promotion_revision >= 0);
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_enqueued_at TIMESTAMPTZ;
 ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS projection_next_retry_at TIMESTAMPTZ;
@@ -508,6 +590,18 @@ CREATE INDEX IF NOT EXISTS job_events_job_idx
 CREATE INDEX IF NOT EXISTS eval_jobs_status_idx
   ON eval_jobs (status, stage_index DESC, train_job_id, created_at);
 
+CREATE INDEX IF NOT EXISTS artifact_announcement_ledger_publication_idx
+  ON artifact_announcement_ledger (verified_at, train_job_id, ledger_id)
+  WHERE disposition = 'ready';
+
+CREATE INDEX IF NOT EXISTS artifact_publication_receipts_run_idx
+  ON artifact_publication_receipts (train_job_id, role, ledger_id, promotion_revision);
+
+DROP INDEX IF EXISTS artifact_publication_receipts_ref_idx;
+CREATE UNIQUE INDEX artifact_publication_receipts_ref_idx
+  ON artifact_publication_receipts (artifact_ref, role, promotion_revision)
+  WHERE artifact_ref IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS eval_attempts_status_idx
   ON eval_attempts (status, expires_at, created_at);
 
@@ -544,6 +638,72 @@ CREATE INDEX IF NOT EXISTS eval_jobs_execution_idx
   ON eval_jobs (execution_key, status);
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+UPDATE eval_runs
+SET promotion_revision = 1,
+    promotion_json = COALESCE(promotion_json, '{}'::jsonb)
+      || jsonb_build_object('promotion_revision', 1)
+WHERE promoted_eval_job_id IS NOT NULL AND promotion_revision = 0;
+
+INSERT INTO artifact_announcement_ledger (
+  train_job_id, ledger_id, disposition, artifact_kind, checkpoint_step,
+  checkpoint_sha256, checkpoint_uri, metadata_uri, metadata_sha256,
+  recipe_uri, recipe_sha256, evaluation_contract_sha256,
+  announcement_sha256, announcement_json, verified_at
+)
+SELECT DISTINCT ON (j.train_job_id, j.ledger_id)
+  j.train_job_id,
+  j.ledger_id,
+  'ready',
+  j.source_announcement_json->>'kind',
+  (j.source_announcement_json->>'step')::bigint,
+  j.source_announcement_json->>'sha256',
+  j.source_announcement_json->>'model_uri',
+  j.source_announcement_json->>'metadata_uri',
+  COALESCE(
+    j.source_announcement_json->>'model_document_sha256',
+    j.source_announcement_json->>'metadata_sha256'
+  ),
+  NULLIF(j.source_announcement_json->>'recipe_uri', ''),
+  NULLIF(j.source_announcement_json->>'recipe_sha256', ''),
+  NULLIF(j.source_announcement_json->>'evaluation_contract_sha256', ''),
+  encode(digest(j.source_announcement_json::text, 'sha256'), 'hex'),
+  j.source_announcement_json,
+  COALESCE(j.created_at, now())
+FROM eval_jobs j
+WHERE j.source_announcement_json->>'kind' IN ('checkpoint', 'final', 'interrupted')
+ON CONFLICT (train_job_id, ledger_id) DO NOTHING;
+
+INSERT INTO artifact_announcement_ledger (
+  train_job_id, ledger_id, disposition, artifact_kind,
+  announcement_sha256, announcement_json, verified_at
+)
+SELECT
+  r.train_job_id,
+  missing.ledger_id,
+  'tombstone',
+  'tombstone',
+  encode(digest(document.payload::text, 'sha256'), 'hex'),
+  document.payload,
+  now()
+FROM eval_runs r
+CROSS JOIN LATERAL generate_series(
+  1, GREATEST(r.next_announcement_id - 1, 0)
+) AS missing(ledger_id)
+CROSS JOIN LATERAL (
+  SELECT jsonb_build_object(
+    'kind', 'tombstone',
+    'ledger_id', missing.ledger_id,
+    'reason', 'historical announcement unavailable during ledger migration'
+  ) AS payload
+) AS document
+WHERE r.complete_announcement_seen = TRUE
+  AND NOT EXISTS (
+    SELECT 1 FROM artifact_announcement_ledger existing
+    WHERE existing.train_job_id = r.train_job_id
+      AND existing.ledger_id = missing.ledger_id
+  )
+ON CONFLICT (train_job_id, ledger_id) DO NOTHING;
 
 CREATE OR REPLACE FUNCTION worker_submit_metric_batch(
   p_attempt_id TEXT,
@@ -820,6 +980,8 @@ RESET_TABLES = (
     "worker_attempts",
     "eval_attempts",
     "eval_jobs",
+    "artifact_publication_receipts",
+    "artifact_announcement_ledger",
     "eval_runs",
     "eval_backend_state",
     "job_events",
@@ -830,6 +992,16 @@ RESET_TABLES = (
 )
 TRAIN_JOB_KIND = "train"
 SCHEMA_MAINTENANCE_LOCK = "rlab-fleet-schema-maintenance"
+FLEET_ADMISSION_LOCK = "rlab-fleet-admission-v1"
+
+
+def acquire_fleet_admission_xact_lock(conn, *, exclusive: bool = False) -> None:
+    function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {function}(hashtextextended(%(key)s, 0))",
+            {"key": FLEET_ADMISSION_LOCK},
+        )
 
 
 @dataclass(frozen=True)
@@ -948,6 +1120,7 @@ def prepare_schema_upgrade(conn) -> None:
 
 def apply_schema(conn) -> None:
     with conn:
+        acquire_fleet_admission_xact_lock(conn, exclusive=True)
         prepare_schema_upgrade(conn)
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
@@ -959,6 +1132,7 @@ def grant_worker_mailbox_role(conn, role: str) -> None:
         raise ValueError("worker mailbox role must be a plain PostgreSQL identifier")
     identifier = psycopg2.extensions.quote_ident(role, conn)
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
             cur.execute(f"GRANT USAGE ON SCHEMA public TO {identifier}")
             cur.execute(
@@ -1050,6 +1224,7 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
 
 def reset_schema(conn, *, export_dir: Path) -> Path:
     with conn:
+        acquire_fleet_admission_xact_lock(conn, exclusive=True)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
@@ -1067,6 +1242,8 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                   worker_attempts,
                   eval_attempts,
                   eval_jobs,
+                  artifact_publication_receipts,
+                  artifact_announcement_ledger,
                   eval_runs,
                   eval_backend_state,
                   job_events,
@@ -1088,6 +1265,8 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                      OR to_regclass('runtime_image_states') IS NULL
                      OR to_regclass('job_events') IS NULL
                      OR to_regclass('eval_runs') IS NULL
+                     OR to_regclass('artifact_announcement_ledger') IS NULL
+                     OR to_regclass('artifact_publication_receipts') IS NULL
                      OR to_regclass('eval_jobs') IS NULL
                      OR to_regclass('eval_attempts') IS NULL
                      OR to_regclass('worker_attempts') IS NULL
@@ -1439,6 +1618,7 @@ def enqueue_train_jobs_from_recipe_document(
         modal_readiness_validated = True
     rows = []
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         if explicit_submission_key:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1695,6 +1875,7 @@ def enqueue_train_job(
     )
 
     def insert() -> dict[str, Any]:
+        acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1829,6 +2010,7 @@ def claim_job_launch(
         params["runtime_image_ref"] = runtime_image_ref
     where = "\n    AND ".join(filters)
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         acquire_machine_control_xact_lock(conn, machine=machine)
         with conn.cursor() as cur:
             cur.execute(
@@ -1907,6 +2089,7 @@ def mark_job_launch_running(
     provider_run_id: str | None = None,
 ) -> dict[str, Any] | None:
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2259,6 +2442,10 @@ def count_nonterminal_jobs(conn=None) -> int:
         conn = connect(database_url())
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('train_jobs') AS train_jobs")
+            schema_row = cur.fetchone()
+            if not schema_row or schema_row["train_jobs"] is None:
+                return 0
             cur.execute(
                 """
                 SELECT
@@ -2471,9 +2658,7 @@ def record_runtime_image_failure(
             return dict(cur.fetchone() or {})
 
 
-def reset_runtime_image_retry(
-    conn, *, machine: str, runtime_image_ref: str
-) -> dict[str, Any]:
+def reset_runtime_image_retry(conn, *, machine: str, runtime_image_ref: str) -> dict[str, Any]:
     machine = normalize_machine(machine)
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     with conn:
@@ -2711,6 +2896,7 @@ def retry_train_job(
         )
         modal_readiness_validated = True
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
@@ -2792,6 +2978,7 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
     """Reopen post-train work or restamp a completed publication without retraining."""
 
     with conn:
+        acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2800,6 +2987,16 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                   r.complete_announcement_seen,
                   r.artifacts_projected_at, r.promoted_eval_job_id,
                   r.promoted_artifact_projected_at,
+                  (SELECT COUNT(*) FROM artifact_announcement_ledger ledger
+                    WHERE ledger.train_job_id=t.id
+                      AND ledger.disposition='ready'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM artifact_publication_receipts receipt
+                        WHERE receipt.train_job_id=ledger.train_job_id
+                          AND receipt.ledger_id=ledger.ledger_id
+                          AND receipt.role='availability'
+                          AND receipt.promotion_revision=0
+                      )) AS missing_artifact_receipts,
                   (SELECT COUNT(*) FROM eval_jobs j
                     WHERE j.train_job_id=t.id
                       AND j.status IN ('pending','dispatching','submitted','blocked_budget'))
@@ -2825,6 +3022,58 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
             source = cur.fetchone()
             if not source:
                 raise ValueError(f"job {job_id} does not exist")
+            if str(source["status"]) == "canceled":
+                active_counts = {
+                    key: int(source.get(key) or 0)
+                    for key in (
+                        "active_eval_jobs",
+                        "active_eval_attempts",
+                        "active_eval_workers",
+                        "active_train_workers",
+                    )
+                }
+                if (
+                    str(source.get("launch_state") or "") != "canceled"
+                    or not bool(source.get("cancel_requested"))
+                    or source.get("process_exited_at") is None
+                    or str(source.get("eval_outcome") or "") != "canceled"
+                    or not bool(source.get("complete_announcement_seen"))
+                    or str(source.get("eval_status") or "") != "canceled"
+                    or any(active_counts.values())
+                ):
+                    raise ValueError(
+                        f"canceled job {job_id} lacks publication-only recovery evidence"
+                    )
+                if str(source.get("live_publication_status") or "") != "complete":
+                    raise ValueError(
+                        f"canceled job {job_id} does not have a complete publication state"
+                    )
+                if int(source.get("missing_artifact_receipts") or 0) == 0:
+                    raise ValueError(f"canceled job {job_id} has no missing artifact receipts")
+                cur.execute(
+                    """
+                    UPDATE train_jobs
+                    SET live_publication_status = 'pending',
+                      live_publication_attempts = 0,
+                      live_publication_next_retry_at = now(),
+                      live_publication_error = NULL
+                    WHERE id = %(job_id)s AND status = 'canceled'
+                      AND live_publication_status = 'complete'
+                    RETURNING *
+                    """,
+                    {"job_id": int(job_id)},
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError(f"canceled job {job_id} changed while reopening publication")
+                record_job_event(
+                    conn,
+                    job_id=int(job_id),
+                    event_type="finalization_retried",
+                    message="operator requested canceled-run artifact publication recovery",
+                    metadata={"launch_state": "canceled", "publication_only": True},
+                )
+                return dict(row)
             if str(source["status"]) == "succeeded":
                 if str(source["launch_state"]) != "succeeded":
                     raise ValueError(f"job {job_id} does not have a successful training launch")
@@ -2895,7 +3144,9 @@ def retry_train_job_finalization(conn, *, job_id: int) -> dict[str, Any]:
                             or source.get("promoted_artifact_projected_at") is not None
                         )
                     )
-                    or str((source.get("train_config") or {}).get("checkpoint_eval_backend") or "local")
+                    or str(
+                        (source.get("train_config") or {}).get("checkpoint_eval_backend") or "local"
+                    )
                     != "modal"
                 )
             )
@@ -3388,6 +3639,29 @@ def queue_status(
               eval_run.promoted_artifact_projected_at AS playable_at,
               eval_run.artifact_projection_attempts,
               eval_run.artifact_projection_next_retry_at,
+              (SELECT COUNT(*) FROM artifact_announcement_ledger ledger
+                WHERE ledger.train_job_id = job.id
+                  AND ledger.disposition = 'ready') AS ready_artifact_count,
+              (SELECT COUNT(*) FROM artifact_publication_receipts receipt
+                WHERE receipt.train_job_id = job.id
+                  AND receipt.role = 'availability') AS availability_receipt_count,
+              (SELECT receipt.artifact_ref
+                FROM artifact_publication_receipts receipt
+                WHERE receipt.train_job_id = job.id
+                  AND receipt.role = 'promotion'
+                  AND receipt.promotion_revision = eval_run.promotion_revision
+                  AND receipt.disposition = 'confirmed'
+                ORDER BY receipt.confirmed_at DESC LIMIT 1) AS promoted_receipt_ref,
+              (SELECT receipt.artifact_ref
+                FROM artifact_publication_receipts receipt
+                WHERE receipt.train_job_id = job.id
+                  AND receipt.role = 'availability'
+                  AND receipt.disposition = 'confirmed'
+                ORDER BY receipt.checkpoint_step DESC,
+                  CASE receipt.artifact_kind
+                    WHEN 'final' THEN 2 WHEN 'interrupted' THEN 1 ELSE 0 END DESC,
+                  receipt.confirmed_at DESC
+                LIMIT 1) AS latest_receipt_ref,
               promoted.checkpoint_step AS promoted_step,
               promoted.checkpoint_uri AS promoted_checkpoint_uri,
               promoted.projected_at AS promoted_projection_at,
@@ -3441,8 +3715,16 @@ def queue_status(
         ):
             blocked_reason = "unreachable"
         row["blocked_reason"] = blocked_reason
+        selected_receipt_ref = row.get("promoted_receipt_ref") or row.get("latest_receipt_ref")
+        all_availability_receipted = int(row.get("ready_artifact_count") or 0) > 0 and int(
+            row.get("availability_receipt_count") or 0
+        ) >= int(row.get("ready_artifact_count") or 0)
         if row.get("eval_status") is None:
             artifact_status = "not_applicable"
+        elif all_availability_receipted and row.get("eval_status") == "complete":
+            artifact_status = "published"
+        elif selected_receipt_ref:
+            artifact_status = "playable"
         elif row.get("published_at") is not None:
             artifact_status = "published"
         elif row.get("playable_at") is not None:
@@ -3453,11 +3735,12 @@ def queue_status(
             artifact_status = "pending"
         row["artifact_status"] = artifact_status
         row["r2_checkpoint_uri"] = row.get("promoted_checkpoint_uri")
-        row["wandb_artifact_ref"] = None
+        row["wandb_artifact_ref"] = selected_receipt_ref
         wandb_url = str(row.get("wandb_url") or "")
         wandb_run_id = str(row.get("wandb_run_id") or "")
         if (
-            artifact_status in {"playable", "published"}
+            row["wandb_artifact_ref"] is None
+            and artifact_status in {"playable", "published"}
             and wandb_url
             and wandb_run_id
             and row.get("promoted_step") is not None
@@ -3581,14 +3864,17 @@ def _machine_capacities(path: Path = DEFAULT_MACHINE_REGISTRY) -> dict[str, int]
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    conn = _connect_from_args(args)
-    try:
-        apply_schema(conn)
-        worker_mailbox_role = args.worker_mailbox_role or configured_worker_mailbox_role()
-        if worker_mailbox_role:
-            grant_worker_mailbox_role(conn, worker_mailbox_role)
-    finally:
-        conn.close()
+    from rlab.fleet_service import default_service_paths, schema_change_service_guard
+
+    with schema_change_service_guard(default_service_paths()):
+        conn = _connect_from_args(args)
+        try:
+            apply_schema(conn)
+            worker_mailbox_role = args.worker_mailbox_role or configured_worker_mailbox_role()
+            if worker_mailbox_role:
+                grant_worker_mailbox_role(conn, worker_mailbox_role)
+        finally:
+            conn.close()
     print("queue_schema=ok")
     return 0
 

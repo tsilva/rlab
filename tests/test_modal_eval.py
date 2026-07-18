@@ -23,6 +23,7 @@ from rlab.modal_eval_orchestrator import (
     cancel_requested_attempts,
     deterministic_eval_failure,
     dispatch_pending,
+    enqueue_post_train_promotions,
     project_eval_results,
     ingest_mailbox_announcements,
     poll_attempts,
@@ -135,9 +136,7 @@ class ModalEvalContractTests(unittest.TestCase):
         store = mock.MagicMock()
         store.get_json_optional.side_effect = [RuntimeError("provider down"), None]
 
-        with mock.patch(
-            "rlab.modal_eval_orchestrator._mark_attempt_failure"
-        ) as mark_failure:
+        with mock.patch("rlab.modal_eval_orchestrator._mark_attempt_failure") as mark_failure:
             changed = poll_attempts(
                 conn,
                 store,
@@ -169,9 +168,7 @@ class ModalEvalContractTests(unittest.TestCase):
         config = mock.MagicMock()
         config.timeout_for.return_value = 1200
 
-        with mock.patch(
-            "rlab.modal_eval_orchestrator.accept_attempt_result"
-        ) as accept_result:
+        with mock.patch("rlab.modal_eval_orchestrator.accept_attempt_result") as accept_result:
             changed = poll_attempts(
                 conn,
                 store,
@@ -188,9 +185,7 @@ class ModalEvalContractTests(unittest.TestCase):
         )
 
     def test_canceled_train_reconciliation_closes_late_eval_rows(self) -> None:
-        conn = FakeConnection(
-            results=[{"rowcount": 3}, {"rowcount": 1}, {"rowcount": 2}]
-        )
+        conn = FakeConnection(results=[{"rowcount": 3}, {"rowcount": 1}, {"rowcount": 2}])
 
         self.assertEqual(
             reconcile_canceled_eval_state(conn),
@@ -233,8 +228,7 @@ class ModalEvalContractTests(unittest.TestCase):
         self.assertIn("a.attempt_id", statements[0])
         self.assertTrue(
             any(
-                "UPDATE worker_attempts" in statement
-                and "status = 'canceled'" in statement
+                "UPDATE worker_attempts" in statement and "status = 'canceled'" in statement
                 for statement in statements
             )
         )
@@ -875,6 +869,16 @@ class ModalEvalRecoveryTests(unittest.TestCase):
 
 
 class ModalEvalSchedulingTests(unittest.TestCase):
+    def test_post_train_promotion_does_not_reopen_decided_runs(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+
+        self.assertEqual(enqueue_post_train_promotions(conn), 0)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("r.outcome IS NULL", statement)
+
     def test_completed_attempt_polling_precedes_and_survives_ingestion_failure(self) -> None:
         order: list[str] = []
         conn = mock.MagicMock()
@@ -1010,12 +1014,27 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         count = ingest_mailbox_announcements(conn, mock.MagicMock())
 
         self.assertEqual(count, 3)
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        ledger_inserts = [
+            index
+            for index, statement in enumerate(statements)
+            if "INSERT INTO artifact_announcement_ledger" in statement
+        ]
         delete_calls = [
             call
             for call in cursor.execute.call_args_list
             if "DELETE FROM attempt_events" in call.args[0]
         ]
+        delete_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if "DELETE FROM attempt_events" in statement
+        ]
+        self.assertEqual(len(ledger_inserts), 3)
         self.assertEqual(len(delete_calls), 3)
+        self.assertTrue(
+            all(insert < delete for insert, delete in zip(ledger_inserts, delete_indexes))
+        )
 
     def test_mailbox_ingestion_defers_malformed_record_and_continues(self) -> None:
         events = [
@@ -1351,7 +1370,15 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         }
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [invalid, valid]
+        cursor.fetchall.side_effect = [
+            [{"train_job_id": 10}, {"train_job_id": 17}],
+            [invalid],
+            [valid],
+        ]
+        cursor.fetchone.side_effect = [
+            {"status": "finalizing", "promotion_revision": 0},
+            {"status": "finalizing", "promotion_revision": 0},
+        ]
         cursor.rowcount = 1
 
         self.assertEqual(reconcile_promotions(conn), 1)
@@ -1421,8 +1448,12 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         terminalize_runs(conn)
 
         statement = cursor.execute.call_args.args[0]
-        self.assertIn("r.artifacts_projected_at IS NOT NULL", statement)
-        self.assertIn("r.promoted_artifact_projected_at IS NOT NULL", statement)
+        self.assertIn("artifact_announcement_ledger", statement)
+        self.assertIn("artifact_publication_receipts", statement)
+        self.assertIn("receipt.role = 'availability'", statement)
+        self.assertIn("receipt.role = 'promotion'", statement)
+        self.assertIn("r.promotion_revision", statement)
+        self.assertIn("GREATEST(r.next_announcement_id - 1, 0)", statement)
         self.assertIn("j.projected_at IS NULL", statement)
         self.assertIn("t.process_exited_at IS NOT NULL", statement)
         self.assertIn("t.live_publication_status IN ('complete', 'disabled')", statement)
@@ -1436,7 +1467,9 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         )
         self.assertIn("THEN 'finalization_failed'", statement)
 
-    def test_terminal_reducers_distinguish_rejection_unknown_and_publication_finishing(self) -> None:
+    def test_terminal_reducers_distinguish_rejection_unknown_and_publication_finishing(
+        self,
+    ) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
         cursor.rowcount = 1
@@ -1473,8 +1506,11 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         finishing = cursor.execute.call_args.args[0]
         self.assertIn("live_publication_status = 'finishing'", finishing)
         self.assertIn("live_publication_attempts = 0", finishing)
-        self.assertIn("r.artifacts_projected_at IS NOT NULL", finishing)
+        self.assertIn("artifact_announcement_ledger", finishing)
+        self.assertIn("artifact_publication_receipts", finishing)
+        self.assertIn("receipt.role = 'promotion'", finishing)
         self.assertIn("s.published_sequence < s.final_sequence", finishing)
+        self.assertIn("artifact_stream.stream_id LIKE 'artifact-v2-%%'", finishing)
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):

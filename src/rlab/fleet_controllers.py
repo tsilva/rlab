@@ -24,6 +24,7 @@ POLL_SECONDS = 2.0
 REMOTE_PASS_BUDGET_SECONDS = 55.0
 MAX_WANDB_ACTORS = 16
 WANDB_ACTOR_SHUTDOWN_SECONDS = 5.0
+WANDB_ACTOR_SESSION_TIMEOUT_SECONDS = 120.0
 WANDB_ACTOR_CONTENTION_BACKOFF_SECONDS = 30.0
 WANDB_ACTOR_LOCK_BUSY_EXIT_CODE = 75
 CONTROLLER_MAX_BACKOFF_SECONDS = 60.0
@@ -117,9 +118,7 @@ def _shutdown_wandb_actors(actors: dict[int, subprocess.Popen]) -> None:
         process.terminate()
     deadline = time.monotonic() + WANDB_ACTOR_SHUTDOWN_SECONDS
     while live and time.monotonic() < deadline:
-        live = {
-            run_id: process for run_id, process in live.items() if process.poll() is None
-        }
+        live = {run_id: process for run_id, process in live.items() if process.poll() is None}
         if live:
             time.sleep(0.05)
     if live:
@@ -137,6 +136,31 @@ def _shutdown_wandb_actors(actors: dict[int, subprocess.Popen]) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=1)
+
+
+def _wandb_actor_session_timed_out(
+    repo_root: Path,
+    *,
+    run_id: int,
+    process: subprocess.Popen,
+    now: float | None = None,
+) -> bool:
+    path = repo_root / "logs" / "fleet" / "wandb-actors" / f"train-{int(run_id)}.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError, OSError, ValueError, TypeError:
+        return False
+    if int(state.get("pid") or 0) != int(process.pid):
+        return False
+    if str(state.get("phase") or "") != "publishing":
+        return False
+    try:
+        started_at = float(state["session_started_at"])
+    except KeyError, TypeError, ValueError:
+        return False
+    return (time.time() if now is None else float(now)) - started_at > (
+        WANDB_ACTOR_SESSION_TIMEOUT_SECONDS
+    )
 
 
 class SleepAssertion:
@@ -376,7 +400,10 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
 
 
 def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
-    from rlab.telemetry_mailbox import pending_metric_run_ids
+    from rlab.telemetry_mailbox import (
+        pending_metric_run_ids,
+        schedule_artifact_publications,
+    )
 
     actors: dict[int, subprocess.Popen] = {}
     ownership_backoff: dict[int, float] = {}
@@ -406,6 +433,19 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
             now = time.monotonic()
             for run_id, process in list(actors.items()):
                 returncode = process.poll()
+                if returncode is None and _wandb_actor_session_timed_out(
+                    repo_root,
+                    run_id=run_id,
+                    process=process,
+                ):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=WANDB_ACTOR_SHUTDOWN_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1)
+                    actors.pop(run_id, None)
+                    continue
                 if returncode is None:
                     continue
                 actors.pop(run_id, None)
@@ -414,6 +454,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
             try:
                 conn = connect(database_url(use_direct=True))
                 try:
+                    schedule_artifact_publications(conn, limit=10)
                     run_ids = pending_metric_run_ids(conn, limit=10_000)
                 finally:
                     conn.close()

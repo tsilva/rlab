@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,6 +126,10 @@ class JobQueueTests(unittest.TestCase):
         with (
             patch.object(job_queue, "_connect_from_args", return_value=conn),
             patch.object(job_queue, "apply_schema") as apply_schema,
+            patch(
+                "rlab.fleet_service.schema_change_service_guard",
+                return_value=nullcontext(),
+            ),
             patch.object(
                 job_queue,
                 "configured_worker_mailbox_role",
@@ -615,6 +620,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("wandb_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("wandb_run_id TEXT", job_queue.SCHEMA_SQL)
         self.assertIn("live_publication_status TEXT", job_queue.SCHEMA_SQL)
+        self.assertIn("SET process_exited_at = l.finished_at", job_queue.SCHEMA_SQL)
         self.assertIn("'finalizing'", job_queue.SCHEMA_SQL)
         self.assertIn("'finalization_failed'", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS worker_attempts", job_queue.SCHEMA_SQL)
@@ -628,6 +634,25 @@ class JobQueueTests(unittest.TestCase):
         )
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_events", job_queue.SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS attempt_commands", job_queue.SCHEMA_SQL)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS artifact_announcement_ledger",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS artifact_publication_receipts",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn("promotion_revision BIGINT", job_queue.SCHEMA_SQL)
+        self.assertIn("role IN ('availability', 'promotion')", job_queue.SCHEMA_SQL)
+        self.assertIn(
+            "ON artifact_publication_receipts (artifact_ref, role, promotion_revision)",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn(
+            "historical announcement unavailable during ledger migration",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn("generate_series(", job_queue.SCHEMA_SQL)
         self.assertIn("worker_submit_metric_batch", job_queue.SCHEMA_SQL)
         self.assertIn("UNIQUE (stream_id, batch_sequence)", job_queue.SCHEMA_SQL)
         self.assertIn("r.status <> 'complete'", job_queue.SCHEMA_SQL)
@@ -641,7 +666,12 @@ class JobQueueTests(unittest.TestCase):
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
 
     def test_quiescence_count_includes_orphaned_active_execution_records(self) -> None:
-        conn = FakeConnection(row={"count": 0})
+        conn = FakeConnection(
+            results=[
+                {"row": {"train_jobs": "train_jobs"}},
+                {"row": {"count": 0}},
+            ]
+        )
 
         self.assertEqual(job_queue.count_nonterminal_jobs(conn), 0)
 
@@ -690,7 +720,15 @@ class JobQueueTests(unittest.TestCase):
                 _modal_readiness_validated=True,
             )
 
-        persisted = conn.cursor_obj.executed_params_list[0]["train_config"].adapted
+        insert_params = next(
+            params
+            for statement, params in zip(
+                conn.cursor_obj.executed_sqls,
+                conn.cursor_obj.executed_params_list,
+            )
+            if "INSERT INTO train_jobs" in statement
+        )
+        persisted = insert_params["train_config"].adapted
         self.assertEqual(persisted["checkpoint_eval_seed"], 10_000)
         self.assertEqual(persisted["checkpoint_eval_seed_protocol"], "vector-lane-v1")
 
@@ -816,8 +854,13 @@ class JobQueueTests(unittest.TestCase):
             train_config=explicit_train_config(),
         )
 
-        insert_sql = conn.cursor_obj.executed_sqls[0]
-        insert_params = conn.cursor_obj.executed_params_list[0]
+        insert_index = next(
+            index
+            for index, statement in enumerate(conn.cursor_obj.executed_sqls)
+            if "INSERT INTO train_jobs" in statement
+        )
+        insert_sql = conn.cursor_obj.executed_sqls[insert_index]
+        insert_params = conn.cursor_obj.executed_params_list[insert_index]
         self.assertEqual(row["runtime_image_ref"], RUNTIME_IMAGE_REF)
         self.assertIn("goal_path", insert_sql)
         self.assertEqual(insert_params["goal_path"], "experiments/goals/mario/Level1-1/_goal.yaml")
@@ -859,7 +902,14 @@ class JobQueueTests(unittest.TestCase):
             seeds=[23],
         )
 
-        insert_params = conn.cursor_obj.executed_params_list[0]
+        insert_params = next(
+            params
+            for statement, params in zip(
+                conn.cursor_obj.executed_sqls,
+                conn.cursor_obj.executed_params_list,
+            )
+            if "INSERT INTO train_jobs" in statement
+        )
         train_config = insert_params["train_config"].adapted
         self.assertEqual(insert_params["machine"], "local-macbook")
         self.assertNotIn("machine", train_config)
@@ -1233,6 +1283,34 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("job.goal_slug", status_sql)
         self.assertNotIn("profile_id", status_sql)
         self.assertIn("eval_run.status AS eval_status", status_sql)
+        self.assertIn("artifact_publication_receipts", status_sql)
+        self.assertIn("promoted_receipt_ref", status_sql)
+
+    def test_queue_status_exposes_live_concrete_artifact_receipt(self) -> None:
+        conn = FakeConnection(
+            rows=[
+                {
+                    "id": 17,
+                    "machine": "beast-3",
+                    "status": "running",
+                    "eval_status": "active",
+                    "latest_receipt_ref": "entity/project/rlab-run-id-checkpoint:v4",
+                    "ready_artifact_count": 1,
+                    "availability_receipt_count": 1,
+                    "cancel_requested": False,
+                    "machine_drained": False,
+                    "active_reservations": 1,
+                }
+            ]
+        )
+
+        job = job_queue.queue_status(conn, job_id=17)["jobs"][0]
+
+        self.assertEqual(job["artifact_status"], "playable")
+        self.assertEqual(
+            job["artifact_ref"],
+            "entity/project/rlab-run-id-checkpoint:v4",
+        )
 
     def test_queue_status_exposes_published_artifact(self) -> None:
         conn = FakeConnection(
@@ -1314,10 +1392,15 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(claimed)
-        sql = conn.cursor_obj.executed_sqls[1]
+        sql_index = next(
+            index
+            for index, statement in enumerate(conn.cursor_obj.executed_sqls)
+            if "NOT EXISTS (SELECT 1 FROM job_launches" in statement
+        )
+        sql = conn.cursor_obj.executed_sqls[sql_index]
         self.assertIn("job.machine = %(machine)s", sql)
         self.assertIn("NOT EXISTS (SELECT 1 FROM job_launches", sql)
-        self.assertEqual(conn.cursor_obj.executed_params_list[1]["launch_id"], "train-7")
+        self.assertEqual(conn.cursor_obj.executed_params_list[sql_index]["launch_id"], "train-7")
 
     def test_wandb_disabled_job_becomes_ready_without_wandb_identity(self) -> None:
         conn = FakeConnection(results=[{"row": {"id": 7}}, {}])
@@ -1376,7 +1459,12 @@ class JobQueueTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+        statements = [
+            statement
+            for statement in conn.cursor_obj.executed_sqls
+            if "pg_advisory_xact_lock_shared" not in statement
+        ]
+        self.assertEqual(len(statements), 1)
 
     def test_successful_modal_launch_releases_capacity_while_job_finalizes(self) -> None:
         launch = {
@@ -1524,6 +1612,39 @@ class JobQueueTests(unittest.TestCase):
         self.assertFalse(any("cancel_requested = FALSE" in statement for statement in statements))
         self.assertTrue(any("publication_status" in statement for statement in statements))
 
+    def test_retry_completed_canceled_run_reopens_only_missing_artifact_receipts(self) -> None:
+        source = {
+            "id": 87,
+            "status": "canceled",
+            "launch_state": "canceled",
+            "cancel_requested": True,
+            "process_exited_at": "2026-07-17T22:03:12Z",
+            "live_publication_status": "complete",
+            "eval_status": "canceled",
+            "eval_outcome": "canceled",
+            "complete_announcement_seen": True,
+            "missing_artifact_receipts": 11,
+            "active_eval_jobs": 0,
+            "active_eval_attempts": 0,
+            "active_eval_workers": 0,
+            "active_train_workers": 0,
+        }
+        reopened = {
+            **source,
+            "live_publication_status": "pending",
+            "live_publication_attempts": 0,
+        }
+        conn = FakeConnection(results=[{"row": source}, {"row": reopened}, {}])
+
+        result = job_queue.retry_train_job_finalization(conn, job_id=87)
+
+        self.assertEqual(result["status"], "canceled")
+        self.assertEqual(result["live_publication_status"], "pending")
+        statements = conn.cursor_obj.executed_sqls
+        self.assertTrue(any("live_publication_status = 'pending'" in sql for sql in statements))
+        self.assertFalse(any("SET status =" in sql for sql in statements))
+        self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
+
     def test_retry_canceled_finalization_rejects_active_eval_work_atomically(self) -> None:
         source = {
             "id": 64,
@@ -1542,7 +1663,12 @@ class JobQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "active=active_eval_jobs"):
             job_queue.retry_train_job_finalization(conn, job_id=64)
 
-        self.assertEqual(len(conn.cursor_obj.executed_sqls), 1)
+        statements = [
+            statement
+            for statement in conn.cursor_obj.executed_sqls
+            if "pg_advisory_xact_lock_shared" not in statement
+        ]
+        self.assertEqual(len(statements), 1)
 
     def test_cancel_intent_dominates_success_result(self) -> None:
         launch = {

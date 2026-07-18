@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -20,7 +22,6 @@ from rlab.env_config import env_config_from_args
 from rlab.telemetry_mailbox import (
     REMOTE_CONFIRM_TIMEOUT_SECONDS,
     claim_run_metric_batches,
-    commit_published_batches,
     decode_metric_batch,
     mark_submitted_batches,
     pending_metric_run_ids,
@@ -28,6 +29,9 @@ from rlab.telemetry_mailbox import (
     release_wandb_run_lock,
 )
 from rlab.job_queue import record_job_event
+from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
+from rlab.policy_bundle import model_document_as_metadata
+from rlab.wandb_artifacts import artifact_collection_name
 from rlab.wandb_publisher import (
     WandbProjector,
     _publish_frame,
@@ -51,6 +55,7 @@ DEFAULT_BATCH_LIMIT = 100
 ACTOR_POLL_SECONDS = 2.0
 MAX_FINALIZATION_ATTEMPTS = 3
 FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
+ARTIFACT_VISIBILITY_RETRY_SECONDS = 5
 WANDB_API_TIMEOUT_SECONDS = 30
 ACTOR_LOCK_BUSY_EXIT_CODE = 75
 TERMINAL_WANDB_STATES = frozenset({"finished", "crashed", "failed", "killed"})
@@ -61,6 +66,7 @@ SUPPORTED_FRAME_KINDS = {
     "checkpoint_preview",
     "projection",
 }
+_ACTOR_SOURCE_FINGERPRINT: str | None = None
 
 
 class InvalidTelemetryBatchError(RuntimeError):
@@ -84,8 +90,96 @@ class WandbCursorConfirmationError(RuntimeError):
     pass
 
 
+class WandbArtifactVisibilityError(RuntimeError):
+    pass
+
+
 class WandbPublisherActorLockBusy(RuntimeError):
     pass
+
+
+def _actor_state_path(train_job_id: int) -> Path:
+    return Path.cwd() / "logs" / "fleet" / "wandb-actors" / f"train-{int(train_job_id)}.json"
+
+
+def _write_actor_state(
+    train_job_id: int,
+    *,
+    phase: str,
+    session_started_at: float | None,
+) -> None:
+    global _ACTOR_SOURCE_FINGERPRINT
+    from rlab.fleet_service import controller_source_fingerprint
+
+    if _ACTOR_SOURCE_FINGERPRINT is None:
+        _ACTOR_SOURCE_FINGERPRINT = controller_source_fingerprint(Path.cwd())
+    path = _actor_state_path(train_job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "train_job_id": int(train_job_id),
+                "phase": phase,
+                "session_started_at": session_started_at,
+                "updated_at": time.time(),
+                "source_fingerprint": _ACTOR_SOURCE_FINGERPRINT,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _verified_json_object(store: ObjectStore, uri: str, expected_sha256: str) -> dict[str, Any]:
+    payload = store.get_bytes(uri)
+    observed = hashlib.sha256(payload).hexdigest()
+    if observed != str(expected_sha256):
+        raise ValueError(f"artifact sidecar hash mismatch: {uri}")
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError(f"artifact sidecar must contain a JSON object: {uri}")
+    return value
+
+
+def _hydrate_artifact_projection_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("artifact_publication_schema") or "") != "v2":
+        return payload
+    store = ObjectStore(object_store_base_uri())
+    document = _verified_json_object(
+        store,
+        str(payload["metadata_uri"]),
+        str(payload["metadata_sha256"]),
+    )
+    if payload.get("recipe_uri"):
+        _verified_json_object(
+            store,
+            str(payload["recipe_uri"]),
+            str(payload["recipe_sha256"]),
+        )
+        metadata = model_document_as_metadata(document)
+    else:
+        metadata = document
+    if not isinstance(metadata.get("training_metadata"), dict):
+        raise ValueError("artifact sidecar is missing training_metadata")
+    return {**payload, "model_metadata": metadata}
+
+
+def _repair_artifact_projection_identity(
+    payload: dict[str, Any],
+    train_config: dict[str, Any],
+) -> dict[str, Any]:
+    if str(payload.get("artifact_publication_schema") or "") != "v2":
+        return payload
+    payload_config = dict(payload.get("train_config") or {})
+    for key in ("wandb_run_id", "run_name", "wandb_group", "wandb_tags"):
+        value = train_config.get(key)
+        if value not in (None, "", []):
+            payload_config[key] = value
+    return {**payload, "train_config": payload_config}
 
 
 def _cursor_mapping(raw: object) -> dict[str, int]:
@@ -136,9 +230,7 @@ def _remote_publication_state(
         env_provider=train_config.get("env_provider"),
     )
     run_id = str(train_config["wandb_run_id"])
-    remote = wandb.Api(timeout=WANDB_API_TIMEOUT_SECONDS).run(
-        f"{entity}/{project}/{run_id}"
-    )
+    remote = wandb.Api(timeout=WANDB_API_TIMEOUT_SECONDS).run(f"{entity}/{project}/{run_id}")
     summary = dict(remote.summary)
     raw = summary.get(SUMMARY_CURSOR_KEY) or {}
     return WandbPublicationState(
@@ -161,6 +253,124 @@ def _wandb_api_run(train_config: dict[str, Any]):
     return wandb.Api(timeout=WANDB_API_TIMEOUT_SECONDS).run(
         f"{entity}/{project}/{train_config['wandb_run_id']}"
     )
+
+
+def _artifact_aliases(artifact: Any) -> set[str]:
+    return {
+        str(getattr(alias, "alias", alias)) for alias in (getattr(artifact, "aliases", ()) or ())
+    }
+
+
+def _artifact_version_number(artifact: Any) -> int:
+    raw = str(getattr(artifact, "version", "") or "")
+    if not raw:
+        qualified = str(getattr(artifact, "qualified_name", "") or "")
+        raw = qualified.rsplit(":", 1)[-1] if ":" in qualified else ""
+    return int(raw[1:]) if raw.startswith("v") and raw[1:].isdigit() else -1
+
+
+def _artifact_qualified_ref(artifact: Any) -> str:
+    qualified = str(getattr(artifact, "qualified_name", "") or "")
+    if qualified and ":" in qualified:
+        return qualified
+    version = str(getattr(artifact, "version", "") or "")
+    name = str(getattr(artifact, "name", "") or "")
+    return f"{name}:{version}" if name and version else ""
+
+
+def _artifact_collection(artifact: Any) -> str:
+    qualified = _artifact_qualified_ref(artifact)
+    if qualified:
+        return qualified.rsplit("/", 1)[-1].rsplit(":", 1)[0]
+    return str(getattr(artifact, "name", "") or "").rsplit("/", 1)[-1]
+
+
+def _artifact_receipts_from_remote(
+    remote: Any,
+    payloads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not payloads:
+        return []
+    logged = getattr(remote, "logged_artifacts", None)
+    if not callable(logged):
+        raise WandbArtifactVisibilityError("W&B run does not expose logged artifacts")
+    artifacts = list(logged())
+    receipts: list[dict[str, Any]] = []
+    for payload in payloads:
+        train_config = dict(payload["train_config"])
+        kind = str(payload["artifact_kind"])
+        collection = artifact_collection_name(
+            kind,
+            run_id=str(train_config["wandb_run_id"]),
+        )
+        required_aliases = {str(alias) for alias in payload.get("artifact_aliases") or ()}
+        matches: list[Any] = []
+        for artifact in artifacts:
+            if str(getattr(artifact, "type", "") or "") != "model":
+                continue
+            if _artifact_collection(artifact) != collection:
+                continue
+            metadata = dict(getattr(artifact, "metadata", {}) or {})
+            expected = {
+                "artifact_publication_schema": "v2",
+                "train_job_id": int(payload["train_job_id"]),
+                "ledger_id": int(payload["ledger_id"]),
+                "artifact_kind": kind,
+                "announcement_sha256": str(payload["announcement_sha256"]),
+                "checkpoint_step": int(payload["checkpoint_step"]),
+                "checkpoint_sha256": str(payload["checkpoint_sha256"]),
+                "artifact_storage_uri": str(payload["checkpoint_uri"]),
+                "metadata_uri": str(payload["metadata_uri"]),
+                "metadata_sha256": str(payload["metadata_sha256"]),
+            }
+            if any(str(metadata.get(key)) != str(value) for key, value in expected.items()):
+                continue
+            # W&B content-deduplicates availability and promotion publications of
+            # the same immutable checkpoint into one artifact version. The remote
+            # version can therefore carry either stream's role metadata. Ledger
+            # identity, hashes, sidecars, and the role-specific aliases are the
+            # durable proof; the receipt records the distinct local stream role.
+            if payload.get("recipe_uri") and (
+                str(metadata.get("recipe_uri")) != str(payload["recipe_uri"])
+                or str(metadata.get("recipe_sha256")) != str(payload["recipe_sha256"])
+            ):
+                continue
+            if not required_aliases.issubset(_artifact_aliases(artifact)):
+                continue
+            if _artifact_version_number(artifact) < 0 or not _artifact_qualified_ref(artifact):
+                continue
+            matches.append(artifact)
+        if not matches:
+            raise WandbArtifactVisibilityError(
+                "W&B cursor is visible but artifact API membership is pending: "
+                f"train/{int(payload['train_job_id'])} ledger/{int(payload['ledger_id'])} "
+                f"role/{payload['publication_role']} revision/{int(payload.get('promotion_revision') or 0)}"
+            )
+        selected = max(matches, key=_artifact_version_number)
+        version_number = _artifact_version_number(selected)
+        receipts.append(
+            {
+                "train_job_id": int(payload["train_job_id"]),
+                "ledger_id": int(payload["ledger_id"]),
+                "role": str(payload["publication_role"]),
+                "promotion_revision": int(payload.get("promotion_revision") or 0),
+                "artifact_kind": kind,
+                "checkpoint_step": int(payload["checkpoint_step"]),
+                "checkpoint_sha256": str(payload["checkpoint_sha256"]),
+                "checkpoint_uri": str(payload["checkpoint_uri"]),
+                "metadata_uri": str(payload["metadata_uri"]),
+                "metadata_sha256": str(payload["metadata_sha256"]),
+                "recipe_uri": payload.get("recipe_uri"),
+                "recipe_sha256": payload.get("recipe_sha256"),
+                "announcement_sha256": str(payload["announcement_sha256"]),
+                "collection_name": collection,
+                "artifact_version": f"v{version_number}",
+                "artifact_ref": _artifact_qualified_ref(selected),
+                "stream_id": str(payload["publication_stream_id"]),
+                "expected_aliases": sorted(required_aliases),
+            }
+        )
+    return receipts
 
 
 def _publication_is_pristine(conn, run: dict[str, Any]) -> bool:
@@ -193,20 +403,25 @@ def _publication_is_pristine(conn, run: dict[str, Any]) -> bool:
             {"train_job_id": int(run["id"])},
         )
         evidence = cur.fetchone() or {}
-    return bool(evidence.get("streams_unpublished")) and bool(
-        evidence.get("batches_unsubmitted")
-    )
+    return bool(evidence.get("streams_unpublished")) and bool(evidence.get("batches_unsubmitted"))
 
 
-def _remote_has_promoted_artifact(remote, checkpoint_sha256: str) -> bool:
+def _remote_has_promoted_artifact(
+    remote,
+    checkpoint_sha256: str,
+    promotion_revision: int,
+) -> bool:
     logged = getattr(remote, "logged_artifacts", None)
     if not callable(logged):
         return False
     for artifact in logged():
         aliases = {str(value) for value in (getattr(artifact, "aliases", ()) or ())}
         metadata = dict(getattr(artifact, "metadata", {}) or {})
-        if "promoted" in aliases and str(metadata.get("checkpoint_sha256") or "") == str(
-            checkpoint_sha256
+        if (
+            "promoted" in aliases
+            and str(metadata.get("checkpoint_sha256") or "") == str(checkpoint_sha256)
+            and str(metadata.get("publication_role") or "") == "promotion"
+            and int(metadata.get("promotion_revision") or 0) == int(promotion_revision)
         ):
             return True
     return False
@@ -302,7 +517,9 @@ def _wandb_finalization_failures(
         if acceptance_pass != 1.0:
             failures.append("acceptance")
         if not _remote_has_promoted_artifact(
-            candidate, str(promotion.get("checkpoint_sha256") or "")
+            candidate,
+            str(promotion.get("checkpoint_sha256") or ""),
+            int(run.get("promotion_revision") or 0),
         ):
             failures.append("artifact")
     return failures
@@ -322,7 +539,7 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
             cur.execute(
                 """
                 SELECT t.*, COALESCE(r.outcome, 'unknown') AS outcome,
-                  r.promotion_json
+                  r.promotion_json, COALESCE(r.promotion_revision, 0) AS promotion_revision
                 FROM train_jobs t
                 LEFT JOIN eval_runs r ON r.train_job_id = t.id
                 WHERE t.id = %(id)s AND t.live_publication_status = 'finishing'
@@ -480,11 +697,63 @@ def _reconcile_non_modal_publication_finishing(conn, train_job_id: int) -> bool:
                 WHERE t.id = %(train_job_id)s
                   AND t.status = 'finalizing'
                   AND t.process_exited_at IS NOT NULL
-                  AND t.telemetry_transport = 'neon_mailbox_v1'
+                  AND (
+                    t.telemetry_transport = 'neon_mailbox_v1'
+                    OR EXISTS (
+                      SELECT 1 FROM metric_streams artifact_stream
+                      JOIN worker_attempts artifact_attempt
+                        ON artifact_attempt.attempt_id = artifact_stream.attempt_id
+                      WHERE artifact_attempt.train_job_id = t.id
+                        AND artifact_stream.stream_id LIKE 'artifact-v2-%%'
+                    )
+                  )
                   AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
                   AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local')
                       <> 'modal'
                   AND t.live_publication_status IN ('pending', 'live')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_batches b
+                    JOIN metric_streams s ON s.stream_id = b.stream_id
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = t.id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM metric_streams s
+                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                    WHERE a.train_job_id = t.id
+                      AND (
+                        s.final_sequence IS NULL
+                        OR s.published_sequence < s.final_sequence
+                      )
+                  )
+                """,
+                {"train_job_id": int(train_job_id)},
+            )
+            return cur.rowcount == 1
+
+
+def _reconcile_terminal_artifact_publication(conn, train_job_id: int) -> bool:
+    """Complete publication-only recovery without changing a terminal run outcome."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs t
+                SET live_publication_status = 'complete',
+                    live_publication_attempts = 0,
+                    live_publication_error = NULL,
+                    live_publication_next_retry_at = NULL
+                WHERE t.id = %(train_job_id)s
+                  AND t.status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')
+                  AND t.live_publication_status IN ('pending', 'live')
+                  AND EXISTS (
+                    SELECT 1 FROM metric_streams artifact_stream
+                    JOIN worker_attempts artifact_attempt
+                      ON artifact_attempt.attempt_id = artifact_stream.attempt_id
+                    WHERE artifact_attempt.train_job_id = t.id
+                      AND artifact_stream.stream_id LIKE 'artifact-v2-%%'
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM metric_batches b
                     JOIN metric_streams s ON s.stream_id = b.stream_id
@@ -515,6 +784,22 @@ def _submitted_at(value: object) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _artifact_visibility_is_propagating(
+    batches: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    submitted = [
+        timestamp
+        for batch in batches
+        if (timestamp := _submitted_at(batch.get("submitted_at"))) is not None
+    ]
+    if not submitted:
+        return False
+    age = max(0.0, ((now or datetime.now(UTC)) - min(submitted)).total_seconds())
+    return age < REMOTE_CONFIRM_TIMEOUT_SECONDS
 
 
 def _raise_for_stalled_confirmations(
@@ -559,9 +844,55 @@ def _record_committed_effects(
     batches: list[dict[str, Any]],
     decoded: dict[int, list[dict[str, Any]]],
     wandb_url: str | None,
+    artifact_receipts: list[dict[str, Any]] | None = None,
 ) -> None:
+    grouped: dict[str, int] = {}
+    batch_ids: list[int] = []
+    for batch in batches:
+        stream_id = str(batch["stream_id"])
+        grouped[stream_id] = max(grouped.get(stream_id, 0), int(batch["batch_sequence"]))
+        batch_ids.append(int(batch["id"]))
     with conn:
         with conn.cursor() as cur:
+            for stream_id, sequence in grouped.items():
+                cur.execute(
+                    """
+                    UPDATE metric_streams
+                    SET submitted_sequence = GREATEST(submitted_sequence, %(sequence)s),
+                        published_sequence = GREATEST(published_sequence, %(sequence)s),
+                        updated_at = now()
+                    WHERE stream_id = %(stream_id)s
+                    """,
+                    {"stream_id": stream_id, "sequence": sequence},
+                )
+            for receipt in artifact_receipts or ():
+                cur.execute(
+                    """
+                    INSERT INTO artifact_publication_receipts (
+                      train_job_id, ledger_id, role, promotion_revision,
+                      disposition, artifact_kind, checkpoint_step,
+                      checkpoint_sha256, checkpoint_uri, metadata_uri,
+                      metadata_sha256, recipe_uri, recipe_sha256,
+                      announcement_sha256, collection_name, artifact_version,
+                      artifact_ref, stream_id, expected_aliases
+                    ) VALUES (
+                      %(train_job_id)s, %(ledger_id)s, %(role)s, %(promotion_revision)s,
+                      'confirmed', %(artifact_kind)s, %(checkpoint_step)s,
+                      %(checkpoint_sha256)s, %(checkpoint_uri)s, %(metadata_uri)s,
+                      %(metadata_sha256)s, %(recipe_uri)s, %(recipe_sha256)s,
+                      %(announcement_sha256)s, %(collection_name)s, %(artifact_version)s,
+                      %(artifact_ref)s, %(stream_id)s, %(expected_aliases)s
+                    )
+                    ON CONFLICT (train_job_id, ledger_id, role, promotion_revision)
+                    DO NOTHING
+                    """,
+                    receipt,
+                )
+            if batch_ids:
+                cur.execute(
+                    "DELETE FROM metric_batches WHERE id = ANY(%(ids)s)",
+                    {"ids": batch_ids},
+                )
             cur.execute(
                 """
                 UPDATE train_jobs t
@@ -597,7 +928,10 @@ def _record_committed_effects(
                 for frame in decoded[int(batch["id"])]:
                     if str(frame.get("kind") or "") != "projection":
                         continue
-                    eval_job_id = frame.get("payload", {}).get("eval_job_id")
+                    payload = frame.get("payload", {})
+                    if str(payload.get("projection_kind") or "evaluation") != "evaluation":
+                        continue
+                    eval_job_id = payload.get("eval_job_id")
                     if eval_job_id is not None:
                         projection_ids.append(int(eval_job_id))
             if projection_ids:
@@ -641,13 +975,25 @@ def publish_claimed_run(
     remote = remote_state.cursors
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
-        commit_published_batches(conn, confirmed)
+        artifact_payloads = [
+            _repair_artifact_projection_identity(dict(frame["payload"]), train_config)
+            for batch in confirmed
+            for frame in decoded[int(batch["id"])]
+            if str(frame.get("kind") or "") == "projection"
+            and str(frame.get("payload", {}).get("artifact_publication_schema") or "") == "v2"
+        ]
+        artifact_receipts = (
+            _artifact_receipts_from_remote(_wandb_api_run(train_config), artifact_payloads)
+            if artifact_payloads
+            else []
+        )
         _record_committed_effects(
             conn,
             run=run,
             batches=confirmed,
             decoded=decoded,
             wandb_url=None,
+            artifact_receipts=artifact_receipts,
         )
         run["live_publication_attempts"] = 0
     if awaiting_confirmation:
@@ -681,11 +1027,21 @@ def publish_claimed_run(
                     kind = str(frame.get("kind") or "history")
                     payload = dict(frame["payload"])
                     if kind == "projection":
-                        project_payload_to_run(
+                        payload = _repair_artifact_projection_identity(payload, train_config)
+                        payload = _hydrate_artifact_projection_payload(payload)
+                        logged_artifact = project_payload_to_run(
                             projector.run,
                             payload,
                             allow_artifact_references=True,
                         )
+                        if (
+                            str(payload.get("artifact_publication_schema") or "") == "v2"
+                            and logged_artifact is not None
+                        ):
+                            wait = getattr(logged_artifact, "wait", None)
+                            if not callable(wait):
+                                raise RuntimeError("W&B artifact handle does not support wait()")
+                            wait(timeout=WANDB_API_TIMEOUT_SECONDS)
                     else:
                         _publish_frame(
                             projector.run,
@@ -733,18 +1089,41 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
         return publish_claimed_run(conn, run, batches)
     except Exception as exc:
         release_metric_batch_claims(conn, batches, error=repr(exc))
-        attempts = int(run.get("live_publication_attempts") or 0) + 1
+        current_attempts = int(run.get("live_publication_attempts") or 0)
+        visibility_propagating = isinstance(
+            exc, WandbArtifactVisibilityError
+        ) and _artifact_visibility_is_propagating(batches)
+        attempts = current_attempts if visibility_propagating else current_attempts + 1
         invalid_batch = isinstance(exc, InvalidTelemetryBatchError)
-        finalizing = str(run.get("status") or "") == "finalizing"
-        terminal = finalizing and (invalid_batch or attempts >= MAX_FINALIZATION_ATTEMPTS)
-        retry_delay = (
-            FINALIZATION_RETRY_DELAYS_SECONDS[
-                min(attempts - 1, len(FINALIZATION_RETRY_DELAYS_SECONDS) - 1)
-            ]
-            if finalizing
-            else 30
+        run_status = str(run.get("status") or "")
+        bounded_publication = run_status in {
+            "finalizing",
+            "succeeded",
+            "failed",
+            "canceled",
+            "finalization_failed",
+        }
+        terminal = (
+            bounded_publication
+            and not visibility_propagating
+            and (invalid_batch or attempts >= MAX_FINALIZATION_ATTEMPTS)
         )
-        error = (str(exc) if isinstance(exc, WandbCursorConfirmationError) else repr(exc))[:4000]
+        retry_delay = (
+            ARTIFACT_VISIBILITY_RETRY_SECONDS
+            if visibility_propagating
+            else (
+                FINALIZATION_RETRY_DELAYS_SECONDS[
+                    min(attempts - 1, len(FINALIZATION_RETRY_DELAYS_SECONDS) - 1)
+                ]
+                if bounded_publication
+                else 30
+            )
+        )
+        error = (
+            str(exc)
+            if isinstance(exc, (WandbCursorConfirmationError, WandbArtifactVisibilityError))
+            else repr(exc)
+        )[:4000]
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -784,6 +1163,7 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
                         "attempts": attempts,
                         "terminal": terminal,
                         "run_status": str(run.get("status") or ""),
+                        "visibility_propagating": visibility_propagating,
                     },
                 )
         raise
@@ -810,6 +1190,7 @@ def drain_once(
     if claim is None:
         if train_job_id is not None:
             _reconcile_non_modal_publication_finishing(conn, int(train_job_id))
+            _reconcile_terminal_artifact_publication(conn, int(train_job_id))
             return int(finalize_finishing_run(conn, int(train_job_id)))
         return 0
     run, batches = claim
@@ -863,14 +1244,32 @@ def run_publisher_actor(
             )
     published = 0
     try:
+        _write_actor_state(
+            int(train_job_id),
+            phase="idle",
+            session_started_at=None,
+        )
         while True:
             if callable(stop_requested) and stop_requested():
                 return published
-            published += drain_once(
-                conn,
-                limit=max(1, int(limit)),
-                train_job_id=int(train_job_id),
+            session_started_at = time.time()
+            _write_actor_state(
+                int(train_job_id),
+                phase="publishing",
+                session_started_at=session_started_at,
             )
+            try:
+                published += drain_once(
+                    conn,
+                    limit=max(1, int(limit)),
+                    train_job_id=int(train_job_id),
+                )
+            finally:
+                _write_actor_state(
+                    int(train_job_id),
+                    phase="idle",
+                    session_started_at=None,
+                )
             done = _publisher_actor_done(conn, int(train_job_id))
             # Do not leave a read transaction open while an active producer is idle.
             conn.rollback()

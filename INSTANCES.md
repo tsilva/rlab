@@ -144,10 +144,18 @@ dollar budgets remain the spend guards. There is no enforceable ten-input contai
 Modal supports `max_inputs > 1`.
 
 Checkpoint mailbox announcements and ready promotion projections are ingested in bounded batches.
+Each verified ready or tombstone announcement is first committed to the ordered PostgreSQL artifact
+ledger. Ready rows schedule Fleet-owned W&B publication immediately, without waiting for evaluation
+or learner exit. Publication is complete only when the W&B artifact API confirms an exact immutable
+membership and Fleet atomically stores its concrete `vN` receipt with the mailbox cursor commit.
+Promotion uses a monotonically increasing database revision and a separate receipt, so playback can
+prefer the highest visible promotion and safely fall back to the newest visible playable artifact.
 The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
 concurrency is independent of the 10-call Modal limit. The actor survives idle producer gaps,
 drains up to 100 ordered durable batches per claim, and rechecks remotely submitted cursors after
-five seconds. A submitted cursor may remain pending for at most two minutes; a missing cursor on a
+five seconds. A publication session that remains inside the W&B SDK for more than two minutes is
+terminated by the manager and retried from durable state. A submitted cursor may remain pending for
+at most two minutes; a missing cursor on a
 terminal W&B run fails immediately. Finalizing runs exhaust publication after three failed passes,
 retain their mailbox payloads, and can re-arm only residual batches with
 `rlab experiment retry-finalization --run <run-id>`. That explicit replay is at-least-once because
@@ -158,7 +166,10 @@ the narrower per-session lock prevent duplicate owners or interleaved writers af
 restart. Neon queue and mailbox connections use TCP keepalives and a 30-second user timeout
 so a laptop sleep or network transition fails the pass promptly and is retried with a fresh
 connection. `rlab fleet queue setup` resolves the restricted role from
-`WORKER_MAILBOX_DATABASE_URL` and grants every mailbox procedure after applying the schema.
+`WORKER_MAILBOX_DATABASE_URL` and grants every mailbox procedure after applying the schema. Schema
+setup/reset requires zero nonterminal work, stops loaded controllers and publisher actors, and uses
+an exclusive admission lock; enqueue, launch, retry, eval dispatch, and W&B claim mutations take the
+shared side of that lock.
 Worker readiness also executes the authenticated command poll, so a missing command grant fails
 the launch before training can be reported ready. The dedicated command relay retries transient
 poll failures but terminates the worker after five consecutive failures instead of silently losing

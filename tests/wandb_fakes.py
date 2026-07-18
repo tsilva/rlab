@@ -8,9 +8,11 @@ from typing import Any
 class FakeLoggedArtifact:
     def __init__(self) -> None:
         self.wait_called = False
+        self.wait_timeout: int | None = None
 
-    def wait(self) -> None:
+    def wait(self, timeout: int | None = None) -> None:
         self.wait_called = True
+        self.wait_timeout = timeout
 
 
 class FakeArtifact:

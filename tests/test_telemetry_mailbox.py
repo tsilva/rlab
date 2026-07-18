@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +17,7 @@ from rlab.telemetry_mailbox import (
     finalize_mailbox_runs_without_eval,
     mark_submitted_batches,
     pending_metric_run_ids,
+    schedule_artifact_publications,
 )
 from rlab.telemetry_relay import CommandRelay, main as relay_main
 
@@ -71,6 +73,90 @@ class FakeMailbox:
 
 
 class TelemetryBatchTests(unittest.TestCase):
+    @staticmethod
+    def _artifact_candidate(*, wandb: bool = True) -> dict:
+        return {
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "recipe_uri": "s3://bucket/recipe.json",
+            "recipe_sha256": "4" * 64,
+            "announcement_sha256": "1" * 64,
+            "verified_at": datetime.now(UTC),
+            "train_config": {"wandb": wandb, "game": "Bandit-v0"},
+            "wandb_run_id": "rlab-7",
+            "run_name": "run-7",
+            "wandb_group": "batch",
+            "wandb_tags": ["test"],
+            "publication_role": "availability",
+            "publication_revision": 0,
+        }
+
+    def test_verified_artifact_is_scheduled_as_a_durable_projection_stream(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [{"acquired": True}, {"id": 99}]
+        cursor.fetchall.side_effect = [[self._artifact_candidate()], []]
+        cursor.rowcount = 1
+
+        result = schedule_artifact_publications(conn)
+
+        self.assertEqual(result, {"scheduled": 1, "opted_out": 0})
+        calls = cursor.execute.call_args_list
+        stream_insert = next(call for call in calls if "INSERT INTO metric_streams" in call.args[0])
+        self.assertEqual(
+            stream_insert.args[1]["stream_id"],
+            "artifact-v2-7-3-availability-r0",
+        )
+        batch_insert = next(call for call in calls if "INSERT INTO metric_batches" in call.args[0])
+        frames = decode_metric_batch(bytes(batch_insert.args[1]["payload"].adapted))
+        self.assertEqual(frames[0]["payload"]["artifact_publication_schema"], "v2")
+        self.assertEqual(frames[0]["payload"]["ledger_id"], 3)
+
+    def test_legacy_null_wandb_column_preserves_immutable_config_run_id(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        candidate = self._artifact_candidate()
+        candidate["wandb_run_id"] = None
+        candidate["train_config"]["wandb_run_id"] = "rlab-config-id"
+        cursor.fetchone.side_effect = [{"acquired": True}, {"id": 99}]
+        cursor.fetchall.side_effect = [[candidate], []]
+
+        self.assertEqual(
+            schedule_artifact_publications(conn),
+            {"scheduled": 1, "opted_out": 0},
+        )
+
+        batch_insert = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "INSERT INTO metric_batches" in call.args[0]
+        )
+        frames = decode_metric_batch(bytes(batch_insert.args[1]["payload"].adapted))
+        self.assertEqual(
+            frames[0]["payload"]["train_config"]["wandb_run_id"],
+            "rlab-config-id",
+        )
+
+    def test_wandb_artifact_opt_out_creates_receipt_without_a_projection(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {"acquired": True}
+        cursor.fetchall.side_effect = [[self._artifact_candidate(wandb=False)], []]
+        cursor.rowcount = 1
+
+        result = schedule_artifact_publications(conn)
+
+        self.assertEqual(result, {"scheduled": 0, "opted_out": 1})
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("'opted_out'" in statement for statement in statements))
+        self.assertFalse(any("INSERT INTO metric_batches" in statement for statement in statements))
+
     def test_non_modal_finalization_uses_authoritative_launch_result(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -97,6 +183,8 @@ class TelemetryBatchTests(unittest.TestCase):
             "live_publication_status NOT IN ('complete', 'disabled', 'failed')",
             statement,
         )
+        self.assertIn("'finalization_failed'", statement)
+        self.assertIn("s.stream_id LIKE 'artifact-v2-%%'", statement)
 
     def test_finishing_publishers_wait_until_their_retry_deadline(self) -> None:
         conn = mock.MagicMock()
@@ -106,7 +194,7 @@ class TelemetryBatchTests(unittest.TestCase):
         self.assertEqual(pending_metric_run_ids(conn), [])
 
         statement = cursor.execute.call_args.args[0]
-        self.assertEqual(statement.count("live_publication_next_retry_at <= now()"), 2)
+        self.assertEqual(statement.count("live_publication_next_retry_at <= now()"), 3)
         self.assertIn(
             "live_publication_status NOT IN ('complete', 'disabled', 'failed')",
             statement,
@@ -114,6 +202,11 @@ class TelemetryBatchTests(unittest.TestCase):
         self.assertIn("t.status = 'finalizing'", statement)
         self.assertIn("checkpoint_eval_backend", statement)
         self.assertIn("<> 'modal'", statement)
+        self.assertIn("s.stream_id LIKE 'artifact-v2-%%'", statement)
+        self.assertIn(
+            "t.status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')",
+            statement,
+        )
 
     def test_worker_preflight_checks_the_command_poll_procedure(self) -> None:
         mailbox = WorkerMailbox("postgresql://worker/db", "train-7", "token")

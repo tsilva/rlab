@@ -109,7 +109,7 @@ def project_payload_to_run(
     payload: Mapping[str, Any],
     *,
     allow_artifact_references: bool = True,
-) -> None:
+) -> Any | None:
     train_config = dict(payload["train_config"])
     run_id = str(train_config["wandb_run_id"])
     import wandb
@@ -119,7 +119,7 @@ def project_payload_to_run(
         if not allow_artifact_references:
             raise ValueError("mailbox telemetry does not project W&B artifact references")
         if bool(train_config.get("no_wandb_artifacts", False)):
-            return
+            return None
         kind = str(payload["artifact_kind"])
         checkpoint_step = int(payload["checkpoint_step"])
         model_metadata = dict(payload["model_metadata"])
@@ -147,6 +147,20 @@ def project_payload_to_run(
                     else {}
                 ),
                 "artifact_storage_uri": checkpoint_uri,
+                **(
+                    {
+                        "artifact_publication_schema": "v2",
+                        "train_job_id": int(payload["train_job_id"]),
+                        "ledger_id": int(payload["ledger_id"]),
+                        "artifact_kind": kind,
+                        "publication_role": str(payload["publication_role"]),
+                        "promotion_revision": int(payload.get("promotion_revision") or 0),
+                        "publication_stream_id": str(payload["publication_stream_id"]),
+                        "announcement_sha256": str(payload["announcement_sha256"]),
+                    }
+                    if str(payload.get("artifact_publication_schema") or "") == "v2"
+                    else {}
+                ),
             },
         )
         if versioned_bundle:
@@ -161,8 +175,7 @@ def project_payload_to_run(
             if isinstance(raw_aliases, list) and raw_aliases
             else artifact_write_aliases(kind, checkpoint_step)
         )
-        run.log_artifact(artifact, aliases=aliases)
-        return
+        return run.log_artifact(artifact, aliases=aliases)
     decision = dict(payload["decision"])
     purpose = str(payload["purpose"])
     checkpoint_uri = str(payload["checkpoint_uri"])
@@ -238,6 +251,7 @@ def project_payload_to_run(
                     ),
                 }
             )
+    return None
 
 
 def project_payload(payload: Mapping[str, Any]) -> None:

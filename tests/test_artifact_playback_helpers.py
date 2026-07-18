@@ -981,19 +981,13 @@ class CommandAndArtifactTests(unittest.TestCase):
                 expected_failure = ["life_loss"] if respects_termination else []
                 expected_success = ["level_change"] if respects_termination else []
                 expected_max_steps = 2345 if respects_termination else 0
-                self.assertEqual(
-                    runtime_config.task["termination"]["failure"], expected_failure
-                )
-                self.assertEqual(
-                    runtime_config.task["termination"]["success"], expected_success
-                )
+                self.assertEqual(runtime_config.task["termination"]["failure"], expected_failure)
+                self.assertEqual(runtime_config.task["termination"]["success"], expected_success)
                 self.assertEqual(
                     runtime_config.task["termination"]["max_episode_steps"],
                     expected_max_steps,
                 )
-                self.assertIn(
-                    f"respect_task_termination={respects_termination}", output.getvalue()
-                )
+                self.assertIn(f"respect_task_termination={respects_termination}", output.getvalue())
 
     def test_play_main_constructs_one_environment_for_policy_and_viewer(self) -> None:
         class FakeEnv:
@@ -1257,7 +1251,7 @@ class CommandAndArtifactTests(unittest.TestCase):
 
         self.assertEqual(projects[0], "tsilva/ms_pacman")
 
-    def test_model_source_ref_uses_wandb_run_url_latest_checkpoint(self) -> None:
+    def test_model_source_ref_reports_pending_wandb_run_without_checkpoint(self) -> None:
         calls = []
         run = FakeRun(
             id="7gjw67kl",
@@ -1274,10 +1268,8 @@ class CommandAndArtifactTests(unittest.TestCase):
         args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
-            self.assertEqual(
-                single_model_artifact_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/b82-b55reval-s6-20260702T150934Z-checkpoint:latest",
-            )
+            with self.assertRaisesRegex(SystemExit, "No W&B checkpoint artifact"):
+                single_model_artifact_ref(args)
 
         self.assertEqual(calls, ["tsilva/SuperMarioBros-Nes-v0/7gjw67kl"])
 
@@ -1300,7 +1292,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
             self.assertEqual(
                 single_model_artifact_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:latest",
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8",
             )
 
     def test_model_source_ref_resolves_bare_run_to_logged_run_artifact(self) -> None:
@@ -1327,7 +1319,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         ):
             self.assertEqual(
                 single_model_artifact_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:latest",
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8",
             )
 
     def test_bare_run_resolves_promoted_checkpoint_before_moving_latest(self) -> None:
@@ -1361,10 +1353,101 @@ class CommandAndArtifactTests(unittest.TestCase):
         ):
             self.assertEqual(
                 single_model_artifact_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:step-6500000",
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v13",
             )
 
-    def test_bare_run_blocks_while_promoted_artifact_is_pending(self) -> None:
+    def test_run_url_prefers_highest_confirmed_promotion_revision(self) -> None:
+        run = FakeRun(
+            id="rlab-run-id",
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v20"),
+                    metadata={"checkpoint_step": 9_000_000},
+                ),
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v21"),
+                    metadata={
+                        "checkpoint_step": 4_000_000,
+                        "artifact_publication_schema": "v2",
+                        "publication_role": "promotion",
+                        "promotion_revision": 2,
+                    },
+                ),
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v19"),
+                    metadata={
+                        "checkpoint_step": 5_000_000,
+                        "artifact_publication_schema": "v2",
+                        "publication_role": "promotion",
+                        "promotion_revision": 3,
+                    },
+                ),
+            ],
+        )
+        fake_wandb = FakeWandb(api=FakeApi(run=lambda _path: run))
+        args = build_play_parser().parse_args(
+            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"]
+        )
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v19",
+            )
+
+    def test_run_url_prefers_legacy_promoted_alias_before_newest_checkpoint(self) -> None:
+        run = FakeRun(
+            id="rlab-run-id",
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"),
+                    aliases=["promoted", "step-3000000"],
+                    metadata={"checkpoint_step": 3_000_000},
+                ),
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v9"),
+                    aliases=["latest", "step-4000000"],
+                    metadata={"checkpoint_step": 4_000_000},
+                ),
+            ],
+        )
+        fake_wandb = FakeWandb(api=FakeApi(run=lambda _path: run))
+        args = build_play_parser().parse_args(
+            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"]
+        )
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8",
+            )
+
+    def test_run_url_fallback_selects_newest_step_across_playable_kinds(self) -> None:
+        run = FakeRun(
+            id="rlab-run-id",
+            logged_artifacts=[
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v8"),
+                    metadata={"checkpoint_step": 3_000_000},
+                ),
+                FakeArtifact(
+                    qualified_name=("tsilva/SuperMarioBros-Nes-v0/rlab-run-id-final:v9"),
+                    metadata={"checkpoint_step": 4_000_000},
+                ),
+            ],
+        )
+        fake_wandb = FakeWandb(api=FakeApi(run=lambda _path: run))
+        args = build_play_parser().parse_args(
+            ["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/rlab-run-id"]
+        )
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-final:v9",
+            )
+
+    def test_bare_run_falls_back_to_newest_visible_when_promotion_is_pending(self) -> None:
         run = FakeRun(
             name="level1-1-base-s1",
             config={"run_name": "level1-1-base-s1"},
@@ -1393,10 +1476,12 @@ class CommandAndArtifactTests(unittest.TestCase):
                 return_value=["tsilva/SuperMarioBros-Nes-v0"],
             ),
         ):
-            with self.assertRaisesRegex(SystemExit, "retry after artifact projection"):
-                single_model_artifact_ref(args)
+            self.assertEqual(
+                single_model_artifact_ref(args),
+                "tsilva/SuperMarioBros-Nes-v0/rlab-run-id-checkpoint:v6",
+            )
 
-    def test_model_source_ref_uses_wandb_run_url_with_query_latest_checkpoint(self) -> None:
+    def test_model_source_ref_with_query_reports_pending_without_checkpoint(self) -> None:
         calls = []
         run = FakeRun(
             id="qxhbhcms",
@@ -1415,15 +1500,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
-            self.assertEqual(
-                single_model_artifact_ref(args),
-                "tsilva/ms_pacman/"
-                "alepy__mspacman_episodic-life_s126_20260709T102223Z-checkpoint:latest",
-            )
+            with self.assertRaisesRegex(SystemExit, "No W&B checkpoint artifact"):
+                single_model_artifact_ref(args)
 
         self.assertEqual(calls, ["tsilva/ms_pacman/qxhbhcms"])
 
-    def test_model_source_ref_uses_wandb_run_url_display_name_fallback(self) -> None:
+    def test_model_source_ref_run_url_does_not_synthesize_missing_artifact(self) -> None:
         run = FakeRun(
             id="7gjw67kl",
             name="Run With Spaces",
@@ -1433,10 +1515,8 @@ class CommandAndArtifactTests(unittest.TestCase):
         args = parser.parse_args(["https://wandb.ai/tsilva/SuperMarioBros-Nes-v0/runs/7gjw67kl"])
 
         with patch.dict(sys.modules, {"wandb": fake_wandb}):
-            self.assertEqual(
-                model_source_ref(args),
-                "tsilva/SuperMarioBros-Nes-v0/Run-With-Spaces-checkpoint:latest",
-            )
+            with self.assertRaisesRegex(SystemExit, "No W&B checkpoint artifact"):
+                model_source_ref(args)
 
     def test_parse_wandb_run_ref_accepts_project_run_path(self) -> None:
         ref = parse_wandb_run_ref(

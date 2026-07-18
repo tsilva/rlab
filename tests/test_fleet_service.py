@@ -19,6 +19,40 @@ def completed(argv, returncode: int = 0, stdout: str = "", stderr: str = ""):
 
 
 class FleetServiceTests(unittest.TestCase):
+    def test_wandb_manager_detects_a_stalled_actor_publication_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_path = root / "logs" / "fleet" / "wandb-actors" / "train-7.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 123,
+                        "phase": "publishing",
+                        "session_started_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            process = mock.Mock(pid=123)
+
+            self.assertTrue(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=221.0,
+                )
+            )
+            self.assertFalse(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=219.0,
+                )
+            )
+
     def test_service_queue_connections_bypass_the_pool_for_session_locks(self) -> None:
         connection = object()
         with (
@@ -100,8 +134,7 @@ class FleetServiceTests(unittest.TestCase):
                 for name in fleet_service.CONTROLLER_NAMES
             }
             controller_pids = {
-                name: 100 + index
-                for index, name in enumerate(fleet_service.CONTROLLER_NAMES)
+                name: 100 + index for index, name in enumerate(fleet_service.CONTROLLER_NAMES)
             }
             loaded = {paths.label}
             fingerprint = fleet_service.controller_source_fingerprint(paths.repo_root)
@@ -272,15 +305,12 @@ class FleetServiceTests(unittest.TestCase):
                     return completed(
                         argv,
                         stdout=(
-                            "43 42 42 python -m rlab.fleet_wandb_publisher "
-                            "--train-job-id 67\n"
+                            "43 42 42 python -m rlab.fleet_wandb_publisher --train-job-id 67\n"
                         ),
                     )
                 return completed(argv, stdout=f"p43\nn{root}\n")
 
-            direct = fleet_service._publisher_processes(
-                root, parent_pid=42, runner=runner
-            )
+            direct = fleet_service._publisher_processes(root, parent_pid=42, runner=runner)
             orphan = fleet_service._publisher_processes(
                 root, expected_process_groups=(42,), runner=runner
             )
@@ -299,9 +329,7 @@ class FleetServiceTests(unittest.TestCase):
                 return completed(argv, stdout=f"p43\nn{root}\n")
 
             with self.assertRaisesRegex(RuntimeError, "unverified module arguments"):
-                fleet_service._publisher_processes(
-                    root, parent_pid=42, runner=invalid_runner
-                )
+                fleet_service._publisher_processes(root, parent_pid=42, runner=invalid_runner)
 
         self.assertEqual([item.pid for item in direct], [43])
         self.assertEqual([item.pgid for item in orphan], [42])
@@ -374,13 +402,9 @@ class FleetServiceTests(unittest.TestCase):
                 },
             }
         status = {"controllers": controllers}
-        with mock.patch.object(
-            fleet_service, "controller_services_status", return_value=status
-        ):
+        with mock.patch.object(fleet_service, "controller_services_status", return_value=status):
             self.assertIs(
-                fleet_service.require_compatible_controller_services(
-                    require_source_current=False
-                ),
+                fleet_service.require_compatible_controller_services(require_source_current=False),
                 status,
             )
             with self.assertRaisesRegex(RuntimeError, "install --replace"):
@@ -527,17 +551,13 @@ class FleetServiceTests(unittest.TestCase):
                 )
 
             with (
-                mock.patch.object(
-                    fleet_service, "_default_count_nonterminal_jobs", return_value=4
-                ),
+                mock.patch.object(fleet_service, "_default_count_nonterminal_jobs", return_value=4),
                 self.assertRaisesRegex(RuntimeError, "4 nonterminal job"),
             ):
                 fleet_service.install_controller_services(
                     paths,
                     replace=True,
-                    runner=lambda argv, **_kwargs: completed(
-                        argv, stdout="state = running"
-                    ),
+                    runner=lambda argv, **_kwargs: completed(argv, stdout="state = running"),
                 )
 
     def test_machine_controller_isolates_one_machine_failure(self) -> None:
@@ -560,9 +580,7 @@ class FleetServiceTests(unittest.TestCase):
                 mock.patch.object(
                     fleet_controllers, "controller_source_fingerprint", return_value="source"
                 ),
-                mock.patch.object(
-                    fleet_controllers, "SleepAssertion", return_value=assertion
-                ),
+                mock.patch.object(fleet_controllers, "SleepAssertion", return_value=assertion),
                 mock.patch(
                     "rlab.fleet.run_service_machine_pass",
                     side_effect=[RuntimeError("provider failed"), {"launched": 1}],
@@ -598,9 +616,7 @@ class FleetServiceTests(unittest.TestCase):
                 mock.patch.object(
                     fleet_controllers, "controller_source_fingerprint", return_value="source"
                 ),
-                mock.patch.object(
-                    fleet_controllers, "SleepAssertion", return_value=assertion
-                ),
+                mock.patch.object(fleet_controllers, "SleepAssertion", return_value=assertion),
                 mock.patch(
                     "rlab.fleet.run_service_machine_pass",
                     side_effect=database_error,
@@ -698,12 +714,8 @@ class FleetServiceTests(unittest.TestCase):
             paths = self.make_paths(Path(temporary))
             runner = mock.MagicMock(return_value=completed([]))
             with (
-                mock.patch.object(
-                    fleet_service, "service_is_loaded", return_value=False
-                ),
-                mock.patch.object(
-                    fleet_service, "_default_count_nonterminal_jobs", return_value=1
-                ),
+                mock.patch.object(fleet_service, "service_is_loaded", return_value=False),
+                mock.patch.object(fleet_service, "_default_count_nonterminal_jobs", return_value=1),
                 self.assertRaisesRegex(RuntimeError, "wait for quiescence"),
             ):
                 with fleet_service.schema_change_service_guard(paths, runner=runner):
@@ -735,24 +747,16 @@ class FleetServiceTests(unittest.TestCase):
                     side_effect=lambda label, **_kwargs: label in loaded_labels,
                 ),
                 mock.patch.object(fleet_service, "service_is_running", return_value=False),
-                mock.patch.object(
-                    fleet_service, "_default_count_nonterminal_jobs", return_value=0
-                ),
+                mock.patch.object(fleet_service, "_default_count_nonterminal_jobs", return_value=0),
                 mock.patch.object(fleet_service, "_service_pid", return_value=42),
                 mock.patch.object(fleet_service, "_publisher_processes", return_value=[]),
             ):
                 with fleet_service.schema_change_service_guard(paths, runner=runner):
                     pass
 
-        booted_out = {
-            command[2]
-            for command in commands
-            if command[:2] == ["launchctl", "bootout"]
-        }
+        booted_out = {command[2] for command in commands if command[:2] == ["launchctl", "bootout"]}
         bootstrapped = {
-            command[-1]
-            for command in commands
-            if command[:2] == ["launchctl", "bootstrap"]
+            command[-1] for command in commands if command[:2] == ["launchctl", "bootstrap"]
         }
         self.assertEqual(
             booted_out,

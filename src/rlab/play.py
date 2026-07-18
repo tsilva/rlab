@@ -387,7 +387,8 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
         type=positional_model_source_arg,
         help=(
             "Model source: W&B run name or URL, full W&B artifact ref, Hugging Face "
-            "model ref, or use --model for a local checkpoint."
+            "model ref, or use --model for a local checkpoint. A W&B run resolves "
+            "the confirmed promotion, then its newest confirmed checkpoint/final model."
         ),
     )
     parser.add_argument(

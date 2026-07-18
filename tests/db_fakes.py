@@ -26,6 +26,8 @@ class FakeCursor:
         self.executed_params = params or {}
         self.executed_sqls.append(sql)
         self.executed_params_list.append(params or {})
+        if "pg_advisory_xact_lock_shared" in sql:
+            return
         if self.results:
             result = self.results.pop(0)
             self.row = result.get("row")

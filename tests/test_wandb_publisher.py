@@ -8,15 +8,20 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab.fleet_wandb_publisher import (
+    WandbArtifactVisibilityError,
     WandbCursorConfirmationError,
     WandbFinalizationVerificationError,
     WandbPublicationState,
     _canonical_goal_summary,
+    _artifact_receipts_from_remote,
     _cursor_mapping,
     _drain_claim,
     _partition_batches,
     _publication_is_pristine,
+    _record_committed_effects,
     _reconcile_non_modal_publication_finishing,
+    _reconcile_terminal_artifact_publication,
+    _repair_artifact_projection_identity,
     _raise_for_stalled_confirmations,
     _remote_publication_state,
     _summary_step_max,
@@ -101,6 +106,7 @@ class WandbPublisherTests(unittest.TestCase):
         summary = _canonical_goal_summary(
             {
                 "outcome": "accepted",
+                "promotion_revision": 1,
                 "train_config": {
                     "selection_rank": [
                         "max(eval/full/outcome/success/rate/min)",
@@ -306,7 +312,9 @@ class WandbPublisherTests(unittest.TestCase):
 
     def test_remote_publication_api_errors_are_not_converted_to_empty_cursors(self) -> None:
         fake_wandb = SimpleNamespace(
-            Api=lambda **_kwargs: SimpleNamespace(run=mock.Mock(side_effect=TimeoutError("offline")))
+            Api=lambda **_kwargs: SimpleNamespace(
+                run=mock.Mock(side_effect=TimeoutError("offline"))
+            )
         )
         with (
             mock.patch.dict("sys.modules", {"wandb": fake_wandb}),
@@ -363,12 +371,8 @@ class WandbPublisherTests(unittest.TestCase):
             close=mock.Mock(),
         )
         with (
-            mock.patch(
-                "rlab.fleet_wandb_publisher._publication_is_pristine", return_value=True
-            ),
-            mock.patch(
-                "rlab.fleet_wandb_publisher._remote_publication_state"
-            ) as remote_state,
+            mock.patch("rlab.fleet_wandb_publisher._publication_is_pristine", return_value=True),
+            mock.patch("rlab.fleet_wandb_publisher._remote_publication_state") as remote_state,
             mock.patch(
                 "rlab.fleet_wandb_publisher.WandbProjector.resume",
                 return_value=projector,
@@ -450,9 +454,7 @@ class WandbPublisherTests(unittest.TestCase):
         )
         self.assertEqual(complete.args[1]["wandb_url"], "https://wandb/run")
         select = next(
-            call
-            for call in cursor.execute.call_args_list
-            if "LEFT JOIN eval_runs" in call.args[0]
+            call for call in cursor.execute.call_args_list if "LEFT JOIN eval_runs" in call.args[0]
         )
         self.assertIn("COALESCE(r.outcome, 'unknown')", select.args[0])
 
@@ -465,16 +467,12 @@ class WandbPublisherTests(unittest.TestCase):
         }
         batches = [{"id": 1, "payload": b"payload"}]
         with (
-            mock.patch(
-                "rlab.fleet_wandb_publisher._publication_is_pristine", return_value=False
-            ),
+            mock.patch("rlab.fleet_wandb_publisher._publication_is_pristine", return_value=False),
             mock.patch(
                 "rlab.fleet_wandb_publisher._remote_publication_state",
                 side_effect=TimeoutError("offline"),
             ),
-            mock.patch(
-                "rlab.fleet_wandb_publisher.WandbProjector.resume"
-            ) as resume,
+            mock.patch("rlab.fleet_wandb_publisher.WandbProjector.resume") as resume,
             mock.patch("rlab.fleet_wandb_publisher.decode_metric_batch", return_value=[]),
             self.assertRaisesRegex(TimeoutError, "offline"),
         ):
@@ -496,6 +494,214 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in confirmed], [1])
         self.assertEqual([row["id"] for row in awaiting], [2])
         self.assertEqual([row["id"] for row in unpublished], [3])
+
+    def test_remote_confirmation_restores_submitted_sequence_before_publish_commit(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        batch = {"id": 1, "stream_id": "artifact-v2-7-3-availability-r0", "batch_sequence": 1}
+
+        _record_committed_effects(
+            conn,
+            run={"id": 7},
+            batches=[batch],
+            decoded={1: []},
+            wandb_url=None,
+        )
+
+        advance = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "UPDATE metric_streams" in call.args[0]
+        )
+        self.assertIn(
+            "submitted_sequence = GREATEST(submitted_sequence, %(sequence)s)",
+            advance.args[0],
+        )
+        self.assertIn(
+            "published_sequence = GREATEST(published_sequence, %(sequence)s)",
+            advance.args[0],
+        )
+
+    def test_artifact_receipt_requires_exact_api_visible_membership(self) -> None:
+        payload = {
+            "train_config": {"wandb_run_id": "rlab-7"},
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "publication_role": "availability",
+            "promotion_revision": 0,
+            "publication_stream_id": "artifact-v2-7-3-availability-r0",
+            "announcement_sha256": "1" * 64,
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "recipe_uri": "s3://bucket/recipe.json",
+            "recipe_sha256": "4" * 64,
+            "artifact_aliases": ["step-300"],
+        }
+        artifact = SimpleNamespace(
+            type="model",
+            version="v4",
+            qualified_name="tsilva/project/rlab-7-checkpoint:v4",
+            aliases=["latest", "step-300"],
+            metadata={
+                "artifact_publication_schema": "v2",
+                "train_job_id": 7,
+                "ledger_id": 3,
+                "artifact_kind": "checkpoint",
+                "publication_role": "availability",
+                "promotion_revision": 0,
+                "publication_stream_id": "artifact-v2-7-3-availability-r0",
+                "announcement_sha256": "1" * 64,
+                "checkpoint_step": 300,
+                "checkpoint_sha256": "2" * 64,
+                "artifact_storage_uri": "s3://bucket/model.zip",
+                "metadata_uri": "s3://bucket/metadata.json",
+                "metadata_sha256": "3" * 64,
+                "recipe_uri": "s3://bucket/recipe.json",
+                "recipe_sha256": "4" * 64,
+            },
+        )
+        remote = SimpleNamespace(logged_artifacts=lambda: [artifact])
+
+        receipt = _artifact_receipts_from_remote(remote, [payload])[0]
+
+        self.assertEqual(receipt["artifact_ref"], "tsilva/project/rlab-7-checkpoint:v4")
+        self.assertEqual(receipt["artifact_version"], "v4")
+        artifact.metadata["metadata_sha256"] = "wrong"
+        with self.assertRaises(WandbArtifactVisibilityError):
+            _artifact_receipts_from_remote(remote, [payload])
+
+    def test_deduplicated_promotion_artifact_confirms_availability_receipt(self) -> None:
+        payload = {
+            "train_config": {"wandb_run_id": "rlab-7"},
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "publication_role": "availability",
+            "promotion_revision": 0,
+            "publication_stream_id": "artifact-v2-7-3-availability-r0",
+            "announcement_sha256": "1" * 64,
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "recipe_uri": "s3://bucket/recipe.json",
+            "recipe_sha256": "4" * 64,
+            "artifact_aliases": ["step-300"],
+        }
+        artifact = SimpleNamespace(
+            type="model",
+            version="v4",
+            qualified_name="tsilva/project/rlab-7-checkpoint:v4",
+            aliases=["latest", "promoted", "step-300"],
+            metadata={
+                "artifact_publication_schema": "v2",
+                "train_job_id": 7,
+                "ledger_id": 3,
+                "artifact_kind": "checkpoint",
+                "publication_role": "promotion",
+                "promotion_revision": 1,
+                "publication_stream_id": "artifact-v2-7-3-promotion-r1",
+                "announcement_sha256": "1" * 64,
+                "checkpoint_step": 300,
+                "checkpoint_sha256": "2" * 64,
+                "artifact_storage_uri": "s3://bucket/model.zip",
+                "metadata_uri": "s3://bucket/metadata.json",
+                "metadata_sha256": "3" * 64,
+                "recipe_uri": "s3://bucket/recipe.json",
+                "recipe_sha256": "4" * 64,
+            },
+        )
+
+        receipt = _artifact_receipts_from_remote(
+            SimpleNamespace(logged_artifacts=lambda: [artifact]),
+            [payload],
+        )[0]
+
+        self.assertEqual(receipt["role"], "availability")
+        self.assertEqual(receipt["stream_id"], "artifact-v2-7-3-availability-r0")
+        self.assertEqual(receipt["artifact_ref"], "tsilva/project/rlab-7-checkpoint:v4")
+
+    def test_queued_artifact_repairs_empty_run_id_from_authoritative_job(self) -> None:
+        repaired = _repair_artifact_projection_identity(
+            {
+                "artifact_publication_schema": "v2",
+                "train_config": {"wandb_run_id": "", "game": "Bandit-v0"},
+            },
+            {"wandb_run_id": "rlab-authoritative", "run_name": "run-7"},
+        )
+
+        self.assertEqual(repaired["train_config"]["wandb_run_id"], "rlab-authoritative")
+        self.assertEqual(repaired["train_config"]["run_name"], "run-7")
+        self.assertEqual(repaired["train_config"]["game"], "Bandit-v0")
+
+    def test_visible_cursor_without_visible_artifact_retries_without_relogging(self) -> None:
+        payload = {
+            "artifact_publication_schema": "v2",
+            "train_config": {"wandb_run_id": "rlab-7"},
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "publication_role": "availability",
+            "promotion_revision": 0,
+            "publication_stream_id": "artifact-v2-7-3-availability-r0",
+            "announcement_sha256": "1" * 64,
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "artifact_aliases": ["step-300"],
+        }
+        run = {
+            "id": 7,
+            "status": "running",
+            "wandb_url": "https://wandb/run",
+            "train_config": {"wandb": True, "wandb_run_id": "rlab-7"},
+        }
+        batches = [
+            {
+                "id": 8,
+                "stream_id": "artifact-v2-7-3-availability-r0",
+                "batch_sequence": 1,
+                "submitted_sequence": 1,
+                "payload": b"payload",
+            }
+        ]
+        frame = {"kind": "projection", "payload": payload}
+        remote = SimpleNamespace(logged_artifacts=lambda: [])
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine",
+                return_value=False,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state",
+                return_value=WandbPublicationState(
+                    state="running",
+                    cursors={"artifact-v2-7-3-availability-r0": 1},
+                    step_max=None,
+                ),
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.decode_metric_batch",
+                return_value=[frame],
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                return_value=remote,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.WandbProjector.resume") as resume,
+            self.assertRaises(WandbArtifactVisibilityError),
+        ):
+            publish_claimed_run(mock.MagicMock(), run, batches)
+
+        resume.assert_not_called()
 
     def test_crashed_run_with_eight_missing_cursors_fails_confirmation(self) -> None:
         batches = [
@@ -573,6 +779,85 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertNotIn("DELETE FROM metric_batches", update.args[0])
         event.assert_called_once()
 
+    def test_recent_artifact_visibility_lag_does_not_consume_finalization_attempt(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        run = {
+            "id": 64,
+            "status": "finalizing",
+            "live_publication_attempts": 2,
+        }
+        batches = [
+            {
+                "id": 1,
+                "stream_id": "artifact-v2-64-1-availability-r0",
+                "batch_sequence": 1,
+                "submitted_at": datetime.now(UTC) - timedelta(seconds=119),
+            }
+        ]
+        error = WandbArtifactVisibilityError("artifact membership pending")
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.publish_claimed_run",
+                side_effect=error,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.release_metric_batch_claims"),
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+            mock.patch("rlab.fleet_wandb_publisher.release_wandb_run_lock"),
+            self.assertRaises(WandbArtifactVisibilityError),
+        ):
+            _drain_claim(conn, run, batches)
+
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertEqual(update.args[1]["attempts"], 2)
+        self.assertFalse(update.args[1]["terminal"])
+        self.assertEqual(update.args[1]["retry_delay"], 5)
+        self.assertTrue(event.call_args.kwargs["metadata"]["visibility_propagating"])
+
+    def test_stale_artifact_visibility_lag_consumes_finalization_attempt(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        run = {
+            "id": 65,
+            "status": "finalizing",
+            "live_publication_attempts": 2,
+        }
+        batches = [
+            {
+                "id": 1,
+                "stream_id": "artifact-v2-65-1-availability-r0",
+                "batch_sequence": 1,
+                "submitted_at": datetime.now(UTC) - timedelta(seconds=120),
+            }
+        ]
+        error = WandbArtifactVisibilityError("artifact membership still missing")
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.publish_claimed_run",
+                side_effect=error,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.release_metric_batch_claims"),
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+            mock.patch("rlab.fleet_wandb_publisher.release_wandb_run_lock"),
+            self.assertRaises(WandbArtifactVisibilityError),
+        ):
+            _drain_claim(conn, run, batches)
+
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertEqual(update.args[1]["attempts"], 3)
+        self.assertTrue(update.args[1]["terminal"])
+        self.assertFalse(event.call_args.kwargs["metadata"]["visibility_propagating"])
+
     def test_active_training_publication_failure_never_terminalizes_learner(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -599,6 +884,19 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertFalse(update.args[1]["terminal"])
         self.assertEqual(update.args[1]["retry_delay"], 30)
 
+    def test_terminal_run_artifact_recovery_completes_without_changing_outcome(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+
+        self.assertTrue(_reconcile_terminal_artifact_publication(conn, 87))
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("live_publication_status = 'complete'", statement)
+        self.assertIn("t.status IN ('succeeded', 'failed', 'canceled'", statement)
+        self.assertNotIn("SET status =", statement)
+        self.assertIn("artifact_stream.stream_id LIKE 'artifact-v2-%%'", statement)
+
     def test_finishing_run_completes_only_after_remote_cursors_metrics_and_artifact(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
@@ -611,6 +909,7 @@ class WandbPublisherTests(unittest.TestCase):
                     "game": "SuperMarioBros-Nes-v0",
                 },
                 "outcome": "accepted",
+                "promotion_revision": 1,
                 "promotion_json": {
                     "checkpoint_sha256": "a" * 64,
                     "checkpoint_step": 8_000_000,
@@ -627,7 +926,11 @@ class WandbPublisherTests(unittest.TestCase):
         cursor.rowcount = 1
         artifact = SimpleNamespace(
             aliases=["promoted"],
-            metadata={"checkpoint_sha256": "a" * 64},
+            metadata={
+                "checkpoint_sha256": "a" * 64,
+                "publication_role": "promotion",
+                "promotion_revision": 1,
+            },
         )
         remote = SimpleNamespace(
             state="finished",
@@ -667,6 +970,7 @@ class WandbPublisherTests(unittest.TestCase):
                     "game": "SuperMarioBros-Nes-v0",
                 },
                 "outcome": "accepted",
+                "promotion_revision": 1,
                 "promotion_json": {"checkpoint_sha256": "a" * 64},
             },
         ]
@@ -714,6 +1018,7 @@ class WandbPublisherTests(unittest.TestCase):
                     ],
                 },
                 "outcome": "accepted",
+                "promotion_revision": 1,
                 "promotion_json": {
                     "checkpoint_sha256": "a" * 64,
                     "checkpoint_step": 8_000_000,
@@ -733,7 +1038,11 @@ class WandbPublisherTests(unittest.TestCase):
         cursor.rowcount = 1
         artifact = SimpleNamespace(
             aliases=["promoted"],
-            metadata={"checkpoint_sha256": "a" * 64},
+            metadata={
+                "checkpoint_sha256": "a" * 64,
+                "publication_role": "promotion",
+                "promotion_revision": 1,
+            },
         )
         remote = SimpleNamespace(
             state="finished",
@@ -775,6 +1084,7 @@ class WandbPublisherTests(unittest.TestCase):
                     "selection_rank": ["max(eval/full/outcome/success/rate/min)"],
                 },
                 "outcome": "accepted",
+                "promotion_revision": 1,
                 "promotion_json": {
                     "checkpoint_sha256": "a" * 64,
                     "checkpoint_step": 8_000_000,

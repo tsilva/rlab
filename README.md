@@ -150,7 +150,8 @@ rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
 rlab env preflight --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml --recipe-file experiments/recipes/mario/single/ppo.yaml
 rlab experiment launch --from-head --goal-file experiments/goals/<goal-slug>/_goal.yaml --recipe-file experiments/recipes/<family>/<recipe>.yaml --machine beast-3 --json
 rlab eval run --game <GameId> --policy random --episodes 2 --max-steps 600
-rlab play <run-name>                                  # resolves the promoted checkpoint; never moving :latest
+rlab play <wandb-run-url>                             # promoted model, else newest API-visible checkpoint/final vN
+rlab play <run-name>                                  # same resolution for a unique historical display name
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-simple_ppo
 rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
@@ -229,11 +230,19 @@ forever. The retry command first rechecks W&B, then replays only residual unconf
 that explicit repair is at-least-once and can duplicate W&B history if frames persisted without
 their summary cursor.
 
+Every verified checkpoint/final/interrupted announcement is published while training or
+finalization is active, independently of evaluation. Fleet records a publication receipt only after
+W&B's artifact API exposes the exact hashes, storage URIs, aliases, collection, and concrete `vN`
+membership. `rlab play <wandb-run-url>` prefers the highest confirmed promotion revision; before a
+promotion exists it selects the newest confirmed playable announcement, with final models winning
+same-step ties. It returns the immutable `vN`, never a moving alias, and reports a clean pending
+message before the first membership is visible.
+
 The accepted checkpoint itself becomes the promoted model, even if the learner advances slightly
-before observing the stop. Its artifact projection receives immutable `step-<n>` plus `promoted` and
-`latest` aliases; later results cannot replace the first accepted checkpoint. A run is reported
-successful only after W&B remotely confirms `finished`, final cursors, acceptance metrics, and the
-promoted artifact aliases.
+before observing the stop. Its artifact publication receives immutable `step-<n>` plus `promoted`
+aliases; later results cannot replace the committed promotion revision. A run is reported
+successful only after W&B remotely confirms `finished`, final cursors, acceptance metrics, every
+availability receipt, and the current promotion receipt.
 
 `rlab experiment status --run <id> --json` reports the launch, evaluation, publication,
 incident, R2 checkpoint, and immutable W&B artifact projections; `artifact_status=playable`
@@ -348,7 +357,7 @@ and beast host recommendations.
 - Every queue-backed training recipe must include a non-empty `description`; `rlab experiment launch` records it as the run description.
 - Queue-backed W&B run names are `<batch_id>-<recipe_id>-s<effective_seed>-<utc>` and use an opaque `rlab-...` run id. Projects identify canonical game families, while config/tags identify the goal, recipe, provider, campaign, and exact environment hash.
 - Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.
-- New W&B model artifact collections and R2/S3 object paths use the immutable run id. Playback continues to resolve historical display-name artifacts and the legacy `breakout` and `ms_pacman` projects.
+- New W&B model artifact collections and R2/S3 object paths use the immutable run id. Playback continues to resolve historical display-name artifacts and the legacy `breakout` and `ms_pacman` projects. Run-level playback selects a concrete API-visible `vN`: highest promotion revision first, otherwise the newest playable checkpoint/final/interrupted artifact.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).
 - Queue-backed train jobs are profileless by default and should reference immutable runtime image digests.
