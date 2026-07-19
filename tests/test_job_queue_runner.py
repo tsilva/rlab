@@ -593,6 +593,18 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(all(call["train_config"]["early_stop"] is None for call in calls))
         self.assertTrue(all(call["train_config"]["checkpoint_eval_stages"] == [] for call in calls))
 
+    def test_checked_in_no_eval_contract_cannot_be_overridden(self) -> None:
+        for requested in ("local", "modal"):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "disabled by the training goal and cannot be overridden",
+                ):
+                    job_queue.resolve_checkpoint_eval_backend(
+                        {"checkpoint_eval_backend": "none"},
+                        checkpoint_eval_backend=requested,
+                    )
+
     def test_checked_in_first_training_success_acceptance_disables_eval(self) -> None:
         document = valid_train_recipe()
         document["train_config"].update(

@@ -5,10 +5,10 @@ tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"
 - "env_id:{env_id}"
-title: Native Breakout Turbo PPO training
+title: Native Atari Breakout replica PPO training
 objective:
   rank:
-  - max(eval/full/outcome/success/rate/min)
+  - min(eval/full/outcome/reason/serve_stall/rate)
   - max(eval/full/episode/return/mean)
   - max(eval/full/episode/return/best)
   - min(leader/checkpoint/step)
@@ -38,8 +38,9 @@ train:
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
-      obs_crop: [0, 0, 0, 0]
-      obs_crop_mode: remove
+      # Match the Atari goal: mask the score band while preserving the wall.
+      obs_crop: [17, 0, 0, 0]
+      obs_crop_mode: mask
       obs_crop_fill: 0
       obs_resize_algorithm: area
     task: &breakout_task
@@ -47,27 +48,21 @@ train:
       action:
         set: native
       signals:
-        bricks_remaining: bricks_remaining
-        lives: lives
+        awaiting_fire: awaiting_fire
       events:
-        cleared:
-          signal: bricks_remaining
+        serve_stall:
+          signal: awaiting_fire
           operation: equals_for
-          value: 0
-          steps: 1
-        game_over:
-          signal: lives
-          operation: equals_for
-          value: 0
-          steps: 1
+          value: 1
+          # One policy step is four native frames; 256 steps is ~17 seconds.
+          steps: 256
       termination:
-        success: [cleared]
-        failure: [game_over]
-        timeout: []
+        failure: [serve_stall]
         max_episode_steps: 54000
       reward:
         reward_mode: native
 eval:
+  # Dormant policy/playback contract only. checkpoint_eval_backend=none prevents execution.
   episodes: 100
   policy:
     stochastic: true
@@ -80,5 +75,3 @@ eval:
         <<: *breakout_provider_args
     preprocessing: *breakout_preprocessing
     task: *breakout_task
-release:
-  huggingface: {}

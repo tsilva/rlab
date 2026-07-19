@@ -16,6 +16,7 @@ train:
   # This goal is training-only: run to the timestep cap without checkpoint evaluation or
   # evaluation-driven stopping. Saved checkpoints remain available for later manual use.
   checkpoint_eval_backend: none
+  stop_on_acceptance: false
   checkpoint_freq: 500000
   environment:
     env_provider: &atari_env_provider stable-retro-turbo
@@ -41,11 +42,13 @@ train:
           obs_layout: chw
           frame_stack: 4
           noop_reset_max: 0
-          reward_clip: true
+          # Keep the learner reward identical to the native replica's Atari score delta.
+          reward_clip: false
           use_fire_reset: false
     preprocessing: &atari_breakout_preprocessing
       frame_skip: 4
-      max_pool_frames: true
+      # breakout-turbo-env 0.3.0 exposes the matched Atari policy path without max-pooling.
+      max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
       # Breakout's score ends at source row 14; the top wall starts at row 17.
@@ -69,8 +72,9 @@ train:
           values:
           - [0, 0, 0, 0, 0, 0, 0, 0] # NOOP
           - [1, 0, 0, 0, 0, 0, 0, 0] # FIRE
-          - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
+          # Match Breakout Turbo's native policy IDs: 2=RIGHT, 3=LEFT.
           - [0, 0, 0, 0, 0, 0, 0, 1] # RIGHT
+          - [0, 0, 0, 0, 0, 0, 1, 0] # LEFT
       signals:
         ball_y: ball_y
       events:
@@ -88,6 +92,7 @@ train:
       reward:
         reward_mode: native
 eval:
+  # Dormant policy/playback contract only. checkpoint_eval_backend=none prevents execution.
   episodes: 100
   policy:
     stochastic: true
@@ -97,7 +102,7 @@ eval:
       <<: *atari_breakout_env_config
       # Promotion eval remains vectorized; the lane count is part of its reproducible protocol.
       n_envs: 16
-      # Train on clipped rewards, but rank checkpoints by the real game score.
+      # Training and evaluation both preserve the real Atari score delta.
       env_args:
         <<: *atari_breakout_provider_args
         reward_clip: false

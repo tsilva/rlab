@@ -1503,7 +1503,12 @@ def resolve_checkpoint_eval_backend(
     checkpoint_eval_backend: str | None,
 ) -> str:
     configured = str(train_config.get("checkpoint_eval_backend") or "")
-    backend = str(checkpoint_eval_backend or configured or "")
+    requested = str(checkpoint_eval_backend or "")
+    if configured == "none" and requested and requested != "none":
+        raise ValueError(
+            "checkpoint evaluation is disabled by the training goal and cannot be overridden"
+        )
+    backend = str(requested or configured or "")
     if not backend:
         modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
         backend = (

@@ -26,7 +26,7 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 
 class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/breakout-turbo-env__breakout/_goal.yaml")
-    BREAKOUT_RECIPE = Path("experiments/recipes/breakout-turbo-env/ppo.yaml")
+    BREAKOUT_RECIPE = Path("experiments/recipes/atari/ppo.yaml")
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
     MARIO_SINGLE_RECIPES = Path("experiments/recipes/mario/single")
 
@@ -60,7 +60,7 @@ class ConfigValidationTests(unittest.TestCase):
                 covered_args = set(contract.canonical_args) | set(contract.explicit_env_args)
                 self.assertEqual(covered_args, signature_args)
 
-    def test_breakout_turbo_goal_composes_with_dedicated_ppo_recipe(self) -> None:
+    def test_breakout_turbo_goal_composes_with_atari_ppo_recipe(self) -> None:
         document = compose_train_document(
             self.BREAKOUT_GOAL,
             self.BREAKOUT_RECIPE,
@@ -76,13 +76,46 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["task"]["action"]["set"], "native")
         self.assertFalse(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
+        self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
+        self.assertEqual(train_config["obs_crop_mode"], "mask")
+        self.assertEqual(train_config["task"]["signals"], {"awaiting_fire": "awaiting_fire"})
+        self.assertEqual(
+            train_config["task"]["events"],
+            {
+                "serve_stall": {
+                    "signal": "awaiting_fire",
+                    "operation": "equals_for",
+                    "value": 1,
+                    "steps": 256,
+                }
+            },
+        )
+        self.assertEqual(
+            train_config["task"]["termination"],
+            {"failure": ["serve_stall"], "max_episode_steps": 54000},
+        )
         self.assertEqual(train_config["checkpoint_eval_backend"], "none")
         self.assertFalse(train_config["stop_on_acceptance"])
         self.assertIsNone(train_config.get("early_stop"))
         self.assertEqual(
             document["goal"]["objective"]["rank"][0],
-            "max(eval/full/outcome/success/rate/min)",
+            "min(eval/full/outcome/reason/serve_stall/rate)",
         )
+
+        atari = compose_train_document(
+            Path("experiments/goals/alepy__breakout/_goal.yaml"),
+            Path("experiments/recipes/atari/ppo.yaml"),
+        )
+        self.assertEqual(train_config["timesteps"], atari["train_config"]["timesteps"])
+        self.assertEqual(
+            train_config["training_backend"],
+            atari["train_config"]["training_backend"],
+        )
+        self.assertEqual(
+            document["_composition"]["recipe_root_path"],
+            atari["_composition"]["recipe_root_path"],
+        )
+        self.assertEqual(document["goal"]["objective"], atari["goal"]["objective"])
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
         environment = {
@@ -251,6 +284,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
         self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
         self.assertEqual(train_config["checkpoint_eval_backend"], "none")
+        self.assertFalse(train_config["stop_on_acceptance"])
         self.assertEqual(
             train_config["selection_rank"],
             [
@@ -279,7 +313,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "obs_layout": "chw",
                 "frame_stack": 4,
                 "noop_reset_max": 0,
-                "reward_clip": True,
+                "reward_clip": False,
                 "use_fire_reset": False,
             },
         )
@@ -291,7 +325,7 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["checkpoint_eval_environment"]["game"],
             "Breakout-Atari2600-v0",
         )
-        self.assertIs(train_config["env_args"]["reward_clip"], True)
+        self.assertIs(train_config["env_args"]["reward_clip"], False)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["env_args"],
             {
@@ -318,7 +352,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)
         self.assertEqual(train_config["frame_skip"], 4)
-        self.assertTrue(train_config["max_pool_frames"])
+        self.assertFalse(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
         self.assertEqual(train_config["observation_size"], 84)
         self.assertNotIn("max_episode_steps", train_config)
@@ -332,8 +366,8 @@ class ConfigValidationTests(unittest.TestCase):
                     "values": [
                         [0, 0, 0, 0, 0, 0, 0, 0],
                         [1, 0, 0, 0, 0, 0, 0, 0],
-                        [0, 0, 0, 0, 0, 0, 1, 0],
                         [0, 0, 0, 0, 0, 0, 0, 1],
+                        [0, 0, 0, 0, 0, 0, 1, 0],
                     ],
                 },
             },
@@ -395,7 +429,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(backend_config["learning_rate_final"], 2.5e-5)
         self.assertEqual(backend_config["learning_rate_schedule_timesteps"], 100_000_000)
         self.assertEqual(backend_config["target_kl"], 0.03)
-        self.assertIs(train_config["env_args"]["reward_clip"], True)
+        self.assertIs(train_config["env_args"]["reward_clip"], False)
         self.assertIs(
             train_config["checkpoint_eval_environment"]["env_args"]["reward_clip"],
             False,
