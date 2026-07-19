@@ -247,6 +247,7 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
         self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
+        self.assertEqual(train_config["checkpoint_eval_backend"], "none")
         self.assertEqual(
             train_config["selection_rank"],
             [

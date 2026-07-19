@@ -769,8 +769,8 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         source_section="goal_train",
         help=(
             "Checkpoint evaluation backend. Queue-backed jobs default to Modal; "
-            "local is an explicit fallback; none is for non-promotable smoke/debug runs or "
-            "an explicitly declared backend-owned training-success acceptance workflow."
+            "local is an explicit fallback; none creates a training-only run that cannot "
+            "establish promotion or acceptance."
         ),
     ),
     TrainConfigField(

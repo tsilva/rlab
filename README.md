@@ -370,7 +370,8 @@ and beast host recommendations.
   submissions also run the live schema, capacity, asset, and deployment preflight before inserting
   queue rows. Use `rlab eval modal preflight --runtime-image-ref <digest-ref> --game <game-id>` for
   operator diagnosis, `--checkpoint-eval-backend local` for the explicit local fallback, or
-  `--checkpoint-eval-backend none` only for a non-promotable smoke/debug run.
+  `--checkpoint-eval-backend none` for a training-only run that cannot establish promotion or
+  acceptance. A goal may declare this training-only behavior as its checked-in default.
 - Set `WANDB_API_KEY` for online W&B. For R2/S3-backed reference artifacts, set
   `CHECKPOINT_BUCKET_URI` or configure `logging.wandb_artifact_storage_uri` in the recipe,
   along with the required `AWS_*` credentials.

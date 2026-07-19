@@ -53,7 +53,6 @@ from rlab.recipe_schema import (
 from rlab.provider_config import provider_num_envs
 from rlab.policy_bundle import build_recipe_document
 from rlab.train_config import validate_and_normalize_train_config
-from rlab.training_backend import accepts_first_training_success
 from rlab.modal_eval_assets import asset_manifest_for_game
 from rlab.checkpoint_acceptance import (
     EVAL_SEED_START,
@@ -1504,17 +1503,6 @@ def resolve_checkpoint_eval_backend(
     checkpoint_eval_backend: str | None,
 ) -> str:
     configured = str(train_config.get("checkpoint_eval_backend") or "")
-    declared_training_acceptance = accepts_first_training_success(train_config)
-    if (
-        configured == "none"
-        and checkpoint_eval_backend != "none"
-        and not (checkpoint_eval_backend is None and declared_training_acceptance)
-    ):
-        raise ValueError(
-            "checkpoint_eval_backend=none is a per-submission smoke/debug override and "
-            "cannot be a checked-in recipe default unless the training backend declares "
-            "first-training-success acceptance"
-        )
     backend = str(checkpoint_eval_backend or configured or "")
     if not backend:
         modal_config_path = Path(__file__).resolve().parents[2] / "experiments" / "modal_eval.yaml"
@@ -1552,7 +1540,6 @@ def enqueue_train_jobs_from_recipe_document(
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
-    declared_training_acceptance = accepts_first_training_success(train_config)
     backend = resolve_checkpoint_eval_backend(
         train_config,
         checkpoint_eval_backend=checkpoint_eval_backend,
@@ -1573,11 +1560,7 @@ def enqueue_train_jobs_from_recipe_document(
             tags.append("checkpoint_eval_backend:none")
         document["tags"] = tags
     document["train_config"] = train_config
-    validate_materialized_train_recipe(
-        document,
-        allow_no_eval_backend=backend == "none"
-        and (checkpoint_eval_backend == "none" or declared_training_acceptance),
-    )
+    validate_materialized_train_recipe(document)
     goal_slug = recipe_goal_slug(document)
     document_slug = recipe_slug(document)
     machine = normalize_machine(machine)
@@ -3888,7 +3871,7 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Materialize the checkpoint evaluation backend for this submission; "
-            "none is limited to non-promotable smoke/debug runs."
+            "none creates a training-only run that cannot establish promotion or acceptance."
         ),
     )
     parser.add_argument("--wait", choices=("running", "terminal"))

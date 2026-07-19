@@ -352,7 +352,12 @@ class JobQueueTests(unittest.TestCase):
                     if recipe_path.name == "jerk.yaml"
                     else "sb3.ppo"
                 )
-                expected_eval_backend = "none" if expected_backend == "rlab.jerk" else "modal"
+                expected_eval_backend = (
+                    "none"
+                    if expected_backend == "rlab.jerk"
+                    or goal_path == Path("experiments/goals/alepy__breakout/_goal.yaml")
+                    else "modal"
+                )
                 self.assertEqual(train_config["checkpoint_eval_backend"], expected_eval_backend)
                 self.assertEqual(train_config["training_backend"]["id"], expected_backend)
                 self.assertEqual(
@@ -556,16 +561,37 @@ class JobQueueTests(unittest.TestCase):
         )
         self.assertTrue(all("checkpoint_eval_backend:none" in call["wandb_tags"] for call in calls))
 
-    def test_checked_in_no_eval_default_is_rejected(self) -> None:
+    def test_checked_in_no_eval_default_creates_training_only_run(self) -> None:
         document = valid_train_recipe()
         document["train_config"]["checkpoint_eval_backend"] = "none"
-        with self.assertRaisesRegex(ValueError, "per-submission smoke/debug override"):
+        calls = []
+
+        def fake_enqueue(conn, **kwargs):
+            del conn
+            calls.append(kwargs)
+            return {"id": len(calls), "run_name": kwargs["run_name"]}
+
+        with (
+            patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue),
+            patch.object(
+                job_queue,
+                "modal_eval_readiness_report",
+                side_effect=AssertionError("training-only runs must not preflight Modal"),
+            ),
+        ):
             job_queue.enqueue_train_jobs_from_recipe_document(
                 FakeConnection(),
                 document=document,
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
             )
+
+        self.assertTrue(calls)
+        self.assertTrue(
+            all(call["train_config"]["checkpoint_eval_backend"] == "none" for call in calls)
+        )
+        self.assertTrue(all(call["train_config"]["early_stop"] is None for call in calls))
+        self.assertTrue(all(call["train_config"]["checkpoint_eval_stages"] == [] for call in calls))
 
     def test_checked_in_first_training_success_acceptance_disables_eval(self) -> None:
         document = valid_train_recipe()

@@ -103,9 +103,10 @@ rlab eval modal smoke-local
 ```
 
 The selected backend is materialized in the queue row and never changes for that job. Use
-`rlab experiment launch ... --checkpoint-eval-backend local` only for an explicit fallback. Use `none` only for
-a smoke/debug submission that does not need eval-owned early stopping, checkpoint promotion, or goal
-acceptance. `preflight` fails closed unless the additive PostgreSQL schema, active capacity, private
+`rlab experiment launch ... --checkpoint-eval-backend local` only for an explicit fallback. Use
+`none` for an explicitly training-only goal or submission that does not need eval-owned early
+stopping, checkpoint promotion, or goal acceptance. `preflight` fails closed unless the additive
+PostgreSQL schema, active capacity, private
 ROM object, R2 evidence path, local Modal credentials, and exact runtime-specific deployment are
 all present. Acceptance evaluation never captures video; representative replay remains a
 release-time workflow.
