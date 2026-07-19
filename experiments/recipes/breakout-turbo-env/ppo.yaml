@@ -4,4 +4,5 @@ defaults:
 recipe_id: ppo
 description: >-
   Seed {seed} trains a native-vector Breakout Turbo PPO policy for {goal_id} under the
-  goal-owned observation, action, reward, termination, and stochastic evaluation contract.
+  goal-owned observation, action, reward, and termination contract until the fixed timestep cap;
+  checkpoint and final evaluation are disabled.

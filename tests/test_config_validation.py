@@ -76,6 +76,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["task"]["action"]["set"], "native")
         self.assertFalse(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
+        self.assertEqual(train_config["checkpoint_eval_backend"], "none")
+        self.assertFalse(train_config["stop_on_acceptance"])
+        self.assertIsNone(train_config.get("early_stop"))
         self.assertEqual(
             document["goal"]["objective"]["rank"][0],
             "max(eval/full/outcome/success/rate/min)",

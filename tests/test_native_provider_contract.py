@@ -246,7 +246,7 @@ class BreakoutTurboProviderTests(unittest.TestCase):
 
     def test_runtime_meets_provider_minimum(self) -> None:
         installed = Version(importlib.metadata.version("breakout-turbo-env"))
-        self.assertGreaterEqual(installed, Version("0.2.2"))
+        self.assertGreaterEqual(installed, Version("0.3.0"))
 
     def test_constructs_and_preserves_native_manual_vector_contract(self) -> None:
         config = self.config()
@@ -277,7 +277,7 @@ class BreakoutTurboProviderTests(unittest.TestCase):
             self.assertEqual(descriptor.render_support, ("rgb_array",))
             self.assertEqual(descriptor.observation_buffer_depth, 2)
             self.assertEqual(env.single_observation_space.shape, (4, 84, 84))
-            self.assertEqual(env.single_action_space.n, 3)
+            self.assertEqual(env.single_action_space.n, 4)
             self.assertTrue(descriptor.signal_schema["bricks_remaining"].available_on_reset)
             self.assertTrue(descriptor.signal_schema["bricks_remaining"].available_on_step)
 

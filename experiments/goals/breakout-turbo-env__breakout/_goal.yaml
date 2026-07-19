@@ -13,7 +13,10 @@ objective:
   - max(eval/full/episode/return/best)
   - min(leader/checkpoint/step)
 train:
-  checkpoint_eval_backend: modal
+  # Training-only: run to the recipe timestep cap without checkpoint or final evaluation.
+  # Periodic checkpoints remain available for later manual use.
+  checkpoint_eval_backend: none
+  stop_on_acceptance: false
   checkpoint_freq: 500000
   environment:
     env_provider: &breakout_provider breakout-turbo-env

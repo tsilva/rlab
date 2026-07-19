@@ -192,6 +192,11 @@ $0.00450, uploaded immutable R2 evidence, promoted eval job 4, and projected `ev
 into the exact finished W&B run. The deployment workflow's startup probe and the preflight command
 both passed for the digest-specific app before the canary was admitted.
 
+On 2026-07-19 the forward Breakout runtime baseline moved from
+`breakout-turbo-env==0.2.2` to `breakout-turbo-env==0.3.0`. The resolved native action contract is
+`Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`); the earlier canary remains historical evidence for
+its original runtime and is not evidence for the 0.3.0 baseline.
+
 ## Host Setup
 
 Bootstrap each host after OS/Docker changes or when validating a new runtime
