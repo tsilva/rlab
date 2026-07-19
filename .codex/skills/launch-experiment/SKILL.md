@@ -97,6 +97,7 @@ Do not use separate status, W&B-history, or log commands during ordinary monitor
 | `wandb_url` | Immediately send the clickable `url` to the user and mark it sent. | Yes |
 | `progress` | Store the latest projection. Normally say nothing; send at most one brief progress update per two minutes. | Yes |
 | `potential_bug` | Immediately dispatch the project `training_run_investigator` for its fingerprint. Pass repo path, run ID, `incident`, and `run` projection, then return to the loop without waiting. | Yes, without interruption |
+| `attention_required` | Immediately report and persist the attention payload. Keep the monitor attached, do not dispatch an investigator for a budget block, and do not launch later work while attention remains. | Yes, without interruption |
 | `reporting_warning` | Store and report the warning; do not change the terminal classification. | Yes |
 | `terminal` | Store the complete payload for that run. This is the only event that ends its monitor loop. | No, for this run |
 
@@ -106,7 +107,7 @@ For a repeated bug fingerprint, reuse or follow up with its existing investigato
 
 ## Relaunch boundary
 
-In observe mode, launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. Never automatically retry after `canceled`, `operational_failure`, `potential_bug`, or observer failure.
+In observe mode, launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. A user-requested bounded durable research controller such as `$autoresearch` may launch its preregistered next cohort after every prior run emitted `accepted` or `goal_rejected`, every investigator returned, and the round barrier closed. It must never advance after `canceled`, `operational_failure`, `potential_bug`, `attention_required`, or observer failure.
 
 In repair mode, never blindly retry. Preserve the failed attempt and its evidence, establish and repair a supported root cause, add regression coverage, and pass relevant tests before submitting a fresh launch with a new batch and run identity. Preserve the original goal, recipe, seed, and overrides unless the diagnosed defect is in that configuration; never weaken the research or acceptance contract to manufacture success. A valid fail-fast rejection is not a system bug and permits another seed only when the user requested repeated research attempts.
 

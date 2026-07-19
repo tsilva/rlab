@@ -1383,8 +1383,14 @@ def _hash_json(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _submission_batch_id(submission_key: str) -> str:
+def submission_batch_id(submission_key: str) -> str:
+    """Return the immutable queue batch id derived from a submission key."""
+
     return "bx" + _hash_json({"submission_key": submission_key})[:16]
+
+
+# Internal compatibility for callers that predate the public recovery helper.
+_submission_batch_id = submission_batch_id
 
 
 def _submission_request_hash(
@@ -1582,7 +1588,7 @@ def enqueue_train_jobs_from_recipe_document(
     submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
     if not submission_key:
         raise ValueError("submission_key is required")
-    batch_id = _submission_batch_id(submission_key)
+    batch_id = submission_batch_id(submission_key)
     document_seeds = _document_seeds(document, seeds)
     request_hash = _submission_request_hash(
         document=document,
@@ -1753,7 +1759,7 @@ def enqueue_train_job(
     if not goal_slug:
         raise ValueError("goal_slug is required")
     submission_key = str(submission_key or f"submission-{uuid.uuid4().hex}").strip()
-    batch_id = str(batch_id or _submission_batch_id(submission_key)).strip()
+    batch_id = str(batch_id or submission_batch_id(submission_key)).strip()
     campaign_id = str(campaign_id or "").strip() or None
     if submission_ordinal < 0:
         raise ValueError("submission_ordinal must be at least zero")
@@ -3759,6 +3765,50 @@ def queue_status(
     return {"selector": selector, "counts": counts, "runs": jobs, "jobs": jobs}
 
 
+def machine_capacity_status(
+    conn,
+    machine: str,
+    *,
+    machines_path: Path = DEFAULT_MACHINE_REGISTRY,
+) -> dict[str, Any]:
+    """Return the read-only effective slot state for one registered machine."""
+
+    normalized = normalize_machine(machine)
+    registered = resolve_machine(load_machine_registry(machines_path), normalized)
+    hard_capacity = int(registered.limits.max_parallel_containers)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              control.effective_capacity,
+              COALESCE(control.drained, FALSE) AS drained,
+              (
+                SELECT COUNT(*)
+                FROM job_launches AS launch
+                WHERE launch.machine = %(machine)s
+                  AND launch.state IN ('launching', 'running')
+              ) AS active_reservations
+            FROM (SELECT 1) AS singleton
+            LEFT JOIN machine_controls AS control ON control.machine = %(machine)s
+            """,
+            {"machine": normalized},
+        )
+        row = dict(cur.fetchone() or {})
+    override = row.get("effective_capacity")
+    effective = min(hard_capacity, int(override)) if override is not None else hard_capacity
+    active = int(row.get("active_reservations") or 0)
+    drained = bool(row.get("drained"))
+    return {
+        "machine": normalized,
+        "hard_capacity": hard_capacity,
+        "configured_capacity": int(override) if override is not None else None,
+        "effective_capacity": effective,
+        "active_reservations": active,
+        "available_slots": 0 if drained else max(effective - active, 0),
+        "drained": drained,
+    }
+
+
 def print_status(report: Mapping[str, Any]) -> None:
     print(f"selector: {json.dumps(report['selector'], sort_keys=True)}")
     print(f"counts: {json.dumps(report['counts'], sort_keys=True)}")
@@ -3798,6 +3848,26 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
             "image ref for the current clean source revision. When omitted, rlab resolves or "
             "builds that exact-source image and never falls back to an older image."
         ),
+    )
+    parser.add_argument(
+        "--existing-runtime-only",
+        action="store_true",
+        help=(
+            "Resolve only an existing exact-source runtime receipt. Never dispatch an image "
+            "workflow, build an image, or deploy a backend runtime."
+        ),
+    )
+    parser.add_argument(
+        "--expected-runtime-image-ref",
+        help="Fail before queue mutation unless the resolved immutable runtime ref matches.",
+    )
+    parser.add_argument(
+        "--expected-runtime-input-sha256",
+        help="Fail before queue mutation unless the resolved runtime input hash matches.",
+    )
+    parser.add_argument(
+        "--expected-runtime-build-source-sha",
+        help="Fail before queue mutation unless the resolved runtime build source matches.",
     )
     parser.add_argument("--image-workflow", default=DEFAULT_IMAGE_WORKFLOW)
     parser.add_argument(

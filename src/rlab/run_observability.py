@@ -99,6 +99,7 @@ def _diagnostics(conn, run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]
               COALESCE((SELECT MAX(checkpoint_step) FROM eval_jobs WHERE train_job_id=%(run)s), 0) AS max_checkpoint_step,
               (SELECT COUNT(*) FROM eval_jobs WHERE train_job_id=%(run)s AND status='failed') AS failed_eval_jobs,
               (SELECT COUNT(*) FROM eval_jobs WHERE train_job_id=%(run)s AND status IN ('pending','dispatching','submitted','blocked_budget')) AS active_eval_jobs,
+              (SELECT COUNT(*) FROM eval_jobs WHERE train_job_id=%(run)s AND status='blocked_budget') AS blocked_budget_eval_jobs,
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s) AS eval_attempts,
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND (a.attempt_number>1 OR a.retry_round>0)) AS eval_retries,
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND a.status IN ('failed','expired')) AS failed_eval_attempts,
@@ -311,6 +312,15 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
     diagnostics, history = _diagnostics(conn, int(run_id))
     wandb_artifact = _wandb_artifact_ref(row)
     incidents = current_incidents(row, diagnostics)
+    recipe_payload = row.get("recipe_payload_json")
+    if not isinstance(recipe_payload, Mapping):
+        recipe_payload = {}
+    recipe_document = recipe_payload.get("recipe")
+    if not isinstance(recipe_document, Mapping):
+        recipe_document = {}
+    train_config = row.get("train_config")
+    if not isinstance(train_config, Mapping):
+        train_config = {}
     projection: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "observed_at": _iso_utc(),
@@ -322,6 +332,27 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
         "machine": row.get("machine"),
         "source_sha": row.get("repo_git_commit"),
         "runtime_image_ref": row.get("runtime_image_ref"),
+        "submission": {
+            "key": row.get("submission_key"),
+            "ordinal": row.get("submission_ordinal"),
+            "request_hash": row.get("request_hash"),
+            "seed": row.get("seed"),
+            "campaign_id": row.get("campaign_id"),
+            "goal_path": row.get("goal_path"),
+            "goal_sha256": row.get("goal_sha256"),
+            "recipe_path": row.get("recipe_path"),
+            "recipe_sha256": row.get("recipe_sha256"),
+            "recipe_overrides": list(
+                recipe_payload.get("recipe_overrides")
+                or recipe_document.get("recipe_overrides")
+                or []
+            ),
+        },
+        "runtime": {
+            "image_ref": row.get("runtime_image_ref"),
+            "input_sha256": train_config.get("runtime_input_sha256"),
+            "build_source_sha": train_config.get("runtime_build_source_sha"),
+        },
         "status": row.get("status"),
         "error": row.get("error"),
         "launch": {
@@ -364,6 +395,7 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
             key: int(diagnostics.get(key) or 0)
             for key in (
                 "active_eval_jobs",
+                "blocked_budget_eval_jobs",
                 "eval_attempts",
                 "eval_retries",
                 "failed_eval_jobs",
@@ -412,7 +444,7 @@ def projections_for_selector(
     machine: str | None = None,
     goal: str | None = None,
 ) -> dict[str, Any]:
-    from rlab.job_queue import queue_status
+    from rlab.job_queue import machine_capacity_status, queue_status
 
     selectors = sum(value is not None for value in (run_id, batch_id, machine, goal))
     if selectors != 1:
@@ -438,13 +470,16 @@ def projections_for_selector(
     for item in runs:
         status = str(item.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "observed_at": _iso_utc(),
         "selector": selector,
         "counts": counts,
         "runs": runs,
     }
+    if machine is not None:
+        result["capacity"] = machine_capacity_status(conn, machine)
+    return result
 
 
 def terminal_wandb_summary(url: str) -> dict[str, Any]:
@@ -527,6 +562,7 @@ def follow_run(
 ) -> int:
     seen_url = False
     seen_incidents: set[str] = set()
+    seen_attention: set[str] = set()
     previous_progress = ""
     last_progress = float("-inf")
     while True:
@@ -562,6 +598,20 @@ def follow_run(
                 continue
             seen_incidents.add(fingerprint)
             send("potential_bug", incident=incident, run=projection)
+        blocked_budget = int(
+            (projection.get("operations") or {}).get("blocked_budget_eval_jobs") or 0
+        )
+        if blocked_budget:
+            attention = {
+                "fingerprint": _fingerprint(int(run_id), "eval_budget_blocked", "modal_budget"),
+                "category": "eval_budget_blocked",
+                "subject": "modal_budget",
+                "detail": f"blocked_budget_eval_jobs={blocked_budget}",
+            }
+            fingerprint = str(attention["fingerprint"])
+            if fingerprint not in seen_attention:
+                seen_attention.add(fingerprint)
+                send("attention_required", attention=attention, run=projection)
         classification = projection.get("terminal_classification")
         if classification:
             wandb_summary: Mapping[str, Any] = {}

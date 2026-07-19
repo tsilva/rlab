@@ -767,6 +767,7 @@ def runtime_release_from_args(
         )
     )
     ref_file = getattr(args, "runtime_image_ref_file", None)
+    existing_only = bool(getattr(args, "existing_runtime_only", False))
     readiness_started = time.monotonic()
     if ref_file:
         payload = runtime_image_payload_from_file(Path(ref_file))
@@ -774,6 +775,13 @@ def runtime_release_from_args(
             payload,
             label=f"runtime image descriptor {ref_file}",
             expected_source_sha=source_sha,
+        )
+    elif existing_only:
+        release = runtime_release_for_source(
+            source_sha=source_sha,
+            workflow=workflow,
+            branch=None,
+            artifact_name=artifact_name,
         )
     else:
         branch = getattr(args, "image_branch", None) or current_git_branch(repo_root)
@@ -785,6 +793,32 @@ def runtime_release_from_args(
             timeout=timeout,
             repo_root=repo_root,
         )
+    expected = {
+        "runtime_image_ref": str(getattr(args, "expected_runtime_image_ref", "") or "").strip(),
+        "runtime_input_sha256": str(
+            getattr(args, "expected_runtime_input_sha256", "") or ""
+        ).strip(),
+        "runtime_build_source_sha": str(
+            getattr(args, "expected_runtime_build_source_sha", "") or ""
+        ).strip(),
+    }
+    supplied = [key for key, value in expected.items() if value]
+    if supplied and len(supplied) != len(expected):
+        missing = sorted(set(expected) - set(supplied))
+        raise ValueError(
+            "expected runtime guards must be supplied together; missing " + ", ".join(missing)
+        )
+    mismatches = {
+        key: {"expected": value, "actual": str(getattr(release, key) or "")}
+        for key, value in expected.items()
+        if value and str(getattr(release, key) or "") != value
+    }
+    if mismatches:
+        detail = "; ".join(
+            f"{key}: expected {values['expected']!r}, got {values['actual']!r}"
+            for key, values in sorted(mismatches.items())
+        )
+        raise RuntimeError(f"resolved runtime does not match the pinned research runtime; {detail}")
     if wait_for_modal and str(checkpoint_eval_backend or "") == "modal":
         remaining = max(timeout - (time.monotonic() - readiness_started), 0.0)
         release = wait_for_modal_readiness(

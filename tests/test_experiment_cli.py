@@ -63,6 +63,30 @@ class ExperimentCliTests(unittest.TestCase):
         self.assertTrue(args.output_json)
         self.assertEqual(args.machine, "beast-3")
 
+    def test_launch_accepts_existing_runtime_triplet_guards(self) -> None:
+        image = "docker:ghcr.io/owner/image@sha256:" + "a" * 64
+        args = experiment_cli.build_parser().parse_args(
+            [
+                "launch",
+                "--goal-file",
+                str(GOAL),
+                "--recipe-file",
+                str(RECIPE),
+                "--machine",
+                "beast-3",
+                "--existing-runtime-only",
+                "--expected-runtime-image-ref",
+                image,
+                "--expected-runtime-input-sha256",
+                "b" * 64,
+                "--expected-runtime-build-source-sha",
+                "c" * 40,
+            ]
+        )
+
+        self.assertTrue(args.existing_runtime_only)
+        self.assertEqual(args.expected_runtime_image_ref, image)
+
     def test_from_head_launch_is_in_process_and_never_reloads_controllers(self) -> None:
         args = experiment_cli.build_parser().parse_args(
             [
@@ -170,6 +194,47 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertEqual(run_observability.terminal_classification(rejected), "goal_rejected")
         self.assertEqual(run_observability.terminal_classification(failed), "operational_failure")
 
+    def test_projection_exposes_recoverable_submission_and_runtime_identity(self) -> None:
+        row = {
+            "id": 9,
+            "batch_id": "bx123",
+            "status": "running",
+            "machine": "beast-3",
+            "repo_git_commit": "a" * 40,
+            "runtime_image_ref": "docker:ghcr.io/owner/image@sha256:" + "b" * 64,
+            "submission_key": "request-1",
+            "submission_ordinal": 0,
+            "request_hash": "c" * 64,
+            "seed": 123,
+            "goal_path": "goal.yaml",
+            "goal_sha256": "d" * 64,
+            "recipe_path": "recipe.yaml",
+            "recipe_sha256": "e" * 64,
+            "recipe_payload_json": {
+                "recipe": {"recipe_overrides": ["train.backend.config.gamma=0.95"]}
+            },
+            "train_config": {
+                "checkpoint_eval_backend": "modal",
+                "runtime_input_sha256": "f" * 64,
+                "runtime_build_source_sha": "1" * 40,
+            },
+        }
+        diagnostics = {"blocked_budget_eval_jobs": 1}
+        with (
+            mock.patch("rlab.job_queue.queue_status", return_value={"runs": [row]}),
+            mock.patch.object(run_observability, "_diagnostics", return_value=(diagnostics, [])),
+        ):
+            projection = run_observability.run_projection(mock.MagicMock(), 9)
+
+        self.assertEqual(projection["submission"]["key"], "request-1")
+        self.assertEqual(projection["submission"]["seed"], 123)
+        self.assertEqual(
+            projection["submission"]["recipe_overrides"],
+            ["train.backend.config.gamma=0.95"],
+        )
+        self.assertEqual(projection["runtime"]["input_sha256"], "f" * 64)
+        self.assertEqual(projection["operations"]["blocked_budget_eval_jobs"], 1)
+
     def test_follow_emits_url_and_terminal_without_writes(self) -> None:
         events: list[dict] = []
         projection = self.projection(status="succeeded", outcome="accepted")
@@ -263,6 +328,34 @@ class RunObservabilityTests(unittest.TestCase):
             potential_bugs[0]["incident"]["category"],
             "wandb_cursor_confirmation_stalled",
         )
+
+    def test_budget_block_is_attention_once_and_not_a_potential_bug(self) -> None:
+        active = {
+            **self.projection(status="succeeded", outcome="accepted"),
+            "status": "finalizing",
+            "terminal_classification": None,
+            "operations": {"blocked_budget_eval_jobs": 2},
+        }
+        terminal = self.projection(status="succeeded", outcome="accepted")
+        events: list[dict] = []
+        with mock.patch.object(
+            run_observability,
+            "run_projection",
+            side_effect=[active, active, terminal],
+        ):
+            code = run_observability.follow_run(
+                mock.MagicMock(),
+                7,
+                emit=lambda event: events.append(dict(event)),
+                sleep=lambda _seconds: None,
+                wandb_reader=lambda _url: {"state": "finished", "metrics": {}},
+            )
+
+        self.assertEqual(code, 0)
+        attention = [event for event in events if event["event"] == "attention_required"]
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["attention"]["category"], "eval_budget_blocked")
+        self.assertNotIn("potential_bug", [event["event"] for event in events])
 
     def test_completed_publication_attempts_are_history_not_a_current_incident(self) -> None:
         incidents = run_observability.current_incidents(

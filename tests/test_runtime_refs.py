@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
 
@@ -261,6 +262,85 @@ class RuntimeRefsTests(unittest.TestCase):
             ),
         ):
             actual = runtime_refs.runtime_release_from_args(args, checkpoint_eval_backend="local")
+
+        self.assertEqual(actual, release)
+
+    def test_existing_runtime_only_never_enters_dispatching_wait(self) -> None:
+        args = SimpleNamespace(
+            image_workflow=runtime_refs.DEFAULT_IMAGE_WORKFLOW,
+            image_artifact=runtime_refs.DEFAULT_IMAGE_ARTIFACT,
+            runtime_readiness_timeout=60,
+            runtime_image_ref_file=None,
+            existing_runtime_only=True,
+            expected_runtime_image_ref=None,
+            expected_runtime_input_sha256=None,
+            expected_runtime_build_source_sha=None,
+        )
+        release = image_info()
+        with (
+            mock.patch.object(runtime_refs, "clean_git_source_sha", return_value=SOURCE_SHA),
+            mock.patch.object(
+                runtime_refs, "runtime_release_for_source", return_value=release
+            ) as existing,
+            mock.patch.object(runtime_refs, "wait_for_runtime_release") as wait,
+        ):
+            actual = runtime_refs.runtime_release_from_args(args, checkpoint_eval_backend="local")
+
+        self.assertEqual(actual, release)
+        existing.assert_called_once_with(
+            source_sha=SOURCE_SHA,
+            workflow=runtime_refs.DEFAULT_IMAGE_WORKFLOW,
+            branch=None,
+            artifact_name=runtime_refs.DEFAULT_IMAGE_ARTIFACT,
+        )
+        wait.assert_not_called()
+
+    def test_expected_runtime_guards_are_all_or_none_and_exact(self) -> None:
+        release = replace(
+            image_info(),
+            runtime_input_sha256="b" * 64,
+            runtime_build_source_sha="2" * 40,
+        )
+        base = dict(
+            image_workflow=runtime_refs.DEFAULT_IMAGE_WORKFLOW,
+            image_artifact=runtime_refs.DEFAULT_IMAGE_ARTIFACT,
+            runtime_readiness_timeout=60,
+            runtime_image_ref_file=None,
+            existing_runtime_only=True,
+        )
+        with (
+            mock.patch.object(runtime_refs, "clean_git_source_sha", return_value=SOURCE_SHA),
+            mock.patch.object(runtime_refs, "runtime_release_for_source", return_value=release),
+        ):
+            with self.assertRaisesRegex(ValueError, "must be supplied together"):
+                runtime_refs.runtime_release_from_args(
+                    SimpleNamespace(
+                        **base,
+                        expected_runtime_image_ref=RUNTIME_IMAGE_REF,
+                        expected_runtime_input_sha256=None,
+                        expected_runtime_build_source_sha=None,
+                    ),
+                    checkpoint_eval_backend="local",
+                )
+            with self.assertRaisesRegex(RuntimeError, "pinned research runtime"):
+                runtime_refs.runtime_release_from_args(
+                    SimpleNamespace(
+                        **base,
+                        expected_runtime_image_ref=RUNTIME_IMAGE_REF,
+                        expected_runtime_input_sha256="c" * 64,
+                        expected_runtime_build_source_sha="2" * 40,
+                    ),
+                    checkpoint_eval_backend="local",
+                )
+            actual = runtime_refs.runtime_release_from_args(
+                SimpleNamespace(
+                    **base,
+                    expected_runtime_image_ref=RUNTIME_IMAGE_REF,
+                    expected_runtime_input_sha256="b" * 64,
+                    expected_runtime_build_source_sha="2" * 40,
+                ),
+                checkpoint_eval_backend="local",
+            )
 
         self.assertEqual(actual, release)
 

@@ -285,6 +285,25 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(args.checkpoint_eval_backend, "none")
         self.assertEqual(args.runtime_readiness_timeout, 20 * 60)
 
+    def test_submission_batch_id_public_helper_preserves_queue_identity(self) -> None:
+        self.assertEqual(
+            job_queue.submission_batch_id("stable-request"),
+            job_queue._submission_batch_id("stable-request"),
+        )
+        self.assertRegex(job_queue.submission_batch_id("stable-request"), r"^bx[0-9a-f]{16}$")
+
+    def test_machine_capacity_status_reports_available_effective_slots(self) -> None:
+        conn = FakeConnection(
+            row={"effective_capacity": 5, "drained": False, "active_reservations": 2}
+        )
+
+        report = job_queue.machine_capacity_status(conn, "beast-3")
+
+        self.assertEqual(report["hard_capacity"], 6)
+        self.assertEqual(report["effective_capacity"], 5)
+        self.assertEqual(report["active_reservations"], 2)
+        self.assertEqual(report["available_slots"], 3)
+
     def test_implicit_submission_defaults_to_modal_backend(self) -> None:
         calls = []
         document = valid_train_recipe()

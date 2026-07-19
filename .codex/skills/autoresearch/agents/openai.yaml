@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoresearch"
+  short_description: "Tune rlab recipes for fast, seed-stable success"
+  default_prompt: "Use $autoresearch to tune this rlab recipe against its goal until a holdout-confirmed winner is found."
