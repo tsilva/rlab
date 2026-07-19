@@ -1,89 +1,117 @@
-# Autoresearch Search Policy
+# Autoresearch Training-Signal Policy
 
 ## Objective and defaults
 
-The winner satisfies the immutable goal contract at the earliest authoritative promoted checkpoint and reproduces that success across training seeds. Optimize lexicographically:
+Select the most sample-efficient seed-stable recipe supported by durable training completion
+signals. Autoresearch does not evaluate or promote checkpoints and cannot establish goal
+acceptance.
 
-1. more paired search seeds that are `accepted` and remotely verified;
-2. lower median censored promoted environment step;
-3. lower worst censored promoted environment step;
-4. stable candidate ID only as an exact deterministic tie-break.
+Use `beast-3`, at most 48 reserved jobs, three stale search rounds, a `0.90` strong threshold, and
+five untouched confirmation seeds requiring at least four strong runs. Freeze at initialization:
 
-Defaults are `beast-3`, at most 48 reserved queue jobs, paired search seeds based at 123, three consecutive stale rounds, and five untouched confirmation seeds requiring at least four accepted-and-remotely-verified runs.
+```text
+rollout_quantum = n_steps * n_envs
+screen_cap = ceil((0.20 * timesteps) / rollout_quantum) * rollout_quantum
+pair_cap = ceil((0.50 * timesteps) / rollout_quantum) * rollout_quantum
+full_effective_cap = ceil(timesteps / rollout_quantum) * rollout_quantum
+```
 
-The provider `n_envs` spaces all seed bases so vector lanes never overlap. For `n_envs=N`, search uses `123` and `123+N`; confirmation uses the next five bases `123+2N` through `123+6N`.
+Require `screen_cap < pair_cap < full_effective_cap`. Launch the confirmation recipe at its
+original configured `timesteps`.
+
+For `n_envs=N`, use screen seed `123`, paired seeds `123+N` and `123+2N`, and confirmation seeds
+`123+3N` through `123+7N`. These are separate fresh runs; no rung resumes another run.
+
+## Evidence and ranking
+
+A screen passes only when the remotely finished W&B run shows at least one cumulative training
+success for every configured start. A missing start or zero success prevents the paired rung.
+
+For paired evidence, define a seed as strong when
+`train/outcome/success/window_100/rate/min` reaches the frozen threshold at any logged
+`global_step`. Missing window-100 history is not strong. Rank eligible two-seed candidates
+lexicographically by:
+
+1. more strong seeds;
+2. lower median first-strong step, censoring non-strong seeds at the 50% effective cap;
+3. lower worst censored first-strong step;
+4. higher worst-seed peak window-100 minimum;
+5. stable candidate ID only as an exact tie-break.
+
+Candidate-ID ties never reset staleness. Use only the binary pass/fail aggregate from a failed
+confirmation to exclude that candidate; do not use holdout per-seed evidence for later proposals.
 
 ## Frozen experiment contract
 
-Never tune or override:
+Never tune or change:
 
-- goal, game, state, provider, environment, preprocessing, task, reward, termination, or evaluation environment;
-- evaluation episodes, acceptance, seed manifest, backend, checkpoint cadence, promotion, or early-stop semantics;
-- training timesteps, `n_envs`, backend ID, `n_steps`, device, resume state, policy/model architecture, categorical choices, W&B/logging, or artifact publication;
+- goal, game, starts, provider, environment, preprocessing, task, reward, termination, evaluation
+  contract, checkpoint cadence, or release semantics;
+- `n_envs`, backend ID, `n_steps`, device, resume state, architecture, categorical choices, W&B,
+  checkpoint publication, or artifact publication;
 - source revision or the exact runtime image/input/build-source triplet.
 
-Use the goal-owned acceptance evaluation and its promoted checkpoint step as the sole success and sample-efficiency authority. Training-return or first-training-success metrics are never promotion evidence.
+The only study-level launch overrides outside a candidate delta are the preregistered rung
+`train.timesteps`, description, and `--checkpoint-eval-backend none`. Do not persist these in the
+winning leaf recipe. Fixed rung caps are separate declared training runs, not metric-driven early
+stops.
 
-The failure censor is frozen at initialization:
-
-```text
-ceil(timesteps / (n_steps * n_envs)) * n_steps * n_envs
-```
-
-Do not recompute it per candidate.
+Training evidence ranks recipes only. Never reinterpret it as checkpoint acceptance, promotion,
+evaluation evidence, release evidence, or proof that a playable artifact satisfies the goal.
 
 ## Allowed candidate space
 
-Tune only numeric, non-null keys already present in the composed backend config. Never introduce a new key, move a zero baseline, change a boolean/categorical value, or change `n_steps`.
+Tune only numeric, non-null keys already present in the composed backend config. Never introduce a
+new key, move a zero baseline, change a boolean or categorical value, or change `n_steps`.
 
-Every candidate changes one coherent group:
+Each candidate changes one coherent group:
 
-- learning-rate schedule: `learning_rate`, `learning_rate_final`, `learning_rate_schedule_timesteps`;
+- learning-rate schedule: `learning_rate`, `learning_rate_final`,
+  `learning_rate_schedule_timesteps`;
 - entropy schedule: `ent_coef`, `ent_coef_final`, `ent_coef_schedule_timesteps`;
 - discounting: `gamma`, `gae_lambda`;
 - value weighting: `vf_coef`;
 - PPO update: `batch_size`, `n_epochs`, `clip_range`, `target_kl`, `adam_eps`;
-- A2C optimizer: existing numeric optimizer fields such as `learning_rate`, `learning_rate_final`, `max_grad_norm`, `rms_prop_eps`, and `vf_coef`.
+- A2C optimizer: existing numeric optimizer fields such as `learning_rate`,
+  `learning_rate_final`, `max_grad_norm`, `rms_prop_eps`, and `vf_coef`.
 
-Each value remains within 0.25x to 4x of baseline and within its semantic domain. Integers stay integers. For PPO, `batch_size` divides fixed `n_steps * n_envs`, and update work per environment step stays at or below 2x baseline. Do not change more than one group to rescue an invalid candidate.
+Keep values within 0.25x to 4x of baseline and their semantic domains. Preserve integer types.
+For PPO, require `batch_size` to divide fixed `n_steps * n_envs` and keep update work per
+environment step at or below 2x baseline.
 
-Prefer a small local experimental design around the incumbent:
+Propose at most three candidates per round, favoring a conservative lower setting, conservative
+higher setting, and one local schedule or interaction alternative in the same group. Never repeat
+a registered candidate.
 
-- one conservative lower setting;
-- one conservative higher setting;
-- one schedule/interaction alternative inside the same group when capacity permits.
+## Capacity, recovery, and stopping
 
-Use prior paired search evidence to choose the next group or local direction. Never use untouched confirmation outcomes beyond the binary pass/fail exclusion.
+Read effective capacity immediately before each reservation and never alter it. Start independent
+screen commands concurrently. Promote a passed screen into its paired rung as soon as the
+controller requests it, but propose no new round until every screen and required pair in the
+current round has complete remote evidence.
 
-Candidate identity is the hash of the normalized effective backend delta. It excludes recipe ID, description, campaign ID, run name, request ID, and other trace-only metadata. Never repeat a candidate already registered in the study.
+Every generated command uses one deterministic request key and batch. Reconcile before enqueue:
 
-## Capacity and concurrency
+- exact cohort: record it;
+- zero rows: execute once;
+- partial rows or mismatched seeds, sources, overrides, runtime, or training-only backend: pause.
 
-Read effective capacity and active reservations immediately before every wave. Do not alter capacity or existing work.
+Operational failure, cancellation, observer failure, `potential_bug`, `attention_required`,
+source drift, runtime drift, or unverified publication pauses rather than consuming a new wave.
+Transient W&B evidence reads remain retryable without state mutation.
 
-For search, preregister up to three candidate cohorts of two seeds each. Choose enough whole paired cohorts to fill current free slots; an odd free slot may cause one member of a pair to queue. Execute all independent candidate launch commands concurrently. Start one independent follow stream per returned run. Use a strict round barrier: no next wave until every prior run is terminal, every incident investigator returned, and no attention or observer failure remains.
-
-Confirmation is exactly five concurrent jobs. Deliberately leave a sixth beast-3 slot for unrelated work when hard capacity is six.
-
-Reservations happen before enqueue and remain charged when enqueue outcome is uncertain. Search reservations always leave five of the 48 jobs unused for confirmation.
-
-## Recovery and stopping
-
-The deterministic request key maps to one deterministic `bx<16 hex>` batch ID using the same repository helper as queue insertion. On resume, inspect the derived batch before enqueue:
-
-- exact complete cohort: reconcile it into study state;
-- zero rows: execute the reserved launch once;
-- partial rows, changed request hash, wrong seeds, wrong source/recipe/goal, wrong overrides, or wrong runtime: pause.
-
-Stop after three consecutive search rounds that do not improve accepted count, median censored step, or worst censored step. Candidate-ID tie-breaks never reset staleness. Operational failure, cancellation, observer failure, `potential_bug`, `attention_required`, source drift, runtime drift, or ambiguous study discovery pauses instead of consuming a new wave.
-
-The five-seed holdout passes with at least four accepted-and-remotely-verified runs. On failure, exclude the candidate using only that binary result, reset staleness, recompute the incumbent from search evidence, and continue only if the fixed budget supports the next action. At budget exhaustion, report no winner and leave the recipe untouched.
+Reserve five jobs for confirmation throughout search. Stop after three stale rounds or when the
+remaining budget cannot support another screen, its possible two-run pair, and confirmation. A
+failed five-seed confirmation excludes the candidate, resets staleness, and continues only if the
+budget supports a valid next action.
 
 ## Winner application
 
-Use a two-phase apply:
+Require at least four of five untouched full-cap seeds to become strong. Record the result as
+`training-signal-confirmed`, never accepted or promoted.
 
-1. store exact leaf postimage, SHA-256, and diff in `study.json` while the leaf equals its pinned preimage;
-2. apply that exact postimage, then require full recomposition to equal the frozen baseline train config plus only the winning backend delta.
-
-All non-leaf composed sources must still match their pinned hashes. An unexpected leaf state is a pause. The baseline may validly win as a no-op. Keep all reports under `runs/autoresearch/`; only the leaf recipe patch is a source change.
+Apply in two phases: preregister the exact leaf postimage and hash while the leaf equals its pinned
+preimage, then apply and recompose. Require the recomposed train configuration to equal the frozen
+baseline plus only the winning numeric backend delta. Preserve all goal-owned evaluation settings
+for ordinary future launches. Keep reports under `runs/autoresearch/`; only the leaf recipe patch is
+source content.

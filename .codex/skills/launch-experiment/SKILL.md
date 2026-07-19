@@ -107,7 +107,7 @@ For a repeated bug fingerprint, reuse or follow up with its existing investigato
 
 ## Relaunch boundary
 
-In observe mode, launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. A user-requested bounded durable research controller such as `$autoresearch` may launch its preregistered next cohort after every prior run emitted `accepted` or `goal_rejected`, every investigator returned, and the round barrier closed. It must never advance after `canceled`, `operational_failure`, `potential_bug`, `attention_required`, or observer failure.
+In observe mode, launch another explicit seed only after `goal_rejected` and only when the user asked for repeated attempts. Preserve every override. A user-requested bounded durable research controller may launch its preregistered next cohort after every prior run reached the terminal classification required by that controller, every investigator returned, its durable evidence was collected, and its barrier closed. For `$autoresearch`, that classification is remotely published training-only `completed`; it must collect the exact W&B training evidence before advancing. A bounded controller must never advance after `canceled`, `operational_failure`, `potential_bug`, `attention_required`, observer failure, or evidence mismatch.
 
 In repair mode, never blindly retry. Preserve the failed attempt and its evidence, establish and repair a supported root cause, add regression coverage, and pass relevant tests before submitting a fresh launch with a new batch and run identity. Preserve the original goal, recipe, seed, and overrides unless the diagnosed defect is in that configuration; never weaken the research or acceptance contract to manufacture success. A valid fail-fast rejection is not a system bug and permits another seed only when the user requested repeated research attempts.
 
@@ -153,5 +153,7 @@ For every run, state its terminal classification. For every successful run, copy
 In repair mode, also summarize each failure fingerprint, root cause, repair, regression test, superseding verification run, and any residual risk or protected action that still needs user authorization.
 
 Call an acceptance run successful only when `verified_success` is true, `terminal_classification` is `accepted`, and the user-required early-stop condition is satisfied. Use the emitted immutable `wandb_artifact` and exact `play_command`; never substitute an R2 URI or mutable alias.
+
+For an `$autoresearch` training-only run, report `completed` and its remote training metrics without calling the run accepted or successful against the goal. Autoresearch selects recipes from training signals; it does not produce a promoted artifact or playback command.
 
 Keep the answer concise. Never expose credentials or raw presigned URLs.

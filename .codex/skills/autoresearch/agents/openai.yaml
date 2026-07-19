@@ -1,4 +1,4 @@
 interface:
   display_name: "Autoresearch"
-  short_description: "Tune rlab recipes for fast, seed-stable success"
-  default_prompt: "Use $autoresearch to tune this rlab recipe against its goal until a holdout-confirmed winner is found."
+  short_description: "Tune rlab recipes from seed-stable training signals"
+  default_prompt: "Use $autoresearch to run a training-only fixed-rung search for this rlab recipe and apply a five-seed training-signal-confirmed winner."

@@ -10,6 +10,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,29 +29,38 @@ RESULT_SCHEMA_VERSION = 1
 TRAIN_STARTUP_TIMEOUT_SECONDS = 300.0
 
 
+@dataclass(frozen=True)
+class WorkerModules:
+    artifact_uploader: str | None
+    evaluator: str | None
+    publisher: str | None
+
+
 def worker_modules(
     eval_backend: str,
     *,
     wandb_enabled: bool,
     telemetry_transport: str = "legacy_local",
-) -> tuple[str | None, str | None]:
+) -> WorkerModules:
     if eval_backend not in {"local", "modal", "none"}:
         raise ValueError(f"unsupported checkpoint evaluation backend: {eval_backend}")
-    producer = (
-        "rlab.checkpoint_coordinator"
-        if eval_backend == "modal"
-        else "rlab.checkpoint_eval_worker"
-        if eval_backend == "local"
-        else None
+    neon_mailbox = telemetry_transport == "neon_mailbox_v1"
+    artifact_uploader = (
+        "rlab.checkpoint_coordinator" if neon_mailbox or eval_backend == "modal" else None
     )
+    evaluator = "rlab.checkpoint_eval_worker" if eval_backend == "local" else None
     publisher = (
         "rlab.telemetry_relay"
-        if telemetry_transport == "neon_mailbox_v1"
+        if neon_mailbox
         else "rlab.wandb_publisher"
         if wandb_enabled or eval_backend != "modal"
         else None
     )
-    return producer, publisher
+    return WorkerModules(
+        artifact_uploader=artifact_uploader,
+        evaluator=evaluator,
+        publisher=publisher,
+    )
 
 
 def publication_attempt_count(
@@ -380,21 +390,20 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     config_document = json.loads(config_path.read_text(encoding="utf-8"))
     wandb_enabled = bool(config_document.get("wandb", False))
     eval_backend = str(config_document.get("checkpoint_eval_backend") or "local")
-    telemetry_transport = str(
-        config_document.get("telemetry_transport") or "legacy_local"
-    )
+    telemetry_transport = str(config_document.get("telemetry_transport") or "legacy_local")
     modal_eval = eval_backend == "modal"
     eval_disabled = eval_backend == "none"
-    producer_module, publisher_module = worker_modules(
+    modules = worker_modules(
         eval_backend,
         wandb_enabled=wandb_enabled,
         telemetry_transport=telemetry_transport,
     )
+    coordinator_present = modules.artifact_uploader == "rlab.checkpoint_coordinator"
     try:
-        if publisher_module:
+        if modules.publisher:
             publisher_workers.append(
                 start_worker(
-                    module=publisher_module,
+                    module=modules.publisher,
                     name="wandb_publisher",
                     output_dir=output_dir,
                     run_dir=run_dir,
@@ -402,11 +411,22 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                     stop_file=publisher_stop_file,
                 )
             )
-        if producer_module:
+        if modules.artifact_uploader:
             producer_workers.append(
                 start_worker(
-                    module=producer_module,
-                    name="checkpoint_coordinator" if modal_eval else "checkpoint_eval_worker",
+                    module=modules.artifact_uploader,
+                    name="checkpoint_coordinator",
+                    output_dir=output_dir,
+                    run_dir=run_dir,
+                    config_path=config_path,
+                    stop_file=producer_stop_file,
+                )
+            )
+        if modules.evaluator:
+            producer_workers.append(
+                start_worker(
+                    module=modules.evaluator,
+                    name="checkpoint_eval_worker",
                     output_dir=output_dir,
                     run_dir=run_dir,
                     config_path=config_path,
@@ -447,11 +467,11 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             )
     finally:
         producer_results = stop_workers(
-            producer_workers, producer_stop_file, timeout=120.0 if modal_eval else 30.0
+            producer_workers,
+            producer_stop_file,
+            timeout=120.0 if coordinator_present else 30.0,
         )
-        publisher_results = stop_workers(
-            publisher_workers, publisher_stop_file, timeout=135.0
-        )
+        publisher_results = stop_workers(publisher_workers, publisher_stop_file, timeout=135.0)
         worker_results = [*producer_results, *publisher_results]
     metadata_job = dict(job)
     metadata_job["train_config"] = {
@@ -460,9 +480,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     }
     metadata = collect_result_metadata(metadata_job)
     producer_failed = any(int(worker.get("returncode") or 0) != 0 for worker in producer_results)
-    publisher_failed = any(
-        int(worker.get("returncode") or 0) != 0 for worker in publisher_results
-    )
+    publisher_failed = any(int(worker.get("returncode") or 0) != 0 for worker in publisher_results)
     critical_worker_failure = (
         producer_failed or publisher_failed
         if telemetry_transport == "neon_mailbox_v1"
@@ -473,11 +491,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         int(worker.get("returncode") or 0) == 0 for worker in publisher_results
     )
     publication_error = None
-    if (
-        wandb_enabled
-        and telemetry_transport != "neon_mailbox_v1"
-        and not publisher_drained
-    ):
+    if wandb_enabled and telemetry_transport != "neon_mailbox_v1" and not publisher_drained:
         publication_error = "live W&B publisher did not drain cleanly"
     result = {
         **base_result(payload),
@@ -515,7 +529,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "transport": telemetry_transport,
             "status": "complete" if publisher_drained else "failed",
         }
-    if modal_eval:
+    if coordinator_present:
         artifact_phases = dict(metadata.get("phase_counts") or {})
         incomplete_artifacts = any(
             key.startswith("artifacts:")

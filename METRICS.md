@@ -47,6 +47,10 @@ Asynchronous evaluation rows may arrive after later training rows without overwr
   100 attempts. Global
   window-100 min/mean appear only after every configured start has 100 attempts. Always pair early
   current aggregates with `start_coverage/rate`.
+- A bounded training-only search may use per-start success counts and the history peak and first
+  threshold crossing of `train/outcome/success/window_100/rate/min` to screen and rank recipes.
+  That evidence is not checkpoint evaluation and cannot establish checkpoint promotion, goal
+  acceptance, or release evidence.
 - Failure reasons may overlap, so reason counts and rates need not sum to the terminal count.
   Successful episodes contribute to success metrics, not the failure-reason families.
 - Positive PPO policy entropy, dominant-action rate, and the action histogram diagnose discrete

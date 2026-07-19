@@ -33,12 +33,10 @@ class ExperimentCliTests(unittest.TestCase):
     def test_cancel_uses_runtime_current_preflight_without_source_gate(self) -> None:
         args = experiment_cli.build_parser().parse_args(["cancel", "--run", "9"])
         with (
-            mock.patch(
-                "rlab.fleet_service.require_compatible_controller_services"
-            ) as preflight,
+            mock.patch("rlab.fleet_service.require_compatible_controller_services") as preflight,
             mock.patch(
                 "rlab.job_queue.cmd_cancel",
-                side_effect=lambda _args: (print('{"job_ids":[9]}') or 0),
+                side_effect=lambda _args: print('{"job_ids":[9]}') or 0,
             ),
         ):
             self.assertEqual(experiment_cli.cmd_cancel(args), 0)
@@ -372,6 +370,37 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertNotIn(
             "wandb_publication_retry",
             [incident["category"] for incident in incidents],
+        )
+
+    def test_visible_run_retry_is_not_mislabeled_as_startup_stall(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 62,
+                "status": "running",
+                "train_config": {"wandb": True},
+                "live_publication_status": "pending",
+                "live_publication_attempts": 1,
+                "learner_ready_at": datetime.now(UTC) - timedelta(hours=1),
+                "wandb_url": "https://wandb.ai/entity/project/runs/rlab-run",
+            },
+            {},
+        )
+
+        categories = [incident["category"] for incident in incidents]
+        self.assertIn("wandb_publication_retry", categories)
+        self.assertNotIn("wandb_publication_stalled", categories)
+
+    def test_concrete_availability_artifact_precedes_promoted_fallback(self) -> None:
+        self.assertEqual(
+            run_observability._wandb_artifact_ref(
+                {
+                    "wandb_artifact_ref": "entity/project/rlab-run-checkpoint:v4",
+                    "wandb_url": "https://wandb.ai/entity/project/runs/rlab-run",
+                    "wandb_run_id": "rlab-run",
+                    "promoted_step": None,
+                }
+            ),
+            "entity/project/rlab-run-checkpoint:v4",
         )
 
     def test_expected_cancellation_and_historical_eval_failures_are_not_incidents(self) -> None:

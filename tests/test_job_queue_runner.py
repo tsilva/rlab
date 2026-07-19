@@ -1690,6 +1690,26 @@ class JobQueueTests(unittest.TestCase):
         self.assertFalse(any("SET status =" in sql for sql in statements))
         self.assertFalse(any("UPDATE job_launches" in sql for sql in statements))
 
+    def test_publication_recovery_leaves_neon_run_for_artifact_finalizer(self) -> None:
+        row = {
+            "id": 7,
+            "status": "finalizing",
+            "live_publication_status": "complete",
+        }
+        conn = FakeConnection(results=[{"row": row}])
+
+        result = job_queue.finish_live_publication_recovery(
+            conn,
+            job_id=7,
+            error=None,
+        )
+
+        self.assertEqual(result["status"], "finalizing")
+        statement = conn.cursor_obj.executed_sqls[0]
+        self.assertIn("telemetry_transport <> 'neon_mailbox_v1'", statement)
+        self.assertIn("NOT EXISTS", statement)
+        self.assertIn("FROM eval_runs", statement)
+
     def test_retry_canceled_finalization_rejects_active_eval_work_atomically(self) -> None:
         source = {
             "id": 64,

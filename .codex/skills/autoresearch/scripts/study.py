@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Durable, deterministic state manager for the local autoresearch skill."""
+"""Durable state manager for training-signal-only autoresearch studies."""
 
 from __future__ import annotations
 
@@ -18,23 +18,37 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterator, Mapping
+from urllib.parse import urlparse
 
 from rlab.job_queue import submission_batch_id
+from rlab.metric_names import (
+    GLOBAL_STEP,
+    TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
+)
 from rlab.provider_config import provider_num_envs
 from rlab.recipe_documents import compose_train_document
-from rlab.training_backend import accepts_first_training_success, training_backend_id
+from rlab.training_backend import training_backend_id
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SUPPORTED_BACKENDS = frozenset({"sb3.ppo", "sb3.a2c"})
 TRACE_ONLY_OVERRIDES = frozenset({"campaign_id", "description", "recipe_id"})
 FROZEN_BACKEND_KEYS = frozenset({"n_steps"})
 MAX_RESERVED_JOBS = 48
 CONFIRMATION_RUNS = 5
-SEARCH_SEED_COUNT = 2
+PAIR_SEED_COUNT = 2
 MAX_CANDIDATES_PER_WAVE = 3
 DEFAULT_STALE_ROUNDS = 3
+DEFAULT_STRONG_THRESHOLD = 0.90
+SCREEN_FRACTION = 0.20
+PAIR_FRACTION = 0.50
+
+SCREEN_PHASES = frozenset({"baseline-screen", "search-screen"})
+PAIR_PHASES = frozenset({"baseline-pair", "search-pair"})
+SEARCH_PHASES = SCREEN_PHASES | PAIR_PHASES
+PHASES = SEARCH_PHASES | {"confirmation"}
 
 GROUPS: dict[str, frozenset[str]] = {
     "learning_rate": frozenset(
@@ -43,7 +57,9 @@ GROUPS: dict[str, frozenset[str]] = {
     "entropy": frozenset({"ent_coef", "ent_coef_final", "ent_coef_schedule_timesteps"}),
     "discounting": frozenset({"gamma", "gae_lambda"}),
     "value": frozenset({"vf_coef"}),
-    "ppo_update": frozenset({"batch_size", "n_epochs", "clip_range", "target_kl", "adam_eps"}),
+    "ppo_update": frozenset(
+        {"batch_size", "n_epochs", "clip_range", "target_kl", "adam_eps"}
+    ),
     "a2c_optimizer": frozenset(
         {"learning_rate", "learning_rate_final", "max_grad_norm", "rms_prop_eps", "vf_coef"}
     ),
@@ -156,8 +172,12 @@ def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 
 def load_state(path: Path) -> dict[str, Any]:
     state = json.loads(path.read_text(encoding="utf-8"))
-    if int(state.get("schema_version") or 0) != SCHEMA_VERSION:
-        raise ValueError(f"unsupported study schema in {path}")
+    version = int(state.get("schema_version") or 0)
+    if version != SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported autoresearch study schema {version} in {path}; "
+            "v1 studies are historical and cannot be resumed"
+        )
     return state
 
 
@@ -224,7 +244,9 @@ def update_work(config: Mapping[str, Any], backend: str, n_envs: int) -> float:
     if backend != "sb3.ppo":
         return 1.0
     rollout = int(config["n_steps"]) * int(n_envs)
-    return float(config.get("n_epochs", 1)) * rollout / float(config.get("batch_size", rollout))
+    return float(config.get("n_epochs", 1)) * rollout / float(
+        config.get("batch_size", rollout)
+    )
 
 
 def validate_delta(
@@ -294,52 +316,136 @@ def record_source_pause(state: dict[str, Any], error: Exception) -> dict[str, An
     return {"action": "pause", "reason": state["pause_reason"]}
 
 
-def frozen_censor_step(state: Mapping[str, Any]) -> int:
-    train = state["baseline"]["train_config"]
-    quantum = int(train["training_backend"]["config"]["n_steps"]) * int(state["n_envs"])
-    return int(math.ceil(int(train["timesteps"]) / quantum) * quantum)
+def effective_cap(timesteps: int, quantum: int) -> int:
+    return int(math.ceil(int(timesteps) / int(quantum)) * int(quantum))
+
+
+def rung_caps(timesteps: int, quantum: int) -> dict[str, int]:
+    full_effective = effective_cap(timesteps, quantum)
+    screen = effective_cap(math.ceil(timesteps * SCREEN_FRACTION), quantum)
+    pair = effective_cap(math.ceil(timesteps * PAIR_FRACTION), quantum)
+    if not screen < pair < full_effective:
+        raise ValueError(
+            "autoresearch requires distinct 20%, 50%, and full effective training caps"
+        )
+    return {
+        "screen": screen,
+        "pair": pair,
+        "confirmation": int(timesteps),
+        "confirmation_effective": full_effective,
+    }
+
+
+def configured_starts(train: Mapping[str, Any]) -> list[str]:
+    environment = train.get("environment") or {}
+    config = environment.get("env_config") or {}
+    raw_states = train.get("states") or config.get("states")
+    if raw_states:
+        values = [str(value) for value in raw_states]
+    elif train.get("state") is not None or config.get("state") is not None:
+        values = [str(train.get("state", config.get("state")))]
+    else:
+        raise ValueError("autoresearch requires explicit configured training start states")
+    values = list(dict.fromkeys(values))
+    if not values or any(not value for value in values):
+        raise ValueError("autoresearch training start states must be non-empty")
+    return values
 
 
 def candidate_score(state: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
-    runs = list(candidate.get("search_runs") or [])
-    censor = frozen_censor_step(state)
-    values: list[int] = []
-    accepted = 0
+    runs = list(candidate.get("pair_runs") or [])
+    if len(runs) != PAIR_SEED_COUNT:
+        raise ValueError("paired candidate evidence requires exactly two runs")
+    censor = int(state["rung_caps"]["pair"])
+    strong = 0
+    crossing_steps: list[int] = []
+    peaks: list[float] = []
     for run in runs:
-        if run.get("accepted_verified"):
-            accepted += 1
-            values.append(int(run["promoted_step"]))
+        evidence = run["training_evidence"]
+        step = evidence.get("first_strong_step")
+        if bool(evidence.get("strong")) and step is not None:
+            strong += 1
+            crossing_steps.append(int(step))
         else:
-            values.append(censor)
-    while len(values) < SEARCH_SEED_COUNT:
-        values.append(censor)
-    values = sorted(values[:SEARCH_SEED_COUNT])
-    median = sum(values) / len(values)
+            crossing_steps.append(censor)
+        peak = evidence.get("peak_window_100_rate_min")
+        peaks.append(float(peak) if peak is not None else 0.0)
     return {
-        "accepted_verified": accepted,
-        "median_censored_step": median,
-        "worst_censored_step": max(values),
+        "strong_seeds": strong,
+        "median_censored_first_strong_step": float(median(crossing_steps)),
+        "worst_censored_first_strong_step": max(crossing_steps),
+        "worst_peak_window_100_rate_min": min(peaks),
         "candidate_id": candidate["id"],
     }
 
 
-def evidence_key(score: Mapping[str, Any]) -> tuple[float, float, float]:
+def evidence_key(score: Mapping[str, Any]) -> tuple[float, float, float, float]:
     return (
-        -float(score["accepted_verified"]),
-        float(score["median_censored_step"]),
-        float(score["worst_censored_step"]),
+        -float(score["strong_seeds"]),
+        float(score["median_censored_first_strong_step"]),
+        float(score["worst_censored_first_strong_step"]),
+        -float(score["worst_peak_window_100_rate_min"]),
     )
 
 
 def ranked_candidates(state: Mapping[str, Any]) -> list[dict[str, Any]]:
-    rows = []
+    rows: list[dict[str, Any]] = []
     excluded = set(state.get("excluded_candidates") or [])
     for candidate in state["candidates"].values():
-        if candidate["id"] in excluded or len(candidate.get("search_runs") or []) != 2:
+        runs = list(candidate.get("pair_runs") or [])
+        if candidate["id"] in excluded or len(runs) != PAIR_SEED_COUNT:
+            continue
+        if not all(
+            bool((run.get("training_evidence") or {}).get("all_starts_succeeded"))
+            for run in runs
+        ):
             continue
         score = candidate_score(state, candidate)
         rows.append({"candidate": candidate, "score": score})
     return sorted(rows, key=lambda row: (*evidence_key(row["score"]), row["score"]["candidate_id"]))
+
+
+def find_wave(state: Mapping[str, Any], submission_key: str) -> dict[str, Any]:
+    matches = [wave for wave in state["waves"] if wave["submission_key"] == submission_key]
+    if len(matches) != 1:
+        raise ValueError(f"submission key maps to {len(matches)} waves")
+    return matches[0]
+
+
+def candidate_wave(
+    state: Mapping[str, Any], candidate_id_value: str, phases: frozenset[str]
+) -> dict[str, Any] | None:
+    matches = [
+        wave
+        for wave in state["waves"]
+        if wave["candidate_id"] == candidate_id_value and wave["phase"] in phases
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(f"candidate {candidate_id_value} has duplicate rung waves")
+    return matches[0] if matches else None
+
+
+def wave_evidence_complete(wave: Mapping[str, Any]) -> bool:
+    return len(wave.get("terminal_runs") or []) == len(wave["seeds"]) and all(
+        item.get("training_evidence") is not None for item in wave.get("terminal_runs") or []
+    )
+
+
+def round_ready_to_close(state: Mapping[str, Any], round_number: int) -> bool:
+    screens = [
+        wave
+        for wave in state["waves"]
+        if int(wave["round"]) == round_number and wave["phase"] in SCREEN_PHASES
+    ]
+    if not screens or any(not wave_evidence_complete(wave) for wave in screens):
+        return False
+    for screen in screens:
+        record = screen["terminal_runs"][0]
+        if bool(record["training_evidence"]["all_starts_succeeded"]):
+            pair = candidate_wave(state, screen["candidate_id"], PAIR_PHASES)
+            if pair is None or not wave_evidence_complete(pair):
+                return False
+    return True
 
 
 def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -349,50 +455,91 @@ def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
         return {"action": "done", "winner": state.get("winner")}
     if state["status"] == "apply_pending":
         return {"action": "apply_postimage", "winner": state.get("winner")}
-    for wave in state["waves"]:
+    open_waves = [wave for wave in state["waves"] if not wave.get("closed")]
+    for wave in open_waves:
         if wave["status"] == "reserved":
             return {
                 "action": "reconcile_submission",
                 "batch_id": wave["batch_id"],
                 "submission_key": wave["submission_key"],
             }
-        if wave["status"] == "launched" and len(wave["terminal_runs"]) < len(wave["seeds"]):
-            return {"action": "await_runs", "run_ids": wave["run_ids"]}
+    for wave in open_waves:
+        for run in wave.get("terminal_runs") or []:
+            if run.get("training_evidence") is None:
+                return {"action": "collect_training_evidence", "run_id": int(run["run_id"])}
+
     baseline = state["candidates"][state["baseline_candidate_id"]]
-    if len(baseline["search_runs"]) < SEARCH_SEED_COUNT:
-        return {"action": "reserve_baseline"}
-    unclosed = [
+    baseline_screen = candidate_wave(state, baseline["id"], SCREEN_PHASES)
+    if baseline_screen is None:
+        return {"action": "reserve_baseline_screen"}
+    if wave_evidence_complete(baseline_screen):
+        screen_passed = bool(
+            baseline_screen["terminal_runs"][0]["training_evidence"]["all_starts_succeeded"]
+        )
+        if screen_passed and candidate_wave(state, baseline["id"], PAIR_PHASES) is None:
+            return {"action": "reserve_baseline_pair", "candidate_id": baseline["id"]}
+    if not baseline_screen.get("closed") and round_ready_to_close(state, 0):
+        return {"action": "close_round", "round": 0}
+
+    current_round = int(state["search_round"]) + 1
+    screens = [
         wave
         for wave in state["waves"]
-        if wave["phase"] in {"baseline", "search"}
-        and wave["status"] == "terminal"
-        and not wave.get("closed")
+        if int(wave["round"]) == current_round and wave["phase"] == "search-screen"
     ]
-    if unclosed:
-        return {"action": "close_round", "round": min(int(wave["round"]) for wave in unclosed)}
+    for screen in screens:
+        if not wave_evidence_complete(screen):
+            continue
+        passed = bool(screen["terminal_runs"][0]["training_evidence"]["all_starts_succeeded"])
+        if passed and candidate_wave(state, screen["candidate_id"], PAIR_PHASES) is None:
+            return {"action": "reserve_search_pair", "candidate_id": screen["candidate_id"]}
+
+    awaiting = [
+        int(run_id)
+        for wave in open_waves
+        if wave["status"] == "launched"
+        for run_id in wave["run_ids"]
+        if int(run_id)
+        not in {int(item["run_id"]) for item in wave.get("terminal_runs") or []}
+    ]
+    if awaiting:
+        return {"action": "await_runs", "run_ids": sorted(awaiting)}
+
+    if screens and round_ready_to_close(state, current_round):
+        return {"action": "close_round", "round": current_round}
+
     confirmation = state.get("confirmation")
     if confirmation and not confirmation.get("closed"):
         return {"action": "close_confirmation", "candidate_id": confirmation["candidate_id"]}
     if state.get("winner"):
         return {"action": "prepare_winner", "winner": state["winner"]}
+
     remaining = MAX_RESERVED_JOBS - int(state["reserved_jobs"])
-    if int(state["stale_rounds"]) >= int(state["policy"]["stale_round_limit"]) or remaining < (
-        SEARCH_SEED_COUNT + CONFIRMATION_RUNS
-    ):
+    stop_search = int(state["stale_rounds"]) >= int(state["policy"]["stale_round_limit"])
+    stop_search = stop_search or remaining < (1 + PAIR_SEED_COUNT + CONFIRMATION_RUNS)
+    if stop_search:
         if state.get("incumbent_candidate_id") and remaining >= CONFIRMATION_RUNS:
             return {
                 "action": "reserve_confirmation",
                 "candidate_id": state["incumbent_candidate_id"],
             }
         return {"action": "finish_no_winner", "reason": "search budget or evidence exhausted"}
+    if screens:
+        raise RuntimeError("current search round is incomplete but has no deterministic action")
     return {
         "action": "propose_search",
-        "round": int(state["search_round"]) + 1,
-        "max_candidates": MAX_CANDIDATES_PER_WAVE,
+        "round": current_round,
+        "max_candidates": min(
+            MAX_CANDIDATES_PER_WAVE,
+            max(0, (remaining - CONFIRMATION_RUNS) // (1 + PAIR_SEED_COUNT)),
+        ),
     }
 
 
 def command_init(args: argparse.Namespace) -> None:
+    threshold = float(args.strong_threshold)
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError("--strong-threshold must be greater than zero and at most one")
     root = Path(args.root).resolve()
     goal = Path(args.goal)
     recipe = Path(args.recipe)
@@ -401,23 +548,34 @@ def command_init(args: argparse.Namespace) -> None:
     head = git_head(root)
     goal_path = relative(root, goal)
     recipe_path = relative(root, recipe)
-    input_hash = digest({"goal": goal_path, "recipe": recipe_path, "source_sha": head})
+    input_hash = digest(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "goal": goal_path,
+            "recipe": recipe_path,
+            "source_sha": head,
+            "strong_threshold": threshold,
+        }
+    )
     studies_root = root / "runs" / "autoresearch"
     with lock(studies_root / ".discovery.lock"):
-        matches = []
+        matches: list[Path] = []
         current_leaf = file_sha256(recipe)
         for path in sorted(studies_root.glob("*/study.json")):
-            prior = load_state(path)
-            if prior.get("status") == "done":
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if int(raw.get("schema_version") or 0) != SCHEMA_VERSION:
                 continue
-            apply = prior.get("apply") or {}
+            if raw.get("status") == "done":
+                continue
+            apply = raw.get("apply") or {}
             recognized = current_leaf in {
-                prior.get("recipe_preimage_sha256"),
+                raw.get("recipe_preimage_sha256"),
                 apply.get("postimage_sha256"),
             }
-            if prior.get("input_hash") == input_hash or (
-                prior.get("goal_path") == goal_path
-                and prior.get("recipe_path") == recipe_path
+            if raw.get("input_hash") == input_hash or (
+                raw.get("goal_path") == goal_path
+                and raw.get("recipe_path") == recipe_path
+                and float((raw.get("policy") or {}).get("strong_threshold", -1)) == threshold
                 and recognized
             ):
                 matches.append(path)
@@ -428,19 +586,14 @@ def command_init(args: argparse.Namespace) -> None:
             source_guard(state, allow_postimage=True)
             emit({"study": str(matches[0]), "resumed": True, "next": next_action(state)})
             return
+
         document = compose_train_document(goal, recipe)
         train = document["train_config"]
         backend = training_backend_id(train)
         if backend not in SUPPORTED_BACKENDS:
             raise ValueError(
-                f"autoresearch v1 supports only {sorted(SUPPORTED_BACKENDS)}, got {backend}"
+                f"autoresearch v2 supports only {sorted(SUPPORTED_BACKENDS)}, got {backend}"
             )
-        if accepts_first_training_success(train):
-            raise ValueError("autoresearch requires checkpoint-evaluated acceptance")
-        if str(train.get("checkpoint_eval_backend") or "none") == "none":
-            raise ValueError("autoresearch requires an available checkpoint evaluation backend")
-        if not bool(train.get("stop_on_acceptance")):
-            raise ValueError("autoresearch requires goal-owned stop-on-acceptance promotion")
         composition = document.get("_composition") or {}
         sources = [
             {"path": relative(root, item["path"]), "sha256": str(item["sha256"])}
@@ -450,24 +603,27 @@ def command_init(args: argparse.Namespace) -> None:
             sources.append({"path": recipe_path, "sha256": file_sha256(recipe)})
         for item in sources:
             committed_hash = git_blob_sha256(root, head, item["path"])
-            if (
-                committed_hash != item["sha256"]
-                or file_sha256(root / item["path"]) != committed_hash
-            ):
+            if committed_hash != item["sha256"] or file_sha256(root / item["path"]) != committed_hash:
                 raise RuntimeError(
-                    f"composition source differs from committed HEAD and cannot be launched "
+                    "composition source differs from committed HEAD and cannot be launched "
                     f"with --from-head: {item['path']}"
                 )
+
+        backend_config = copy.deepcopy(train["training_backend"]["config"])
+        n_envs = provider_num_envs(train, explicit_n_envs=train.get("n_envs"))
+        quantum = int(backend_config["n_steps"]) * int(n_envs)
+        caps = rung_caps(int(train["timesteps"]), quantum)
+        starts = configured_starts(train)
+        screen_seed = 123
+        pair_seeds = [123 + index * n_envs for index in range(1, 1 + PAIR_SEED_COUNT)]
+        confirmation_seeds = [
+            123 + index * n_envs
+            for index in range(1 + PAIR_SEED_COUNT, 1 + PAIR_SEED_COUNT + CONFIRMATION_RUNS)
+        ]
+        baseline_id = candidate_id({})
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         directory = studies_root / f"{stamp}-{input_hash[:12]}"
         directory.mkdir(parents=True, exist_ok=False)
-        backend_config = copy.deepcopy(train["training_backend"]["config"])
-        n_envs = provider_num_envs(train, explicit_n_envs=train.get("n_envs"))
-        search_seeds = [123 + index * n_envs for index in range(SEARCH_SEED_COUNT)]
-        confirmation_seeds = [
-            123 + (SEARCH_SEED_COUNT + index) * n_envs for index in range(CONFIRMATION_RUNS)
-        ]
-        baseline_id = candidate_id({})
         state = {
             "schema_version": SCHEMA_VERSION,
             "study_id": uuid.uuid4().hex,
@@ -484,8 +640,11 @@ def command_init(args: argparse.Namespace) -> None:
             "source_files": sources,
             "backend": backend,
             "n_envs": n_envs,
-            "search_seeds": search_seeds,
+            "configured_starts": starts,
+            "screen_seed": screen_seed,
+            "pair_seeds": pair_seeds,
             "confirmation_seeds": confirmation_seeds,
+            "rung_caps": caps,
             "runtime": None,
             "policy": {
                 "machine": "beast-3",
@@ -493,17 +652,15 @@ def command_init(args: argparse.Namespace) -> None:
                 "stale_round_limit": DEFAULT_STALE_ROUNDS,
                 "confirmation_runs": CONFIRMATION_RUNS,
                 "confirmation_required": 4,
+                "strong_threshold": threshold,
+                "checkpoint_evaluation": "disabled",
             },
             "baseline": {
                 "backend_config": backend_config,
                 "tunables": numeric_tunables(backend_config),
                 "train_config": copy.deepcopy(train),
                 "update_work_per_env_step": update_work(backend_config, backend, n_envs),
-                "censor_step": int(
-                    math.ceil(int(train["timesteps"]) / (int(backend_config["n_steps"]) * n_envs))
-                    * int(backend_config["n_steps"])
-                    * n_envs
-                ),
+                "rollout_quantum": quantum,
             },
             "baseline_candidate_id": baseline_id,
             "candidates": {
@@ -511,7 +668,8 @@ def command_init(args: argparse.Namespace) -> None:
                     "id": baseline_id,
                     "delta": {},
                     "created_round": 0,
-                    "search_runs": [],
+                    "screen_runs": [],
+                    "pair_runs": [],
                     "confirmation_runs": [],
                 }
             },
@@ -564,9 +722,10 @@ def expected_recipe_overrides(state: Mapping[str, Any], wave: Mapping[str, Any])
         f"train.backend.config.{key}={json.dumps(value)}"
         for key, value in candidate["delta"].items()
     ]
+    overrides.append(f"train.timesteps={int(wave['timesteps'])}")
     description = (
         f"Autoresearch {state['study_id'][:8]} {wave['phase']} candidate "
-        f"{wave['candidate_id']} seed {{seed}}."
+        f"{wave['candidate_id']} seed {{seed}}. Training-only evidence; no evaluation or promotion."
     )
     return [*overrides, f"description={description}"]
 
@@ -586,6 +745,8 @@ def launch_command(state: Mapping[str, Any], wave: Mapping[str, Any]) -> list[st
         "--request-id",
         wave["submission_key"],
         "--existing-runtime-only",
+        "--checkpoint-eval-backend",
+        "none",
     ]
     runtime = state.get("runtime")
     if runtime:
@@ -614,22 +775,22 @@ def reserve_one(
     round_number: int,
     candidate: Mapping[str, Any],
     seeds: list[int],
+    timesteps: int,
 ) -> dict[str, Any]:
     delta = dict(candidate.get("delta") or {})
-    if phase == "baseline":
+    if phase.startswith("baseline"):
         identifier = state["baseline_candidate_id"]
     else:
-        delta = validate_delta(state, delta) if phase == "search" else delta
+        delta = validate_delta(state, delta) if phase == "search-screen" else delta
         identifier = candidate_id(delta)
-        if phase == "confirmation" and identifier != state["incumbent_candidate_id"]:
-            raise ValueError("confirmation must use the current incumbent")
         state["candidates"].setdefault(
             identifier,
             {
                 "id": identifier,
                 "delta": delta,
                 "created_round": round_number,
-                "search_runs": [],
+                "screen_runs": [],
+                "pair_runs": [],
                 "confirmation_runs": [],
             },
         )
@@ -642,6 +803,7 @@ def reserve_one(
         "round": round_number,
         "candidate_id": identifier,
         "seeds": seeds,
+        "timesteps": int(timesteps),
         "submission_key": submission_key,
         "batch_id": submission_batch_id(submission_key),
         "status": "reserved",
@@ -666,62 +828,81 @@ def command_reserve(args: argparse.Namespace) -> None:
             return
         if state["status"] != "active":
             raise RuntimeError(f"cannot reserve while study is {state['status']}")
-        action = next_action(state)["action"]
+        action = next_action(state)
         phase = args.phase
-        if phase == "baseline" and action != "reserve_baseline":
-            raise RuntimeError(f"state expects {action}, not baseline reservation")
-        if phase == "search" and action != "propose_search":
-            raise RuntimeError(f"state expects {action}, not search reservation")
-        if phase == "confirmation" and action != "reserve_confirmation":
-            raise RuntimeError(f"state expects {action}, not confirmation reservation")
+        expected_actions = {
+            "baseline-screen": "reserve_baseline_screen",
+            "baseline-pair": "reserve_baseline_pair",
+            "search-screen": "propose_search",
+            "search-pair": "reserve_search_pair",
+            "confirmation": "reserve_confirmation",
+        }
+        if action["action"] != expected_actions[phase]:
+            raise RuntimeError(f"state expects {action['action']}, not {phase} reservation")
         free = max(int(args.effective_capacity) - int(args.active_reservations), 0)
         if free <= 0:
             raise RuntimeError("beast-3 has no available slot; wait without reserving a wave")
+
         candidates = parse_candidates(args.candidates_json)
-        if phase == "baseline":
+        if phase == "baseline-screen":
             candidates = [{"delta": {}}]
-            seeds = list(state["search_seeds"])
-            cohort_limit = 1
+            seeds = [int(state["screen_seed"])]
+            timesteps = int(state["rung_caps"]["screen"])
             round_number = 0
-        elif phase == "confirmation":
-            incumbent = state["candidates"][state["incumbent_candidate_id"]]
-            candidates = [{"delta": incumbent["delta"]}]
-            seeds = list(state["confirmation_seeds"])
-            cohort_limit = 1
-            round_number = int(state["search_round"])
-        else:
-            seeds = list(state["search_seeds"])
+        elif phase == "baseline-pair":
+            candidates = [{"delta": {}}]
+            seeds = list(state["pair_seeds"])
+            timesteps = int(state["rung_caps"]["pair"])
+            round_number = 0
+        elif phase == "search-screen":
+            seeds = [int(state["screen_seed"])]
+            timesteps = int(state["rung_caps"]["screen"])
             round_number = int(state["search_round"]) + 1
-            budget_cohorts = (
-                MAX_RESERVED_JOBS - int(state["reserved_jobs"]) - CONFIRMATION_RUNS
-            ) // SEARCH_SEED_COUNT
+            remaining = MAX_RESERVED_JOBS - int(state["reserved_jobs"])
             cohort_limit = min(
                 MAX_CANDIDATES_PER_WAVE,
-                max(1, math.ceil(free / SEARCH_SEED_COUNT)),
-                budget_cohorts,
+                free,
+                max(0, (remaining - CONFIRMATION_RUNS) // (1 + PAIR_SEED_COUNT)),
             )
+            if cohort_limit <= 0:
+                raise RuntimeError("job budget cannot support another complete screened candidate")
+            if len(candidates) != cohort_limit:
+                raise ValueError(f"provide exactly {cohort_limit} new screen candidates")
+        elif phase == "search-pair":
+            candidate_value = str(args.candidate_id or action.get("candidate_id") or "")
+            if candidate_value != str(action.get("candidate_id") or ""):
+                raise ValueError("--candidate-id does not match the deterministic next action")
+            incumbent = state["candidates"].get(candidate_value)
+            if not incumbent:
+                raise ValueError(f"unknown candidate: {candidate_value}")
+            candidates = [{"delta": incumbent["delta"]}]
+            seeds = list(state["pair_seeds"])
+            timesteps = int(state["rung_caps"]["pair"])
+            round_number = int(incumbent["created_round"])
+        else:
+            candidate_value = str(state["incumbent_candidate_id"] or "")
+            incumbent = state["candidates"].get(candidate_value)
+            if not incumbent:
+                raise RuntimeError("confirmation requires a ranked incumbent")
+            candidates = [{"delta": incumbent["delta"]}]
+            seeds = list(state["confirmation_seeds"])
+            timesteps = int(state["rung_caps"]["confirmation"])
+            round_number = int(state["search_round"])
+
         if not candidates:
             raise ValueError("at least one candidate is required")
-        if phase == "search" and len(candidates) < cohort_limit:
-            raise ValueError(
-                f"provide exactly {cohort_limit} new candidates to fill available beast-3 slots"
-            )
         candidates = sorted(candidates, key=lambda item: candidate_id(item.get("delta") or {}))
-        candidates = candidates[:cohort_limit]
         identifiers = [candidate_id(item.get("delta") or {}) for item in candidates]
         if len(set(identifiers)) != len(identifiers):
-            raise ValueError("a search wave cannot reserve the same candidate twice")
-        if phase == "search":
-            existing = set(state["candidates"])
-            repeated = sorted(set(identifiers) & existing)
+            raise ValueError("a wave cannot reserve the same candidate twice")
+        if phase == "search-screen":
+            repeated = sorted(set(identifiers) & set(state["candidates"]))
             if repeated:
                 raise ValueError(f"search candidates must be new to the study: {repeated}")
         needed = len(candidates) * len(seeds)
         reserve_for_confirmation = 0 if phase == "confirmation" else CONFIRMATION_RUNS
         if int(state["reserved_jobs"]) + needed + reserve_for_confirmation > MAX_RESERVED_JOBS:
-            raise RuntimeError(
-                "reservation would consume the confirmation reserve or exceed 48 jobs"
-            )
+            raise RuntimeError("reservation would consume the confirmation reserve or exceed 48 jobs")
         waves = [
             reserve_one(
                 state,
@@ -729,6 +910,7 @@ def command_reserve(args: argparse.Namespace) -> None:
                 round_number=round_number,
                 candidate=candidate,
                 seeds=seeds,
+                timesteps=timesteps,
             )
             for candidate in candidates
         ]
@@ -749,13 +931,6 @@ def command_reserve(args: argparse.Namespace) -> None:
             for wave in waves
         ]
     emit({"study": str(path), "reserved": output, "launch_concurrently": len(output) > 1})
-
-
-def find_wave(state: Mapping[str, Any], submission_key: str) -> dict[str, Any]:
-    matches = [wave for wave in state["waves"] if wave["submission_key"] == submission_key]
-    if len(matches) != 1:
-        raise ValueError(f"submission key maps to {len(matches)} waves")
-    return matches[0]
 
 
 def read_json_arg(value: str | None, path: str | None) -> dict[str, Any]:
@@ -848,6 +1023,9 @@ def command_record_launch(args: argparse.Namespace) -> None:
                         or []
                     )
                 )
+                train_config = row.get("train_config") or {}
+                if train_config and str(train_config.get("checkpoint_eval_backend")) != "none":
+                    errors.append("submission row did not materialize training-only execution")
             if any(value != expected_recipe_overrides(state, wave) for value in observed_overrides):
                 errors.append("submission rows do not match the reserved recipe overrides")
         runtime = {
@@ -858,12 +1036,21 @@ def command_record_launch(args: argparse.Namespace) -> None:
         if not all(runtime.values()) and rows:
             first = rows[0]
             runtime_projection = first.get("runtime") or {}
+            config = first.get("train_config") or {}
             runtime = {
                 "image_ref": str(
                     runtime_projection.get("image_ref") or first.get("runtime_image_ref") or ""
                 ),
-                "input_sha256": str(runtime_projection.get("input_sha256") or ""),
-                "build_source_sha": str(runtime_projection.get("build_source_sha") or ""),
+                "input_sha256": str(
+                    runtime_projection.get("input_sha256")
+                    or config.get("runtime_input_sha256")
+                    or ""
+                ),
+                "build_source_sha": str(
+                    runtime_projection.get("build_source_sha")
+                    or config.get("runtime_build_source_sha")
+                    or ""
+                ),
             }
         if rows:
             row_runtimes = set()
@@ -932,52 +1119,176 @@ def command_record_terminal(args: argparse.Namespace) -> None:
             emit({"study": str(path), "duplicate": True, "run_id": run_id})
             return
         classification = str(payload.get("terminal_classification") or "")
-        if classification not in {
-            "accepted",
-            "goal_rejected",
-            "completed",
-            "canceled",
-            "operational_failure",
-        }:
-            raise ValueError("payload is not a terminal follow event")
-        wandb = payload.get("wandb") or {}
         evaluation = payload.get("evaluation") or {}
-        accepted_verified = (
-            classification == "accepted"
-            and bool(payload.get("verified_success"))
+        wandb = payload.get("wandb") or {}
+        wandb_terminal = payload.get("wandb_terminal") or {}
+        valid = (
+            classification == "completed"
+            and evaluation.get("acceptance_required") is False
             and bool(wandb.get("remote_verified"))
+            and bool(wandb.get("url"))
+            and bool(wandb.get("run_id"))
+            and str(wandb_terminal.get("state") or "finished") == "finished"
         )
-        promoted_step = evaluation.get("promoted_step")
-        if accepted_verified and promoted_step is None:
-            raise RuntimeError("accepted+verified terminal event lacks promoted_step")
         record = {
             "run_id": run_id,
             "seed": seed,
             "classification": classification,
-            "accepted_verified": accepted_verified,
-            "promoted_step": int(promoted_step) if promoted_step is not None else None,
+            "wandb_run_id": wandb.get("run_id"),
             "wandb_url": wandb.get("url"),
-            "artifact": (payload.get("artifacts") or {}).get("wandb_artifact"),
+            "training_evidence": None,
         }
         wave["terminal_runs"].append(record)
         wave["terminal_runs"].sort(key=lambda item: item["seed"])
-        candidate = state["candidates"][wave["candidate_id"]]
-        destination = "confirmation_runs" if wave["phase"] == "confirmation" else "search_runs"
-        candidate[destination].append(record)
-        candidate[destination].sort(key=lambda item: (item["seed"], item["run_id"]))
-        if len(wave["terminal_runs"]) == len(wave["seeds"]):
-            wave["status"] = "terminal"
-        if classification in {"canceled", "operational_failure", "completed"} or (
-            classification == "accepted" and not accepted_verified
-        ):
+        if not valid:
             state["status"] = "paused"
             state["pause_reason"] = {
-                "event": "terminal_without_valid_research_evidence",
+                "event": "terminal_without_valid_training_evidence_source",
                 "run_id": run_id,
                 "classification": classification,
+                "acceptance_required": evaluation.get("acceptance_required"),
                 "remote_verified": bool(wandb.get("remote_verified")),
+                "wandb_state": wandb_terminal.get("state"),
             }
+        elif len(wave["terminal_runs"]) == len(wave["seeds"]):
+            wave["status"] = "awaiting_evidence"
     emit({"study": str(path), "run_id": run_id, "next": next_action(load_state(path))})
+
+
+def _summary_scalar(value: Any) -> Any:
+    if not isinstance(value, dict) and hasattr(value, "keys"):
+        value = dict(value)
+    if isinstance(value, dict) and len(value) == 1:
+        return next(iter(value.values()))
+    return value
+
+
+def _wandb_run_path(url: str) -> str:
+    parts = [part for part in urlparse(url).path.split("/") if part]
+    if len(parts) < 4 or parts[-2] != "runs":
+        raise ValueError(f"unrecognized W&B run URL: {url}")
+    return f"{parts[0]}/{parts[1]}/{parts[-1]}"
+
+
+def fetch_training_evidence(
+    *,
+    url: str,
+    expected_run_id: str,
+    starts: list[str],
+    strong_threshold: float,
+) -> dict[str, Any]:
+    import wandb
+
+    remote = wandb.Api(timeout=30).run(_wandb_run_path(url))
+    if str(remote.id) != str(expected_run_id):
+        raise RuntimeError("W&B run identity does not match the terminal event")
+    if str(remote.state) != "finished":
+        raise RuntimeError(f"W&B run is not remotely finished: {remote.state}")
+    summary = remote.summary
+    counts: dict[str, int] = {}
+    for start in starts:
+        metric = f"train/outcome/success/from/{start}/count"
+        raw = _summary_scalar(summary.get(metric))
+        counts[start] = int(raw or 0)
+    all_starts_succeeded = all(value > 0 for value in counts.values())
+
+    peak: float | None = None
+    first_strong_step: int | None = None
+    observed_max_step = int(_summary_scalar(summary.get(GLOBAL_STEP)) or 0)
+    for row in remote.scan_history(
+        keys=[GLOBAL_STEP, TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN],
+        page_size=1000,
+    ):
+        step = row.get(GLOBAL_STEP)
+        value = row.get(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN)
+        if step is None or value is None:
+            continue
+        step = int(step)
+        value = float(value)
+        observed_max_step = max(observed_max_step, step)
+        peak = value if peak is None else max(peak, value)
+        if first_strong_step is None and value >= strong_threshold:
+            first_strong_step = step
+    return {
+        "all_starts_succeeded": all_starts_succeeded,
+        "success_counts_by_start": counts,
+        "peak_window_100_rate_min": peak,
+        "first_strong_step": first_strong_step,
+        "strong": first_strong_step is not None,
+        "observed_max_step": observed_max_step,
+        "strong_threshold": strong_threshold,
+        "wandb_run_id": str(remote.id),
+        "wandb_url": str(remote.url or url),
+        "wandb_state": str(remote.state),
+        "collected_at": utc_now(),
+    }
+
+
+def command_collect_training_evidence(args: argparse.Namespace) -> None:
+    path = study_path(args.study)
+    state = load_state(path)
+    if state["status"] != "active":
+        raise RuntimeError(f"cannot collect evidence while study is {state['status']}")
+    try:
+        source_guard(state)
+    except RuntimeError as exc:
+        with edit_state(path) as current:
+            action = record_source_pause(current, exc)
+        emit({"study": str(path), "next": action})
+        return
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for wave in state["waves"]:
+        for record in wave.get("terminal_runs") or []:
+            if int(record["run_id"]) == int(args.run_id):
+                matches.append((wave, record))
+    if len(matches) != 1:
+        raise ValueError(f"run {args.run_id} maps to {len(matches)} terminal records")
+    _, record = matches[0]
+    if record.get("training_evidence") is not None:
+        emit({"study": str(path), "run_id": int(args.run_id), "duplicate": True})
+        return
+    evidence = fetch_training_evidence(
+        url=str(record["wandb_url"]),
+        expected_run_id=str(record["wandb_run_id"]),
+        starts=list(state["configured_starts"]),
+        strong_threshold=float(state["policy"]["strong_threshold"]),
+    )
+    with edit_state(path) as current:
+        source_guard(current)
+        current_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for wave in current["waves"]:
+            for item in wave.get("terminal_runs") or []:
+                if int(item["run_id"]) == int(args.run_id):
+                    current_matches.append((wave, item))
+        if len(current_matches) != 1:
+            raise RuntimeError("terminal record changed while collecting W&B evidence")
+        wave, item = current_matches[0]
+        if item.get("training_evidence") is not None:
+            emit({"study": str(path), "run_id": int(args.run_id), "duplicate": True})
+            return
+        if str(item["wandb_run_id"]) != evidence["wandb_run_id"]:
+            raise RuntimeError("W&B identity changed while collecting evidence")
+        item["training_evidence"] = evidence
+        candidate = current["candidates"][wave["candidate_id"]]
+        destination = (
+            "screen_runs"
+            if wave["phase"] in SCREEN_PHASES
+            else "pair_runs"
+            if wave["phase"] in PAIR_PHASES
+            else "confirmation_runs"
+        )
+        candidate[destination].append(copy.deepcopy(item))
+        candidate[destination].sort(key=lambda value: (value["seed"], value["run_id"]))
+        if wave_evidence_complete(wave):
+            wave["status"] = "evidence_complete"
+    emit(
+        {
+            "study": str(path),
+            "run_id": int(args.run_id),
+            "training_evidence": evidence,
+            "next": next_action(load_state(path)),
+        }
+    )
 
 
 def command_close_round(args: argparse.Namespace) -> None:
@@ -987,26 +1298,32 @@ def command_close_round(args: argparse.Namespace) -> None:
         waves = [
             wave
             for wave in state["waves"]
-            if int(wave["round"]) == round_number and wave["phase"] in {"baseline", "search"}
+            if int(wave["round"]) == round_number and wave["phase"] in SEARCH_PHASES
         ]
-        if not waves or any(wave["status"] != "terminal" for wave in waves):
-            raise RuntimeError("round barrier requires every cohort to be terminal")
+        if not waves or not round_ready_to_close(state, round_number):
+            raise RuntimeError("round barrier requires complete screen and promoted-pair evidence")
         if any(wave.get("closed") for wave in waves):
             raise RuntimeError("round was already closed")
         ranked = ranked_candidates(state)
-        if not ranked:
-            raise RuntimeError("no complete paired candidate evidence is available")
-        best = ranked[0]
+        best = ranked[0] if ranked else None
         prior = state.get("incumbent_evidence")
-        improved = prior is None or evidence_key(best["score"]) < evidence_key(prior)
+        improved = bool(best) and (prior is None or evidence_key(best["score"]) < evidence_key(prior))
         if round_number > 0:
             state["search_round"] = round_number
             state["stale_rounds"] = 0 if improved else int(state["stale_rounds"]) + 1
-        state["incumbent_candidate_id"] = best["candidate"]["id"]
-        state["incumbent_evidence"] = best["score"]
+        if best:
+            state["incumbent_candidate_id"] = best["candidate"]["id"]
+            state["incumbent_evidence"] = best["score"]
         for wave in waves:
             wave["closed"] = True
-    emit({"study": str(path), "ranking": [row["score"] for row in ranked], "improved": improved})
+    emit(
+        {
+            "study": str(path),
+            "ranking": [row["score"] for row in ranked],
+            "improved": improved,
+            "next": next_action(load_state(path)),
+        }
+    )
 
 
 def command_close_confirmation(args: argparse.Namespace) -> None:
@@ -1016,17 +1333,23 @@ def command_close_confirmation(args: argparse.Namespace) -> None:
         if not confirmation or confirmation.get("closed"):
             raise RuntimeError("no open confirmation exists")
         wave = find_wave(state, confirmation["submission_key"])
-        if wave["status"] != "terminal" or len(wave["terminal_runs"]) != CONFIRMATION_RUNS:
-            raise RuntimeError("confirmation barrier requires exactly five terminal runs")
-        accepted = sum(bool(item["accepted_verified"]) for item in wave["terminal_runs"])
+        if not wave_evidence_complete(wave) or len(wave["terminal_runs"]) != CONFIRMATION_RUNS:
+            raise RuntimeError("confirmation barrier requires five remotely evidenced runs")
+        strong = sum(
+            bool(item["training_evidence"]["strong"]) for item in wave["terminal_runs"]
+        )
         confirmation["closed"] = True
-        confirmation["accepted_verified"] = accepted
+        confirmation["strong_seed_count"] = strong
         candidate_id_value = confirmation["candidate_id"]
-        if accepted >= int(state["policy"]["confirmation_required"]):
+        if strong >= int(state["policy"]["confirmation_required"]):
+            wave["closed"] = True
             state["winner"] = {
                 "candidate_id": candidate_id_value,
                 "delta": state["candidates"][candidate_id_value]["delta"],
-                "accepted_verified": accepted,
+                "training_signal_confirmed": True,
+                "strong_seed_count": strong,
+                "total_seeds": CONFIRMATION_RUNS,
+                "strong_threshold": state["policy"]["strong_threshold"],
                 "runs": wave["terminal_runs"],
             }
         else:
@@ -1034,16 +1357,25 @@ def command_close_confirmation(args: argparse.Namespace) -> None:
             state["stale_rounds"] = 0
             redacted = {
                 "redacted": True,
-                "accepted_verified_count": accepted,
+                "strong_seed_count": strong,
                 "total": CONFIRMATION_RUNS,
             }
             state["candidates"][candidate_id_value]["confirmation_runs"] = [redacted]
             wave["terminal_runs"] = [redacted]
+            wave["closed"] = True
             ranked = ranked_candidates(state)
             state["incumbent_candidate_id"] = ranked[0]["candidate"]["id"] if ranked else None
             state["incumbent_evidence"] = ranked[0]["score"] if ranked else None
             state["confirmation"] = None
-    emit({"study": str(path), "accepted_verified": accepted, "next": next_action(load_state(path))})
+    emit(
+        {
+            "study": str(path),
+            "strong_seed_count": strong,
+            "training_signal_confirmed": strong
+            >= int(state["policy"]["confirmation_required"]),
+            "next": next_action(load_state(path)),
+        }
+    )
 
 
 def command_attention(args: argparse.Namespace) -> None:
@@ -1087,11 +1419,29 @@ def command_prepare_apply(args: argparse.Namespace) -> None:
             emit({"study": str(path), "next": action})
             return
         winner = state.get("winner")
-        if not winner:
-            raise RuntimeError("no holdout-confirmed winner exists")
+        if not winner or not winner.get("training_signal_confirmed"):
+            raise RuntimeError("no training-signal-confirmed winner exists")
         if not winner["delta"]:
             state["status"] = "done"
             state["apply"] = {"kind": "baseline_noop", "completed_at": utc_now()}
+            atomic_json(
+                path.parent / "report.json",
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "study_id": state["study_id"],
+                    "goal_path": state["goal_path"],
+                    "recipe_path": state["recipe_path"],
+                    "source_sha": state["source_sha"],
+                    "runtime": state["runtime"],
+                    "rung_caps": state["rung_caps"],
+                    "checkpoint_evaluation": "disabled",
+                    "checkpoint_promoted": False,
+                    "goal_accepted": False,
+                    "winner": winner,
+                    "reserved_jobs": state["reserved_jobs"],
+                    "completed_at": utc_now(),
+                },
+            )
         else:
             preimage = state["recipe_preimage"]
             if postimage == preimage:
@@ -1129,25 +1479,24 @@ def command_complete_apply(args: argparse.Namespace) -> None:
         recipe = Path(state["repo_root"]) / state["recipe_path"]
         if file_sha256(recipe) != state["apply"]["postimage_sha256"]:
             raise RuntimeError("recipe is not the exact preregistered postimage")
-        document = compose_train_document(
-            Path(state["repo_root"]) / state["goal_path"],
-            recipe,
-        )
+        document = compose_train_document(Path(state["repo_root"]) / state["goal_path"], recipe)
         expected = copy.deepcopy(state["baseline"]["train_config"])
         expected["training_backend"]["config"].update(state["winner"]["delta"])
         if document["train_config"] != expected:
-            raise RuntimeError(
-                "recomposition changed frozen fields or did not materialize the winner"
-            )
+            raise RuntimeError("recomposition changed frozen fields or did not materialize the winner")
         state["status"] = "done"
         state["apply"]["completed_at"] = utc_now()
         report = {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "study_id": state["study_id"],
             "goal_path": state["goal_path"],
             "recipe_path": state["recipe_path"],
             "source_sha": state["source_sha"],
             "runtime": state["runtime"],
+            "rung_caps": state["rung_caps"],
+            "checkpoint_evaluation": "disabled",
+            "checkpoint_promoted": False,
+            "goal_accepted": False,
             "winner": state["winner"],
             "reserved_jobs": state["reserved_jobs"],
             "completed_at": utc_now(),
@@ -1167,9 +1516,12 @@ def command_finish_no_winner(args: argparse.Namespace) -> None:
         atomic_json(
             path.parent / "report.json",
             {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "study_id": state["study_id"],
                 "winner": None,
+                "checkpoint_evaluation": "disabled",
+                "checkpoint_promoted": False,
+                "goal_accepted": False,
                 "reason": state["no_winner_reason"],
                 "reserved_jobs": state["reserved_jobs"],
                 "completed_at": utc_now(),
@@ -1186,6 +1538,7 @@ def build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("--root", default=".")
     initialize.add_argument("--goal", required=True)
     initialize.add_argument("--recipe", required=True)
+    initialize.add_argument("--strong-threshold", type=float, default=DEFAULT_STRONG_THRESHOLD)
     initialize.set_defaults(handler=command_init)
 
     for name, handler in (("status", command_status), ("next", command_next)):
@@ -1195,7 +1548,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     reserve = commands.add_parser("reserve-wave")
     reserve.add_argument("--study", required=True)
-    reserve.add_argument("--phase", choices=("baseline", "search", "confirmation"), required=True)
+    reserve.add_argument("--phase", choices=sorted(PHASES), required=True)
+    reserve.add_argument("--candidate-id")
     reserve.add_argument("--candidates-json", default="[]")
     reserve.add_argument("--effective-capacity", type=int, required=True)
     reserve.add_argument("--active-reservations", type=int, required=True)
@@ -1216,6 +1570,11 @@ def build_parser() -> argparse.ArgumentParser:
     terminal.add_argument("--event-json")
     terminal.add_argument("--event-file")
     terminal.set_defaults(handler=command_record_terminal)
+
+    evidence = commands.add_parser("collect-training-evidence")
+    evidence.add_argument("--study", required=True)
+    evidence.add_argument("--run-id", type=int, required=True)
+    evidence.set_defaults(handler=command_collect_training_evidence)
 
     close_round = commands.add_parser("close-round")
     close_round.add_argument("--study", required=True)

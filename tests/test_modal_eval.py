@@ -23,6 +23,7 @@ from rlab.modal_eval_orchestrator import (
     cancel_requested_attempts,
     deterministic_eval_failure,
     dispatch_pending,
+    ensure_eval_runs,
     enqueue_post_train_promotions,
     project_eval_results,
     ingest_mailbox_announcements,
@@ -38,6 +39,7 @@ from rlab.modal_eval_orchestrator import (
     round_robin_jobs,
     run_service_eval_pass,
     terminalize_failed_eval_runs,
+    terminalize_artifact_only_runs,
     terminalize_runs,
 )
 from rlab.checkpoint_eval_worker import evaluation_metric_payload
@@ -967,6 +969,10 @@ class ModalEvalSchedulingTests(unittest.TestCase):
                 "rlab.modal_eval_orchestrator.reconcile_publication_finishing",
                 return_value=0,
             ),
+            mock.patch(
+                "rlab.modal_eval_orchestrator.terminalize_artifact_only_runs",
+                return_value=0,
+            ),
             mock.patch("rlab.modal_eval_orchestrator.terminalize_runs", return_value=0),
             mock.patch(
                 "rlab.modal_eval_orchestrator.run_modal_app_cleanup",
@@ -1035,6 +1041,39 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertTrue(
             all(insert < delete for insert, delete in zip(ledger_inserts, delete_indexes))
         )
+
+    def test_none_backend_ingests_checkpoint_without_creating_eval_job(self) -> None:
+        event = {
+            "id": 1,
+            "event_type": "checkpoint_ready",
+            "payload_json": {
+                "train_job_id": 44,
+                "ledger_id": 1,
+                "kind": "checkpoint",
+            },
+            "authoritative_train_job_id": 44,
+            "next_announcement_id": 1,
+            "contract_json": {"checkpoint_eval_backend": "none"},
+        }
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [event]
+        cursor.rowcount = 1
+
+        with (
+            mock.patch(
+                "rlab.modal_eval_orchestrator.validate_announcement",
+                return_value=event["payload_json"],
+            ),
+            mock.patch("rlab.modal_eval_orchestrator._verify_checkpoint_artifacts"),
+            mock.patch("rlab.modal_eval_orchestrator._persist_artifact_announcement") as persist,
+            mock.patch("rlab.modal_eval_orchestrator._insert_eval_job") as insert_eval,
+        ):
+            count = ingest_mailbox_announcements(conn, mock.MagicMock())
+
+        self.assertEqual(count, 1)
+        persist.assert_called_once()
+        insert_eval.assert_not_called()
 
     def test_mailbox_ingestion_defers_malformed_record_and_continues(self) -> None:
         events = [
@@ -1467,6 +1506,37 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         )
         self.assertIn("THEN 'finalization_failed'", statement)
 
+    def test_artifact_only_finalization_waits_for_complete_durable_stream(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+
+        self.assertEqual(terminalize_artifact_only_runs(conn), 1)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("checkpoint_eval_backend', 'local') <> 'modal'", statement)
+        self.assertIn("t.process_exited_at IS NOT NULL", statement)
+        self.assertIn("t.cancel_requested", statement)
+        self.assertIn("disposition = 'tombstone'", statement)
+        self.assertIn("'finalization_failed'", statement)
+        self.assertIn("r.complete_announcement_seen = TRUE", statement)
+        self.assertIn("GREATEST(r.next_announcement_id - 1, 0)", statement)
+        self.assertIn("receipt.role = 'availability'", statement)
+        self.assertIn("s.final_sequence IS NULL", statement)
+        self.assertIn("t.live_publication_status IN ('complete', 'disabled')", statement)
+
+    def test_neon_jobs_get_ordered_checkpoint_stream_state_for_every_backend(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 3
+
+        self.assertEqual(ensure_eval_runs(conn), 3)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("telemetry_transport = 'neon_mailbox_v1'", statement)
+        self.assertIn("checkpoint_eval_backend' = 'modal'", statement)
+        self.assertIn("status <> 'canceled'", statement)
+
     def test_terminal_reducers_distinguish_rejection_unknown_and_publication_finishing(
         self,
     ) -> None:
@@ -1486,6 +1556,7 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertEqual(reconcile_eval_run_failures(conn), 1)
         unknown = cursor.execute.call_args.args[0]
         self.assertIn("outcome = 'unknown'", unknown)
+        self.assertIn("checkpoint_eval_backend', 'local') = 'modal'", unknown)
         self.assertIn("t.status = 'finalizing'", unknown)
         self.assertIn("required evaluation exhausted retries", unknown)
         self.assertIn("checkpoint stream closed without evaluable evidence", unknown)
@@ -1878,6 +1949,74 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             second = objects.get_json("artifact-announcements/9/00000002.json")
             self.assertEqual(first["model_uri"], second["model_uri"])
             self.assertNotEqual(first["metadata_uri"], second["metadata_uri"])
+
+    def test_none_backend_uploads_checkpoint_to_neon_without_local_eval_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = MetricStore(root / "rlab.sqlite")
+            store.init()
+            checkpoint_ids = []
+            for step in (100, 200):
+                model = root / f"model_{step}_steps.zip"
+                metadata = root / f"model_{step}_steps.metadata.json"
+                model.write_bytes(f"checkpoint-{step}".encode())
+                metadata.write_text("{}\n", encoding="utf-8")
+                checkpoint_ids.append(
+                    store.record_checkpoint(
+                        run_name="smoke",
+                        kind="checkpoint",
+                        step=step,
+                        path=model,
+                        metadata_path=metadata,
+                        eval_required=False,
+                    )
+                )
+            objects = ObjectStore((root / "objects").resolve().as_uri())
+            args = SimpleNamespace(
+                queue_train_job_id=9,
+                telemetry_transport="neon_mailbox_v1",
+                runtime_image_ref="docker:example.invalid/rlab@sha256:" + "f" * 64,
+                wandb_run_id="rlab-smoke",
+                wandb=False,
+            )
+            mailbox = mock.MagicMock()
+
+            with (
+                mock.patch("rlab.checkpoint_coordinator._eval_payload", return_value={}),
+                mock.patch(
+                    "rlab.telemetry_mailbox.WorkerMailbox.from_env",
+                    return_value=mailbox,
+                ),
+            ):
+                for row in store.pending_artifact_uploads(limit=10):
+                    self.assertTrue(process_upload(store, objects, args, row))
+
+            with store.connection() as conn:
+                eval_count = conn.execute("SELECT COUNT(*) AS count FROM eval_results").fetchone()[
+                    "count"
+                ]
+                uploads = conn.execute(
+                    "SELECT checkpoint_id, status, storage_uri FROM artifact_uploads "
+                    "ORDER BY checkpoint_id"
+                ).fetchall()
+            self.assertEqual(eval_count, 0)
+            self.assertEqual(
+                [upload["checkpoint_id"] for upload in uploads],
+                checkpoint_ids,
+            )
+            self.assertTrue(all(upload["status"] == "uploaded" for upload in uploads))
+            self.assertTrue(
+                all(str(upload["storage_uri"]).endswith("/model.zip") for upload in uploads)
+            )
+            self.assertEqual(mailbox.append_event.call_count, 2)
+            self.assertEqual(
+                [call.args[0] for call in mailbox.append_event.call_args_list],
+                ["checkpoint_ready", "checkpoint_ready"],
+            )
+            self.assertEqual(
+                [call.args[1]["step"] for call in mailbox.append_event.call_args_list],
+                [100, 200],
+            )
 
     def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
         store = ObjectStore("s3://bucket/prefix")

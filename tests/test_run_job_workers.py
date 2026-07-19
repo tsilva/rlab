@@ -2,35 +2,70 @@ from __future__ import annotations
 
 import unittest
 
-from rlab.run_job import publication_attempt_count, worker_modules
+from rlab.run_job import WorkerModules, publication_attempt_count, worker_modules
 
 
 class RunJobWorkerTests(unittest.TestCase):
     def test_backend_worker_matrix(self) -> None:
         self.assertEqual(
             worker_modules("modal", wandb_enabled=True),
-            ("rlab.checkpoint_coordinator", "rlab.wandb_publisher"),
+            WorkerModules(
+                artifact_uploader="rlab.checkpoint_coordinator",
+                evaluator=None,
+                publisher="rlab.wandb_publisher",
+            ),
         )
         self.assertEqual(
             worker_modules("local", wandb_enabled=True),
-            ("rlab.checkpoint_eval_worker", "rlab.wandb_publisher"),
+            WorkerModules(
+                artifact_uploader=None,
+                evaluator="rlab.checkpoint_eval_worker",
+                publisher="rlab.wandb_publisher",
+            ),
         )
         self.assertEqual(
             worker_modules("none", wandb_enabled=True),
-            (None, "rlab.wandb_publisher"),
+            WorkerModules(
+                artifact_uploader=None,
+                evaluator=None,
+                publisher="rlab.wandb_publisher",
+            ),
         )
         self.assertEqual(
             worker_modules("none", wandb_enabled=False),
-            (None, "rlab.wandb_publisher"),
-        )
-        self.assertEqual(
-            worker_modules(
-                "modal",
-                wandb_enabled=True,
-                telemetry_transport="neon_mailbox_v1",
+            WorkerModules(
+                artifact_uploader=None,
+                evaluator=None,
+                publisher="rlab.wandb_publisher",
             ),
-            ("rlab.checkpoint_coordinator", "rlab.telemetry_relay"),
         )
+        neon_expected = {
+            "modal": WorkerModules(
+                artifact_uploader="rlab.checkpoint_coordinator",
+                evaluator=None,
+                publisher="rlab.telemetry_relay",
+            ),
+            "local": WorkerModules(
+                artifact_uploader="rlab.checkpoint_coordinator",
+                evaluator="rlab.checkpoint_eval_worker",
+                publisher="rlab.telemetry_relay",
+            ),
+            "none": WorkerModules(
+                artifact_uploader="rlab.checkpoint_coordinator",
+                evaluator=None,
+                publisher="rlab.telemetry_relay",
+            ),
+        }
+        for backend, expected in neon_expected.items():
+            with self.subTest(backend=backend):
+                self.assertEqual(
+                    worker_modules(
+                        backend,
+                        wandb_enabled=True,
+                        telemetry_transport="neon_mailbox_v1",
+                    ),
+                    expected,
+                )
 
     def test_unknown_backend_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported checkpoint evaluation backend"):

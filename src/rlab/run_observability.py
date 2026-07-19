@@ -59,6 +59,9 @@ def _acceptance_required(row: Mapping[str, Any]) -> bool:
 
 
 def _wandb_artifact_ref(row: Mapping[str, Any]) -> str | None:
+    concrete_ref = str(row.get("wandb_artifact_ref") or row.get("latest_receipt_ref") or "").strip()
+    if concrete_ref:
+        return concrete_ref
     url = str(row.get("wandb_url") or "")
     run_id = str(row.get("wandb_run_id") or "")
     step = row.get("promoted_step")
@@ -173,14 +176,7 @@ def current_incidents(
                 f"unconfirmed_batches={unconfirmed_batches}, "
                 f"oldest_confirmation_age_seconds={confirmation_age:.1f}",
             )
-        elif (
-            ready_age is not None
-            and ready_age >= 180
-            and (
-                not row.get("wandb_url")
-                or publication_attempts
-            )
-        ):
+        elif ready_age is not None and ready_age >= 180 and not row.get("wandb_url"):
             publication_incident = _incident(
                 run_id,
                 "wandb_publication_stalled",

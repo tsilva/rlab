@@ -2521,9 +2521,17 @@ def finish_live_publication_recovery(
                     UPDATE train_jobs
                     SET status = CASE
                         WHEN COALESCE(train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
+                          AND telemetry_transport <> 'neon_mailbox_v1'
+                          AND NOT EXISTS (
+                            SELECT 1 FROM eval_runs r WHERE r.train_job_id = train_jobs.id
+                          )
                           THEN 'succeeded' ELSE status END,
                       finished_at = CASE
                         WHEN COALESCE(train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
+                          AND telemetry_transport <> 'neon_mailbox_v1'
+                          AND NOT EXISTS (
+                            SELECT 1 FROM eval_runs r WHERE r.train_job_id = train_jobs.id
+                          )
                           THEN now() ELSE finished_at END,
                       live_publication_status = 'complete',
                       live_publication_next_retry_at = NULL,

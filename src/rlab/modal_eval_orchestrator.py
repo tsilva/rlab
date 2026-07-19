@@ -192,8 +192,14 @@ def ensure_eval_runs(conn) -> int:
                 INSERT INTO eval_runs (train_job_id, contract_json)
                 SELECT id, train_config || jsonb_build_object('runtime_image_ref', runtime_image_ref)
                 FROM train_jobs
-                WHERE train_config->>'checkpoint_eval_backend' = 'modal'
-                  AND status NOT IN ('canceled')
+                WHERE (
+                    train_config->>'checkpoint_eval_backend' = 'modal'
+                    OR telemetry_transport = 'neon_mailbox_v1'
+                  )
+                  AND (
+                    status <> 'canceled'
+                    OR telemetry_transport = 'neon_mailbox_v1'
+                  )
                 ON CONFLICT (train_job_id) DO NOTHING
                 """
             )
@@ -667,6 +673,12 @@ def ingest_mailbox_announcements(
             )
             continue
         announcement: Mapping[str, Any] = payload
+        contract = event.get("contract_json") or {}
+        eval_backend = (
+            str(contract.get("checkpoint_eval_backend") or "local")
+            if isinstance(contract, Mapping)
+            else "local"
+        )
         if event_type == "checkpoint_ready":
             try:
                 announcement = validate_announcement(
@@ -701,10 +713,15 @@ def ingest_mailbox_announcements(
                 event_type=event_type,
                 announcement=announcement,
             )
-            if event_type == "checkpoint_ready" and str(announcement.get("kind")) in {
-                "checkpoint",
-                "final",
-            }:
+            if (
+                eval_backend == "modal"
+                and event_type == "checkpoint_ready"
+                and str(announcement.get("kind"))
+                in {
+                    "checkpoint",
+                    "final",
+                }
+            ):
                 eval_contract = announcement.get("eval", {})
                 stages = eval_contract.get("stages") or []
                 descriptor = (
@@ -1819,6 +1836,106 @@ def enqueue_post_train_promotions(conn) -> int:
     return created
 
 
+def terminalize_artifact_only_runs(conn) -> int:
+    """Terminalize non-Modal runs only after their artifact stream is durable."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH ready AS (
+                  SELECT
+                    r.train_job_id,
+                    CASE
+                      WHEN t.cancel_requested OR r.outcome = 'canceled' THEN 'canceled'
+                      WHEN EXISTS (
+                        SELECT 1 FROM artifact_announcement_ledger tombstone
+                        WHERE tombstone.train_job_id = r.train_job_id
+                          AND tombstone.disposition = 'tombstone'
+                      ) THEN 'finalization_failed'
+                      ELSE 'succeeded'
+                    END AS terminal_status
+                  FROM eval_runs r
+                  JOIN train_jobs t ON t.id = r.train_job_id
+                  WHERE t.status = 'finalizing'
+                    AND t.process_exited_at IS NOT NULL
+                    AND COALESCE(r.contract_json->>'checkpoint_eval_backend', 'local') <> 'modal'
+                    AND r.complete_announcement_seen = TRUE
+                    AND (
+                      SELECT count(*)
+                      FROM artifact_announcement_ledger ledger
+                      WHERE ledger.train_job_id = r.train_job_id
+                    ) = GREATEST(r.next_announcement_id - 1, 0)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM artifact_announcement_ledger ledger
+                      WHERE ledger.train_job_id = r.train_job_id
+                        AND ledger.disposition = 'ready'
+                        AND NOT EXISTS (
+                          SELECT 1 FROM artifact_publication_receipts receipt
+                          WHERE receipt.train_job_id = ledger.train_job_id
+                            AND receipt.ledger_id = ledger.ledger_id
+                            AND receipt.role = 'availability'
+                            AND receipt.promotion_revision = 0
+                        )
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM metric_batches b
+                      JOIN metric_streams s ON s.stream_id = b.stream_id
+                      JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                      WHERE a.train_job_id = r.train_job_id
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM metric_streams s
+                      JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                      WHERE a.train_job_id = r.train_job_id
+                        AND (
+                          s.final_sequence IS NULL
+                          OR s.published_sequence < s.final_sequence
+                        )
+                    )
+                    AND t.live_publication_status IN ('complete', 'disabled')
+                  FOR UPDATE OF r, t
+                ), completed AS (
+                  UPDATE eval_runs r
+                  SET status = CASE
+                        WHEN ready.terminal_status = 'canceled' THEN 'canceled'
+                        WHEN ready.terminal_status = 'finalization_failed' THEN 'failed'
+                        ELSE 'complete'
+                      END,
+                      updated_at = now(),
+                      error = CASE
+                        WHEN ready.terminal_status = 'canceled'
+                          THEN COALESCE(r.error, 'training finalization canceled')
+                        WHEN ready.terminal_status = 'finalization_failed'
+                          THEN COALESCE(r.error, 'checkpoint artifact upload exhausted retries')
+                        ELSE NULL
+                      END
+                  FROM ready
+                  WHERE r.train_job_id = ready.train_job_id
+                  RETURNING r.train_job_id, ready.terminal_status
+                )
+                UPDATE train_jobs t
+                SET status = completed.terminal_status,
+                  finished_at = now(),
+                  error = CASE
+                    WHEN completed.terminal_status = 'succeeded' THEN NULL
+                    WHEN completed.terminal_status = 'canceled'
+                      THEN COALESCE(t.error, 'training finalization canceled')
+                    ELSE COALESCE(t.error, 'checkpoint artifact upload exhausted retries')
+                  END,
+                  live_publication_next_retry_at = NULL,
+                  live_publication_error = CASE
+                    WHEN completed.terminal_status = 'succeeded' THEN NULL
+                    ELSE live_publication_error
+                  END
+                FROM completed
+                WHERE t.id = completed.train_job_id
+                  AND t.status = 'finalizing'
+                """
+            )
+            return cur.rowcount
+
+
 def terminalize_runs(conn) -> int:
     """Apply the one authoritative, idempotent terminal state reduction.
 
@@ -1994,7 +2111,10 @@ def reconcile_publication_finishing(conn) -> int:
                     FROM artifact_announcement_ledger ledger
                     WHERE ledger.train_job_id = r.train_job_id
                   ) = GREATEST(r.next_announcement_id - 1, 0)
-                  AND r.outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
+                  AND (
+                    COALESCE(r.contract_json->>'checkpoint_eval_backend', 'local') <> 'modal'
+                    OR r.outcome IN ('accepted', 'not_accepted', 'unknown', 'canceled')
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM artifact_announcement_ledger ledger
                     WHERE ledger.train_job_id = r.train_job_id
@@ -2072,6 +2192,7 @@ def reconcile_eval_run_failures(conn) -> int:
                     END
                   )
                 WHERE r.status IN ('active', 'awaiting_artifact_recovery', 'finalizing')
+                  AND COALESCE(r.contract_json->>'checkpoint_eval_backend', 'local') = 'modal'
                   AND r.outcome IS NULL
                     AND r.complete_announcement_seen = TRUE
                     AND (
@@ -2191,6 +2312,7 @@ def reconcile_definitive_non_acceptance(conn) -> int:
                 SET outcome = 'not_accepted', status = 'finalizing',
                     updated_at = now(), error = NULL
                 WHERE r.outcome IS NULL
+                  AND COALESCE(r.contract_json->>'checkpoint_eval_backend', 'local') = 'modal'
                   AND r.complete_announcement_seen = TRUE
                   AND EXISTS (
                     SELECT 1 FROM train_jobs t
@@ -3025,6 +3147,7 @@ def run_service_eval_pass(
         eval_run_failures = reconcile_eval_run_failures(conn)
         failed_terminalizations = terminalize_failed_eval_runs(conn)
         publication_finishing = reconcile_publication_finishing(conn)
+        artifact_only_finalized = terminalize_artifact_only_runs(conn)
         finalized = terminalize_runs(conn)
         try:
             if progress:
@@ -3073,6 +3196,7 @@ def run_service_eval_pass(
             "eval_run_failures": eval_run_failures,
             "failed_terminalizations": failed_terminalizations,
             "publication_finishing": publication_finishing,
+            "artifact_only_finalized": artifact_only_finalized,
             "finalized": finalized,
             "finalization_failures": 0,
             "app_cleanup": app_cleanup,
