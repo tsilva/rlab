@@ -13,7 +13,7 @@ from rlab.env_providers import (
 )
 
 
-GOAL_PATH = Path("experiments/goals/alepy__breakout/_goal.yaml")
+GOAL_PATH = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
 GAME = "Breakout-Atari2600-v0"
 
 

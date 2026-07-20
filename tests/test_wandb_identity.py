@@ -37,8 +37,8 @@ from rlab.wandb_utils import (
         (
             "breakout-turbo-env",
             "BreakoutTurbo-v0",
-            "BreakoutTurbo-v0",
-            "BreakoutTurbo",
+            "Breakout-Atari2600-v0",
+            "Atari2600-Breakout",
         ),
         (
             "stable-retro-turbo",

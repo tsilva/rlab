@@ -704,7 +704,8 @@ def command_init(args: argparse.Namespace) -> None:
                 apply.get("postimage_sha256"),
             }
             if raw.get("input_hash") == input_hash or (
-                raw.get("goal_path") == goal_path
+                raw.get("source_sha") == head
+                and raw.get("goal_path") == goal_path
                 and raw.get("recipe_path") == recipe_path
                 and float((raw.get("policy") or {}).get("strong_threshold", -1)) == threshold
                 and recognized
@@ -862,6 +863,15 @@ def expected_recipe_overrides(state: Mapping[str, Any], wave: Mapping[str, Any])
         f"{wave['candidate_id']} seed {{seed}}. Training-only evidence; no evaluation or promotion."
     )
     return [*overrides, f"description={description}"]
+
+
+def materialized_recipe_overrides(
+    state: Mapping[str, Any], wave: Mapping[str, Any], seed: int
+) -> list[str]:
+    return [
+        value.replace("{seed}", str(int(seed)))
+        for value in expected_recipe_overrides(state, wave)
+    ]
 
 
 def launch_command(state: Mapping[str, Any], wave: Mapping[str, Any]) -> list[str]:
@@ -1168,7 +1178,15 @@ def command_record_launch(args: argparse.Namespace) -> None:
                 train_config = row.get("train_config") or {}
                 if train_config and str(train_config.get("checkpoint_eval_backend")) != "none":
                     errors.append("submission row did not materialize training-only execution")
-            if any(value != expected_recipe_overrides(state, wave) for value in observed_overrides):
+            expected_overrides = [
+                materialized_recipe_overrides(
+                    state,
+                    wave,
+                    int((row.get("submission") or {}).get("seed", row.get("seed"))),
+                )
+                for row in rows
+            ]
+            if observed_overrides != expected_overrides:
                 errors.append("submission rows do not match the reserved recipe overrides")
         runtime = {
             "image_ref": str(payload.get("runtime_image_ref") or ""),

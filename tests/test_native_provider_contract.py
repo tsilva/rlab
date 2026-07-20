@@ -272,8 +272,8 @@ class BreakoutTurboProviderTests(unittest.TestCase):
                 state_weight_mapping=lambda _config: {},
             )
             self.assertIs(env.autoreset_mode, gym.vector.AutoresetMode.DISABLED)
-            self.assertEqual(descriptor.start_catalog, ("full", "checker", "tunnel", "sparse"))
-            self.assertEqual(descriptor.lane_start_ids, ("full", "full"))
+            self.assertEqual(descriptor.start_catalog, ("Start", "checker", "tunnel", "sparse"))
+            self.assertEqual(descriptor.lane_start_ids, ("Start", "Start"))
             self.assertEqual(descriptor.render_support, ("rgb_array",))
             self.assertEqual(descriptor.observation_buffer_depth, 2)
             self.assertEqual(env.single_observation_space.shape, (4, 84, 84))
@@ -798,7 +798,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertNotIn("max_episode_steps", env.kwargs)
         env.reset(seed=123)
         observations, _rewards, terminated, _truncated, infos = env.step(
-            np.zeros((16, 8), dtype=np.int8)
+            np.zeros(16, dtype=np.int64)
         )
         self.assertTrue(terminated[0])
         self.assertEqual(int(observations[0, 0, 0, 0]), 9)

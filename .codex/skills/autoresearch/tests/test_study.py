@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "study.py"
@@ -87,6 +92,65 @@ class ReturnEvidenceTests(unittest.TestCase):
 
     def test_percentile_interpolates(self) -> None:
         self.assertEqual(study.percentile([0.0, 10.0], 0.5), 5.0)
+
+
+class StudyDiscoveryTests(unittest.TestCase):
+    def test_init_ignores_incomplete_study_from_different_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            goal = root / "goal.yaml"
+            recipe = root / "recipe.yaml"
+            goal.write_text("goal: current\n", encoding="utf-8")
+            recipe.write_text("recipe: current\n", encoding="utf-8")
+            subprocess.run(["git", "add", "goal.yaml", "recipe.yaml"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "current"], cwd=root, check=True)
+            head = study.git_head(root)
+            studies = root / "runs" / "autoresearch" / "old"
+            studies.mkdir(parents=True)
+            (studies / "study.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": study.SCHEMA_VERSION,
+                        "status": "paused",
+                        "source_sha": "different-source",
+                        "goal_path": "goal.yaml",
+                        "recipe_path": "recipe.yaml",
+                        "recipe_preimage_sha256": study.file_sha256(recipe),
+                        "apply": None,
+                        "policy": {"strong_threshold": study.DEFAULT_STRONG_THRESHOLD},
+                        "input_hash": "old-input",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                root=str(root),
+                goal="goal.yaml",
+                recipe="recipe.yaml",
+                strong_threshold=study.DEFAULT_STRONG_THRESHOLD,
+            )
+            with mock.patch.object(study, "compose_train_document", side_effect=RuntimeError("new-study")):
+                with self.assertRaisesRegex(RuntimeError, "new-study"):
+                    study.command_init(args)
+            self.assertEqual(study.git_head(root), head)
+
+    def test_materializes_seed_in_reserved_description(self) -> None:
+        state = {
+            "study_id": "abcdef123456",
+            "candidates": {"candidate": {"delta": {"learning_rate": 0.000125}}},
+        }
+        wave = {
+            "candidate_id": "candidate",
+            "phase": "search-pair",
+            "timesteps": 50,
+        }
+        overrides = study.materialized_recipe_overrides(state, wave, 139)
+        self.assertEqual(overrides[0], "train.backend.config.learning_rate=0.000125")
+        self.assertIn("seed 139", overrides[-1])
+        self.assertNotIn("{seed}", overrides[-1])
 
 
 if __name__ == "__main__":

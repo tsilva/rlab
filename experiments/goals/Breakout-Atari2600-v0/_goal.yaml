@@ -1,44 +1,55 @@
 defaults:
 - _self_
-goal_id: breakout-turbo-env__breakout
+goal_id: Breakout-Atari2600-v0
 tags:
 - "goal_id:{goal_id}"
 - "recipe_id:{recipe_id}"
 - "env_id:{env_id}"
-title: Native Atari Breakout replica PPO training
+title: Atari 2600 Breakout wall completion
 objective:
   rank:
-  - min(eval/full/outcome/reason/serve_stall/rate)
   - max(eval/full/episode/return/mean)
-  - max(eval/full/episode/return/best)
+  - max(eval/full/episode/length/mean)
+  - min(eval/full/outcome/reason/serve_stall/rate)
   - min(leader/checkpoint/step)
 train:
-  # Training-only: run to the recipe timestep cap without checkpoint or final evaluation.
-  # Periodic checkpoints remain available for later manual use.
-  checkpoint_eval_backend: none
-  stop_on_acceptance: false
+  checkpoint_eval_backend: modal
+  stop_on_acceptance: true
   checkpoint_freq: 500000
   environment:
+    # Breakout Turbo is the default ROM-free implementation. The complete contract is
+    # intentionally accepted by Stable Retro Turbo so only env_provider needs to change.
     env_provider: &breakout_provider breakout-turbo-env
     env_config:
       <<: &breakout_env_config
-        game: BreakoutTurbo-v0
-        state: full
+        game: Breakout-Atari2600-v0
+        state: Start
         n_envs: 16
         env_args: &breakout_provider_args
-          num_threads: 6
-          frame_stack: 4
-          obs_layout: chw
-          obs_grayscale: true
-          obs_copy: safe_view
-          info_filter: all
+          scenario: scenario
+          info: data
+          use_restricted_actions: filtered
+          record: false
+          players: 1
+          inttype: stable
+          obs_type: image
           render_mode: rgb_array
+          info_filter: all
+          num_threads: 6
+          rom_path: null
+          obs_copy: safe_view
+          obs_grayscale: true
+          obs_layout: chw
+          frame_stack: 4
+          noop_reset_max: 0
+          reward_clip: false
+          use_fire_reset: false
     preprocessing: &breakout_preprocessing
       frame_skip: 4
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84
-      # Match the Atari goal: mask the score band while preserving the wall.
+      # Mask the score band and separator while preserving the wall from source row 17.
       obs_crop: [17, 0, 0, 0]
       obs_crop_mode: mask
       obs_crop_fill: 0
@@ -46,6 +57,7 @@ train:
     task: &breakout_task
       id: identity
       action:
+        # Rlab normalizes both providers to 0=NOOP, 1=FIRE, 2=RIGHT, 3=LEFT.
         set: native
       signals:
         ball_y: ball_y
@@ -54,7 +66,7 @@ train:
           signal: ball_y
           operation: equals_for
           value: 0
-          # One policy step is four native frames; 256 steps is ~17 seconds.
+          # One policy step is four native frames; 256 steps is roughly 17 seconds.
           steps: 256
       termination:
         failure: [serve_stall]
@@ -62,8 +74,11 @@ train:
       reward:
         reward_mode: native
 eval:
-  # Dormant policy/playback contract only. checkpoint_eval_backend=none prevents execution.
   episodes: 100
+  acceptance:
+  - metric: eval/full/episode/return/mean
+    operator: '>='
+    threshold: 864
   policy:
     stochastic: true
   environment:
@@ -75,3 +90,5 @@ eval:
         <<: *breakout_provider_args
     preprocessing: *breakout_preprocessing
     task: *breakout_task
+release:
+  huggingface: {}

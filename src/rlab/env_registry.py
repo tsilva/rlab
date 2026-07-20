@@ -162,11 +162,12 @@ BREAKOUT_TURBO_ENV_PROVIDER = EnvProvider(
     provider_id="breakout-turbo-env",
     import_name="breakout_turbo_env",
     distribution_name="breakout-turbo-env",
-    env_ids=("BreakoutTurbo-v0",),
+    env_ids=("Breakout-Atari2600-v0", "BreakoutTurbo-v0"),
     constructor_contract=ProviderConstructorContract(
         canonical_args=frozenset(
             {
                 "frame_skip",
+                "game",
                 "maxpool_last_two",
                 "num_envs",
                 "obs_crop",
@@ -174,17 +175,31 @@ BREAKOUT_TURBO_ENV_PROVIDER = EnvProvider(
                 "obs_crop_mode",
                 "obs_resize",
                 "obs_resize_algorithm",
+                "state",
+                "state_catalog",
+                "sticky_action_prob",
             }
         ),
         explicit_env_args=frozenset(
             {
                 "frame_stack",
+                "info",
                 "info_filter",
+                "inttype",
+                "noop_reset_max",
                 "num_threads",
                 "obs_copy",
                 "obs_grayscale",
                 "obs_layout",
+                "obs_type",
+                "players",
+                "record",
                 "render_mode",
+                "reward_clip",
+                "rom_path",
+                "scenario",
+                "use_fire_reset",
+                "use_restricted_actions",
             }
         ),
         required_values={},
@@ -289,7 +304,11 @@ CANONICAL_ENVIRONMENT_IDENTITIES: Mapping[
         (
             "breakout-turbo-env",
             "BreakoutTurbo-v0",
-        ): CanonicalEnvironmentIdentity("BreakoutTurbo", "BreakoutTurbo-v0"),
+        ): CanonicalEnvironmentIdentity("Atari2600-Breakout", "Breakout-Atari2600-v0"),
+        (
+            "breakout-turbo-env",
+            "Breakout-Atari2600-v0",
+        ): CanonicalEnvironmentIdentity("Atari2600-Breakout", "Breakout-Atari2600-v0"),
         ("ale-py", "breakout"): CanonicalEnvironmentIdentity(
             "Atari2600-Breakout",
             "Breakout-Atari2600-v0",

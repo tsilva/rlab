@@ -167,7 +167,7 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
     [
         ("stable-retro-turbo", "SuperMarioBros3-Nes-v0", "NES-SuperMarioBros3"),
         ("ale-py", "breakout", "Atari2600-Breakout"),
-        ("breakout-turbo-env", "BreakoutTurbo-v0", "BreakoutTurbo"),
+        ("breakout-turbo-env", "BreakoutTurbo-v0", "Atari2600-Breakout"),
         ("stable-retro-turbo", "Breakout-Atari2600-v0", "Atari2600-Breakout"),
         ("ale-py", "ms_pacman", "Atari2600-MsPacman"),
     ],

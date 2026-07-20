@@ -78,6 +78,20 @@ rlab experiment launch --from-head \
   --set logging.wandb_artifact_storage_uri=
 ```
 
+Breakout has one shared goal and recipe. Breakout Turbo is the ROM-free default;
+select Stable Retro Turbo atomically for training and checkpoint evaluation, or
+override the provider when evaluating or playing an existing policy:
+
+```bash
+rlab experiment launch --from-head \
+  --goal-file experiments/goals/Breakout-Atari2600-v0/_goal.yaml \
+  --recipe-file experiments/recipes/atari/ppo.yaml \
+  --env-provider stable-retro-turbo \
+  --machine beast-3
+rlab eval run <checkpoint> --env-provider stable-retro-turbo
+rlab play <checkpoint> --env-provider stable-retro-turbo
+```
+
 `rlab:Bandit-v0` has no renderer. Replay it headlessly with
 `rlab play <checkpoint> --debug` for interactive stepping or add a positive `--episodes` limit
 for unattended playback.
@@ -356,7 +370,7 @@ and beast host recommendations.
 - Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
 - Every queue-backed training recipe must include a non-empty `description`; `rlab experiment launch` records it as the run description.
 - Queue-backed W&B run names are `<batch_id>-<recipe_id>-s<effective_seed>-<utc>` and use an opaque `rlab-...` run id. Projects identify canonical game families, while config/tags identify the goal, recipe, provider, campaign, and exact environment hash.
-- Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.
+- Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE, Breakout Turbo, or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.
 - New W&B model artifact collections and R2/S3 object paths use the immutable run id. Playback continues to resolve historical display-name artifacts and the legacy `breakout` and `ms_pacman` projects. Run-level playback selects a concrete API-visible `vN`: highest promotion revision first, otherwise the newest playable checkpoint/final/interrupted artifact.
 - Training logs to W&B and uploads model artifacts unless the recipe sets
   `logging.no_wandb_artifacts: true` (or `--set logging.no_wandb_artifacts=true`).

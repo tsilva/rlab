@@ -12,7 +12,7 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from itertools import count
 from types import ModuleType
 
@@ -442,6 +442,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    parser.add_argument(
+        "--env-provider",
+        help=(
+            "Run the artifact's unchanged evaluation contract through an equivalent provider. "
+            "The provider must support the recorded game and constructor arguments."
+        ),
+    )
     parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument(
         "--debug",
@@ -1403,6 +1410,10 @@ def main(argv: list[str] | None = None) -> int:
             artifact_config = load_playback_env_config(
                 source.model_path,
                 respect_task_termination=args.respect_task_termination,
+            )
+        if args.env_provider:
+            artifact_config = resolve_env_config(
+                replace(artifact_config, env_provider=str(args.env_provider))
             )
     args.seed = validate_eval_seed(args.seed)
     config = artifact_config

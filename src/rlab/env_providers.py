@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -159,6 +160,99 @@ class _StartInfoAdapter:
         get_screen = getattr(native, "get_screen", None)
         if callable(get_screen):
             return [np.asarray(get_screen(lane)) for lane in range(self.env.num_envs)]
+        get_images = getattr(self.env, "get_images", None)
+        if callable(get_images):
+            return get_images()
+        return self.env.render()
+
+    def close(self):
+        return self.env.close()
+
+
+class _CanonicalBreakoutAdapter:
+    """Expose one provider-neutral Atari Breakout action and start contract."""
+
+    def __init__(self, env: Any):
+        self.env = env
+        self.num_envs = int(env.num_envs)
+        self.single_action_space = gym.spaces.Discrete(4)
+        self.action_space = gym.spaces.MultiDiscrete(
+            np.full(self.num_envs, 4, dtype=np.int64)
+        )
+        raw_catalog = _native_start_catalog(env)
+        self._canonical_to_native: dict[str, str] = {}
+        canonical_catalog: list[str] = []
+        for native_name in raw_catalog:
+            canonical_name = "Start" if native_name == "full" else native_name
+            self._canonical_to_native.setdefault(canonical_name, native_name)
+            if canonical_name not in canonical_catalog:
+                canonical_catalog.append(canonical_name)
+        self.state_catalog = tuple(canonical_catalog)
+        self.initial_state_names = self.state_catalog
+        self._uses_button_actions = isinstance(
+            getattr(env, "single_action_space", None), gym.spaces.MultiBinary
+        )
+        self._button_actions = np.zeros((self.num_envs, 8), dtype=np.int8)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "env":
+            raise AttributeError(name)
+        return getattr(self.env, name)
+
+    def reset(self, *, seed=None, options=None):
+        native_options = dict(options or {})
+        start_ids = native_options.get("start_ids")
+        if start_ids is not None:
+            native_ids = np.asarray(start_ids, dtype=object).copy()
+            if native_ids.shape != (self.num_envs,):
+                raise ValueError(
+                    f"start_ids must have shape ({self.num_envs},), got {native_ids.shape}"
+                )
+            for lane, value in enumerate(native_ids):
+                if value is None:
+                    continue
+                canonical = "Start" if str(value) == "full" else str(value)
+                try:
+                    native_ids[lane] = self._canonical_to_native[canonical]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"unknown provider start id {value!r}; expected one of {self.state_catalog}"
+                    ) from exc
+            native_options["start_ids"] = native_ids
+        observations, infos = self.env.reset(seed=seed, options=native_options)
+        return observations, self._canonical_infos(infos)
+
+    def step(self, actions):
+        action_ids = np.asarray(actions, dtype=np.int64)
+        if action_ids.shape != (self.num_envs,):
+            raise ValueError(f"actions must have shape ({self.num_envs},)")
+        if np.any((action_ids < 0) | (action_ids > 3)):
+            raise ValueError("Breakout actions must be in [0, 3]")
+        native_actions: Any = action_ids
+        if self._uses_button_actions:
+            self._button_actions.fill(0)
+            self._button_actions[:, 0] = action_ids == 1
+            self._button_actions[:, 7] = action_ids == 2
+            self._button_actions[:, 6] = action_ids == 3
+            native_actions = self._button_actions
+        observations, rewards, terminated, truncated, infos = self.env.step(native_actions)
+        return observations, rewards, terminated, truncated, self._canonical_infos(infos)
+
+    @staticmethod
+    def _canonical_infos(infos: Any) -> Any:
+        if not isinstance(infos, Mapping):
+            return infos
+        result = dict(infos)
+        for key in ("start_id", "state", "start_state"):
+            values = result.get(key)
+            if values is None:
+                continue
+            canonical = np.asarray(values, dtype=object).copy()
+            canonical[canonical == "full"] = "Start"
+            result[key] = canonical
+        return result
+
+    def get_images(self):
         get_images = getattr(self.env, "get_images", None)
         if callable(get_images):
             return get_images()
@@ -480,7 +574,13 @@ def provider_descriptor(
     elif config.states:
         lane_start_ids = tuple(config.states)
     elif config.state and start_catalog:
-        lane_start_ids = tuple(config.state for _ in range(int(native_env.num_envs)))
+        configured_start = (
+            "Start"
+            if provider.provider_id == BREAKOUT_TURBO_ENV_PROVIDER.provider_id
+            and config.state == "full"
+            else config.state
+        )
+        lane_start_ids = tuple(configured_start for _ in range(int(native_env.num_envs)))
 
     metadata = getattr(native_env, "metadata", {})
     render_modes = metadata.get("render_modes", ()) if isinstance(metadata, Mapping) else ()
@@ -625,7 +725,10 @@ def _stable_retro_turbo_make_vec_env(
     kwargs = dict(native_kwargs)
     env = env_type(config.game, **kwargs)
     env = _require_disabled_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
-    return _StartInfoAdapter(env)
+    env = _StartInfoAdapter(env)
+    if config.game == "Breakout-Atari2600-v0":
+        return _CanonicalBreakoutAdapter(env)
+    return env
 
 
 def _super_mario_bros_nes_turbo_make_vec_env(
@@ -679,8 +782,26 @@ def _breakout_turbo_make_vec_env(
 ):
     _require_provider(config, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
     env_type = breakout_vec_env_type()
-    env = env_type(**dict(native_kwargs))
-    return _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
+    kwargs = dict(native_kwargs)
+    if "game" in inspect.signature(env_type).parameters:
+        env = env_type(config.game, state=config.state or "Start", **kwargs)
+    else:
+        legacy_unsupported = {
+            "info",
+            "inttype",
+            "noop_reset_max",
+            "obs_type",
+            "players",
+            "record",
+            "reward_clip",
+            "rom_path",
+            "scenario",
+            "use_fire_reset",
+            "use_restricted_actions",
+        }
+        env = env_type(**{key: value for key, value in kwargs.items() if key not in legacy_unsupported})
+    env = _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
+    return _CanonicalBreakoutAdapter(env)
 
 
 def make_provider_vec_env(

@@ -3834,6 +3834,13 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     parser.add_argument("--goal-file", dest="goal_file", type=Path, required=True)
     parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
+    parser.add_argument(
+        "--env-provider",
+        help=(
+            "Atomically replace the goal's training and evaluation provider while preserving "
+            "the rest of its environment contract."
+        ),
+    )
     parser.add_argument("--machine", required=True, help="Exact registered machine name.")
     parser.add_argument("--request-id", dest="submission_key")
     parser.add_argument(
@@ -3977,6 +3984,7 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         args.goal_file,
         args.recipe_file,
         recipe_overrides=args.recipe_overrides,
+        env_provider=args.env_provider,
     )
     backend = resolve_checkpoint_eval_backend(
         dict(document.get("train_config") or {}),

@@ -18,6 +18,7 @@ rlab is a reproducible reinforcement-learning workbench for game-agent researche
 - Environment and runtime boundaries must preserve supported Gymnasium observation and action values, normalize layout only to the policy's declared input contract, and never change semantic content.
 - Task events, rewards, termination, truncation, outcomes, and metrics must be derived from provider facts at the declared vector-step boundaries.
 - Training, evaluation, and playback must use the same declared observation, action, reward, start-state, reset, and termination contract; evidence produced under a different contract cannot establish goal acceptance.
+- Equivalent providers for one canonical environment must share one goal and recipe contract. A provider override must atomically select that provider for training, evaluation, and playback without changing the remaining contract, while preserving the selected provider in provenance.
 - Provider-specific requirements must not leak into generic Gymnasium workflows, and supported ROM-free and ROM-backed environments must remain trainable, evaluable, and playable through the common workflow.
 - Dependency installation must be reproducible, supply-chain hardened, resistant to known-bad releases, and compatible with every supported environment provider and execution path.
 - Training must preserve durable metrics and checkpoint artifacts by default, keep result evidence distinct from job state, and use documented, unambiguous metric semantics.

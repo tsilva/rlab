@@ -272,11 +272,37 @@ def _goal_slug_from_value(value: Any) -> str:
     return ""
 
 
-def _load_rendered_goal_composition(path: Path, *, label: str | None = None) -> ComposedDocument:
+def _goal_with_environment_provider(
+    document: Mapping[str, Any], provider: str | None
+) -> dict[str, Any]:
+    result = copy.deepcopy(dict(document))
+    if provider is None:
+        return result
+    provider_id = str(provider).strip()
+    if not provider_id:
+        raise ValueError("environment provider override must be non-empty")
+    from rlab.env_registry import resolve_env_provider
+
+    resolve_env_provider(provider_id)
+    for section_name in ("train", "eval"):
+        section = result.get(section_name)
+        environment = section.get("environment") if isinstance(section, Mapping) else None
+        if not isinstance(environment, dict):
+            raise ValueError(f"goal.{section_name}.environment is required for provider override")
+        environment["env_provider"] = provider_id
+    return result
+
+
+def _load_rendered_goal_composition(
+    path: Path,
+    *,
+    label: str | None = None,
+    env_provider: str | None = None,
+) -> ComposedDocument:
     composition = load_composed_mapping(path, cycle_label="goal")
     return ComposedDocument(
         document=render_template_vars(
-            composition.document,
+            _goal_with_environment_provider(composition.document, env_provider),
             path=path,
             label=label or f"goal file {path}",
             deferred_fields_by_path=GOAL_DEFERRED_TEMPLATE_FIELDS,
@@ -497,8 +523,12 @@ def compose_train_document(
     recipe_path: Path,
     *,
     recipe_overrides: Sequence[str] = (),
+    env_provider: str | None = None,
 ) -> dict[str, Any]:
-    goal_composition = _load_rendered_goal_composition(goal_path)
+    goal_composition = _load_rendered_goal_composition(
+        goal_path,
+        env_provider=env_provider,
+    )
     if goal_composition.sources:
         from rlab.config_validation import validate_goal_contract_document
 

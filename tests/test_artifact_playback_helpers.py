@@ -829,6 +829,11 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertEqual(parser.parse_args(["--episodes", "3"]).episodes, 3)
         self.assertEqual(parser.parse_args([]).seed, DEFAULT_EVAL_SEED)
         self.assertEqual(parser.parse_args(["--seed", "7"]).seed, 7)
+        self.assertIsNone(parser.parse_args([]).env_provider)
+        self.assertEqual(
+            parser.parse_args(["--env-provider", "stable-retro-turbo"]).env_provider,
+            "stable-retro-turbo",
+        )
         self.assertEqual(parser.parse_args([]).attribution, "none")
         self.assertEqual(parser.parse_args(["--attribution", "gradcam"]).attribution, "gradcam")
         self.assertIsNone(parser.parse_args([]).attribution_interval)
@@ -842,6 +847,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--debug", help_text)
         self.assertNotIn("--step-over", help_text)
         self.assertIn("--attribution", help_text)
+        self.assertIn("--env-provider", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
 

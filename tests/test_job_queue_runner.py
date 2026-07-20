@@ -32,6 +32,7 @@ RUNTIME_IMAGE_REF = (
 )
 MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
 MARIO_SINGLE_PPO = Path("experiments/recipes/mario/single/ppo.yaml")
+BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
 MARIO_SINGLE_GOALS = tuple(
     Path(f"experiments/goals/SuperMarioBros-Nes-v0/Level{world}-{level}/_goal.yaml")
     for world in range(1, 5)
@@ -59,11 +60,11 @@ SUPPORTED_RECIPE_PAIRS = tuple(
         Path("experiments/recipes/mario/mixed/raw-advantage.yaml"),
     ),
     (
-        Path("experiments/goals/alepy__breakout/_goal.yaml"),
+        BREAKOUT_GOAL,
         Path("experiments/recipes/atari/ppo.yaml"),
     ),
     (
-        Path("experiments/goals/alepy__breakout/_goal.yaml"),
+        BREAKOUT_GOAL,
         Path("experiments/recipes/atari/ppo-stable-updates.yaml"),
     ),
     (
@@ -283,6 +284,22 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(args.checkpoint_eval_backend, "none")
+
+    def test_train_enqueue_parser_accepts_environment_provider_override(self) -> None:
+        args = job_queue.build_train_enqueue_parser().parse_args(
+            [
+                "--goal-file",
+                "goal.yaml",
+                "--recipe-file",
+                "recipe.yaml",
+                "--machine",
+                "beast-3",
+                "--env-provider",
+                "stable-retro-turbo",
+            ]
+        )
+
+        self.assertEqual(args.env_provider, "stable-retro-turbo")
         self.assertEqual(args.runtime_readiness_timeout, 20 * 60)
 
     def test_submission_batch_id_public_helper_preserves_queue_identity(self) -> None:
@@ -352,12 +369,7 @@ class JobQueueTests(unittest.TestCase):
                     if recipe_path.name == "jerk.yaml"
                     else "sb3.ppo"
                 )
-                expected_eval_backend = (
-                    "none"
-                    if expected_backend == "rlab.jerk"
-                    or goal_path == Path("experiments/goals/alepy__breakout/_goal.yaml")
-                    else "modal"
-                )
+                expected_eval_backend = "none" if expected_backend == "rlab.jerk" else "modal"
                 self.assertEqual(train_config["checkpoint_eval_backend"], expected_eval_backend)
                 self.assertEqual(train_config["training_backend"]["id"], expected_backend)
                 self.assertEqual(
@@ -1296,6 +1308,23 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(
             sum(path.endswith("/Level1-1/_goal.yaml") for path in source_paths),
             1,
+        )
+
+    def test_compose_train_document_overrides_breakout_provider_atomically(self) -> None:
+        document = compose_train_document(
+            BREAKOUT_GOAL,
+            Path("experiments/recipes/atari/ppo.yaml"),
+            env_provider="stable-retro-turbo",
+        )
+
+        self.assertEqual(document["train_config"]["env_provider"], "stable-retro-turbo")
+        self.assertEqual(
+            document["train_config"]["checkpoint_eval_environment"]["env_provider"],
+            "stable-retro-turbo",
+        )
+        self.assertEqual(
+            document["environment"]["env_id"],
+            "stable-retro-turbo:Breakout-Atari2600-v0",
         )
 
     def test_compose_train_document_rejects_ale_only_arg_for_stable_retro(self) -> None:
