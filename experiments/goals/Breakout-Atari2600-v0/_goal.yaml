@@ -24,7 +24,7 @@ train:
       <<: &breakout_env_config
         game: Breakout-Atari2600-v0
         state: Start
-        n_envs: 16
+        n_envs: 128
         env_args: &breakout_provider_args
           scenario: scenario
           info: data

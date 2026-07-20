@@ -8,9 +8,6 @@ description: >-
   and evaluation contract.
 train:
   timesteps: 200000000
-  environment:
-    env_config:
-      n_envs: 128
   backend:
     config:
       n_steps: 64
