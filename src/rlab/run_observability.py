@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from psycopg2 import InterfaceError, OperationalError
+
 from rlab.json_utils import json_safe
 from rlab.telemetry_mailbox import REMOTE_CONFIRM_TIMEOUT_SECONDS
 
@@ -555,78 +557,109 @@ def follow_run(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     wandb_reader: Callable[[str], Mapping[str, Any]] = terminal_wandb_summary,
+    connection_factory: Callable[[], Any] | None = None,
+    reconnect_seconds: float = 2.0,
 ) -> int:
     seen_url = False
     seen_incidents: set[str] = set()
     seen_attention: set[str] = set()
     previous_progress = ""
     last_progress = float("-inf")
-    while True:
-        started = clock()
-        projection = run_projection(conn, int(run_id))
+    current_conn = conn
 
-        def send(event: str, **payload: Any) -> None:
-            emit(
-                json_safe(
-                    {
-                        "schema_version": SCHEMA_VERSION,
-                        "event": event,
-                        "run_id": int(run_id),
-                        "observed_at": _iso_utc(),
-                        **payload,
-                    }
-                )
-            )
+    def close_connection() -> None:
+        try:
+            current_conn.close()
+        except Exception:
+            pass
 
-        url = str((projection.get("wandb") or {}).get("url") or "")
-        if url and not seen_url:
-            seen_url = True
-            send("wandb_url", url=url, wandb_run_id=(projection.get("wandb") or {}).get("run_id"))
-        semantic = _semantic_progress(projection)
-        now = clock()
-        if semantic != previous_progress or now - last_progress >= heartbeat_seconds:
-            send("progress", run=projection)
-            previous_progress = semantic
-            last_progress = now
-        for incident in (projection.get("incidents") or {}).get("current") or []:
-            fingerprint = str(incident["fingerprint"])
-            if fingerprint in seen_incidents:
+    try:
+        while True:
+            started = clock()
+            try:
+                projection = run_projection(current_conn, int(run_id))
+            except (OperationalError, InterfaceError):
+                if connection_factory is None:
+                    raise
+                close_connection()
+                while True:
+                    sleep(max(0.0, float(reconnect_seconds)))
+                    try:
+                        current_conn = connection_factory()
+                    except (OperationalError, InterfaceError):
+                        continue
+                    break
                 continue
-            seen_incidents.add(fingerprint)
-            send("potential_bug", incident=incident, run=projection)
-        blocked_budget = int(
-            (projection.get("operations") or {}).get("blocked_budget_eval_jobs") or 0
-        )
-        if blocked_budget:
-            attention = {
-                "fingerprint": _fingerprint(int(run_id), "eval_budget_blocked", "modal_budget"),
-                "category": "eval_budget_blocked",
-                "subject": "modal_budget",
-                "detail": f"blocked_budget_eval_jobs={blocked_budget}",
-            }
-            fingerprint = str(attention["fingerprint"])
-            if fingerprint not in seen_attention:
-                seen_attention.add(fingerprint)
-                send("attention_required", attention=attention, run=projection)
-        classification = projection.get("terminal_classification")
-        if classification:
-            wandb_summary: Mapping[str, Any] = {}
-            if url:
-                try:
-                    wandb_summary = wandb_reader(url)
-                except Exception as exc:
-                    send(
-                        "reporting_warning",
-                        category="wandb_terminal_read_failed",
-                        detail=f"{type(exc).__name__}: {exc}",
+
+            def send(event: str, **payload: Any) -> None:
+                emit(
+                    json_safe(
+                        {
+                            "schema_version": SCHEMA_VERSION,
+                            "event": event,
+                            "run_id": int(run_id),
+                            "observed_at": _iso_utc(),
+                            **payload,
+                        }
                     )
-            send("terminal", **terminal_payload(projection, wandb_summary=wandb_summary))
-            return {
-                "accepted": 0,
-                "completed": 0,
-                "goal_rejected": 2,
-                "canceled": 3,
-                "operational_failure": 1,
-            }[str(classification)]
-        elapsed = clock() - started
-        sleep(max(0.0, float(poll_seconds) - elapsed))
+                )
+
+            url = str((projection.get("wandb") or {}).get("url") or "")
+            if url and not seen_url:
+                seen_url = True
+                send(
+                    "wandb_url",
+                    url=url,
+                    wandb_run_id=(projection.get("wandb") or {}).get("run_id"),
+                )
+            semantic = _semantic_progress(projection)
+            now = clock()
+            if semantic != previous_progress or now - last_progress >= heartbeat_seconds:
+                send("progress", run=projection)
+                previous_progress = semantic
+                last_progress = now
+            for incident in (projection.get("incidents") or {}).get("current") or []:
+                fingerprint = str(incident["fingerprint"])
+                if fingerprint in seen_incidents:
+                    continue
+                seen_incidents.add(fingerprint)
+                send("potential_bug", incident=incident, run=projection)
+            blocked_budget = int(
+                (projection.get("operations") or {}).get("blocked_budget_eval_jobs") or 0
+            )
+            if blocked_budget:
+                attention = {
+                    "fingerprint": _fingerprint(int(run_id), "eval_budget_blocked", "modal_budget"),
+                    "category": "eval_budget_blocked",
+                    "subject": "modal_budget",
+                    "detail": f"blocked_budget_eval_jobs={blocked_budget}",
+                }
+                fingerprint = str(attention["fingerprint"])
+                if fingerprint not in seen_attention:
+                    seen_attention.add(fingerprint)
+                    send("attention_required", attention=attention, run=projection)
+            classification = projection.get("terminal_classification")
+            if classification:
+                wandb_summary: Mapping[str, Any] = {}
+                if url:
+                    try:
+                        wandb_summary = wandb_reader(url)
+                    except Exception as exc:
+                        send(
+                            "reporting_warning",
+                            category="wandb_terminal_read_failed",
+                            detail=f"{type(exc).__name__}: {exc}",
+                        )
+                send("terminal", **terminal_payload(projection, wandb_summary=wandb_summary))
+                return {
+                    "accepted": 0,
+                    "completed": 0,
+                    "goal_rejected": 2,
+                    "canceled": 3,
+                    "operational_failure": 1,
+                }[str(classification)]
+            elapsed = clock() - started
+            sleep(max(0.0, float(poll_seconds) - elapsed))
+    finally:
+        if connection_factory is not None:
+            close_connection()

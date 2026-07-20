@@ -495,6 +495,118 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in awaiting], [2])
         self.assertEqual([row["id"] for row in unpublished], [3])
 
+    def test_artifact_only_session_preserves_durable_training_cursor_floor(self) -> None:
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+            {"stream_id": "train-7", "sequence": 39},
+        ]
+        run = {
+            "id": 7,
+            "status": "running",
+            "wandb_url": "https://wandb/run",
+            "train_config": {"wandb": True, "wandb_run_id": "rlab-7", "game": "game"},
+        }
+        batches = [
+            {
+                "id": 8,
+                "stream_id": "artifact-v2-7-14-availability-r0",
+                "batch_sequence": 1,
+                "submitted_sequence": 0,
+                "payload": b"payload",
+            }
+        ]
+        projector = SimpleNamespace(
+            run=SimpleNamespace(url="https://wandb/run", summary={}),
+            close=mock.Mock(),
+        )
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine",
+                return_value=False,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state",
+                return_value=WandbPublicationState(
+                    state="running",
+                    cursors={"train-7": 35},
+                    step_max=7_500_000,
+                ),
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.decode_metric_batch", return_value=[]),
+            mock.patch("rlab.fleet_wandb_publisher.resolve_env_config", return_value={}),
+            mock.patch("rlab.fleet_wandb_publisher.env_config_from_args", return_value={}),
+            mock.patch("rlab.fleet_wandb_publisher.mark_submitted_batches"),
+        ):
+            publish_claimed_run(conn, run, batches)
+
+        self.assertEqual(
+            projector.run.summary["_rlab_telemetry_cursors"],
+            {
+                "train-7": 39,
+                "artifact-v2-7-14-availability-r0": 1,
+            },
+        )
+
+    def test_stalled_crashed_run_reasserts_durable_cursor_without_relogging(self) -> None:
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+            {"stream_id": "train-7", "sequence": 39},
+        ]
+        run = {
+            "id": 7,
+            "status": "running",
+            "wandb_url": "https://wandb/run",
+            "train_config": {"wandb": True, "wandb_run_id": "rlab-7", "game": "game"},
+        }
+        batches = [
+            {
+                "id": 8,
+                "stream_id": "train-7",
+                "batch_sequence": 39,
+                "submitted_sequence": 39,
+                "submitted_at": datetime.now(UTC) - timedelta(minutes=5),
+                "payload": b"payload",
+            }
+        ]
+        projector = SimpleNamespace(
+            run=SimpleNamespace(url="https://wandb/run", summary={}),
+            close=mock.Mock(),
+        )
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine",
+                return_value=False,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state",
+                return_value=WandbPublicationState(
+                    state="crashed",
+                    cursors={"train-7": 35},
+                    step_max=7_500_000,
+                ),
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.WandbProjector.resume",
+                return_value=projector,
+            ) as resume,
+            mock.patch("rlab.fleet_wandb_publisher.decode_metric_batch", return_value=[]),
+            mock.patch("rlab.fleet_wandb_publisher.mark_submitted_batches") as submitted,
+        ):
+            self.assertEqual(publish_claimed_run(conn, run, batches), 0)
+
+        self.assertEqual(
+            projector.run.summary["_rlab_telemetry_cursors"],
+            {"train-7": 39},
+        )
+        self.assertFalse(resume.call_args.kwargs["update_finish_state"])
+        submitted.assert_called_once_with(conn, batches, refresh_submitted_at=True)
+
     def test_remote_confirmation_restores_submitted_sequence_before_publish_commit(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value

@@ -246,7 +246,7 @@ class BreakoutTurboProviderTests(unittest.TestCase):
 
     def test_runtime_meets_provider_minimum(self) -> None:
         installed = Version(importlib.metadata.version("breakout-turbo-env"))
-        self.assertGreaterEqual(installed, Version("0.3.0"))
+        self.assertGreaterEqual(installed, Version("0.3.1"))
 
     def test_constructs_and_preserves_native_manual_vector_contract(self) -> None:
         config = self.config()

@@ -1,6 +1,6 @@
 ---
 name: autoresearch
-description: Tune one checked-in rlab SB3 PPO or A2C recipe from durable training completion signals without launching checkpoint evaluations. Use when the user points to a recipe and asks to tune, optimize, autoresearch, improve sample efficiency, find the best hyperparameters, or make training success stable across seeds. Runs a bounded fixed-rung beast-3 search, confirms the winner on five untouched training seeds, and patches only the pointed leaf recipe.
+description: Tune one checked-in rlab SB3 PPO or A2C recipe from durable training completion signals without launching checkpoint evaluations. Use when the user points to a recipe and asks to tune, optimize, autoresearch, improve sample efficiency, maximize training return, find the best hyperparameters, or make training behavior stable across seeds. Runs a bounded fixed-rung beast-3 search, confirms the winner on five untouched training seeds, and patches only the pointed leaf recipe.
 ---
 
 # Autoresearch
@@ -22,6 +22,8 @@ Before acting:
 
 Resolve exactly one checked-in goal and recipe. V2 accepts only `sb3.ppo` and `sb3.a2c` recipes
 with explicit training start states and distinct quantized 20%, 50%, and full training caps.
+It uses success evidence when the task declares success termination and return evidence when the
+goal ranks episode return but declares no success event.
 Historical schema-v1 studies are inert and cannot be resumed.
 
 ## Initialize or resume
@@ -142,7 +144,19 @@ uv run python .codex/skills/autoresearch/scripts/study.py collect-training-evide
 ```
 
 A transient W&B read failure leaves the action pending and is safe to repeat. Missing success or
-window-100 metrics are valid negative evidence, not an infrastructure failure.
+window-100 metrics are valid negative evidence, not an infrastructure failure. Return-mode
+studies collect the final 10% mean, p05, standard deviation, peak, and last value of
+`train/episode/return/shaped/mean`.
+
+An active v2 study incorrectly screened as success-only may be upgraded only when its frozen goal
+is return-ranked, it has no paired evidence, and confirmation or apply has not started:
+
+```bash
+uv run python .codex/skills/autoresearch/scripts/study.py upgrade-return-mode --study <study>
+```
+
+This re-reads the exact finished W&B runs and reopens only prematurely closed screen barriers. It
+does not alter or relaunch a queue job.
 
 Persist attention and resume only from supported new evidence:
 
@@ -163,9 +177,11 @@ uv run python .codex/skills/autoresearch/scripts/study.py close-round \
   --study <study> --round <round>
 ```
 
-The helper ranks two-seed evidence by strong-seed count, median and worst censored first-strong
-step, then worst peak window-100 minimum. Stop after three stale rounds or when budget cannot
-support another complete candidate plus confirmation.
+Success mode ranks two-seed evidence by strong-seed count, median and worst censored first-strong
+step, then worst peak window-100 minimum. Return mode pairs only the best robust screen per round
+and ranks paired evidence by worst and median final-10% mean, worst and median final-10% p05, then
+median peak. Stop after three stale rounds or when budget cannot support another complete
+candidate plus confirmation.
 
 After exactly five full-cap confirmation runs have evidence:
 
@@ -173,9 +189,11 @@ After exactly five full-cap confirmation runs have evidence:
 uv run python .codex/skills/autoresearch/scripts/study.py close-confirmation --study <study>
 ```
 
-The winner requires at least four seeds to reach the frozen strong threshold. A failed holdout is
-a binary exclusion; do not inspect its per-seed details to choose later candidates. If no candidate
-can be confirmed, run the requested `finish-no-winner` action and leave the recipe unchanged.
+Success mode requires at least four seeds to reach the frozen strong threshold. Return mode
+requires at least four seeds to meet the incumbent's frozen worst paired final-10% mean. A failed
+holdout is a binary exclusion; do not inspect its per-seed details to choose later candidates. If
+no candidate can be confirmed, run the requested `finish-no-winner` action and leave the recipe
+unchanged.
 
 ## Apply the winner
 

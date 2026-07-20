@@ -216,16 +216,14 @@ def cmd_follow(args: argparse.Namespace) -> int:
     def emit(value: Mapping[str, Any]) -> None:
         print(json.dumps(json_safe(value), sort_keys=True, separators=(",", ":")), flush=True)
 
-    try:
-        return follow_run(
-            conn,
-            int(args.run_id),
-            emit=emit,
-            poll_seconds=float(args.poll_seconds),
-            heartbeat_seconds=float(args.heartbeat_seconds),
-        )
-    finally:
-        conn.close()
+    return follow_run(
+        conn,
+        int(args.run_id),
+        emit=emit,
+        poll_seconds=float(args.poll_seconds),
+        heartbeat_seconds=float(args.heartbeat_seconds),
+        connection_factory=lambda: _connect(args, root),
+    )
 
 
 def cmd_wait(args: argparse.Namespace) -> int:

@@ -682,6 +682,47 @@ def _partition_batches(
     return confirmed, awaiting_confirmation, unpublished
 
 
+def _durable_cursor_floor(conn, train_job_id: int) -> dict[str, int]:
+    """Return cursors whose W&B sessions closed successfully for one run."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.stream_id,
+              GREATEST(s.submitted_sequence, s.published_sequence) AS sequence
+            FROM metric_streams s
+            JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+            WHERE a.train_job_id = %(train_job_id)s
+              AND GREATEST(s.submitted_sequence, s.published_sequence) > 0
+            """,
+            {"train_job_id": int(train_job_id)},
+        )
+        rows = cur.fetchall()
+    return {str(row["stream_id"]): int(row["sequence"]) for row in rows}
+
+
+def _merge_cursor_mappings(*mappings: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for mapping in mappings:
+        for stream_id, sequence in mapping.items():
+            merged[str(stream_id)] = max(
+                int(merged.get(str(stream_id), 0)),
+                int(sequence),
+            )
+    return merged
+
+
+def _confirmation_is_stalled(
+    batches: list[dict[str, Any]],
+    remote: WandbPublicationState,
+) -> bool:
+    try:
+        _raise_for_stalled_confirmations(batches, remote)
+    except WandbCursorConfirmationError:
+        return True
+    return False
+
+
 def _reconcile_non_modal_publication_finishing(conn, train_job_id: int) -> bool:
     """Close a terminal non-Modal producer only after its durable outbox is complete."""
 
@@ -973,6 +1014,7 @@ def publish_claimed_run(
         else _remote_publication_state(train_config)
     )
     remote = remote_state.cursors
+    durable_floor = _durable_cursor_floor(conn, int(run["id"]))
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
         artifact_payloads = [
@@ -996,11 +1038,20 @@ def publish_claimed_run(
             artifact_receipts=artifact_receipts,
         )
         run["live_publication_attempts"] = 0
-    if awaiting_confirmation:
+    regressed_floor = {
+        stream_id: sequence
+        for stream_id, sequence in durable_floor.items()
+        if int(remote.get(stream_id, 0)) < int(sequence)
+    }
+    reassert_cursor_floor = bool(regressed_floor) and _confirmation_is_stalled(
+        awaiting_confirmation,
+        remote_state,
+    )
+    if awaiting_confirmation and not reassert_cursor_floor:
         _raise_for_stalled_confirmations(awaiting_confirmation, remote_state)
         mark_submitted_batches(conn, awaiting_confirmation)
     wandb_url: str | None = None
-    if unpublished:
+    if unpublished or reassert_cursor_floor:
         session_step_max = remote_state.step_max
         expected: dict[str, int] = {}
         for row in unpublished:
@@ -1014,8 +1065,12 @@ def publish_claimed_run(
         )
         try:
             wandb_url = str(getattr(projector.run, "url", "") or "") or None
-            args = SimpleNamespace(**train_config)
-            config = resolve_env_config(env_config_from_args(args, include_states=True))
+            args = SimpleNamespace(**train_config) if unpublished else None
+            config = (
+                resolve_env_config(env_config_from_args(args, include_states=True))
+                if args is not None
+                else None
+            )
             for batch in unpublished:
                 for frame in decoded[int(batch["id"])]:
                     try:
@@ -1043,6 +1098,7 @@ def publish_claimed_run(
                                 raise RuntimeError("W&B artifact handle does not support wait()")
                             wait(timeout=WANDB_API_TIMEOUT_SECONDS)
                     else:
+                        assert args is not None and config is not None
                         _publish_frame(
                             projector.run,
                             {
@@ -1052,9 +1108,7 @@ def publish_claimed_run(
                             args=args,
                             config=config,
                         )
-            merged = dict(remote)
-            for stream_id, sequence in expected.items():
-                merged[stream_id] = max(int(merged.get(stream_id, 0)), int(sequence))
+            merged = _merge_cursor_mappings(remote, durable_floor, expected)
             projector.run.summary[SUMMARY_CURSOR_KEY] = merged
             if session_step_max is not None:
                 summary_step: int | float = session_step_max
@@ -1063,7 +1117,14 @@ def publish_claimed_run(
                 projector.run.summary["global_step"] = {"max": summary_step}
         finally:
             projector.close()
-        mark_submitted_batches(conn, unpublished)
+        if unpublished:
+            mark_submitted_batches(conn, unpublished)
+        if reassert_cursor_floor:
+            mark_submitted_batches(
+                conn,
+                awaiting_confirmation,
+                refresh_submitted_at=True,
+            )
     if awaiting_confirmation or unpublished:
         with conn:
             with conn.cursor() as cur:

@@ -78,14 +78,14 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
-        self.assertEqual(train_config["task"]["signals"], {"awaiting_fire": "awaiting_fire"})
+        self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
         self.assertEqual(
             train_config["task"]["events"],
             {
                 "serve_stall": {
-                    "signal": "awaiting_fire",
+                    "signal": "ball_y",
                     "operation": "equals_for",
-                    "value": 1,
+                    "value": 0,
                     "steps": 256,
                 }
             },
@@ -116,6 +116,18 @@ class ConfigValidationTests(unittest.TestCase):
             atari["_composition"]["recipe_root_path"],
         )
         self.assertEqual(document["goal"]["objective"], atari["goal"]["objective"])
+        self.assertEqual(
+            train_config["task"]["signals"],
+            atari["train_config"]["task"]["signals"],
+        )
+        self.assertEqual(
+            train_config["task"]["events"],
+            atari["train_config"]["task"]["events"],
+        )
+        self.assertEqual(
+            train_config["task"]["termination"],
+            atari["train_config"]["task"]["termination"],
+        )
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
         environment = {

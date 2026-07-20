@@ -3,8 +3,9 @@
 ## Objective and defaults
 
 Select the most sample-efficient seed-stable recipe supported by durable training completion
-signals. Autoresearch does not evaluate or promote checkpoints and cannot establish goal
-acceptance.
+signals. Use success evidence when the task declares success termination. When a goal ranks
+episode return but declares no success event, use robust late-training return evidence instead.
+Autoresearch does not evaluate or promote checkpoints and cannot establish goal acceptance.
 
 Use `beast-3`, at most 48 reserved jobs, three stale search rounds, a `0.90` strong threshold, and
 five untouched confirmation seeds requiring at least four strong runs. Freeze at initialization:
@@ -24,6 +25,8 @@ For `n_envs=N`, use screen seed `123`, paired seeds `123+N` and `123+2N`, and co
 
 ## Evidence and ranking
 
+### Success mode
+
 A screen passes only when the remotely finished W&B run shows at least one cumulative training
 success for every configured start. A missing start or zero success prevents the paired rung.
 
@@ -40,6 +43,26 @@ lexicographically by:
 
 Candidate-ID ties never reset staleness. Use only the binary pass/fail aggregate from a failed
 confirmation to exclude that candidate; do not use holdout per-seed evidence for later proposals.
+
+### Return mode
+
+For every remotely finished run, read `train/episode/return/shaped/mean` and summarize the final
+10% of observed training steps with its mean, p05, and standard deviation; also retain the peak
+and last value. Missing or non-finite history is invalid evidence.
+
+Always pair the baseline. In each search round, pair only the screen with the highest final-10%
+mean, then p05, then peak; candidate ID is only an exact tie-break. Rank eligible two-seed
+candidates lexicographically by:
+
+1. higher worst-seed final-10% mean;
+2. higher median final-10% mean;
+3. higher worst-seed final-10% p05;
+4. higher median final-10% p05;
+5. higher median peak.
+
+At confirmation reservation, freeze the incumbent's worst paired final-10% mean. At least four of
+five untouched full-cap seeds must meet that floor. A failed holdout remains a binary exclusion;
+do not use its per-seed values to choose later candidates.
 
 ## Frozen experiment contract
 
@@ -107,8 +130,8 @@ budget supports a valid next action.
 
 ## Winner application
 
-Require at least four of five untouched full-cap seeds to become strong. Record the result as
-`training-signal-confirmed`, never accepted or promoted.
+Require at least four of five untouched full-cap seeds to satisfy the active success or return
+confirmation rule. Record the result as `training-signal-confirmed`, never accepted or promoted.
 
 Apply in two phases: preregister the exact leaf postimage and hash while the leaf equals its pinned
 preimage, then apply and recompose. Require the recomposed train configuration to equal the frozen

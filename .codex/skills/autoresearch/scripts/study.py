@@ -18,13 +18,14 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import median
+from statistics import mean, median, pstdev
 from typing import Any, Iterator, Mapping
 from urllib.parse import urlparse
 
 from rlab.job_queue import submission_batch_id
 from rlab.metric_names import (
     GLOBAL_STEP,
+    TRAIN_EPISODE_RETURN_SHAPED_MEAN,
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
 )
 from rlab.provider_config import provider_num_envs
@@ -44,6 +45,11 @@ DEFAULT_STALE_ROUNDS = 3
 DEFAULT_STRONG_THRESHOLD = 0.90
 SCREEN_FRACTION = 0.20
 PAIR_FRACTION = 0.50
+RETURN_TAIL_FRACTION = 0.10
+
+EVIDENCE_SUCCESS = "success"
+EVIDENCE_RETURN = "return"
+EVIDENCE_MODES = frozenset({EVIDENCE_SUCCESS, EVIDENCE_RETURN})
 
 SCREEN_PHASES = frozenset({"baseline-screen", "search-screen"})
 PAIR_PHASES = frozenset({"baseline-pair", "search-pair"})
@@ -352,10 +358,108 @@ def configured_starts(train: Mapping[str, Any]) -> list[str]:
     return values
 
 
+def infer_evidence_mode(train: Mapping[str, Any]) -> str:
+    task = train.get("task") or {}
+    termination = task.get("termination") or {}
+    if termination.get("success"):
+        return EVIDENCE_SUCCESS
+    ranking = [str(value) for value in train.get("selection_rank") or []]
+    if any("episode/return" in value for value in ranking):
+        return EVIDENCE_RETURN
+    return EVIDENCE_SUCCESS
+
+
+def evidence_mode(state: Mapping[str, Any]) -> str:
+    mode = str(state.get("evidence_mode") or EVIDENCE_SUCCESS)
+    if mode not in EVIDENCE_MODES:
+        raise ValueError(f"unsupported autoresearch evidence mode: {mode}")
+    return mode
+
+
+def percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        raise ValueError("percentile requires at least one value")
+    ordered = sorted(float(value) for value in values)
+    position = (len(ordered) - 1) * float(quantile)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def return_evidence_valid(evidence: Mapping[str, Any]) -> bool:
+    return bool(evidence.get("return_evidence_valid")) and all(
+        evidence.get(key) is not None
+        for key in ("return_tail_mean", "return_tail_p05", "return_peak")
+    )
+
+
+def screen_evidence_passed(state: Mapping[str, Any], evidence: Mapping[str, Any]) -> bool:
+    if evidence_mode(state) == EVIDENCE_RETURN:
+        return return_evidence_valid(evidence)
+    return bool(evidence.get("all_starts_succeeded"))
+
+
+def return_screen_key(evidence: Mapping[str, Any]) -> tuple[float, float, float]:
+    if not return_evidence_valid(evidence):
+        return (-float("inf"), -float("inf"), -float("inf"))
+    return (
+        float(evidence["return_tail_mean"]),
+        float(evidence["return_tail_p05"]),
+        float(evidence["return_peak"]),
+    )
+
+
+def selected_return_screen(
+    state: Mapping[str, Any], round_number: int
+) -> dict[str, Any] | None:
+    screens = [
+        wave
+        for wave in state["waves"]
+        if int(wave["round"]) == int(round_number) and wave["phase"] in SCREEN_PHASES
+    ]
+    if not screens or any(not wave_evidence_complete(wave) for wave in screens):
+        return None
+    eligible = [
+        wave
+        for wave in screens
+        if screen_evidence_passed(state, wave["terminal_runs"][0]["training_evidence"])
+    ]
+    if not eligible:
+        return None
+    return sorted(
+        eligible,
+        key=lambda wave: (
+            tuple(-value for value in return_screen_key(
+                wave["terminal_runs"][0]["training_evidence"]
+            )),
+            wave["candidate_id"],
+        ),
+    )[0]
+
+
 def candidate_score(state: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
     runs = list(candidate.get("pair_runs") or [])
     if len(runs) != PAIR_SEED_COUNT:
         raise ValueError("paired candidate evidence requires exactly two runs")
+    if evidence_mode(state) == EVIDENCE_RETURN:
+        evidence = [run["training_evidence"] for run in runs]
+        if not all(return_evidence_valid(item) for item in evidence):
+            raise ValueError("paired return evidence is incomplete")
+        tail_means = [float(item["return_tail_mean"]) for item in evidence]
+        tail_p05s = [float(item["return_tail_p05"]) for item in evidence]
+        peaks = [float(item["return_peak"]) for item in evidence]
+        return {
+            "evidence_mode": EVIDENCE_RETURN,
+            "worst_return_tail_mean": min(tail_means),
+            "median_return_tail_mean": float(median(tail_means)),
+            "worst_return_tail_p05": min(tail_p05s),
+            "median_return_tail_p05": float(median(tail_p05s)),
+            "median_return_peak": float(median(peaks)),
+            "candidate_id": candidate["id"],
+        }
     censor = int(state["rung_caps"]["pair"])
     strong = 0
     crossing_steps: list[int] = []
@@ -371,6 +475,7 @@ def candidate_score(state: Mapping[str, Any], candidate: Mapping[str, Any]) -> d
         peak = evidence.get("peak_window_100_rate_min")
         peaks.append(float(peak) if peak is not None else 0.0)
     return {
+        "evidence_mode": EVIDENCE_SUCCESS,
         "strong_seeds": strong,
         "median_censored_first_strong_step": float(median(crossing_steps)),
         "worst_censored_first_strong_step": max(crossing_steps),
@@ -379,7 +484,15 @@ def candidate_score(state: Mapping[str, Any], candidate: Mapping[str, Any]) -> d
     }
 
 
-def evidence_key(score: Mapping[str, Any]) -> tuple[float, float, float, float]:
+def evidence_key(score: Mapping[str, Any]) -> tuple[float, ...]:
+    if str(score.get("evidence_mode") or EVIDENCE_SUCCESS) == EVIDENCE_RETURN:
+        return (
+            -float(score["worst_return_tail_mean"]),
+            -float(score["median_return_tail_mean"]),
+            -float(score["worst_return_tail_p05"]),
+            -float(score["median_return_tail_p05"]),
+            -float(score["median_return_peak"]),
+        )
     return (
         -float(score["strong_seeds"]),
         float(score["median_censored_first_strong_step"]),
@@ -395,7 +508,10 @@ def ranked_candidates(state: Mapping[str, Any]) -> list[dict[str, Any]]:
         runs = list(candidate.get("pair_runs") or [])
         if candidate["id"] in excluded or len(runs) != PAIR_SEED_COUNT:
             continue
-        if not all(
+        if evidence_mode(state) == EVIDENCE_RETURN:
+            if not all(return_evidence_valid(run.get("training_evidence") or {}) for run in runs):
+                continue
+        elif not all(
             bool((run.get("training_evidence") or {}).get("all_starts_succeeded"))
             for run in runs
         ):
@@ -439,6 +555,12 @@ def round_ready_to_close(state: Mapping[str, Any], round_number: int) -> bool:
     ]
     if not screens or any(not wave_evidence_complete(wave) for wave in screens):
         return False
+    if evidence_mode(state) == EVIDENCE_RETURN:
+        selected = selected_return_screen(state, round_number)
+        if selected is None:
+            return True
+        pair = candidate_wave(state, selected["candidate_id"], PAIR_PHASES)
+        return pair is not None and wave_evidence_complete(pair)
     for screen in screens:
         record = screen["terminal_runs"][0]
         if bool(record["training_evidence"]["all_starts_succeeded"]):
@@ -473,8 +595,8 @@ def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
     if baseline_screen is None:
         return {"action": "reserve_baseline_screen"}
     if wave_evidence_complete(baseline_screen):
-        screen_passed = bool(
-            baseline_screen["terminal_runs"][0]["training_evidence"]["all_starts_succeeded"]
+        screen_passed = screen_evidence_passed(
+            state, baseline_screen["terminal_runs"][0]["training_evidence"]
         )
         if screen_passed and candidate_wave(state, baseline["id"], PAIR_PHASES) is None:
             return {"action": "reserve_baseline_pair", "candidate_id": baseline["id"]}
@@ -487,12 +609,21 @@ def next_action(state: Mapping[str, Any]) -> dict[str, Any]:
         for wave in state["waves"]
         if int(wave["round"]) == current_round and wave["phase"] == "search-screen"
     ]
-    for screen in screens:
-        if not wave_evidence_complete(screen):
-            continue
-        passed = bool(screen["terminal_runs"][0]["training_evidence"]["all_starts_succeeded"])
-        if passed and candidate_wave(state, screen["candidate_id"], PAIR_PHASES) is None:
-            return {"action": "reserve_search_pair", "candidate_id": screen["candidate_id"]}
+    if evidence_mode(state) == EVIDENCE_RETURN:
+        selected = selected_return_screen(state, current_round)
+        if selected is not None and candidate_wave(
+            state, selected["candidate_id"], PAIR_PHASES
+        ) is None:
+            return {"action": "reserve_search_pair", "candidate_id": selected["candidate_id"]}
+    else:
+        for screen in screens:
+            if not wave_evidence_complete(screen):
+                continue
+            passed = bool(
+                screen["terminal_runs"][0]["training_evidence"]["all_starts_succeeded"]
+            )
+            if passed and candidate_wave(state, screen["candidate_id"], PAIR_PHASES) is None:
+                return {"action": "reserve_search_pair", "candidate_id": screen["candidate_id"]}
 
     awaiting = [
         int(run_id)
@@ -614,6 +745,7 @@ def command_init(args: argparse.Namespace) -> None:
         quantum = int(backend_config["n_steps"]) * int(n_envs)
         caps = rung_caps(int(train["timesteps"]), quantum)
         starts = configured_starts(train)
+        mode = infer_evidence_mode(train)
         screen_seed = 123
         pair_seeds = [123 + index * n_envs for index in range(1, 1 + PAIR_SEED_COUNT)]
         confirmation_seeds = [
@@ -641,6 +773,7 @@ def command_init(args: argparse.Namespace) -> None:
             "backend": backend,
             "n_envs": n_envs,
             "configured_starts": starts,
+            "evidence_mode": mode,
             "screen_seed": screen_seed,
             "pair_seeds": pair_seeds,
             "confirmation_seeds": confirmation_seeds,
@@ -653,6 +786,7 @@ def command_init(args: argparse.Namespace) -> None:
                 "confirmation_runs": CONFIRMATION_RUNS,
                 "confirmation_required": 4,
                 "strong_threshold": threshold,
+                "return_tail_fraction": RETURN_TAIL_FRACTION,
                 "checkpoint_evaluation": "disabled",
             },
             "baseline": {
@@ -915,10 +1049,18 @@ def command_reserve(args: argparse.Namespace) -> None:
             for candidate in candidates
         ]
         if phase == "confirmation":
+            confirmation_floor = None
+            if evidence_mode(state) == EVIDENCE_RETURN:
+                confirmation_floor = float(
+                    candidate_score(state, state["candidates"][candidate_value])[
+                        "worst_return_tail_mean"
+                    ]
+                )
             state["confirmation"] = {
                 "candidate_id": waves[0]["candidate_id"],
                 "submission_key": waves[0]["submission_key"],
                 "closed": False,
+                "return_floor": confirmation_floor,
             }
         output = [
             {
@@ -1176,6 +1318,8 @@ def fetch_training_evidence(
     expected_run_id: str,
     starts: list[str],
     strong_threshold: float,
+    mode: str = EVIDENCE_SUCCESS,
+    return_tail_fraction: float = RETURN_TAIL_FRACTION,
 ) -> dict[str, Any]:
     import wandb
 
@@ -1209,7 +1353,27 @@ def fetch_training_evidence(
         peak = value if peak is None else max(peak, value)
         if first_strong_step is None and value >= strong_threshold:
             first_strong_step = step
-    return {
+
+    return_rows: list[tuple[int, float]] = []
+    for row in remote.scan_history(
+        keys=[GLOBAL_STEP, TRAIN_EPISODE_RETURN_SHAPED_MEAN],
+        page_size=1000,
+    ):
+        step = row.get(GLOBAL_STEP)
+        value = row.get(TRAIN_EPISODE_RETURN_SHAPED_MEAN)
+        if step is None or value is None:
+            continue
+        step = int(step)
+        value = float(value)
+        if not math.isfinite(value):
+            continue
+        observed_max_step = max(observed_max_step, step)
+        return_rows.append((step, value))
+    tail_start = int(observed_max_step * (1.0 - float(return_tail_fraction)))
+    tail_values = [value for step, value in return_rows if step >= tail_start]
+    return_valid = bool(return_rows) and len(tail_values) >= 10
+    result = {
+        "evidence_mode": mode,
         "all_starts_succeeded": all_starts_succeeded,
         "success_counts_by_start": counts,
         "peak_window_100_rate_min": peak,
@@ -1221,7 +1385,20 @@ def fetch_training_evidence(
         "wandb_url": str(remote.url or url),
         "wandb_state": str(remote.state),
         "collected_at": utc_now(),
+        "return_metric": TRAIN_EPISODE_RETURN_SHAPED_MEAN,
+        "return_points": len(return_rows),
+        "return_tail_fraction": float(return_tail_fraction),
+        "return_tail_points": len(tail_values),
+        "return_evidence_valid": return_valid,
+        "return_peak": max((value for _, value in return_rows), default=None),
+        "return_last": return_rows[-1][1] if return_rows else None,
+        "return_tail_mean": float(mean(tail_values)) if tail_values else None,
+        "return_tail_p05": percentile(tail_values, 0.05) if tail_values else None,
+        "return_tail_std": float(pstdev(tail_values)) if tail_values else None,
     }
+    if mode == EVIDENCE_RETURN and not return_valid:
+        result["strong"] = False
+    return result
 
 
 def command_collect_training_evidence(args: argparse.Namespace) -> None:
@@ -1252,6 +1429,10 @@ def command_collect_training_evidence(args: argparse.Namespace) -> None:
         expected_run_id=str(record["wandb_run_id"]),
         starts=list(state["configured_starts"]),
         strong_threshold=float(state["policy"]["strong_threshold"]),
+        mode=evidence_mode(state),
+        return_tail_fraction=float(
+            state["policy"].get("return_tail_fraction", RETURN_TAIL_FRACTION)
+        ),
     )
     with edit_state(path) as current:
         source_guard(current)
@@ -1287,6 +1468,75 @@ def command_collect_training_evidence(args: argparse.Namespace) -> None:
             "run_id": int(args.run_id),
             "training_evidence": evidence,
             "next": next_action(load_state(path)),
+        }
+    )
+
+
+def command_upgrade_return_mode(args: argparse.Namespace) -> None:
+    path = study_path(args.study)
+    state = load_state(path)
+    source_guard(state)
+    if evidence_mode(state) == EVIDENCE_RETURN:
+        emit({"study": str(path), "duplicate": True, "next": next_action(state)})
+        return
+    if state["status"] != "active":
+        raise RuntimeError(f"cannot upgrade evidence while study is {state['status']}")
+    if infer_evidence_mode(state["baseline"]["train_config"]) != EVIDENCE_RETURN:
+        raise RuntimeError("the frozen goal is not a return-only training objective")
+    if state.get("confirmation") or state.get("winner") or state.get("apply"):
+        raise RuntimeError("return-mode upgrade must precede confirmation or winner application")
+    if any(candidate.get("pair_runs") for candidate in state["candidates"].values()):
+        raise RuntimeError("return-mode upgrade must precede paired evidence")
+
+    records: dict[int, dict[str, Any]] = {}
+    for wave in state["waves"]:
+        for item in wave.get("terminal_runs") or []:
+            run_id = int(item["run_id"])
+            records[run_id] = fetch_training_evidence(
+                url=str(item["wandb_url"]),
+                expected_run_id=str(item["wandb_run_id"]),
+                starts=list(state["configured_starts"]),
+                strong_threshold=float(state["policy"]["strong_threshold"]),
+                mode=EVIDENCE_RETURN,
+                return_tail_fraction=RETURN_TAIL_FRACTION,
+            )
+
+    with edit_state(path) as current:
+        source_guard(current)
+        if evidence_mode(current) == EVIDENCE_RETURN:
+            emit({"study": str(path), "duplicate": True, "next": next_action(current)})
+            return
+        current["evidence_mode"] = EVIDENCE_RETURN
+        current["policy"]["return_tail_fraction"] = RETURN_TAIL_FRACTION
+        for wave in current["waves"]:
+            if wave["phase"] in SEARCH_PHASES:
+                wave["closed"] = False
+            for item in wave.get("terminal_runs") or []:
+                item["training_evidence"] = copy.deepcopy(records[int(item["run_id"])])
+        for candidate in current["candidates"].values():
+            for destination in ("screen_runs", "pair_runs", "confirmation_runs"):
+                for item in candidate.get(destination) or []:
+                    run_id = item.get("run_id")
+                    if run_id is not None and int(run_id) in records:
+                        item["training_evidence"] = copy.deepcopy(records[int(run_id)])
+        current["search_round"] = 0
+        current["stale_rounds"] = 0
+        current["incumbent_candidate_id"] = None
+        current["incumbent_evidence"] = None
+        current.setdefault("migration_history", []).append(
+            {
+                "event": "success_to_return_evidence",
+                "migrated_at": utc_now(),
+                "run_ids": sorted(records),
+            }
+        )
+        action = next_action(current)
+    emit(
+        {
+            "study": str(path),
+            "evidence_mode": EVIDENCE_RETURN,
+            "migrated_run_ids": sorted(records),
+            "next": action,
         }
     )
 
@@ -1335,9 +1585,19 @@ def command_close_confirmation(args: argparse.Namespace) -> None:
         wave = find_wave(state, confirmation["submission_key"])
         if not wave_evidence_complete(wave) or len(wave["terminal_runs"]) != CONFIRMATION_RUNS:
             raise RuntimeError("confirmation barrier requires five remotely evidenced runs")
-        strong = sum(
-            bool(item["training_evidence"]["strong"]) for item in wave["terminal_runs"]
-        )
+        if evidence_mode(state) == EVIDENCE_RETURN:
+            floor = confirmation.get("return_floor")
+            if floor is None:
+                raise RuntimeError("return confirmation lacks its frozen paired-evidence floor")
+            strong = sum(
+                return_evidence_valid(item["training_evidence"])
+                and float(item["training_evidence"]["return_tail_mean"]) >= float(floor)
+                for item in wave["terminal_runs"]
+            )
+        else:
+            strong = sum(
+                bool(item["training_evidence"]["strong"]) for item in wave["terminal_runs"]
+            )
         confirmation["closed"] = True
         confirmation["strong_seed_count"] = strong
         candidate_id_value = confirmation["candidate_id"]
@@ -1350,6 +1610,8 @@ def command_close_confirmation(args: argparse.Namespace) -> None:
                 "strong_seed_count": strong,
                 "total_seeds": CONFIRMATION_RUNS,
                 "strong_threshold": state["policy"]["strong_threshold"],
+                "evidence_mode": evidence_mode(state),
+                "return_floor": confirmation.get("return_floor"),
                 "runs": wave["terminal_runs"],
             }
         else:
@@ -1575,6 +1837,10 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--study", required=True)
     evidence.add_argument("--run-id", type=int, required=True)
     evidence.set_defaults(handler=command_collect_training_evidence)
+
+    return_mode = commands.add_parser("upgrade-return-mode")
+    return_mode.add_argument("--study", required=True)
+    return_mode.set_defaults(handler=command_upgrade_return_mode)
 
     close_round = commands.add_parser("close-round")
     close_round.add_argument("--study", required=True)

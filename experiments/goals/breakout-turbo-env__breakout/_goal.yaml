@@ -48,12 +48,12 @@ train:
       action:
         set: native
       signals:
-        awaiting_fire: awaiting_fire
+        ball_y: ball_y
       events:
         serve_stall:
-          signal: awaiting_fire
+          signal: ball_y
           operation: equals_for
-          value: 1
+          value: 0
           # One policy step is four native frames; 256 steps is ~17 seconds.
           steps: 256
       termination:

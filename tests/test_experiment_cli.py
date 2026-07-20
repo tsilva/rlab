@@ -161,6 +161,30 @@ class ExperimentCliTests(unittest.TestCase):
             parsed = modal.parse_args(command[3:])
             self.assertGreater(int(getattr(parsed, destination)), 0)
 
+    def test_follow_reconnect_factory_preserves_direct_database_selection(self) -> None:
+        args = experiment_cli.build_parser().parse_args(
+            ["follow", "--run", "7", "--jsonl", "--direct"]
+        )
+        root = Path("/repo")
+        initial = mock.MagicMock()
+        replacement = mock.MagicMock()
+        connections = mock.Mock(side_effect=[initial, replacement])
+
+        def follow(conn, run_id, **kwargs):
+            self.assertIs(conn, initial)
+            self.assertEqual(run_id, 7)
+            self.assertIs(kwargs["connection_factory"](), replacement)
+            return 0
+
+        with (
+            mock.patch.object(experiment_cli, "repository_root", return_value=root),
+            mock.patch.object(experiment_cli, "_connect", connections),
+            mock.patch.object(run_observability, "follow_run", side_effect=follow),
+        ):
+            self.assertEqual(experiment_cli.cmd_follow(args), 0)
+
+        self.assertEqual(connections.call_args_list, [mock.call(args, root), mock.call(args, root)])
+
 
 class RunObservabilityTests(unittest.TestCase):
     def projection(self, *, status: str, outcome: str | None) -> dict:
@@ -254,6 +278,128 @@ class RunObservabilityTests(unittest.TestCase):
         )
         conn.commit.assert_not_called()
         conn.rollback.assert_not_called()
+
+    def test_follow_reconnects_without_reemitting_semantic_events(self) -> None:
+        events: list[dict] = []
+        active = {
+            **self.projection(status="succeeded", outcome="accepted"),
+            "status": "running",
+            "terminal_classification": None,
+            "operations": {},
+            "incidents": {
+                "current": [{"fingerprint": "incident-1", "category": "test"}],
+                "history": [],
+            },
+        }
+        terminal = self.projection(status="succeeded", outcome="accepted")
+        initial = mock.MagicMock()
+        replacement = mock.MagicMock()
+        connection_factory = mock.Mock(return_value=replacement)
+
+        with mock.patch.object(
+            run_observability,
+            "run_projection",
+            side_effect=[
+                active,
+                run_observability.OperationalError("connection dropped"),
+                active,
+                terminal,
+            ],
+        ):
+            code = run_observability.follow_run(
+                initial,
+                7,
+                emit=lambda event: events.append(dict(event)),
+                sleep=lambda _seconds: None,
+                wandb_reader=lambda _url: {"state": "finished", "metrics": {}},
+                connection_factory=connection_factory,
+                reconnect_seconds=0,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual([event["event"] for event in events].count("wandb_url"), 1)
+        self.assertEqual([event["event"] for event in events].count("potential_bug"), 1)
+        self.assertEqual([event["event"] for event in events].count("progress"), 2)
+        self.assertEqual([event["event"] for event in events].count("terminal"), 1)
+        connection_factory.assert_called_once_with()
+        initial.close.assert_called_once_with()
+        replacement.close.assert_called_once_with()
+
+    def test_follow_retries_transient_reconnect_failures(self) -> None:
+        terminal = self.projection(status="succeeded", outcome="accepted")
+        initial = mock.MagicMock()
+        replacement = mock.MagicMock()
+        connection_factory = mock.Mock(
+            side_effect=[run_observability.OperationalError("still offline"), replacement]
+        )
+        sleep = mock.Mock()
+
+        with mock.patch.object(
+            run_observability,
+            "run_projection",
+            side_effect=[run_observability.OperationalError("connection dropped"), terminal],
+        ):
+            code = run_observability.follow_run(
+                initial,
+                7,
+                emit=lambda _event: None,
+                sleep=sleep,
+                wandb_reader=lambda _url: {"state": "finished", "metrics": {}},
+                connection_factory=connection_factory,
+                reconnect_seconds=0.25,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(connection_factory.call_count, 2)
+        self.assertEqual(sleep.call_args_list, [mock.call(0.25), mock.call(0.25)])
+        initial.close.assert_called_once_with()
+        replacement.close.assert_called_once_with()
+
+    def test_follow_reconnects_after_interface_error(self) -> None:
+        terminal = self.projection(status="succeeded", outcome="accepted")
+        initial = mock.MagicMock()
+        replacement = mock.MagicMock()
+
+        with mock.patch.object(
+            run_observability,
+            "run_projection",
+            side_effect=[run_observability.InterfaceError("connection closed"), terminal],
+        ):
+            code = run_observability.follow_run(
+                initial,
+                7,
+                emit=lambda _event: None,
+                sleep=lambda _seconds: None,
+                wandb_reader=lambda _url: {"state": "finished", "metrics": {}},
+                connection_factory=lambda: replacement,
+                reconnect_seconds=0,
+            )
+
+        self.assertEqual(code, 0)
+        initial.close.assert_called_once_with()
+        replacement.close.assert_called_once_with()
+
+    def test_follow_does_not_mask_non_connectivity_errors(self) -> None:
+        initial = mock.MagicMock()
+        connection_factory = mock.Mock()
+        with (
+            mock.patch.object(
+                run_observability,
+                "run_projection",
+                side_effect=RuntimeError("bad projection"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "bad projection"),
+        ):
+            run_observability.follow_run(
+                initial,
+                7,
+                emit=lambda _event: None,
+                sleep=lambda _seconds: None,
+                connection_factory=connection_factory,
+            )
+
+        connection_factory.assert_not_called()
+        initial.close.assert_called_once_with()
 
     def test_reporting_warning_does_not_change_classification(self) -> None:
         events: list[dict] = []

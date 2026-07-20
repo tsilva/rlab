@@ -234,7 +234,22 @@ class TelemetryBatchTests(unittest.TestCase):
         calls = conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
         self.assertEqual(lease_update.args[1]["delay"], 5.0)
-        self.assertIn("submitted_at = COALESCE(submitted_at, now())", lease_update.args[0])
+        self.assertFalse(lease_update.args[1]["refresh_submitted_at"])
+        self.assertIn("ELSE COALESCE(submitted_at, now()) END", lease_update.args[0])
+
+    def test_cursor_reassertion_refreshes_confirmation_window(self) -> None:
+        conn = mock.MagicMock()
+
+        mark_submitted_batches(
+            conn,
+            [{"id": 1, "stream_id": "train-7", "batch_sequence": 39}],
+            refresh_submitted_at=True,
+        )
+
+        calls = conn.cursor.return_value.__enter__.return_value.execute.call_args_list
+        lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
+        self.assertTrue(lease_update.args[1]["refresh_submitted_at"])
+        self.assertIn("CASE WHEN %(refresh_submitted_at)s", lease_update.args[0])
 
     def test_batch_is_deterministic_gzip_and_preserves_explicit_global_steps(self) -> None:
         batch = encode_metric_batch([frame(1, step=300), frame(2, step=100), frame(3, step=200)])

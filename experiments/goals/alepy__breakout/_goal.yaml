@@ -47,7 +47,7 @@ train:
           use_fire_reset: false
     preprocessing: &atari_breakout_preprocessing
       frame_skip: 4
-      # breakout-turbo-env 0.3.0 exposes the matched Atari policy path without max-pooling.
+      # breakout-turbo-env 0.3.1 exposes the matched Atari policy path without max-pooling.
       max_pool_frames: false
       sticky_action_prob: 0.0
       observation_size: 84

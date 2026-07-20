@@ -616,6 +616,7 @@ def mark_submitted_batches(
     batches: Sequence[Mapping[str, Any]],
     *,
     confirm_after_seconds: float = REMOTE_CONFIRM_POLL_SECONDS,
+    refresh_submitted_at: bool = False,
 ) -> None:
     """Record W&B submission without treating it as remote confirmation."""
 
@@ -645,12 +646,14 @@ def mark_submitted_batches(
                 SET lease_owner = NULL,
                     lease_expires_at = now() + (%(delay)s * interval '1 second'),
                     last_error = NULL,
-                    submitted_at = COALESCE(submitted_at, now())
+                    submitted_at = CASE WHEN %(refresh_submitted_at)s
+                      THEN now() ELSE COALESCE(submitted_at, now()) END
                 WHERE id = ANY(%(ids)s)
                 """,
                 {
                     "ids": ids,
                     "delay": max(float(confirm_after_seconds), 0.0),
+                    "refresh_submitted_at": bool(refresh_submitted_at),
                 },
             )
 

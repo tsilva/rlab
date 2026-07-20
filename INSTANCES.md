@@ -197,6 +197,10 @@ On 2026-07-19 the forward Breakout runtime baseline moved from
 `Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`); the earlier canary remains historical evidence for
 its original runtime and is not evidence for the 0.3.0 baseline.
 
+On 2026-07-20 the forward Breakout runtime baseline moved from
+`breakout-turbo-env==0.3.0` to `breakout-turbo-env==0.3.1`. The native action
+contract remains `Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`).
+
 ## Host Setup
 
 Bootstrap each host after OS/Docker changes or when validating a new runtime
