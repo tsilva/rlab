@@ -1,0 +1,17 @@
+defaults:
+- ../../../recipes/_presets/atari-ppo@_global_
+- _self_
+recipe_id: ppo-128x64
+description: >-
+  Seed {seed} trains a high-throughput Atari PPO policy for {goal_id} with 128 environments and
+  64-step rollouts under the explicit goal-owned environment, start-state, reward, termination,
+  and evaluation contract.
+train:
+  timesteps: 200000000
+  environment:
+    env_config:
+      n_envs: 128
+  backend:
+    config:
+      n_steps: 64
+      learning_rate: 1.25e-4
