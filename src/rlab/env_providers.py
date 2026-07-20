@@ -307,6 +307,7 @@ def provider_native_vec_kwargs(
     n_envs: int,
     native_obs_crop: Callable[[Any], tuple[int, int, int, int] | None],
     state_weight_mapping: Callable[[Any], dict[str, float]],
+    runtime_rom_path: str | None = None,
 ) -> dict[str, Any]:
     """Compile provider mechanics without task events or termination rules."""
     native_kwargs = dict(config.env_args or {})
@@ -320,6 +321,8 @@ def provider_native_vec_kwargs(
         STABLE_RETRO_TURBO_PROVIDER.provider_id,
         SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
     }:
+        if runtime_rom_path:
+            native_kwargs["rom_path"] = runtime_rom_path
         enum_args = {
             "use_restricted_actions": ("Actions",),
             "inttype": ("data", "Integrations"),
@@ -740,15 +743,6 @@ def _super_mario_bros_nes_turbo_make_vec_env(
     _require_provider(config, SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id)
     env_type = super_mario_vec_env_type()
     kwargs = dict(native_kwargs)
-    if kwargs.get("rom_path") is None:
-        try:
-            import stable_retro.data
-
-            imported_rom = Path(stable_retro.data.get_romfile_path(config.game))
-        except (FileNotFoundError, ImportError):
-            imported_rom = None
-        if imported_rom is not None and imported_rom.is_file():
-            kwargs["rom_path"] = str(imported_rom)
     env = env_type(
         config.game,
         **kwargs,

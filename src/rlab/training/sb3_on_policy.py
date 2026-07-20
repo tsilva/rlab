@@ -205,7 +205,12 @@ def run_sb3_on_policy(
     args = context.args
     config = context.environment
     n_envs = int(args.resolved_n_envs)
-    env = make_training_vec_env(config=config, n_envs=n_envs, seed=args.seed)
+    env = make_training_vec_env(
+        config=config,
+        n_envs=n_envs,
+        seed=args.seed,
+        rom_binding=getattr(context, "rom_binding", None),
+    )
     try:
         store_path = metric_store_path(context.run_dir)
         set_random_seed(args.seed)

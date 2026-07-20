@@ -22,7 +22,7 @@ from rlab.train import main as train_main
 
 
 BANDIT_GOAL = Path("experiments/goals/rlab__bandit/_goal.yaml")
-BANDIT_RECIPE = Path("experiments/recipes/bandit/ppo.yaml")
+BANDIT_RECIPE = Path("experiments/goals/rlab__bandit/recipes/ppo.yaml")
 
 
 def _bandit_recipe_document():

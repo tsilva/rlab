@@ -54,6 +54,7 @@ from rlab.modal_eval_protocol import (
 )
 from rlab.modal_eval_storage import ObjectStore, file_sha256
 from rlab.modal_eval_worker import execute_attempt
+from rlab.rom_assets import install_rom_file
 from rlab.checkpoint_coordinator import process_upload, reconcile_orphan_models
 from rlab.metric_store import MetricStore
 from rlab import checkpoint_coordinator, modal_eval_cli
@@ -73,7 +74,10 @@ def contract(root: Path, *, episodes: int = 2, n_envs: int = 2) -> dict:
         seed=10_000,
         seed_protocol=SEED_PROTOCOL,
         asset_manifest={
+            "schema_version": 2,
+            "game": "Game-Nes-v0",
             "filename": rom.name,
+            "size_bytes": rom.stat().st_size,
             "sha256": file_sha256(rom),
             "object_uri": rom.resolve().as_uri(),
             "provider_rom_identity": "c" * 40,
@@ -1585,6 +1589,41 @@ class ModalEvalSchedulingTests(unittest.TestCase):
 
 
 class ModalEvalStorageAndWorkerTests(unittest.TestCase):
+    def test_warm_volume_cache_avoids_object_get_and_copies_attempt_locally(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, result_path = self._worker_payload(root)
+            asset = payload["contract"]["asset"]
+            cache_root = root / "volume"
+            source = root / "game.nes"
+            cached = install_rom_file(source, asset, cache_root)
+            payload["rom_get_url"] = "file:///definitely/missing/game.nes"
+
+            def finish_child(command, **_kwargs):
+                child_input = Path(command[command.index("--input") + 1])
+                child_output = Path(command[command.index("--output") + 1])
+                request = json.loads(child_input.read_text(encoding="utf-8"))
+                runtime_rom = Path(request["rom_path"])
+                self.assertNotEqual(runtime_rom, cached)
+                self.assertEqual(runtime_rom.read_bytes(), cached.read_bytes())
+                child_output.write_text(
+                    json.dumps(
+                        {
+                            "metrics": {"eval/full/episode/return/mean": 1.0},
+                            "episode_results": [],
+                            "preview": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch("rlab.modal_eval_worker.subprocess.run", side_effect=finish_child):
+                execute_attempt(payload, cache_root=cache_root)
+
+            evidence = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["status"], "succeeded")
+
     def test_rom_free_worker_does_not_require_rom_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1919,7 +1958,10 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 },
                 checkpoint_eval_stages=[],
                 checkpoint_eval_asset_manifest={
+                    "schema_version": 2,
                     "game": "Game-Nes-v0",
+                    "filename": "Game-Nes-v0.rom",
+                    "size_bytes": 1,
                     "sha256": "a" * 64,
                     "provider_rom_identity": "b" * 40,
                     "object_uri": "s3://bucket/Game-Nes-v0.rom",
@@ -2098,7 +2140,10 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
             seed=10_000,
             seed_protocol=SEED_PROTOCOL,
             asset_manifest={
+                "schema_version": 2,
+                "game": "Game-Nes-v0",
                 "filename": rom.name,
+                "size_bytes": rom.stat().st_size,
                 "sha256": file_sha256(rom),
                 "object_uri": rom.resolve().as_uri(),
                 "provider_rom_identity": hashlib.sha1(b"rom").hexdigest(),

@@ -1,11 +1,12 @@
 defaults:
-- ../_presets/atari-ppo@_global_
+- ../../../recipes/_presets/atari-ppo@_global_
 - _self_
 recipe_id: ppo
 description: >-
   Seed {seed} trains a standard Atari PPO policy for {goal_id} under the explicit goal-owned
   environment, start-state, reward, termination, and evaluation contract.
 train:
+  timesteps: 200000000
   backend:
     config:
       learning_rate: 1.25e-4

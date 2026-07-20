@@ -28,6 +28,7 @@ from rlab.env_identity import task_config_from_train_config, validate_task_confi
 from rlab.targets import target_for_game
 from rlab.task_kernels import IdentityTaskDefinition, MarioTaskConfig, MarioTaskDefinition
 from rlab.validation import normalize_obs_crop as validate_obs_crop
+from rlab.rom_runtime import RomRuntimeBinding
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -285,14 +286,23 @@ def _provider_descriptor(config: EnvConfig, native_env: Any) -> ProviderDescript
 def make_native_provider(
     config: EnvConfig,
     n_envs: int,
+    *,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> tuple[Any, ProviderDescriptor]:
     """Construct and describe one provider, closing it if description fails."""
+
+    provider = resolve_env_provider(config.env_provider)
+    if provider.requires_external_rom_asset and rom_binding is None:
+        raise FileNotFoundError(
+            f"{provider.provider_id} requires a verified runtime ROM binding"
+        )
 
     native_kwargs = provider_native_vec_kwargs(
         config,
         n_envs=n_envs,
         native_obs_crop=native_obs_crop,
         state_weight_mapping=state_weight_mapping,
+        runtime_rom_path=rom_binding.rom_path if rom_binding is not None else None,
     )
     native_env = make_provider_vec_env(config, native_kwargs=native_kwargs)
     try:
@@ -374,6 +384,7 @@ def make_vec_envs(
     seed: int,
     *,
     capture_step_diagnostics: bool = False,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> Any:
     from rlab.training.sb3_vec_env import RlabVecEnv
 
@@ -382,6 +393,7 @@ def make_vec_envs(
         n_envs,
         seed,
         capture_step_diagnostics=capture_step_diagnostics,
+        rom_binding=rom_binding,
     )
     vec_env = RlabVecEnv(runtime)
     vec_env.seed(seed)
@@ -395,10 +407,11 @@ def make_training_batch_runtime(
     *,
     global_lane_ids: tuple[int, ...] | None = None,
     capture_step_diagnostics: bool = False,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> BatchRuntime:
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
-    native_env, descriptor = make_native_provider(config, n_envs)
+    native_env, descriptor = make_native_provider(config, n_envs, rom_binding=rom_binding)
     return bind_native_provider(
         config,
         n_envs=n_envs,
@@ -410,8 +423,19 @@ def make_training_batch_runtime(
     )
 
 
-def make_training_vec_env(config: EnvConfig, n_envs: int, seed: int) -> Any:
-    return make_vec_envs(config=config, n_envs=n_envs, seed=seed)
+def make_training_vec_env(
+    config: EnvConfig,
+    n_envs: int,
+    seed: int,
+    *,
+    rom_binding: RomRuntimeBinding | None = None,
+) -> Any:
+    return make_vec_envs(
+        config=config,
+        n_envs=n_envs,
+        seed=seed,
+        rom_binding=rom_binding,
+    )
 
 
 def make_eval_vec_env(
@@ -420,12 +444,14 @@ def make_eval_vec_env(
     seed: int,
     *,
     capture_step_diagnostics: bool = False,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> Any:
     return make_vec_envs(
         config=resolve_env_config(config),
         n_envs=n_envs,
         seed=seed,
         capture_step_diagnostics=capture_step_diagnostics,
+        rom_binding=rom_binding,
     )
 
 
@@ -441,10 +467,19 @@ def assert_rom_imported(game: str) -> str:
         ) from exc
 
 
-def assert_provider_runtime_available(config: EnvConfig) -> None:
+def assert_provider_runtime_available(
+    config: EnvConfig,
+    *,
+    rom_binding: RomRuntimeBinding | None = None,
+) -> None:
     provider = resolve_env_provider(config.env_provider)
-    if provider.uses_stable_retro_roms:
-        assert_rom_imported(config.game)
+    if provider.requires_external_rom_asset:
+        if rom_binding is None:
+            raise FileNotFoundError(
+                f"{config.game} requires a verified external ROM asset binding"
+            )
+        if rom_binding.manifest.get("game") != config.game:
+            raise ValueError("runtime ROM binding game mismatch")
     elif provider.provider_id == ALE_PY_PROVIDER.provider_id:
         from ale_py import roms
 

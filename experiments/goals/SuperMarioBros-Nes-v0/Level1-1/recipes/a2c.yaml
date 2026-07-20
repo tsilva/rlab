@@ -1,5 +1,5 @@
 defaults:
-- ../../_presets/mario-single-on-policy@_global_
+- ../../../../recipes/_presets/mario-single-on-policy@_global_
 - _self_
 recipe_id: a2c
 description: >-

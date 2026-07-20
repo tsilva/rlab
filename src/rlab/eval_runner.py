@@ -30,6 +30,12 @@ from rlab.policy_bundle import (
     evaluation_contract_sha256,
     model_document_as_metadata,
 )
+from rlab.env_registry import resolve_env_provider
+from rlab.rom_assets import rom_asset_manifest_for_game
+from rlab.rom_runtime import (
+    RomRuntimeBinding,
+    ensure_local_rom_binding,
+)
 from rlab.policy_models import load_policy_model, resolve_policy_algorithm
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.video import PolicyObservationPreview, write_video
@@ -89,6 +95,7 @@ def _evaluate_model_episodes_vector(
     preview_capture: PolicyObservationPreview | None = None,
     exact_task_contract: bool = False,
     acceptance_contract: dict[str, Any] | None = None,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     vec_config = _eval_runtime_config(
         config,
@@ -96,7 +103,12 @@ def _evaluate_model_episodes_vector(
         semantics=semantics,
         exact_task_contract=exact_task_contract,
     )
-    eval_env = make_eval_vec_env(config=vec_config, n_envs=n_envs, seed=seed)
+    eval_env = make_eval_vec_env(
+        config=vec_config,
+        n_envs=n_envs,
+        seed=seed,
+        rom_binding=rom_binding,
+    )
     episode_results: list[dict[str, Any]] = []
     best_episode_result: dict[str, Any] | None = None
     lane_episode_ordinals: dict[int, int] = {}
@@ -186,6 +198,7 @@ def evaluate_model_episodes(
     preview_capture: PolicyObservationPreview | None = None,
     exact_task_contract: bool = False,
     acceptance_contract: dict[str, Any] | None = None,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> tuple[dict[str, Any], Path | None]:
     if deterministic:
         raise ValueError("deterministic policy evaluation is unsupported; use stochastic sampling")
@@ -202,7 +215,6 @@ def evaluate_model_episodes(
     semantics = target_for_game(config.game).eval_semantics
     planned = manifest_index(acceptance_contract) if acceptance_contract is not None else None
     rejected = False
-
     with tqdm(
         total=episodes,
         desc=progress_description,
@@ -217,7 +229,12 @@ def evaluate_model_episodes(
                 semantics=semantics,
                 exact_task_contract=exact_task_contract,
             )
-            eval_env = make_eval_vec_env(config=eval_config, n_envs=1, seed=seed)
+            eval_env = make_eval_vec_env(
+                config=eval_config,
+                n_envs=1,
+                seed=seed,
+                rom_binding=rom_binding,
+            )
             try:
                 _bind_policy_action_space(model, getattr(eval_env, "action_space", None))
                 for episode_idx in range(episodes):
@@ -290,6 +307,7 @@ def evaluate_model_episodes(
                 preview_capture=preview_capture,
                 exact_task_contract=exact_task_contract,
                 acceptance_contract=acceptance_contract,
+                rom_binding=rom_binding,
             )
 
     if acceptance_contract is not None:
@@ -332,7 +350,12 @@ def evaluate_model_episodes(
             failure=[],
             success=[],
         )
-        video_env = make_eval_vec_env(config=video_config, n_envs=1, seed=best_episode_seed)
+        video_env = make_eval_vec_env(
+            config=video_config,
+            n_envs=1,
+            seed=best_episode_seed,
+            rom_binding=rom_binding,
+        )
         try:
             video_env.seed(best_episode_seed)
             video_env.reset()
@@ -371,6 +394,7 @@ def evaluate_policy_bundle(
     semantic_overrides: dict[str, Any] | None = None,
     preview_capture: PolicyObservationPreview | None = None,
     acceptance_contract: dict[str, Any] | None = None,
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> tuple[dict[str, Any], Path | None]:
     request = normalized_evaluation_request(
         bundle,
@@ -389,7 +413,15 @@ def evaluate_policy_bundle(
     if environment is None:
         raise PolicyDocumentError(f"{bundle.recipe_path} has no evaluation environment")
     config = resolve_env_config(environment)
-    assert_provider_runtime_available(config)
+    asset = contract.get("asset")
+    if rom_binding is None and isinstance(asset, Mapping):
+        rom_binding = ensure_local_rom_binding(asset, game=config.game)
+    elif rom_binding is None and resolve_env_provider(config.env_provider).requires_external_rom_asset:
+        rom_binding = ensure_local_rom_binding(
+            rom_asset_manifest_for_game(config.game),
+            game=config.game,
+        )
+    assert_provider_runtime_available(config, rom_binding=rom_binding)
     metadata = model_document_as_metadata(bundle.model)
     algorithm_id = resolve_policy_algorithm(metadata)
     model = load_policy_model(bundle.checkpoint_path, device=device, metadata=metadata)
@@ -456,6 +488,7 @@ def evaluate_policy_bundle(
         acceptance_contract=effective_acceptance_contract,
         extra=evidence,
         preview_capture=preview_capture,
+        rom_binding=rom_binding,
     )
     summary["evaluation_evidence"] = evidence
     summary["episode_seeds"] = [

@@ -81,7 +81,10 @@ def build_model_metadata(
     kind: str,
     checkpoint_step_value: int | None = None,
 ) -> dict[str, Any]:
-    training = training_metadata(config)
+    training = training_metadata(
+        config,
+        rom_asset_manifest=getattr(args, "rom_asset_manifest", None),
+    )
     step = checkpoint_step(model_path)
     if step is None:
         step = checkpoint_step_value
@@ -324,7 +327,10 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     wandb_config["training_backend_config_hash"] = str(
         getattr(args, "training_backend_config_hash", "") or ""
     ).strip()
-    training = training_metadata(config)
+    training = training_metadata(
+        config,
+        rom_asset_manifest=getattr(args, "rom_asset_manifest", None),
+    )
     wandb_config["environment"] = training["environment"]
     wandb_config["environment_hash"] = training["environment_hash"]
     wandb_run = wandb.init(

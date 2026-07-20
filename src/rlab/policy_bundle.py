@@ -586,7 +586,8 @@ def build_recipe_document(
     from rlab.env_metadata import training_metadata
 
     effective_training_metadata = training_metadata(
-        resolve_env_config(env_config_from_mapping(train_config))
+        resolve_env_config(env_config_from_mapping(train_config)),
+        rom_asset_manifest=train_config.get("rom_asset_manifest"),
     )
     recipe["environment"] = effective_training_metadata["environment"]
     recipe["environment_hash"] = effective_training_metadata["environment_hash"]
@@ -603,6 +604,7 @@ def build_recipe_document(
     for key in _OPERATIONAL_TRAIN_FIELDS:
         train_config.pop(key, None)
     train_config.pop("checkpoint_eval_asset_manifest", None)
+    train_config.pop("rom_asset_manifest", None)
     if seed is not None:
         train_config["seed"] = int(seed)
     recipe["train_config"] = train_config

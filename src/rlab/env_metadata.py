@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 from dataclasses import asdict
+from collections.abc import Mapping
 from typing import Any
 
 from rlab.env import EnvConfig, state_distribution_metadata, validate_obs_crop
@@ -61,10 +62,17 @@ def training_preprocessing_metadata(config: EnvConfig) -> dict[str, Any]:
     return preprocessing_contract(config)
 
 
-def training_metadata(config: EnvConfig) -> dict[str, Any]:
+def training_metadata(
+    config: EnvConfig,
+    *,
+    rom_asset_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     env_config = env_config_metadata(config)
     preprocessing = training_preprocessing_metadata(config)
-    environment = environment_identity_from_train_config(env_config)
+    identity_source = dict(env_config)
+    if rom_asset_manifest is not None:
+        identity_source["rom_asset_manifest"] = dict(rom_asset_manifest)
+    environment = environment_identity_from_train_config(identity_source)
     environment.setdefault("preprocessing", {}).update(preprocessing)
     return {
         "env_config": env_config,

@@ -41,6 +41,7 @@ from rlab.env import (
     resolve_env_config,
 )
 from rlab.env_metadata import env_config_from_config_dict
+from rlab.env_registry import resolve_env_provider
 from rlab.eval_metrics import (
     batch_metrics_for_lane,
     drain_runtime_records,
@@ -48,6 +49,8 @@ from rlab.eval_metrics import (
     episode_result_from_record,
     is_level_complete,
 )
+from rlab.rom_assets import rom_asset_manifest_for_game
+from rlab.rom_runtime import ensure_local_rom_binding
 from rlab.model_sources import (
     model_source_ref,
     positional_model_source_arg,
@@ -1426,7 +1429,18 @@ def main(argv: list[str] | None = None) -> int:
         display_config=display_config,
     )
     with startup_progress("Checking provider runtime", disabled=args.no_progress):
-        assert_provider_runtime_available(config)
+        rom_binding = None
+        if resolve_env_provider(config.env_provider).requires_external_rom_asset:
+            asset = contract.get("asset") if source.bundle is not None else None
+            rom_binding = (
+                ensure_local_rom_binding(asset, game=config.game)
+                if isinstance(asset, Mapping)
+                else ensure_local_rom_binding(
+                    rom_asset_manifest_for_game(config.game),
+                    game=config.game,
+                )
+            )
+        assert_provider_runtime_available(config, rom_binding=rom_binding)
 
     with startup_progress("Loading policy runtime", disabled=args.no_progress):
         from rlab.policy_models import load_policy_model
@@ -1447,6 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
             n_envs=1,
             seed=args.seed,
             capture_step_diagnostics=args.debug,
+            rom_binding=rom_binding,
         )
     bind_action_space = getattr(model, "bind_action_space", None)
     if callable(bind_action_space):

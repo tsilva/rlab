@@ -31,7 +31,7 @@ Queue work by composing one checked-in goal contract with one reusable recipe:
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/<goal-slug>/_goal.yaml \
-  --recipe-file experiments/recipes/<family>/<recipe>.yaml \
+  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
   --machine beast-3
 ```
 
@@ -98,7 +98,9 @@ rlab eval modal resume
 rlab eval modal retry --eval-job <eval-job-id>
 rlab eval modal recover --run <run-id>
 rlab eval modal abandon --run <run-id>
-rlab eval modal assets sync --game <game-id>
+rlab rom sync --game <game-id>
+rlab rom warm --game <game-id> --target modal
+rlab rom status --game <game-id> --target modal --json
 rlab eval modal smoke-local
 ```
 
@@ -110,6 +112,13 @@ PostgreSQL schema, active capacity, private
 ROM object, R2 evidence path, local Modal credentials, and exact runtime-specific deployment are
 all present. Acceptance evaluation never captures video; representative replay remains a
 release-time workflow.
+
+R2 is the durable ROM authority. Modal uses the rebuildable Volume v2
+`rlab-rom-cache-v2` only as a content-addressed cache. The runtime-specific app stages a missing or
+corrupt entry from a short-lived R2 GET, commits the Volume, and evaluators reload and verify it
+before copying it into attempt-local storage. A verified direct-R2 attempt-local download preserves
+correctness when Volume staging or visibility fails, but `rlab rom status` remains unhealthy until
+the cache is repaired. A warm staging request performs no object GET.
 
 The train-image workflow runs on every push to `main` and publishes an exact-source version-5
 `rlab-train-image.json` as soon as the immutable image exists. Runtime images are keyed by the
@@ -139,7 +148,7 @@ locations, decisions, and publication cursors live in PostgreSQL. Each checkpoin
 acceptance job and at most two immutable attempts; a valid rejection is successful execution and is
 never retried. Runtime-specific apps are deployed from CI as `rlab-eval-<digest-prefix>` from the exact
 shared train/eval image digest. Modal 1.5 exposes only single-use or
-unbounded-reuse containers. V1 uses warm-container reuse with a 60-second scale-down window because
+unbounded-reuse containers. Evaluators use warm-container reuse with a 60-second scale-down window because
 single-use containers impose the full cold-start cost on every evaluation; the global call cap and
 dollar budgets remain the spend guards. There is no enforceable ten-input container lifetime until
 Modal supports `max_inputs > 1`.
@@ -201,6 +210,49 @@ On 2026-07-20 the forward Breakout runtime baseline moved from
 `breakout-turbo-env==0.3.0` to `breakout-turbo-env==0.3.1`. The native action
 contract remains `Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`).
 
+On 2026-07-20 the forward Breakout runtime baseline moved from
+`breakout-turbo-env==0.3.1` to `breakout-turbo-env==0.3.2`. The native action
+contract remains `Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`).
+
+## ROM Asset Registry and Cutover
+
+External ROMs are controlled by the v2 R2 registry and a full-file SHA-256 cache. Provision and
+inspect them from the Mac control plane:
+
+```bash
+rlab rom sync --game <game-id>                 # discovers under ~/roms by default
+rlab rom warm --game <game-id> --target all
+rlab rom status --game <game-id> --target all --json
+```
+
+Beast caches live at `/home/tsilva/rlab/rom-cache/sha256/<digest>/<basename>`. Fleet runs a
+CPU-only helper from the job's immutable runtime image before container creation, then mounts only
+that digest directory read-only at the identical `/rom-cache/sha256/<digest>` path. ROM-free jobs
+run neither step. Never restore the old `/home/tsilva/roms:/roms` mount or a container-start
+`stable_retro.import`.
+
+Legacy storage removal is a gated migration, not routine cleanup. Before each rename or deletion:
+
+1. Re-read the queue and require zero nonterminal jobs on both Beasts.
+2. Inspect mounts for every ID returned by `docker ps -aq`; Fleet labels are insufficient.
+3. Require the new runtime/controller/Modal app to be deployed and Mario plus Stable Retro Atari
+   direct-path canaries to pass on the affected targets.
+4. Rename each Beast `/home/tsilva/roms` tree to a timestamped same-filesystem quarantine. Keep the
+   rollback name and old runtime/controller available for at least 24 hours of failure-free use.
+5. Before deletion, create one deterministic `tar.zst` and full path/type/size/SHA-256 inventory per
+   Beast tree and per Modal target, upload both privately to content-addressed R2, download them
+   independently, safely extract into temporary storage, and compare the complete inventory.
+6. For Modal, identify deployments by opaque Volume ID, require zero tasks and references, and
+   delete only `roms:/retro-roms`, `stable-retro-ppo-data:/roms`, and
+   `mario-ppo-data:/roms`. Never touch a `/runs` subtree or `viet-mario-ppo-data`.
+
+As of 2026-07-20, Mario (`f61548…248de`) and historical Stable Retro Breakout
+(`376323…6fd5`) are pinned in R2 and healthy in local, Beast-2, Beast-3, and
+`rlab-rom-cache-v2` caches. The local/Beast/legacy-Modal libraries do not contain the provider-
+approved `MsPacman-Atari2600-v0` ROM, so that game remains intentionally unprovisioned. Legacy
+quarantine has not started: Beast-3 job 130 is still running the old mount contract, the new runtime
+has not been published, and the required 24-hour observation window has not begun.
+
 ## Host Setup
 
 Bootstrap each host after OS/Docker changes or when validating a new runtime
@@ -242,7 +294,8 @@ launches remain observable and prevent that skip until they become terminal.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
-- ROM mount root: `/home/tsilva/roms`.
+- ROM cache root: `/home/tsilva/rlab/rom-cache`; Fleet mounts only the required
+  `sha256/<digest>` directory read-only into a job container.
 - Prewarming: enabled. The Mac fleet service pulls and probes the latest successful main-runtime
   receipt without reserving a training slot. Exactly that latest digest is temporary cleanup
   demand; a superseded digest is pruned once no queued or active job requires it. Prewarm failures
@@ -268,7 +321,8 @@ intentionally testing small-GPU behavior.
 - Docker command: configured in `experiments/machines.yaml`; currently
   `sudo -n docker`.
 - Persistent root: `/home/tsilva/rlab`.
-- ROM mount root: `/home/tsilva/roms`.
+- ROM cache root: `/home/tsilva/rlab/rom-cache`; Fleet mounts only the required
+  `sha256/<digest>` directory read-only into a job container.
 - Prewarming: disabled initially.
 
 The old `local-8332822-dirty` image tag was a k3s/containerd artifact. Use

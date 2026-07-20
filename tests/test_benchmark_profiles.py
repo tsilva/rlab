@@ -190,7 +190,7 @@ schema_version: 1
 name: bad
 kind: train_loop_throughput
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
-recipe_file: experiments/recipes/mario/single/ppo.yaml
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
 recipe_overrides:
 - train.backend.config.timstepz=512
 required_metrics: [train/throughput/loop_fps]
@@ -210,7 +210,7 @@ schema_version: 1
 name: bad
 kind: train_loop_throughput
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
-recipe_file: experiments/recipes/mario/single/ppo.yaml
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
 required_metrics: [train/throughput/not_real]
 """,
                 encoding="utf-8",

@@ -36,6 +36,8 @@ from rlab.training_backend import (
     training_backend_id,
     training_backend_runtime_metadata,
 )
+from rlab.rom_assets import manifest_from_train_config
+from rlab.rom_runtime import bind_cached_rom, runtime_cache_root
 
 
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
@@ -115,7 +117,16 @@ def main(argv: list[str] | None = None) -> int:
     environment = resolve_env_config(env_config_from_args(args, include_states=True))
     n_envs = effective_n_envs(args)
     environment = resolve_mixed_state_config(environment, n_envs=n_envs)
-    assert_provider_runtime_available(environment)
+    manifest = manifest_from_train_config(train_config, expected_game=environment.game)
+    rom_binding = (
+        bind_cached_rom(
+            manifest,
+            cache_root=runtime_cache_root(container_default=True),
+        )
+        if manifest is not None
+        else None
+    )
+    assert_provider_runtime_available(environment, rom_binding=rom_binding)
     args.resolved_n_envs = n_envs
 
     run_dir = Path(default_run_dir(args.run_name, args.runs_dir))
@@ -144,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         metric_store=store,
         wandb_enabled=bool(args.wandb),
         stop_flag=stop_flag,
+        rom_binding=rom_binding,
     )
     backend.run(context)
     return 0

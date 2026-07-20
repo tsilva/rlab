@@ -31,7 +31,7 @@ from rlab.training_backend import training_backend_config, training_backend_conf
 
 
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-RECIPE = Path("experiments/recipes/mario/single/ppo.yaml")
+RECIPE = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml")
 RUNTIME = "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "b" * 64
 
 
@@ -122,7 +122,9 @@ def test_recipe_materializes_the_environment_identity_executed_by_the_learner() 
 def test_recipe_keeps_eval_asset_identity_but_removes_private_locations() -> None:
     materialized = compose_train_document(GOAL, RECIPE)
     materialized["train_config"]["checkpoint_eval_asset_manifest"] = {
+        "schema_version": 1,
         "game": "SuperMarioBros-Nes-v0",
+        "filename": "mario.nes",
         "sha256": "c" * 64,
         "provider_rom_identity": "d" * 40,
         "provider_rom_identity_algorithm": "sha1-provider-body-v1",
@@ -140,7 +142,9 @@ def test_recipe_keeps_eval_asset_identity_but_removes_private_locations() -> Non
     )
 
     expected_asset = {
+        "schema_version": 1,
         "game": "SuperMarioBros-Nes-v0",
+        "filename": "mario.nes",
         "sha256": "c" * 64,
         "provider_rom_identity": "d" * 40,
         "provider_rom_identity_algorithm": "sha1-provider-body-v1",

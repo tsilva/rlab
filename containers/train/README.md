@@ -59,35 +59,38 @@ Smoke the image without ROMs:
 docker run --rm ghcr.io/tsilva/rlab/rlab-train:git-$(git rev-parse --short HEAD)
 ```
 
-Smoke with a mounted ROM bundle:
+For a ROM-backed job, first ensure the one content-addressed cache entry with the exact runtime
+image. The normal Fleet launcher performs this helper step automatically:
 
 ```bash
-docker run --rm --gpus all \
-  -e RETRO_GAME=SuperMarioBros-Nes-v0 \
-  -v /home/tsilva/roms:/roms:ro \
-  ghcr.io/tsilva/rlab/rlab-train:git-$(git rev-parse --short HEAD) \
-  rlab-container-entrypoint rlab-container-smoke
+docker run --rm \
+  --env-file /home/tsilva/rlab/.env.runner \
+  -v /home/tsilva/rlab/payloads:/input/payloads:ro \
+  -v /home/tsilva/rlab/rom-cache:/rom-cache \
+  ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
+  python -m rlab.rom_cache \
+    --payload /input/payloads/<launch-id>.json \
+    --cache-root /rom-cache
 ```
 
-Run one claimed job payload:
+Then mount only the required digest directory read-only when running the claimed job payload:
 
 ```bash
 docker run --rm --gpus all \
   --env-file /home/tsilva/rlab/.env.runner \
-  -e RLAB_ROM_DIR=/roms \
-  -v /home/tsilva/rlab/payloads:/root/rlab/payloads:ro \
-  -v /home/tsilva/rlab/outputs:/root/rlab/outputs \
-  -v /home/tsilva/roms:/roms:ro \
+  -e RLAB_ROM_CACHE_DIR=/rom-cache \
+  -v /home/tsilva/rlab/payloads:/input/payloads:ro \
+  -v /home/tsilva/rlab/outputs:/output \
+  -v /home/tsilva/rlab/rom-cache/sha256/<rom-sha256>:/rom-cache/sha256/<rom-sha256>:ro \
   ghcr.io/tsilva/rlab/rlab-train@sha256:<digest> \
   rlab-container-entrypoint \
   rlab run-job \
-    --payload /root/rlab/payloads/<launch-id>.json \
-    --output-dir /root/rlab/outputs/<launch-id>
+    --payload /input/payloads/<launch-id>.json \
+    --output-dir /output/<launch-id>
 ```
 
-`rlab-container-entrypoint` imports ROMs from `RLAB_ROM_DIR` before executing
-the command. Set `RLAB_IMPORT_ROMS=0` to skip that step, or `RLAB_IMPORT_ROMS=1`
-to fail if the mount is missing.
+The entrypoint never imports or scans ROM directories. ROM-free jobs skip both the cache helper and
+the ROM mount.
 
 ## Publishing
 

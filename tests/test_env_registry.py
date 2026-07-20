@@ -74,7 +74,9 @@ def test_resolves_registered_supermariobrosnes_turbo_env_id() -> None:
     assert resolved.provider_id == "supermariobrosnes-turbo"
     assert resolved.provider_env_id == "SuperMarioBros-Nes-v0"
     assert resolved.import_name == "supermariobrosnes_turbo"
-    assert resolve_env_provider(resolved.provider_id).uses_stable_retro_roms
+    provider = resolve_env_provider(resolved.provider_id)
+    assert provider.external_rom_asset_strategy == "stable_retro_direct_path_v1"
+    assert provider.requires_external_rom_asset
 
 
 def test_resolves_registered_ale_py_env_id() -> None:

@@ -44,11 +44,21 @@ rlab --help
 rlab validate
 ```
 
-Import ROMs through the installed CLI so playback and training see them in the same runtime:
+Provision each external ROM once from the local source library (default `~/roms`):
 
 ```bash
-rlab import-roms ~/Desktop/roms --game SuperMarioBros-Nes-v0
+rlab rom sync --game SuperMarioBros-Nes-v0
+rlab rom sync --game MsPacman-Atari2600-v0
+rlab rom status --json
 ```
+
+`rom sync` validates the provider-approved ROM identity without importing a directory, uploads the
+immutable bytes and manifest to private R2, and pins the game pointer. Queue submission pins that
+exact manifest before hashing the request. Local, Beast, and Modal execution then use verified
+content-addressed caches and pass a direct `rom_path` to the provider. Warm caches can be populated
+explicitly with `rlab rom warm --game <game-id> --target all`; normal launch and evaluation paths
+also ensure their required entry automatically. `rlab import-roms` remains only for historical
+tooling and is never run by a container.
 
 ## Run
 
@@ -58,7 +68,7 @@ Start with the built-in ROM-free native-vector smoke environment:
 rlab env inspect rlab:Bandit-v0
 rlab env preflight \
   --goal-file experiments/goals/rlab__bandit/_goal.yaml \
-  --recipe-file experiments/recipes/bandit/ppo.yaml
+  --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml
 ```
 
 Run its complete queue-backed local training and checkpoint-evaluation path:
@@ -66,7 +76,7 @@ Run its complete queue-backed local training and checkpoint-evaluation path:
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/rlab__bandit/_goal.yaml \
-  --recipe-file experiments/recipes/bandit/ppo.yaml \
+  --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml \
   --machine local-macbook \
   --checkpoint-eval-backend local \
   --wait terminal \
@@ -85,7 +95,7 @@ override the provider when evaluating or playing an existing policy:
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/Breakout-Atari2600-v0/_goal.yaml \
-  --recipe-file experiments/recipes/atari/ppo.yaml \
+  --recipe-file experiments/goals/Breakout-Atari2600-v0/recipes/ppo.yaml \
   --env-provider stable-retro-turbo \
   --machine beast-3
 rlab eval run <checkpoint> --env-provider stable-retro-turbo
@@ -101,7 +111,7 @@ For a ROM-backed Mario smoke run, use the same queue path with explicit smoke ov
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
-  --recipe-file experiments/recipes/mario/single/ppo.yaml \
+  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml \
   --machine local-macbook \
   --checkpoint-eval-backend none \
   --wait terminal \
@@ -126,7 +136,7 @@ Queue comparable experiments from checked-in recipe files:
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/<goal-slug>/_goal.yaml \
-  --recipe-file experiments/recipes/<family>/<recipe>.yaml \
+  --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml \
   --machine beast-3 \
   --runtime-image-ref-file rlab-train-image.json
 ```
@@ -137,7 +147,7 @@ apply repeatable Hydra/OmegaConf dotlist overrides from the CLI:
 ```bash
 rlab experiment launch --from-head \
   --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml \
-  --recipe-file experiments/recipes/mario/single/ppo.yaml \
+  --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml \
   --machine beast-3 \
   --set recipe_id=lr2e4 \
   --set campaign_id=Level1-1-lr2e4 \
@@ -159,10 +169,10 @@ If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab exp
 rlab validate                                      # validate goals, recipes, benchmarks, and machine config
 rlab env list                                      # list declared providers and environments without importing them
 rlab env inspect rlab:Bandit-v0
-rlab env preflight --goal-file experiments/goals/rlab__bandit/_goal.yaml --recipe-file experiments/recipes/bandit/ppo.yaml
+rlab env preflight --goal-file experiments/goals/rlab__bandit/_goal.yaml --recipe-file experiments/goals/rlab__bandit/recipes/ppo.yaml
 rlab env inspect supermariobrosnes-turbo:SuperMarioBros-Nes-v0
-rlab env preflight --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml --recipe-file experiments/recipes/mario/single/ppo.yaml
-rlab experiment launch --from-head --goal-file experiments/goals/<goal-slug>/_goal.yaml --recipe-file experiments/recipes/<family>/<recipe>.yaml --machine beast-3 --json
+rlab env preflight --goal-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml --recipe-file experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
+rlab experiment launch --from-head --goal-file experiments/goals/<goal-slug>/_goal.yaml --recipe-file experiments/goals/<goal-slug>/recipes/<recipe>.yaml --machine beast-3 --json
 rlab eval run --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <wandb-run-url>                             # promoted model, else newest API-visible checkpoint/final vN
 rlab play <run-name>                                  # same resolution for a unique historical display name
@@ -220,7 +230,11 @@ Maintenance commands are intentionally outside the normal research loop:
 
 ## Research Loop
 
-Active research contracts live under `experiments/goals/`. For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or promotion criteria.
+Active research contracts live under `experiments/goals/`. Each goal owns its launchable
+`recipes/*.yaml` leaves; those leaves may inherit reusable configuration-only defaults from
+`experiments/recipes/_presets/`. A recipe from one goal cannot be launched against another goal.
+For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or
+promotion criteria.
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 
@@ -367,7 +381,8 @@ and beast host recommendations.
 - Python is pinned to `==3.14.*`; dependency resolution and lock state are managed by `uv`.
 - The installed console command is `rlab`; examples should not use `uv run`.
 - Runtime support is pinned for macOS arm64 and Linux x86_64 with `stable-retro-turbo`.
-- Stable Retro matches ROMs by SHA, not filename. Import ROMs with `rlab import-roms` for the game ids you train or play.
+- Stable Retro Turbo and Mario Turbo receive only verified direct ROM paths. Provision with
+  `rlab rom sync`; filenames and cache paths are operational and do not affect environment identity.
 - Every queue-backed training recipe must include a non-empty `description`; `rlab experiment launch` records it as the run description.
 - Queue-backed W&B run names are `<batch_id>-<recipe_id>-s<effective_seed>-<utc>` and use an opaque `rlab-...` run id. Projects identify canonical game families, while config/tags identify the goal, recipe, provider, campaign, and exact environment hash.
 - Canonical W&B projects are `SuperMarioBros-Nes-v0` for SMB1, `SuperMarioBros3-Nes-v0` for SMB3, `Breakout-Atari2600-v0` for ALE, Breakout Turbo, or Stable Retro Breakout, and `MsPacman-Atari2600-v0` for ALE or Stable Retro Ms. Pac-Man. An explicit `wandb_project` still overrides this routing; unknown environments use their provider-local environment id.

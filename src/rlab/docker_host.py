@@ -19,6 +19,7 @@ from rlab.fleet_labels import (
 from rlab.json_utils import json_safe
 from rlab.machines import MachineConfig
 from rlab.runtime_refs import docker_image_ref, normalize_runtime_image_ref
+from rlab.rom_assets import validate_rom_asset_manifest
 
 
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
@@ -590,6 +591,7 @@ class DockerRunnerHost:
         runtime_image_ref: str,
         labels: Mapping[str, str],
         attempt_env_path: str | None = None,
+        rom_asset_manifest: Mapping[str, Any] | None = None,
     ) -> HostOperationResult:
         args = [
             "create",
@@ -606,11 +608,25 @@ class DockerRunnerHost:
             f"{self.machine.paths.payloads_dir}:{self.machine.paths.container_payloads_dir}:ro",
             "-v",
             f"{self.machine.paths.outputs_dir}:{self.machine.paths.container_outputs_dir}",
-            "-v",
-            f"{self.machine.paths.roms_dir}:{self.machine.paths.container_roms_dir}:ro",
-            "-e",
-            f"RLAB_ROM_DIR={self.machine.paths.container_roms_dir}",
         ]
+        if rom_asset_manifest is not None:
+            manifest = validate_rom_asset_manifest(rom_asset_manifest, allow_legacy=True)
+            host_digest_dir = (
+                Path(self.machine.paths.rom_cache_dir) / "sha256" / manifest["sha256"]
+            )
+            container_digest_dir = (
+                Path(self.machine.paths.container_rom_cache_dir)
+                / "sha256"
+                / manifest["sha256"]
+            )
+            args.extend(
+                [
+                    "-v",
+                    f"{host_digest_dir}:{container_digest_dir}:ro",
+                    "-e",
+                    f"RLAB_ROM_CACHE_DIR={self.machine.paths.container_rom_cache_dir}",
+                ]
+            )
         for key, value in sorted(labels.items()):
             args.extend(["--label", f"{key}={value}"])
         args.extend(
@@ -629,6 +645,41 @@ class DockerRunnerHost:
             self.machine,
             args,
             capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        return _operation_result(result)
+
+    def ensure_rom_cache(
+        self,
+        *,
+        launch_id: str,
+        runtime_image_ref: str,
+        attempt_env_path: str | None = None,
+    ) -> HostOperationResult:
+        result = _run_machine_docker(
+            self.machine,
+            [
+                "run",
+                "--rm",
+                "--env-file",
+                attempt_env_path or self.machine.paths.env_file,
+                "-e",
+                f"RLAB_ROM_CACHE_DIR={self.machine.paths.container_rom_cache_dir}",
+                "-v",
+                f"{self.machine.paths.payloads_dir}:{self.machine.paths.container_payloads_dir}:ro",
+                "-v",
+                f"{self.machine.paths.rom_cache_dir}:{self.machine.paths.container_rom_cache_dir}",
+                docker_image_ref(runtime_image_ref),
+                "python",
+                "-m",
+                "rlab.rom_cache",
+                "--payload",
+                self.payload_container_path(launch_id),
+                "--cache-root",
+                self.machine.paths.container_rom_cache_dir,
+            ],
+            capture=True,
+            timeout=DOCKER_PULL_TIMEOUT_SECONDS,
             deadline_monotonic=self.deadline_monotonic,
         )
         return _operation_result(result)
@@ -747,7 +798,11 @@ def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None 
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(machine.paths.host_root)}",
         f"mkdir -p {shlex.quote(runs_dir)} {shlex.quote(machine.paths.logs_dir)} "
-        f"{shlex.quote(machine.paths.roms_dir)} {shlex.quote(state_dir)}",
+        f"{shlex.quote(state_dir)}",
+        f"if ! mkdir -p {shlex.quote(machine.paths.rom_cache_dir)} 2>/dev/null; then",
+        f"  sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" "
+        f"{shlex.quote(machine.paths.rom_cache_dir)}",
+        "fi",
         "if ! command -v docker >/dev/null 2>&1; then",
         "  if command -v apt-get >/dev/null 2>&1; then",
         "    sudo -n apt-get update",
@@ -818,10 +873,6 @@ def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None 
                             *machine.docker_gpu_args,
                             "--env-file",
                             machine.paths.env_file,
-                            "-e",
-                            f"RLAB_ROM_DIR={machine.paths.container_roms_dir}",
-                            "-v",
-                            f"{machine.paths.roms_dir}:{machine.paths.container_roms_dir}:ro",
                             image,
                             "rlab-container-entrypoint",
                             "rlab-container-smoke",
@@ -862,8 +913,6 @@ def run_checkpoint_coordinator_container(
             "--rm",
             "--env-file",
             host.machine.paths.env_file,
-            "-e",
-            "RLAB_IMPORT_ROMS=0",
             "-v",
             f"{host.machine.paths.outputs_dir}:{host.machine.paths.container_outputs_dir}",
             docker_image_ref(runtime_image_ref),
@@ -903,8 +952,6 @@ def run_wandb_publisher_recovery_container(
             f"rlab-wandb-recovery-{launch_id}",
             "--env-file",
             host.machine.paths.env_file,
-            "-e",
-            "RLAB_IMPORT_ROMS=0",
             "-v",
             f"{host.machine.paths.outputs_dir}:{host.machine.paths.container_outputs_dir}",
             docker_image_ref(runtime_image_ref),

@@ -77,7 +77,7 @@ def validate_announcement(
     environment = eval_contract.get("environment")
     provider = str(environment.get("env_provider") or "") if isinstance(environment, Mapping) else ""
     requires_rom_asset = (
-        resolve_env_provider(provider).uses_stable_retro_roms if provider else True
+        resolve_env_provider(provider).requires_external_rom_asset if provider else True
     )
     if requires_rom_asset and not isinstance(asset, Mapping):
         raise ValueError("checkpoint announcement asset contract is missing")

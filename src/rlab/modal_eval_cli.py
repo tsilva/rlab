@@ -181,7 +181,7 @@ def modal_preflight(
             conn.close()
 
     provider = str(env_provider or "").strip()
-    requires_rom_asset = not provider or resolve_env_provider(provider).uses_stable_retro_roms
+    requires_rom_asset = not provider or resolve_env_provider(provider).requires_external_rom_asset
     if requires_rom_asset:
         try:
             manifest = asset_manifest_for_game(game)
@@ -509,11 +509,27 @@ def cmd_abandon(args: argparse.Namespace) -> int:
 
 
 def cmd_assets_sync(args: argparse.Namespace) -> int:
+    print(
+        "warning: `rlab eval modal assets sync` is deprecated; use `rlab rom sync`",
+        file=sys.stderr,
+    )
     manifest = sync_rom_asset(
         args.game,
         rom_path=args.rom_path,
     )
-    print(json.dumps(manifest, indent=2, sort_keys=True))
+    legacy_stdout = {
+        key: manifest[key]
+        for key in (
+            "game",
+            "filename",
+            "sha256",
+            "object_uri",
+            "provider_rom_identity",
+            "provider_rom_identity_algorithm",
+        )
+    }
+    legacy_stdout["schema_version"] = 1
+    print(json.dumps(legacy_stdout, indent=2, sort_keys=True))
     _kick("modal_assets_sync", entity_kind="game", entity_id=args.game)
     return 0
 

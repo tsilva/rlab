@@ -774,6 +774,16 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         ),
     ),
     TrainConfigField(
+        "rom_asset_manifest",
+        "--rom-asset-manifest",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        cli_exposed=False,
+        help="Queue-materialized immutable external ROM identity.",
+    ),
+    TrainConfigField(
         "checkpoint_eval_asset_manifest",
         "--checkpoint-eval-asset-manifest",
         type_name="json",
@@ -781,7 +791,7 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         serialize="json",
         mapping_value=True,
         cli_exposed=False,
-        help="Materialized immutable private-ROM identity for remote checkpoint evaluation.",
+        help="Deprecated historical alias for rom_asset_manifest.",
     ),
     TrainConfigField(
         "checkpoint_eval_seed_protocol",

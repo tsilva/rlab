@@ -358,7 +358,7 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
             (root / filename).write_text(content, encoding="utf-8")
         composed = compose_train_document(
             Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml"),
-            Path("experiments/recipes/mario/single/ppo.yaml"),
+            Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml"),
         )
         recipe_document = build_recipe_document(
             composed,

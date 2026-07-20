@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -8,11 +9,24 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, unquote, urlparse
 
-from rlab.artifacts import parse_s3_uri, strip_env_file_quotes
 from rlab.file_utils import file_sha256 as _file_sha256
 
 
 file_sha256 = _file_sha256
+
+
+def _strip_env_file_quotes(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1]
+    return text
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3" or not parsed.netloc:
+        raise ValueError(f"Expected an s3://bucket/prefix URI, got: {uri}")
+    return parsed.netloc, parsed.path.lstrip("/")
 
 
 class ObjectNotFound(FileNotFoundError):
@@ -21,7 +35,7 @@ class ObjectNotFound(FileNotFoundError):
 
 def object_store_base_uri(environment: Mapping[str, str] | None = None) -> str:
     values = os.environ if environment is None else environment
-    uri = strip_env_file_quotes(
+    uri = _strip_env_file_quotes(
         values.get("MODAL_EVAL_STORAGE_URI", "") or values.get("CHECKPOINT_BUCKET_URI", "")
     )
     if not uri:
@@ -49,14 +63,14 @@ class ObjectStore:
         return Path(unquote(parsed.path))
 
     def _s3_parts(self, key_or_uri: str) -> tuple[str, str]:
-        return parse_s3_uri(key_or_uri if "://" in key_or_uri else self.uri(key_or_uri))
+        return _parse_s3_uri(key_or_uri if "://" in key_or_uri else self.uri(key_or_uri))
 
     def _s3_client(self):
         if self._client is None:
             import boto3
             from botocore.config import Config
 
-            endpoint = strip_env_file_quotes(
+            endpoint = _strip_env_file_quotes(
                 os.environ.get("AWS_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3", "")
             )
             kwargs: dict[str, Any] = {
@@ -126,6 +140,79 @@ class ObjectStore:
             content_type="application/json",
             create_only=create_only,
         )
+
+    def put_json_conditional(
+        self,
+        key_or_uri: str,
+        value: Mapping[str, Any],
+        *,
+        if_none_match: bool = False,
+        if_match: str | None = None,
+    ) -> tuple[str, str]:
+        """Conditionally replace one small JSON object and return its URI/ETag.
+
+        ROM game pointers use this instead of an unguarded last-writer-wins
+        update.  The file backend uses the payload SHA-256 as its ETag analogue.
+        """
+
+        if if_none_match and if_match is not None:
+            raise ValueError("if_none_match and if_match are mutually exclusive")
+        payload = (json.dumps(dict(value), sort_keys=True, separators=(",", ":")) + "\n").encode()
+        uri = key_or_uri if "://" in key_or_uri else self.uri(key_or_uri)
+        if self.scheme == "file":
+            import fcntl
+
+            path = self._file_path(uri)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = path.parent / f".{path.name}.lock"
+            with lock_path.open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                current = path.read_bytes() if path.is_file() else None
+                current_etag = hashlib.sha256(current).hexdigest() if current is not None else None
+                if if_none_match and current is not None:
+                    raise RuntimeError(f"conditional object create failed: {uri}")
+                if if_match is not None and current_etag != if_match.strip('"'):
+                    raise RuntimeError(f"conditional object replace failed: {uri}")
+                fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+                temporary = Path(name)
+                try:
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(payload)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, path)
+                    directory_fd = os.open(path.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            return uri, hashlib.sha256(payload).hexdigest()
+
+        bucket, key = self._s3_parts(uri)
+        kwargs: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": key,
+            "Body": payload,
+            "ContentType": "application/json",
+        }
+        if if_none_match:
+            kwargs["IfNoneMatch"] = "*"
+        if if_match is not None:
+            kwargs["IfMatch"] = if_match
+        try:
+            result = self._s3_client().put_object(**kwargs)
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status in {409, 412}:
+                raise RuntimeError(f"conditional object update failed: {uri}") from exc
+            raise
+        etag = str(result.get("ETag") or "").strip('"')
+        if not etag:
+            etag = str(self.head(uri).get("etag") or "")
+        return uri, etag
 
     def put_file(
         self,
@@ -204,7 +291,12 @@ class ObjectStore:
                 stat = self._file_path(uri).stat()
             except FileNotFoundError as exc:
                 raise ObjectNotFound(uri) from exc
-            return {"size": stat.st_size, "metadata": {}}
+            payload = self._file_path(uri).read_bytes()
+            return {
+                "size": stat.st_size,
+                "metadata": {},
+                "etag": hashlib.sha256(payload).hexdigest(),
+            }
         bucket, key = self._s3_parts(uri)
         try:
             result = self._s3_client().head_object(Bucket=bucket, Key=key)
@@ -213,7 +305,11 @@ class ObjectStore:
             if response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 404:
                 raise ObjectNotFound(uri) from exc
             raise
-        return {"size": int(result["ContentLength"]), "metadata": dict(result.get("Metadata") or {})}
+        return {
+            "size": int(result["ContentLength"]),
+            "metadata": dict(result.get("Metadata") or {}),
+            "etag": str(result.get("ETag") or "").strip('"'),
+        }
 
     def presign_get(self, key_or_uri: str, *, expires_seconds: int) -> str:
         uri = key_or_uri if "://" in key_or_uri else self.uri(key_or_uri)

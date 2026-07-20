@@ -13,6 +13,7 @@ NON_SEMANTIC_ENV_ARG_KEYS = frozenset(
         "game",
         "num_envs",
         "num_threads",
+        "rom_path",
         "thread_affinity_offset",
     }
 )

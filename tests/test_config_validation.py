@@ -26,9 +26,9 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 
 class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
-    BREAKOUT_RECIPE = Path("experiments/recipes/atari/ppo.yaml")
+    BREAKOUT_RECIPE = BREAKOUT_GOAL.parent / "recipes/ppo.yaml"
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-    MARIO_SINGLE_RECIPES = Path("experiments/recipes/mario/single")
+    MARIO_SINGLE_RECIPES = MARIO_L11_GOAL.parent / "recipes"
 
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
         from ale_py.vector_env import AtariVectorEnv
@@ -74,7 +74,7 @@ class ConfigValidationTests(unittest.TestCase):
 
         train_config = document["train_config"]
         self.assertEqual(document["recipe_id"], "ppo")
-        self.assertEqual(train_config["timesteps"], 100_000_000)
+        self.assertEqual(train_config["timesteps"], 200_000_000)
         self.assertEqual(train_config["training_backend"]["id"], "sb3.ppo")
         self.assertEqual(train_config["env_provider"], "breakout-turbo-env")
         self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
@@ -285,15 +285,19 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.issues, ())
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
-        self.assertGreaterEqual(report.counts["train_recipes"], 1)
         self.assertGreaterEqual(report.counts["goals"], 1)
+        self.assertEqual(report.counts["train_recipes"], 25)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertEqual(report.counts["benchmark_profiles"], 3)
+
+    def test_recipe_cannot_be_launched_for_a_different_goal(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not belong to goal"):
+            compose_train_document(self.MARIO_L11_GOAL, self.BREAKOUT_RECIPE)
 
     def test_breakout_recipe_loads_with_stable_retro_start_state(self) -> None:
         document = compose_train_document(
             self.BREAKOUT_GOAL,
-            Path("experiments/recipes/atari/ppo.yaml"),
+            self.BREAKOUT_RECIPE,
             env_provider="stable-retro-turbo",
         )
 
@@ -425,7 +429,7 @@ class ConfigValidationTests(unittest.TestCase):
     def test_breakout_stable_updates_recipe_adds_late_update_guards(self) -> None:
         document = compose_train_document(
             self.BREAKOUT_GOAL,
-            Path("experiments/recipes/atari/ppo-stable-updates.yaml"),
+            self.BREAKOUT_GOAL.parent / "recipes/ppo-stable-updates.yaml",
             env_provider="stable-retro-turbo",
         )
 
@@ -445,11 +449,11 @@ class ConfigValidationTests(unittest.TestCase):
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
         breakout = compose_train_document(
             self.BREAKOUT_GOAL,
-            Path("experiments/recipes/atari/ppo.yaml"),
+            self.BREAKOUT_RECIPE,
         )
         document = compose_train_document(
             Path("experiments/goals/alepy__mspacman/_goal.yaml"),
-            Path("experiments/recipes/atari/ppo.yaml"),
+            Path("experiments/goals/alepy__mspacman/recipes/ppo.yaml"),
         )
 
         train_config = document["train_config"]

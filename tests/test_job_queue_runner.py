@@ -30,51 +30,22 @@ RUNTIME_IMAGE_REF = (
     "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
+ROM_ASSET_MANIFEST = {
+    "schema_version": 2,
+    "game": "SuperMarioBros-Nes-v0",
+    "filename": "SuperMarioBros.nes",
+    "size_bytes": 40976,
+    "sha256": "a" * 64,
+    "object_uri": "s3://bucket/rom-assets/v2/objects/sha256/" + "a" * 64 + "/SuperMarioBros.nes",
+    "provider_rom_identity": "b" * 40,
+    "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+}
 MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-MARIO_SINGLE_PPO = Path("experiments/recipes/mario/single/ppo.yaml")
+MARIO_SINGLE_PPO = MARIO_L11_GOAL.parent / "recipes/ppo.yaml"
 BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
-MARIO_SINGLE_GOALS = tuple(
-    Path(f"experiments/goals/SuperMarioBros-Nes-v0/Level{world}-{level}/_goal.yaml")
-    for world in range(1, 5)
-    for level in range(1, 5)
-)
 SUPPORTED_RECIPE_PAIRS = tuple(
-    (
-        goal_path,
-        (
-            Path("experiments/recipes/mario/single/ppo-l14-soft-update.yaml")
-            if goal_path.parent.name == "Level1-4"
-            else MARIO_SINGLE_PPO
-        ),
-    )
-    for goal_path in MARIO_SINGLE_GOALS
-) + (
-    (MARIO_L11_GOAL, Path("experiments/recipes/mario/single/a2c.yaml")),
-    (MARIO_L11_GOAL, Path("experiments/recipes/mario/single/jerk.yaml")),
-    (
-        Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/_goal.yaml"),
-        Path("experiments/recipes/mario/mixed/ppo.yaml"),
-    ),
-    (
-        Path("experiments/goals/SuperMarioBros-Nes-v0/Levels_1-1_1-2/_goal.yaml"),
-        Path("experiments/recipes/mario/mixed/raw-advantage.yaml"),
-    ),
-    (
-        BREAKOUT_GOAL,
-        Path("experiments/recipes/atari/ppo.yaml"),
-    ),
-    (
-        BREAKOUT_GOAL,
-        Path("experiments/recipes/atari/ppo-stable-updates.yaml"),
-    ),
-    (
-        Path("experiments/goals/alepy__mspacman/_goal.yaml"),
-        Path("experiments/recipes/atari/ppo.yaml"),
-    ),
-    (
-        Path("experiments/goals/rlab__bandit/_goal.yaml"),
-        Path("experiments/recipes/bandit/ppo.yaml"),
-    ),
+    (recipe_path.parent.parent / "_goal.yaml", recipe_path)
+    for recipe_path in sorted(Path("experiments/goals").rglob("recipes/*.yaml"))
 )
 
 
@@ -101,6 +72,7 @@ def explicit_train_config(**overrides) -> dict:
         "wandb_mode": "online",
         "wandb_artifact_storage_uri": "s3://bucket/checkpoints",
         "checkpoint_eval_backend": "local",
+        "rom_asset_manifest": dict(ROM_ASSET_MANIFEST),
     }
     config.update(overrides)
     return config
@@ -164,7 +136,14 @@ class JobQueueTests(unittest.TestCase):
         started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=1) as executor:
             backend_future = executor.submit(wait_backend)
-            with patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue):
+            with (
+                patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue),
+                patch.object(
+                    job_queue,
+                    "rom_asset_manifest_for_game",
+                    return_value=dict(ROM_ASSET_MANIFEST),
+                ),
+            ):
                 job_queue.enqueue_train_jobs_from_recipe_document(
                     FakeConnection(),
                     document=document,
@@ -398,7 +377,14 @@ class JobQueueTests(unittest.TestCase):
             for source in document["_composition"]["source_files"]:
                 relative = Path(source["path"]).resolve().relative_to(source_root)
                 source["path"] = str(launch_root / relative)
-            with patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue):
+            with (
+                patch.object(job_queue, "enqueue_train_job", side_effect=fake_enqueue),
+                patch.object(
+                    job_queue,
+                    "rom_asset_manifest_for_game",
+                    return_value=dict(ROM_ASSET_MANIFEST),
+                ),
+            ):
                 job_queue.enqueue_train_jobs_from_recipe_document(
                     FakeConnection(),
                     document=document,
@@ -759,7 +745,7 @@ class JobQueueTests(unittest.TestCase):
             conn,
             goal_slug="Level1-1",
             recipe_slug="candidate",
-            recipe_path="experiments/recipes/mario/single/candidate.yaml",
+            recipe_path="experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/candidate.yaml",
             runtime_image_ref=RUNTIME_IMAGE_REF,
             machine="beast-3",
             train_config=explicit_train_config(),
@@ -777,7 +763,7 @@ class JobQueueTests(unittest.TestCase):
 
         with patch.object(
             job_queue,
-            "asset_manifest_for_game",
+            "rom_asset_manifest_for_game",
             return_value={"game": "SuperMarioBros-Nes-v0"},
         ):
             job_queue.enqueue_train_job(
@@ -909,7 +895,7 @@ class JobQueueTests(unittest.TestCase):
             goal_path="experiments/goals/mario/Level1-1/_goal.yaml",
             goal_sha256="def456",
             recipe_slug="candidate",
-            recipe_path="experiments/recipes/mario/single/candidate.yaml",
+            recipe_path="experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/candidate.yaml",
             recipe_sha256="abc123",
             recipe_payload={
                 "recipe_id": "candidate",
@@ -1139,7 +1125,7 @@ class JobQueueTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "may compose only presets"):
+            with self.assertRaisesRegex(ValueError, "may inherit only shared presets"):
                 load_recipe_source_document(leaf)
 
     def test_train_recipe_rejects_unknown_train_config_fields(self) -> None:
@@ -1196,7 +1182,9 @@ class JobQueueTests(unittest.TestCase):
                 runtime_image_ref=RUNTIME_IMAGE_REF,
                 machine="beast-3",
                 submission_key="naming-test",
-                recipe_path="experiments/recipes/mario/single/candidate.yaml",
+                recipe_path=(
+                    "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/candidate.yaml"
+                ),
                 recipe_sha256="abc123",
                 repo_git_commit="deadbeef",
                 repo_dirty=True,
@@ -1217,7 +1205,10 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual([call["seed"] for call in calls], [23, 24])
         self.assertTrue(all("seed" not in call["train_config"] for call in calls))
         self.assertEqual(calls[0]["recipe_slug"], "candidate")
-        self.assertEqual(calls[0]["recipe_path"], "experiments/recipes/mario/single/candidate.yaml")
+        self.assertEqual(
+            calls[0]["recipe_path"],
+            "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/candidate.yaml",
+        )
         self.assertEqual(calls[0]["recipe_sha256"], "abc123")
 
     def test_enqueue_uses_effective_default_seed_in_row_and_run_name(self) -> None:
@@ -1313,7 +1304,7 @@ class JobQueueTests(unittest.TestCase):
     def test_compose_train_document_overrides_breakout_provider_atomically(self) -> None:
         document = compose_train_document(
             BREAKOUT_GOAL,
-            Path("experiments/recipes/atari/ppo.yaml"),
+            BREAKOUT_GOAL.parent / "recipes/ppo.yaml",
             env_provider="stable-retro-turbo",
         )
 
@@ -1339,7 +1330,7 @@ class JobQueueTests(unittest.TestCase):
         ):
             compose_train_document(
                 Path("experiments/goals/alepy__mspacman/_goal.yaml"),
-                Path("experiments/recipes/atari/ppo.yaml"),
+                Path("experiments/goals/alepy__mspacman/recipes/ppo.yaml"),
                 recipe_overrides=overrides,
             )
 
@@ -1897,7 +1888,7 @@ class JobQueueTests(unittest.TestCase):
             ) as preflight,
             patch.object(
                 job_queue,
-                "asset_manifest_for_game",
+                "rom_asset_manifest_for_game",
                 return_value={
                     "game": "SuperMarioBros-Nes-v0",
                     "sha256": "a" * 64,

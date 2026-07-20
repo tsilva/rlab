@@ -98,6 +98,12 @@ def _env(argv: Sequence[str]) -> int:
     return _run(env_main, argv)
 
 
+def _rom(argv: Sequence[str]) -> int:
+    from rlab.rom_cli import main as rom_main
+
+    return _run(rom_main, argv)
+
+
 COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "experiment": ("launch and observe queue-backed training experiments", _experiment),
     "eval": ("run direct or Modal-backed evaluations", _eval),
@@ -109,6 +115,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
         _validate,
     ),
     "env": ("list, inspect, and preflight environment providers", _env),
+    "rom": ("provision, verify, and warm immutable ROM assets", _rom),
     "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
     "reports": ("plan, synchronize, and verify declarative W&B reports", _reports),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
@@ -122,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rlab",
         description="Unified command surface for rlab training, eval, playback, and ops.",
         epilog=(
-            "Research: experiment, eval, play, validate.  Environments: env, import-roms, "
+            "Research: experiment, eval, play, validate.  Environments: env, rom, import-roms, "
             "benchmark.  Results: leaders, reports.  Infrastructure: fleet."
         ),
     )

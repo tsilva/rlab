@@ -267,7 +267,12 @@ def run_jerk(context: BackendContext) -> None:
     args = context.args
     config = context.environment
     n_envs = int(args.resolved_n_envs)
-    env = make_training_vec_env(config=config, n_envs=n_envs, seed=args.seed)
+    env = make_training_vec_env(
+        config=config,
+        n_envs=n_envs,
+        seed=args.seed,
+        rom_binding=getattr(context, "rom_binding", None),
+    )
     try:
         if int(args.timesteps) % n_envs != 0:
             raise ValueError("JERK timesteps must be divisible by the environment count")

@@ -7,6 +7,13 @@ from types import MappingProxyType
 from typing import Any
 
 
+EXTERNAL_ROM_ASSET_NONE = "none"
+STABLE_RETRO_DIRECT_PATH_V1 = "stable_retro_direct_path_v1"
+EXTERNAL_ROM_ASSET_STRATEGIES = frozenset(
+    {EXTERNAL_ROM_ASSET_NONE, STABLE_RETRO_DIRECT_PATH_V1}
+)
+
+
 @dataclass(frozen=True)
 class ProviderConstructorContract:
     canonical_args: frozenset[str]
@@ -33,9 +40,19 @@ class EnvProvider:
     distribution_name: str
     env_ids: tuple[str, ...]
     supports_states: bool = True
-    uses_stable_retro_roms: bool = False
+    external_rom_asset_strategy: str = EXTERNAL_ROM_ASSET_NONE
     allows_unregistered_env_ids: bool = False
     constructor_contract: ProviderConstructorContract | None = None
+
+    def __post_init__(self) -> None:
+        if self.external_rom_asset_strategy not in EXTERNAL_ROM_ASSET_STRATEGIES:
+            raise ValueError(
+                f"unsupported external ROM asset strategy: {self.external_rom_asset_strategy}"
+            )
+
+    @property
+    def requires_external_rom_asset(self) -> bool:
+        return self.external_rom_asset_strategy != EXTERNAL_ROM_ASSET_NONE
 
 
 @dataclass(frozen=True)
@@ -64,7 +81,7 @@ STABLE_RETRO_TURBO_PROVIDER = EnvProvider(
         "Breakout-Atari2600-v0",
         "MsPacman-Atari2600-v0",
     ),
-    uses_stable_retro_roms=True,
+    external_rom_asset_strategy=STABLE_RETRO_DIRECT_PATH_V1,
     constructor_contract=ProviderConstructorContract(
         canonical_args=frozenset(
             {
@@ -113,7 +130,7 @@ SUPERMARIOBROS_NES_TURBO_PROVIDER = EnvProvider(
     import_name="supermariobrosnes_turbo",
     distribution_name="supermariobrosnes-turbo",
     env_ids=("SuperMarioBros-Nes-v0",),
-    uses_stable_retro_roms=True,
+    external_rom_asset_strategy=STABLE_RETRO_DIRECT_PATH_V1,
     constructor_contract=ProviderConstructorContract(
         canonical_args=frozenset(
             {

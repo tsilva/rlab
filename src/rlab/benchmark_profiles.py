@@ -343,6 +343,7 @@ def _train_loop_config(profile: Mapping[str, Any]) -> dict[str, Any]:
     config["early_stop"] = None
     config["post_train_eval_episodes"] = 0
     config.pop("checkpoint_eval_asset_manifest", None)
+    config.pop("rom_asset_manifest", None)
     config["wandb"] = False
     config["wandb_mode"] = "disabled"
     config["wandb_artifact_storage_uri"] = ""

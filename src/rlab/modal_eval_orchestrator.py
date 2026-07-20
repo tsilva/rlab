@@ -133,6 +133,8 @@ class ModalInvoker(Protocol):
     def poll(self, call_id: str) -> tuple[str, object | None]: ...
     def cancel(self, call_id: str) -> None: ...
 
+    def stage_rom(self, app_name: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
 
 class DefaultModalInvoker:
     def spawn(self, app_name: str, function_name: str, payload: Mapping[str, Any]) -> str:
@@ -164,6 +166,14 @@ class DefaultModalInvoker:
         import modal
 
         modal.FunctionCall.from_id(call_id).cancel()
+
+    def stage_rom(self, app_name: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        import modal
+
+        result = modal.Function.from_name(app_name, "stage_rom").remote(dict(payload))
+        if not isinstance(result, Mapping):
+            raise RuntimeError("Modal ROM stager returned an invalid receipt")
+        return dict(result)
 
 
 def _try_lock(conn) -> bool:
@@ -1748,6 +1758,21 @@ def dispatch_pending(
                 terminal=deterministic_eval_failure(exc),
             )
             continue
+        if isinstance(asset, Mapping):
+            stager = getattr(invoker, "stage_rom", None)
+            if callable(stager):
+                try:
+                    receipt = stager(
+                        app_name,
+                        {
+                            "manifest": dict(asset),
+                            "rom_get_url": payload["rom_get_url"],
+                        },
+                    )
+                    if str(receipt.get("sha256") or "") != str(asset["sha256"]):
+                        raise ValueError("Modal ROM cache staging receipt hash mismatch")
+                except Exception as exc:
+                    payload["rom_cache_degraded"] = type(exc).__name__
         try:
             call_id = invoker.spawn(app_name, config.function_name, payload)
         except Exception as exc:

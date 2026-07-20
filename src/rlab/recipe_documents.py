@@ -499,14 +499,12 @@ def load_recipe_source_document(path: Path) -> ComposedDocument:
         composed.document,
         label=f"composed recipe file {path}",
     )
-    active_root = (Path("experiments") / "recipes").resolve()
-    resolved_path = path.resolve()
-    if resolved_path.is_relative_to(active_root):
+    presets_root = (Path("experiments") / "recipes" / "_presets").resolve()
+    if not path.resolve().is_relative_to(presets_root):
         for source in composed.sources[:-1]:
-            relative = source.relative_to(active_root)
-            if not relative.parts or relative.parts[0] != "_presets":
+            if not source.resolve().is_relative_to(presets_root):
                 raise ValueError(
-                    f"recipe leaf {path} may compose only presets under "
+                    f"launchable recipe {path} may inherit only shared presets under "
                     f"experiments/recipes/_presets, got {source}"
                 )
     for source in composed.sources[:-1]:
@@ -525,6 +523,13 @@ def compose_train_document(
     recipe_overrides: Sequence[str] = (),
     env_provider: str | None = None,
 ) -> dict[str, Any]:
+    expected_recipe_dir = goal_path.resolve().parent / "recipes"
+    resolved_recipe_path = recipe_path.resolve()
+    if resolved_recipe_path.parent != expected_recipe_dir:
+        raise ValueError(
+            f"recipe {recipe_path} does not belong to goal {goal_path}; "
+            f"select a launchable recipe directly under {expected_recipe_dir}"
+        )
     goal_composition = _load_rendered_goal_composition(
         goal_path,
         env_provider=env_provider,

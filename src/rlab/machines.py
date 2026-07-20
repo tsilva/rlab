@@ -18,10 +18,12 @@ MACHINE_PATH_KEYS = frozenset(
         "outputs_dir",
         "logs_dir",
         "roms_dir",
+        "rom_cache_dir",
         "env_file",
         "container_payloads_dir",
         "container_outputs_dir",
         "container_roms_dir",
+        "container_rom_cache_dir",
     }
 )
 
@@ -38,10 +40,12 @@ class MachinePaths:
     outputs_dir: str
     logs_dir: str
     roms_dir: str
+    rom_cache_dir: str
     env_file: str
     container_payloads_dir: str
     container_outputs_dir: str
     container_roms_dir: str
+    container_rom_cache_dir: str
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,7 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
             outputs_dir=str(paths_raw.get("outputs_dir") or f"{host_root}/outputs"),
             logs_dir=str(paths_raw.get("logs_dir") or f"{host_root}/logs"),
             roms_dir=str(paths_raw.get("roms_dir") or "/home/tsilva/roms"),
+            rom_cache_dir=str(paths_raw.get("rom_cache_dir") or f"{host_root}/rom-cache"),
             env_file=str(paths_raw.get("env_file") or f"{host_root}/.env.runner"),
             container_payloads_dir=str(
                 paths_raw.get("container_payloads_dir") or "/input/payloads"
@@ -174,6 +179,9 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
                 paths_raw.get("container_outputs_dir") or "/output"
             ),
             container_roms_dir=str(paths_raw.get("container_roms_dir") or "/roms"),
+            container_rom_cache_dir=str(
+                paths_raw.get("container_rom_cache_dir") or "/rom-cache"
+            ),
         ),
     )
 

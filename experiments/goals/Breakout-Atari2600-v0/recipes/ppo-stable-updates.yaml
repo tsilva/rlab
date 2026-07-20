@@ -1,5 +1,5 @@
 defaults:
-- ../_presets/atari-ppo@_global_
+- ../../../recipes/_presets/atari-ppo@_global_
 - _self_
 recipe_id: ppo-stable-updates
 description: >-

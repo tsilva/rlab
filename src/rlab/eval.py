@@ -23,6 +23,7 @@ from rlab.env import (
 )
 from rlab.env_config import env_config_from_args, parse_obs_crop
 from rlab.eval_runner import evaluate_model_episodes, evaluate_policy_bundle
+from rlab.env_registry import resolve_env_provider
 from rlab.model_sources import (
     add_model_source_args,
     apply_model_source_defaults,
@@ -30,6 +31,8 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.policy_models import load_policy_model, resolve_policy_algorithm
+from rlab.rom_assets import rom_asset_manifest_for_game
+from rlab.rom_runtime import ensure_local_rom_binding
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.targets import target_for_game
 from rlab.train_config import add_env_config_args, env_config_arg_fields
@@ -212,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:
             include_states=True,
         )
     )
-    assert_provider_runtime_available(config)
+    rom_binding = None
+    if resolve_env_provider(config.env_provider).requires_external_rom_asset:
+        rom_binding = ensure_local_rom_binding(
+            rom_asset_manifest_for_game(config.game),
+            game=config.game,
+        )
+    assert_provider_runtime_available(config, rom_binding=rom_binding)
     if args.model:
         model, model_policy = load_eval_model(
             args.model,
@@ -233,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             n_envs=args.n_envs,
             progress=args.progress,
             progress_description="eval model",
+            rom_binding=rom_binding,
             extra={
                 "model": args.model,
                 "policy": model_policy,
@@ -252,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             n_envs=1,
             progress=args.progress,
             progress_description=f"eval {args.policy}",
+            rom_binding=rom_binding,
             extra={
                 "model": args.model,
                 "policy": args.policy,

@@ -14,6 +14,7 @@ from rlab.eval_metrics import episode_is_complete, episode_start_state
 from rlab.env_registry import resolve_env_provider
 from rlab.metric_names import EVAL_FULL_SUCCESS_RATE_MEAN, EVAL_FULL_SUCCESS_RATE_MIN
 from rlab.seeds import EVAL_SEED_START
+from rlab.rom_assets import manifest_from_train_config, validate_rom_asset_manifest
 
 
 ACCEPTANCE_PROTOCOL_VERSION = 1
@@ -104,21 +105,22 @@ class CheckpointEvalContractCompiler:
                 raise ValueError("checkpoint eval acceptance rules must be a list")
             acceptance = [deepcopy(dict(rule)) for rule in acceptance_value]
 
-        asset_value = train_config.get("checkpoint_eval_asset_manifest")
-        requires_asset = resolve_env_provider(provider).uses_stable_retro_roms
+        asset_value = manifest_from_train_config(
+            train_config,
+            expected_game=str(environment.get("game") or ""),
+        )
+        requires_asset = resolve_env_provider(provider).requires_external_rom_asset
         asset: dict[str, Any] | None = None
         if requires_asset:
             if not isinstance(asset_value, Mapping):
                 if require_asset:
                     raise ValueError("checkpoint eval asset manifest is not materialized")
             else:
-                asset = deepcopy(dict(asset_value))
-                if not str(asset.get("sha256") or ""):
-                    raise ValueError("checkpoint eval asset manifest must include sha256")
-                if not str(asset.get("provider_rom_identity") or ""):
-                    raise ValueError(
-                        "checkpoint eval asset manifest must include provider_rom_identity"
-                    )
+                asset = validate_rom_asset_manifest(
+                    asset_value,
+                    expected_game=str(environment.get("game") or ""),
+                    allow_legacy=True,
+                )
                 if portable_asset:
                     asset = {
                         key: value
@@ -324,7 +326,7 @@ def validate_checkpoint_eval_contract(
             "checkpoint_eval_seed": contract.get("seed"),
             "checkpoint_eval_seed_protocol": contract.get("seed_protocol"),
             "checkpoint_eval_acceptance": acceptance,
-            "checkpoint_eval_asset_manifest": contract.get("asset"),
+            "rom_asset_manifest": contract.get("asset"),
         },
         portable_asset=portable_asset,
         require_asset=not portable_asset,

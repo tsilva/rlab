@@ -21,6 +21,44 @@ registry_secret = modal.Secret.from_name(registry_secret_name) if registry_secre
 image = modal.Image.from_registry(registry_ref, secret=registry_secret)
 image = image.env({"RLAB_MODAL_EVAL_RUNTIME_IMAGE": runtime_image_ref})
 app = modal.App(app_name)
+rom_cache_root = Path("/rom-cache")
+rom_volume = modal.Volume.from_name(
+    "rlab-rom-cache-v2",
+    create_if_missing=True,
+    version=2,
+)
+
+
+@app.function(
+    name="stage_rom",
+    image=image,
+    cpu=0.25,
+    memory=256,
+    min_containers=0,
+    buffer_containers=0,
+    max_containers=1,
+    retries=0,
+    timeout=120,
+    startup_timeout=config.startup_timeout_seconds,
+    single_use_containers=False,
+    include_source=False,
+    volumes={str(rom_cache_root): rom_volume},
+)
+def stage_rom(payload: dict) -> dict[str, Any]:
+    from rlab.rom_assets import stage_rom_from_url, validate_rom_asset_manifest
+
+    manifest = validate_rom_asset_manifest(
+        payload["manifest"],
+        require_object_uri=False,
+        allow_legacy=True,
+    )
+    path = stage_rom_from_url(
+        manifest,
+        url=str(payload["rom_get_url"]),
+        cache_root=rom_cache_root,
+    )
+    rom_volume.commit()
+    return {"status": "ready", "sha256": manifest["sha256"], "path": str(path)}
 
 
 @app.function(
@@ -37,11 +75,14 @@ app = modal.App(app_name)
     startup_timeout=config.startup_timeout_seconds,
     single_use_containers=config.single_use_containers,
     include_source=False,
+    volumes={str(rom_cache_root): rom_volume.with_mount_options(read_only=True)},
 )
 def evaluate_checkpoint(payload: dict) -> dict:
     from rlab.modal_eval_worker import execute_attempt
 
-    return execute_attempt(payload)
+    if isinstance(payload.get("contract", {}).get("asset"), dict):
+        rom_volume.reload()
+    return execute_attempt(payload, cache_root=rom_cache_root)
 
 
 @app.function(

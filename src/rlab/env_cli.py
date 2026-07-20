@@ -62,7 +62,8 @@ def _provider_payload(
         "env_ids": list(provider.env_ids),
         "allows_unregistered_env_ids": provider.allows_unregistered_env_ids,
         "supports_states": provider.supports_states,
-        "uses_stable_retro_roms": provider.uses_stable_retro_roms,
+        "external_rom_asset_strategy": provider.external_rom_asset_strategy,
+        "requires_external_rom_asset": provider.requires_external_rom_asset,
         "constructor_contract": (
             {
                 "kind": "fixed",
@@ -399,11 +400,24 @@ def _check_report(args: argparse.Namespace) -> dict[str, Any]:
         )
 
         stage = "runtime_availability"
-        assert_provider_runtime_available(config)
+        rom_binding = None
+        if provider.requires_external_rom_asset:
+            from rlab.rom_assets import rom_asset_manifest_for_game
+            from rlab.rom_runtime import ensure_local_rom_binding
+
+            rom_binding = ensure_local_rom_binding(
+                rom_asset_manifest_for_game(config.game),
+                game=config.game,
+            )
+        assert_provider_runtime_available(config, rom_binding=rom_binding)
         _record(report, stage, "passed", "provider runtime assets are available")
 
         stage = "native_construction"
-        native_env, descriptor = make_native_provider(config, n_envs)
+        native_env, descriptor = make_native_provider(
+            config,
+            n_envs,
+            rom_binding=rom_binding,
+        )
         report["observed"].update(
             {
                 "vector_type": f"{type(native_env).__module__}.{type(native_env).__qualname__}",
@@ -639,7 +653,12 @@ def build_parser() -> argparse.ArgumentParser:
         "preflight", help="Run a recipe-backed environment preflight."
     )
     preflight_parser.add_argument("--goal-file", type=Path, required=True)
-    preflight_parser.add_argument("--recipe-file", type=Path, required=True)
+    preflight_parser.add_argument(
+        "--recipe-file",
+        type=Path,
+        required=True,
+        help="Launchable recipe under the selected goal's recipes directory.",
+    )
     preflight_parser.add_argument("--set", dest="recipe_overrides", action="append", default=[])
     preflight_parser.add_argument("--seed", type=int, default=0)
     preflight_parser.add_argument("--json", action="store_true")

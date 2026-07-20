@@ -3,7 +3,7 @@ name: train-loop-throughput-mario-l11
 kind: train_loop_throughput
 description: Bounded SB3 on-policy throughput probe for the consolidated Mario native-vector runtime.
 goal_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml
-recipe_file: experiments/recipes/mario/single/ppo.yaml
+recipe_file: experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
 seed: 123
 recipe_overrides:
 - train.timesteps=4096

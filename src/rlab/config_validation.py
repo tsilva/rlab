@@ -26,15 +26,13 @@ from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
 from rlab.recipe_documents import (
+    compose_train_document,
     load_goal_contract_document,
-    load_recipe_source_document,
-    materialize_train_recipe_document,
 )
 from rlab.ranking import parse_objective_rank
 from rlab.seeds import validate_eval_seed
 from rlab.train_config import (
     env_config_allowed_keys,
-    validate_and_normalize_train_config,
     validate_train_config_fields,
 )
 from rlab.validation import (
@@ -697,37 +695,53 @@ def validate_experiment_tree(repo_root: Path | str = Path(".")) -> ValidationRep
             lambda: validate_report_declarations(repo_root),
         )
 
-    legacy_goal_recipes = sorted(
+    recipes = sorted(
         path
         for path in (experiments_dir / "goals").rglob("recipes/*.yaml")
         if _active_experiment_path(path)
     )
-    for path in legacy_goal_recipes:
-        issues.append(
-            ValidationIssue(
-                path=_display_path(path, repo_root),
-                message="active goal-local recipes are unsupported; use experiments/recipes",
+    counts["train_recipes"] = len(recipes)
+    recipes_by_goal = {path.parent.parent.resolve() for path in recipes}
+    for goal_path in goals:
+        if goal_path.parent.resolve() not in recipes_by_goal:
+            issues.append(
+                ValidationIssue(
+                    path=_display_path(goal_path, repo_root),
+                    message="active goal has no launchable recipe under its recipes directory",
+                )
             )
+    for path in recipes:
+        goal_path = path.parent.parent / "_goal.yaml"
+        if not goal_path.is_file():
+            issues.append(
+                ValidationIssue(
+                    path=_display_path(path, repo_root),
+                    message="goal-local recipe has no sibling _goal.yaml owner",
+                )
+            )
+            continue
+        _capture_issue(
+            issues,
+            path,
+            repo_root,
+            lambda path=path, goal_path=goal_path: compose_train_document(goal_path, path),
         )
     recipes_root = experiments_dir / "recipes"
-    recipes = sorted(
+    shared_recipe_leaves = sorted(
         path
         for path in recipes_root.rglob("*.yaml")
         if _active_experiment_path(path) and (not path.is_relative_to(recipes_root / "_presets"))
     )
-    counts["train_recipes"] = len(recipes)
-    for path in recipes:
-
-        def validate_recipe(path: Path = path) -> None:
-            composition = load_recipe_source_document(path)
-            source = materialize_train_recipe_document(composition.document)
-            validate_and_normalize_train_config(
-                source.get("train_config") or {},
-                label=f"recipe file {path} train_config",
-                required_keys=("timesteps", "wandb", "wandb_mode", "wandb_artifact_storage_uri"),
+    for path in shared_recipe_leaves:
+        issues.append(
+            ValidationIssue(
+                path=_display_path(path, repo_root),
+                message=(
+                    "shared recipe directories may contain only reusable _presets; "
+                    "launchable recipes belong under their goal"
+                ),
             )
-
-        _capture_issue(issues, path, repo_root, validate_recipe)
+        )
 
     env_configs = sorted(
         path for path in goals_dir.glob("*/_env-*.yaml") if _active_experiment_path(path)

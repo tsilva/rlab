@@ -53,7 +53,11 @@ from rlab.recipe_schema import (
 from rlab.provider_config import provider_num_envs
 from rlab.policy_bundle import build_recipe_document
 from rlab.train_config import validate_and_normalize_train_config
-from rlab.modal_eval_assets import asset_manifest_for_game
+from rlab.rom_assets import (
+    manifest_from_train_config,
+    rom_asset_manifest_for_game,
+    validate_rom_asset_manifest,
+)
 from rlab.checkpoint_acceptance import (
     EVAL_SEED_START,
     checkpoint_eval_contract_from_train_config,
@@ -1545,6 +1549,11 @@ def enqueue_train_jobs_from_recipe_document(
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
+    if "checkpoint_eval_asset_manifest" in train_config:
+        raise ValueError(
+            "new submissions must use queue-materialized rom_asset_manifest, not "
+            "checkpoint_eval_asset_manifest"
+        )
     backend = resolve_checkpoint_eval_backend(
         train_config,
         checkpoint_eval_backend=checkpoint_eval_backend,
@@ -1564,6 +1573,22 @@ def enqueue_train_jobs_from_recipe_document(
         if "checkpoint_eval_backend:none" not in tags:
             tags.append("checkpoint_eval_backend:none")
         document["tags"] = tags
+    provider_id = str(train_config.get("env_provider") or "stable-retro-turbo").strip()
+    provider = resolve_env_provider(provider_id)
+    if provider.requires_external_rom_asset:
+        manifest = manifest_from_train_config(
+            train_config,
+            expected_game=str(train_config.get("game") or ""),
+        )
+        if manifest is None:
+            manifest = rom_asset_manifest_for_game(str(train_config.get("game") or ""))
+        train_config["rom_asset_manifest"] = validate_rom_asset_manifest(
+            manifest,
+            expected_game=str(train_config.get("game") or ""),
+        )
+    else:
+        train_config.pop("rom_asset_manifest", None)
+        train_config.pop("checkpoint_eval_asset_manifest", None)
     document["train_config"] = train_config
     validate_materialized_train_recipe(document)
     goal_slug = recipe_goal_slug(document)
@@ -1782,6 +1807,19 @@ def enqueue_train_job(
     )
     config["telemetry_transport"] = "neon_mailbox_v1"
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
+    provider_id = str(config.get("env_provider") or "stable-retro-turbo").strip()
+    provider = resolve_env_provider(provider_id)
+    manifest = manifest_from_train_config(
+        config,
+        expected_game=str(config.get("game") or ""),
+    )
+    if provider.requires_external_rom_asset:
+        if manifest is None:
+            raise ValueError("external ROM asset manifest is not materialized before enqueue")
+        config["rom_asset_manifest"] = manifest
+    else:
+        config.pop("rom_asset_manifest", None)
+    config.pop("checkpoint_eval_asset_manifest", None)
     if str(config.get("checkpoint_eval_backend") or "local") == "modal":
         if not _modal_readiness_validated:
             require_modal_eval_ready(
@@ -1789,16 +1827,6 @@ def enqueue_train_job(
                 game=str(config.get("game") or ""),
                 env_provider=str(config.get("env_provider") or ""),
             )
-        provider = str(config.get("env_provider") or "").strip()
-        requires_rom_asset = (
-            resolve_env_provider(provider).uses_stable_retro_roms if provider else True
-        )
-        if requires_rom_asset and not config.get("checkpoint_eval_asset_manifest"):
-            config["checkpoint_eval_asset_manifest"] = asset_manifest_for_game(
-                str(config.get("game") or "")
-            )
-        elif not requires_rom_asset:
-            config.pop("checkpoint_eval_asset_manifest", None)
         config.setdefault("checkpoint_eval_seed", EVAL_SEED_START)
         config.setdefault("checkpoint_eval_seed_protocol", SEED_PROTOCOL)
         if config.get("stop_on_acceptance"):
@@ -3833,7 +3861,13 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
     add_direct_database_arg(parser)
     parser.add_argument("--machines", type=Path, default=DEFAULT_MACHINE_REGISTRY)
     parser.add_argument("--goal-file", dest="goal_file", type=Path, required=True)
-    parser.add_argument("--recipe-file", dest="recipe_file", type=Path, required=True)
+    parser.add_argument(
+        "--recipe-file",
+        dest="recipe_file",
+        type=Path,
+        required=True,
+        help="Launchable recipe under the selected goal's recipes directory.",
+    )
     parser.add_argument(
         "--env-provider",
         help=(

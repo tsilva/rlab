@@ -112,6 +112,33 @@ def mario_task(*, conditioning: bool = False) -> dict:
 
 
 class CommandAndArtifactTests(unittest.TestCase):
+    def setUp(self) -> None:
+        manifest = {
+            "schema_version": 2,
+            "game": "SuperMarioBros-Nes-v0",
+            "filename": "rom.nes",
+            "size_bytes": 1,
+            "sha256": "a" * 64,
+            "object_uri": "s3://bucket/rom.nes",
+            "provider_rom_identity": "b" * 40,
+            "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+        }
+        binding = types.SimpleNamespace(manifest=manifest, rom_path="/rom-cache/rom.nes")
+        for target, value in (
+            ("rlab.play.rom_asset_manifest_for_game", manifest),
+            ("rlab.eval.rom_asset_manifest_for_game", manifest),
+        ):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for target in (
+            "rlab.play.ensure_local_rom_binding",
+            "rlab.eval.ensure_local_rom_binding",
+        ):
+            patcher = patch(target, return_value=binding)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_normalize_advantages_by_task_updates_rollout_in_place(self) -> None:
         advantages = np.asarray(
             [

@@ -21,7 +21,9 @@ from rlab.recipe_documents import compose_train_document
 
 
 MARIO_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-MARIO_RECIPE = Path("experiments/recipes/mario/single/ppo.yaml")
+MARIO_RECIPE = Path(
+    "experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml"
+)
 
 
 class FakeNativeProvider:
@@ -181,8 +183,21 @@ def _run_fake_check(
         if distribution_error is not None
         else {"return_value": _distribution(package_root)}
     )
+    manifest = {
+        "schema_version": 2,
+        "game": "SuperMarioBros-Nes-v0",
+        "filename": "mario.nes",
+        "size_bytes": 1,
+        "sha256": "a" * 64,
+        "object_uri": "s3://bucket/mario.nes",
+        "provider_rom_identity": "b" * 40,
+        "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+    }
+    binding = SimpleNamespace(rom_path="/rom-cache/mario.nes", manifest=manifest)
     with (
         patch("rlab.env.assert_provider_runtime_available", side_effect=runtime_error),
+        patch("rlab.rom_assets.rom_asset_manifest_for_game", return_value=manifest),
+        patch("rlab.rom_runtime.ensure_local_rom_binding", return_value=binding),
         patch(
             "rlab.env.make_native_provider",
             side_effect=lambda *_args, **_kwargs: (
@@ -381,7 +396,11 @@ def test_native_construction_closes_provider_when_description_fails() -> None:
         patch("rlab.env._provider_descriptor", side_effect=ValueError("bad descriptor")),
         pytest.raises(ValueError, match="bad descriptor"),
     ):
-        make_native_provider(config, 16)
+        make_native_provider(
+            config,
+            16,
+            rom_binding=SimpleNamespace(rom_path="/rom-cache/mario.nes"),
+        )
 
     assert native.close_calls == 1
 

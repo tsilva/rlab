@@ -22,6 +22,16 @@ RUNTIME_IMAGE_REF = (
     "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:"
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 )
+ROM_MANIFEST = {
+    "schema_version": 2,
+    "game": "SuperMarioBros-Nes-v0",
+    "filename": "rom.nes",
+    "size_bytes": 1,
+    "sha256": "a" * 64,
+    "object_uri": "s3://bucket/rom.nes",
+    "provider_rom_identity": "b" * 40,
+    "provider_rom_identity_algorithm": "sha1-provider-body-v1",
+}
 
 
 def machine(*, backend: str = "local_docker", host_root: str = "/tmp/rlab"):
@@ -152,6 +162,46 @@ class DockerHostTests(unittest.TestCase):
         self.assertIn("--payload /input/payloads/train-12.json", text)
         self.assertIn("--label rlab.launch-id=train-12", text)
         self.assertIn("/tmp/rlab/payloads:/input/payloads:ro", text)
+        self.assertNotIn("RLAB_ROM_CACHE_DIR", text)
+        self.assertNotIn("/roms", text)
+
+    def test_rom_container_mounts_only_the_required_digest_read_only(self) -> None:
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run:
+            outcome = DockerRunnerHost(machine()).create_train_container(
+                launch_id="train-12",
+                container_name="rlab-job-beast-test-train-train-12",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                labels={LAUNCH_ID_LABEL: "train-12"},
+                rom_asset_manifest=ROM_MANIFEST,
+            )
+
+        self.assertTrue(outcome.ok)
+        text = " ".join(run.call_args.args[1])
+        digest = ROM_MANIFEST["sha256"]
+        self.assertIn(
+            f"/tmp/rlab/rom-cache/sha256/{digest}:/rom-cache/sha256/{digest}:ro",
+            text,
+        )
+        self.assertIn("RLAB_ROM_CACHE_DIR=/rom-cache", text)
+        self.assertNotIn("RLAB_ROM_DIR", text)
+        self.assertNotIn("RLAB_IMPORT_ROMS", text)
+
+    def test_rom_cache_helper_uses_runtime_image_and_writable_cache(self) -> None:
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run:
+            outcome = DockerRunnerHost(machine()).ensure_rom_cache(
+                launch_id="train-12",
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+            )
+
+        self.assertTrue(outcome.ok)
+        text = " ".join(run.call_args.args[1])
+        self.assertIn("run --rm", text)
+        self.assertIn("/tmp/rlab/rom-cache:/rom-cache", text)
+        self.assertNotIn("/tmp/rlab/rom-cache:/rom-cache:ro", text)
+        self.assertIn("python -m rlab.rom_cache", text)
+        self.assertIn("/input/payloads/train-12.json", text)
 
     def test_list_job_containers_filters_managed_job_label(self) -> None:
         output = "\n".join(

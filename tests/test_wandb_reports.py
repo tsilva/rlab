@@ -31,7 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 FAMILY_ROOT = ROOT / "experiments" / "goals" / "SuperMarioBros-Nes-v0"
 LEVEL1_1_GOAL = FAMILY_ROOT / "Level1-1" / "_goal.yaml"
 MIXED_GOAL = FAMILY_ROOT / "Levels_1-1_1-2" / "_goal.yaml"
-MARIO_RECIPE = ROOT / "experiments" / "recipes" / "mario" / "single" / "ppo.yaml"
+MARIO_RECIPE = (
+    ROOT
+    / "experiments"
+    / "goals"
+    / "SuperMarioBros-Nes-v0"
+    / "Level1-1"
+    / "recipes"
+    / "ppo.yaml"
+)
 
 
 def goal_spec(goal_id: str) -> GoalReportSpec:

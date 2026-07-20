@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,22 +21,12 @@ from rlab.policy_bundle import (
     load_policy_bundle,
 )
 from rlab.video import PolicyObservationPreview, write_preview_video
+from rlab.rom_assets import cache_path, validate_rom_asset_manifest, verify_rom_file
+from rlab.rom_runtime import bind_rom_path
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(value), sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _provider_rom_identity(path: Path, algorithm: str) -> str:
-    if algorithm != "sha1-provider-body-v1":
-        raise ValueError(f"unsupported provider ROM identity algorithm: {algorithm}")
-    digest = hashlib.sha1()
-    with path.open("rb") as handle:
-        if path.suffix.lower() == ".nes":
-            handle.read(16)
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _upload_json(url: str, value: Mapping[str, Any]) -> str:
@@ -121,15 +112,12 @@ def run_child(input_path: Path, output_path: Path) -> int:
     bundle_root = request.get("bundle_root")
     bundle = load_policy_bundle(Path(bundle_root)) if bundle_root else None
     raw_rom_path = request.get("rom_path")
-    if raw_rom_path:
-        rom_dir = Path(str(raw_rom_path)).parent
-        subprocess.run(
-            [sys.executable, "-m", "stable_retro.import", str(rom_dir)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+    asset = request.get("rom_asset_manifest") or contract.get("asset")
+    rom_binding = (
+        bind_rom_path(asset, Path(str(raw_rom_path)))
+        if raw_rom_path and isinstance(asset, Mapping)
+        else None
+    )
     from rlab.eval_runner import evaluate_model_episodes, evaluate_policy_bundle
 
     acceptance_contract = contract if "acceptance" in contract else None
@@ -160,6 +148,7 @@ def run_child(input_path: Path, output_path: Path) -> int:
             progress=True,
             preview_capture=preview_capture,
             acceptance_contract=acceptance_contract,
+            rom_binding=rom_binding,
         )
     else:
         from rlab.env import resolve_env_config
@@ -187,6 +176,7 @@ def run_child(input_path: Path, output_path: Path) -> int:
             progress_description="modal checkpoint eval",
             preview_capture=preview_capture,
             acceptance_contract=acceptance_contract,
+            rom_binding=rom_binding,
         )
     episode_results = metrics.pop("episode_results")
     evaluation_evidence = metrics.pop("evaluation_evidence", None)
@@ -234,7 +224,11 @@ def run_child(input_path: Path, output_path: Path) -> int:
     return 0
 
 
-def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
+def execute_attempt(
+    payload: Mapping[str, Any],
+    *,
+    cache_root: Path = Path("/rom-cache"),
+) -> dict[str, Any]:
     attempt_id = str(payload["attempt_id"])
     contract = dict(payload["contract"])
     execution = execution_key(contract)
@@ -302,31 +296,24 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
             asset = contract.get("asset")
             rom_path: Path | None = None
             if isinstance(asset, Mapping):
-                cache_dir = Path("/tmp/rlab-modal-assets") / str(asset["sha256"])
-                cached_rom = cache_dir / str(asset["filename"])
-                cache_valid = cached_rom.is_file() and file_sha256(cached_rom) == str(asset["sha256"])
-                if not cache_valid:
-                    cached_rom.unlink(missing_ok=True)
-                    cache_dir.mkdir(parents=True, exist_ok=True)
-                    downloaded_rom = write_downloaded_file(
-                        str(payload["rom_get_url"]), root / "roms" / str(asset["filename"])
+                normalized_asset = validate_rom_asset_manifest(
+                    asset,
+                    require_object_uri=False,
+                    allow_legacy=True,
+                )
+                cached_rom = cache_path(cache_root, normalized_asset)
+                try:
+                    source_rom = verify_rom_file(cached_rom, normalized_asset)
+                except (FileNotFoundError, ValueError):
+                    source_rom = write_downloaded_file(
+                        str(payload["rom_get_url"]),
+                        root / "downloaded-rom" / str(normalized_asset["filename"]),
                     )
-                    if file_sha256(downloaded_rom) != str(asset["sha256"]):
-                        raise ValueError("downloaded ROM hash mismatch")
-                    temporary_cache = cache_dir / f".{asset['filename']}.{attempt_id}.tmp"
-                    temporary_cache.write_bytes(downloaded_rom.read_bytes())
-                    try:
-                        os.link(temporary_cache, cached_rom)
-                    except FileExistsError:
-                        pass
-                    finally:
-                        temporary_cache.unlink(missing_ok=True)
-                rom_path = cached_rom
-                if _provider_rom_identity(
-                    rom_path,
-                    str(asset.get("provider_rom_identity_algorithm") or ""),
-                ) != str(asset["provider_rom_identity"]):
-                    raise ValueError("downloaded ROM provider identity mismatch")
+                    verify_rom_file(source_rom, normalized_asset)
+                rom_path = root / "roms" / str(normalized_asset["filename"])
+                rom_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_rom, rom_path)
+                verify_rom_file(rom_path, normalized_asset)
             child_input = root / "child-input.json"
             child_output = root / "child-output.json"
             _write_json(
@@ -337,6 +324,7 @@ def execute_attempt(payload: Mapping[str, Any]) -> dict[str, Any]:
                     "model_path": str(model_path),
                     "model_metadata": model_metadata,
                     "rom_path": str(rom_path) if rom_path is not None else None,
+                    "rom_asset_manifest": dict(asset) if isinstance(asset, Mapping) else None,
                     "preview": payload.get("preview"),
                 },
             )

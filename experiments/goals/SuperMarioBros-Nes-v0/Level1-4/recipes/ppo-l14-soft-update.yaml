@@ -1,5 +1,5 @@
 defaults:
-- ../../_presets/mario-single-ppo@_global_
+- ../../../../recipes/_presets/mario-single-ppo@_global_
 - _self_
 recipe_id: ppo-l14-soft-update
 description: >-

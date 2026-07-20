@@ -19,7 +19,7 @@ from rlab.modal_eval_cli import build_parser as build_modal_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-RECIPE = Path("experiments/recipes/mario/single/ppo.yaml")
+RECIPE = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml")
 
 
 class ExperimentCliTests(unittest.TestCase):

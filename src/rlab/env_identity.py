@@ -11,6 +11,7 @@ from rlab.metric_names import metric_path_segment
 from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
 from rlab.preprocessing import preprocessing_contract
+from rlab.rom_assets import manifest_from_train_config, portable_rom_asset_identity
 from rlab.task_kernels import default_task_document
 
 
@@ -344,6 +345,12 @@ def environment_identity_from_train_config(
     provider_args = semantic_provider_args(train_config)
     if provider_args:
         identity.setdefault("provider_args", deepcopy(provider_args))
+    rom_asset = manifest_from_train_config(
+        train_config,
+        expected_game=provider_game(train_config),
+    )
+    if rom_asset is not None:
+        identity["rom_asset"] = portable_rom_asset_identity(rom_asset)
     _normalize_preprocessing(identity)
     return identity
 

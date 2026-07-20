@@ -63,6 +63,7 @@ from rlab.runtime_refs import (
     runtime_image_ref_from_args,
     normalize_runtime_image_ref,
 )
+from rlab.rom_assets import manifest_from_train_config
 from rlab.fleet_labels import (
     JOB_CONTAINER_LABEL,
     JOB_ID_LABEL,
@@ -446,6 +447,26 @@ def _start_or_resume_launch(
             mailbox_env[ATTEMPT_TOKEN_ENV] = token
             attempt_env_path = host.write_attempt_env(launch_id, mailbox_env)
         host.write_payload(launch_id, job_payload_for_launch(job, launch))
+        train_config = dict(job.get("train_config") or {})
+        rom_asset_manifest = manifest_from_train_config(
+            train_config,
+            expected_game=str(train_config.get("game") or ""),
+        )
+        if rom_asset_manifest is not None and (
+            known_container is None or known_container.state != "running"
+        ):
+            cached = host.ensure_rom_cache(
+                launch_id=launch_id,
+                runtime_image_ref=str(launch["runtime_image_ref"]),
+                attempt_env_path=attempt_env_path,
+            )
+            if not cached.ok:
+                _record_launch_error(
+                    conn,
+                    launch_id,
+                    cached.detail or "ROM cache staging failed",
+                )
+                return False
         container = known_container
         if container is None:
             labels = {
@@ -464,6 +485,7 @@ def _start_or_resume_launch(
                 runtime_image_ref=str(launch["runtime_image_ref"]),
                 labels=labels,
                 attempt_env_path=attempt_env_path,
+                rom_asset_manifest=rom_asset_manifest,
             )
             containers = {item.launch_id: item for item in host.list_job_containers()}
             container = containers.get(launch_id)

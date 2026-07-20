@@ -36,6 +36,7 @@ class BackendContext:
     metric_store: Any
     wandb_enabled: bool
     stop_flag: Any
+    rom_binding: Any | None
 
     def mark_ready(self) -> Path:
         path = self.run_dir / "learner_ready.json"

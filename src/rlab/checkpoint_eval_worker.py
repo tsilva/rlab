@@ -15,9 +15,11 @@ from rlab.checkpoint_eval_config import (
 )
 from rlab.device import resolve_sb3_device
 from rlab.early_stop import evaluate_early_stop_config
-from rlab.env import EnvConfig, resolve_env_config
+from rlab.env import EnvConfig, assert_provider_runtime_available, resolve_env_config
 from rlab.env_metadata import env_config_from_config_dict
 from rlab.eval_runner import evaluate_model_episodes
+from rlab.rom_assets import manifest_from_train_config
+from rlab.rom_runtime import RomRuntimeBinding, bind_cached_rom, runtime_cache_root
 from rlab.eval_metrics import eval_by_start_rows
 from rlab.eval_metrics import completion_score as eval_completion_score
 from rlab.metric_names import (
@@ -362,6 +364,7 @@ def process_staged_eval(
     run_dir: Path,
     row: dict[str, Any],
     stages: list[dict[str, Any]],
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> None:
     stage_id = int(row["eval_stage_id"])
     checkpoint_id = int(row["id"])
@@ -395,6 +398,7 @@ def process_staged_eval(
                 "checkpoint_artifact": str(checkpoint_path),
                 "eval_source": f"async_worker:{stage_name}",
             },
+            rom_binding=rom_binding,
         )
         canonical_payload = metric_payload(
             args=args,
@@ -507,6 +511,7 @@ def process_eval(
     config,
     run_dir: Path,
     row: dict[str, Any],
+    rom_binding: RomRuntimeBinding | None = None,
 ) -> None:
     stages = _checkpoint_eval_stages(args)
     if stages:
@@ -519,6 +524,7 @@ def process_eval(
             run_dir=run_dir,
             row=row,
             stages=stages,
+            rom_binding=rom_binding,
         )
         return
     checkpoint_id = int(row["id"])
@@ -549,6 +555,7 @@ def process_eval(
                 "checkpoint_artifact": str(checkpoint_path),
                 "eval_source": "async_worker",
             },
+            rom_binding=rom_binding,
         )
         payload = metric_payload(
             args=args,
@@ -607,6 +614,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     train_args = materialized_train_args(args.train_config_json)
     config = checkpoint_eval_config_from_args(train_args)
+    manifest = manifest_from_train_config(vars(train_args), expected_game=config.game)
+    rom_binding = (
+        bind_cached_rom(manifest, cache_root=runtime_cache_root(container_default=True))
+        if manifest is not None
+        else None
+    )
+    assert_provider_runtime_available(config, rom_binding=rom_binding)
     store = MetricStore(metric_store_path(args.run_dir))
     store.init()
     stages = _checkpoint_eval_stages(train_args)
@@ -634,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 run_dir=args.run_dir,
                 row=row,
+                rom_binding=rom_binding,
             )
         if not rows:
             time.sleep(max(args.poll_seconds, 0.25))
