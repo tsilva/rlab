@@ -342,22 +342,45 @@ METRIC_DEFINITIONS = (
         "train/algorithm/{algorithm}/hyperparameter/entropy_coefficient",
         "Current scheduled entropy coefficient.",
     ),
-    *(
-        _definition(
-            name,
-            "Training-loop rate or phase duration.",
-            "steps/second" if name.endswith("_fps") else "seconds",
-        )
-        for name in (
-            TRAIN_THROUGHPUT_LOOP_FPS,
-            TRAIN_THROUGHPUT_ROLLOUT_FPS,
-            TRAIN_THROUGHPUT_ENV_STEP_FPS,
-            TRAIN_THROUGHPUT_LOOP_SECONDS,
-            TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
-            TRAIN_THROUGHPUT_ENV_STEP_SECONDS,
-            TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
-            TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS,
-        )
+    _definition(
+        TRAIN_THROUGHPUT_LOOP_FPS,
+        "Policy transitions divided by rollout-start-to-next-rollout-start wall time.",
+        "steps/second",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_ROLLOUT_FPS,
+        "Policy transitions divided by rollout-collection wall time.",
+        "steps/second",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_ENV_STEP_FPS,
+        "Policy transitions divided by native-provider step wall time accumulated during the rollout.",
+        "steps/second",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_LOOP_SECONDS,
+        "Wall time from one rollout start to the next rollout start.",
+        "seconds",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
+        "Wall time spent collecting one rollout.",
+        "seconds",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_ENV_STEP_SECONDS,
+        "Native-provider step wall time accumulated while collecting one rollout.",
+        "seconds",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
+        "Rollout wall time outside native-provider step calls, including policy inference and wrapper, buffer, reset, task, and callback work.",
+        "seconds",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS,
+        "Wall time after rollout collection and before the next rollout, including optimizer updates, callbacks, and logging.",
+        "seconds",
     ),
     _definition(TRAIN_ARTIFACT_SAVE_SECONDS, "Local model save duration.", "seconds", "artifact"),
     _definition(

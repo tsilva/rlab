@@ -55,8 +55,12 @@ Asynchronous evaluation rows may arrive after later training rows without overwr
   Successful episodes contribute to success metrics, not the failure-reason families.
 - Positive PPO policy entropy, dominant-action rate, and the action histogram diagnose discrete
   policy collapse. Value prediction and advantage histograms are sampled every 64 rollouts.
-- `between_rollouts_seconds` includes PPO updates, callbacks, and logging. It is deliberately not
-  named optimization time.
+- Throughput phase timing satisfies `loop_seconds = env_step_seconds +
+  rollout_overhead_seconds + between_rollouts_seconds`. Compare those three phase durations on
+  matching workloads to identify a training-loop bottleneck. `rollout_overhead_seconds` includes
+  policy inference plus wrapper, buffer, reset, task, and callback work outside the native provider.
+  `between_rollouts_seconds` includes optimizer updates, callbacks, and logging, so it is deliberately
+  not named optimization time.
 - Reward components are emitted only when active. Each component has mean, nonzero rate, and share;
   raw reward appears only when it differs from shaped reward.
 
@@ -143,14 +147,14 @@ checkpoint projections remain in history and never modify canonical leader field
 | `train/algorithm/{algorithm}/rollout/advantage/max` | Rollout advantage distribution diagnostic. | scalar | rollout | history |
 | `train/algorithm/{algorithm}/rollout/advantage/hist` | Rollout advantage histogram. | histogram | every 64 rollouts | history |
 | `train/algorithm/{algorithm}/hyperparameter/entropy_coefficient` | Current scheduled entropy coefficient. | scalar | rollout | history |
-| `train/throughput/loop_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
-| `train/throughput/rollout_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
-| `train/throughput/env_step_fps` | Training-loop rate or phase duration. | steps/second | rollout | history |
-| `train/throughput/loop_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
-| `train/throughput/rollout_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
-| `train/throughput/env_step_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
-| `train/throughput/rollout_overhead_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
-| `train/throughput/between_rollouts_seconds` | Training-loop rate or phase duration. | seconds | rollout | history |
+| `train/throughput/loop_fps` | Policy transitions divided by rollout-start-to-next-rollout-start wall time. | steps/second | rollout | history |
+| `train/throughput/rollout_fps` | Policy transitions divided by rollout-collection wall time. | steps/second | rollout | history |
+| `train/throughput/env_step_fps` | Policy transitions divided by native-provider step wall time accumulated during the rollout. | steps/second | rollout | history |
+| `train/throughput/loop_seconds` | Wall time from one rollout start to the next rollout start. | seconds | rollout | history |
+| `train/throughput/rollout_seconds` | Wall time spent collecting one rollout. | seconds | rollout | history |
+| `train/throughput/env_step_seconds` | Native-provider step wall time accumulated while collecting one rollout. | seconds | rollout | history |
+| `train/throughput/rollout_overhead_seconds` | Rollout wall time outside native-provider step calls, including policy inference and wrapper, buffer, reset, task, and callback work. | seconds | rollout | history |
+| `train/throughput/between_rollouts_seconds` | Wall time after rollout collection and before the next rollout, including optimizer updates, callbacks, and logging. | seconds | rollout | history |
 | `train/artifact/save/seconds` | Local model save duration. | seconds | artifact | history |
 | `train/artifact/upload/seconds` | External storage and W&B artifact publication duration. | seconds | artifact | history |
 | `eval/{protocol}/episode/return/mean` | Evaluation episode-return distribution. | return | evaluation | history |
