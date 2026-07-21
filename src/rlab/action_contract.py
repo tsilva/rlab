@@ -80,6 +80,15 @@ def _packaged_action_sets(provider_id: str, game: str) -> Mapping[str, Any]:
 
         path = Path(stable_retro.__file__).resolve().parent / "data" / "stable" / game / "metadata.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
+        action_sets = metadata.get("action_sets", {})
+        if action_sets or game != "SuperMarioBros-Nes-v0":
+            return action_sets if isinstance(action_sets, Mapping) else {}
+        # Stable Retro owns the ROM integration, while the forward native Mario
+        # provider owns the named action-table catalog shared by both providers.
+        path = importlib.resources.files("supermariobrosnes_turbo").joinpath(
+            "data", game, "metadata.json"
+        )
+        metadata = json.loads(path.read_text(encoding="utf-8"))
     else:
         package = {
             "supermariobrosnes-turbo": "supermariobrosnes_turbo",
@@ -248,11 +257,43 @@ def configured_action_meanings(config: Any) -> tuple[str, ...]:
     return target_for_game(game).action_names_for_set(configured_action_name(config))
 
 
+def configured_action_values(config: Any) -> tuple[tuple[int, ...], ...] | None:
+    """Return a provider-button lookup table for an rlab-side discrete adapter."""
+    contract = declared_action_contract(config)
+    if contract is None or contract.get("table") is None:
+        return None
+    provider_id = str(
+        config.get("env_provider", "stable-retro-turbo")
+        if isinstance(config, Mapping)
+        else getattr(config, "env_provider", "stable-retro-turbo")
+    )
+    game = str(
+        config.get("game", "") if isinstance(config, Mapping) else getattr(config, "game", "")
+    )
+    env_args = (
+        config.get("env_args", {})
+        if isinstance(config, Mapping)
+        else getattr(config, "env_args", {})
+    )
+    players = int(env_args.get("players", 1)) if isinstance(env_args, Mapping) else 1
+    buttons = _provider_buttons(provider_id, game)
+    values: list[tuple[int, ...]] = []
+    for action in contract["table"]:
+        player_actions = [action] if players == 1 else action
+        flattened: list[int] = []
+        for labels in player_actions:
+            selected = set(labels)
+            flattened.extend(int(button is not None and button in selected) for button in buttons)
+        values.append(tuple(flattened))
+    return tuple(values)
+
+
 __all__ = [
     "BUILTIN_ACTION_MODES",
     "MARIO_PROVIDERS",
     "configured_action_meanings",
     "configured_action_name",
+    "configured_action_values",
     "declared_action_contract",
     "normalize_action_configuration",
 ]

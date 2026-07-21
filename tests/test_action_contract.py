@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from rlab.action_contract import (
+    configured_action_values,
     configured_action_meanings,
     configured_action_name,
     declared_action_contract,
@@ -77,6 +78,23 @@ def test_provider_metadata_resolves_shared_semantic_hash(provider, game, expecte
     assert contract["table_hash"] == expected_hash
     assert configured_action_name(config) == "simple"
     assert configured_action_meanings(config) == tuple(contract["meanings"])
+
+
+def test_stable_retro_mario_preset_compiles_to_native_button_masks():
+    config = SimpleNamespace(
+        env_provider="stable-retro-turbo",
+        game="SuperMarioBros-Nes-v0",
+        env_args={"players": 1, "use_restricted_actions": "simple"},
+        task={"action": {"set": "native"}},
+    )
+
+    values = configured_action_values(config)
+
+    assert values is not None
+    assert len(values) == 7
+    assert values[0] == (0, 0, 0, 0, 0, 0, 0, 0, 0)
+    assert values[1] == (0, 0, 0, 0, 0, 0, 0, 1, 0)
+    assert values[2] == (1, 0, 0, 0, 0, 0, 0, 1, 0)
 
 
 def test_multiplayer_inline_table_is_joint_not_cartesian_and_order_stable():

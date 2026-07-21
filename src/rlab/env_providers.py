@@ -344,6 +344,13 @@ def provider_native_vec_kwargs(
             if not isinstance(value, str):
                 continue
             if key == "use_restricted_actions" and value.strip().casefold() not in BUILTIN_ACTION_MODES:
+                if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+                    declared_action = declared_action_contract(config)
+                    if declared_action is None or declared_action.get("table") is None:
+                        raise ValueError(
+                            f"cannot resolve Stable Retro action preset {value!r}"
+                        )
+                    native_kwargs[key] = retro.Actions.ALL
                 continue
             enum_type: Any = retro
             for attribute in attribute_path:
@@ -616,6 +623,17 @@ def provider_descriptor(
     action_table = getattr(native_env, "action_table", None)
     action_meanings = getattr(native_env, "action_meanings", None)
     action_table_hash = getattr(native_env, "action_table_hash", None)
+    if (
+        provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id
+        and declared_action is not None
+        and declared_action["table_hash"] is not None
+        and action_table_hash is None
+    ):
+        action_mode = "custom_discrete_adapter"
+        action_preset = declared_action["preset"]
+        action_table = declared_action["table"]
+        action_meanings = declared_action["meanings"]
+        action_table_hash = declared_action["table_hash"]
     if (
         declared_action is not None
         and declared_action["table_hash"] is not None

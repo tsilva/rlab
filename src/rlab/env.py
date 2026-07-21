@@ -9,7 +9,7 @@ import numpy as np
 import stable_retro as retro
 
 from rlab import env_providers as provider_runtime
-from rlab.action_contract import normalize_action_configuration
+from rlab.action_contract import configured_action_values, normalize_action_configuration
 from rlab.batch_runtime import BatchRuntime, ProviderDescriptor
 from rlab.env_providers import (
     DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
@@ -360,6 +360,8 @@ def _bound_task_kernel(config: EnvConfig, descriptor: ProviderDescriptor, n_envs
     if task_id != "identity":
         raise ValueError(f"unknown task kernel {task_id!r}")
     action_values = task_action_values(config)
+    if action_values is None and config.env_provider == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        action_values = configured_action_values(config)
     if task_action_set(config) != "native" and action_values is None:
         raise ValueError(
             "generic native-vector tasks require native actions or a discrete lookup codec"

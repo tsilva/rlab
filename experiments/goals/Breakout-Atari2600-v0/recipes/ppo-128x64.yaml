@@ -11,4 +11,4 @@ train:
   backend:
     config:
       n_steps: 64
-      learning_rate: 1.25e-4
+      learning_rate: 2.5e-4

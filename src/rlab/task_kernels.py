@@ -907,6 +907,10 @@ class MarioTaskConfig:
         action_set = str(action.get("set", "native"))
         target = target_for_game(config.game)
         masks = target.action_masks_for_set(action_set)
+        if not masks and config.env_provider == "stable-retro-turbo":
+            from rlab.action_contract import configured_action_values
+
+            masks = configured_action_values(config) or ()
         action_masks = np.stack(masks).astype(np.int8) if masks else None
         signals = task.get("signals", {}) if isinstance(task.get("signals"), Mapping) else {}
         termination = (

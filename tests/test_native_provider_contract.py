@@ -382,6 +382,26 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
         self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
 
+    def test_stable_retro_named_action_preset_uses_rlab_discrete_adapter(self) -> None:
+        config = self.config(
+            env_provider="stable-retro-turbo",
+            env_args={
+                "action_set": None,
+                "use_restricted_actions": "simple",
+                "inttype": "stable",
+                "obs_type": "image",
+            },
+        )
+
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=1,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda _config: {},
+        )
+
+        self.assertIs(kwargs["use_restricted_actions"], retro.Actions.ALL)
+
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:
             metadata = {
