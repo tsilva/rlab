@@ -76,6 +76,11 @@ class ProviderDescriptor:
     autoreset_mode: str = "disabled"
     # Number of rotating provider-owned observation batches.
     observation_buffer_depth: int = 1
+    action_mode: str | None = None
+    action_preset: str | None = None
+    action_table: tuple[Any, ...] | None = None
+    action_meanings: tuple[str, ...] | None = None
+    action_table_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not self.provider_id:
@@ -85,6 +90,10 @@ class ProviderDescriptor:
         if int(self.observation_buffer_depth) < 1:
             raise ValueError("provider observation_buffer_depth must be positive")
         object.__setattr__(self, "observation_buffer_depth", int(self.observation_buffer_depth))
+        if self.action_table is not None:
+            object.__setattr__(self, "action_table", tuple(self.action_table))
+        if self.action_meanings is not None:
+            object.__setattr__(self, "action_meanings", tuple(self.action_meanings))
         normalized: dict[str, SignalSpec] = {}
         for key, spec in self.signal_schema.items():
             if key != spec.name:

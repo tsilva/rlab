@@ -128,7 +128,7 @@ class ExperimentCliTests(unittest.TestCase):
         ):
             self.assertEqual(experiment_cli.cmd_launch(args), 0)
 
-        preflight.assert_called_once()
+        preflight.assert_called_once_with(require_source_current=False)
         popen.assert_not_called()
 
     def test_selected_dirty_file_is_rejected(self) -> None:

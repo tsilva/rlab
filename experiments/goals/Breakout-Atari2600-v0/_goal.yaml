@@ -28,7 +28,7 @@ train:
         env_args: &breakout_provider_args
           scenario: scenario
           info: data
-          use_restricted_actions: filtered
+          use_restricted_actions: simple
           record: false
           players: 1
           inttype: stable

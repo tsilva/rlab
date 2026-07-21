@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from rlab.env import EnvConfig, state_distribution_metadata, validate_obs_crop
+from rlab.action_contract import declared_action_contract, normalize_action_configuration
 from rlab.env_identity import (
     environment_hash,
     environment_identity_from_train_config,
@@ -20,6 +21,7 @@ PLAYBACK_ENV_ARG_KEYS = playback_env_arg_keys()
 RUNTIME_VERSION_PACKAGES = {
     "stable_retro_turbo": "stable-retro-turbo",
     "supermariobrosnes_turbo": "supermariobrosnes-turbo",
+    "breakout_turbo_env": "breakout-turbo-env",
     "stable_baselines3": "stable-baselines3",
 }
 
@@ -79,9 +81,11 @@ def training_metadata(
         "environment": environment,
         "environment_hash": environment_hash(environment),
         "preprocessing": preprocessing,
+        "action": declared_action_contract(config),
         "versions": {
             "stable_retro_turbo": _package_version("stable-retro-turbo"),
             "supermariobrosnes_turbo": _package_version("supermariobrosnes-turbo"),
+            "breakout_turbo_env": _package_version("breakout-turbo-env"),
             "stable_baselines3": _package_version("stable-baselines3"),
         },
     }
@@ -133,6 +137,15 @@ def sanitize_env_config_metadata(config: dict[str, Any]) -> dict[str, Any]:
         if legacy_game is not None:
             cleaned.setdefault("game", legacy_game)
         cleaned["env_args"] = env_args
+    normalized_args, normalized_task = normalize_action_configuration(
+        provider_id=str(cleaned.get("env_provider") or "stable-retro-turbo"),
+        game=str(cleaned.get("game") or ""),
+        env_args=cleaned.get("env_args"),
+        task=cleaned.get("task"),
+    )
+    cleaned["env_args"] = normalized_args
+    if normalized_task:
+        cleaned["task"] = normalized_task
     unexpected = sorted(set(cleaned) - ENV_CONFIG_METADATA_KEYS)
     if unexpected:
         raise ValueError(f"artifact environment config has unexpected keys: {unexpected}")

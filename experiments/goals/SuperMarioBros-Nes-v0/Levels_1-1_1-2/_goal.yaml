@@ -32,11 +32,10 @@ train:
         n_envs: 16
         env_args:
           # Keep provider action-set conveniences disabled; rlab owns the task codec.
-          action_set: null
           scenario: scenario
           info: data
           # rlab owns the goal-level discrete codec and sends native button masks.
-          use_restricted_actions: all
+          use_restricted_actions: simple
           record: false
           players: 1
           inttype: stable
@@ -73,7 +72,7 @@ train:
     task: &mario_task
       id: mario
       action:
-        set: simple
+        set: native
       signals:
         x: [xscrollHi, xscrollLo]
         score: score

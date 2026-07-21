@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 PACKAGES=(
+    breakout-turbo-env
     stable-retro-turbo
     supermariobrosnes-turbo
 )
@@ -34,6 +35,7 @@ update_cutoffs "$ROOT/uv-tool.toml"
 update_cutoffs "${UV_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml}"
 
 uv lock \
+    --upgrade-package breakout-turbo-env \
     --upgrade-package stable-retro-turbo \
     --upgrade-package supermariobrosnes-turbo
 

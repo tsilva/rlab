@@ -7,10 +7,10 @@ requires-python = "==3.14.*"
 dependencies = [
     "stable-retro-turbo==1.0.1.post33; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "stable-retro-turbo==1.0.1.post33; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "supermariobrosnes-turbo>=0.3.5; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "supermariobrosnes-turbo>=0.3.5; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "breakout-turbo-env>=0.3.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "breakout-turbo-env>=0.3.4; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "supermariobrosnes-turbo>=0.4.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "supermariobrosnes-turbo>=0.4.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "breakout-turbo-env>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "breakout-turbo-env>=0.4.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "torch==2.12.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -52,9 +52,9 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-breakout-turbo-env = "2026-07-20T16:11:00Z"
+breakout-turbo-env = "2026-07-21T07:46:16.759348Z"
 stable-retro-turbo = "2026-07-20T15:21:26.271359Z"
-supermariobrosnes-turbo = "2026-07-20T16:06:47.487036Z"
+supermariobrosnes-turbo = "2026-07-21T07:12:44.073250Z"
 
 [tool.ruff]
 line-length = 100
@@ -77,8 +77,8 @@ train-image-build = [
 ]
 train-runtime = [
     "stable-retro-turbo==1.0.1.post33; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "supermariobrosnes-turbo>=0.3.5; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "breakout-turbo-env>=0.3.4; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "supermariobrosnes-turbo>=0.4.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "breakout-turbo-env>=0.4.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",
     "torch==2.12.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "tensorboard>=2.16,<3",

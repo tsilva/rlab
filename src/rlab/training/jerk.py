@@ -12,9 +12,10 @@ import numpy as np
 from gymnasium import spaces
 
 from rlab.artifacts import write_model_metadata
+from rlab.action_contract import configured_action_meanings
 from rlab.batch_runtime import EpisodeRecord
 from rlab.early_stop import evaluate_early_stop_config
-from rlab.env import make_training_vec_env, task_action_set
+from rlab.env import make_training_vec_env
 from rlab.jerk import JerkSearch
 from rlab.metric_names import (
     TRAIN_ALGORITHM_JERK_BEST_RETURN_MEAN,
@@ -39,7 +40,6 @@ from rlab.metric_names import (
     train_success_window_rate_metric,
 )
 from rlab.task_kernels import Outcome
-from rlab.targets import target_for_game
 from rlab.training_backend import (
     CHECKPOINT_EVAL_ACCEPTANCE,
     FIRST_TRAINING_SUCCESS_ACCEPTANCE,
@@ -278,7 +278,7 @@ def run_jerk(context: BackendContext) -> None:
             raise ValueError("JERK timesteps must be divisible by the environment count")
         if not isinstance(env.action_space, spaces.Discrete):
             raise ValueError("JERK requires a discrete task action space")
-        action_names = target_for_game(config.game).action_names_for_set(task_action_set(config))
+        action_names = configured_action_meanings(config)
         search = JerkSearch(
             n_envs=n_envs,
             seed=args.seed,

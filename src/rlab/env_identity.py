@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from rlab.metric_names import metric_path_segment
+from rlab.action_contract import normalize_action_configuration
 
 from rlab.env_registry import resolve_env_id
 from rlab.provider_config import provider_env_id, provider_game, semantic_provider_args
@@ -319,35 +320,48 @@ def environment_identity_from_train_config(
     policy actually acts within.
     """
 
+    normalized_train_config = deepcopy(dict(train_config))
+    provider_id = str(normalized_train_config.get("env_provider") or "stable-retro-turbo")
+    game = str(provider_game(normalized_train_config) or normalized_train_config.get("game") or "")
+    normalized_args, normalized_task = normalize_action_configuration(
+        provider_id=provider_id,
+        game=game,
+        env_args=normalized_train_config.get("env_args"),
+        task=normalized_train_config.get("task"),
+    )
+    normalized_train_config["env_args"] = normalized_args
+    if normalized_task:
+        normalized_train_config["task"] = normalized_task
+
     identity = deepcopy(dict(environment or {}))
     identity.pop("env_config", None)
     identity["schema_version"] = ENVIRONMENT_SCHEMA_VERSION
     identity.pop("env_provider", None)
     if "env_id" not in identity:
-        resolved_env_id = provider_env_id(train_config)
+        resolved_env_id = provider_env_id(normalized_train_config)
         if resolved_env_id is not None:
             identity["env_id"] = resolved_env_id
     elif isinstance(identity.get("env_id"), str):
         identity["env_id"] = resolve_env_id(str(identity["env_id"])).qualified_id
 
     _normalize_state_identity(identity)
-    _setdefault_top_level(identity, _copy_present(train_config, STATE_KEYS))
+    _setdefault_top_level(identity, _copy_present(normalized_train_config, STATE_KEYS))
     _setdefault_section(
         identity,
         "preprocessing",
-        _copy_present(train_config, PREPROCESSING_KEYS),
+        _copy_present(normalized_train_config, PREPROCESSING_KEYS),
     )
     existing_task = identity.pop("task", None)
     identity["task"] = task_config_from_train_config(
-        train_config,
+        normalized_train_config,
         task=existing_task if isinstance(existing_task, Mapping) else None,
     )
-    provider_args = semantic_provider_args(train_config)
+    provider_args = semantic_provider_args(normalized_train_config)
     if provider_args:
         identity.setdefault("provider_args", deepcopy(provider_args))
     rom_asset = manifest_from_train_config(
-        train_config,
-        expected_game=provider_game(train_config),
+        normalized_train_config,
+        expected_game=provider_game(normalized_train_config),
     )
     if rom_asset is not None:
         identity["rom_asset"] = portable_rom_asset_identity(rom_asset)

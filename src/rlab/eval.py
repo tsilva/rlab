@@ -14,12 +14,12 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 
 from rlab.artifacts import load_model_metadata
+from rlab.action_contract import configured_action_meanings
 from rlab.cli_args import explicit_arg_dests, parse_json_value
 from rlab.device import resolve_sb3_device
 from rlab.env import (
     assert_provider_runtime_available,
     resolve_env_config,
-    task_action_set,
 )
 from rlab.env_config import env_config_from_args, parse_obs_crop
 from rlab.eval_runner import evaluate_model_episodes, evaluate_policy_bundle
@@ -34,7 +34,6 @@ from rlab.policy_models import load_policy_model, resolve_policy_algorithm
 from rlab.rom_assets import rom_asset_manifest_for_game
 from rlab.rom_runtime import ensure_local_rom_binding
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
-from rlab.targets import target_for_game
 from rlab.train_config import add_env_config_args, env_config_arg_fields
 
 
@@ -250,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     else:
-        action_names = target_for_game(config.game).action_names_for_set(task_action_set(config))
+        action_names = configured_action_meanings(config)
         policy = ScriptedPolicy(args.policy, action_names)
         summary, _ = evaluate_model_episodes(
             model=policy,

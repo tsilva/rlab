@@ -152,7 +152,10 @@ def cmd_launch(args: argparse.Namespace) -> int:
     source_sha, source_branch, caller_dirty = _source(root)
     if args.runtime_image_ref_file is not None:
         args.runtime_image_ref_file = args.runtime_image_ref_file.expanduser().resolve()
-    require_compatible_controller_services()
+    # Queue safety depends on live protocol-compatible controllers. Source drift is
+    # reported by service diagnostics, but unrelated repository changes must not
+    # force a launchd replacement before every isolated-HEAD submission.
+    require_compatible_controller_services(require_source_current=False)
     args.goal_file = goal
     args.recipe_file = recipe
     args.image_branch = args.image_branch or source_branch

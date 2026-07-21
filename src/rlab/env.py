@@ -9,6 +9,7 @@ import numpy as np
 import stable_retro as retro
 
 from rlab import env_providers as provider_runtime
+from rlab.action_contract import normalize_action_configuration
 from rlab.batch_runtime import BatchRuntime, ProviderDescriptor
 from rlab.env_providers import (
     DEFAULT_RETRO_VEC_ENV as RetroVecEnv,
@@ -89,6 +90,13 @@ def resolve_env_config(config: EnvConfig) -> EnvConfig:
         config = replace(config, game=str(config.env_args["game"]))
     if not config.game:
         raise ValueError("game is required; pass --game or set RETRO_GAME")
+    normalized_args, normalized_task = normalize_action_configuration(
+        provider_id=config.env_provider,
+        game=config.game,
+        env_args=config.env_args,
+        task=config.task,
+    )
+    config = replace(config, env_args=normalized_args, task=normalized_task)
     qualify_env_id(config.env_provider, config.game)
     _validate_sticky_action_prob(config.sticky_action_prob)
     validate_obs_crop_mode(config.obs_crop_mode)

@@ -560,6 +560,55 @@ class FleetServiceTests(unittest.TestCase):
                     runner=lambda argv, **_kwargs: completed(argv, stdout="state = running"),
                 )
 
+    def test_controller_replacement_waits_for_slow_launchd_unregistration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            items = {
+                name: fleet_service.controller_service_paths(paths, name)
+                for name in fleet_service.CONTROLLER_NAMES
+            }
+            loaded = {item.label for item in items.values()}
+            pending_polls: dict[str, int] = {}
+            for name, item in items.items():
+                item.plist.parent.mkdir(parents=True, exist_ok=True)
+                item.plist.write_bytes(
+                    fleet_service.render_controller_launch_agent_plist(paths, name)
+                )
+
+            def runner(argv, **_kwargs):
+                if argv[:2] == ["launchctl", "print"]:
+                    label = str(argv[-1]).removeprefix(f"gui/{os.getuid()}/")
+                    remaining = pending_polls.get(label, 0)
+                    if remaining:
+                        pending_polls[label] = remaining - 1
+                        return completed(argv)
+                    if label in pending_polls:
+                        loaded.discard(label)
+                    return completed(argv, returncode=0 if label in loaded else 113)
+                if argv[:2] == ["launchctl", "bootout"]:
+                    label = str(argv[-1]).removeprefix(f"gui/{os.getuid()}/")
+                    pending_polls[label] = 50 if label.endswith(".wandb") else 1
+                    return completed(argv)
+                if argv[:2] == ["launchctl", "bootstrap"]:
+                    plist = Path(argv[-1])
+                    label = next(item.label for item in items.values() if item.plist == plist)
+                    loaded.add(label)
+                    pending_polls.pop(label, None)
+                    return completed(argv)
+                return completed(argv)
+
+            with (
+                mock.patch.object(fleet_service, "_default_count_nonterminal_jobs", return_value=0),
+                mock.patch.object(fleet_service, "CONTROL_PLANE_PROTOCOL_VERSION", 0),
+                mock.patch.object(fleet_service.time, "sleep") as sleep,
+            ):
+                result = fleet_service.install_controller_services(
+                    paths, replace=True, runner=runner
+                )
+
+        self.assertTrue(result.installed)
+        self.assertGreaterEqual(sleep.call_count, 52)
+
     def test_machine_controller_isolates_one_machine_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -810,11 +859,15 @@ class FleetServiceTests(unittest.TestCase):
             old_data = b"old plist\n"
             paths.plist.write_bytes(old_data)
             commands: list[list[str]] = []
+            loaded = True
 
             def runner(argv, **kwargs):
+                nonlocal loaded
                 commands.append(list(argv))
                 if argv[:2] == ["launchctl", "print"]:
-                    return completed(argv)
+                    return completed(argv, returncode=0 if loaded else 113)
+                if argv[:2] == ["launchctl", "bootout"]:
+                    loaded = False
                 if argv[:2] == ["launchctl", "bootstrap"] and kwargs.get("check"):
                     raise subprocess.CalledProcessError(5, argv)
                 return completed(argv)
@@ -822,7 +875,7 @@ class FleetServiceTests(unittest.TestCase):
             with (
                 mock.patch.object(fleet_service.shutil, "which", return_value=None),
                 mock.patch.object(fleet_service.time, "sleep"),
-                self.assertRaises(subprocess.CalledProcessError),
+                self.assertRaises(RuntimeError),
             ):
                 fleet_service.install_service(paths, replace=True, runner=runner)
 
@@ -830,7 +883,7 @@ class FleetServiceTests(unittest.TestCase):
             self.assertIn(["launchctl", "bootout", f"gui/{os.getuid()}/{paths.label}"], commands)
             self.assertEqual(
                 sum(command[:2] == ["launchctl", "bootstrap"] for command in commands),
-                fleet_service.SERVICE_BOOTSTRAP_ATTEMPTS + 1,
+                fleet_service.SERVICE_BOOTSTRAP_ATTEMPTS * 2,
             )
 
     def test_replacement_retries_launchd_busy_after_bootout(self) -> None:
@@ -839,15 +892,19 @@ class FleetServiceTests(unittest.TestCase):
             paths.plist.parent.mkdir(parents=True)
             paths.plist.write_bytes(b"old plist\n")
             bootstrap_attempts = 0
+            loaded = True
 
             def runner(argv, **kwargs):
-                nonlocal bootstrap_attempts
+                nonlocal bootstrap_attempts, loaded
                 if argv[:2] == ["launchctl", "print"]:
-                    return completed(argv)
+                    return completed(argv, returncode=0 if loaded else 113)
+                if argv[:2] == ["launchctl", "bootout"]:
+                    loaded = False
                 if argv[:2] == ["launchctl", "bootstrap"] and kwargs.get("check"):
                     bootstrap_attempts += 1
                     if bootstrap_attempts == 1:
                         raise subprocess.CalledProcessError(5, argv)
+                    loaded = True
                 return completed(argv)
 
             with (
@@ -859,6 +916,22 @@ class FleetServiceTests(unittest.TestCase):
             self.assertTrue(result.replaced)
             self.assertEqual(bootstrap_attempts, 2)
             sleep.assert_called_once_with(fleet_service.SERVICE_BOOTSTRAP_RETRY_SECONDS)
+
+    def test_wait_for_service_unloaded_handles_slow_launchd_removal(self) -> None:
+        print_attempts = 0
+
+        def runner(argv, **_kwargs):
+            nonlocal print_attempts
+            self.assertEqual(argv[:2], ["launchctl", "print"])
+            print_attempts += 1
+            return completed(argv, returncode=0 if print_attempts <= 50 else 113)
+
+        with mock.patch.object(fleet_service.time, "sleep") as sleep:
+            fleet_service._wait_for_service_unloaded("com.example.slow", runner=runner)
+
+        self.assertEqual(print_attempts, 51)
+        self.assertEqual(sleep.call_count, 50)
+        sleep.assert_called_with(fleet_service.SERVICE_BOOTOUT_RETRY_SECONDS)
 
     def test_uninstall_refuses_nonterminal_jobs_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

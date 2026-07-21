@@ -62,6 +62,8 @@ SERVICE_ALERT_AFTER_FAILURES = 2
 SERVICE_ALERT_REPEAT_SECONDS = 3600
 SERVICE_BOOTSTRAP_ATTEMPTS = 10
 SERVICE_BOOTSTRAP_RETRY_SECONDS = 0.25
+SERVICE_BOOTOUT_ATTEMPTS = 150
+SERVICE_BOOTOUT_RETRY_SECONDS = 0.1
 
 
 def _utc_now() -> datetime:
@@ -571,6 +573,24 @@ def service_is_loaded(
     return result.returncode == 0
 
 
+def _wait_for_service_unloaded(
+    label: str,
+    *,
+    runner: CommandRunner,
+) -> None:
+    """Wait for launchd's asynchronous bootout transaction to release a label."""
+
+    for attempt in range(SERVICE_BOOTOUT_ATTEMPTS):
+        if not service_is_loaded(label, runner=runner):
+            return
+        if attempt + 1 < SERVICE_BOOTOUT_ATTEMPTS:
+            time.sleep(SERVICE_BOOTOUT_RETRY_SECONDS)
+    raise TimeoutError(
+        f"launchd did not unload {_target(label)} within "
+        f"{SERVICE_BOOTOUT_ATTEMPTS * SERVICE_BOOTOUT_RETRY_SECONDS:.1f}s"
+    )
+
+
 def kick_service(
     label: str = SERVICE_LABEL,
     *,
@@ -676,9 +696,14 @@ def _bootstrap_launch_agent(
             runner(command, check=True, capture_output=True, text=True)
             return
         except subprocess.CalledProcessError as exc:
-            if exc.returncode != 5 or attempt + 1 >= attempts:
-                raise
-            time.sleep(SERVICE_BOOTSTRAP_RETRY_SECONDS)
+            if exc.returncode == 5 and attempt + 1 < attempts:
+                time.sleep(SERVICE_BOOTSTRAP_RETRY_SECONDS)
+                continue
+            detail = redact(exc.stderr or exc.stdout or "no launchctl diagnostic output")
+            raise RuntimeError(
+                f"launchctl bootstrap failed for {paths.label} with exit "
+                f"{exc.returncode}: {detail}"
+            ) from exc
 
 
 def install_service(
@@ -712,6 +737,7 @@ def install_service(
                 capture_output=True,
                 text=True,
             )
+            _wait_for_service_unloaded(paths.label, runner=runner)
         os.replace(candidate, paths.plist)
         try:
             _bootstrap_launch_agent(
@@ -719,18 +745,19 @@ def install_service(
                 runner=runner,
                 retry_busy=was_loaded,
             )
-        except Exception:
+        except Exception as install_error:
             if old_data is None:
                 paths.plist.unlink(missing_ok=True)
             else:
                 _atomic_write(paths.plist, old_data)
                 if was_loaded:
-                    runner(
-                        ["launchctl", "bootstrap", _domain(), str(paths.plist)],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                    )
+                    try:
+                        _bootstrap_launch_agent(paths, runner=runner, retry_busy=True)
+                    except Exception as rollback_error:
+                        raise RuntimeError(
+                            "fleet service install failed "
+                            f"({install_error}); rollback also failed: {rollback_error}"
+                        ) from install_error
             raise
     finally:
         candidate.unlink(missing_ok=True)
@@ -806,6 +833,7 @@ def install_controller_services(
                         capture_output=True,
                         text=True,
                     )
+                    _wait_for_service_unloaded(item.label, runner=runner)
                 os.replace(candidate, item.plist)
                 installed.append((name, item))
                 _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
@@ -843,26 +871,35 @@ def install_controller_services(
                 raise RuntimeError(
                     "fleet controllers did not publish matching heartbeat evidence"
                 )
-    except Exception:
+    except Exception as install_error:
+        rollback_errors: list[str] = []
         for name, item in reversed(installed):
-            runner(
-                ["launchctl", "bootout", _target(item.label)],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            if service_is_loaded(item.label, runner=runner):
+                runner(
+                    ["launchctl", "bootout", _target(item.label)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                try:
+                    _wait_for_service_unloaded(item.label, runner=runner)
+                except Exception as exc:
+                    rollback_errors.append(f"{name} unload: {exc}")
             old_data, was_loaded = previous[name]
             if old_data is None:
                 item.plist.unlink(missing_ok=True)
             else:
                 _atomic_write(item.plist, old_data)
                 if was_loaded:
-                    runner(
-                        ["launchctl", "bootstrap", _domain(), str(item.plist)],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                    )
+                    try:
+                        _bootstrap_launch_agent(item, runner=runner, retry_busy=True)
+                    except Exception as exc:
+                        rollback_errors.append(f"{name} restore: {exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"fleet controller install failed ({install_error}); rollback also failed: "
+                + "; ".join(rollback_errors)
+            ) from install_error
         raise
 
     if legacy_loaded:
@@ -872,6 +909,7 @@ def install_controller_services(
             capture_output=True,
             text=True,
         )
+        _wait_for_service_unloaded(paths.label, runner=runner)
     paths.plist.unlink(missing_ok=True)
     return InstallResult(
         installed=True,

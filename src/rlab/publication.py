@@ -239,6 +239,7 @@ def policy_variant_from_contract(
     task: Mapping[str, Any],
     *,
     game: str,
+    action_contract: Mapping[str, Any] | None = None,
 ) -> str:
     height, width = _observation_shape(preprocessing)
     grayscale = preprocessing.get("obs_grayscale")
@@ -261,7 +262,17 @@ def policy_variant_from_contract(
 
     action = _require_mapping(task.get("action"), label="publication task.action")
     action_set = str(action.get("set") or "").strip()
-    target_for_game(game).action_names_for_set(action_set)
+    if isinstance(action_contract, Mapping) and action_contract.get("preset"):
+        action_set = str(action_contract["preset"]).strip()
+        meanings = action_contract.get("meanings")
+        if (
+            not isinstance(meanings, Sequence)
+            or isinstance(meanings, str | bytes)
+            or not meanings
+        ):
+            raise ValueError("publication action contract meanings must be a non-empty list")
+    else:
+        target_for_game(game).action_names_for_set(action_set)
     components.append(normalize_publication_component(action_set, label="publication action set"))
     return "-".join(components)
 
@@ -283,12 +294,33 @@ def publication_identity_from_model_metadata(
         label="model metadata training_metadata.preprocessing",
     )
     task = _require_mapping(environment.get("task"), label="model metadata environment.task")
+    action_contract = (
+        training.get("action") if isinstance(training.get("action"), Mapping) else None
+    )
+    if action_contract is None:
+        provider_args = environment.get("provider_args")
+        if isinstance(provider_args, Mapping):
+            from rlab.action_contract import declared_action_contract
+
+            action_contract = declared_action_contract(
+                {
+                    "env_provider": provider,
+                    "game": game,
+                    "env_args": provider_args,
+                    "task": task,
+                }
+            )
     algorithm = normalize_algorithm_id(model_metadata.get("algorithm_id"))
     validate_algorithm_model_class(algorithm, model_metadata.get("model_class"))
     return PublicationIdentity(
         game_family=normalize_publication_component(family, label="game family"),
         goal=normalize_publication_component(goal_id, label="goal id"),
-        policy_variant=policy_variant_from_contract(preprocessing, task, game=game),
+        policy_variant=policy_variant_from_contract(
+            preprocessing,
+            task,
+            game=game,
+            action_contract=action_contract,
+        ),
         algorithm=algorithm,
     )
 

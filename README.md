@@ -228,6 +228,23 @@ Maintenance commands are intentionally outside the normal research loop:
 
 - `rlab fleet queue reset-schema --dry-run` previews an administrative queue-schema export and reset; rerun without `--dry-run` only when that destructive operation is intended.
 
+### Provider-owned action tables
+
+Environment action selection belongs in `env_args.use_restricted_actions`:
+
+```yaml
+env_args:
+  use_restricted_actions: simple
+```
+
+The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
+or `multi_discrete`), a preset from the selected game provider's packaged
+`metadata.json`, or an inline exact table of controller-label combinations.
+rlab records the resolved ordered table, action meanings, preset, and semantic
+hash in environment/run metadata and rejects provider overrides whose resolved
+hash differs. Historical `env_args.action_set` and Mario task-level action-set
+values are translated before environment construction and identity hashing.
+
 ## Research Loop
 
 Active research contracts live under `experiments/goals/`. Each goal owns its launchable

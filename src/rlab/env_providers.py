@@ -13,6 +13,11 @@ from gymnasium.vector import AutoresetMode
 from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
 from rlab.bandit_env import BanditVectorEnv
+from rlab.action_contract import (
+    BUILTIN_ACTION_MODES,
+    declared_action_contract,
+    normalize_action_configuration,
+)
 from rlab.batch_runtime import ProviderDescriptor, SignalSpec
 from rlab.env_registry import (
     ALE_PY_PROVIDER,
@@ -310,7 +315,13 @@ def provider_native_vec_kwargs(
     runtime_rom_path: str | None = None,
 ) -> dict[str, Any]:
     """Compile provider mechanics without task events or termination rules."""
-    native_kwargs = dict(config.env_args or {})
+    normalized_args, _normalized_task = normalize_action_configuration(
+        provider_id=config.env_provider,
+        game=config.game,
+        env_args=config.env_args,
+        task=getattr(config, "task", None),
+    )
+    native_kwargs = dict(normalized_args)
     provider = resolve_env_provider(config.env_provider)
     if provider.provider_id == RLAB_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
@@ -331,6 +342,8 @@ def provider_native_vec_kwargs(
         for key, attribute_path in enum_args.items():
             value = native_kwargs.get(key)
             if not isinstance(value, str):
+                continue
+            if key == "use_restricted_actions" and value.strip().casefold() not in BUILTIN_ACTION_MODES:
                 continue
             enum_type: Any = retro
             for attribute in attribute_path:
@@ -597,6 +610,22 @@ def provider_descriptor(
         STABLE_RETRO_TURBO_PROVIDER.provider_id,
         SUPERMARIOBROS_NES_TURBO_PROVIDER.provider_id,
     }
+    declared_action = declared_action_contract(config)
+    action_mode = getattr(native_env, "action_mode", None)
+    action_preset = getattr(native_env, "action_preset", None)
+    action_table = getattr(native_env, "action_table", None)
+    action_meanings = getattr(native_env, "action_meanings", None)
+    action_table_hash = getattr(native_env, "action_table_hash", None)
+    if (
+        declared_action is not None
+        and declared_action["table_hash"] is not None
+        and hasattr(native_env, "action_table_hash")
+    ):
+        if action_table_hash != declared_action["table_hash"]:
+            raise ValueError(
+                f"provider {provider.provider_id!r} resolved action table hash "
+                f"{action_table_hash!r}; expected {declared_action['table_hash']!r}"
+            )
     return ProviderDescriptor(
         provider_id=provider.provider_id,
         native_observation_space=observation_space,
@@ -607,6 +636,17 @@ def provider_descriptor(
         lane_start_ids=lane_start_ids,
         render_support=tuple(str(mode) for mode in render_modes),
         observation_buffer_depth=2 if supports_safe_views and obs_copy == "safe_view" else 1,
+        action_mode=str(action_mode) if action_mode is not None else None,
+        action_preset=str(action_preset) if action_preset is not None else None,
+        action_table=tuple(action_table) if action_table is not None else None,
+        action_meanings=(
+            tuple(str(value) for value in action_meanings)
+            if action_meanings is not None
+            else None
+        ),
+        action_table_hash=(
+            str(action_table_hash) if action_table_hash is not None else None
+        ),
     )
 
 

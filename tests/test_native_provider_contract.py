@@ -245,7 +245,7 @@ class BreakoutTurboProviderTests(unittest.TestCase):
 
     def test_runtime_meets_provider_minimum(self) -> None:
         installed = Version(importlib.metadata.version("breakout-turbo-env"))
-        self.assertGreaterEqual(installed, Version("0.3.4"))
+        self.assertGreaterEqual(installed, Version("0.4.0"))
 
     def test_constructs_and_preserves_native_manual_vector_contract(self) -> None:
         config = self.config()
@@ -357,14 +357,14 @@ class MarioNativeProviderTests(unittest.TestCase):
 
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
-        self.assertGreaterEqual(installed, Version("0.3.5"))
+        self.assertGreaterEqual(installed, Version("0.4.1"))
         self.assertEqual(Version(retro.__version__), Version("1.0.1.post33"))
 
     def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
         config = self.config(
             env_args={
                 "action_set": None,
-                "use_restricted_actions": "all",
+                "use_restricted_actions": "simple",
                 "inttype": "stable",
                 "obs_type": "image",
             }
@@ -377,8 +377,8 @@ class MarioNativeProviderTests(unittest.TestCase):
             state_weight_mapping=lambda _config: {},
         )
 
-        self.assertIsNone(kwargs["action_set"])
-        self.assertIs(kwargs["use_restricted_actions"], retro.Actions.ALL)
+        self.assertNotIn("action_set", kwargs)
+        self.assertEqual(kwargs["use_restricted_actions"], "simple")
         self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
         self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
 

@@ -25,6 +25,7 @@ import torch
 from tqdm import tqdm
 
 from rlab.artifacts import load_playback_env_config, playback_env_config
+from rlab.action_contract import configured_action_meanings, configured_action_name
 from rlab.batch_runtime import StepDiagnostics
 from rlab.cli_args import explicit_arg_dests
 from rlab.device import resolve_sb3_device
@@ -33,7 +34,6 @@ from rlab.env import (
     info_value_from_state_name,
     make_eval_vec_env,
     state_name_candidates_from_level_id,
-    task_action_set,
     task_conditioning,
     task_max_episode_steps,
     task_reward,
@@ -573,7 +573,7 @@ def resolved_play_launch_lines(
         _summary_line(
             "⚙",
             "action/reward",
-            f"action_set={task_action_set(policy_config)} "
+            f"action_set={configured_action_name(policy_config)} "
             f"reward_mode={task_reward(policy_config).get('reward_mode')} "
             f"reward_scale={task_reward(policy_config).get('reward_scale')} "
             f"clip_rewards={task_reward(policy_config).get('clip_rewards')}",
@@ -732,9 +732,7 @@ class _PlaybackSession:
         self.conditioning_enabled = bool(task_conditioning(config).get("enabled"))
         self.configured_task_states = task_state_names(config) if self.conditioning_enabled else ()
         try:
-            self.action_names = target_for_game(config.game).action_names_for_set(
-                task_action_set(config)
-            )
+            self.action_names = configured_action_meanings(config)
         except ValueError:
             self.action_names = ()
         self.policy_obs = None

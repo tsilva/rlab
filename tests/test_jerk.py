@@ -343,11 +343,10 @@ def test_first_training_success_saves_playable_checkpoint_and_stops(tmp_path) ->
 
     with (
         mock.patch.object(jerk_training, "make_training_vec_env", return_value=env),
-        mock.patch.object(jerk_training, "task_action_set", return_value="simple"),
         mock.patch.object(
             jerk_training,
-            "target_for_game",
-            return_value=SimpleNamespace(action_names_for_set=lambda _action_set: ACTIONS),
+            "configured_action_meanings",
+            return_value=ACTIONS,
         ),
         mock.patch.object(
             jerk_training,
@@ -374,11 +373,10 @@ def test_first_training_success_budget_exhaustion_is_unsuccessful(tmp_path) -> N
 
     with (
         mock.patch.object(jerk_training, "make_training_vec_env", return_value=env),
-        mock.patch.object(jerk_training, "task_action_set", return_value="simple"),
         mock.patch.object(
             jerk_training,
-            "target_for_game",
-            return_value=SimpleNamespace(action_names_for_set=lambda _action_set: ACTIONS),
+            "configured_action_meanings",
+            return_value=ACTIONS,
         ),
         mock.patch.object(
             jerk_training,

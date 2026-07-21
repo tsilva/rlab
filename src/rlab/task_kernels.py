@@ -33,7 +33,7 @@ def default_task_document(task_id: str) -> dict[str, Any]:
         raise ValueError(f"unknown task definition: {task_id!r}")
     return {
         "id": "mario",
-        "action": {"set": "simple"},
+        "action": {"set": "native"},
         "signals": {
             "x": ["xscrollHi", "xscrollLo"],
             "score": "score",

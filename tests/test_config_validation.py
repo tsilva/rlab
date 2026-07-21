@@ -286,7 +286,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertEqual(report.counts["train_recipes"], 25)
+        self.assertEqual(report.counts["train_recipes"], 26)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertEqual(report.counts["benchmark_profiles"], 3)
 
@@ -320,7 +320,7 @@ class ConfigValidationTests(unittest.TestCase):
             {
                 "scenario": "scenario",
                 "info": "data",
-                "use_restricted_actions": "filtered",
+                "use_restricted_actions": "simple",
                 "record": False,
                 "players": 1,
                 "inttype": "stable",
@@ -340,7 +340,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
-        self.assertEqual(train_config["n_envs"], 16)
+        self.assertEqual(train_config["n_envs"], 128)
         self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
         self.assertEqual(
             train_config["checkpoint_eval_environment"]["game"],
@@ -352,7 +352,7 @@ class ConfigValidationTests(unittest.TestCase):
             {
                 "scenario": "scenario",
                 "info": "data",
-                "use_restricted_actions": "filtered",
+                "use_restricted_actions": "simple",
                 "record": False,
                 "players": 1,
                 "inttype": "stable",
