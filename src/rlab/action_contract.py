@@ -11,12 +11,45 @@ from pathlib import Path
 from typing import Any
 
 
-MARIO_PROVIDERS = frozenset(
-    {"stable-retro-turbo", "supermariobrosnes-turbo"}
-)
-BUILTIN_ACTION_MODES = frozenset(
-    {"all", "filtered", "discrete", "multi_discrete"}
-)
+MARIO_PROVIDERS = frozenset({"stable-retro-turbo", "supermariobrosnes-turbo"})
+BUILTIN_ACTION_MODES = frozenset({"all", "filtered", "discrete", "multi_discrete"})
+MARIO_ACTION_TABLES = {
+    "basic": (
+        (),
+        ("RIGHT",),
+        ("RIGHT", "B"),
+        ("RIGHT", "A"),
+        ("RIGHT", "A", "B"),
+        ("A",),
+        ("LEFT",),
+    ),
+    "standard": (
+        (),
+        ("RIGHT",),
+        ("RIGHT", "B"),
+        ("RIGHT", "A"),
+        ("RIGHT", "A", "B"),
+        ("A",),
+        ("LEFT",),
+        ("DOWN",),
+    ),
+    "basic-start": (
+        (),
+        ("RIGHT",),
+        ("RIGHT", "B"),
+        ("RIGHT", "A"),
+        ("RIGHT", "A", "B"),
+        ("A",),
+        ("LEFT",),
+        ("START",),
+    ),
+    "right-jump": (
+        ("RIGHT",),
+        ("RIGHT", "B"),
+        ("RIGHT", "A"),
+        ("RIGHT", "A", "B"),
+    ),
+}
 
 
 def _mode_name(value: Any) -> str:
@@ -45,9 +78,7 @@ def normalize_action_configuration(
     legacy_action_set = normalized_args.pop("action_set", None)
     action = normalized_task.get("action")
     task_action_set = (
-        str(action.get("set", "native")).strip()
-        if isinstance(action, Mapping)
-        else "native"
+        str(action.get("set", "native")).strip() if isinstance(action, Mapping) else "native"
     )
 
     requested_preset = None
@@ -75,18 +106,17 @@ def normalize_action_configuration(
 
 
 def _packaged_action_sets(provider_id: str, game: str) -> Mapping[str, Any]:
+    if game == "SuperMarioBros-Nes-v0" and provider_id in MARIO_PROVIDERS:
+        return MARIO_ACTION_TABLES
     if provider_id == "stable-retro-turbo":
         import stable_retro
 
-        path = Path(stable_retro.__file__).resolve().parent / "data" / "stable" / game / "metadata.json"
-        metadata = json.loads(path.read_text(encoding="utf-8"))
-        action_sets = metadata.get("action_sets", {})
-        if action_sets or game != "SuperMarioBros-Nes-v0":
-            return action_sets if isinstance(action_sets, Mapping) else {}
-        # Stable Retro owns the ROM integration, while the forward native Mario
-        # provider owns the named action-table catalog shared by both providers.
-        path = importlib.resources.files("supermariobrosnes_turbo").joinpath(
-            "data", game, "metadata.json"
+        path = (
+            Path(stable_retro.__file__).resolve().parent
+            / "data"
+            / "stable"
+            / game
+            / "metadata.json"
         )
         metadata = json.loads(path.read_text(encoding="utf-8"))
     else:
@@ -166,7 +196,11 @@ def declared_action_contract(config: Any) -> dict[str, Any] | None:
             raise ValueError(
                 f"provider {provider_id!r} has no action preset {request!r} for {game!r}"
             ) from exc
-    if isinstance(table, (str, bytes, bytearray)) or not isinstance(table, list | tuple) or not table:
+    if (
+        isinstance(table, (str, bytes, bytearray))
+        or not isinstance(table, list | tuple)
+        or not table
+    ):
         raise ValueError("custom use_restricted_actions must be a non-empty action table")
     buttons = _provider_buttons(provider_id, game)
     button_to_index = {name: index for index, name in enumerate(buttons) if name is not None}
@@ -204,9 +238,7 @@ def declared_action_contract(config: Any) -> dict[str, Any] | None:
             if isinstance(raw_action, (str, bytes, bytearray)) or not isinstance(
                 raw_action, list | tuple
             ):
-                raise ValueError(
-                    "multiplayer action entries must contain one action per player"
-                )
+                raise ValueError("multiplayer action entries must contain one action per player")
             if len(raw_action) != players:
                 raise ValueError(
                     f"multiplayer action entries must contain exactly {players} player actions"
@@ -251,7 +283,9 @@ def configured_action_meanings(config: Any) -> tuple[str, ...]:
     contract = declared_action_contract(config)
     if contract is not None and contract.get("meanings") is not None:
         return tuple(str(value) for value in contract["meanings"])
-    game = str(config.get("game", "") if isinstance(config, Mapping) else getattr(config, "game", ""))
+    game = str(
+        config.get("game", "") if isinstance(config, Mapping) else getattr(config, "game", "")
+    )
     from rlab.targets import target_for_game
 
     return target_for_game(game).action_names_for_set(configured_action_name(config))
@@ -290,6 +324,7 @@ def configured_action_values(config: Any) -> tuple[tuple[int, ...], ...] | None:
 
 __all__ = [
     "BUILTIN_ACTION_MODES",
+    "MARIO_ACTION_TABLES",
     "MARIO_PROVIDERS",
     "configured_action_meanings",
     "configured_action_name",

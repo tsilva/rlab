@@ -58,6 +58,7 @@ class RetroTarget:
     def action_masks_for_set(cls, action_set: str) -> tuple[np.ndarray, ...]:
         return tuple(cls.action_library[name] for name in cls.action_names_for_set(action_set))
 
+
 class GenericRetroTarget(RetroTarget):
     pass
 
@@ -88,10 +89,32 @@ class SuperMarioBrosNesV0Target(RetroTarget):
         "right_a_b": _button_mask(9, 7, 8, 0),
         "a": _button_mask(9, 8),
         "left": _button_mask(9, 6),
+        "down": _button_mask(9, 5),
+        "start": _button_mask(9, 3),
     }
     action_sets = {
-        "simple": ("noop", "right", "right_b", "right_a", "right_a_b", "a", "left"),
-        "right": ("right", "right_b", "right_a", "right_a_b"),
+        "basic": ("noop", "right", "right_b", "right_a", "right_a_b", "a", "left"),
+        "standard": (
+            "noop",
+            "right",
+            "right_b",
+            "right_a",
+            "right_a_b",
+            "a",
+            "left",
+            "down",
+        ),
+        "basic-start": (
+            "noop",
+            "right",
+            "right_b",
+            "right_a",
+            "right_a_b",
+            "a",
+            "left",
+            "start",
+        ),
+        "right-jump": ("right", "right_b", "right_a", "right_a_b"),
     }
 
 

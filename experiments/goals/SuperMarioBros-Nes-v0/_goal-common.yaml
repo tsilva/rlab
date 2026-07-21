@@ -41,7 +41,7 @@ train:
           scenario: scenario
           info: data
           # The provider resolves this game-owned table from metadata.json.
-          use_restricted_actions: simple
+          use_restricted_actions: basic
           record: false
           players: 1
           inttype: stable

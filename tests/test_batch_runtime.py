@@ -560,14 +560,10 @@ class BatchRuntimeTests(unittest.TestCase):
         )
 
         samples_a = [
-            runtime_a._start_for(lane, episode)
-            for episode in range(20)
-            for lane in range(2)
+            runtime_a._start_for(lane, episode) for episode in range(20) for lane in range(2)
         ]
         samples_b = [
-            runtime_b._start_for(lane, episode)
-            for episode in range(20)
-            for lane in range(2)
+            runtime_b._start_for(lane, episode) for episode in range(20) for lane in range(2)
         ]
 
         self.assertEqual(samples_a, samples_b)
@@ -599,9 +595,7 @@ class BatchRuntimeTests(unittest.TestCase):
         self.assertEqual(step.transition_info["rlab_boundary_reason"][0], "forced_reset")
         self.assertEqual(step.transition_info["rlab_reset_reason"][0], "curriculum")
         record = next(
-            record
-            for record in runtime.drain_records()
-            if isinstance(record, EpisodeRecord)
+            record for record in runtime.drain_records() if isinstance(record, EpisodeRecord)
         )
         self.assertEqual(record.outcome, Outcome.NEUTRAL)
         self.assertEqual(record.boundary_reason, "forced_reset")
@@ -634,11 +628,7 @@ class BatchRuntimeTests(unittest.TestCase):
             ("Level1-2", "Level1-1"),
         )
         records = sorted(
-            (
-                record
-                for record in runtime.drain_records()
-                if isinstance(record, EpisodeRecord)
-            ),
+            (record for record in runtime.drain_records() if isinstance(record, EpisodeRecord)),
             key=lambda record: record.lane,
         )
         self.assertEqual(records[0].boundary_reason, "terminated")
@@ -834,7 +824,7 @@ class MarioKernelTests(unittest.TestCase):
             state="Level1-1",
             task={
                 "id": "mario",
-                "action": {"set": "right"},
+                "action": {"set": "right-jump"},
                 "signals": {
                     "x": "custom_x",
                     "score": "custom_score",
@@ -883,9 +873,7 @@ class RlabVecEnvTests(unittest.TestCase):
         )
         provider.queue_step(image=[[3, 3], [8, 8]])
 
-        observations, _rewards, dones, infos = env.step(
-            np.zeros((2, 3), dtype=np.int8)
-        )
+        observations, _rewards, dones, infos = env.step(np.zeros((2, 3), dtype=np.int8))
 
         np.testing.assert_array_equal(dones, [False, True])
         np.testing.assert_array_equal(observations["image"], [[3, 3], [0, 0]])

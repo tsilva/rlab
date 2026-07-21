@@ -43,7 +43,7 @@ def benchmark_config(args: argparse.Namespace) -> EnvConfig:
             obs_resize_algorithm="area",
             task={
                 "id": "mario",
-                "action": {"set": "simple"},
+                "action": {"set": "basic"},
                 "signals": {
                     "x": ["xscrollHi", "xscrollLo"],
                     "score": "score",
@@ -63,7 +63,7 @@ def benchmark_config(args: argparse.Namespace) -> EnvConfig:
 
 
 def action_batches(config: EnvConfig, *, envs: int, count: int, seed: int):
-    masks = np.asarray(target_for_game(config.game).action_masks_for_set("simple"), dtype=np.int8)
+    masks = np.asarray(target_for_game(config.game).action_masks_for_set("basic"), dtype=np.int8)
     rng = np.random.default_rng(seed)
     policy_actions = rng.integers(0, len(masks), size=(count, envs), dtype=np.int64)
     return policy_actions, masks[policy_actions]

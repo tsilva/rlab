@@ -80,7 +80,7 @@ def strip_ansi(text: str) -> str:
 def mario_task(*, conditioning: bool = False) -> dict:
     task = {
         "id": "mario",
-        "action": {"set": "simple"},
+        "action": {"set": "basic"},
         "signals": {
             "x": ["xscrollHi", "xscrollLo"],
             "score": "score",
@@ -428,7 +428,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(env_config["obs_crop_mode"], "mask")
             self.assertEqual(env_config["obs_crop_fill"], 7)
             self.assertEqual(env_config["task"]["id"], "mario")
-            self.assertEqual(env_config["task"]["action"]["set"], "simple")
+            self.assertEqual(env_config["task"]["action"]["set"], "basic")
             self.assertEqual(
                 environment["preprocessing"]["obs_crop"],
                 [0, 0, 32, 0],
@@ -682,7 +682,7 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("source of truth:", text)
         self.assertIn("frame_skip=4", text)
         self.assertIn("max_pool=False", text)
-        self.assertIn("action_set=simple", text)
+        self.assertIn("action_set=basic", text)
         self.assertIn("termination_events=life_loss,level_change", text)
 
     def test_playback_env_config_preserves_task_termination_by_default(self) -> None:
@@ -1757,7 +1757,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 "max_pool_frames": False,
                 "max_episode_steps": 1234,
                 "observation_size": 96,
-                "action_set": "simple",
+                "action_set": "basic",
             },
         )
 

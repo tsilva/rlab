@@ -35,7 +35,7 @@ train:
           scenario: scenario
           info: data
           # rlab owns the goal-level discrete codec and sends native button masks.
-          use_restricted_actions: simple
+          use_restricted_actions: basic
           record: false
           players: 1
           inttype: stable

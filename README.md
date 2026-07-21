@@ -177,7 +177,7 @@ rlab eval run --game <GameId> --policy random --episodes 2 --max-steps 600
 rlab play <wandb-run-url>                             # promoted model, else newest API-visible checkpoint/final vN
 rlab play <run-name>                                  # same resolution for a unique historical display name
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
-rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-simple_ppo
+rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-basic_ppo
 rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
@@ -234,7 +234,7 @@ Environment action selection belongs in `env_args.use_restricted_actions`:
 
 ```yaml
 env_args:
-  use_restricted_actions: simple
+  use_restricted_actions: basic
 ```
 
 The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
@@ -333,7 +333,7 @@ Policies publish under `tsilva` with a generated repository identity:
 For example:
 
 ```text
-tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo
+tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-basic_ppo
 ```
 
 The game family comes from rlab's provider-neutral registry, the policy variant comes from the
@@ -362,7 +362,7 @@ Hub state through the API:
 
 ```bash
 uv run python scripts/audit_huggingface_release.py \
-  tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-simple_ppo \
+  tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-basic_ppo \
   --revision v1
 ```
 

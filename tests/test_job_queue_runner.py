@@ -1006,7 +1006,7 @@ class JobQueueTests(unittest.TestCase):
 
     def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
         rejected_fields = {
-            "env": {"action_set": "right"},
+            "env": {"action_set": "right-jump"},
             "state": "Level9-9",
             "states": ["Level9-8", "Level9-9"],
             "state_probs": [0.25, 0.75],

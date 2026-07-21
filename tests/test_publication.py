@@ -76,7 +76,7 @@ def model_metadata(
     crop_mode: str = "mask",
     frame_stack: int = 4,
     layout: str = "channel_first",
-    action_set: str = "simple",
+    action_set: str = "basic",
     algorithm: str = "ppo",
     model_class: str = "stable_baselines3.ppo.ppo.PPO",
 ) -> dict:
@@ -153,12 +153,11 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
     assert native == PublicationIdentity(
         game_family="NES-SuperMarioBros",
         goal="Level1-1",
-        policy_variant="gray84-hudmask-stack4-simple",
+        policy_variant="gray84-hudmask-stack4-basic",
         algorithm="ppo",
     )
     assert build_model_repo_id(native) == (
-        "tsilva/NES-SuperMarioBros_Level1-1_"
-        "gray84-hudmask-stack4-simple_ppo"
+        "tsilva/NES-SuperMarioBros_Level1-1_gray84-hudmask-stack4-basic_ppo"
     )
 
 
@@ -173,9 +172,7 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
     ],
 )
 def test_registered_game_families(provider: str, game: str, family: str) -> None:
-    metadata = model_metadata(
-        provider=provider, game=game, crop=[0, 0, 0, 0], action_set="native"
-    )
+    metadata = model_metadata(provider=provider, game=game, crop=[0, 0, 0, 0], action_set="native")
     identity = publication_identity_from_model_metadata("Goal1", metadata)
     assert identity.game_family == family
 
@@ -199,9 +196,9 @@ def test_policy_variant_records_rgb_shape_crop_stack_layout_and_action() -> None
 
 def test_policy_variant_accepts_another_registered_action_set() -> None:
     identity = publication_identity_from_model_metadata(
-        "Level1-1", model_metadata(action_set="right")
+        "Level1-1", model_metadata(action_set="right-jump")
     )
-    assert identity.policy_variant.endswith("-right")
+    assert identity.policy_variant.endswith("-right-jump")
 
 
 @pytest.mark.parametrize(
@@ -246,7 +243,7 @@ def test_long_repo_names_are_rejected() -> None:
             PublicationIdentity(
                 game_family="NES-SuperMarioBros",
                 goal="A" * 70,
-                policy_variant="gray84-hudmask-stack4-simple",
+                policy_variant="gray84-hudmask-stack4-basic",
                 algorithm="ppo",
             )
         )
@@ -273,7 +270,7 @@ def test_legacy_metadata_upgrade_requires_explicit_missing_facts() -> None:
     training["preprocessing"].pop("obs_crop_mode")
     training["environment"] = {
         "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
-        "action": {"action_set": "simple"},
+        "action": {"action_set": "basic"},
     }
 
     upgraded = upgrade_legacy_model_metadata_for_publication(
@@ -284,7 +281,7 @@ def test_legacy_metadata_upgrade_requires_explicit_missing_facts() -> None:
     )
     identity = publication_identity_from_model_metadata("Level1-1", upgraded)
 
-    assert identity.policy_variant == "gray84-hudcrop-stack4-simple"
+    assert identity.policy_variant == "gray84-hudcrop-stack4-basic"
     assert identity.algorithm == "ppo"
 
 
@@ -318,7 +315,7 @@ def test_model_card_template_preserves_current_sb3_golden_output() -> None:
 
     ModelCard(card).validate(repo_type="model")
     assert hashlib.sha256(card.encode()).hexdigest() == (
-        "17db58fae0e6022eb5f1f5b3f445815145d0ff3ee720bcf706a145d98e8d6a4c"
+        "4c16286ee86f548fd8f854212eef94a35a6bb1344d544fb6702a9321deda00fb"
     )
 
 
@@ -331,7 +328,7 @@ def test_model_card_template_preserves_current_jerk_golden_output() -> None:
 
     ModelCard(card).validate(repo_type="model")
     assert hashlib.sha256(card.encode()).hexdigest() == (
-        "43670c208a96044ec3f8468737eb361c94045f4591d85ddef10cf2b23dd49c61"
+        "6ad6a1b54e3c867604baadd4e3426fb8a89740a9eafd9b157b815a863738663d"
     )
 
 
@@ -402,9 +399,7 @@ def test_release_bundle_has_exact_files_hashes_and_portable_identity() -> None:
             artifacts={},
             youtube_url="https://www.youtube.com/watch?v=example",
         )
-        (root / "README.md").write_text(
-            render_model_card(provisional, metadata), encoding="utf-8"
-        )
+        (root / "README.md").write_text(render_model_card(provisional, metadata), encoding="utf-8")
         records = release_artifact_records(root)
         manifest = build_release_manifest(
             identity,

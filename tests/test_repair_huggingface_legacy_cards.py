@@ -34,7 +34,7 @@ def legacy_metadata() -> dict:
             "environment_hash": "sha256:environment",
             "environment": {
                 "env_id": "supermariobrosnes-turbo:SuperMarioBros-Nes-v0",
-                "action": {"action_set": "simple"},
+                "action": {"action_set": "basic"},
             },
             "preprocessing": preprocessing,
         },
@@ -57,10 +57,7 @@ def legacy_manifest() -> dict:
 
 
 def test_legacy_repair_card_uses_canonical_renderer_and_marks_evidence() -> None:
-    repo_id = (
-        "tsilva/NES-SuperMarioBros_Level1-1_"
-        "gray84-hudcrop-stack4-simple_ppo"
-    )
+    repo_id = "tsilva/NES-SuperMarioBros_Level1-1_gray84-hudcrop-stack4-basic_ppo"
     manifest, upgraded = MODULE._legacy_card_inputs(
         repo_id,
         legacy_metadata(),
@@ -77,7 +74,7 @@ def test_legacy_repair_card_uses_canonical_renderer_and_marks_evidence() -> None
     assert "supermariobrosnes-turbo" in card
     assert manifest["source"]["seed"] == 7
     assert hashlib.sha256(card.encode()).hexdigest() == (
-        "abf75cd1f933c05a0472de2791d29ab117431ae92269cb6130f0ff17b1df74b7"
+        "32ceac313818448241fcb6c707eea118a8083b677d39a1082ee246287bb34ce0"
     )
 
 

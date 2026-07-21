@@ -124,9 +124,9 @@ class _StartInfoAdapter:
                     raise ValueError(
                         f"unknown provider start id {start_id!r}; expected one of {catalog}"
                     ) from exc
-            native_options[
-                "state_indices" if uses_state_catalog else "start_indices"
-            ] = state_indices
+            native_options["state_indices" if uses_state_catalog else "start_indices"] = (
+                state_indices
+            )
         observations, infos = self.env.reset(seed=seed, options=native_options)
         if not isinstance(infos, Mapping):
             return observations, infos
@@ -181,9 +181,7 @@ class _CanonicalBreakoutAdapter:
         self.env = env
         self.num_envs = int(env.num_envs)
         self.single_action_space = gym.spaces.Discrete(4)
-        self.action_space = gym.spaces.MultiDiscrete(
-            np.full(self.num_envs, 4, dtype=np.int64)
-        )
+        self.action_space = gym.spaces.MultiDiscrete(np.full(self.num_envs, 4, dtype=np.int64))
         raw_catalog = _native_start_catalog(env)
         self._canonical_to_native: dict[str, str] = {}
         canonical_catalog: list[str] = []
@@ -343,14 +341,17 @@ def provider_native_vec_kwargs(
             value = native_kwargs.get(key)
             if not isinstance(value, str):
                 continue
-            if key == "use_restricted_actions" and value.strip().casefold() not in BUILTIN_ACTION_MODES:
+            if (
+                key == "use_restricted_actions"
+                and value.strip().casefold() not in BUILTIN_ACTION_MODES
+            ):
+                declared_action = declared_action_contract(config)
+                if declared_action is None or declared_action.get("table") is None:
+                    raise ValueError(f"cannot resolve provider action preset {value!r}")
                 if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-                    declared_action = declared_action_contract(config)
-                    if declared_action is None or declared_action.get("table") is None:
-                        raise ValueError(
-                            f"cannot resolve Stable Retro action preset {value!r}"
-                        )
                     native_kwargs[key] = retro.Actions.ALL
+                else:
+                    native_kwargs[key] = declared_action["table"]
                 continue
             enum_type: Any = retro
             for attribute in attribute_path:
@@ -364,9 +365,7 @@ def provider_native_vec_kwargs(
             provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id
             and native_kwargs.get("info") == "data"
         ):
-            native_kwargs["info"] = str(
-                _stable_retro_packaged_data_path(config.game, "data.json")
-            )
+            native_kwargs["info"] = str(_stable_retro_packaged_data_path(config.game, "data.json"))
     if provider.provider_id == GYMNASIUM_PROVIDER.provider_id:
         if config.state or config.states or config.state_probs:
             raise ValueError(
@@ -644,6 +643,8 @@ def provider_descriptor(
                 f"provider {provider.provider_id!r} resolved action table hash "
                 f"{action_table_hash!r}; expected {declared_action['table_hash']!r}"
             )
+        if action_preset is None:
+            action_preset = declared_action["preset"]
     return ProviderDescriptor(
         provider_id=provider.provider_id,
         native_observation_space=observation_space,
@@ -658,13 +659,9 @@ def provider_descriptor(
         action_preset=str(action_preset) if action_preset is not None else None,
         action_table=tuple(action_table) if action_table is not None else None,
         action_meanings=(
-            tuple(str(value) for value in action_meanings)
-            if action_meanings is not None
-            else None
+            tuple(str(value) for value in action_meanings) if action_meanings is not None else None
         ),
-        action_table_hash=(
-            str(action_table_hash) if action_table_hash is not None else None
-        ),
+        action_table_hash=(str(action_table_hash) if action_table_hash is not None else None),
     )
 
 
@@ -764,7 +761,9 @@ class _AleManualResetAdapter:
         elif observations.ndim == 5 and observations.shape[-1] in (1, 3, 4):
             frames = observations[:, -1]
         else:
-            raise ValueError(f"unsupported ALE observation shape for rendering: {observations.shape}")
+            raise ValueError(
+                f"unsupported ALE observation shape for rendering: {observations.shape}"
+            )
         if frames.ndim == 3:
             frames = np.repeat(frames[..., None], 3, axis=-1)
         elif frames.ndim == 4 and frames.shape[-1] == 1:
@@ -851,7 +850,9 @@ def _breakout_turbo_make_vec_env(
             "use_fire_reset",
             "use_restricted_actions",
         }
-        env = env_type(**{key: value for key, value in kwargs.items() if key not in legacy_unsupported})
+        env = env_type(
+            **{key: value for key, value in kwargs.items() if key not in legacy_unsupported}
+        )
     env = _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
     return _CanonicalBreakoutAdapter(env)
 

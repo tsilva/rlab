@@ -735,7 +735,7 @@ train:
       env_provider: stable-retro-turbo
       game: SuperMarioBros-Nes-v0
       state: Level1-1
-      action_set: simple
+      action_set: basic
       frame_skip: 4
       observation_size: 84
       hud_crop_top: 32

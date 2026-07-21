@@ -19,7 +19,7 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
                 "game": "SuperMarioBros-Nes-v0",
                 "task": {
                     "id": "mario",
-                    "action": {"set": "simple"},
+                    "action": {"set": "basic"},
                     "signals": {
                         "x": ["xscrollHi", "xscrollLo"],
                         "score": "score",
@@ -49,11 +49,13 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
 
     def test_unknown_artifact_environment_metadata_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unexpected keys"):
-            sanitize_env_config_metadata({
-                "env_provider": "supermariobrosnes-turbo",
-                "game": "SuperMarioBros-Nes-v0",
-                "unknown_runtime_key": True,
-            })
+            sanitize_env_config_metadata(
+                {
+                    "env_provider": "supermariobrosnes-turbo",
+                    "game": "SuperMarioBros-Nes-v0",
+                    "unknown_runtime_key": True,
+                }
+            )
 
     def test_task_validation_rejects_unknown_termination_event(self) -> None:
         with self.assertRaisesRegex(ValueError, "references unknown events"):
@@ -82,7 +84,7 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
 
         mario_task = {
             "id": "mario",
-            "action": {"set": "simple"},
+            "action": {"set": "basic"},
             "signals": {},
             "events": {},
             "termination": {},
@@ -191,7 +193,7 @@ class EnvironmentTaskConfigTests(unittest.TestCase):
             validate_task_config(
                 {
                     "id": "mario",
-                    "action": {"set": "simple"},
+                    "action": {"set": "basic"},
                     "signals": {"x": "x", "lives": "lives"},
                     "events": {
                         "life_loss": {"signal": "x", "operation": "decrease"},

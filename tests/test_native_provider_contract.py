@@ -9,6 +9,7 @@ import gymnasium as gym
 import numpy as np
 import stable_retro as retro
 
+from rlab.action_contract import MARIO_ACTION_TABLES
 from rlab.env import EnvConfig, _bound_task_kernel
 from rlab.env_providers import (
     _AleManualResetAdapter,
@@ -133,9 +134,13 @@ class GenericNativeProviderTests(unittest.TestCase):
         class StepSignalEnv(RegisteredNativeVectorEnv):
             def step(self, actions):
                 observations, rewards, terminated, truncated, _infos = super().step(actions)
-                return observations, rewards, terminated, truncated, {
-                    "ball_y": np.arange(self.num_envs, dtype=np.int64)
-                }
+                return (
+                    observations,
+                    rewards,
+                    terminated,
+                    truncated,
+                    {"ball_y": np.arange(self.num_envs, dtype=np.int64)},
+                )
 
         env = StepSignalEnv(2, gym.vector.AutoresetMode.DISABLED)
         config = EnvConfig(
@@ -337,7 +342,7 @@ class MarioNativeProviderTests(unittest.TestCase):
             "state": "Level1-1",
             "task": {
                 "id": "mario",
-                "action": {"set": "simple"},
+                "action": {"set": "basic"},
                 "signals": {
                     "x": ["xscrollHi", "xscrollLo"],
                     "score": "score",
@@ -364,7 +369,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         config = self.config(
             env_args={
                 "action_set": None,
-                "use_restricted_actions": "simple",
+                "use_restricted_actions": "basic",
                 "inttype": "stable",
                 "obs_type": "image",
             }
@@ -378,7 +383,10 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
 
         self.assertNotIn("action_set", kwargs)
-        self.assertEqual(kwargs["use_restricted_actions"], "simple")
+        self.assertEqual(
+            tuple(tuple(labels) for labels in kwargs["use_restricted_actions"]),
+            MARIO_ACTION_TABLES["basic"],
+        )
         self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
         self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
 
@@ -387,7 +395,7 @@ class MarioNativeProviderTests(unittest.TestCase):
             env_provider="stable-retro-turbo",
             env_args={
                 "action_set": None,
-                "use_restricted_actions": "simple",
+                "use_restricted_actions": "basic",
                 "inttype": "stable",
                 "obs_type": "image",
             },
@@ -421,9 +429,7 @@ class MarioNativeProviderTests(unittest.TestCase):
                 self.observation_space = gym.vector.utils.batch_space(
                     self.single_observation_space, num_envs
                 )
-                self.action_space = gym.vector.utils.batch_space(
-                    self.single_action_space, num_envs
-                )
+                self.action_space = gym.vector.utils.batch_space(self.single_action_space, num_envs)
                 self.state_catalog = ("Level1-1",)
                 self._states = ["Level1-1" for _ in range(num_envs)]
                 self._state_indices = np.zeros(num_envs, dtype=np.int32)
@@ -524,9 +530,7 @@ class MarioNativeProviderTests(unittest.TestCase):
         class Native:
             num_envs = 2
             metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
-            single_observation_space = gym.spaces.Box(
-                0, 255, shape=(4, 84, 84), dtype=np.uint8
-            )
+            single_observation_space = gym.spaces.Box(0, 255, shape=(4, 84, 84), dtype=np.uint8)
             single_action_space = gym.spaces.MultiBinary(9)
             observation_space = gym.vector.utils.batch_space(single_observation_space, 2)
             action_space = gym.vector.utils.batch_space(single_action_space, 2)
@@ -739,9 +743,7 @@ class MarioNativeProviderTests(unittest.TestCase):
                 self.observation_space = gym.vector.utils.batch_space(
                     self.single_observation_space, num_envs
                 )
-                self.action_space = gym.vector.utils.batch_space(
-                    self.single_action_space, num_envs
-                )
+                self.action_space = gym.vector.utils.batch_space(self.single_action_space, num_envs)
 
             def reset(self, *, seed=None, options=None):
                 del seed
@@ -897,6 +899,7 @@ class AleManualLifecycleTests(unittest.TestCase):
 
         self.assertEqual([frame.shape for frame in frames], [(3, 5, 3), (3, 5, 3)])
         np.testing.assert_array_equal(frames[0][..., 0], frames[0][..., 1])
+
 
 if __name__ == "__main__":
     unittest.main()
