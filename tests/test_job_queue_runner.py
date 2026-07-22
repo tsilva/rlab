@@ -348,7 +348,11 @@ class JobQueueTests(unittest.TestCase):
                     if recipe_path.name == "jerk.yaml"
                     else "sb3.ppo"
                 )
-                expected_eval_backend = "none" if expected_backend == "rlab.jerk" else "modal"
+                expected_eval_backend = (
+                    "none"
+                    if expected_backend == "rlab.jerk" or goal_path == BREAKOUT_GOAL
+                    else "modal"
+                )
                 self.assertEqual(train_config["checkpoint_eval_backend"], expected_eval_backend)
                 self.assertEqual(train_config["training_backend"]["id"], expected_backend)
                 self.assertEqual(
@@ -552,6 +556,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(
             all(call["train_config"]["checkpoint_eval_backend"] == "none" for call in calls)
         )
+        self.assertTrue(all(call["train_config"]["metrics_schema_version"] == 5 for call in calls))
         self.assertTrue(all(call["train_config"]["early_stop"] is None for call in calls))
         self.assertTrue(all(call["train_config"]["checkpoint_eval_stages"] == [] for call in calls))
         self.assertTrue(
@@ -1335,10 +1340,8 @@ class JobQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(document["train_config"]["env_provider"], "stable-retro-turbo")
-        self.assertEqual(
-            document["train_config"]["checkpoint_eval_environment"]["env_provider"],
-            "stable-retro-turbo",
-        )
+        self.assertNotIn("checkpoint_eval_environment", document["train_config"])
+        self.assertEqual(document["train_config"]["checkpoint_eval_backend"], "none")
         self.assertEqual(
             document["environment"]["env_id"],
             "stable-retro-turbo:Breakout-Atari2600-v0",

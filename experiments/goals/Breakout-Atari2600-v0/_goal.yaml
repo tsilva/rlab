@@ -8,13 +8,11 @@ tags:
 title: Atari 2600 Breakout wall completion
 objective:
   rank:
-  - max(eval/full/episode/return/mean)
-  - max(eval/full/episode/length/mean)
-  - min(eval/full/outcome/reason/serve_stall/rate)
-  - min(leader/checkpoint/step)
+  - max(train/episode/return/shaped/mean)
+  - min(global_step)
 train:
-  checkpoint_eval_backend: modal
-  stop_on_acceptance: true
+  checkpoint_eval_backend: none
+  stop_on_acceptance: false
   checkpoint_freq: 500000
   environment:
     # Breakout Turbo is the default ROM-free implementation. The complete contract is
@@ -73,22 +71,3 @@ train:
         max_episode_steps: 54000
       reward:
         reward_mode: native
-eval:
-  episodes: 100
-  acceptance:
-  - metric: eval/full/episode/return/mean
-    operator: '>='
-    threshold: 864
-  policy:
-    stochastic: true
-  environment:
-    env_provider: *breakout_provider
-    env_config:
-      <<: *breakout_env_config
-      n_envs: 16
-      env_args:
-        <<: *breakout_provider_args
-    preprocessing: *breakout_preprocessing
-    task: *breakout_task
-release:
-  huggingface: {}

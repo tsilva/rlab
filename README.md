@@ -277,7 +277,7 @@ env_args:
 The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
 or `multi_discrete`), a preset from the selected game provider's packaged
 `metadata.json`, or an inline exact table of controller-label combinations.
-Mario runtime 0.4.2 provides the canonical `basic`, `standard`, `right-jump`,
+Mario runtime 0.4.3 provides the canonical `basic`, `standard`, `right-jump`,
 and `basic-start` presets; `standard` extends `basic` with `DOWN` for
 pipe-dependent levels.
 rlab records the resolved ordered table, action meanings, preset, and semantic

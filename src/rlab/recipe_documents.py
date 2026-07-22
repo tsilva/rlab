@@ -287,6 +287,8 @@ def _goal_with_environment_provider(
     for section_name in ("train", "eval"):
         section = result.get(section_name)
         environment = section.get("environment") if isinstance(section, Mapping) else None
+        if section_name == "eval" and section is None:
+            continue
         if not isinstance(environment, dict):
             raise ValueError(f"goal.{section_name}.environment is required for provider override")
         environment["env_provider"] = provider_id

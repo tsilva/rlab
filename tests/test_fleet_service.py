@@ -106,7 +106,7 @@ class FleetServiceTests(unittest.TestCase):
                 for name in fleet_service.CONTROLLER_NAMES
             }
 
-        self.assertEqual(set(payloads), {"machine", "evaluation", "wandb"})
+        self.assertEqual(set(payloads), {"machine", "evaluation", "wandb", "workspace"})
         for name, payload in payloads.items():
             self.assertIs(payload["KeepAlive"], True)
             self.assertEqual(payload["ThrottleInterval"], 2)
@@ -123,7 +123,7 @@ class FleetServiceTests(unittest.TestCase):
             )
             self.assertNotIn("DATABASE_URL", json.dumps(payload))
 
-    def test_split_controller_install_bootstraps_three_labels_and_retires_combined(self) -> None:
+    def test_split_controller_install_bootstraps_all_labels_and_retires_combined(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.make_paths(Path(temporary))
             paths.plist.parent.mkdir(parents=True)

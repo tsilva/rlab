@@ -10,7 +10,6 @@ from rlab.metric_names import (
     EVAL_FULL_SUCCESS_RATE_MIN,
     eval_metric,
     eval_progress_metric,
-    eval_reason_count_metric,
     eval_reason_rate_metric,
     eval_success_from_rate_metric,
     eval_success_rate_metric,
@@ -215,7 +214,6 @@ def eval_outcome_metrics(
     episode_count = len(episode_results)
     for reason in all_reasons:
         count = sum(reason in episode_reasons(episode) for episode in episode_results)
-        metrics[eval_reason_count_metric(protocol, reason)] = count
         metrics[eval_reason_rate_metric(protocol, reason)] = count / episode_count
 
     states = sorted(

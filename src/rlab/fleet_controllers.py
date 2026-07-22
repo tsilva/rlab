@@ -523,9 +523,108 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
             assertion.close()
 
 
+def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
+    from rlab.artifact_durability import (
+        ArtifactDurabilityPolicy,
+        verify_due_artifact_receipts,
+    )
+    from rlab.workspace_gc import (
+        WorkspaceNotReady,
+        close_due_telemetry_obligations,
+        due_proof_reduction_launches,
+        finalize_host_deleted,
+        reduce_cleanup_proof,
+        workspace_protocol_mode,
+    )
+
+    assertion = SleepAssertion()
+    heartbeat, readiness = _controller_state_paths(repo_root, "workspace")
+    source_fingerprint = controller_source_fingerprint(repo_root)
+    started_at = time.time()
+    last_success_at: float | None = None
+    backoff = POLL_SECONDS
+    try:
+        while True:
+            reduced = 0
+            pending = 0
+            finalized = 0
+            obligations_closed = 0
+            artifacts_verified = 0
+            error = None
+            try:
+                conn = connect(database_url(use_direct=True))
+                try:
+                    protocol_mode = workspace_protocol_mode(conn)
+                    policy_path = str(
+                        os.environ.get("RLAB_ARTIFACT_DURABILITY_POLICY_FILE") or ""
+                    ).strip()
+                    if protocol_mode != "dormant":
+                        if not policy_path:
+                            raise RuntimeError(
+                                "RLAB_ARTIFACT_DURABILITY_POLICY_FILE is required outside "
+                                "dormant workspace mode"
+                            )
+                        policy = ArtifactDurabilityPolicy.load(Path(policy_path))
+                        artifacts_verified = verify_due_artifact_receipts(
+                            conn, policy=policy, limit=8
+                        )
+                    obligations_closed = close_due_telemetry_obligations(conn, limit=100)
+                    launch_ids = due_proof_reduction_launches(conn, limit=100)
+                    for launch_id in launch_ids:
+                        try:
+                            reduce_cleanup_proof(conn, launch_id=launch_id)
+                            reduced += 1
+                        except WorkspaceNotReady:
+                            pending += 1
+                    finalized = finalize_host_deleted(conn, limit=100)
+                finally:
+                    conn.close()
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"[:4000]
+            phase = (
+                "error"
+                if error
+                else "reconciling"
+                if reduced or finalized or obligations_closed or artifacts_verified
+                else "idle"
+            )
+            if not error:
+                last_success_at = time.time()
+            assertion.update(
+                bool(pending or reduced or finalized or obligations_closed or artifacts_verified)
+            )
+            _write_controller_heartbeat(
+                heartbeat,
+                controller="workspace",
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase=phase,
+                last_success_at=last_success_at,
+                last_error=error,
+            )
+            _write_controller_readiness(
+                readiness,
+                source_fingerprint=source_fingerprint,
+                started_at=started_at,
+                phase=phase,
+            )
+            if once:
+                if error:
+                    raise RuntimeError(error)
+                return 0
+            if error:
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+            else:
+                backoff = POLL_SECONDS
+                time.sleep(POLL_SECONDS)
+    finally:
+        assertion.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one isolated rlab fleet controller.")
-    parser.add_argument("controller", choices=("machine", "evaluation", "wandb"))
+    parser.add_argument("controller", choices=("machine", "evaluation", "wandb", "workspace"))
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--protocol-version", type=int, required=True)
     parser.add_argument("--once", action="store_true")
@@ -548,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_machine_controller(repo_root, once=args.once)
     if args.controller == "evaluation":
         return run_evaluation_controller(repo_root, once=args.once)
+    if args.controller == "workspace":
+        return run_workspace_controller(repo_root, once=args.once)
     return run_wandb_manager(repo_root, once=args.once)
 
 

@@ -577,7 +577,6 @@ class ThroughputHelperTests(unittest.TestCase):
             {
                 "train/throughput/loop_fps": 20.0,
                 "train/throughput/rollout_fps": 50.0,
-                "train/throughput/loop_seconds": 5.0,
                 "train/throughput/rollout_seconds": 2.0,
                 "train/throughput/between_rollouts_seconds": 3.0,
             },
@@ -623,14 +622,13 @@ class ThroughputHelperTests(unittest.TestCase):
         callback._on_rollout_start()
 
         frame = dict(model.logger.records)
-        self.assertEqual(frame["train/throughput/loop_seconds"], 7.0)
         self.assertEqual(frame["train/throughput/rollout_seconds"], 5.0)
         self.assertEqual(frame["train/throughput/between_rollouts_seconds"], 2.0)
         self.assertEqual(frame["train/throughput/env_step_seconds"], 2.0)
         self.assertEqual(frame["train/throughput/rollout_overhead_seconds"], 3.0)
         self.assertEqual(frame["train/throughput/env_step_fps"], 50.0)
         self.assertEqual(
-            frame["train/throughput/loop_seconds"],
+            7.0,
             frame["train/throughput/rollout_seconds"]
             + frame["train/throughput/between_rollouts_seconds"],
         )

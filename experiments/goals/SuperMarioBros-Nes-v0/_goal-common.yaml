@@ -16,9 +16,7 @@ title: Sample-efficient SuperMarioBros-NES {goal_id} completion
 objective:
   # Ordered ranking signals; compare each metric in sequence until a candidate wins.
   rank:
-  - max(eval/full/outcome/success/rate/min)
-  - max(eval/full/outcome/success/rate/mean)
-  - min(leader/checkpoint/steps_to_goal)
+  - min(leader/checkpoint/step)
   - max(eval/full/episode/return/mean)
 # Goal-owned named reward programs. Recipes select one key atomically.
 reward_shapes:

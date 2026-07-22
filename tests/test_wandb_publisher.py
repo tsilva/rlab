@@ -57,6 +57,12 @@ class FakeHtml:
         self.kwargs = kwargs
 
 
+class FakeTable:
+    def __init__(self, *, columns, data) -> None:
+        self.columns = columns
+        self.data = data
+
+
 class WandbPublisherTests(unittest.TestCase):
     @staticmethod
     def _acceptance_payload(
@@ -147,6 +153,49 @@ class WandbPublisherTests(unittest.TestCase):
             "s3://bucket/8000000/model.zip",
         )
 
+    def test_v5_terminal_summary_keeps_variable_acceptance_evidence_only(self) -> None:
+        summary = _canonical_goal_summary(
+            {
+                "outcome": "accepted",
+                "train_config": {
+                    "metrics_schema_version": 5,
+                    "selection_rank": [
+                        "min(leader/checkpoint/step)",
+                        "max(eval/full/episode/return/mean)",
+                    ],
+                },
+                "promotion_json": {
+                    "checkpoint_step": 8_000_000,
+                    "checkpoint_uri": "s3://bucket/model.zip",
+                    "raw_metrics": {
+                        "_acceptance_duration_seconds": 33.75,
+                        "_acceptance_aggregates": {
+                            "episodes_planned": 100,
+                            "episodes_completed": 100,
+                            "failure_count": 0,
+                        },
+                        "eval/full/duration/seconds": 32.0,
+                        "eval/full/outcome/success/rate/min": 1.0,
+                        "eval/full/episode/return/mean": 3144.17,
+                        "eval/full/episode/count": 100,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(summary["eval/acceptance/duration/seconds"], 33.75)
+        self.assertEqual(summary["eval/full/episode/return/mean"], 3144.17)
+        self.assertEqual(summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+        self.assertNotIn("eval/acceptance/failure/count", summary)
+        self.assertNotIn("eval/full/checkpoint/step", summary)
+        self.assertNotIn("eval/full/duration/seconds", summary)
+        self.assertFalse(any(name.startswith("eval/full/outcome/") for name in summary))
+        self.assertNotIn(LEADER_CHECKPOINT_ACCEPTANCE_PASS, summary)
+        self.assertNotIn("leader/checkpoint/objective_name", summary)
+        self.assertNotIn("leader/checkpoint/rank", summary)
+        self.assertNotIn("leader/checkpoint/steps_to_goal", summary)
+        self.assertNotIn("leader/checkpoint/local_path", summary)
+
     def test_canonical_acceptance_survives_later_noncanonical_rejection(self) -> None:
         run = FakeRun()
         with mock.patch.dict("sys.modules", {"wandb": SimpleNamespace()}):
@@ -178,6 +227,34 @@ class WandbPublisherTests(unittest.TestCase):
 
         self.assertEqual(run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS], 1.0)
         self.assertEqual(run.summary[LEADER_CHECKPOINT_STEP], 8_000_000)
+
+    def test_v5_mailbox_acceptance_publishes_precomputed_by_start_table(self) -> None:
+        run = FakeRun()
+        row = ["Level1-1", 100, 100, 1.0, 10.0, 1.0, 10.0, "", 0, 0.0]
+        payload = {
+            "train_config": {
+                "metrics_schema_version": 5,
+                "wandb_run_id": "rlab-test",
+            },
+            "purpose": "acceptance",
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "checkpoint_step": 123,
+            "canonical_promotion": False,
+            "decision": {
+                "passed": True,
+                "metrics": {
+                    "global_step": 123,
+                    "eval/acceptance/pass": 1.0,
+                },
+                "raw_metrics": {"_eval_by_start_rows": [row]},
+            },
+        }
+
+        with mock.patch.dict("sys.modules", {"wandb": SimpleNamespace(Table=FakeTable)}):
+            project_payload_to_run(run, payload)
+
+        table = run.logged[0]["eval/full/by_start"]
+        self.assertEqual(table.data, [[123, *row]])
 
     def test_acceptance_history_summary_uses_max(self) -> None:
         run = mock.MagicMock()

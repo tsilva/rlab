@@ -57,7 +57,7 @@ from rlab.model_sources import (
     resolve_single_model_source,
 )
 from rlab.play_attribution import PolicyActionAttributor
-from rlab.policy_bundle import evaluation_contract
+from rlab.policy_bundle import playback_contract
 from rlab.play_debug import (
     DebugCommandError,
     PolicyDecision,
@@ -1395,10 +1395,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Downloaded model: {args.model}", flush=True)
     with startup_progress("Loading playback metadata", disabled=args.no_progress):
         if source.bundle is not None:
-            contract = evaluation_contract(source.bundle.recipe)
+            contract = playback_contract(source.bundle.recipe)
             artifact_config = env_config_from_config_dict(contract["environment"])
             if artifact_config is None:
-                raise ValueError("policy bundle recipe has no evaluation environment")
+                raise ValueError("policy bundle recipe has no playback environment")
             artifact_config = resolve_env_config(artifact_config)
             if "seed" not in explicit_dests:
                 args.seed = int(contract["seed"])

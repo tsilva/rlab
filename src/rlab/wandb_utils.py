@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rlab.dotenv import load_env_file
 from rlab.env_registry import game_family_for_environment, wandb_project_for_environment
-from rlab.metric_names import EVAL_ACCEPTANCE_PASS
+from rlab.metric_names import EVAL_ACCEPTANCE_PASS, TRAIN_EPISODE_RETURN_SHAPED_MEAN
 
 DEFAULT_WANDB_ENTITY = "tsilva"
 DEFAULT_WANDB_PROJECT = "SuperMarioBros-Nes-v0"
@@ -104,6 +104,11 @@ def configure_wandb_metrics(run):
             EVAL_ACCEPTANCE_PASS,
             step_metric="global_step",
             summary="max",
+        )
+        run.define_metric(
+            TRAIN_EPISODE_RETURN_SHAPED_MEAN,
+            step_metric="global_step",
+            summary="last",
         )
         run.define_metric("*", step_metric="global_step")
     return run

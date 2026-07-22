@@ -14,6 +14,7 @@ from rlab.metric_names import (
     EVAL_FULL_EPISODE_RETURN_MEAN,
     EVAL_FULL_SUCCESS_RATE_MEAN,
     EVAL_FULL_SUCCESS_RATE_MIN,
+    GLOBAL_STEP,
     LEADER_CHECKPOINT_ARTIFACT_REF,
     LEADER_CHECKPOINT_BEST_RETURN,
     LEADER_CHECKPOINT_EVAL_SOURCE,
@@ -28,15 +29,18 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
     LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
     LEGACY_TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+    METRICS_SCHEMA_VERSION,
+    TRAIN_EPISODE_RETURN_SHAPED_MEAN,
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
 )
-from rlab.ranking import parse_objective_rank, rank_score
+from rlab.ranking import parse_objective_rank, parse_persisted_objective_rank, rank_score
 from rlab.wandb_utils import DEFAULT_WANDB_PROJECT_PATH, load_wandb_env
 
 
 RUN_OBJECTIVE_KEYS = (
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN,
     LEGACY_TRAIN_OUTCOME_SUCCESS_RATE_WINDOW_100_MIN,
+    TRAIN_EPISODE_RETURN_SHAPED_MEAN,
 )
 RUN_PRIMARY_ORDER = "-created_at"
 CHECKPOINT_SUCCESS_KEYS = (LEADER_CHECKPOINT_SUCCESS_RATE_MIN,)
@@ -65,6 +69,7 @@ class RunScore:
     url: str
     seed: int | None
     objective: float
+    steps: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class RunLeader:
     mean_seed: float
     best_seed: float
     runs: tuple[RunScore, ...]
+    mean_steps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -208,7 +214,20 @@ def checkpoint_summary_filter() -> dict[str, Any]:
 def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
     config = dict(getattr(run, "config", {}) or {})
     summary = getattr(run, "summary", {}) or {}
-    objective = _first_float(summary, objective_keys)
+    configured_rank = parse_persisted_objective_rank(config.get("selection_rank"))
+    configured_primary = (
+        configured_rank[0].metric
+        if configured_rank
+        and (
+            configured_rank[0].metric.startswith("train/")
+            or configured_rank[0].metric == GLOBAL_STEP
+        )
+        else ""
+    )
+    candidate_keys = tuple(
+        dict.fromkeys((configured_primary, *objective_keys) if configured_primary else objective_keys)
+    )
+    objective = _first_float(summary, candidate_keys)
     if objective is None:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
@@ -235,6 +254,7 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
         url=str(getattr(run, "url", "") or ""),
         seed=_optional_int(config.get("seed")),
         objective=float(objective),
+        steps=_optional_int(_mapping_value(summary, GLOBAL_STEP)),
     )
 
 
@@ -260,8 +280,18 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
     ), group_scores in grouped.items():
         if len(group_scores) < min_seeds:
             continue
-        ordered_runs = tuple(sorted(group_scores, key=lambda item: item.objective, reverse=True))
+        ordered_runs = tuple(
+            sorted(
+                group_scores,
+                key=lambda item: (
+                    item.objective,
+                    -(item.steps if item.steps is not None else float("inf")),
+                ),
+                reverse=True,
+            )
+        )
         values = [item.objective for item in ordered_runs]
+        step_values = [item.steps for item in ordered_runs if item.steps is not None]
         leaders.append(
             RunLeader(
                 goal_slug=goal_slug,
@@ -275,6 +305,7 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
                 mean_seed=mean(values),
                 best_seed=max(values),
                 runs=ordered_runs,
+                mean_steps=mean(step_values) if step_values else None,
             )
         )
     return sorted(
@@ -285,6 +316,7 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
             item.worst_seed,
             item.mean_seed,
             item.best_seed,
+            -(item.mean_steps if item.mean_steps is not None else float("inf")),
             item.seeds,
         ),
         reverse=True,
@@ -310,15 +342,24 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
     if episode_return is None or not artifact_ref:
         return None
     tags = tuple(getattr(run, "tags", ()) or ())
-    rank = parse_objective_rank(_mapping_value(summary, LEADER_CHECKPOINT_RANK))
+    try:
+        schema_version = int(config.get("metrics_schema_version", METRICS_SCHEMA_VERSION))
+    except TypeError, ValueError:
+        schema_version = 4
+    rank = parse_objective_rank(
+        _mapping_value(summary, LEADER_CHECKPOINT_RANK), schema_version=4
+    )
     if not rank:
-        rank = parse_objective_rank(config.get("selection_rank"))
+        rank = parse_objective_rank(config.get("selection_rank"), schema_version=schema_version)
+    if not rank:
+        rank = parse_persisted_objective_rank(config.get("selection_rank"))
     rank_metrics: dict[str, Any] = {
         EVAL_FULL_SUCCESS_RATE_MIN: success,
         EVAL_FULL_SUCCESS_RATE_MEAN: success_mean,
         EVAL_FULL_EPISODE_RETURN_MEAN: episode_return,
         EVAL_FULL_EPISODE_RETURN_BEST: _first_float(summary, (LEADER_CHECKPOINT_BEST_RETURN,)),
         LEADER_CHECKPOINT_STEPS_TO_GOAL: steps_to_goal,
+        LEADER_CHECKPOINT_STEP: checkpoint_step,
         "checkpoint_step": checkpoint_step,
     }
     saved_rank_values = _mapping_value(summary, LEADER_CHECKPOINT_RANK_VALUES)
@@ -353,7 +394,7 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
         objective=objective,
-        objective_name=objective_name,
+        objective_name=objective_name or rank[0].metric,
         success_rate_min=success,
         success_rate_mean=success_mean,
         progress_max=progress,
@@ -414,11 +455,15 @@ def print_json(rows: Sequence[Any]) -> None:
 
 
 def print_run_leaders(rows: Sequence[RunLeader]) -> None:
-    print("goal_slug\trecipe_slug\treward_shape\tseeds\tworst_seed\tmean_seed\tbest_seed")
+    print(
+        "goal_slug\trecipe_slug\treward_shape\tseeds\tworst_seed\tmean_seed\tbest_seed"
+        "\tmean_steps"
+    )
     for row in rows:
+        mean_steps = f"{row.mean_steps:.6g}" if row.mean_steps is not None else ""
         print(
             f"{row.goal_slug}\t{row.recipe_slug}\t{row.reward_shape or 'legacy'}\t{row.seeds}\t"
-            f"{row.worst_seed:.6g}\t{row.mean_seed:.6g}\t{row.best_seed:.6g}"
+            f"{row.worst_seed:.6g}\t{row.mean_seed:.6g}\t{row.best_seed:.6g}\t{mean_steps}"
         )
 
 

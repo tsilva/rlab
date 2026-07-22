@@ -18,7 +18,9 @@ from rlab.artifacts import (
     wandb_artifact_storage_uri,
     write_wandb_url,
 )
+from rlab.file_utils import file_sha256
 from rlab.checkpoint_eval_worker import (
+    add_eval_by_start_table,
     log_checkpoint_eval_metrics,
     update_best_checkpoint_summary,
 )
@@ -179,6 +181,7 @@ def project_payload_to_run(
     decision = dict(payload["decision"])
     purpose = str(payload["purpose"])
     checkpoint_uri = str(payload["checkpoint_uri"])
+    schema_version = int(train_config.get("metrics_schema_version", 4) or 4)
     if purpose == "promotion":
         environment = train_config.get("checkpoint_eval_environment")
         if not isinstance(environment, dict):
@@ -199,7 +202,14 @@ def project_payload_to_run(
             force_leader=bool(payload.get("canonical_promotion", False)),
         )
     else:
-        run.log(dict(decision["metrics"]))
+        projected_metrics = dict(decision["metrics"])
+        if purpose == "acceptance" and bool(decision.get("passed", False)):
+            add_eval_by_start_table(
+                projected_metrics,
+                metrics=dict(decision["raw_metrics"]),
+                checkpoint_step=int(payload["checkpoint_step"]),
+            )
+        run.log(projected_metrics)
         if purpose == "acceptance" and bool(payload.get("canonical_promotion", False)):
             if not bool(decision.get("passed", False)):
                 raise ValueError("canonical acceptance projection must contain a passed decision")
@@ -212,8 +222,11 @@ def project_payload_to_run(
                 eval_source="modal:acceptance",
                 selection_rank=train_config.get("selection_rank") or (),
                 force=True,
+                metrics_schema_version=schema_version,
+                include_completion=schema_version == 4,
             )
-            run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
+            if schema_version == 4:
+                run.summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
             run.summary["rlab/goal/outcome"] = "accepted"
         preview = decision.get("preview")
         if (
@@ -328,6 +341,7 @@ def process_upload(
                 path,
                 kind,
                 run_id=getattr(wandb_run, "id", None) or getattr(args, "wandb_run_id", None),
+                object_sha256=file_sha256(path),
             )
         store.mark_artifact_uploaded(
             checkpoint_id,
@@ -347,7 +361,10 @@ def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
     payload = json.loads(str(row["payload_json"]))
     kind = str(row["kind"])
     if kind == "history":
-        validate_metric_payload(payload)
+        validate_metric_payload(
+            payload,
+            schema_version=int(getattr(args, "metrics_schema_version", 4) or 4),
+        )
         run.log(payload)
         return
     if kind == "histogram":
@@ -357,7 +374,10 @@ def _publish_frame(run, row: dict[str, Any], *, args, config) -> None:
         for name, values in payload.get("histograms", {}).items():
             converted[str(name)] = wandb.Histogram(values)
         if len(converted) > 1:
-            validate_metric_payload(converted)
+            validate_metric_payload(
+                converted,
+                schema_version=int(getattr(args, "metrics_schema_version", 4) or 4),
+            )
             run.log(converted)
         return
     if kind == "checkpoint_eval":

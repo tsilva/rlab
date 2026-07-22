@@ -108,7 +108,7 @@ def encode_metric_batch(
     )
 
 
-def decode_metric_batch(payload: bytes) -> list[dict[str, Any]]:
+def decode_metric_batch(payload: bytes, *, schema_version: int = 5) -> list[dict[str, Any]]:
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as compressed:
             raw = compressed.read(MAX_BATCH_UNCOMPRESSED_BYTES + 1)
@@ -138,7 +138,7 @@ def decode_metric_batch(payload: bytes) -> list[dict[str, Any]]:
         if not isinstance(payload_value, dict):
             raise MailboxProtocolError("metric batch frame payload must be an object")
         if str(raw.get("kind") or "history") == "history":
-            validate_metric_payload(payload_value)
+            validate_metric_payload(payload_value, schema_version=schema_version)
         frames.append(dict(raw))
     return frames
 
@@ -1116,6 +1116,22 @@ def consume_attempt_events(conn, *, limit: int = 100) -> int:
             for row in rows:
                 if str(row["event_type"]) == "metric_stream_closed":
                     final_sequence = int((row.get("payload_json") or {}).get("final_sequence") or 0)
+                    cur.execute(
+                        """
+                        INSERT INTO metric_streams (
+                          stream_id, attempt_id, accepted_sequence, final_sequence,
+                          submitted_sequence, published_sequence
+                        ) VALUES (
+                          %(attempt_id)s, %(attempt_id)s, %(final_sequence)s,
+                          %(final_sequence)s, %(final_sequence)s, %(final_sequence)s
+                        )
+                        ON CONFLICT (stream_id) DO NOTHING
+                        """,
+                        {
+                            "attempt_id": str(row["attempt_id"]),
+                            "final_sequence": final_sequence,
+                        },
+                    )
                     cur.execute(
                         """
                         UPDATE metric_streams

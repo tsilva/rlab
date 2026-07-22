@@ -161,7 +161,13 @@ class DockerHostTests(unittest.TestCase):
         self.assertIn("rlab-container-entrypoint rlab run-job", text)
         self.assertIn("--payload /input/payloads/train-12.json", text)
         self.assertIn("--label rlab.launch-id=train-12", text)
-        self.assertIn("/tmp/rlab/payloads:/input/payloads:ro", text)
+        self.assertIn(
+            "src=/tmp/rlab/payloads/train-12.json,dst=/input/payloads/train-12.json",
+            text,
+        )
+        self.assertIn("src=/tmp/rlab/outputs/train-12,dst=/output/train-12", text)
+        self.assertNotIn("/tmp/rlab/payloads:/input/payloads", text)
+        self.assertNotIn("/tmp/rlab/outputs:/output", text)
         self.assertNotIn("RLAB_ROM_CACHE_DIR", text)
         self.assertNotIn("/roms", text)
 
@@ -180,7 +186,8 @@ class DockerHostTests(unittest.TestCase):
         text = " ".join(run.call_args.args[1])
         digest = ROM_MANIFEST["sha256"]
         self.assertIn(
-            f"/tmp/rlab/rom-cache/sha256/{digest}:/rom-cache/sha256/{digest}:ro",
+            f"src=/tmp/rlab/rom-cache/sha256/{digest},"
+            f"dst=/rom-cache/sha256/{digest},bind-nonrecursive=true,readonly",
             text,
         )
         self.assertIn("RLAB_ROM_CACHE_DIR=/rom-cache", text)
@@ -193,13 +200,18 @@ class DockerHostTests(unittest.TestCase):
             outcome = DockerRunnerHost(machine()).ensure_rom_cache(
                 launch_id="train-12",
                 runtime_image_ref=RUNTIME_IMAGE_REF,
+                rom_asset_manifest=ROM_MANIFEST,
             )
 
         self.assertTrue(outcome.ok)
         text = " ".join(run.call_args.args[1])
         self.assertIn("run --rm", text)
-        self.assertIn("/tmp/rlab/rom-cache:/rom-cache", text)
-        self.assertNotIn("/tmp/rlab/rom-cache:/rom-cache:ro", text)
+        digest = ROM_MANIFEST["sha256"]
+        self.assertIn(
+            f"src=/tmp/rlab/rom-cache/sha256/{digest},dst=/rom-cache/sha256/{digest}",
+            text,
+        )
+        self.assertNotIn("/tmp/rlab/rom-cache:/rom-cache", text)
         self.assertIn("python -m rlab.rom_cache", text)
         self.assertIn("/input/payloads/train-12.json", text)
 

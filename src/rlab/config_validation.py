@@ -326,21 +326,74 @@ def _goal_train_environment(
 def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
     if "eval_spec" in document:
         raise ValueError(f"{label}.eval_spec moved to eval")
+    train = document.get("train")
+    train = train if isinstance(train, Mapping) else {}
+    if "eval" not in document:
+        if train.get("checkpoint_eval_backend") != "none":
+            raise ValueError(
+                f"{label}.eval is required unless train.checkpoint_eval_backend is none"
+            )
+        if train.get("stop_on_acceptance") is not False:
+            raise ValueError(
+                f"{label}.train.stop_on_acceptance must be false for a training-only goal"
+            )
+        if "release" in document:
+            raise ValueError(f"{label}.release is unsupported for a training-only goal")
+        objective = document.get("objective")
+        rank = objective.get("rank") if isinstance(objective, Mapping) else None
+        criteria = parse_objective_rank(rank)
+        if not criteria or any(
+            criterion.metric != "global_step"
+            and not criterion.metric.startswith("train/")
+            for criterion in criteria
+        ):
+            raise ValueError(
+                f"{label}.objective.rank for a training-only goal may use only "
+                "training metrics and global_step"
+            )
+        return
     eval_section = _require_mapping(
         _require_key(document, "eval", label=label),
         label=f"{label}.eval",
     )
+    if train.get("checkpoint_eval_backend") == "none":
+        raise ValueError(
+            f"{label}.eval must be omitted when train.checkpoint_eval_backend is none"
+        )
     _require_int(eval_section, "episodes", label=f"{label}.eval", minimum=1)
-    train = document.get("train")
     acceptance_enabled = bool(
-        isinstance(train, Mapping) and train.get("stop_on_acceptance") is True
+        train.get("stop_on_acceptance") is True
     )
     if acceptance_enabled:
         normalize_early_stop_config(
             _require_key(eval_section, "acceptance", label=f"{label}.eval"),
             label=f"{label}.eval.acceptance",
         )
-    eval_environment = eval_section.get("environment")
+    if "eval_config" in eval_section:
+        raise ValueError(f"{label}.eval.eval_config moved to eval.policy")
+    if "eval" in eval_section:
+        raise ValueError(f"{label}.eval.eval moved to eval.policy")
+    policy = eval_section.get("policy")
+    if isinstance(policy, Mapping):
+        for moved_key in ("seed", "n_envs", "max_steps"):
+            if moved_key in policy:
+                raise ValueError(
+                    f"{label}.eval.policy.{moved_key} moved to "
+                    f"{label}.eval.environment.env_config.{moved_key}"
+                )
+        if "stochastic" in policy:
+            stochastic = _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
+            if not stochastic:
+                raise ValueError(
+                    f"{label}.eval.policy.stochastic must be true; "
+                    "all policy evaluation uses stochastic sampling"
+                )
+    elif policy is not None:
+        raise ValueError(f"{label}.eval.policy must be an object")
+    eval_environment = _require_mapping(
+        _require_key(eval_section, "environment", label=f"{label}.eval"),
+        label=f"{label}.eval.environment",
+    )
     if isinstance(eval_environment, Mapping):
         eval_environment_keys = {
             "env_provider",
@@ -399,27 +452,6 @@ def _validate_goal_eval(document: Mapping[str, Any], *, label: str) -> None:
             label=f"{label}.eval.env_config",
             require_game=False,
         )
-    if "eval_config" in eval_section:
-        raise ValueError(f"{label}.eval.eval_config moved to eval.policy")
-    if "eval" in eval_section:
-        raise ValueError(f"{label}.eval.eval moved to eval.policy")
-    policy = eval_section.get("policy")
-    if isinstance(policy, Mapping):
-        for moved_key in ("seed", "n_envs", "max_steps"):
-            if moved_key in policy:
-                raise ValueError(
-                    f"{label}.eval.policy.{moved_key} moved to "
-                    f"{label}.eval.environment.env_config.{moved_key}"
-                )
-        if "stochastic" in policy:
-            stochastic = _require_bool(policy, "stochastic", label=f"{label}.eval.policy")
-            if not stochastic:
-                raise ValueError(
-                    f"{label}.eval.policy.stochastic must be true; "
-                    "all policy evaluation uses stochastic sampling"
-                )
-    elif policy is not None:
-        raise ValueError(f"{label}.eval.policy must be an object")
 
 
 def _validate_rank_order(rank_order: Any, *, label: str) -> None:

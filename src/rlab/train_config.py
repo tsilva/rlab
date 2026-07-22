@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from rlab.env import EnvConfig
+from rlab.metric_names import METRICS_SCHEMA_VERSION
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.provider_config import provider_num_envs
 from rlab.seeds import DEFAULT_TRAIN_SEED, EVAL_SEED_START, validate_training_seed
@@ -440,6 +441,13 @@ def validate_and_normalize_train_config(
             f"{label}.post_train_eval_stochastic must be true; "
             "all policy evaluation uses stochastic sampling"
         )
+    if normalized.get("checkpoint_eval_backend") == "none":
+        if normalized.get("early_stop") is not None:
+            raise ValueError(f"{label}.early_stop must be null when checkpoint eval is disabled")
+        if normalized.get("checkpoint_eval_stages"):
+            raise ValueError(
+                f"{label}.checkpoint_eval_stages must be empty when checkpoint eval is disabled"
+            )
     if normalized.get("early_stop") is not None:
         normalized["early_stop"] = normalize_early_stop_config(
             normalized["early_stop"], label=f"{label}.early_stop"
@@ -468,13 +476,6 @@ def validate_and_normalize_train_config(
         if not normalized.get("checkpoint_eval_acceptance"):
             raise ValueError(
                 f"{label}.checkpoint_eval_acceptance is required when stop_on_acceptance is true"
-            )
-    if normalized.get("checkpoint_eval_backend") == "none":
-        if normalized.get("early_stop") is not None:
-            raise ValueError(f"{label}.early_stop must be null when checkpoint eval is disabled")
-        if normalized.get("checkpoint_eval_stages"):
-            raise ValueError(
-                f"{label}.checkpoint_eval_stages must be empty when checkpoint eval is disabled"
             )
     if "training_backend" in normalized:
         from rlab.training_backend import normalize_training_backend
@@ -847,6 +848,16 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         sequence_items="str",
         owner="goal_objective",
         help="Ordered objective.rank contract carried into checkpoint selection.",
+    ),
+    TrainConfigField(
+        "metrics_schema_version",
+        "--metrics-schema-version",
+        type_name="int",
+        default=METRICS_SCHEMA_VERSION,
+        validation_min=4,
+        validation_max=METRICS_SCHEMA_VERSION,
+        cli_exposed=False,
+        help="Run-owned telemetry schema used by validation and publication compatibility paths.",
     ),
     TrainConfigField(
         "wandb",

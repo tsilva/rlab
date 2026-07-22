@@ -38,9 +38,9 @@ from rlab.cli_commands import (
 
 SERVICE_LABEL = "com.rlab.fleet-service"
 SERVICE_INTERVAL_SECONDS = 30
-CONTROLLER_NAMES = ("machine", "evaluation", "wandb")
+CONTROLLER_NAMES = ("machine", "evaluation", "wandb", "workspace")
 CONTROLLER_POLL_SECONDS = 2
-CONTROL_PLANE_PROTOCOL_VERSION = 2
+CONTROL_PLANE_PROTOCOL_VERSION = 3
 CONTROLLER_READINESS_TIMEOUT_SECONDS = 10.0
 CONTROLLER_INSTALL_HEARTBEAT_TIMEOUT_SECONDS = 180.0
 CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS = 70.0
@@ -780,10 +780,10 @@ def install_controller_services(
     replace: bool = False,
     runner: CommandRunner = _run_command,
 ) -> InstallResult:
-    """Install the three independent persistent fleet controllers atomically enough for launchd.
+    """Install the independent persistent fleet controllers atomically enough for launchd.
 
     Each controller has its own label and process. Existing controller plists are restored if a
-    later bootstrap fails. The retired combined pass is removed only after all three controllers
+    later bootstrap fails. The retired combined pass is removed only after all controllers
     are loaded successfully.
     """
 

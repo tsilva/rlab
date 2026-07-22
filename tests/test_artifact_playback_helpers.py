@@ -303,7 +303,9 @@ class CommandAndArtifactTests(unittest.TestCase):
             [
                 (
                     model_path,
-                    "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/run-id-checkpoint/ppo_test_100_steps.zip",
+                    "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/run-id-checkpoint/"
+                    "sha256/4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2/"
+                    "ppo_test_100_steps.zip",
                 )
             ],
         )
@@ -997,7 +999,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 with (
                     patch("rlab.play.resolve_single_model_source", return_value=source),
                     patch(
-                        "rlab.play.evaluation_contract",
+                        "rlab.play.playback_contract",
                         return_value={"environment": {}, "seed": DEFAULT_EVAL_SEED},
                     ),
                     patch("rlab.play.env_config_from_config_dict", return_value=config),

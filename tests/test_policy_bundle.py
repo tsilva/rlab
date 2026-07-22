@@ -20,6 +20,7 @@ from rlab.policy_bundle import (
     build_recipe_document,
     canonical_json_bytes,
     evaluation_contract,
+    playback_contract,
     load_policy_bundle,
     load_recipe_document,
     validate_recipe_document,
@@ -36,6 +37,8 @@ RECIPE = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml
 RUNTIME = "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "b" * 64
 POST400_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/post400-r400/_goal.yaml")
 POST400_RECIPE = POST400_GOAL.parent / "recipes/ppo-resume-129991680.yaml"
+BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
+BREAKOUT_RECIPES = tuple(sorted((BREAKOUT_GOAL.parent / "recipes").glob("*.yaml")))
 
 
 def level1_1_recipe_document(*, seed: int = 7) -> dict:
@@ -48,6 +51,27 @@ def level1_1_recipe_document(*, seed: int = 7) -> dict:
         seed=seed,
         runtime_image_ref=RUNTIME,
     )
+
+
+@pytest.mark.parametrize("recipe_path", BREAKOUT_RECIPES)
+def test_breakout_bundle_is_playable_but_has_no_evaluation_contract(
+    recipe_path: Path,
+) -> None:
+    materialized = compose_train_document(BREAKOUT_GOAL, recipe_path)
+    document = build_recipe_document(
+        materialized,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="training-only Breakout",
+        seed=7,
+        runtime_image_ref=RUNTIME,
+    )
+
+    assert document["recipe"]["train_config"]["checkpoint_eval_backend"] == "none"
+    assert "eval" not in document["recipe"]
+    assert playback_contract(document)["environment"]["game"] == "Breakout-Atari2600-v0"
+    with pytest.raises(PolicyDocumentError, match="no evaluation contract"):
+        evaluation_contract(document)
 
 
 def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:
@@ -99,7 +123,7 @@ def test_level1_1_recipe_fixture_preserves_distinct_train_and_eval_contracts() -
     eval_task = eval_contract["environment"]["task"]
 
     assert train_task["termination"]["failure"] == ["life_loss", "stalled"]
-    assert eval_task["termination"]["failure"] == ["stalled"]
+    assert eval_task["termination"]["failure"] == []
     assert document["recipe"]["train_config"]["obs_crop"] == [32, 0, 0, 0]
     assert eval_contract["action_sampling"] == "stochastic"
     assert eval_contract["seed_protocol"] == "vector-lane-v1"

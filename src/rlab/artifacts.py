@@ -25,6 +25,7 @@ from rlab.env_metadata import (
     env_config_metadata,
     training_metadata,
 )
+from rlab.file_utils import file_sha256
 from rlab.metric_names import (
     GLOBAL_STEP,
     METRICS_SCHEMA_VERSION,
@@ -325,7 +326,10 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
         tags.append(family_tag)
     args.wandb_tags = ",".join(tags)
     wandb_config: dict[str, Any] = {**vars(args), **env_config_metadata(config)}
-    wandb_config["metrics_schema_version"] = METRICS_SCHEMA_VERSION
+    wandb_config["metrics_schema_version"] = int(
+        getattr(args, "metrics_schema_version", METRICS_SCHEMA_VERSION)
+        or METRICS_SCHEMA_VERSION
+    )
     wandb_config["algorithm_id"] = str(getattr(args, "algorithm_id", "") or "").strip()
     wandb_config["model_class"] = str(getattr(args, "model_class", "") or "").strip()
     wandb_config["training_backend_id"] = str(
@@ -438,6 +442,7 @@ def build_s3_artifact_uri(
     kind: str,
     *,
     run_id: object = None,
+    object_sha256: str = "",
 ) -> str:
     bucket, prefix = parse_s3_uri(base_uri)
     prefix = artifact_storage_prefix(prefix, args.game)
@@ -448,6 +453,8 @@ def build_s3_artifact_uri(
     key_parts = [
         prefix,
         collection_name,
+        "sha256" if object_sha256 else "",
+        object_sha256,
         model_path.name,
     ]
     key = "/".join(part for part in key_parts if part)
@@ -612,16 +619,27 @@ def log_wandb_model_artifact(
             Path(CHECKPOINT_FILENAME) if versioned_bundle else model_path,
             kind,
             run_id=run_id,
+            object_sha256=file_sha256(model_path),
         )
         upload_started_at = timer()
         if versioned_bundle:
             reference_uris = {
                 CHECKPOINT_FILENAME: reference_uri,
                 MODEL_FILENAME: build_s3_artifact_uri(
-                    storage_base_uri, args, Path(MODEL_FILENAME), kind, run_id=run_id
+                    storage_base_uri,
+                    args,
+                    Path(MODEL_FILENAME),
+                    kind,
+                    run_id=run_id,
+                    object_sha256=file_sha256(model_sidecar),
                 ),
                 RECIPE_FILENAME: build_s3_artifact_uri(
-                    storage_base_uri, args, Path(RECIPE_FILENAME), kind, run_id=run_id
+                    storage_base_uri,
+                    args,
+                    Path(RECIPE_FILENAME),
+                    kind,
+                    run_id=run_id,
+                    object_sha256=file_sha256(recipe_sidecar),
                 ),
             }
             for filename, local_path in (

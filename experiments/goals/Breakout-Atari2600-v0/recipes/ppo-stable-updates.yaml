@@ -4,7 +4,8 @@ defaults:
 recipe_id: ppo-stable-updates
 description: >-
   Seed {seed} trains {goal_id} with the standard Atari PPO batch shape while decaying the
-  learning rate and stopping update epochs early when approximate KL becomes too large.
+  learning rate and stopping update epochs early when approximate KL becomes too large under
+  the goal-owned training contract.
 train:
   backend:
     id: sb3.ppo

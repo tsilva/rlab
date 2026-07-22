@@ -816,6 +816,12 @@ def publish_skipped_decisions(conn, store: ObjectStore, *, limit: int = 100) -> 
 def _stage_metrics(
     job: Mapping[str, Any], raw_metrics: Mapping[str, Any], passed: bool
 ) -> dict[str, object]:
+    train_config = job.get("train_config")
+    schema_version = int(
+        train_config.get("metrics_schema_version", 4)
+        if isinstance(train_config, Mapping)
+        else 4
+    )
     if str(job["purpose"]) == "acceptance":
         aggregates = raw_metrics.get("_acceptance_aggregates")
         if not isinstance(aggregates, Mapping):
@@ -827,6 +833,8 @@ def _stage_metrics(
                 checkpoint_step=int(job["checkpoint_step"]),
                 checkpoint_artifact=str(job["checkpoint_uri"]),
                 eval_source="modal",
+                metrics_schema_version=schema_version,
+                acceptance_projection=schema_version >= 5,
             )
             if passed
             else {GLOBAL_STEP: int(job["checkpoint_step"])}
@@ -836,13 +844,14 @@ def _stage_metrics(
                 EVAL_ACCEPTANCE_PASS: 1.0 if passed else 0.0,
                 EVAL_ACCEPTANCE_EPISODES_PLANNED: int(aggregates["episodes_planned"]),
                 EVAL_ACCEPTANCE_EPISODES_COMPLETED: int(aggregates["episodes_completed"]),
-                EVAL_ACCEPTANCE_FAILURE_COUNT: int(aggregates["failure_count"]),
                 EVAL_ACCEPTANCE_DURATION_SECONDS: float(
                     raw_metrics.get("_acceptance_duration_seconds") or 0.0
                 ),
             }
         )
-        validate_metric_payload(metrics)
+        if schema_version == 4:
+            metrics[EVAL_ACCEPTANCE_FAILURE_COUNT] = int(aggregates["failure_count"])
+        validate_metric_payload(metrics, schema_version=schema_version)
         return metrics
     if str(job["purpose"]) == "promotion":
         return evaluation_metric_payload(
@@ -851,6 +860,7 @@ def _stage_metrics(
             checkpoint_step=int(job["checkpoint_step"]),
             checkpoint_artifact=str(job["checkpoint_uri"]),
             eval_source="modal",
+            metrics_schema_version=schema_version,
         )
     stage_name = str(job["stage_name"])
     metrics = evaluation_metric_payload(
@@ -859,13 +869,14 @@ def _stage_metrics(
         checkpoint_step=int(job["checkpoint_step"]),
         checkpoint_artifact=str(job["checkpoint_uri"]),
         eval_source="modal",
+        metrics_schema_version=schema_version,
     )
     metrics[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = 1.0 if passed else 0.0
     metrics[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(
         job["stage_index"]
     )
     metrics[checkpoint_eval_stage_metric(stage_name, "source")] = "modal"
-    validate_metric_payload(metrics)
+    validate_metric_payload(metrics, schema_version=schema_version)
     return metrics
 
 

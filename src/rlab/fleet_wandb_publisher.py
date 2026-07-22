@@ -45,6 +45,7 @@ from rlab.metric_names import (
     EVAL_ACCEPTANCE_FAILURE_COUNT,
     EVAL_ACCEPTANCE_PASS,
     EVAL_FULL_CHECKPOINT_STEP,
+    EVAL_FULL_DURATION_SECONDS,
     LEADER_CHECKPOINT_ACCEPTANCE_PASS,
     LEADER_CHECKPOINT_STEP,
 )
@@ -438,6 +439,7 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
     if outcome != "accepted":
         return summary
     promotion = dict(run.get("promotion_json") or {})
+    schema_version = int(_train_config(run).get("metrics_schema_version", 4) or 4)
     raw_metrics = dict(promotion.get("raw_metrics") or {})
     aggregates = dict(raw_metrics.get("_acceptance_aggregates") or {})
     checkpoint_step = int(
@@ -453,20 +455,28 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
             EVAL_ACCEPTANCE_EPISODES_COMPLETED: int(
                 aggregates.get("episodes_completed") or raw_metrics.get("episodes") or 0
             ),
-            EVAL_ACCEPTANCE_FAILURE_COUNT: int(aggregates.get("failure_count") or 0),
             EVAL_ACCEPTANCE_DURATION_SECONDS: float(
                 raw_metrics.get("_acceptance_duration_seconds")
                 or raw_metrics.get("eval/full/duration/seconds")
                 or 0.0
             ),
-            EVAL_FULL_CHECKPOINT_STEP: checkpoint_step,
         }
     )
+    if schema_version == 4:
+        summary[EVAL_ACCEPTANCE_FAILURE_COUNT] = int(aggregates.get("failure_count") or 0)
+        summary[EVAL_FULL_CHECKPOINT_STEP] = checkpoint_step
     for key, value in raw_metrics.items():
         if (
             str(key).startswith("eval/full/")
             and isinstance(value, int | float)
             and not isinstance(value, bool)
+            and not (
+                schema_version >= 5
+                and (
+                    str(key).startswith("eval/full/outcome/")
+                    or str(key) == EVAL_FULL_DURATION_SECONDS
+                )
+            )
         ):
             summary[str(key)] = value
     leader = SimpleNamespace(summary={})
@@ -479,9 +489,12 @@ def _canonical_goal_summary(run: dict[str, Any]) -> dict[str, Any]:
         eval_source="modal:acceptance",
         selection_rank=_train_config(run).get("selection_rank") or (),
         force=True,
+        metrics_schema_version=schema_version,
+        include_completion=schema_version == 4,
     )
     summary.update(leader.summary)
-    summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
+    if schema_version == 4:
+        summary[LEADER_CHECKPOINT_ACCEPTANCE_PASS] = 1.0
     return summary
 
 
@@ -996,7 +1009,10 @@ def publish_claimed_run(
     decoded: dict[int, list[dict[str, Any]]] = {}
     for batch in batches:
         try:
-            frames = decode_metric_batch(bytes(batch["payload"]))
+            frames = decode_metric_batch(
+                bytes(batch["payload"]),
+                schema_version=int(train_config.get("metrics_schema_version", 4) or 4),
+            )
         except Exception as exc:
             raise InvalidTelemetryBatchError(str(exc)) from exc
         unsupported = {

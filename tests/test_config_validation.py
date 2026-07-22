@@ -5,6 +5,7 @@ import inspect
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -115,17 +116,16 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["termination"],
             {"failure": ["serve_stall"], "max_episode_steps": 54000},
         )
-        self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
-        self.assertTrue(train_config["stop_on_acceptance"])
+        self.assertEqual(train_config["checkpoint_eval_backend"], "none")
+        self.assertFalse(train_config["stop_on_acceptance"])
         self.assertIsNone(train_config.get("early_stop"))
+        self.assertNotIn("eval", document["goal"])
+        self.assertNotIn("release", document["goal"])
         self.assertEqual(
-            document["goal"]["eval"]["acceptance"],
+            train_config["selection_rank"],
             [
-                {
-                    "metric": "eval/full/episode/return/mean",
-                    "operator": ">=",
-                    "threshold": 864,
-                }
+                "max(train/episode/return/shaped/mean)",
+                "min(global_step)",
             ],
         )
 
@@ -136,17 +136,11 @@ class ConfigValidationTests(unittest.TestCase):
         )
         stable_train = stable_retro["train_config"]
         self.assertEqual(stable_train["env_provider"], "stable-retro-turbo")
-        self.assertEqual(
-            stable_train["checkpoint_eval_environment"]["env_provider"],
-            "stable-retro-turbo",
-        )
+        self.assertNotIn("checkpoint_eval_environment", stable_train)
         for key in ("game", "state", "env_args", "task", "selection_rank"):
             self.assertEqual(train_config[key], stable_train[key])
         self.assertEqual(document["goal"]["objective"], stable_retro["goal"]["objective"])
-        self.assertEqual(
-            document["goal"]["eval"]["acceptance"],
-            stable_retro["goal"]["eval"]["acceptance"],
-        )
+        self.assertNotIn("eval", stable_retro["goal"])
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
         environment = {
@@ -319,15 +313,13 @@ class ConfigValidationTests(unittest.TestCase):
         train_config = document["train_config"]
         self.assertEqual(train_config["env_provider"], "stable-retro-turbo")
         self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
-        self.assertEqual(train_config["checkpoint_eval_backend"], "modal")
-        self.assertTrue(train_config["stop_on_acceptance"])
+        self.assertEqual(train_config["checkpoint_eval_backend"], "none")
+        self.assertFalse(train_config["stop_on_acceptance"])
         self.assertEqual(
             train_config["selection_rank"],
             [
-                "max(eval/full/episode/return/mean)",
-                "max(eval/full/episode/length/mean)",
-                "min(eval/full/outcome/reason/serve_stall/rate)",
-                "min(leader/checkpoint/step)",
+                "max(train/episode/return/shaped/mean)",
+                "min(global_step)",
             ],
         )
         self.assertEqual(
@@ -356,36 +348,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["state"], "Start")
         self.assertNotIn("states", train_config)
         self.assertEqual(train_config["n_envs"], 128)
-        self.assertEqual(train_config["checkpoint_eval_n_envs"], 16)
-        self.assertEqual(
-            train_config["checkpoint_eval_environment"]["game"],
-            "Breakout-Atari2600-v0",
-        )
+        self.assertNotIn("checkpoint_eval_n_envs", train_config)
+        self.assertNotIn("checkpoint_eval_environment", train_config)
         self.assertIs(train_config["env_args"]["reward_clip"], False)
-        self.assertEqual(
-            train_config["checkpoint_eval_environment"]["env_args"],
-            {
-                "scenario": "scenario",
-                "info": "data",
-                "use_restricted_actions": "simple",
-                "record": False,
-                "players": 1,
-                "inttype": "stable",
-                "obs_type": "image",
-                "render_mode": "rgb_array",
-                "info_filter": "all",
-                "num_threads": 6,
-                "rom_path": None,
-                "obs_copy": "safe_view",
-                "obs_grayscale": True,
-                "obs_layout": "chw",
-                "frame_stack": 4,
-                "noop_reset_max": 0,
-                "reward_clip": False,
-                "use_fire_reset": False,
-            },
-        )
-        self.assertEqual(train_config["checkpoint_eval_environment"]["task"]["id"], "identity")
         self.assertNotIn("env_threads", train_config)
         self.assertEqual(train_config["frame_skip"], 4)
         self.assertFalse(train_config["max_pool_frames"])
@@ -421,19 +386,12 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["termination"],
             {"failure": ["serve_stall"], "max_episode_steps": 54000},
         )
-        self.assertEqual(
-            train_config["checkpoint_eval_environment"]["task"]["action"],
-            train_config["task"]["action"],
-        )
         self.assertNotIn("clip_rewards", train_config)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
         self.assertEqual(document["environment"]["preprocessing"]["obs_crop"], [17, 0, 0, 0])
-        self.assertEqual(
-            document["goal"]["eval"]["environment"]["preprocessing"]["obs_crop"],
-            [17, 0, 0, 0],
-        )
+        self.assertNotIn("eval", document["goal"])
         self.assertEqual(train_config["obs_resize_algorithm"], "area")
         self.assertEqual(
             document["environment"]["env_id"],
@@ -456,10 +414,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(backend_config["learning_rate_schedule_timesteps"], 100_000_000)
         self.assertEqual(backend_config["target_kl"], 0.03)
         self.assertIs(train_config["env_args"]["reward_clip"], False)
-        self.assertIs(
-            train_config["checkpoint_eval_environment"]["env_args"]["reward_clip"],
-            False,
-        )
+        self.assertNotIn("checkpoint_eval_environment", train_config)
 
     def test_mspacman_recipe_loads_with_breakout_base_config_and_hud_mask(self) -> None:
         breakout = compose_train_document(
@@ -640,6 +595,39 @@ eval:
         with self.assertRaisesRegex(ValueError, "unknown field.*hypotesis"):
             validate_goal_contract_document(document, path, Path(".").resolve())
 
+    def test_training_only_goal_rejects_eval_owned_contract_fields(self) -> None:
+        path = self.BREAKOUT_GOAL.resolve()
+        base = load_goal_contract(path)
+        mario_eval = load_goal_contract(self.MARIO_L11_GOAL.resolve())["eval"]
+        invalid_documents = []
+
+        eval_rank = deepcopy(base)
+        eval_rank["objective"]["rank"] = ["max(eval/full/episode/return/mean)"]
+        invalid_documents.append((eval_rank, "may use only training metrics"))
+
+        acceptance_stop = deepcopy(base)
+        acceptance_stop["train"]["stop_on_acceptance"] = True
+        invalid_documents.append((acceptance_stop, "stop_on_acceptance must be false"))
+
+        eval_config = deepcopy(base)
+        eval_config["eval"] = deepcopy(mario_eval)
+        invalid_documents.append((eval_config, "eval must be omitted"))
+
+        release = deepcopy(base)
+        release["release"] = {"huggingface": {}}
+        invalid_documents.append((release, "release is unsupported"))
+
+        for document, message in invalid_documents:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                validate_goal_contract_document(document, path, Path(".").resolve())
+
+    def test_evaluated_goal_still_requires_eval_contract(self) -> None:
+        with self.assertRaisesRegex(ValueError, "eval is required"):
+            config_validation._validate_goal_eval(
+                {"train": {"checkpoint_eval_backend": "modal"}},
+                label="goal",
+            )
+
     def test_goal_validator_requires_slug_to_match_goal_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -807,9 +795,7 @@ environment_hash: sha256:deadbeef
         self.assertEqual(
             document["objective"]["rank"],
             [
-                "max(eval/full/outcome/success/rate/min)",
-                "max(eval/full/outcome/success/rate/mean)",
-                "min(leader/checkpoint/steps_to_goal)",
+                "min(leader/checkpoint/step)",
                 "max(eval/full/episode/return/mean)",
             ],
         )
@@ -861,7 +847,7 @@ environment_hash: sha256:deadbeef
         )
         self.assertEqual(
             document["eval"]["environment"]["task"]["termination"]["failure"],
-            ["stalled"],
+            [],
         )
         self.assertEqual(document["eval"]["episodes"], 100)
         self.assertNotIn("max_episodes", document["eval"]["environment"]["env_config"])

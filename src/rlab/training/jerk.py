@@ -23,7 +23,6 @@ from rlab.metric_names import (
     TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN,
     TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY,
     TRAIN_ALGORITHM_JERK_RETAINED_COUNT,
-    TRAIN_EPISODE_COUNT,
     TRAIN_EPISODE_LENGTH_MEAN,
     TRAIN_EPISODE_RETURN_SHAPED_MEAN,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
@@ -36,7 +35,6 @@ from rlab.metric_names import (
     metric_value_segment,
     train_success_attempts_metric,
     train_success_count_metric,
-    train_success_current_rate_metric,
     train_success_window_rate_metric,
 )
 from rlab.task_kernels import Outcome
@@ -143,7 +141,6 @@ class _OutcomeMetrics:
             current_rates[start] = rate
             payload[train_success_count_metric(start)] = successes
             payload[train_success_attempts_metric(start)] = attempts
-            payload[train_success_current_rate_metric(start)] = rate
             if len(self.windows[start]) >= 100:
                 payload[train_success_window_rate_metric(start)] = sum(self.windows[start]) / len(
                     self.windows[start]
@@ -217,7 +214,6 @@ def _publish_metrics(
 ) -> None:
     candidate = search.best_candidate()
     payload: dict[str, int | float] = {
-        TRAIN_EPISODE_COUNT: search.completed_episodes,
         TRAIN_ALGORITHM_JERK_RETAINED_COUNT: search.retained_count,
         TRAIN_ALGORITHM_JERK_EXPLOIT_PROBABILITY: search.archive_replay_probability,
         TRAIN_ALGORITHM_JERK_ARCHIVE_SELECTED_PREFIX_RETURN_MEAN: (

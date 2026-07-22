@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from rlab.file_utils import file_sha256 as _file_sha256
-from rlab.metric_names import validate_metric_payload
+from rlab.metric_names import METRICS_SCHEMA_VERSION, validate_metric_payload
 
 
 file_sha256 = _file_sha256
@@ -196,6 +196,7 @@ class MetricStore:
         source: str,
         created_at: float | None = None,
         publish: bool = True,
+        schema_version: int = METRICS_SCHEMA_VERSION,
     ) -> int:
         payload: dict[str, float] = {}
         now = time.time() if created_at is None else created_at
@@ -208,7 +209,7 @@ class MetricStore:
             payload[str(name)] = numeric
         if not payload:
             return 0
-        validate_metric_payload(payload)
+        validate_metric_payload(payload, schema_version=schema_version)
         payload.setdefault("global_step", float(step) if step is not None else 0.0)
         event_id = self._metric_event_id(source=source, step=step, payload=payload)
         with self.connection() as conn:
@@ -796,6 +797,7 @@ class MetricStore:
             step=checkpoint_step,
             source="modal_checkpoint_eval",
             publish=bool(publish),
+            schema_version=4,
         )
 
     def apply_modal_eval_skip(

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
+import os
+import re
 import shlex
 import subprocess
+import sys
 import time
+import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +23,13 @@ from rlab.fleet_labels import (
     JOB_KIND_LABEL,
     LABEL_PREFIX,
     LAUNCH_ID_LABEL,
+    MANAGED_LABEL,
 )
 from rlab.json_utils import json_safe
 from rlab.machines import MachineConfig
 from rlab.runtime_refs import docker_image_ref, normalize_runtime_image_ref
 from rlab.rom_assets import validate_rom_asset_manifest
+from rlab.workspace_contract import CleanupBatchEnvelope, WorkspaceManifest, exact_bind_mount
 
 
 GPU_TEST_IMAGE = "nvidia/cuda:12.9.1-base-ubuntu22.04"
@@ -28,6 +38,7 @@ MACHINE_COMMAND_TIMEOUT_SECONDS = 120.0
 DOCKER_PULL_TIMEOUT_SECONDS = 900.0
 DOCKER_STOP_TIMEOUT_SECONDS = 150.0
 TRAIN_CONTAINER_STOP_TIMEOUT_SECONDS = 300
+SSH_WORKSPACE_HELPER_PATH = "/usr/local/libexec/rlab-workspace-helper"
 
 
 @dataclass(frozen=True)
@@ -280,6 +291,221 @@ class DockerRunnerHost:
 
     def output_container_path(self, launch_id: str) -> str:
         return f"{self.machine.paths.container_outputs_dir.rstrip('/')}/{launch_id}"
+
+    def run_workspace_helper(
+        self,
+        operation: str,
+        request: Mapping[str, Any],
+        *,
+        timeout: float | None = MACHINE_COMMAND_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        if self.machine.backend == "local_docker":
+            command = [sys.executable, "-m", "rlab.workspace_helper", operation]
+            try:
+                result = subprocess.run(
+                    command,
+                    input=json.dumps(dict(request), sort_keys=True),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise MachineCommandTimeout(self.machine.name, float(timeout or 0.0)) from exc
+        else:
+            script = _shell_join(["sudo", "-n", SSH_WORKSPACE_HELPER_PATH, operation])
+            result = _run_machine_shell(
+                self.machine,
+                script,
+                input_text=json.dumps(dict(request), sort_keys=True),
+                capture=True,
+                timeout=timeout,
+                deadline_monotonic=self.deadline_monotonic,
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"workspace helper {operation} failed on {self.machine.name}: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"workspace helper {operation} returned invalid JSON") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError(f"workspace helper {operation} response must be an object")
+        return response
+
+    def workspace_helper_doctor(self) -> dict[str, Any]:
+        return self.run_workspace_helper("doctor", {}, timeout=5)
+
+    def workspace_drain_zero_receipt(
+        self,
+        *,
+        manifests: Sequence[WorkspaceManifest],
+        exact_container_names: Sequence[str],
+        exact_protected_paths: Sequence[str],
+        receipt_nonce: str,
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "drain-zero",
+            {
+                "protected_metadata_root": self.machine.paths.protected_metadata_dir,
+                "manifests": [manifest.as_dict() for manifest in manifests],
+                "exact_container_names": list(exact_container_names),
+                "exact_protected_paths": list(exact_protected_paths),
+                "receipt_nonce": receipt_nonce,
+            },
+            timeout=15,
+        )
+
+    def install_workspace_key_policy(
+        self, *, key_revision: str, public_key: bytes
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "install-key-policy",
+            {
+                "protected_metadata_root": self.machine.paths.protected_metadata_dir,
+                "key_revision": key_revision,
+                "public_key_base64": base64.b64encode(public_key).decode("ascii"),
+            },
+            timeout=10,
+        )
+
+    def reserve_workspace(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        payload: bytes,
+        attempt_env: Mapping[str, str],
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "reserve",
+            {
+                "manifest": manifest.as_dict(),
+                "payload_base64": base64.b64encode(payload).decode("ascii"),
+                "attempt_env": dict(attempt_env),
+            },
+        )
+
+    def release_reservation_intent(
+        self, manifest: WorkspaceManifest, *, receipt_sha256: str
+    ) -> None:
+        self.run_workspace_helper(
+            "release-reservation-intent",
+            {"manifest": manifest.as_dict(), "receipt_sha256": receipt_sha256},
+        )
+
+    def unlink_reserved_attempt_env(
+        self, manifest: WorkspaceManifest, *, expected_identity: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "unlink-env",
+            {"manifest": manifest.as_dict(), "expected_identity": dict(expected_identity)},
+        )
+
+    def reserve_recovery_env(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        container_generation: int,
+        attempt_env: Mapping[str, str],
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "reserve-generation-env",
+            {
+                "manifest": manifest.as_dict(),
+                "container_generation": int(container_generation),
+                "attempt_env": dict(attempt_env),
+            },
+        )
+
+    def release_recovery_env_intent(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        container_generation: int,
+        receipt_sha256: str,
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "release-generation-env-intent",
+            {
+                "manifest": manifest.as_dict(),
+                "container_generation": int(container_generation),
+                "receipt_sha256": receipt_sha256,
+            },
+        )
+
+    def delete_prepare(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        cleanup_row_id: int,
+        cleanup_attempt_id: str,
+        control_revision: int,
+        cursor_sha256: str,
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "delete-prepare",
+            {
+                "manifest": manifest.as_dict(),
+                "cleanup_row_id": int(cleanup_row_id),
+                "cleanup_attempt_id": cleanup_attempt_id,
+                "control_revision": int(control_revision),
+                "cursor_sha256": cursor_sha256,
+            },
+            timeout=10,
+        )
+
+    def delete_commit(
+        self,
+        envelope: CleanupBatchEnvelope,
+        *,
+        signature: str,
+        manifests: Mapping[int, WorkspaceManifest],
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "delete-commit",
+            {
+                "envelope": envelope.as_dict(),
+                "signature": signature,
+                "manifests": {
+                    str(row_id): manifest.as_dict() for row_id, manifest in manifests.items()
+                },
+            },
+            timeout=5,
+        )
+
+    def remove_prepare_receipt(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        cleanup_attempt_id: str,
+        prepare_receipt_sha256: str,
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "remove-prepare",
+            {
+                "manifest": manifest.as_dict(),
+                "cleanup_attempt_id": cleanup_attempt_id,
+                "prepare_receipt_sha256": prepare_receipt_sha256,
+            },
+            timeout=5,
+        )
+
+    def remove_host_deleted_journal(
+        self,
+        manifest: WorkspaceManifest,
+        *,
+        host_deleted_journal_sha256: str,
+    ) -> dict[str, Any]:
+        return self.run_workspace_helper(
+            "remove-host-deleted-journal",
+            {
+                "manifest": manifest.as_dict(),
+                "host_deleted_journal_sha256": host_deleted_journal_sha256,
+            },
+            timeout=5,
+        )
 
     def sync_shared_env(self, values: Mapping[str, str]) -> None:
         if self.machine.backend != "docker_ssh":
@@ -604,10 +830,18 @@ class DockerRunnerHost:
             *self.machine.docker_gpu_args,
             "--env-file",
             attempt_env_path or self.machine.paths.env_file,
-            "-v",
-            f"{self.machine.paths.payloads_dir}:{self.machine.paths.container_payloads_dir}:ro",
-            "-v",
-            f"{self.machine.paths.outputs_dir}:{self.machine.paths.container_outputs_dir}",
+            "--mount",
+            exact_bind_mount(
+                self.payload_host_path(launch_id),
+                self.payload_container_path(launch_id),
+                readonly=True,
+            ),
+            "--mount",
+            exact_bind_mount(
+                self.output_host_path(launch_id),
+                self.output_container_path(launch_id),
+                readonly=False,
+            ),
         ]
         if rom_asset_manifest is not None:
             manifest = validate_rom_asset_manifest(rom_asset_manifest, allow_legacy=True)
@@ -621,8 +855,10 @@ class DockerRunnerHost:
             )
             args.extend(
                 [
-                    "-v",
-                    f"{host_digest_dir}:{container_digest_dir}:ro",
+                    "--mount",
+                    exact_bind_mount(
+                        str(host_digest_dir), str(container_digest_dir), readonly=True
+                    ),
                     "-e",
                     f"RLAB_ROM_CACHE_DIR={self.machine.paths.container_rom_cache_dir}",
                 ]
@@ -655,20 +891,45 @@ class DockerRunnerHost:
         launch_id: str,
         runtime_image_ref: str,
         attempt_env_path: str | None = None,
+        rom_asset_manifest: Mapping[str, Any],
+        container_name: str | None = None,
     ) -> HostOperationResult:
+        manifest = validate_rom_asset_manifest(rom_asset_manifest, allow_legacy=True)
+        host_digest_dir = Path(self.machine.paths.rom_cache_dir) / "sha256" / manifest["sha256"]
+        container_digest_dir = (
+            Path(self.machine.paths.container_rom_cache_dir) / "sha256" / manifest["sha256"]
+        )
+        prepare = _run_machine_shell(
+            self.machine,
+            f"mkdir -p {shlex.quote(str(host_digest_dir))}",
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if prepare.returncode != 0:
+            return _operation_result(prepare)
         result = _run_machine_docker(
             self.machine,
             [
                 "run",
                 "--rm",
+                "--name",
+                container_name or f"rlab-rom-{launch_id}",
                 "--env-file",
                 attempt_env_path or self.machine.paths.env_file,
                 "-e",
                 f"RLAB_ROM_CACHE_DIR={self.machine.paths.container_rom_cache_dir}",
-                "-v",
-                f"{self.machine.paths.payloads_dir}:{self.machine.paths.container_payloads_dir}:ro",
-                "-v",
-                f"{self.machine.paths.rom_cache_dir}:{self.machine.paths.container_rom_cache_dir}",
+                "--mount",
+                exact_bind_mount(
+                    self.payload_host_path(launch_id),
+                    self.payload_container_path(launch_id),
+                    readonly=True,
+                ),
+                "--mount",
+                exact_bind_mount(
+                    str(host_digest_dir),
+                    str(container_digest_dir),
+                    readonly=False,
+                ),
                 docker_image_ref(runtime_image_ref),
                 "python",
                 "-m",
@@ -716,6 +977,145 @@ class DockerRunnerHost:
             deadline_monotonic=self.deadline_monotonic,
         )
         return _operation_result(result)
+
+    def container_is_absent(self, container_name: str) -> bool:
+        result = _run_machine_docker(
+            self.machine,
+            ["container", "inspect", container_name],
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode == 0:
+            return False
+        detail = str(result.stderr or result.stdout or "").lower()
+        if "no such" in detail or "not found" in detail:
+            return True
+        raise RuntimeError(
+            f"cannot prove container absence on {self.machine.name}: "
+            f"{result.stderr or result.stdout}"
+        )
+
+    def attest_train_container(
+        self,
+        *,
+        container_name: str,
+        launch_id: str,
+        runtime_image_ref: str,
+    ) -> dict[str, Any]:
+        result = _run_machine_docker(
+            self.machine,
+            ["container", "inspect", container_name],
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"cannot inspect workspace container {container_name}: "
+                f"{result.stderr or result.stdout}"
+            )
+        try:
+            documents = json.loads(result.stdout)
+            document = documents[0]
+        except (json.JSONDecodeError, IndexError, KeyError, TypeError) as exc:
+            raise RuntimeError("docker inspect returned an invalid container document") from exc
+        expected_mounts = {
+            (
+                os.path.normpath(self.payload_host_path(launch_id)),
+                os.path.normpath(self.payload_container_path(launch_id)),
+                False,
+            ),
+            (
+                os.path.normpath(self.output_host_path(launch_id)),
+                os.path.normpath(self.output_container_path(launch_id)),
+                True,
+            ),
+        }
+        all_bind_mounts = {
+            (
+                os.path.normpath(str(mount.get("Source") or "")),
+                os.path.normpath(str(mount.get("Destination") or "")),
+                bool(mount.get("RW")),
+            )
+            for mount in document.get("Mounts") or ()
+            if str(mount.get("Type") or "") == "bind"
+        }
+        actual_mounts = {
+            mount
+            for mount in all_bind_mounts
+            if mount[1]
+            in {self.payload_container_path(launch_id), self.output_container_path(launch_id)}
+        }
+        if actual_mounts != expected_mounts:
+            raise RuntimeError(
+                f"workspace container exact mount attestation failed: {sorted(actual_mounts)!r}"
+            )
+        exclusive_roots = tuple(
+            os.path.normpath(value)
+            for value in (
+                self.machine.paths.host_root,
+                self.machine.paths.payloads_dir,
+                self.machine.paths.outputs_dir,
+                self.machine.paths.protected_metadata_dir,
+            )
+        )
+        for source, destination, writable in all_bind_mounts:
+            rom_source_prefix = os.path.normpath(
+                f"{self.machine.paths.rom_cache_dir.rstrip('/')}/sha256"
+            )
+            rom_destination_prefix = os.path.normpath(
+                f"{self.machine.paths.container_rom_cache_dir.rstrip('/')}/sha256"
+            )
+            source_digest = os.path.relpath(source, rom_source_prefix)
+            destination_digest = os.path.relpath(destination, rom_destination_prefix)
+            exact_rom = (
+                not writable
+                and source_digest == destination_digest
+                and bool(re.fullmatch(r"[0-9a-f]{64}", source_digest))
+            )
+            overlaps_exclusive = any(
+                source == root
+                or source.startswith(f"{root}{os.sep}")
+                or root.startswith(f"{source}{os.sep}")
+                for root in exclusive_roots
+            )
+            if (
+                overlaps_exclusive
+                and (source, destination, writable) not in expected_mounts
+                and not exact_rom
+            ):
+                raise RuntimeError(
+                    f"workspace container has an unexpected broad/exclusive bind: {source}"
+                )
+        config = dict(document.get("Config") or {})
+        if str(config.get("Image") or "") != docker_image_ref(runtime_image_ref):
+            raise RuntimeError("workspace container image attestation failed")
+        labels = dict(config.get("Labels") or {})
+        if labels.get(LAUNCH_ID_LABEL) != launch_id or labels.get(MANAGED_LABEL) != "true":
+            raise RuntimeError("workspace container ownership-label attestation failed")
+        def command_parts(value: object) -> list[str]:
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, Sequence):
+                return [str(part) for part in value]
+            return []
+
+        command = [
+            *command_parts(config.get("Entrypoint")),
+            *command_parts(config.get("Cmd")),
+        ]
+        if "rlab-container-entrypoint" not in command or "run-job" not in command:
+            raise RuntimeError("workspace container entrypoint attestation failed")
+        return {
+            "container_id": str(document.get("Id") or ""),
+            "container_name": container_name,
+            "runtime_image_ref": runtime_image_ref,
+            "mounts": [
+                {"source": source, "destination": destination, "writable": writable}
+                for source, destination, writable in sorted(actual_mounts)
+            ],
+            "entrypoint": command,
+            "attested_at": datetime.now(UTC).isoformat(),
+        }
 
     def remove_runtime_image(self, image_ref: str) -> HostOperationResult:
         result = _run_machine_docker(
@@ -781,6 +1181,23 @@ class DockerRunnerHost:
         return int(result.returncode)
 
 
+def _workspace_helper_zipapp() -> tuple[str, str]:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "__main__.py",
+            "from rlab.workspace_helper import main\nraise SystemExit(main())\n",
+        )
+        archive.writestr("rlab/__init__.py", "")
+        for name in ("workspace_helper.py", "workspace_contract.py"):
+            archive.writestr(
+                f"rlab/{name}",
+                Path(__file__).with_name(name).read_bytes(),
+            )
+    executable = b"#!/usr/bin/env python3\n" + payload.getvalue()
+    return base64.b64encode(executable).decode("ascii"), hashlib.sha256(executable).hexdigest()
+
+
 def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None = None) -> str:
     if machine.backend != "docker_ssh":
         raise ValueError(f"setup-host requires a docker_ssh machine, got {machine.name!r}")
@@ -794,11 +1211,24 @@ def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None 
             ["run", "--rm", *machine.docker_gpu_args, GPU_TEST_IMAGE, "nvidia-smi"],
         )
     )
+    helper_base64, helper_sha256 = _workspace_helper_zipapp()
     lines = [
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(machine.paths.host_root)}",
         f"mkdir -p {shlex.quote(runs_dir)} {shlex.quote(machine.paths.logs_dir)} "
-        f"{shlex.quote(state_dir)}",
+        f"{shlex.quote(state_dir)} {shlex.quote(machine.paths.payloads_dir)} "
+        f"{shlex.quote(machine.paths.outputs_dir)}",
+        f"sudo -n install -d -o root -g root -m 0700 "
+        f"{shlex.quote(machine.paths.protected_metadata_dir)}",
+        "helper_tmp=$(mktemp)",
+        "trap 'rm -f \"$helper_tmp\"' EXIT",
+        f"printf %s {shlex.quote(helper_base64)} | base64 --decode > \"$helper_tmp\"",
+        f"printf '%s  %s\\n' {shlex.quote(helper_sha256)} \"$helper_tmp\" | sha256sum -c -",
+        f"sudo -n install -o root -g root -m 0755 \"$helper_tmp\" "
+        f"{shlex.quote(SSH_WORKSPACE_HELPER_PATH)}",
+        f"test \"$(sudo -n stat -c %U {shlex.quote(SSH_WORKSPACE_HELPER_PATH)})\" = root",
+        f"test \"$(sudo -n stat -c %a {shlex.quote(SSH_WORKSPACE_HELPER_PATH)})\" = 755",
+        f"sudo -n {shlex.quote(SSH_WORKSPACE_HELPER_PATH)} --help >/dev/null",
         f"if ! mkdir -p {shlex.quote(machine.paths.rom_cache_dir)} 2>/dev/null; then",
         f"  sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" "
         f"{shlex.quote(machine.paths.rom_cache_dir)}",
@@ -871,8 +1301,6 @@ def _setup_host_script(machine: MachineConfig, *, runtime_image_ref: str | None 
                             "run",
                             "--rm",
                             *machine.docker_gpu_args,
-                            "--env-file",
-                            machine.paths.env_file,
                             image,
                             "rlab-container-entrypoint",
                             "rlab-container-smoke",
@@ -911,10 +1339,16 @@ def run_checkpoint_coordinator_container(
         [
             "run",
             "--rm",
+            "--name",
+            f"rlab-checkpoint-recovery-{launch_id}",
             "--env-file",
             host.machine.paths.env_file,
-            "-v",
-            f"{host.machine.paths.outputs_dir}:{host.machine.paths.container_outputs_dir}",
+            "--mount",
+            exact_bind_mount(
+                host.output_host_path(launch_id),
+                host.output_container_path(launch_id),
+                readonly=False,
+            ),
             docker_image_ref(runtime_image_ref),
             "python",
             "-m",
@@ -952,8 +1386,12 @@ def run_wandb_publisher_recovery_container(
             f"rlab-wandb-recovery-{launch_id}",
             "--env-file",
             host.machine.paths.env_file,
-            "-v",
-            f"{host.machine.paths.outputs_dir}:{host.machine.paths.container_outputs_dir}",
+            "--mount",
+            exact_bind_mount(
+                host.output_host_path(launch_id),
+                host.output_container_path(launch_id),
+                readonly=False,
+            ),
             docker_image_ref(runtime_image_ref),
             "timeout",
             "--signal=TERM",

@@ -31,6 +31,7 @@ _HISTORICAL_RANK_METRICS = frozenset(
         "eval/reward/mean",
         "eval/best/reward",
         "eval/full/reward/mean",
+        "leader/checkpoint/steps_to_goal",
         "leader/checkpoint/steps_to_completion_goal",
     }
 )
@@ -42,7 +43,9 @@ class RankCriterion:
     metric: str
 
 
-def parse_objective_rank(value: Any) -> tuple[RankCriterion, ...]:
+def parse_objective_rank(
+    value: Any, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> tuple[RankCriterion, ...]:
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return ()
     criteria: list[RankCriterion] = []
@@ -52,7 +55,7 @@ def parse_objective_rank(value: Any) -> tuple[RankCriterion, ...]:
             return ()
         metric = match.group(2).strip()
         try:
-            validate_metric_name(metric)
+            validate_metric_name(metric, schema_version=schema_version)
         except ValueError:
             return ()
         criteria.append(RankCriterion(match.group(1), metric))
@@ -64,6 +67,9 @@ def parse_persisted_objective_rank(value: Any) -> tuple[RankCriterion, ...]:
     current = parse_objective_rank(value)
     if current:
         return current
+    version_four = parse_objective_rank(value, schema_version=4)
+    if version_four:
+        return version_four
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return ()
     criteria: list[RankCriterion] = []
@@ -78,8 +84,10 @@ def parse_persisted_objective_rank(value: Any) -> tuple[RankCriterion, ...]:
     return tuple(criteria)
 
 
-def require_objective_rank(value: Any) -> tuple[RankCriterion, ...]:
-    criteria = parse_objective_rank(value)
+def require_objective_rank(
+    value: Any, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> tuple[RankCriterion, ...]:
+    criteria = parse_objective_rank(value, schema_version=schema_version)
     if not criteria:
         raise ValueError(
             f"objective.rank must contain valid schema-v{METRICS_SCHEMA_VERSION} metric criteria"

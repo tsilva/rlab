@@ -1,4 +1,4 @@
-# Metrics schema v4
+# Metrics schema v5
 
 This file is the human contract for rlab telemetry. The Python registry in
 `src/rlab/metric_names.py` is the executable source of truth. Every emitted metric must match an
@@ -14,7 +14,7 @@ exact registry entry or a bounded template.
 - Fleet is the sole W&B writer for new `neon_mailbox_v1` runs. Training and evaluation workers never
   receive W&B credentials. Fleet preassigns the immutable W&B run id, publishes all streams to that
   run, and stores per-stream commit cursors in the W&B summary before deleting mailbox batches.
-- W&B config contains run-defining dimensions: `metrics_schema_version: 4`, `training_backend_id`,
+- W&B config contains run-defining dimensions: `metrics_schema_version: 5`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
@@ -38,15 +38,20 @@ rather than silently rewritten. Starts use the same readable ID in training and 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
 Fleet never supplies W&B's internal `_step`; W&B assigns it in arrival order. It is not an
-environment-transition or checkpoint count. Charts must use explicit `global_step` for the x-axis,
-and evaluation rows also carry `eval/{protocol}/checkpoint/step` for the evaluated checkpoint.
-Asynchronous evaluation rows may arrive after later training rows without overwriting them.
+environment-transition or checkpoint count. Charts and evaluation history use explicit
+`global_step` for the x-axis. Asynchronous evaluation rows may arrive after later training rows
+without overwriting them.
+
+Schema v4 is frozen compatibility state. Its removed metrics, `screen`/`confirm` staged-evaluation
+families, parsing, and projections remain accepted when a run declares `metrics_schema_version: 4`.
+Existing W&B history is never rewritten. Newly materialized runs declare v5.
 
 ## Research interpretation
 
-- Use `eval/full/outcome/success/rate/min` first for multi-start success goals, then the mean, then
-  `leader/checkpoint/steps_to_goal`, then episode return. `steps_to_goal` exists only when minimum
-  success is at least `0.99`.
+- Mario ranks checkpoints only after acceptance: earliest `leader/checkpoint/step`, then highest
+  `eval/full/episode/return/mean`. Breakout is training-only and ranks seeded recipe cohorts by
+  worst, mean, then best final `train/episode/return/shaped/mean`; tied cohorts prefer fewer mean
+  policy transitions.
 - Aggregate training `current/rate/*` is cumulative. Aggregate `window_100/rate/*` is the latest
   100 attempts. Global
   window-100 min/mean appear only after every configured start has 100 attempts. Always pair early
@@ -59,7 +64,7 @@ Asynchronous evaluation rows may arrive after later training rows without overwr
   Successful episodes contribute to success metrics, not the failure-reason families.
 - Positive PPO policy entropy, dominant-action rate, and the action histogram diagnose discrete
   policy collapse. Value prediction and advantage histograms are sampled every 64 rollouts.
-- Throughput phase timing satisfies `loop_seconds = env_step_seconds +
+- Derived throughput phase timing satisfies `loop wall time = env_step_seconds +
   rollout_overhead_seconds + between_rollouts_seconds`. Compare those three phase durations on
   matching workloads to identify a training-loop bottleneck. `rollout_overhead_seconds` includes
   policy inference plus wrapper, buffer, reset, task, and callback work outside the native provider.
@@ -80,16 +85,20 @@ Episode-level evidence stays in R2. Confidence intervals and start-by-reason sca
 are intentionally computed offline rather than added to W&B history.
 
 An acceptance rejection is complete evidence of failure, but not a complete 100-episode
-evaluation. It emits `eval/acceptance/*` counters only. `eval/full/*` is emitted only after every
-manifest identity appears exactly once and all 100 episodes succeed.
+evaluation. W&B history always receives `global_step`, pass, planned/completed episodes, and
+acceptance duration. It receives no partial `eval/full/*` result. Accepted projections additionally
+include variable return, length, progress, episode count, artifact, source, and `eval/full/by_start`.
+Constant acceptance success rates, per-start success scalars, failure-reason scalars, duplicate full
+duration, and constant leader-success fields remain in database/R2 evidence but are suppressed from
+acceptance W&B history.
 
 `eval/acceptance/pass` is per-checkpoint history. W&B summarizes that history with `max`, so the
 summary means that some checkpoint passed; it is not the run verdict. The authoritative verdict is
 the database promotion record (`eval_runs.outcome`, `promoted_eval_job_id`, and `promotion_json`).
-At terminal publication, that record restamps `rlab/goal/outcome`, `leader/checkpoint/*`, and the
-accepted `eval/acceptance/*` and `eval/full/*` compatibility summaries. In particular,
-`leader/checkpoint/acceptance_pass=1` identifies the canonical promoted checkpoint. Later rejected
-checkpoint projections remain in history and never modify canonical leader fields.
+At terminal publication, that record restamps `rlab/goal/outcome`, the canonical variable
+`leader/checkpoint/*` fields, and the accepted W&B projection. Later rejected checkpoint projections
+remain in history and never modify canonical leader fields. Raw acceptance aggregates and episode
+evidence remain authoritative in the database/R2.
 
 ## Registry
 
@@ -99,13 +108,11 @@ checkpoint projections remain in history and never modify canonical leader field
 | `global_step` | Policy environment transitions consumed. | steps | frame | history |
 | `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 completed training episodes. | scalar | rollout | history |
 | `train/episode/length/mean` | Rolling mean length over the latest 100 completed training episodes. | steps | rollout | history |
-| `train/episode/count` | Cumulative completed training episodes. | episodes | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
 | `train/outcome/reason/{reason}/count` | Cumulative failed episodes containing a reason. | episodes | rollout | history |
 | `train/outcome/reason/{reason}/rate/window_100` | Failure-reason incidence over the latest 100 terminal episodes. | fraction | rollout | history |
 | `train/outcome/success/from/{start}/count` | Cumulative successful episodes from a start. | episodes | rollout | history |
 | `train/outcome/success/from/{start}/attempts` | Cumulative episode attempts from a start. | episodes | rollout | history |
-| `train/outcome/success/from/{start}/rate/current` | Cumulative success rate from a start. | fraction | rollout | history |
 | `train/outcome/success/from/{start}/rate/window_100` | Success rate over the latest 100 attempts from a start. | fraction | rollout | history |
 | `train/outcome/success/current/rate/min` | Minimum cumulative success rate across observed starts. | fraction | rollout | history |
 | `train/outcome/success/current/rate/mean` | Mean cumulative success rate across observed starts. | fraction | rollout | history |
@@ -154,7 +161,6 @@ checkpoint projections remain in history and never modify canonical leader field
 | `train/throughput/loop_fps` | Policy transitions divided by rollout-start-to-next-rollout-start wall time. | steps/second | rollout | history |
 | `train/throughput/rollout_fps` | Policy transitions divided by rollout-collection wall time. | steps/second | rollout | history |
 | `train/throughput/env_step_fps` | Policy transitions divided by native-provider step wall time accumulated during the rollout. | steps/second | rollout | history |
-| `train/throughput/loop_seconds` | Wall time from one rollout start to the next rollout start. | seconds | rollout | history |
 | `train/throughput/rollout_seconds` | Wall time spent collecting one rollout. | seconds | rollout | history |
 | `train/throughput/env_step_seconds` | Native-provider step wall time accumulated while collecting one rollout. | seconds | rollout | history |
 | `train/throughput/rollout_overhead_seconds` | Rollout wall time outside native-provider step calls, including policy inference and wrapper, buffer, reset, task, and callback work. | seconds | rollout | history |
@@ -170,41 +176,27 @@ checkpoint projections remain in history and never modify canonical leader field
 | `eval/{protocol}/outcome/success/from/{start}/rate` | Evaluation success rate from a start. | fraction | evaluation | history |
 | `eval/{protocol}/outcome/success/rate/min` | Aggregate per-start evaluation success rate. | fraction | evaluation | history |
 | `eval/{protocol}/outcome/success/rate/mean` | Aggregate per-start evaluation success rate. | fraction | evaluation | history |
-| `eval/{protocol}/outcome/reason/{reason}/count` | Failed evaluation episodes containing a reason. | episodes | evaluation | history |
 | `eval/{protocol}/outcome/reason/{reason}/rate` | Evaluation failure-reason incidence. | fraction | evaluation | history |
 | `eval/full/progress/{progress}/mean` | Goal-configured full-evaluation progress summary. | value | evaluation | history |
 | `eval/full/progress/{progress}/max` | Goal-configured full-evaluation progress summary. | value | evaluation | history |
-| `eval/{protocol}/checkpoint/step` | Evaluated checkpoint step. | steps | evaluation | history |
 | `eval/{protocol}/checkpoint/artifact` | Evaluated checkpoint artifact reference. | metadata | evaluation | history |
 | `eval/{protocol}/duration/seconds` | Evaluation wall duration. | seconds | evaluation | history |
 | `eval/{protocol}/source` | Evaluation execution source. | text | evaluation | history |
 | `eval/acceptance/pass` | Per-checkpoint acceptance result; W&B summarizes its history with max, not as the verdict. | boolean | acceptance evaluation | history |
 | `eval/acceptance/episodes/planned` | Exact episode identities required by the acceptance manifest. | episodes | acceptance evaluation | history |
 | `eval/acceptance/episodes/completed` | Valid planned episode rows completed before acceptance or fail-fast rejection. | episodes | acceptance evaluation | history |
-| `eval/acceptance/failure/count` | Failed planned episodes; zero for acceptance and one for fail-fast rejection. | episodes | acceptance evaluation | history |
 | `eval/acceptance/duration/seconds` | Acceptance-worker evaluation wall duration. | seconds | acceptance evaluation | history |
-| `eval/screen/preview` | Historical checkpoint-screen preview; new acceptance jobs do not capture or publish previews. | html | historical evaluation | media |
-| `eval/screen/candidate/pass` | Historical staged checkpoint pass signal. | boolean | historical evaluation | history |
-| `eval/confirm/candidate/pass` | Historical staged checkpoint pass signal. | boolean | historical evaluation | history |
-| `eval/screen/candidate/stage_index` | Historical staged checkpoint protocol index. | index | historical evaluation | history |
-| `eval/confirm/candidate/stage_index` | Historical staged checkpoint protocol index. | index | historical evaluation | history |
-| `eval/confirm/candidate/checkpoint_step` | Historical confirmed candidate checkpoint step. | steps | historical evaluation | history |
-| `eval/confirm/candidate/episodes` | Historical confirmed candidate evaluation episodes. | episodes | historical evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
 | `leader/checkpoint/acceptance_pass` | Canonical promoted-checkpoint acceptance verdict restamped from database promotion state. | boolean | selection | summary |
 | `leader/checkpoint/success_rate_min` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/success_rate_mean` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/objective` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/objective_name` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/return_mean` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/best_return` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/rank` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/rank_values` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/progress_max` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/step` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/steps_to_goal` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/artifact_ref` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/local_path` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/eval_source` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/updated_at` | Selected checkpoint summary field. | summary | selection | summary |
 <!-- METRIC_REGISTRY_END -->

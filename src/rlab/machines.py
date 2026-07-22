@@ -16,6 +16,7 @@ MACHINE_PATH_KEYS = frozenset(
         "host_root",
         "payloads_dir",
         "outputs_dir",
+        "protected_metadata_dir",
         "logs_dir",
         "roms_dir",
         "rom_cache_dir",
@@ -38,6 +39,7 @@ class MachinePaths:
     host_root: str
     payloads_dir: str
     outputs_dir: str
+    protected_metadata_dir: str
     logs_dir: str
     roms_dir: str
     rom_cache_dir: str
@@ -168,6 +170,9 @@ def _machine_from_raw(name: str, raw: Mapping[str, Any]) -> MachineConfig:
             host_root=host_root,
             payloads_dir=str(paths_raw.get("payloads_dir") or f"{host_root}/payloads"),
             outputs_dir=str(paths_raw.get("outputs_dir") or f"{host_root}/outputs"),
+            protected_metadata_dir=str(
+                paths_raw.get("protected_metadata_dir") or f"{host_root}/workspace-meta"
+            ),
             logs_dir=str(paths_raw.get("logs_dir") or f"{host_root}/logs"),
             roms_dir=str(paths_raw.get("roms_dir") or "/home/tsilva/roms"),
             rom_cache_dir=str(paths_raw.get("rom_cache_dir") or f"{host_root}/rom-cache"),

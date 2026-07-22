@@ -143,7 +143,9 @@ class AsyncWorkerTests(unittest.TestCase):
 
             expected_uri = (
                 "s3://bucket/checkpoints/SuperMarioBros-Nes-v0/"
-                "rlab-test-run-checkpoint/model_100_steps.zip"
+                "rlab-test-run-checkpoint/sha256/"
+                "47320987f9a49d5b00119b960f247a956773f57543982b8bfcb6da5bb3afd9ef/"
+                "model_100_steps.zip"
             )
             self.assertTrue(uploaded)
             upload.assert_called_once_with(checkpoint_path, expected_uri)

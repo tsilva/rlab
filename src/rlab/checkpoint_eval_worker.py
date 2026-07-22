@@ -99,6 +99,8 @@ def update_best_checkpoint_summary(
     eval_source: str = "async_worker",
     selection_rank: object = (),
     force: bool = False,
+    metrics_schema_version: int = 5,
+    include_completion: bool = True,
 ) -> None:
     if wandb_run is None:
         return
@@ -109,17 +111,27 @@ def update_best_checkpoint_summary(
         except AttributeError, KeyError:
             pass
 
-    criteria = require_objective_rank(selection_rank)
+    criteria = require_objective_rank(
+        selection_rank, schema_version=metrics_schema_version
+    )
     score = rank_score(metrics, criteria)
     values = rank_metric_values(metrics, criteria)
-    objective_name = criteria[0].metric
     try:
-        previous_rank = parse_objective_rank(wandb_run.summary.get(LEADER_CHECKPOINT_RANK))
         previous_values = wandb_run.summary.get(LEADER_CHECKPOINT_RANK_VALUES)
     except AttributeError:
-        previous_rank = ()
         previous_values = None
-    if previous_rank == criteria and isinstance(previous_values, list | tuple):
+    previous_rank = (
+        parse_objective_rank(
+            wandb_run.summary.get(LEADER_CHECKPOINT_RANK), schema_version=4
+        )
+        if int(metrics_schema_version) == 4
+        else criteria
+    )
+    if (
+        previous_rank == criteria
+        and isinstance(previous_values, list | tuple)
+        and len(previous_values) == len(criteria)
+    ):
         previous_metrics = {
             criterion.metric: value
             for criterion, value in zip(criteria, previous_values, strict=False)
@@ -131,11 +143,17 @@ def update_best_checkpoint_summary(
         return
 
     wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE] = values[0]
-    wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE_NAME] = objective_name
-    wandb_run.summary[LEADER_CHECKPOINT_RANK] = list(objective_rank_strings(criteria))
+    if int(metrics_schema_version) == 4:
+        wandb_run.summary[LEADER_CHECKPOINT_OBJECTIVE_NAME] = criteria[0].metric
+        wandb_run.summary[LEADER_CHECKPOINT_RANK] = list(objective_rank_strings(criteria))
+    else:
+        remove_summary_key(LEADER_CHECKPOINT_OBJECTIVE_NAME)
+        remove_summary_key(LEADER_CHECKPOINT_RANK)
+        remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_GOAL)
+        remove_summary_key(LEADER_CHECKPOINT_LOCAL_PATH)
     wandb_run.summary[LEADER_CHECKPOINT_RANK_VALUES] = list(values)
     completion = eval_completion_score(dict(metrics))
-    if completion is not None:
+    if include_completion and completion is not None:
         wandb_run.summary[LEADER_CHECKPOINT_SUCCESS_RATE_MIN] = completion[0]
         wandb_run.summary[LEADER_CHECKPOINT_SUCCESS_RATE_MEAN] = completion[1]
     else:
@@ -145,15 +163,16 @@ def update_best_checkpoint_summary(
     wandb_run.summary[LEADER_CHECKPOINT_BEST_RETURN] = metrics.get(EVAL_FULL_EPISODE_RETURN_BEST)
     wandb_run.summary[LEADER_CHECKPOINT_PROGRESS_MAX] = metrics.get(EVAL_FULL_PROGRESS_X_MAX)
     wandb_run.summary[LEADER_CHECKPOINT_STEP] = checkpoint_step_value
-    if any(
-        criterion.metric == LEADER_CHECKPOINT_STEPS_TO_GOAL and value is not None
-        for criterion, value in zip(criteria, values, strict=True)
-    ):
-        wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_GOAL] = checkpoint_step_value
-    else:
-        remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_GOAL)
     wandb_run.summary[LEADER_CHECKPOINT_ARTIFACT_REF] = artifact_ref
-    wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
+    if int(metrics_schema_version) == 4:
+        if any(
+            criterion.metric == LEADER_CHECKPOINT_STEPS_TO_GOAL and value is not None
+            for criterion, value in zip(criteria, values, strict=True)
+        ):
+            wandb_run.summary[LEADER_CHECKPOINT_STEPS_TO_GOAL] = checkpoint_step_value
+        else:
+            remove_summary_key(LEADER_CHECKPOINT_STEPS_TO_GOAL)
+        wandb_run.summary[LEADER_CHECKPOINT_LOCAL_PATH] = str(checkpoint_path)
     wandb_run.summary[LEADER_CHECKPOINT_EVAL_SOURCE] = eval_source
     wandb_run.summary[LEADER_CHECKPOINT_UPDATED_AT] = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ",
@@ -168,25 +187,38 @@ def evaluation_metric_payload(
     checkpoint_step: int,
     checkpoint_artifact: str,
     eval_source: str,
+    metrics_schema_version: int = 5,
+    acceptance_projection: bool = False,
 ) -> dict[str, object]:
     payload: dict[str, object] = {GLOBAL_STEP: checkpoint_step}
     for name, value in metrics.items():
         if not name.startswith("eval/full/"):
             continue
         suffix = name.removeprefix("eval/full/")
+        if acceptance_projection and suffix.startswith("outcome/"):
+            continue
         if suffix == "episode/return/best" and protocol != "full":
             continue
         if suffix.startswith(("episode/", "outcome/")) or (
             protocol == "full" and suffix.startswith("progress/")
         ):
-            payload[eval_metric(protocol, suffix)] = value
-    payload[eval_metric(protocol, "checkpoint/step")] = checkpoint_step
-    payload[eval_metric(protocol, "checkpoint/artifact")] = checkpoint_artifact
-    payload[eval_metric(protocol, "source")] = eval_source
+            payload[
+                eval_metric(protocol, suffix, schema_version=metrics_schema_version)
+            ] = value
+    if int(metrics_schema_version) == 4:
+        payload[
+            eval_metric(protocol, "checkpoint/step", schema_version=metrics_schema_version)
+        ] = checkpoint_step
+    payload[
+        eval_metric(protocol, "checkpoint/artifact", schema_version=metrics_schema_version)
+    ] = checkpoint_artifact
+    payload[eval_metric(protocol, "source", schema_version=metrics_schema_version)] = eval_source
     duration = metrics.get(EVAL_FULL_DURATION_SECONDS)
-    if duration is not None:
-        payload[eval_metric(protocol, "duration/seconds")] = duration
-    validate_metric_payload(payload)
+    if duration is not None and not acceptance_projection:
+        payload[
+            eval_metric(protocol, "duration/seconds", schema_version=metrics_schema_version)
+        ] = duration
+    validate_metric_payload(payload, schema_version=metrics_schema_version)
     return payload
 
 
@@ -202,17 +234,47 @@ def log_checkpoint_eval_metrics(
     config: EnvConfig,
     update_leader: bool = True,
     force_leader: bool = False,
+    acceptance_projection: bool = False,
 ) -> None:
     if wandb_run is None:
         return
     del config
+    configured_schema_version = getattr(args, "metrics_schema_version", None)
+    if configured_schema_version is None:
+        try:
+            configured_schema_version = wandb_run.config.get("metrics_schema_version")
+        except AttributeError, KeyError:
+            configured_schema_version = None
+    metrics_schema_version = int(configured_schema_version or 5)
     payload = evaluation_metric_payload(
         protocol="full",
         metrics=metrics,
         checkpoint_step=checkpoint_step_value,
         checkpoint_artifact=artifact_ref,
         eval_source=eval_source,
+        metrics_schema_version=metrics_schema_version,
+        acceptance_projection=acceptance_projection,
     )
+    add_eval_by_start_table(payload, metrics=metrics, checkpoint_step=checkpoint_step_value)
+    wandb_run.log(payload)
+    if update_leader:
+        update_best_checkpoint_summary(
+            wandb_run,
+            metrics=metrics,
+            checkpoint_path=checkpoint_path,
+            checkpoint_step_value=checkpoint_step_value,
+            artifact_ref=artifact_ref,
+            eval_source=eval_source,
+            selection_rank=getattr(args, "selection_rank", ()),
+            force=force_leader,
+            metrics_schema_version=metrics_schema_version,
+            include_completion=not acceptance_projection,
+        )
+
+
+def add_eval_by_start_table(
+    payload: dict[str, object], *, metrics: Mapping[str, Any], checkpoint_step: int
+) -> None:
     table_rows = metrics.get("_eval_by_start_rows")
     episode_results = metrics.get("episode_results")
     if not isinstance(table_rows, list) and isinstance(episode_results, list):
@@ -235,19 +297,7 @@ def log_checkpoint_eval_metrics(
         ]
         payload[EVAL_FULL_BY_START] = wandb.Table(
             columns=columns,
-            data=[[checkpoint_step_value, *row] for row in table_rows],
-        )
-    wandb_run.log(payload)
-    if update_leader:
-        update_best_checkpoint_summary(
-            wandb_run,
-            metrics=metrics,
-            checkpoint_path=checkpoint_path,
-            checkpoint_step_value=checkpoint_step_value,
-            artifact_ref=artifact_ref,
-            eval_source=eval_source,
-            selection_rank=getattr(args, "selection_rank", ()),
-            force=force_leader,
+            data=[[checkpoint_step, *row] for row in table_rows],
         )
 
 
@@ -278,6 +328,7 @@ def metric_payload(
         checkpoint_step=checkpoint_step,
         checkpoint_artifact=eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
         eval_source=str(metrics.get("eval_source") or "async_worker"),
+        metrics_schema_version=int(getattr(args, "metrics_schema_version", 5) or 5),
     )
 
 
@@ -299,10 +350,11 @@ def staged_metric_payload(
         checkpoint_step=checkpoint_step,
         checkpoint_artifact=eval_checkpoint_artifact_ref(args, checkpoint_path, checkpoint_step),
         eval_source="async_worker",
+        metrics_schema_version=4,
     )
     payload[checkpoint_eval_stage_metric(stage_name, "candidate/pass")] = 1.0 if passed else 0.0
     payload[checkpoint_eval_stage_metric(stage_name, "candidate/stage_index")] = float(stage_index)
-    validate_metric_payload(payload)
+    validate_metric_payload(payload, schema_version=4)
     return payload
 
 
@@ -428,6 +480,7 @@ def process_staged_eval(
             step=step,
             source="checkpoint_eval",
             publish=bool(getattr(args, "wandb", False)),
+            schema_version=4,
         )
         store.mark_checkpoint_eval_stage_succeeded(
             stage_id,
@@ -456,6 +509,7 @@ def process_staged_eval(
                 step=step,
                 source="checkpoint_eval",
                 publish=bool(getattr(args, "wandb", False)),
+                schema_version=4,
             )
             store.mark_checkpoint_eval_candidate(
                 checkpoint_id,

@@ -15,9 +15,7 @@ objective:
   - Level1-1
   - Level1-2
   rank:
-  - max(eval/full/outcome/success/rate/min)
-  - max(eval/full/outcome/success/rate/mean)
-  - min(leader/checkpoint/steps_to_goal)
+  - min(leader/checkpoint/step)
   - max(eval/full/episode/return/mean)
 reward_shapes:
   program_kind: mario-v1

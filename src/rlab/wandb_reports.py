@@ -15,18 +15,19 @@ import yaml
 
 from rlab.metric_names import (
     EVAL_FULL_BY_START,
-    EVAL_FULL_CHECKPOINT_STEP,
     EVAL_FULL_EPISODE_RETURN_MEAN,
     EVAL_FULL_SUCCESS_RATE_MEAN,
     EVAL_FULL_SUCCESS_RATE_MIN,
     GLOBAL_STEP,
+    EVAL_ACCEPTANCE_EPISODES_COMPLETED,
+    EVAL_ACCEPTANCE_EPISODES_PLANNED,
+    EVAL_ACCEPTANCE_PASS,
     LEADER_CHECKPOINT_ARTIFACT_REF,
     LEADER_CHECKPOINT_EVAL_SOURCE,
     LEADER_CHECKPOINT_OBJECTIVE,
     LEADER_CHECKPOINT_PROGRESS_MAX,
     LEADER_CHECKPOINT_RETURN_MEAN,
     LEADER_CHECKPOINT_STEP,
-    LEADER_CHECKPOINT_STEPS_TO_GOAL,
     LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
     LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
     LEADER_CHECKPOINT_UPDATED_AT,
@@ -93,9 +94,7 @@ LEADER_COLUMNS = [
     "config:goal_contract_sha256.value",
     "config:recipe_slug.value",
     "config:seed.value",
-    f"summary:{LEADER_CHECKPOINT_SUCCESS_RATE_MIN}",
-    f"summary:{LEADER_CHECKPOINT_SUCCESS_RATE_MEAN}",
-    f"summary:{LEADER_CHECKPOINT_STEPS_TO_GOAL}",
+    f"summary:{LEADER_CHECKPOINT_OBJECTIVE}",
     f"summary:{LEADER_CHECKPOINT_RETURN_MEAN}",
     f"summary:{LEADER_CHECKPOINT_PROGRESS_MAX}",
     f"summary:{LEADER_CHECKPOINT_STEP}",
@@ -112,8 +111,9 @@ ACTIVE_COLUMNS = [
     "config:batch_id.value",
     "config:seed.value",
     "config:algorithm_id.value",
-    f"summary:{EVAL_FULL_SUCCESS_RATE_MIN}",
-    f"summary:{EVAL_FULL_SUCCESS_RATE_MEAN}",
+    f"summary:{EVAL_ACCEPTANCE_PASS}",
+    f"summary:{EVAL_ACCEPTANCE_EPISODES_COMPLETED}",
+    f"summary:{EVAL_ACCEPTANCE_EPISODES_PLANNED}",
 ]
 COLUMN_WIDTHS = {
     "run:name": 320,
@@ -426,7 +426,6 @@ def _leader_order_spec(criteria: Sequence[RankCriterion]) -> list[tuple[str, boo
         EVAL_FULL_SUCCESS_RATE_MIN: LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
         EVAL_FULL_SUCCESS_RATE_MEAN: LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
         EVAL_FULL_EPISODE_RETURN_MEAN: LEADER_CHECKPOINT_RETURN_MEAN,
-        LEADER_CHECKPOINT_STEPS_TO_GOAL: LEADER_CHECKPOINT_STEPS_TO_GOAL,
         LEADER_CHECKPOINT_STEP: LEADER_CHECKPOINT_STEP,
     }
     result: list[tuple[str, bool]] = []
@@ -551,33 +550,35 @@ def _goal_section_blocks(wr, section: str, goal: GoalReportSpec, *, entity: str)
                 panels=[
                     _line(
                         wr,
-                        title="Full-evaluation success",
-                        x=EVAL_FULL_CHECKPOINT_STEP,
-                        y=[EVAL_FULL_SUCCESS_RATE_MIN, EVAL_FULL_SUCCESS_RATE_MEAN],
+                        title="Acceptance result",
+                        x=GLOBAL_STEP,
+                        y=[EVAL_ACCEPTANCE_PASS],
+                    ),
+                    _line(
+                        wr,
+                        title="Acceptance episode progress",
+                        x=GLOBAL_STEP,
+                        y=[
+                            EVAL_ACCEPTANCE_EPISODES_COMPLETED,
+                            EVAL_ACCEPTANCE_EPISODES_PLANNED,
+                        ],
                     ),
                     _line(
                         wr,
                         title=EVAL_FULL_EPISODE_RETURN_MEAN,
-                        x=EVAL_FULL_CHECKPOINT_STEP,
+                        x=GLOBAL_STEP,
                         y=[EVAL_FULL_EPISODE_RETURN_MEAN],
                     ),
                 ],
             ),
         ]
     if section == "evaluation_by_start":
-        panels = []
-        if len(goal.starts) <= 4:
-            for start in goal.starts:
-                metric = f"eval/full/outcome/success/from/{start}/rate"
-                panels.append(
-                    _line(wr, title=metric, x=EVAL_FULL_CHECKPOINT_STEP, y=[metric], w=12, h=7)
-                )
-        panels.append(
+        panels = [
             wr.WeavePanelSummaryTable(
                 table_name=EVAL_FULL_BY_START,
                 layout=wr.Layout(w=24, h=12),
             )
-        )
+        ]
         return [
             wr.H2("Full evaluation by start"),
             wr.PanelGrid(runsets=[runset], panels=panels),
@@ -640,13 +641,6 @@ def _goal_section_blocks(wr, section: str, goal: GoalReportSpec, *, entity: str)
                         x=GLOBAL_STEP,
                         y=[],
                         metric_regex=r"train/outcome/reason/.*/rate/window_100",
-                        layout=wr.Layout(w=12, h=8),
-                    ),
-                    wr.LinePlot(
-                        title="Full-evaluation failure-reason rates",
-                        x=EVAL_FULL_CHECKPOINT_STEP,
-                        y=[],
-                        metric_regex=r"eval/full/outcome/reason/.*/rate",
                         layout=wr.Layout(w=12, h=8),
                     ),
                 ],

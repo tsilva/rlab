@@ -350,12 +350,81 @@ class ModalEvalContractTests(unittest.TestCase):
                 "purpose": "promotion",
                 "checkpoint_step": 123,
                 "checkpoint_uri": "s3://bucket/checkpoint.zip",
+                "train_config": {"metrics_schema_version": 5},
             },
             raw_metrics,
             True,
         )
 
         self.assertEqual(actual, expected)
+
+    def test_v5_acceptance_projection_suppresses_constant_outcomes(self) -> None:
+        raw_metrics = {
+            "eval/full/episode/return/mean": 2.0,
+            "eval/full/episode/length/mean": 10.0,
+            "eval/full/episode/count": 100,
+            "eval/full/progress/x/max": 3160.0,
+            "eval/full/outcome/success/rate/min": 1.0,
+            "eval/full/outcome/success/from/Level1-1/rate": 1.0,
+            "eval/full/outcome/reason/stalled/rate": 0.0,
+            "eval/full/duration/seconds": 12.0,
+            "_acceptance_duration_seconds": 13.0,
+            "_acceptance_aggregates": {
+                "episodes_planned": 100,
+                "episodes_completed": 100,
+                "failure_count": 0,
+            },
+        }
+        job = {
+            "purpose": "acceptance",
+            "checkpoint_step": 123,
+            "checkpoint_uri": "s3://bucket/checkpoint.zip",
+            "train_config": {"metrics_schema_version": 5},
+        }
+
+        projected = _stage_metrics(job, raw_metrics, True)
+
+        self.assertEqual(projected["global_step"], 123)
+        self.assertEqual(projected["eval/acceptance/pass"], 1.0)
+        self.assertEqual(projected["eval/acceptance/episodes/planned"], 100)
+        self.assertEqual(projected["eval/acceptance/episodes/completed"], 100)
+        self.assertEqual(projected["eval/acceptance/duration/seconds"], 13.0)
+        self.assertEqual(projected["eval/full/episode/return/mean"], 2.0)
+        self.assertEqual(projected["eval/full/episode/length/mean"], 10.0)
+        self.assertEqual(projected["eval/full/episode/count"], 100)
+        self.assertEqual(projected["eval/full/progress/x/max"], 3160.0)
+        self.assertEqual(
+            projected["eval/full/checkpoint/artifact"],
+            "s3://bucket/checkpoint.zip",
+        )
+        self.assertEqual(projected["eval/full/source"], "modal")
+        self.assertNotIn("eval/acceptance/failure/count", projected)
+        self.assertNotIn("eval/full/checkpoint/step", projected)
+        self.assertNotIn("eval/full/duration/seconds", projected)
+        self.assertFalse(any(name.startswith("eval/full/outcome/") for name in projected))
+
+    def test_v5_rejected_acceptance_has_no_partial_full_projection(self) -> None:
+        projected = _stage_metrics(
+            {
+                "purpose": "acceptance",
+                "checkpoint_step": 123,
+                "checkpoint_uri": "s3://bucket/checkpoint.zip",
+                "train_config": {"metrics_schema_version": 5},
+            },
+            {
+                "eval/full/episode/return/mean": 2.0,
+                "_acceptance_duration_seconds": 3.0,
+                "_acceptance_aggregates": {
+                    "episodes_planned": 100,
+                    "episodes_completed": 1,
+                    "failure_count": 1,
+                },
+            },
+            False,
+        )
+
+        self.assertEqual(projected["eval/acceptance/pass"], 0.0)
+        self.assertFalse(any(name.startswith("eval/full/") for name in projected))
 
     def test_preflight_checks_schema_asset_backend_and_exact_deployment(self) -> None:
         conn = mock.MagicMock()

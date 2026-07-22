@@ -6,7 +6,7 @@ from numbers import Real
 from typing import Any, Mapping
 
 
-METRICS_SCHEMA_VERSION = 4
+METRICS_SCHEMA_VERSION = 5
 GLOBAL_STEP = "global_step"
 
 TRAIN_EPISODE_RETURN_SHAPED_MEAN = "train/episode/return/shaped/mean"
@@ -95,6 +95,7 @@ TRAIN_ARTIFACT_UPLOAD_SECONDS = "train/artifact/upload/seconds"
 
 EVAL_ROOT = "eval"
 EVAL_PROTOCOLS = ("screen", "confirm", "full")
+ACTIVE_EVAL_PROTOCOLS = ("full",)
 EVAL_FULL_ROOT = f"{EVAL_ROOT}/full"
 EVAL_FULL_EPISODE_RETURN_MEAN = f"{EVAL_FULL_ROOT}/episode/return/mean"
 EVAL_FULL_EPISODE_RETURN_STD = f"{EVAL_FULL_ROOT}/episode/return/std"
@@ -170,7 +171,6 @@ METRIC_DEFINITIONS = (
         "Rolling mean length over the latest 100 completed training episodes.",
         "steps",
     ),
-    _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
     _definition(TRAIN_OUTCOME_TERMINAL_COUNT, "Cumulative terminal episode records.", "episodes"),
     _definition(
         "train/outcome/reason/{reason}/count",
@@ -191,11 +191,6 @@ METRIC_DEFINITIONS = (
         "train/outcome/success/from/{start}/attempts",
         "Cumulative episode attempts from a start.",
         "episodes",
-    ),
-    _definition(
-        "train/outcome/success/from/{start}/rate/current",
-        "Cumulative success rate from a start.",
-        "fraction",
     ),
     _definition(
         "train/outcome/success/from/{start}/rate/window_100",
@@ -358,11 +353,6 @@ METRIC_DEFINITIONS = (
         "steps/second",
     ),
     _definition(
-        TRAIN_THROUGHPUT_LOOP_SECONDS,
-        "Wall time from one rollout start to the next rollout start.",
-        "seconds",
-    ),
-    _definition(
         TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
         "Wall time spent collecting one rollout.",
         "seconds",
@@ -432,12 +422,6 @@ METRIC_DEFINITIONS = (
         for stat in ("min", "mean")
     ),
     _definition(
-        "eval/{protocol}/outcome/reason/{reason}/count",
-        "Failed evaluation episodes containing a reason.",
-        "episodes",
-        "evaluation",
-    ),
-    _definition(
         "eval/{protocol}/outcome/reason/{reason}/rate",
         "Evaluation failure-reason incidence.",
         "fraction",
@@ -451,9 +435,6 @@ METRIC_DEFINITIONS = (
             "evaluation",
         )
         for stat in ("mean", "max")
-    ),
-    _definition(
-        "eval/{protocol}/checkpoint/step", "Evaluated checkpoint step.", "steps", "evaluation"
     ),
     _definition(
         "eval/{protocol}/checkpoint/artifact",
@@ -484,15 +465,68 @@ METRIC_DEFINITIONS = (
         "acceptance evaluation",
     ),
     _definition(
-        EVAL_ACCEPTANCE_FAILURE_COUNT,
-        "Failed planned episodes; zero for acceptance and one for fail-fast rejection.",
-        "episodes",
-        "acceptance evaluation",
-    ),
-    _definition(
         EVAL_ACCEPTANCE_DURATION_SECONDS,
         "Acceptance-worker evaluation wall duration.",
         "seconds",
+        "acceptance evaluation",
+    ),
+    _definition(
+        EVAL_FULL_BY_START,
+        "Structured full-evaluation evidence by start and reason.",
+        "table",
+        "evaluation",
+    ),
+    _definition(
+        LEADER_CHECKPOINT_ACCEPTANCE_PASS,
+        "Canonical promoted-checkpoint acceptance verdict restamped from database promotion state.",
+        "boolean",
+        "selection",
+        "summary",
+    ),
+    *(
+        _definition(name, "Selected checkpoint summary field.", "summary", "selection", "summary")
+        for name in (
+            LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+            LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+            LEADER_CHECKPOINT_OBJECTIVE,
+            LEADER_CHECKPOINT_RETURN_MEAN,
+            LEADER_CHECKPOINT_BEST_RETURN,
+            LEADER_CHECKPOINT_RANK_VALUES,
+            LEADER_CHECKPOINT_PROGRESS_MAX,
+            LEADER_CHECKPOINT_STEP,
+            LEADER_CHECKPOINT_ARTIFACT_REF,
+            LEADER_CHECKPOINT_EVAL_SOURCE,
+            LEADER_CHECKPOINT_UPDATED_AT,
+        )
+    ),
+)
+
+
+V4_ONLY_METRIC_DEFINITIONS = (
+    _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
+    _definition(
+        "train/outcome/success/from/{start}/rate/current",
+        "Cumulative success rate from a start.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_THROUGHPUT_LOOP_SECONDS,
+        "Wall time from one rollout start to the next rollout start.",
+        "seconds",
+    ),
+    _definition(
+        "eval/{protocol}/outcome/reason/{reason}/count",
+        "Failed evaluation episodes containing a reason.",
+        "episodes",
+        "evaluation",
+    ),
+    _definition(
+        "eval/{protocol}/checkpoint/step", "Evaluated checkpoint step.", "steps", "evaluation"
+    ),
+    _definition(
+        EVAL_ACCEPTANCE_FAILURE_COUNT,
+        "Failed planned episodes; zero for acceptance and one for fail-fast rejection.",
+        "episodes",
         "acceptance evaluation",
     ),
     _definition(
@@ -532,37 +566,13 @@ METRIC_DEFINITIONS = (
         "episodes",
         "historical evaluation",
     ),
-    _definition(
-        EVAL_FULL_BY_START,
-        "Structured full-evaluation evidence by start and reason.",
-        "table",
-        "evaluation",
-    ),
-    _definition(
-        LEADER_CHECKPOINT_ACCEPTANCE_PASS,
-        "Canonical promoted-checkpoint acceptance verdict restamped from database promotion state.",
-        "boolean",
-        "selection",
-        "summary",
-    ),
     *(
         _definition(name, "Selected checkpoint summary field.", "summary", "selection", "summary")
         for name in (
-            LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
-            LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
-            LEADER_CHECKPOINT_OBJECTIVE,
             LEADER_CHECKPOINT_OBJECTIVE_NAME,
-            LEADER_CHECKPOINT_RETURN_MEAN,
-            LEADER_CHECKPOINT_BEST_RETURN,
             LEADER_CHECKPOINT_RANK,
-            LEADER_CHECKPOINT_RANK_VALUES,
-            LEADER_CHECKPOINT_PROGRESS_MAX,
-            LEADER_CHECKPOINT_STEP,
             LEADER_CHECKPOINT_STEPS_TO_GOAL,
-            LEADER_CHECKPOINT_ARTIFACT_REF,
             LEADER_CHECKPOINT_LOCAL_PATH,
-            LEADER_CHECKPOINT_EVAL_SOURCE,
-            LEADER_CHECKPOINT_UPDATED_AT,
         )
     ),
 )
@@ -571,21 +581,27 @@ METRIC_DEFINITIONS = (
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PLACEHOLDER_PATTERNS = {
     "algorithm": "(?:ppo|a2c)",
-    "protocol": "(?:screen|confirm|full)",
+    "protocol": "(?:full)",
     "reason": "[A-Za-z0-9_.-]+",
     "start": "[A-Za-z0-9_.-]+",
     "component": "[A-Za-z0-9_.-]+",
     "signal": "[A-Za-z0-9_.-]+",
     "progress": "[A-Za-z0-9_.-]+",
 }
+_V4_PLACEHOLDER_PATTERNS = {
+    **_PLACEHOLDER_PATTERNS,
+    "protocol": "(?:screen|confirm|full)",
+}
 
 
-def _definition_pattern(template: str) -> re.Pattern[str]:
+def _definition_pattern(
+    template: str, *, placeholders: Mapping[str, str] = _PLACEHOLDER_PATTERNS
+) -> re.Pattern[str]:
     cursor = 0
     parts: list[str] = []
     for match in re.finditer(r"\{([a-z_]+)\}", template):
         parts.append(re.escape(template[cursor : match.start()]))
-        parts.append(_PLACEHOLDER_PATTERNS[match.group(1)])
+        parts.append(placeholders[match.group(1)])
         cursor = match.end()
     parts.append(re.escape(template[cursor:]))
     return re.compile("^" + "".join(parts) + "$")
@@ -594,24 +610,47 @@ def _definition_pattern(template: str) -> re.Pattern[str]:
 _DEFINITION_PATTERNS = tuple(
     (definition, _definition_pattern(definition.name)) for definition in METRIC_DEFINITIONS
 )
+_V4_DEFINITION_PATTERNS = tuple(
+    (
+        definition,
+        _definition_pattern(definition.name, placeholders=_V4_PLACEHOLDER_PATTERNS),
+    )
+    for definition in (*METRIC_DEFINITIONS, *V4_ONLY_METRIC_DEFINITIONS)
+)
 
 
-def metric_definition(name: str) -> MetricDefinition | None:
-    for definition, pattern in _DEFINITION_PATTERNS:
+def _supported_schema_version(schema_version: int) -> int:
+    try:
+        version = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"unsupported metrics schema version: {schema_version!r}") from exc
+    if version not in {4, METRICS_SCHEMA_VERSION}:
+        raise ValueError(f"unsupported metrics schema version: {version}")
+    return version
+
+
+def metric_definition(
+    name: str, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> MetricDefinition | None:
+    version = _supported_schema_version(schema_version)
+    patterns = _V4_DEFINITION_PATTERNS if version == 4 else _DEFINITION_PATTERNS
+    for definition, pattern in patterns:
         if pattern.fullmatch(name):
             return definition
     return None
 
 
-def validate_metric_name(name: str) -> str:
-    if metric_definition(name) is None:
+def validate_metric_name(name: str, *, schema_version: int = METRICS_SCHEMA_VERSION) -> str:
+    if metric_definition(name, schema_version=schema_version) is None:
         raise ValueError(f"unknown metric name: {name}")
     return name
 
 
-def validate_metric_payload(payload: Mapping[str, Any]) -> None:
+def validate_metric_payload(
+    payload: Mapping[str, Any], *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> None:
     for name in payload:
-        validate_metric_name(str(name))
+        validate_metric_name(str(name), schema_version=schema_version)
 
 
 def metric_path_segment(value: object) -> str:
@@ -633,15 +672,21 @@ def stat_metric(prefix: str, stat: str) -> str:
     return validate_metric_name(f"{prefix}/{metric_path_segment(stat)}")
 
 
-def eval_metric(protocol: str, suffix: str) -> str:
+def eval_metric(
+    protocol: str, suffix: str, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> str:
     protocol = metric_path_segment(protocol)
-    if protocol not in EVAL_PROTOCOLS:
+    version = _supported_schema_version(schema_version)
+    protocols = EVAL_PROTOCOLS if version == 4 else ACTIVE_EVAL_PROTOCOLS
+    if protocol not in protocols:
         raise ValueError(f"unknown evaluation protocol: {protocol}")
-    return validate_metric_name(f"{EVAL_ROOT}/{protocol}/{suffix.strip('/')}")
+    return validate_metric_name(
+        f"{EVAL_ROOT}/{protocol}/{suffix.strip('/')}", schema_version=schema_version
+    )
 
 
 def checkpoint_eval_stage_metric(stage_name: str, name: str) -> str:
-    return eval_metric(stage_name, name)
+    return eval_metric(stage_name, name, schema_version=4)
 
 
 def staged_metric_name(stage_name: str, metric_name: str) -> str:
@@ -650,7 +695,7 @@ def staged_metric_name(stage_name: str, metric_name: str) -> str:
     suffix = metric_name.removeprefix(f"{EVAL_FULL_ROOT}/")
     if suffix == metric_name:
         raise ValueError(f"staged evaluation requires an eval/full metric: {metric_name}")
-    return eval_metric(stage_name, suffix)
+    return eval_metric(stage_name, suffix, schema_version=4)
 
 
 def train_outcome_reason_count_metric(reason: object) -> str:
@@ -678,7 +723,10 @@ def train_success_attempts_metric(start: object) -> str:
 
 
 def train_success_current_rate_metric(start: object) -> str:
-    return train_success_from_metric(start, "rate/current")
+    return validate_metric_name(
+        f"{TRAIN_OUTCOME_SUCCESS_ROOT}/from/{metric_value_segment(start)}/rate/current",
+        schema_version=4,
+    )
 
 
 def train_success_window_rate_metric(start: object) -> str:
@@ -697,26 +745,55 @@ def train_reward_signal_metric(signal: object, stat: str) -> str:
     )
 
 
-def eval_success_from_rate_metric(protocol: str, start: object) -> str:
-    return eval_metric(protocol, f"outcome/success/from/{metric_value_segment(start)}/rate")
+def eval_success_from_rate_metric(
+    protocol: str, start: object, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> str:
+    return eval_metric(
+        protocol,
+        f"outcome/success/from/{metric_value_segment(start)}/rate",
+        schema_version=schema_version,
+    )
 
 
-def eval_success_rate_metric(protocol: str, stat: str) -> str:
-    return eval_metric(protocol, f"outcome/success/rate/{metric_path_segment(stat)}")
+def eval_success_rate_metric(
+    protocol: str, stat: str, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> str:
+    return eval_metric(
+        protocol,
+        f"outcome/success/rate/{metric_path_segment(stat)}",
+        schema_version=schema_version,
+    )
 
 
 def eval_reason_count_metric(protocol: str, reason: object) -> str:
-    return eval_metric(protocol, f"outcome/reason/{metric_path_segment(reason)}/count")
+    return eval_metric(
+        protocol,
+        f"outcome/reason/{metric_path_segment(reason)}/count",
+        schema_version=4,
+    )
 
 
-def eval_reason_rate_metric(protocol: str, reason: object) -> str:
-    return eval_metric(protocol, f"outcome/reason/{metric_path_segment(reason)}/rate")
+def eval_reason_rate_metric(
+    protocol: str, reason: object, *, schema_version: int = METRICS_SCHEMA_VERSION
+) -> str:
+    return eval_metric(
+        protocol,
+        f"outcome/reason/{metric_path_segment(reason)}/rate",
+        schema_version=schema_version,
+    )
 
 
-def eval_progress_metric(protocol: str, progress: object, stat: str) -> str:
+def eval_progress_metric(
+    protocol: str,
+    progress: object,
+    stat: str,
+    *,
+    schema_version: int = METRICS_SCHEMA_VERSION,
+) -> str:
     return eval_metric(
         protocol,
         f"progress/{metric_path_segment(progress)}/{metric_path_segment(stat)}",
+        schema_version=schema_version,
     )
 
 

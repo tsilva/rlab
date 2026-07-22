@@ -148,6 +148,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(parser.parse_args([]).checkpoint_eval_backend, "modal")
+        self.assertEqual(parser.parse_args([]).metrics_schema_version, 5)
         self.assertEqual(
             parser.parse_args(["--checkpoint-eval-backend", "local"]).checkpoint_eval_backend,
             "local",
@@ -156,6 +157,16 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             parser.parse_args(["--checkpoint-eval-backend", "none"]).checkpoint_eval_backend,
             "none",
         )
+
+    def test_metrics_schema_version_accepts_frozen_v4_and_active_v5_only(self) -> None:
+        self.assertEqual(
+            validate_and_normalize_train_config({"metrics_schema_version": 4})[
+                "metrics_schema_version"
+            ],
+            4,
+        )
+        with self.assertRaisesRegex(ValueError, "must be <= 5"):
+            validate_and_normalize_train_config({"metrics_schema_version": 6})
 
     def test_no_eval_config_rejects_eval_owned_stop_behavior(self) -> None:
         with self.assertRaisesRegex(ValueError, "early_stop must be null"):

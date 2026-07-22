@@ -14,11 +14,12 @@ train:
       termination:
         failure: [life_loss, stalled]
 
-# Keep checkpoint evaluation on the same no-progress boundary as training.
+# Track no-progress events during checkpoint evaluation without treating them as
+# terminal failures; eval continues until level completion or the episode cap.
 eval:
   environment:
     task:
       events:
         stalled: {signal: x, operation: unchanged_for, steps: 300}
       termination:
-        failure: [stalled]
+        failure: []

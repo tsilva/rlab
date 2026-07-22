@@ -25,7 +25,6 @@ from rlab.eval_metrics import episode_reason_names
 from rlab.metric_names import (
     canonical_training_scalars,
     TRAIN_ARTIFACT_SAVE_SECONDS,
-    TRAIN_EPISODE_COUNT,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN,
@@ -37,7 +36,6 @@ from rlab.metric_names import (
     TRAIN_THROUGHPUT_ENV_STEP_FPS,
     TRAIN_THROUGHPUT_ENV_STEP_SECONDS,
     TRAIN_THROUGHPUT_LOOP_FPS,
-    TRAIN_THROUGHPUT_LOOP_SECONDS,
     TRAIN_THROUGHPUT_ROLLOUT_FPS,
     TRAIN_THROUGHPUT_ROLLOUT_OVERHEAD_SECONDS,
     TRAIN_THROUGHPUT_ROLLOUT_SECONDS,
@@ -50,7 +48,6 @@ from rlab.metric_names import (
     metric_value_segment,
     train_success_attempts_metric,
     train_success_count_metric,
-    train_success_current_rate_metric,
     train_success_window_rate_metric,
     validate_metric_payload,
 )
@@ -256,7 +253,6 @@ class ThroughputHelper(CallbackHelper):
         payload: dict[str, float] = {
             TRAIN_THROUGHPUT_LOOP_FPS: rollout.steps / loop_seconds,
             TRAIN_THROUGHPUT_ROLLOUT_FPS: rollout.steps / rollout.rollout_seconds,
-            TRAIN_THROUGHPUT_LOOP_SECONDS: loop_seconds,
             TRAIN_THROUGHPUT_ROLLOUT_SECONDS: rollout.rollout_seconds,
             TRAIN_THROUGHPUT_BETWEEN_ROLLOUTS_SECONDS: between_seconds,
         }
@@ -798,7 +794,6 @@ class _DoneMetricsReducer:
     def record_metrics(self) -> dict[str, int | float]:
         payload: dict[str, int | float] = {
             TRAIN_OUTCOME_TERMINAL_COUNT: self.done_count,
-            TRAIN_EPISODE_COUNT: self.done_count,
         }
         for reason, count in sorted(self.reason_counts.items()):
             window = self.reason_windows[reason]
@@ -832,7 +827,6 @@ class _SuccessMetricsReducer:
         source_key = metric_value_segment(source)
         count_metric = train_success_count_metric(source_key)
         attempts_metric = train_success_attempts_metric(source_key)
-        current_rate_metric = train_success_current_rate_metric(source_key)
         window_rate_metric = train_success_window_rate_metric(source_key)
         window = self.attempt_windows.setdefault(source_key, deque(maxlen=self.ep_window_size))
         window.append(completed)
@@ -844,7 +838,6 @@ class _SuccessMetricsReducer:
             start: self.success_counts.get(start, 0) / attempts
             for start, attempts in self.attempt_counts.items()
         }
-        current_rate = current_rates[source_key]
         expected_starts = self.configured_starts or tuple(self.attempt_counts)
         coverage = sum(start in self.attempt_counts for start in expected_starts) / len(
             expected_starts
@@ -852,7 +845,6 @@ class _SuccessMetricsReducer:
         payload: dict[str, int | float] = {
             count_metric: self.success_counts.get(source_key, 0),
             attempts_metric: self.attempt_counts[source_key],
-            current_rate_metric: current_rate,
             TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN: min(current_rates.values()),
             TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN: float(np.mean(tuple(current_rates.values()))),
             TRAIN_OUTCOME_SUCCESS_START_COVERAGE_RATE: coverage,

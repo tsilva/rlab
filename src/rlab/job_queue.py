@@ -25,6 +25,7 @@ from rlab.dotenv import load_env_file
 from rlab.env_registry import resolve_env_provider
 from rlab.json_utils import json_safe
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry, resolve_machine
+from rlab.metric_names import METRICS_SCHEMA_VERSION
 from rlab.runtime_refs import (
     DEFAULT_IMAGE_ARTIFACT,
     DEFAULT_IMAGE_WORKFLOW,
@@ -975,7 +976,626 @@ REVOKE ALL ON FUNCTION worker_ack_attempt_command(
 ) FROM PUBLIC;
 """
 
+WORKSPACE_SCHEMA_SQL = """
+ALTER TABLE job_launches
+  ADD COLUMN IF NOT EXISTS lifecycle_generation BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE job_launches
+  ADD COLUMN IF NOT EXISTS workspace_layout_version INTEGER;
+ALTER TABLE job_launches
+  DROP CONSTRAINT IF EXISTS job_launches_lifecycle_generation_check;
+ALTER TABLE job_launches
+  ADD CONSTRAINT job_launches_lifecycle_generation_check
+  CHECK (lifecycle_generation >= 1);
+ALTER TABLE job_launches
+  DROP CONSTRAINT IF EXISTS job_launches_workspace_layout_version_check;
+ALTER TABLE job_launches
+  ADD CONSTRAINT job_launches_workspace_layout_version_check
+  CHECK (workspace_layout_version IS NULL OR workspace_layout_version = 1);
+
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS drain_requested BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS drain_state TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS normal_admission_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS host_mutation_quarantined BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS cleanup_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS control_revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS rollout_owner TEXT;
+ALTER TABLE machine_controls ADD COLUMN IF NOT EXISTS cleanup_evidence_sha256 TEXT;
+ALTER TABLE machine_controls DROP CONSTRAINT IF EXISTS machine_controls_drain_state_check;
+ALTER TABLE machine_controls ADD CONSTRAINT machine_controls_drain_state_check CHECK (
+  drain_state IN (
+    'active', 'drain_requested', 'drained',
+    'legacy_drained_no_contact', 'legacy_drain_closing'
+  )
+);
+ALTER TABLE machine_controls DROP CONSTRAINT IF EXISTS machine_controls_control_revision_check;
+ALTER TABLE machine_controls ADD CONSTRAINT machine_controls_control_revision_check
+  CHECK (control_revision >= 1);
+
+CREATE TABLE IF NOT EXISTS workspace_rollout_controls (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  protocol_mode TEXT NOT NULL DEFAULT 'dormant'
+    CHECK (protocol_mode IN ('dormant', 'qualification', 'promotion_verifying', 'active', 'rollback')),
+  work_creation_paused BOOLEAN NOT NULL DEFAULT TRUE,
+  cleanup_globally_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  control_revision BIGINT NOT NULL DEFAULT 1 CHECK (control_revision >= 1),
+  rollout_owner TEXT,
+  reason TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO workspace_rollout_controls (singleton)
+VALUES (TRUE)
+ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS workspace_manifests (
+  launch_id TEXT NOT NULL REFERENCES job_launches(launch_id) ON DELETE CASCADE,
+  generation BIGINT NOT NULL CHECK (generation >= 1),
+  machine TEXT NOT NULL,
+  layout_version INTEGER NOT NULL CHECK (layout_version = 1),
+  helper_protocol_version INTEGER NOT NULL CHECK (helper_protocol_version = 1),
+  reservation_nonce TEXT NOT NULL,
+  manifest_sha256 TEXT NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+  payload_sha256 TEXT NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
+  manifest_json JSONB NOT NULL,
+  payload_path TEXT NOT NULL,
+  env_path TEXT NOT NULL,
+  output_path TEXT NOT NULL,
+  ownership_marker_path TEXT NOT NULL,
+  reservation_receipt_path TEXT NOT NULL,
+  container_payload_path TEXT NOT NULL,
+  container_output_path TEXT NOT NULL,
+  reservation_intent_state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (reservation_intent_state IN (
+      'pending', 'anchor_written', 'partial', 'reserved', 'cleaning', 'cleaned', 'failed'
+    )),
+  reservation_intent_receipt JSONB,
+  reservation_receipt JSONB,
+  reservation_receipt_sha256 TEXT,
+  intent_attempts INTEGER NOT NULL DEFAULT 0 CHECK (intent_attempts >= 0),
+  intent_next_retry_at TIMESTAMPTZ,
+  intent_last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reserved_at TIMESTAMPTZ,
+  intent_cleaned_at TIMESTAMPTZ,
+  PRIMARY KEY (launch_id, generation),
+  UNIQUE (payload_path),
+  UNIQUE (env_path),
+  UNIQUE (output_path),
+  UNIQUE (ownership_marker_path),
+  UNIQUE (reservation_receipt_path),
+  CHECK (reservation_receipt_sha256 IS NULL OR reservation_receipt_sha256 ~ '^[0-9a-f]{64}$')
+);
+
+CREATE TABLE IF NOT EXISTS workspace_container_generations (
+  launch_id TEXT NOT NULL,
+  workspace_generation BIGINT NOT NULL,
+  container_generation BIGINT NOT NULL CHECK (container_generation >= 1),
+  purpose TEXT NOT NULL CHECK (purpose IN ('startup', 'checkpoint_recovery', 'wandb_recovery')),
+  env_path TEXT NOT NULL,
+  env_device BIGINT,
+  env_inode BIGINT,
+  env_fingerprint_sha256 TEXT,
+  expected_member_count INTEGER NOT NULL CHECK (expected_member_count BETWEEN 1 AND 4),
+  bootstrap_release_state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (bootstrap_release_state IN ('pending', 'attested_unreleased', 'released', 'failed')),
+  env_cleanup_state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (env_cleanup_state IN ('pending', 'eligible', 'unlinking', 'unlinked', 'failed', 'review')),
+  env_cleanup_attempts INTEGER NOT NULL DEFAULT 0 CHECK (env_cleanup_attempts >= 0),
+  env_cleanup_next_retry_at TIMESTAMPTZ,
+  env_cleanup_error TEXT,
+  env_unlinked_at TIMESTAMPTZ,
+  env_cleanup_receipt JSONB,
+  token_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (launch_id, workspace_generation, container_generation),
+  FOREIGN KEY (launch_id, workspace_generation)
+    REFERENCES workspace_manifests(launch_id, generation) ON DELETE CASCADE,
+  CHECK (env_fingerprint_sha256 IS NULL OR env_fingerprint_sha256 ~ '^[0-9a-f]{64}$')
+);
+
+CREATE TABLE IF NOT EXISTS workspace_container_members (
+  launch_id TEXT NOT NULL,
+  workspace_generation BIGINT NOT NULL,
+  container_generation BIGINT NOT NULL,
+  member_kind TEXT NOT NULL CHECK (member_kind IN ('rom', 'train', 'checkpoint', 'wandb')),
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  container_name TEXT NOT NULL,
+  container_id TEXT,
+  runtime_image_ref TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'expected'
+    CHECK (state IN (
+      'expected', 'created', 'attested_unreleased', 'released', 'running',
+      'exited', 'removing', 'absent', 'failed', 'review'
+    )),
+  mount_attestation JSONB,
+  start_journal_sha256 TEXT,
+  release_receipt_sha256 TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  absent_at TIMESTAMPTZ,
+  PRIMARY KEY (
+    launch_id, workspace_generation, container_generation, member_kind, ordinal
+  ),
+  FOREIGN KEY (launch_id, workspace_generation, container_generation)
+    REFERENCES workspace_container_generations(
+      launch_id, workspace_generation, container_generation
+    ) ON DELETE CASCADE,
+  UNIQUE (container_name),
+  CHECK (start_journal_sha256 IS NULL OR start_journal_sha256 ~ '^[0-9a-f]{64}$'),
+  CHECK (release_receipt_sha256 IS NULL OR release_receipt_sha256 ~ '^[0-9a-f]{64}$')
+);
+
+ALTER TABLE workspace_container_generations
+  ADD COLUMN IF NOT EXISTS env_reservation_receipt JSONB;
+ALTER TABLE workspace_container_generations
+  ADD COLUMN IF NOT EXISTS env_intent_cleanup_state TEXT NOT NULL DEFAULT 'not_created';
+ALTER TABLE workspace_container_generations
+  DROP CONSTRAINT IF EXISTS workspace_container_generations_env_intent_cleanup_state_check;
+ALTER TABLE workspace_container_generations
+  ADD CONSTRAINT workspace_container_generations_env_intent_cleanup_state_check CHECK (
+    env_intent_cleanup_state IN ('not_created','present','cleaned','failed','review')
+  );
+
+CREATE TABLE IF NOT EXISTS host_operation_leases (
+  operation_id TEXT PRIMARY KEY,
+  machine TEXT NOT NULL,
+  launch_id TEXT,
+  lifecycle_generation BIGINT,
+  operation_kind TEXT NOT NULL,
+  resource_scope TEXT NOT NULL,
+  source_revision TEXT NOT NULL,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  owner TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'registered'
+    CHECK (state IN ('registered', 'running', 'reconciling', 'completed', 'failed')),
+  transport_evidence JSONB,
+  registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deadline_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
+  last_error TEXT,
+  FOREIGN KEY (launch_id) REFERENCES job_launches(launch_id) ON DELETE CASCADE,
+  CHECK ((launch_id IS NULL) = (lifecycle_generation IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS machine_drain_zero_receipts (
+  machine TEXT NOT NULL REFERENCES machine_controls(machine) ON DELETE CASCADE,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  receipt_nonce TEXT NOT NULL,
+  helper_protocol_version INTEGER NOT NULL CHECK (helper_protocol_version = 1),
+  receipt_sha256 TEXT NOT NULL CHECK (receipt_sha256 ~ '^[0-9a-f]{64}$'),
+  receipt_json JSONB NOT NULL,
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (machine, control_revision)
+);
+
+CREATE OR REPLACE FUNCTION rlab_reject_direct_drained_write()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.drained AND (TG_OP = 'INSERT' OR NOT OLD.drained)
+     AND COALESCE(current_setting('rlab.drain_finalize', true), '') <> 'on' THEN
+    RAISE EXCEPTION 'drained=true requires the ordered drain finalizer';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS machine_controls_drain_guard ON machine_controls;
+CREATE TRIGGER machine_controls_drain_guard
+BEFORE INSERT OR UPDATE OF drained ON machine_controls
+FOR EACH ROW EXECUTE FUNCTION rlab_reject_direct_drained_write();
+
+CREATE TABLE IF NOT EXISTS telemetry_obligations (
+  id BIGSERIAL PRIMARY KEY,
+  train_job_id BIGINT NOT NULL REFERENCES train_jobs(id) ON DELETE CASCADE,
+  launch_id TEXT NOT NULL REFERENCES job_launches(launch_id) ON DELETE CASCADE,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  producer_identity TEXT NOT NULL,
+  sink TEXT NOT NULL,
+  configuration_revision TEXT NOT NULL,
+  disposition TEXT NOT NULL DEFAULT 'pending'
+    CHECK (disposition IN (
+      'pending', 'published', 'zero_batch', 'disabled',
+      'aborted_before_release', 'recovered_final', 'failed'
+    )),
+  expected_stream_id TEXT,
+  final_sequence BIGINT CHECK (final_sequence IS NULL OR final_sequence >= 0),
+  receipt_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  closed_at TIMESTAMPTZ,
+  UNIQUE (
+    launch_id, lifecycle_generation, producer_identity, sink, configuration_revision
+  )
+);
+
+CREATE TABLE IF NOT EXISTS artifact_durability_receipts (
+  train_job_id BIGINT NOT NULL,
+  ledger_id BIGINT NOT NULL,
+  object_kind TEXT NOT NULL CHECK (object_kind IN ('model', 'metadata', 'recipe')),
+  object_uri TEXT NOT NULL,
+  object_version TEXT NOT NULL,
+  size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+  sha256 TEXT NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  full_read_verified_at TIMESTAMPTZ NOT NULL,
+  verifier_identity TEXT NOT NULL,
+  policy_scope TEXT NOT NULL,
+  policy_sha256 TEXT NOT NULL CHECK (policy_sha256 ~ '^[0-9a-f]{64}$'),
+  non_expiring_write_once BOOLEAN NOT NULL,
+  runtime_delete_denied BOOLEAN NOT NULL,
+  runtime_overwrite_denied BOOLEAN NOT NULL,
+  storage_root_nonoverlap_sha256 TEXT NOT NULL
+    CHECK (storage_root_nonoverlap_sha256 ~ '^[0-9a-f]{64}$'),
+  receipt_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (train_job_id, ledger_id, object_kind),
+  FOREIGN KEY (train_job_id, ledger_id)
+    REFERENCES artifact_announcement_ledger(train_job_id, ledger_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS workspace_cleanup_proofs (
+  launch_id TEXT NOT NULL,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  proof_sha256 TEXT NOT NULL CHECK (proof_sha256 ~ '^[0-9a-f]{64}$'),
+  proof_json JSONB NOT NULL,
+  proof_inputs_complete_at TIMESTAMPTZ NOT NULL,
+  cleanup_ready_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (launch_id, lifecycle_generation),
+  FOREIGN KEY (launch_id) REFERENCES job_launches(launch_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS workspace_cleanup_rows (
+  id BIGSERIAL PRIMARY KEY,
+  launch_id TEXT NOT NULL,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  workspace_state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (workspace_state IN (
+      'pending', 'deleting', 'host_deleted', 'completed', 'rollback_review'
+    )),
+  deletion_progress TEXT
+    CHECK (deletion_progress IS NULL OR deletion_progress IN (
+      'claimed', 'prepare_pending', 'prepared', 'mutation_pending',
+      'mutating', 'partial', 'mutation_complete'
+    )),
+  cleanup_attempt_id TEXT,
+  control_revision BIGINT,
+  manifest_sha256 TEXT NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+  cursor_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  cursor_sha256 TEXT NOT NULL CHECK (cursor_sha256 ~ '^[0-9a-f]{64}$'),
+  prepare_receipt_path TEXT,
+  prepare_receipt_sha256 TEXT,
+  prepare_boot_id TEXT,
+  prepare_deadline_monotonic_ns BIGINT,
+  prepare_cleanup_state TEXT NOT NULL DEFAULT 'not_created'
+    CHECK (prepare_cleanup_state IN (
+      'not_created', 'present', 'cleaning', 'cleaned', 'failed', 'review'
+    )),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_retry_at TIMESTAMPTZ,
+  last_error TEXT,
+  review_reason TEXT,
+  claimed_at TIMESTAMPTZ,
+  host_deleted_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  host_deleted_journal_sha256 TEXT,
+  journal_cleanup_state TEXT NOT NULL DEFAULT 'not_created'
+    CHECK (journal_cleanup_state IN (
+      'not_created', 'present', 'cleaning', 'cleaned', 'failed', 'review'
+    )),
+  journal_cleanup_error TEXT,
+  UNIQUE (launch_id, lifecycle_generation),
+  FOREIGN KEY (launch_id, lifecycle_generation)
+    REFERENCES workspace_manifests(launch_id, generation) ON DELETE CASCADE,
+  FOREIGN KEY (launch_id, lifecycle_generation)
+    REFERENCES workspace_cleanup_proofs(launch_id, lifecycle_generation) ON DELETE RESTRICT,
+  CHECK (
+    host_deleted_journal_sha256 IS NULL
+    OR host_deleted_journal_sha256 ~ '^[0-9a-f]{64}$'
+  ),
+  CHECK (prepare_receipt_sha256 IS NULL OR prepare_receipt_sha256 ~ '^[0-9a-f]{64}$'),
+  CHECK (
+    prepare_deadline_monotonic_ns IS NULL OR prepare_deadline_monotonic_ns >= 1
+  )
+);
+
+CREATE TABLE IF NOT EXISTS workspace_cleanup_batches (
+  id BIGSERIAL PRIMARY KEY,
+  batch_id TEXT NOT NULL UNIQUE,
+  predecessor_batch_id TEXT REFERENCES workspace_cleanup_batches(batch_id),
+  machine TEXT NOT NULL,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  helper_revision TEXT NOT NULL,
+  key_revision TEXT NOT NULL,
+  epoch BIGINT NOT NULL CHECK (epoch >= 1),
+  boot_id TEXT NOT NULL,
+  envelope_sha256 TEXT NOT NULL CHECK (envelope_sha256 ~ '^[0-9a-f]{64}$'),
+  state TEXT NOT NULL DEFAULT 'signing_pending'
+    CHECK (state IN (
+      'signing_pending', 'signer_claimed', 'token_issued', 'delivery_intent',
+      'delivery_ack', 'delivery_ambiguous', 'consumed', 'exited',
+      'reconciled', 'superseded', 'canceled', 'signer_failed', 'expired'
+    )),
+  signer_lease_owner TEXT,
+  signer_lease_expires_at TIMESTAMPTZ,
+  signature TEXT,
+  signature_sha256 TEXT,
+  issued_at TIMESTAMPTZ,
+  helper_deadline_monotonic_ns BIGINT NOT NULL CHECK (helper_deadline_monotonic_ns >= 1),
+  outer_not_after TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error TEXT,
+  UNIQUE (machine, epoch),
+  CHECK (signature_sha256 IS NULL OR signature_sha256 ~ '^[0-9a-f]{64}$')
+);
+
+CREATE TABLE IF NOT EXISTS workspace_cleanup_batch_rows (
+  batch_id TEXT NOT NULL REFERENCES workspace_cleanup_batches(batch_id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 7),
+  cleanup_row_id BIGINT NOT NULL REFERENCES workspace_cleanup_rows(id) ON DELETE RESTRICT,
+  cleanup_attempt_id TEXT NOT NULL,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  manifest_sha256 TEXT NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+  prepare_receipt_sha256 TEXT NOT NULL CHECK (prepare_receipt_sha256 ~ '^[0-9a-f]{64}$'),
+  starting_cursor_sha256 TEXT NOT NULL CHECK (starting_cursor_sha256 ~ '^[0-9a-f]{64}$'),
+  PRIMARY KEY (batch_id, ordinal),
+  UNIQUE (batch_id, cleanup_row_id)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_authorization_outbox (
+  batch_id TEXT PRIMARY KEY REFERENCES workspace_cleanup_batches(batch_id) ON DELETE CASCADE,
+  envelope_json JSONB NOT NULL,
+  envelope_sha256 TEXT NOT NULL CHECK (envelope_sha256 ~ '^[0-9a-f]{64}$'),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'leased', 'signed', 'canceled', 'failed')),
+  lease_owner TEXT,
+  lease_generation BIGINT NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at TIMESTAMPTZ,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_retry_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_authorization_history (
+  id BIGSERIAL PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES workspace_cleanup_batches(batch_id) ON DELETE RESTRICT,
+  transition TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  evidence_sha256 TEXT NOT NULL CHECK (evidence_sha256 ~ '^[0-9a-f]{64}$'),
+  evidence_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_signer_leases (
+  signer_id TEXT PRIMARY KEY,
+  generation BIGINT NOT NULL CHECK (generation >= 1),
+  key_revision TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('starting', 'healthy', 'degraded', 'stopped')),
+  heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lease_expires_at TIMESTAMPTZ NOT NULL,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS workspace_qualification_schedules (
+  schedule_id TEXT PRIMARY KEY,
+  rollout_owner TEXT NOT NULL,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  state TEXT NOT NULL DEFAULT 'planned'
+    CHECK (state IN ('planned', 'running', 'passed', 'failed', 'revoked')),
+  global_concurrency_cap INTEGER NOT NULL CHECK (global_concurrency_cap >= 1),
+  schedule_json JSONB NOT NULL,
+  schedule_sha256 TEXT NOT NULL CHECK (schedule_sha256 ~ '^[0-9a-f]{64}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS workspace_qualification_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES workspace_qualification_schedules(schedule_id)
+    ON DELETE RESTRICT,
+  machine TEXT NOT NULL,
+  machine_control_revision BIGINT NOT NULL CHECK (machine_control_revision >= 1),
+  source_sha TEXT NOT NULL,
+  runtime_image_digest TEXT NOT NULL,
+  backend TEXT NOT NULL,
+  effective_capacity INTEGER NOT NULL CHECK (effective_capacity >= 1),
+  paired_blocks INTEGER NOT NULL CHECK (paired_blocks >= 5),
+  throughput_point_regression DOUBLE PRECISION NOT NULL,
+  throughput_upper95_regression DOUBLE PRECISION NOT NULL,
+  loop_seconds_p99_regression DOUBLE PRECISION NOT NULL,
+  loop_seconds_max_regression DOUBLE PRECISION NOT NULL,
+  machine_pass_p95_regression DOUBLE PRECISION NOT NULL,
+  mixed_backlog_rows INTEGER NOT NULL CHECK (mixed_backlog_rows > 8),
+  service_rate_gate_passed BOOLEAN NOT NULL,
+  quiescence_gate_passed BOOLEAN NOT NULL,
+  boundary_evidence_complete BOOLEAN NOT NULL,
+  receipt_json JSONB NOT NULL,
+  receipt_sha256 TEXT NOT NULL UNIQUE CHECK (receipt_sha256 ~ '^[0-9a-f]{64}$'),
+  passed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (throughput_point_regression <= 0.05),
+  CHECK (throughput_upper95_regression <= 0.05),
+  CHECK (loop_seconds_p99_regression <= 0.05),
+  CHECK (loop_seconds_max_regression <= 0.10),
+  CHECK (machine_pass_p95_regression <= 0.05),
+  CHECK (service_rate_gate_passed AND quiescence_gate_passed
+    AND boundary_evidence_complete)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_promotion_receipts (
+  launch_id TEXT PRIMARY KEY REFERENCES job_launches(launch_id) ON DELETE RESTRICT,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  machine TEXT NOT NULL,
+  rollout_control_revision BIGINT NOT NULL CHECK (rollout_control_revision >= 1),
+  ordinary_claim_without_cleanup_capability BOOLEAN NOT NULL CHECK (
+    ordinary_claim_without_cleanup_capability
+  ),
+  cleanup_completed BOOLEAN NOT NULL CHECK (cleanup_completed),
+  journal_cleanup_completed BOOLEAN NOT NULL CHECK (journal_cleanup_completed),
+  quiescence_gate_passed BOOLEAN NOT NULL CHECK (quiescence_gate_passed),
+  evidence_json JSONB NOT NULL,
+  evidence_sha256 TEXT NOT NULL UNIQUE CHECK (evidence_sha256 ~ '^[0-9a-f]{64}$'),
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (launch_id, lifecycle_generation)
+    REFERENCES workspace_cleanup_proofs(launch_id, lifecycle_generation) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS workspace_capabilities (
+  capability_id TEXT PRIMARY KEY,
+  capability_kind TEXT NOT NULL CHECK (capability_kind IN (
+    'qualification_enqueue', 'train_claim', 'cleanup_canary',
+    'descendant_work', 'promotion_enqueue_only', 'residual_reconcile'
+  )),
+  schedule_id TEXT REFERENCES workspace_qualification_schedules(schedule_id) ON DELETE CASCADE,
+  machine TEXT NOT NULL,
+  launch_id TEXT,
+  lifecycle_generation BIGINT,
+  control_revision BIGINT NOT NULL CHECK (control_revision >= 1),
+  capability_json JSONB NOT NULL,
+  remaining_count INTEGER NOT NULL CHECK (remaining_count >= 0),
+  expires_at TIMESTAMPTZ,
+  consumed_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  predecessor_capability_id TEXT REFERENCES workspace_capabilities(capability_id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((launch_id IS NULL) = (lifecycle_generation IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS workspace_manifest_intent_due_idx
+  ON workspace_manifests (intent_next_retry_at, created_at)
+  WHERE reservation_intent_state NOT IN ('cleaned', 'failed');
+CREATE INDEX IF NOT EXISTS workspace_env_cleanup_due_idx
+  ON workspace_container_generations (env_cleanup_next_retry_at, created_at)
+  WHERE env_cleanup_state NOT IN ('unlinked', 'review');
+CREATE INDEX IF NOT EXISTS workspace_member_absence_idx
+  ON workspace_container_members (launch_id, workspace_generation, state)
+  WHERE state <> 'absent';
+CREATE INDEX IF NOT EXISTS host_operation_lease_active_idx
+  ON host_operation_leases (machine, deadline_at, state)
+  WHERE state IN ('registered', 'running', 'reconciling');
+CREATE INDEX IF NOT EXISTS telemetry_obligation_open_idx
+  ON telemetry_obligations (train_job_id, lifecycle_generation, created_at)
+  WHERE disposition IN ('pending', 'failed');
+CREATE INDEX IF NOT EXISTS artifact_durability_run_idx
+  ON artifact_durability_receipts (train_job_id, ledger_id, object_kind);
+CREATE INDEX IF NOT EXISTS workspace_cleanup_ready_idx
+  ON workspace_cleanup_rows (next_retry_at, id)
+  WHERE workspace_state IN ('pending', 'deleting', 'host_deleted');
+CREATE INDEX IF NOT EXISTS workspace_cleanup_review_idx
+  ON workspace_cleanup_rows (launch_id, lifecycle_generation)
+  WHERE workspace_state = 'rollback_review';
+CREATE INDEX IF NOT EXISTS workspace_batch_due_idx
+  ON workspace_cleanup_batches (state, outer_not_after, id)
+  WHERE state NOT IN ('reconciled', 'superseded', 'canceled', 'signer_failed', 'expired');
+CREATE INDEX IF NOT EXISTS workspace_signer_outbox_due_idx
+  ON workspace_authorization_outbox (next_retry_at, created_at)
+  WHERE state IN ('pending', 'leased');
+
+CREATE OR REPLACE FUNCTION workspace_enforce_train_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  control workspace_rollout_controls%ROWTYPE;
+  capability_id TEXT;
+BEGIN
+  SELECT * INTO control FROM workspace_rollout_controls WHERE singleton=TRUE;
+  IF control.protocol_mode = 'dormant' OR NOT control.work_creation_paused THEN
+    RETURN NEW;
+  END IF;
+  capability_id := NULLIF(current_setting('rlab.workspace_enqueue_capability_id', TRUE), '');
+  IF capability_id IS NULL THEN
+    RAISE EXCEPTION 'work creation is paused';
+  END IF;
+  UPDATE workspace_capabilities
+  SET remaining_count=remaining_count-1,
+      consumed_at=CASE WHEN remaining_count=1 THEN now() ELSE consumed_at END
+  WHERE workspace_capabilities.capability_id=capability_id
+    AND capability_kind IN ('qualification_enqueue','promotion_enqueue_only')
+    AND machine=NEW.machine AND control_revision=control.control_revision
+    AND remaining_count > 0 AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > now())
+  RETURNING workspace_capabilities.capability_id INTO capability_id;
+  IF capability_id IS NULL THEN
+    RAISE EXCEPTION 'work creation capability is absent, stale, or exhausted';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS workspace_train_insert_gate ON train_jobs;
+CREATE TRIGGER workspace_train_insert_gate
+BEFORE INSERT ON train_jobs
+FOR EACH ROW EXECUTE FUNCTION workspace_enforce_train_insert();
+
+CREATE OR REPLACE FUNCTION workspace_enforce_train_claim()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  rollout workspace_rollout_controls%ROWTYPE;
+  machine_control machine_controls%ROWTYPE;
+  capability_id TEXT;
+BEGIN
+  IF NOT (OLD.status='pending' AND NEW.status='launching') THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO rollout FROM workspace_rollout_controls WHERE singleton=TRUE;
+  SELECT * INTO machine_control FROM machine_controls WHERE machine=NEW.machine;
+  IF machine_control.drain_requested OR machine_control.drained
+     OR machine_control.normal_admission_disabled
+     OR machine_control.host_mutation_quarantined THEN
+    RAISE EXCEPTION 'machine admission is disabled';
+  END IF;
+  IF rollout.protocol_mode = 'dormant' OR NOT rollout.work_creation_paused THEN
+    RETURN NEW;
+  END IF;
+  capability_id := NULLIF(current_setting('rlab.workspace_claim_capability_id', TRUE), '');
+  UPDATE workspace_capabilities
+  SET remaining_count=remaining_count-1,
+      consumed_at=CASE WHEN remaining_count=1 THEN now() ELSE consumed_at END
+  WHERE workspace_capabilities.capability_id=capability_id
+    AND capability_kind='train_claim' AND machine=NEW.machine
+    AND control_revision=rollout.control_revision
+    AND remaining_count > 0 AND revoked_at IS NULL
+  RETURNING workspace_capabilities.capability_id INTO capability_id;
+  IF capability_id IS NULL THEN
+    RAISE EXCEPTION 'train claim capability is absent, stale, or exhausted';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS workspace_train_claim_gate ON train_jobs;
+CREATE TRIGGER workspace_train_claim_gate
+BEFORE UPDATE OF status ON train_jobs
+FOR EACH ROW EXECUTE FUNCTION workspace_enforce_train_claim();
+
+REVOKE ALL ON workspace_authorization_outbox,
+  workspace_authorization_history,
+  workspace_cleanup_batches,
+  workspace_cleanup_batch_rows FROM PUBLIC;
+"""
+
 RESET_TABLES = (
+    "workspace_authorization_history",
+    "workspace_authorization_outbox",
+    "workspace_cleanup_batch_rows",
+    "workspace_cleanup_batches",
+    "workspace_cleanup_rows",
+    "workspace_cleanup_proofs",
+    "workspace_capabilities",
+    "workspace_promotion_receipts",
+    "workspace_qualification_receipts",
+    "workspace_qualification_schedules",
+    "workspace_signer_leases",
+    "artifact_durability_receipts",
+    "telemetry_obligations",
+    "machine_drain_zero_receipts",
+    "host_operation_leases",
+    "workspace_container_members",
+    "workspace_container_generations",
+    "workspace_manifests",
+    "workspace_rollout_controls",
     "attempt_commands",
     "attempt_events",
     "metric_batches",
@@ -996,9 +1616,20 @@ RESET_TABLES = (
 TRAIN_JOB_KIND = "train"
 SCHEMA_MAINTENANCE_LOCK = "rlab-fleet-schema-maintenance"
 FLEET_ADMISSION_LOCK = "rlab-fleet-admission-v1"
+WORK_CREATION_GATE = "rlab-work-creation-gate-v1"
+
+
+def acquire_work_creation_xact_lock(conn, *, exclusive: bool = False) -> None:
+    function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {function}(hashtextextended(%(key)s, 0))",
+            {"key": WORK_CREATION_GATE},
+        )
 
 
 def acquire_fleet_admission_xact_lock(conn, *, exclusive: bool = False) -> None:
+    acquire_work_creation_xact_lock(conn)
     function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
     with conn.cursor() as cur:
         cur.execute(
@@ -1127,6 +1758,7 @@ def apply_schema(conn) -> None:
         prepare_schema_upgrade(conn)
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            cur.execute(WORKSPACE_SCHEMA_SQL)
 
 
 def grant_worker_mailbox_role(conn, role: str) -> None:
@@ -1202,14 +1834,36 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
         if not _table_exists(conn, table_name):
             continue
         path = export_dir / f"{table_name}.jsonl"
-        order_column = (
+        explicit_order_columns = {
+            "workspace_rollout_controls": "singleton",
+            "workspace_manifests": "launch_id, generation",
+            "workspace_container_generations": (
+                "launch_id, workspace_generation, container_generation"
+            ),
+            "workspace_container_members": (
+                "launch_id, workspace_generation, container_generation, ordinal"
+            ),
+            "host_operation_leases": "operation_id",
+            "machine_drain_zero_receipts": "machine, control_revision",
+            "artifact_durability_receipts": "train_job_id, ledger_id, object_kind",
+            "workspace_cleanup_proofs": "launch_id, lifecycle_generation",
+            "workspace_cleanup_batch_rows": "batch_id, ordinal",
+            "workspace_authorization_outbox": "batch_id",
+            "workspace_signer_leases": "signer_id",
+            "workspace_qualification_schedules": "schedule_id",
+            "workspace_qualification_receipts": "receipt_id",
+            "workspace_promotion_receipts": "launch_id",
+            "workspace_capabilities": "capability_id",
+        }
+        order_column = explicit_order_columns.get(
+            table_name,
             "machine"
             if table_name in {"machine_controls", "runtime_image_states"}
             else "backend"
             if table_name == "eval_backend_state"
             else "train_job_id"
             if table_name == "eval_runs"
-            else "id"
+            else "id",
         )
         with conn.cursor() as cur:
             cur.execute(f"SELECT * FROM {table_name} ORDER BY {order_column}")
@@ -1238,6 +1892,25 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
+                  workspace_authorization_history,
+                  workspace_authorization_outbox,
+                  workspace_cleanup_batch_rows,
+                  workspace_cleanup_batches,
+                  workspace_cleanup_rows,
+                  workspace_cleanup_proofs,
+                  workspace_capabilities,
+                  workspace_promotion_receipts,
+                  workspace_qualification_receipts,
+                  workspace_qualification_schedules,
+                  workspace_signer_leases,
+                  artifact_durability_receipts,
+                  telemetry_obligations,
+                  machine_drain_zero_receipts,
+                  host_operation_leases,
+                  workspace_container_members,
+                  workspace_container_generations,
+                  workspace_manifests,
+                  workspace_rollout_controls,
                   attempt_commands,
                   attempt_events,
                   metric_batches,
@@ -1258,6 +1931,7 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                 """
             )
             cur.execute(SCHEMA_SQL)
+            cur.execute(WORKSPACE_SCHEMA_SQL)
             cur.execute(
                 """
                 DO $$
@@ -1277,7 +1951,26 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                      OR to_regclass('metric_batches') IS NULL
                      OR to_regclass('attempt_events') IS NULL
                      OR to_regclass('attempt_commands') IS NULL
-                     OR to_regclass('eval_backend_state') IS NULL THEN
+                     OR to_regclass('eval_backend_state') IS NULL
+                     OR to_regclass('workspace_rollout_controls') IS NULL
+                     OR to_regclass('workspace_manifests') IS NULL
+                     OR to_regclass('workspace_container_generations') IS NULL
+                     OR to_regclass('workspace_container_members') IS NULL
+                     OR to_regclass('host_operation_leases') IS NULL
+                     OR to_regclass('machine_drain_zero_receipts') IS NULL
+                     OR to_regclass('telemetry_obligations') IS NULL
+                     OR to_regclass('artifact_durability_receipts') IS NULL
+                     OR to_regclass('workspace_cleanup_proofs') IS NULL
+                     OR to_regclass('workspace_cleanup_rows') IS NULL
+                     OR to_regclass('workspace_cleanup_batches') IS NULL
+                     OR to_regclass('workspace_cleanup_batch_rows') IS NULL
+                     OR to_regclass('workspace_authorization_outbox') IS NULL
+                     OR to_regclass('workspace_authorization_history') IS NULL
+                     OR to_regclass('workspace_signer_leases') IS NULL
+                     OR to_regclass('workspace_qualification_schedules') IS NULL
+                     OR to_regclass('workspace_qualification_receipts') IS NULL
+                     OR to_regclass('workspace_promotion_receipts') IS NULL
+                     OR to_regclass('workspace_capabilities') IS NULL THEN
                     RAISE EXCEPTION 'queue schema validation failed';
                   END IF;
                 END $$
@@ -1549,6 +2242,7 @@ def enqueue_train_jobs_from_recipe_document(
 ) -> list[dict[str, Any]]:
     document = copy.deepcopy(dict(document))
     train_config = dict(document.get("train_config") or {})
+    train_config.setdefault("metrics_schema_version", METRICS_SCHEMA_VERSION)
     if "checkpoint_eval_asset_manifest" in train_config:
         raise ValueError(
             "new submissions must use queue-materialized rom_asset_manifest, not "
@@ -1842,6 +2536,7 @@ def enqueue_train_job(
     if submission_ordinal < 0:
         raise ValueError("submission_ordinal must be at least zero")
     requested_config = dict(train_config)
+    requested_config.setdefault("metrics_schema_version", METRICS_SCHEMA_VERSION)
     requested_config["runtime_input_sha256"] = str(runtime_input_sha256).strip()
     requested_config["runtime_build_source_sha"] = str(runtime_build_source_sha).strip()
     requested_config["source_sha"] = str(repo_git_commit or "").strip()
@@ -2426,7 +3121,10 @@ def machine_control(conn, *, machine: str) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT machine, drained, effective_capacity, reason, updated_at
+            SELECT machine, drained, drain_requested, drain_state,
+              normal_admission_disabled, host_mutation_quarantined,
+              cleanup_enabled, control_revision, rollout_owner,
+              cleanup_evidence_sha256, effective_capacity, reason, updated_at
             FROM machine_controls
             WHERE machine = %(machine)s
             """,
@@ -2439,6 +3137,12 @@ def machine_control(conn, *, machine: str) -> dict[str, Any]:
         else {
             "machine": machine,
             "drained": False,
+            "drain_requested": False,
+            "drain_state": "active",
+            "normal_admission_disabled": False,
+            "host_mutation_quarantined": False,
+            "cleanup_enabled": False,
+            "control_revision": 1,
             "effective_capacity": None,
             "reason": None,
         }
@@ -2464,27 +3168,52 @@ def set_machine_control(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO machine_controls (machine, drained, effective_capacity, reason)
+                INSERT INTO machine_controls (
+                  machine, drained, drain_requested, drain_state,
+                  normal_admission_disabled, effective_capacity, reason
+                )
                 VALUES (
                   %(machine)s,
-                  COALESCE(%(drained)s, FALSE),
+                  FALSE,
+                  %(request_drain)s,
+                  CASE WHEN %(request_drain)s THEN 'drain_requested' ELSE 'active' END,
+                  %(request_drain)s,
                   %(effective_capacity)s,
                   %(reason)s
                 )
                 ON CONFLICT (machine) DO UPDATE
-                SET drained = COALESCE(%(drained)s, machine_controls.drained),
+                SET drained = CASE WHEN %(resume)s THEN FALSE ELSE machine_controls.drained END,
+                    drain_requested = CASE
+                      WHEN %(request_drain)s THEN TRUE
+                      WHEN %(resume)s THEN FALSE
+                      ELSE machine_controls.drain_requested END,
+                    drain_state = CASE
+                      WHEN %(request_drain)s THEN 'drain_requested'
+                      WHEN %(resume)s THEN 'active'
+                      ELSE machine_controls.drain_state END,
+                    normal_admission_disabled = CASE
+                      WHEN %(request_drain)s THEN TRUE
+                      WHEN %(resume)s THEN FALSE
+                      ELSE machine_controls.normal_admission_disabled END,
                     effective_capacity = CASE
                       WHEN %(reset_capacity)s THEN NULL
                       WHEN %(effective_capacity)s IS NOT NULL THEN %(effective_capacity)s
                       ELSE machine_controls.effective_capacity
                     END,
                     reason = COALESCE(%(reason)s, machine_controls.reason),
+                    control_revision = CASE
+                      WHEN %(drained)s IS NOT NULL
+                        OR %(effective_capacity)s IS NOT NULL OR %(reset_capacity)s
+                      THEN machine_controls.control_revision + 1
+                      ELSE machine_controls.control_revision END,
                     updated_at = now()
                 RETURNING *
                 """,
                 {
                     "machine": machine,
                     "drained": drained,
+                    "request_drain": drained is True,
+                    "resume": drained is False,
                     "effective_capacity": effective_capacity,
                     "reset_capacity": reset_capacity,
                     "reason": reason,
@@ -2498,6 +3227,128 @@ def set_machine_control(
     return update()
 
 
+def record_machine_drain_zero_receipt(
+    conn,
+    *,
+    machine: str,
+    control_revision: int,
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    canonical = json.dumps(dict(receipt), sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    with conn:
+        acquire_machine_control_xact_lock(conn, machine=machine)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO machine_drain_zero_receipts (
+                  machine, control_revision, receipt_nonce, helper_protocol_version,
+                  receipt_sha256, receipt_json
+                )
+                SELECT %(machine)s, %(control_revision)s, %(receipt_nonce)s,
+                  %(helper_protocol_version)s, %(receipt_sha256)s, %(receipt_json)s
+                FROM machine_controls control
+                WHERE control.machine=%(machine)s
+                  AND control.control_revision=%(control_revision)s
+                  AND control.drain_requested AND NOT control.drained
+                ON CONFLICT (machine, control_revision) DO UPDATE
+                SET receipt_sha256=machine_drain_zero_receipts.receipt_sha256
+                WHERE machine_drain_zero_receipts.receipt_sha256=EXCLUDED.receipt_sha256
+                RETURNING *
+                """,
+                {
+                    "machine": machine,
+                    "control_revision": int(control_revision),
+                    "receipt_nonce": str(receipt.get("receipt_nonce") or ""),
+                    "helper_protocol_version": int(receipt.get("protocol_version") or 0),
+                    "receipt_sha256": digest,
+                    "receipt_json": json_arg(dict(receipt)),
+                },
+            )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError("drain zero receipt does not match the active control revision")
+            return dict(row)
+
+
+def finalize_machine_drain(conn, *, machine: str, control_revision: int) -> dict[str, Any]:
+    machine = normalize_machine(machine)
+    with conn:
+        acquire_machine_control_xact_lock(conn, machine=machine)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT control.*, receipt.observed_at, receipt.receipt_json
+                FROM machine_controls control
+                JOIN machine_drain_zero_receipts receipt
+                  ON receipt.machine=control.machine
+                 AND receipt.control_revision=control.control_revision
+                WHERE control.machine=%(machine)s
+                  AND control.control_revision=%(control_revision)s
+                  AND control.drain_requested AND NOT control.drained
+                  AND NOT control.host_mutation_quarantined
+                  AND receipt.observed_at > now() - interval '30 seconds'
+                FOR UPDATE OF control
+                """,
+                {"machine": machine, "control_revision": int(control_revision)},
+            )
+            control = cur.fetchone()
+            if not control:
+                raise RuntimeError("machine is not ready for revision-bound drain finalization")
+            receipt = dict(control["receipt_json"])
+            counts = dict(receipt.get("counts") or {})
+            if not counts or any(int(value) != 0 for value in counts.values()):
+                raise RuntimeError("host drain receipt is not a zero-residue receipt")
+            cur.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM job_launches
+                    WHERE machine=%(machine)s AND state IN ('launching','running'))
+                  + (SELECT COUNT(*) FROM workspace_container_generations generation
+                     JOIN workspace_manifests manifest
+                       ON manifest.launch_id=generation.launch_id
+                      AND manifest.generation=generation.workspace_generation
+                     WHERE manifest.machine=%(machine)s
+                       AND generation.env_cleanup_state <> 'unlinked')
+                  + (SELECT COUNT(*) FROM workspace_container_members member
+                     JOIN workspace_manifests manifest
+                       ON manifest.launch_id=member.launch_id
+                      AND manifest.generation=member.workspace_generation
+                     WHERE manifest.machine=%(machine)s AND member.state <> 'absent')
+                  + (SELECT COUNT(*) FROM workspace_manifests
+                     WHERE machine=%(machine)s
+                       AND reservation_intent_state NOT IN ('cleaned'))
+                  + (SELECT COUNT(*) FROM workspace_cleanup_rows row
+                     JOIN workspace_manifests manifest
+                       ON manifest.launch_id=row.launch_id
+                      AND manifest.generation=row.lifecycle_generation
+                     WHERE manifest.machine=%(machine)s AND (
+                       row.workspace_state IN ('deleting','host_deleted','rollback_review')
+                       OR row.prepare_cleanup_state NOT IN ('not_created','cleaned')
+                       OR row.journal_cleanup_state NOT IN ('not_created','cleaned')
+                     ))
+                  + (SELECT COUNT(*) FROM host_operation_leases
+                     WHERE machine=%(machine)s AND state IN ('registered','running','reconciling'))
+                  AS blockers
+                """,
+                {"machine": machine},
+            )
+            if int(cur.fetchone()["blockers"]):
+                raise RuntimeError("database drain-zero predicate is not satisfied")
+            cur.execute("SET LOCAL rlab.drain_finalize = 'on'")
+            cur.execute(
+                """
+                UPDATE machine_controls
+                SET drained=TRUE, drain_state='drained', updated_at=now()
+                WHERE machine=%(machine)s AND control_revision=%(control_revision)s
+                RETURNING *
+                """,
+                {"machine": machine, "control_revision": int(control_revision)},
+            )
+            return dict(cur.fetchone())
+
+
 def machines_with_service_work(conn=None) -> tuple[str, ...]:
     owned_connection = conn is None
     if owned_connection:
@@ -2506,14 +3357,34 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT machine
-                FROM train_jobs
-                WHERE status IN ('pending', 'launching', 'starting', 'running')
-                   OR (
-                     status = 'finalizing'
-                     AND telemetry_transport <> 'neon_mailbox_v1'
-                     AND live_publication_status IN ('pending', 'live')
-                   )
+                SELECT DISTINCT machine FROM (
+                  SELECT machine
+                  FROM train_jobs
+                  WHERE status IN ('pending', 'launching', 'starting', 'running')
+                     OR (
+                       status = 'finalizing'
+                       AND telemetry_transport <> 'neon_mailbox_v1'
+                       AND live_publication_status IN ('pending', 'live')
+                     )
+                  UNION ALL
+                  SELECT manifest.machine
+                  FROM workspace_container_generations generation
+                  JOIN workspace_manifests manifest
+                    ON manifest.launch_id=generation.launch_id
+                   AND manifest.generation=generation.workspace_generation
+                  JOIN job_launches launch ON launch.launch_id=generation.launch_id
+                  WHERE launch.state IN ('succeeded','failed','canceled')
+                    AND (
+                      generation.env_cleanup_state <> 'unlinked'
+                      OR EXISTS (
+                        SELECT 1 FROM workspace_container_members member
+                        WHERE member.launch_id=generation.launch_id
+                          AND member.workspace_generation=generation.workspace_generation
+                          AND member.container_generation=generation.container_generation
+                          AND member.state <> 'absent'
+                      )
+                    )
+                ) work
                 ORDER BY machine
                 """
             )
@@ -2802,6 +3673,8 @@ def next_pending_train_job(
                      + pg_total_relation_size('attempt_commands')
               ) < 5368709120
               AND COALESCE(control.drained, FALSE) = FALSE
+              AND COALESCE(control.drain_requested, FALSE) = FALSE
+              AND COALESCE(control.normal_admission_disabled, FALSE) = FALSE
               AND (
                 image_state.next_retry_at IS NULL
                 OR image_state.next_retry_at <= now()

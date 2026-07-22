@@ -56,6 +56,7 @@ _RECIPE_VALUE_FIELDS = frozenset(
         "environment",
         "environment_hash",
         "eval",
+        "playback",
     }
 )
 _EVAL_FIELDS = frozenset(
@@ -75,6 +76,7 @@ _EVAL_FIELDS = frozenset(
         "asset",
     }
 )
+_PLAYBACK_FIELDS = frozenset({"environment", "seed"})
 _RECIPE_PROVENANCE_FIELDS = frozenset({"source_commit", "source_files", "runtime", "asset"})
 _MODEL_PROVENANCE_FIELDS = frozenset(
     {
@@ -355,7 +357,7 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
     provenance = _required_mapping(document.get("provenance"), label=f"{source}.provenance")
     _reject_unknown(recipe, _RECIPE_VALUE_FIELDS, label=f"{source}.recipe")
     _reject_unknown(provenance, _RECIPE_PROVENANCE_FIELDS, label=f"{source}.provenance")
-    required_recipe = {"goal", "recipe_id", "description", "train", "train_config", "eval"}
+    required_recipe = {"goal", "recipe_id", "description", "train", "train_config"}
     missing = sorted(required_recipe - set(recipe))
     if missing:
         raise PolicyDocumentError(
@@ -365,8 +367,26 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
     train_config = _required_mapping(
         recipe.get("train_config"), label=f"{source}.recipe.train_config"
     )
-    evaluation = _required_mapping(recipe.get("eval"), label=f"{source}.recipe.eval")
-    _reject_unknown(evaluation, _EVAL_FIELDS, label=f"{source}.recipe.eval")
+    evaluation_value = recipe.get("eval")
+    playback_value = recipe.get("playback")
+    evaluation = (
+        _required_mapping(evaluation_value, label=f"{source}.recipe.eval")
+        if evaluation_value is not None
+        else None
+    )
+    playback = (
+        _required_mapping(playback_value, label=f"{source}.recipe.playback")
+        if playback_value is not None
+        else None
+    )
+    if evaluation is None and playback is None:
+        raise PolicyDocumentError(f"{source}.recipe must define eval or playback")
+    if evaluation is not None and playback is not None:
+        raise PolicyDocumentError(f"{source}.recipe cannot define both eval and playback")
+    if evaluation is not None:
+        _reject_unknown(evaluation, _EVAL_FIELDS, label=f"{source}.recipe.eval")
+    if playback is not None:
+        _reject_unknown(playback, _PLAYBACK_FIELDS, label=f"{source}.recipe.playback")
     from rlab.env_identity import validate_task_config
     from rlab.goal_schema import validate_goal_document_shape
     from rlab.train_config import (
@@ -389,12 +409,24 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
         validate_goal_document_shape(goal, label=f"{source}.recipe.goal")
     except ValueError as exc:
         raise PolicyDocumentError(str(exc)) from exc
+    training_only = str(train_config.get("checkpoint_eval_backend") or "") == "none"
+    if training_only and evaluation is not None:
+        raise PolicyDocumentError(f"{source}.recipe training-only contract cannot define eval")
+    if not training_only and evaluation is None:
+        raise PolicyDocumentError(f"{source}.recipe evaluated contract must define eval")
+    if evaluation is not None:
+        portable_environment = evaluation.get("environment")
+        portable_environment_label = "evaluation"
+    else:
+        assert playback is not None
+        portable_environment = playback.get("environment")
+        portable_environment_label = "playback"
     for label, environment in (
         ("training", train_config),
-        ("evaluation", evaluation.get("environment")),
+        (portable_environment_label, portable_environment),
     ):
         environment = _required_mapping(environment, label=f"{source} {label} environment")
-        if label == "evaluation":
+        if label in {"evaluation", "playback"}:
             _reject_unknown(
                 environment,
                 env_config_allowed_keys(),
@@ -416,16 +448,20 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
             raise PolicyDocumentError(str(exc)) from exc
     _required_mapping(train_config.get("training_backend"), label=f"{source} training backend")
     _required_mapping(goal.get("train"), label=f"{source}.recipe.goal.train")
-    if evaluation.get("action_sampling") != "stochastic":
+    portable_seed = (evaluation or playback or {}).get("seed")
+    if not isinstance(portable_seed, int) or isinstance(portable_seed, bool):
+        raise PolicyDocumentError(f"{source} portable environment seed must be an integer")
+    if evaluation is not None and evaluation.get("action_sampling") != "stochastic":
         raise PolicyDocumentError(f"{source}.recipe.eval.action_sampling must be 'stochastic'")
-    if evaluation.get("deterministic", False) is not False:
+    if evaluation is not None and evaluation.get("deterministic", False) is not False:
         raise PolicyDocumentError(f"{source}.recipe.eval.deterministic must be false")
-    _required_text(evaluation.get("seed_protocol"), label=f"{source} eval seed_protocol")
-    if not isinstance(evaluation.get("seed"), int) or isinstance(evaluation.get("seed"), bool):
-        raise PolicyDocumentError(f"{source}.recipe.eval.seed must be an integer")
-    if not isinstance(evaluation.get("episodes"), int) or int(evaluation["episodes"]) <= 0:
+    if evaluation is not None:
+        _required_text(evaluation.get("seed_protocol"), label=f"{source} eval seed_protocol")
+    if evaluation is not None and (
+        not isinstance(evaluation.get("episodes"), int) or int(evaluation["episodes"]) <= 0
+    ):
         raise PolicyDocumentError(f"{source}.recipe.eval.episodes must be positive")
-    if "manifest" in evaluation:
+    if evaluation is not None and "manifest" in evaluation:
         from rlab.checkpoint_acceptance import manifest_index
 
         try:
@@ -572,7 +608,7 @@ def build_recipe_document(
     # recipe.json is the immutable policy contract consumed by evaluation. Materialize
     # backend defaults here, before the queue adds operational fields, so its backend
     # hash is identical to the normalized config executed by the learner.
-    from rlab.train_config import validate_and_normalize_train_config
+    from rlab.train_config import env_config_allowed_keys, validate_and_normalize_train_config
 
     train_config = validate_and_normalize_train_config(
         train_config,
@@ -594,13 +630,29 @@ def build_recipe_document(
     recipe["environment_hash"] = effective_training_metadata["environment_hash"]
     from rlab.checkpoint_acceptance import CheckpointEvalContractCompiler
 
-    eval_compiler = CheckpointEvalContractCompiler.from_train_config(
-        train_config,
-        portable_asset=True,
-        require_asset=False,
-        materialize_seed_defaults=True,
-    )
-    portable_asset = eval_compiler.asset
+    training_only = str(train_config.get("checkpoint_eval_backend") or "") == "none"
+    eval_compiler = None
+    portable_asset = None
+    playback = None
+    if training_only:
+        from rlab.seeds import EVAL_SEED_START
+
+        playback = {
+            "environment": {
+                key: deepcopy(value)
+                for key, value in train_config.items()
+                if key in env_config_allowed_keys()
+            },
+            "seed": int(train_config.get("checkpoint_eval_seed", EVAL_SEED_START)),
+        }
+    else:
+        eval_compiler = CheckpointEvalContractCompiler.from_train_config(
+            train_config,
+            portable_asset=True,
+            require_asset=False,
+            materialize_seed_defaults=True,
+        )
+        portable_asset = eval_compiler.asset
     stop_on_acceptance = bool(train_config.get("stop_on_acceptance"))
     for key in _OPERATIONAL_TRAIN_FIELDS:
         train_config.pop(key, None)
@@ -622,7 +674,13 @@ def build_recipe_document(
         )
     )
     recipe["schema_version"] = int(recipe.get("schema_version") or 2)
-    recipe["eval"] = eval_compiler.contract(require_acceptance=stop_on_acceptance)
+    if training_only:
+        recipe.pop("eval", None)
+        recipe["playback"] = playback
+    else:
+        assert eval_compiler is not None
+        recipe.pop("playback", None)
+        recipe["eval"] = eval_compiler.contract(require_acceptance=stop_on_acceptance)
     source_files = []
     if isinstance(composition, Mapping):
         for item in composition.get("source_files") or []:
@@ -875,7 +933,29 @@ def evaluation_contract(recipe_document: Mapping[str, Any]) -> dict[str, Any]:
         expected_type=RECIPE_DOCUMENT_TYPE,
         handlers={RECIPE_FORMAT_VERSION: _validate_recipe_v1},
     )
+    if "eval" not in validated["recipe"]:
+        raise PolicyDocumentError(
+            "training-only policy bundle has no evaluation contract"
+        )
     return deepcopy(dict(validated["recipe"]["eval"]))
+
+
+def playback_contract(recipe_document: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the portable environment used for interactive policy playback."""
+    validated = preflight_document(
+        recipe_document,
+        source=RECIPE_FILENAME,
+        expected_type=RECIPE_DOCUMENT_TYPE,
+        handlers={RECIPE_FORMAT_VERSION: _validate_recipe_v1},
+    )
+    recipe = validated["recipe"]
+    if "playback" in recipe:
+        return deepcopy(dict(recipe["playback"]))
+    evaluation = dict(recipe["eval"])
+    return {
+        "environment": deepcopy(dict(evaluation["environment"])),
+        "seed": int(evaluation["seed"]),
+    }
 
 
 def evaluation_contract_sha256(recipe_document: Mapping[str, Any]) -> str:

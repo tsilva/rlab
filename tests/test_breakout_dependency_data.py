@@ -20,8 +20,8 @@ GAME = "Breakout-Atari2600-v0"
 def test_breakout_goal_uses_pinned_stable_retro_data() -> None:
     goal = yaml.safe_load(GOAL_PATH.read_text(encoding="utf-8"))
     train_info = goal["train"]["environment"]["env_config"]["env_args"]["info"]
-    eval_info = goal["eval"]["environment"]["env_config"]["env_args"]["info"]
-    assert train_info == eval_info == "data"
+    assert train_info == "data"
+    assert "eval" not in goal
 
     data_path = _stable_retro_packaged_data_path(GAME, f"{train_info}.json")
     assert data_path.is_file()

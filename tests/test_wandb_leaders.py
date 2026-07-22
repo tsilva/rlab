@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from rlab.wandb_leaders import (
     CheckpointLeader,
     RunScore,
     rank_checkpoint_leaders,
     rank_run_leaders,
+    run_score as score_wandb_run,
 )
 
 
@@ -17,10 +19,12 @@ def run_score(
     effective_goal_hash: str,
     objective: float,
     is_default: bool,
+    recipe_slug: str = "ppo",
+    steps: int | None = None,
 ) -> RunScore:
     return RunScore(
         goal_slug="mario-level-1-1",
-        recipe_slug="ppo",
+        recipe_slug=recipe_slug,
         reward_shape=reward_shape,
         reward_shape_sha256=reward_hash,
         effective_goal_contract_sha256=effective_goal_hash,
@@ -30,6 +34,7 @@ def run_score(
         url="https://example.invalid/run",
         seed=1,
         objective=objective,
+        steps=steps,
     )
 
 
@@ -66,6 +71,35 @@ def checkpoint_leader(
 
 
 class WandbLeaderRewardShapeTests(unittest.TestCase):
+    def test_training_only_run_uses_configured_final_return_and_steps(self):
+        score = score_wandb_run(
+            SimpleNamespace(
+                config={
+                    "goal_slug": "Breakout-Atari2600-v0",
+                    "recipe_slug": "ppo",
+                    "selection_rank": [
+                        "max(train/episode/return/shaped/mean)",
+                        "min(global_step)",
+                    ],
+                },
+                summary={
+                    "train/episode/return/shaped/mean": 42.0,
+                    "train/outcome/success/window_100/rate/min": 0.1,
+                    "global_step": 1_000_000,
+                },
+                tags=(),
+                id="run",
+                name="run",
+                url="https://example.invalid/run",
+            ),
+            objective_keys=("train/outcome/success/window_100/rate/min",),
+        )
+
+        self.assertIsNotNone(score)
+        assert score is not None
+        self.assertEqual(score.objective, 42.0)
+        self.assertEqual(score.steps, 1_000_000)
+
     def test_run_ranking_does_not_combine_different_reward_shapes(self):
         leaders = rank_run_leaders(
             [
@@ -113,6 +147,30 @@ class WandbLeaderRewardShapeTests(unittest.TestCase):
         self.assertEqual(
             [leader.reward_shape for leader in leaders],
             ["score-v1", "score-step-0p01-v1"],
+        )
+
+    def test_training_return_tie_prefers_fewer_mean_policy_transitions(self):
+        common = {
+            "reward_shape": "score-v1",
+            "reward_hash": "sha256:score",
+            "effective_goal_hash": "sha256:goal-score",
+            "is_default": True,
+        }
+        leaders = rank_run_leaders(
+            [
+                run_score(**common, recipe_slug="fast", objective=10.0, steps=100),
+                run_score(**common, recipe_slug="fast", objective=20.0, steps=200),
+                run_score(**common, recipe_slug="slow", objective=10.0, steps=300),
+                run_score(**common, recipe_slug="slow", objective=20.0, steps=400),
+            ],
+            min_seeds=2,
+        )
+
+        self.assertEqual([leader.recipe_slug for leader in leaders], ["fast", "slow"])
+        self.assertEqual(leaders[0].mean_steps, 150)
+        self.assertEqual(
+            (leaders[0].worst_seed, leaders[0].mean_seed, leaders[0].best_seed),
+            (10.0, 15.0, 20.0),
         )
 
 
