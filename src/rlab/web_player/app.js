@@ -72,6 +72,9 @@ const state = {
   layout: null,
   selectedPanel: null,
   draggingPanel: null,
+  dragSession: null,
+  dragTarget: null,
+  remoteDrag: null,
   activeWindows: new Map(),
   gameAspect: 256 / 240,
 };
@@ -138,7 +141,6 @@ function subscriptions() {
 function setDetachedLayout() {
   const secondary = state.windowId !== "main";
   document.body.classList.toggle("secondary-window", secondary);
-  if (panelName) $("#page-title").textContent = `${PANEL_LABELS[panelName] || panelName} window`;
 }
 
 function showToast(message, error = false) {
@@ -396,12 +398,10 @@ function updateControlState() {
 function renderWorkspaceStatus() {
   const live = state.liveSnapshot;
   const shown = state.snapshot || live;
-  $("#workspace-sequence").textContent = `SEQ ${text(live?.sequence)}`;
+  $("#timeline-step").textContent = `EP ${text(shown?.session?.episode)} · STEP ${text(shown?.session?.step)}`;
   if (state.inspectionSequence === null) {
-    $("#timeline-step").textContent = `STEP ${text(shown?.session?.step)}`;
     $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)}`;
   } else {
-    $("#timeline-step").textContent = `STEP ${text(shown?.session?.step)}`;
     $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)} · LIVE ${text(live?.sequence)}`;
   }
 }
@@ -415,12 +415,12 @@ function renderSnapshot() {
   renderWorkspaceStatus();
   $("#seed").value = text(session.seed, "");
   if (document.activeElement !== $("#fps")) $("#fps").value = Number(session.target_fps || 0);
-  $("#session-summary").textContent = `EP ${session.episode} · STEP ${session.step} · SEQ ${snapshot.sequence} · ${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
+  $("#session-summary").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
   $("#resolved-config").textContent = session.config || "No configuration supplied.";
   renderJson($("#raw-transition"), transition, "No transition yet.");
   $("#model-input").textContent = transition?.before?.model_input?.join("\n") || "No policy input yet.";
   $("#game-overlay").textContent = transition
-    ? `${state.inspectionSequence === null ? "" : "INSPECTING · "}seq ${transition.sequence} · ep ${transition.episode} · step ${transition.step}\nr ${number(transition.reward?.step, 2)} · return ${number(transition.reward?.return, 2)}\n${transition.action_source}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
+    ? `${state.inspectionSequence === null ? "" : "INSPECTING · "}EP ${transition.episode} · STEP ${transition.step} · r ${number(transition.reward?.step, 2)} · R ${number(transition.reward?.return, 2)} · ${String(transition.action_source || "—").toUpperCase()}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
     : `seed ${text(session.seed)} · ready`;
   const actionNamesKey = JSON.stringify(session.action_names || []);
   if (actionNamesKey !== state.actionNamesKey) {
@@ -482,16 +482,16 @@ function renderPolicy(decision, inspection) {
   const summary = $("#policy-summary");
   const actions = $("#policy-actions");
   if (!decision) {
-    setStats(summary, [["Source", state.snapshot?.driver || "—"], ["Decision", "Human / unavailable"]]);
+    setStats(summary, [["Mode", state.snapshot?.driver || "—"], ["Decision", "Unavailable"]]);
     actions.className = "action-probabilities empty-state";
     actions.textContent = "No sampled policy decision for this transition.";
     return;
   }
   setStats(summary, [
-    [inspection ? "Inspection" : "Source", inspection ? "Policy mode" : (decision.sampled ? "Stochastic sample" : "Policy mode")],
-    ["Value V(s)", number(decision.value, 4)],
+    [inspection ? "Inspection" : "Mode", inspection ? "Policy" : (decision.sampled ? "Stochastic" : "Policy")],
+    ["V(s)", number(decision.value, 4)],
     ["Entropy", number(decision.entropy, 4)],
-    ["Log probability", number(decision.log_probability, 4)],
+    ["Log p", number(decision.log_probability, 4)],
   ]);
   const probabilities = decision.probabilities;
   if (!Array.isArray(probabilities)) {
@@ -523,8 +523,8 @@ function renderPolicy(decision, inspection) {
 function renderReward(transition) {
   const reward = transition?.reward || {};
   setStats($("#reward-stats"), [
-    ["Provider", number(reward.provider, 3)],
-    ["Shaped", number(reward.shaped, 3)],
+    ["Provider r", number(reward.provider, 3)],
+    ["Shaped r", number(reward.shaped, 3)],
     ["Return", number(reward.return, 2)],
     ["Outcome", transition?.outcome || "continuing"],
   ]);
@@ -788,7 +788,9 @@ function persistLayout({ announce = true } = {}) {
 }
 
 function updateLayoutTitle() {
-  $("#layout-name").textContent = state.layout.name;
+  $("#page-title").textContent = panelName
+    ? `${PANEL_LABELS[panelName] || panelName} window`
+    : state.layout.name;
   $("#layout-name-input").value = state.layout.name;
   document.title = `${state.layout.name} · rlab player`;
 }
@@ -876,11 +878,15 @@ function renderPanelShelf() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "shelf-item";
+    button.setAttribute("aria-label", config.visible ? `Move ${label} to this window` : `Show ${label}`);
     const title = document.createElement("span");
     title.textContent = label;
-    const status = document.createElement("small");
-    status.textContent = config.visible ? "Move here" : "Restore";
-    button.append(title, status);
+    button.append(title);
+    if (config.visible) {
+      const status = document.createElement("small");
+      status.textContent = "Other window";
+      button.append(status);
+    }
     button.addEventListener("click", () => {
       const windowHasPanels = Object.entries(state.layout.panels).some(([otherName, panel]) =>
         otherName !== name && panel.visible && panel.window === state.windowId
@@ -896,6 +902,8 @@ function renderPanelShelf() {
       resolveCollisions(name);
       persistLayout();
       applyLayout();
+      $("#panel-shelf").hidden = true;
+      $("#panels-toggle").setAttribute("aria-expanded", "false");
       showToast(`${label} moved into this window.`);
     });
     return button;
@@ -911,30 +919,137 @@ function renderPanelShelf() {
 function gridMetrics() {
   const dashboard = $("#dashboard");
   const rect = dashboard.getBoundingClientRect();
-  const gap = 10;
-  const column = (rect.width - gap * 11) / 12;
-  return { dashboard, rect, gap, column, row: 32, rowPitch: 42, columnPitch: column + gap };
-}
-
-function dropCell(event, config) {
-  const { rect, columnPitch, rowPitch } = gridMetrics();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
+  const style = getComputedStyle(dashboard);
+  const gap = Number.parseFloat(style.columnGap) || 10;
+  const row = Number.parseFloat(style.gridAutoRows) || 32;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+  const contentWidth = Math.max(0, rect.width - paddingLeft - paddingRight);
+  const contentHeight = Math.max(0, rect.height - paddingTop - paddingBottom);
+  const column = Math.max(0, (contentWidth - gap * 11) / 12);
   return {
-    col: clamp(Math.floor(x / columnPitch) + 1, 1, 13 - config.w),
-    row: clamp(Math.floor(y / rowPitch) + 1, 1, 200),
+    dashboard,
+    rect,
+    gap,
+    column,
+    row,
+    paddingLeft,
+    paddingTop,
+    contentWidth,
+    contentHeight,
+    rowPitch: row + gap,
+    columnPitch: column + gap,
   };
 }
 
-function showDropPreview(config, cell) {
+function dropTargetAt(clientX, clientY, config) {
+  const metrics = gridMetrics();
+  const { rect, paddingLeft, paddingTop, contentWidth, contentHeight, columnPitch, rowPitch } = metrics;
+  const x = clientX - rect.left - paddingLeft;
+  const y = clientY - rect.top - paddingTop;
+  if (x < 0 || x > contentWidth || y < 0 || y > contentHeight) return null;
+  return {
+    cell: {
+      col: clamp(Math.floor(x / columnPitch) + 1, 1, 13 - config.w),
+      row: clamp(Math.floor(y / rowPitch) + 1, 1, 200),
+    },
+    metrics,
+  };
+}
+
+function showDropPreview(config, cell, metrics = gridMetrics()) {
   const preview = $("#drop-preview");
+  const { paddingLeft, paddingTop, column, row, gap, columnPitch, rowPitch } = metrics;
   preview.hidden = false;
-  preview.style.gridColumn = `${cell.col} / span ${config.w}`;
-  preview.style.gridRow = `${cell.row} / span ${config.h}`;
+  preview.style.left = `${paddingLeft + (cell.col - 1) * columnPitch}px`;
+  preview.style.top = `${paddingTop + (cell.row - 1) * rowPitch}px`;
+  preview.style.width = `${column * config.w + gap * (config.w - 1)}px`;
+  preview.style.height = `${row * config.h + gap * (config.h - 1)}px`;
+  preview.dataset.panel = state.draggingPanel || state.remoteDrag?.name || "";
+  preview.dataset.targetWindow = state.windowId;
 }
 
 function hideDropPreview() {
-  $("#drop-preview").hidden = true;
+  const preview = $("#drop-preview");
+  preview.hidden = true;
+  delete preview.dataset.panel;
+  delete preview.dataset.targetWindow;
+}
+
+function ensurePanelDragOverlay() {
+  let overlay = $("#panel-drag-overlay");
+  if (overlay) return overlay;
+  overlay = document.createElement("div");
+  overlay.id = "panel-drag-overlay";
+  overlay.className = "panel-drag-overlay";
+  overlay.hidden = true;
+  overlay.setAttribute("aria-hidden", "true");
+  document.body.append(overlay);
+  return overlay;
+}
+
+function showPanelDragOverlay(name, clientX, clientY) {
+  const overlay = ensurePanelDragOverlay();
+  overlay.textContent = PANEL_LABELS[name] || name;
+  overlay.style.left = `${clientX}px`;
+  overlay.style.top = `${clientY}px`;
+  overlay.hidden = clientX < 0 || clientX > innerWidth || clientY < 0 || clientY > innerHeight;
+}
+
+function setPanelDragUi(active, { source = false } = {}) {
+  document.body.classList.toggle("panel-drag-active", active);
+  $("#dashboard").classList.toggle("drag-origin", active && source);
+  $("#dashboard").classList.toggle("drag-receiving", active && !source);
+  if (active) return;
+  hideDropPreview();
+  const overlay = $("#panel-drag-overlay");
+  if (overlay) overlay.hidden = true;
+}
+
+function clientPointFromScreen(screenX, screenY) {
+  const sideChrome = Math.max(0, (outerWidth - innerWidth) / 2);
+  const topChrome = Math.max(0, outerHeight - innerHeight - sideChrome);
+  return {
+    x: Number(screenX) - window.screenX - sideChrome,
+    y: Number(screenY) - window.screenY - topChrome,
+  };
+}
+
+function publishPanelDragMove(session, event) {
+  const screenX = Number(event.screenX);
+  const screenY = Number(event.screenY);
+  if (session.lastScreen?.x === screenX && session.lastScreen?.y === screenY) return;
+  session.lastScreen = { x: screenX, y: screenY };
+  session.move += 1;
+  const config = state.layout.panels[session.name];
+  const localTarget = dropTargetAt(event.clientX, event.clientY, config);
+  state.dragTarget = localTarget
+    ? { window: state.windowId, cell: localTarget.cell, move: session.move }
+    : null;
+  showPanelDragOverlay(session.name, event.clientX, event.clientY);
+  if (localTarget) showDropPreview(config, localTarget.cell, localTarget.metrics);
+  else hideDropPreview();
+  workspaceChannel?.postMessage({
+    type: "panel-drag-move",
+    drag: session.id,
+    source: state.windowId,
+    name: session.name,
+    move: session.move,
+    screenX,
+    screenY,
+  });
+}
+
+function clearPanelDragSession(session, panel) {
+  if (state.dragSession?.id !== session.id) return;
+  panel.classList.remove("dragging");
+  state.draggingPanel = null;
+  state.dragSession = null;
+  state.dragTarget = null;
+  setPanelDragUi(false);
+  workspaceChannel?.postMessage({ type: "panel-drag-end", drag: session.id, source: state.windowId });
 }
 
 function ensureResizeHandle(panel) {
@@ -984,35 +1099,78 @@ function beginPanelDrag(event, panel) {
   if (event.button !== 0) return;
   const name = panel.dataset.panel;
   const config = state.layout.panels[name];
+  const handle = event.currentTarget;
   const start = { x: event.clientX, y: event.clientY };
   let moved = false;
-  let cell = { col: config.col, row: config.row };
+  let finishing = false;
+  try { handle.setPointerCapture(event.pointerId); } catch { /* Pointer capture is optional. */ }
   const move = (next) => {
     if (!moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
     next.preventDefault();
-    moved = true;
-    state.draggingPanel = name;
-    panel.classList.add("dragging");
-    cell = dropCell(next, config);
-    showDropPreview(config, cell);
+    if (!moved) {
+      moved = true;
+      const session = { id: crypto.randomUUID(), name, move: 0, lastScreen: null };
+      state.draggingPanel = name;
+      state.dragSession = session;
+      state.dragTarget = null;
+      panel.classList.add("dragging");
+      setPanelDragUi(true, { source: true });
+      workspaceChannel?.postMessage({
+        type: "panel-drag-start",
+        drag: session.id,
+        source: state.windowId,
+        name,
+        width: config.w,
+        height: config.h,
+      });
+    }
+    publishPanelDragMove(state.dragSession, next);
   };
-  const finish = (next) => {
+  const removeListeners = () => {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
-    panel.classList.remove("dragging");
-    state.draggingPanel = null;
-    hideDropPreview();
-    if (!moved) return;
-    const bounds = $("#dashboard").getBoundingClientRect();
-    if (next.clientX < bounds.left || next.clientX > bounds.right || next.clientY < bounds.top) return;
-    Object.assign(config, cell, { visible: true, window: state.windowId });
-    resolveCollisions(name);
-    persistLayout();
-    applyLayout();
-    showToast(`${PANEL_LABELS[name]} moved.`);
+    document.removeEventListener("pointercancel", cancel);
+    document.removeEventListener("keydown", keydown);
+  };
+  const complete = (cancelled = false) => {
+    const session = state.dragSession;
+    try { handle.releasePointerCapture(event.pointerId); } catch { /* Capture may already be released. */ }
+    if (!moved || !session) return;
+    if (!cancelled && state.dragTarget?.move === session.move) {
+      const target = state.dragTarget;
+      Object.assign(config, target.cell, { visible: true, window: target.window });
+      resolveCollisions(name);
+      persistLayout();
+      applyLayout();
+      const destination = target.window === state.windowId ? "" : " to the other window";
+      showToast(`${PANEL_LABELS[name]} moved${destination}.`);
+    }
+    clearPanelDragSession(session, panel);
+  };
+  const finish = (next) => {
+    if (finishing) return;
+    finishing = true;
+    removeListeners();
+    if (!moved) { complete(); return; }
+    publishPanelDragMove(state.dragSession, next);
+    // Give the destination window one animation frame to claim the final pointer position.
+    setTimeout(() => complete(false), 50);
+  };
+  const cancel = () => {
+    if (finishing) return;
+    finishing = true;
+    removeListeners();
+    complete(true);
+  };
+  const keydown = (next) => {
+    if (next.key !== "Escape") return;
+    next.preventDefault();
+    cancel();
   };
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", finish, { once: true });
+  document.addEventListener("pointercancel", cancel, { once: true });
+  document.addEventListener("keydown", keydown);
 }
 
 function bindPanelLayout() {
@@ -1075,8 +1233,11 @@ function movePanelToNewWindow(name) {
 }
 
 function bindWorkspaceMenus() {
-  $("#layout-name").addEventListener("click", (event) => positionMenu($("#layout-menu"), event.currentTarget));
-  $("#layouts-toggle").addEventListener("click", (event) => positionMenu($("#layout-menu"), event.currentTarget));
+  $("#layouts-toggle").addEventListener("click", (event) => {
+    $("#panel-shelf").hidden = true;
+    $("#panels-toggle").setAttribute("aria-expanded", "false");
+    positionMenu($("#layout-menu"), event.currentTarget);
+  });
   $$("[data-panel-menu]").forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
     openPanelMenu(button.dataset.panelMenu, button);
@@ -1140,16 +1301,16 @@ function bindWorkspaceMenus() {
     applyLayout();
     $("#panel-menu").hidden = true;
   });
-  $("#panels-toggle").addEventListener("click", () => {
+  $("#panels-toggle").addEventListener("click", (event) => {
     const shelf = $("#panel-shelf");
-    shelf.hidden = false;
-    $("#panel-shelf-title").setAttribute("aria-expanded", "true");
-    shelf.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  });
-  $("#panel-shelf-title").addEventListener("click", (event) => {
-    const expanded = event.currentTarget.getAttribute("aria-expanded") === "true";
-    event.currentTarget.setAttribute("aria-expanded", String(!expanded));
-    $("#panel-shelf-items").hidden = expanded;
+    const opening = shelf.hidden;
+    $("#layout-menu").hidden = true;
+    shelf.hidden = true;
+    event.currentTarget.setAttribute("aria-expanded", String(opening));
+    if (opening) {
+      renderPanelShelf();
+      positionMenu(shelf, event.currentTarget);
+    }
   });
   $("#new-window").addEventListener("click", () => {
     const targetWindow = `window-${crypto.randomUUID().slice(0, 8)}`;
@@ -1158,7 +1319,11 @@ function bindWorkspaceMenus() {
   });
   document.addEventListener("click", (event) => {
     if (!$("#panel-menu").contains(event.target) && !event.target.closest("[data-panel-menu]")) $("#panel-menu").hidden = true;
-    if (!$("#layout-menu").contains(event.target) && !event.target.closest("#layout-name, #layouts-toggle")) $("#layout-menu").hidden = true;
+    if (!$("#layout-menu").contains(event.target) && !event.target.closest("#layouts-toggle")) $("#layout-menu").hidden = true;
+    if (!$("#panel-shelf").contains(event.target) && !event.target.closest("#panels-toggle")) {
+      $("#panel-shelf").hidden = true;
+      $("#panels-toggle").setAttribute("aria-expanded", "false");
+    }
   });
 }
 
@@ -1195,6 +1360,38 @@ function bindWorkspaceSync() {
         }
       } else if (message.type === "heartbeat") {
         state.activeWindows.set(message.window, Date.now());
+      } else if (message.type === "panel-drag-start" && message.source !== state.windowId && PANEL_LABELS[message.name]) {
+        state.remoteDrag = { id: message.drag, source: message.source, name: message.name };
+        setPanelDragUi(true, { source: false });
+      } else if (message.type === "panel-drag-move" && state.remoteDrag?.id === message.drag) {
+        const config = state.layout.panels[state.remoteDrag.name];
+        const point = clientPointFromScreen(message.screenX, message.screenY);
+        const target = dropTargetAt(point.x, point.y, config);
+        showPanelDragOverlay(state.remoteDrag.name, point.x, point.y);
+        if (target) showDropPreview(config, target.cell, target.metrics);
+        else hideDropPreview();
+        workspaceChannel.postMessage({
+          type: "panel-drag-target",
+          drag: message.drag,
+          source: message.source,
+          target: state.windowId,
+          move: message.move,
+          cell: target?.cell || null,
+        });
+      } else if (message.type === "panel-drag-target" && state.dragSession?.id === message.drag && message.source === state.windowId) {
+        if (message.move < state.dragSession.move) return;
+        if (message.cell) {
+          state.dragTarget = {
+            window: message.target,
+            cell: message.cell,
+            move: message.move,
+          };
+        } else if (state.dragTarget?.window === message.target && state.dragTarget.move <= message.move) {
+          state.dragTarget = null;
+        }
+      } else if (message.type === "panel-drag-end" && state.remoteDrag?.id === message.drag) {
+        state.remoteDrag = null;
+        setPanelDragUi(false);
       } else if (message.type === "window-closing" && state.windowId === "main") {
         setTimeout(() => {
           const lastSeen = state.activeWindows.get(message.window) || 0;
@@ -1216,7 +1413,10 @@ function bindWorkspaceSync() {
   const heartbeat = () => workspaceChannel?.postMessage({ type: "heartbeat", window: state.windowId });
   heartbeat();
   setInterval(heartbeat, 1000);
-  window.addEventListener("beforeunload", () => workspaceChannel?.postMessage({ type: "window-closing", window: state.windowId }));
+  window.addEventListener("beforeunload", () => {
+    if (state.dragSession) workspaceChannel?.postMessage({ type: "panel-drag-end", drag: state.dragSession.id, source: state.windowId });
+    workspaceChannel?.postMessage({ type: "window-closing", window: state.windowId });
+  });
 }
 
 function bindTimeline() {

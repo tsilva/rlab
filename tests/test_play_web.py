@@ -307,14 +307,23 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'id="step-ten" class="icon-only" aria-label="Step 10 times"' in markup
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert "ti-device-desktop-share" in icons
-    assert "separate scale" in markup
+    assert "separate scale" not in markup
+    assert "shared scale" not in markup
+    assert "Research workspace" not in markup
+    assert "panel-kicker" not in markup
+    assert 'id="workspace-sequence"' not in markup
+    assert '<details class="control-section session-settings">' in markup
+    assert '#workspace-sequence' not in script
+    assert "panel-shelf-title" not in script
+    assert "scrollIntoView" not in script
+    assert '${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}' in script
     assert 'drawLines($("#return-chart")' in script
     assert "data-drag-handle" in markup
     assert 'aria-label="Move game panel"' in markup
     assert "/assets/tabler-icons.svg#ti-player-play" in markup
     assert 'id="ti-grip-vertical"' in icons
     assert 'id="ti-player-play"' in icons
-    assert 'id="panel-shelf"' in markup
+    assert 'id="panel-shelf" class="floating-menu panel-shelf" hidden' in markup
     assert "requestFullscreen" in script
     assert 'id="raw-transition" class="json-view"' in markup
     assert "function renderJson(" in script
@@ -330,4 +339,14 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "/workspace/" in script
     assert "workspace_id" in script
     assert "BroadcastChannel" in script
+    assert 'type: "panel-drag-start"' in script
+    assert 'type: "panel-drag-move"' in script
+    assert 'type: "panel-drag-target"' in script
+    assert 'type: "panel-drag-end"' in script
+    assert "setPointerCapture" in script
+    assert "clientPointFromScreen" in script
+    assert "preview.style.width" in script
+    assert "preview.style.height" in script
+    assert ".panel-drag-overlay" in styles
+    assert ".dashboard.drag-receiving" in styles
     assert "visibilitychange" in script

@@ -12,16 +12,14 @@
       <div class="app-brand">
         <span class="eyebrow">RLAB PLAYER</span>
         <span class="header-divider" aria-hidden="true"></span>
-        <h1 id="page-title">Research workspace</h1>
-        <button id="layout-name" class="layout-name" type="button" aria-label="Open saved layouts">Mario debug</button>
+        <h1 id="page-title">Mario debug</h1>
       </div>
       <div class="workspace-status" aria-live="polite">
-        <span id="workspace-sequence" class="sequence-label">SEQ —</span>
         <span id="connection-status" class="sync-status warning">Connecting</span>
       </div>
       <div class="header-status">
         <button id="layouts-toggle" class="quiet icon-only" type="button" aria-label="Layouts" title="Layouts"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg></button>
-        <button id="panels-toggle" class="quiet icon-only" type="button" aria-label="Panels" title="Panels"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-grid"></use></svg></button>
+        <button id="panels-toggle" class="quiet icon-only" type="button" aria-label="Panels" title="Panels" aria-controls="panel-shelf" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-grid"></use></svg></button>
         <button id="new-window" class="quiet icon-only" type="button" aria-label="Open synchronized window" title="Open synchronized window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg></button>
         <span id="control-status" class="badge muted">Observer</span>
       </div>
@@ -44,6 +42,11 @@
       <button id="panel-reset-size" class="button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-restore"></use></svg><span>Reset size</span></button>
     </div>
 
+    <div id="panel-shelf" class="floating-menu panel-shelf" hidden aria-label="Available panels">
+      <strong>Available panels</strong>
+      <div id="panel-shelf-items" class="panel-shelf-items"></div>
+    </div>
+
     <main id="dashboard" class="dashboard">
       <section class="panel game-panel" data-panel="game">
         <div id="game-stage" class="game-stage">
@@ -63,7 +66,7 @@
       <aside class="panel control-panel transport" data-panel="controls" aria-labelledby="controls-heading">
         <header class="panel-header control-panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move controls panel" title="Move controls panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">SESSION</span><h2 id="controls-heading">Controls</h2></div>
+          <div class="panel-title"><h2 id="controls-heading">Controls</h2></div>
           <button data-panel-menu="controls" class="icon-button icon-only" type="button" aria-label="Controls panel options" title="Controls panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <p id="session-summary" class="session-summary" aria-live="polite">Waiting for session…</p>
@@ -80,17 +83,19 @@
           </div>
         </section>
 
-        <section class="control-section" aria-labelledby="session-controls-heading">
-          <h3 id="session-controls-heading" class="control-label">Session</h3>
-          <div class="control-field-row">
-            <label>Seed <input id="seed" inputmode="numeric"></label>
-            <button id="reset" class="icon-only" aria-label="Reset with this seed" title="Reset with this seed"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg></button>
+        <details class="control-section session-settings">
+          <summary>Session settings</summary>
+          <div class="session-settings-body">
+            <div class="control-field-row">
+              <label>Seed <input id="seed" inputmode="numeric"></label>
+              <button id="reset" class="icon-only" aria-label="Reset with this seed" title="Reset with this seed"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg></button>
+            </div>
+            <div class="control-field-row">
+              <label>FPS <input id="fps" type="number" min="0" step="1" value="0"></label>
+              <button id="set-fps" class="quiet icon-only" aria-label="Apply FPS limit" title="Apply FPS limit"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
+            </div>
           </div>
-          <div class="control-field-row">
-            <label>FPS <input id="fps" type="number" min="0" step="1" value="0"></label>
-            <button id="set-fps" class="quiet icon-only" aria-label="Apply FPS limit" title="Apply FPS limit"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
-          </div>
-        </section>
+        </details>
 
         <section class="control-section" aria-labelledby="driver-controls-heading">
           <h3 id="driver-controls-heading" class="control-label">Driver</h3>
@@ -108,7 +113,7 @@
       <section class="panel" data-panel="policy">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move policy distribution panel" title="Move policy distribution panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">DECISION</span><h2>Policy distribution</h2></div>
+          <div class="panel-title"><h2>Policy distribution</h2></div>
           <button data-panel-menu="policy" class="icon-button icon-only" type="button" aria-label="Policy distribution panel options" title="Policy distribution panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <div id="policy-summary" class="stat-grid"></div>
@@ -118,7 +123,7 @@
       <section class="panel" data-panel="reward">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move reward and return panel" title="Move reward and return panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">TRANSITION HISTORY</span><h2>Reward and return</h2></div>
+          <div class="panel-title"><h2>Reward and return</h2></div>
           <button data-panel-menu="reward" class="icon-button icon-only" type="button" aria-label="Reward and return panel options" title="Reward and return panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <div id="reward-stats" class="stat-grid"></div>
@@ -126,7 +131,6 @@
           <section class="reward-plot" aria-labelledby="reward-plot-title">
             <div class="chart-heading">
               <span id="reward-plot-title">Step reward</span>
-              <small>shared scale</small>
             </div>
             <canvas id="reward-chart" class="chart reward-chart" aria-label="Provider and shaped step reward history"></canvas>
             <div id="reward-legend" class="legend"></div>
@@ -134,7 +138,6 @@
           <section class="reward-plot" aria-labelledby="return-plot-title">
             <div class="chart-heading">
               <span id="return-plot-title">Episode return</span>
-              <small>separate scale</small>
             </div>
             <canvas id="return-chart" class="chart reward-chart" aria-label="Episode return history"></canvas>
             <div id="return-legend" class="legend"></div>
@@ -145,7 +148,7 @@
       <section class="panel" data-panel="actions">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move action histogram panel" title="Move action histogram panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">BEHAVIOR</span><h2>Action histogram</h2></div>
+          <div class="panel-title"><h2>Action histogram</h2></div>
           <button data-panel-menu="actions" class="icon-button icon-only" type="button" aria-label="Action histogram panel options" title="Action histogram panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <canvas id="action-chart" class="chart" aria-label="Action histogram"></canvas>
@@ -155,7 +158,7 @@
       <section class="panel observation-panel" data-panel="observation">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move observation panel" title="Move observation panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">POLICY INPUT</span><h2>Observation and attribution</h2></div>
+          <div class="panel-title"><h2>Observation and attribution</h2></div>
           <button data-panel-menu="observation" class="icon-button icon-only" type="button" aria-label="Observation panel options" title="Observation panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <div class="observation-stage">
@@ -168,7 +171,7 @@
       <section class="panel" data-panel="signals">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move live signals panel" title="Move live signals panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">PROVIDER + TASK</span><h2>Live signals</h2></div>
+          <div class="panel-title"><h2>Live signals</h2></div>
           <button data-panel-menu="signals" class="icon-button icon-only" type="button" aria-label="Live signals panel options" title="Live signals panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <div class="signal-toolbar">
@@ -181,7 +184,7 @@
       <section class="panel" data-panel="events">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move events panel" title="Move events panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">BOUNDARIES</span><h2>Events</h2></div>
+          <div class="panel-title"><h2>Events</h2></div>
           <button data-panel-menu="events" class="icon-button icon-only" type="button" aria-label="Events panel options" title="Events panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <ol id="event-list" class="event-list"><li class="empty-state">No events observed.</li></ol>
@@ -190,7 +193,7 @@
       <section class="panel raw-panel" data-panel="raw">
         <header class="panel-header">
           <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move transition inspector panel" title="Move transition inspector panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
-          <div class="panel-title"><span class="panel-kicker">INSPECTOR</span><h2>Transition and configuration</h2></div>
+          <div class="panel-title"><h2>Transition inspector</h2></div>
           <button data-panel-menu="raw" class="icon-button icon-only" type="button" aria-label="Transition inspector panel options" title="Transition inspector panel options"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-dots-vertical"></use></svg></button>
         </header>
         <details open><summary>Current transition</summary><pre id="raw-transition" class="json-view">No transition yet.</pre></details>
@@ -213,11 +216,6 @@
         <span id="timeline-zoom-label">512 steps</span>
         <button id="timeline-zoom-in" class="quiet icon-only" type="button" aria-label="Zoom timeline in" title="Zoom timeline in"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-zoom-in"></use></svg></button>
       </div>
-    </section>
-
-    <section id="panel-shelf" class="panel-shelf" aria-labelledby="panel-shelf-title">
-      <button id="panel-shelf-title" class="shelf-title" type="button" aria-expanded="true">Panel shelf</button>
-      <div id="panel-shelf-items" class="panel-shelf-items"></div>
     </section>
 
     <div id="drop-preview" class="drop-preview" hidden aria-hidden="true"></div>

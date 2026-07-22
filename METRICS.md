@@ -74,6 +74,9 @@ families, parsing, and projections remain accepted when a run declares the corre
   Successful episodes contribute to success metrics, not the failure-reason families.
 - Positive PPO policy entropy, dominant-action rate, and the action histogram diagnose discrete
   policy collapse. Value prediction and advantage histograms are sampled every 64 rollouts.
+- Snapshot-curriculum `sampling/probability/max` and `sampling/effective_cell/count` summarize the
+  current cell-probability distribution. They do not report realized per-cell selection frequency
+  or identify which resident cells were selected.
 - Derived throughput phase timing satisfies `loop wall time = env_step_seconds +
   rollout_overhead_seconds + between_rollouts_seconds`. Compare those three phase durations on
   matching workloads to identify a training-loop bottleneck. `rollout_overhead_seconds` includes
