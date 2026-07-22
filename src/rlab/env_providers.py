@@ -265,6 +265,100 @@ class _CanonicalBreakoutAdapter:
         return self.env.close()
 
 
+class _BreakoutSnapshotBankAdapter:
+    """Expose persisted Breakout states as deterministic provider start IDs."""
+
+    def __init__(self, env: Any, bank: Any):
+        self.env = env
+        self.bank = bank
+        self.num_envs = int(env.num_envs)
+        self.state_catalog = tuple(bank.state_ids)
+        self.initial_state_names = self.state_catalog
+        self._active_starts = np.full(self.num_envs, None, dtype=object)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in {"env", "bank"}:
+            raise AttributeError(name)
+        return getattr(self.env, name)
+
+    def reset(self, *, seed=None, options=None):
+        native_options = dict(options or {})
+        mask = np.asarray(
+            native_options.get("reset_mask", np.ones(self.num_envs, dtype=np.bool_)),
+            dtype=np.bool_,
+        )
+        if mask.shape != (self.num_envs,):
+            raise ValueError(f"reset_mask must have shape ({self.num_envs},)")
+        requested = native_options.get("start_ids")
+        if requested is None:
+            requested_ids = np.full(self.num_envs, self.state_catalog[0], dtype=object)
+        else:
+            requested_ids = np.asarray(requested, dtype=object).copy()
+            if requested_ids.shape != (self.num_envs,):
+                raise ValueError(f"start_ids must have shape ({self.num_envs},)")
+        snapshot_mask = np.zeros(self.num_envs, dtype=np.bool_)
+        for lane in np.flatnonzero(mask):
+            state_id = str(requested_ids[lane])
+            if state_id not in self.bank.states:
+                raise ValueError(
+                    f"unknown snapshot start id {state_id!r}; expected one of {self.state_catalog}"
+                )
+            snapshot_mask[lane] = True
+
+        placeholder = self.bank.states[self.state_catalog[0]]
+        states = [placeholder for _ in range(self.num_envs)]
+        for lane in np.flatnonzero(snapshot_mask):
+            states[lane] = self.bank.states[str(requested_ids[lane])]
+        self.env.set_state(states, reset_mask=snapshot_mask)
+        native_options["snapshots"] = self.env.capture_snapshots(snapshot_mask)
+        native_options["start_ids"] = np.full(self.num_envs, None, dtype=object)
+
+        if seed is None:
+            normalized_seed = None
+        elif isinstance(seed, int):
+            normalized_seed = [seed + lane for lane in range(self.num_envs)]
+        else:
+            normalized_seed = list(seed)
+            if len(normalized_seed) != self.num_envs:
+                raise ValueError(f"seed must contain {self.num_envs} lane values")
+        if normalized_seed is not None:
+            for lane in np.flatnonzero(snapshot_mask):
+                normalized_seed[lane] = None
+
+        observations, infos = self.env.reset(seed=normalized_seed, options=native_options)
+        self._active_starts[snapshot_mask] = requested_ids[snapshot_mask]
+        if not isinstance(infos, Mapping):
+            return observations, infos
+        result = dict(infos)
+        for key in ("start_id", "state", "start_state"):
+            values = np.asarray(result.get(key, self._active_starts), dtype=object).copy()
+            values[snapshot_mask] = requested_ids[snapshot_mask]
+            result[key] = values
+            result[f"_{key}"] = mask.copy()
+        result["start_source"] = np.full(self.num_envs, "snapshot", dtype=object)
+        result["_start_source"] = mask.copy()
+        return observations, result
+
+    def active_states(self):
+        return tuple(str(value) for value in self._active_starts)
+
+    def active_state_indices(self):
+        lookup = {name: index for index, name in enumerate(self.state_catalog)}
+        return np.asarray(
+            [lookup.get(str(value), -1) for value in self._active_starts],
+            dtype=np.int32,
+        )
+
+    def step(self, actions):
+        return self.env.step(actions)
+
+    def get_images(self):
+        return self.env.get_images()
+
+    def close(self):
+        return self.env.close()
+
+
 def super_mario_bros_nes_turbo_vec_env_type():
     try:
         from supermariobrosnes_turbo import SuperMarioBrosNesTurboVecEnv
@@ -834,8 +928,15 @@ def _breakout_turbo_make_vec_env(
     _require_provider(config, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
     env_type = breakout_vec_env_type()
     kwargs = dict(native_kwargs)
+    snapshot_bank_uri = str(kwargs.pop("snapshot_bank_uri", "") or "").strip()
+    snapshot_bank_sha256 = str(kwargs.pop("snapshot_bank_sha256", "") or "").strip()
+    if bool(snapshot_bank_uri) != bool(snapshot_bank_sha256):
+        raise ValueError(
+            "breakout snapshot starts require both snapshot_bank_uri and snapshot_bank_sha256"
+        )
     if "game" in inspect.signature(env_type).parameters:
-        env = env_type(config.game, state=config.state or "Start", **kwargs)
+        raw_state = "Start" if snapshot_bank_uri else (config.state or "Start")
+        env = env_type(config.game, state=raw_state, **kwargs)
     else:
         legacy_unsupported = {
             "info",
@@ -854,7 +955,28 @@ def _breakout_turbo_make_vec_env(
             **{key: value for key, value in kwargs.items() if key not in legacy_unsupported}
         )
     env = _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
-    return _CanonicalBreakoutAdapter(env)
+    env = _CanonicalBreakoutAdapter(env)
+    if snapshot_bank_uri:
+        from rlab.snapshot_banks import (
+            load_breakout_snapshot_bank,
+            validate_breakout_snapshot_environment,
+        )
+
+        bank = load_breakout_snapshot_bank(snapshot_bank_uri, snapshot_bank_sha256)
+        validate_breakout_snapshot_environment(
+            bank,
+            game=config.game,
+            frame_skip=config.frame_skip,
+            frame_stack=int(kwargs.get("frame_stack", 4)),
+            observation_size=config.observation_size,
+            obs_crop=kwargs.get("obs_crop"),
+            obs_crop_mode=config.obs_crop_mode,
+            obs_crop_fill=config.obs_crop_fill,
+            obs_resize_algorithm=config.obs_resize_algorithm,
+            sticky_action_prob=config.sticky_action_prob,
+        )
+        env = _BreakoutSnapshotBankAdapter(env, bank)
+    return env
 
 
 def make_provider_vec_env(

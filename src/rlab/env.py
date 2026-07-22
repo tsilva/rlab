@@ -147,7 +147,8 @@ def resolve_mixed_state_config(config: EnvConfig, n_envs: int) -> EnvConfig:
         if config.state_probs:
             raise ValueError("--state-probs requires --states")
         return config
-    _validate_state_names(config.game, config.states)
+    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+        _validate_state_names(config.game, config.states)
     if config.state_probs:
         if len(config.state_probs) != len(config.states):
             raise ValueError("--state-probs count must match --states count")

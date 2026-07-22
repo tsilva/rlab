@@ -1,0 +1,169 @@
+defaults:
+- _self_
+goal_id: post400-r400
+tags:
+- "goal_id:{goal_id}"
+- "recipe_id:{recipe_id}"
+- "env_id:{env_id}"
+- post400-snapshot-curriculum
+title: Atari 2600 Breakout completion from diverse post-400 snapshots
+objective:
+  rank:
+  - max(eval/full/outcome/success/rate/min)
+  - max(eval/full/outcome/success/rate/mean)
+  - max(eval/full/episode/return/mean)
+  - min(eval/full/outcome/reason/serve_stall/rate)
+  - min(leader/checkpoint/step)
+train:
+  checkpoint_eval_backend: modal
+  stop_on_acceptance: true
+  checkpoint_freq: 500000
+  environment:
+    env_provider: &breakout_provider breakout-turbo-env
+    env_config:
+      <<: &breakout_env_config
+        game: Breakout-Atari2600-v0
+        state: post400-000
+        states: &snapshot_states
+        - post400-000
+        - post400-001
+        - post400-002
+        - post400-003
+        - post400-004
+        - post400-005
+        - post400-006
+        - post400-007
+        - post400-008
+        - post400-009
+        - post400-010
+        - post400-011
+        - post400-012
+        - post400-013
+        - post400-014
+        - post400-015
+        - post400-016
+        - post400-017
+        - post400-018
+        - post400-019
+        - post400-020
+        - post400-021
+        - post400-022
+        - post400-023
+        - post400-024
+        - post400-025
+        - post400-026
+        - post400-027
+        - post400-028
+        - post400-029
+        - post400-030
+        - post400-031
+        state_probs: &snapshot_probs
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        - 1
+        n_envs: 128
+        env_args: &breakout_provider_args
+          scenario: scenario
+          info: data
+          use_restricted_actions: simple
+          record: false
+          players: 1
+          inttype: stable
+          obs_type: image
+          render_mode: rgb_array
+          info_filter: all
+          num_threads: 6
+          rom_path: null
+          obs_copy: safe_view
+          obs_grayscale: true
+          obs_layout: chw
+          frame_stack: 4
+          noop_reset_max: 0
+          reward_clip: false
+          use_fire_reset: false
+          snapshot_bank_uri: >-
+            s3://wandb/rlab/environment-snapshots/Breakout-Atari2600-v0/062e0ae9e4e3cddba1bfcde5288f936b0212a500356752ca2c6c4bfe9d5a1884/snapshot-bank.tar.gz
+          snapshot_bank_sha256: 062e0ae9e4e3cddba1bfcde5288f936b0212a500356752ca2c6c4bfe9d5a1884
+    preprocessing: &breakout_preprocessing
+      frame_skip: 4
+      max_pool_frames: false
+      sticky_action_prob: 0.0
+      observation_size: 84
+      obs_crop: [17, 0, 0, 0]
+      obs_crop_mode: mask
+      obs_crop_fill: 0
+      obs_resize_algorithm: area
+    task: &breakout_task
+      id: identity
+      action:
+        set: native
+      signals:
+        ball_y: ball_y
+        walls_cleared: walls_cleared
+      events:
+        serve_stall:
+          signal: ball_y
+          operation: equals_for
+          value: 0
+          steps: 256
+        wall_cleared:
+          signal: walls_cleared
+          operation: equals_for
+          value: 1
+          steps: 1
+      termination:
+        failure: [serve_stall]
+        success: [wall_cleared]
+        max_episode_steps: 54000
+      reward:
+        reward_mode: native
+eval:
+  episodes: 100
+  acceptance:
+  - metric: eval/full/outcome/success/rate/min
+    operator: '>='
+    threshold: 1.0
+  policy:
+    stochastic: true
+  environment:
+    env_provider: *breakout_provider
+    env_config:
+      <<: *breakout_env_config
+      states: *snapshot_states
+      state_probs: *snapshot_probs
+      n_envs: 16
+      env_args:
+        <<: *breakout_provider_args
+    preprocessing: *breakout_preprocessing
+    task: *breakout_task
+release:
+  huggingface: {}

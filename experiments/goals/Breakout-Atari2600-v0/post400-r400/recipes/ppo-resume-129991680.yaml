@@ -1,0 +1,20 @@
+defaults:
+- ../../../../recipes/_presets/atari-ppo@_global_
+- _self_
+recipe_id: ppo-resume-129991680
+description: >-
+  Seed {seed} resumes Breakout PPO checkpoint 129991680 from run
+  rlab-89bf32059537b62d0e507dfa and trains only on the 32 hash-bound post-400
+  emulator snapshots, testing whether focused experience can escape the observed return plateau.
+train:
+  timesteps: 50000000
+  backend:
+    config:
+      n_steps: 64
+      learning_rate: 5.0e-5
+      learning_rate_final: null
+      learning_rate_schedule_timesteps: 0
+      ent_coef: 0.002
+      ent_coef_final: null
+      ent_coef_schedule_timesteps: 0
+      resume: tsilva/Breakout-Atari2600-v0/rlab-89bf32059537b62d0e507dfa-checkpoint:v259

@@ -214,6 +214,8 @@ BREAKOUT_TURBO_ENV_PROVIDER = EnvProvider(
                 "reward_clip",
                 "rom_path",
                 "scenario",
+                "snapshot_bank_sha256",
+                "snapshot_bank_uri",
                 "use_fire_reset",
                 "use_restricted_actions",
             }
