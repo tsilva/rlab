@@ -29,6 +29,9 @@ class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
     BREAKOUT_RECIPE = BREAKOUT_GOAL.parent / "recipes/ppo.yaml"
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
+    MARIO_END_TO_END_GOAL = Path(
+        "experiments/goals/SuperMarioBros-Nes-v0/EndToEnd/_goal.yaml"
+    )
     MARIO_SINGLE_RECIPES = MARIO_L11_GOAL.parent / "recipes"
 
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
@@ -295,7 +298,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertEqual(report.counts["train_recipes"], 27)
+        self.assertEqual(report.counts["train_recipes"], 28)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertEqual(report.counts["benchmark_profiles"], 3)
 
@@ -858,6 +861,28 @@ environment_hash: sha256:deadbeef
             ["level_change"],
         )
         self.assertEqual(document["train"]["environment"]["task"]["id"], "mario")
+
+    def test_end_to_end_mario_goal_only_terminates_successfully_after_level_8_4(self) -> None:
+        document = load_goal_contract(self.MARIO_END_TO_END_GOAL)
+
+        self.assertEqual(
+            document["train"]["environment"]["env_config"]["state"],
+            "Level1-1",
+        )
+        for phase in ("train", "eval"):
+            task = document[phase]["environment"]["task"]
+            self.assertEqual(
+                task["events"]["game_complete"],
+                {
+                    "signal": "game_mode",
+                    "operation": "equals",
+                    "value": 2,
+                    "when": {"signal": "level", "value": [7, 3]},
+                },
+            )
+            self.assertEqual(task["termination"]["failure"], [])
+            self.assertEqual(task["termination"]["success"], ["game_complete"])
+            self.assertEqual(task["termination"]["max_episode_steps"], 144000)
 
     def test_validate_is_registered_on_unified_cli(self) -> None:
         self.assertIn("validate", COMMANDS)

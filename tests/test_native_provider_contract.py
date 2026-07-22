@@ -390,6 +390,29 @@ class MarioNativeProviderTests(unittest.TestCase):
         self.assertIs(kwargs["inttype"], retro.data.Integrations.STABLE)
         self.assertIs(kwargs["obs_type"], retro.Observations.IMAGE)
 
+    def test_string_all_info_filter_selects_required_extra_task_signals(self) -> None:
+        task = self.config().task
+        task["signals"]["game_mode"] = "game_mode"
+        task["events"]["game_complete"] = {
+            "signal": "game_mode",
+            "operation": "equals",
+            "value": 2,
+            "when": {"signal": "level", "value": [7, 3]},
+        }
+        task["termination"]["success"] = ["game_complete"]
+        config = self.config(task=task, env_args={"info_filter": "all"})
+
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=1,
+            native_obs_crop=lambda _config: None,
+            state_weight_mapping=lambda _config: {},
+        )
+
+        self.assertEqual(kwargs["info_filter"]["mode"], "all")
+        self.assertIn("game_mode", kwargs["info_filter"]["keys"])
+        self.assertIn("x_pos", kwargs["info_filter"]["keys"])
+
     def test_stable_retro_named_action_preset_uses_rlab_discrete_adapter(self) -> None:
         config = self.config(
             env_provider="stable-retro-turbo",

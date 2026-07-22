@@ -533,6 +533,9 @@ def _record_one(
     session_id: str,
     headless: bool,
     projected_rebuild: int,
+    ui: str = "pygame",
+    no_open: bool = False,
+    port: int = 0,
 ) -> str | None:
     episode_id = str(uuid.uuid4())
     policy_seed = seed
@@ -540,7 +543,7 @@ def _record_one(
     video_output = episode_directory / f"{episode_id}.rgb.mkv.bin"
     journal = EpisodeJournal(episode_directory / "active")
     writer = LosslessVideoWriter(video_output, fps=session.fps)
-    controller: HumanController | None = None
+    controller: Any | None = None
     transitions: list[dict[str, Any]] = []
     try:
         _write_artifacts(journal.directory, environment=environment, collector=collector)
@@ -553,7 +556,23 @@ def _record_one(
             return None
         writer.write(frame)
         if agent == "human":
-            controller = HumanController(session, frame, headless=headless)
+            if ui == "web":
+                from argparse import Namespace
+
+                from rlab.play_web import WebHumanController
+
+                controller = WebHumanController(
+                    session,
+                    Namespace(
+                        fps=session.fps,
+                        episodes=1,
+                        port=port,
+                        no_open=no_open,
+                        debug=False,
+                    ),
+                )
+            else:
+                controller = HumanController(session, frame, headless=headless)
         elif agent == "random":
             session.env.action_space.seed(policy_seed)
         else:
@@ -613,6 +632,15 @@ def _record_one(
             current_frame = frame
             next_observation, reward, terminated, truncated, info = session.env.step(action)
             next_frame = observation_to_rgb(session.recording_observation(next_observation))
+            observe_transition = getattr(controller, "observe_transition", None)
+            if callable(observe_transition):
+                observe_transition(
+                    reward=float(reward),
+                    terminated=bool(terminated),
+                    truncated=bool(truncated),
+                    info=info,
+                    next_frame=next_frame,
+                )
             _candidate, next_hash = journal.write_candidate(
                 step=len(transitions) + 1, frame=next_frame
             )
@@ -809,6 +837,9 @@ def _record_session(
             session_id=session_id,
             headless=bool(args.headless),
             projected_rebuild=projected_rebuild,
+            ui=str(getattr(args, "ui", "web")),
+            no_open=bool(getattr(args, "no_open", False)),
+            port=int(getattr(args, "port", 0)),
         )
         if episode_id is None:
             break

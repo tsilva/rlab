@@ -32,6 +32,22 @@ from rlab.env_registry import (
 )
 
 
+MARIO_BASE_INFO_KEYS = frozenset(
+    {
+        "x_pos",
+        "coins",
+        "levelHi",
+        "levelLo",
+        "lives",
+        "score",
+        "scrolling",
+        "time",
+        "xscrollHi",
+        "xscrollLo",
+    }
+)
+
+
 def _is_disabled_autoreset_mode(value: Any) -> bool:
     name = getattr(value, "name", None)
     if isinstance(name, str) and name == "DISABLED":
@@ -555,10 +571,12 @@ def provider_native_vec_kwargs(
             for source in signals.values():
                 required_info_keys.update((source,) if isinstance(source, str) else source)
         configured_filter = defaults.get("info_filter")
-        if configured_filter is None:
+        if configured_filter is None or str(configured_filter) == "all":
             defaults["info_filter"] = {
                 "mode": "all",
-                "keys": tuple(sorted(str(key) for key in required_info_keys)),
+                "keys": tuple(
+                    sorted(str(key) for key in MARIO_BASE_INFO_KEYS | required_info_keys)
+                ),
             }
         elif isinstance(configured_filter, Mapping):
             mode = str(configured_filter.get("mode", "all"))
@@ -570,6 +588,13 @@ def provider_native_vec_kwargs(
                     "Mario task signals require info_filter mode='all' and keys "
                     f"{sorted(required_info_keys)}"
                 )
+            if keys is None:
+                defaults["info_filter"] = {
+                    "mode": "all",
+                    "keys": tuple(
+                        sorted(str(key) for key in MARIO_BASE_INFO_KEYS | required_info_keys)
+                    ),
+                }
         elif str(configured_filter) != "all":
             raise ValueError("Mario task signals require info_filter='all'")
     return defaults

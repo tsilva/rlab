@@ -223,6 +223,7 @@ def _mario_step_kernel(
     lives,
     level_hi,
     level_lo,
+    game_mode,
     native_rewards,
     provider_terminated,
     provider_truncated,
@@ -249,6 +250,7 @@ def _mario_step_kernel(
     life_lost,
     level_changed,
     completion,
+    game_complete,
     stalled,
     raw_reward,
     progress_component,
@@ -276,11 +278,16 @@ def _mario_step_kernel(
     max_episode_steps,
     no_progress_timeout_steps,
     no_progress_min_delta,
+    final_level_hi,
+    final_level_lo,
+    game_complete_mode,
     terminate_on_life_loss,
     terminate_on_level_change,
+    terminate_on_game_complete,
     stall_is_failure,
     emit_life_loss,
     emit_level_change,
+    emit_game_complete,
     emit_stalled,
 ):
     any_events = False
@@ -292,6 +299,7 @@ def _mario_step_kernel(
         current_lives = int(lives[lane])
         current_level_hi = int(level_hi[lane])
         current_level_lo = int(level_lo[lane])
+        current_game_mode = int(game_mode[lane])
 
         previous_lives = state_lives[lane]
         previous_level_hi = state_level_hi[lane]
@@ -300,7 +308,14 @@ def _mario_step_kernel(
         changed_level = (
             current_level_hi != previous_level_hi or current_level_lo != previous_level_lo
         )
-        completed = changed_level and not lost_life
+        completed_level = changed_level and not lost_life
+        completed_game = (
+            not lost_life
+            and current_level_hi == final_level_hi
+            and current_level_lo == final_level_lo
+            and current_game_mode == game_complete_mode
+        )
+        completed = completed_level or completed_game
 
         life_transition_source[lane] = previous_lives
         life_transition_target[lane] = current_lives
@@ -313,7 +328,7 @@ def _mario_step_kernel(
             state_completed_base[lane] += state_level_max_x[lane]
             state_completed_count[lane] += 1
             state_level_max_x[lane] = 0
-        effective_x = 0 if changed_level else current_x
+        effective_x = 0 if changed_level or completed_game else current_x
         if effective_x > state_level_max_x[lane]:
             state_level_max_x[lane] = effective_x
         global_x = state_completed_base[lane] + effective_x
@@ -336,7 +351,9 @@ def _mario_step_kernel(
         )
 
         terminated = (terminate_on_life_loss and lost_life) or (
-            terminate_on_level_change and completed
+            terminate_on_level_change and completed_level
+        ) or (
+            terminate_on_game_complete and completed_game
         )
         if stall_is_failure and is_stalled:
             terminated = True
@@ -353,6 +370,8 @@ def _mario_step_kernel(
             bits |= 2
         if is_stalled and emit_stalled:
             bits |= 4
+        if completed_game and emit_game_complete:
+            bits |= 16
         timed_out = truncated or provider_truncated[lane]
         any_events = any_events or bits != 0
 
@@ -441,6 +460,7 @@ def _mario_step_kernel(
         life_lost[lane] = lost_life
         level_changed[lane] = changed_level
         completion[lane] = completed
+        game_complete[lane] = completed_game
         stalled[lane] = is_stalled
         raw_reward[lane] = raw
         progress_component[lane] = component_progress
@@ -874,6 +894,7 @@ class MarioTaskConfig:
     score: SignalSource = "score"
     lives: SignalSource = "lives"
     level: SignalSource = ("levelHi", "levelLo")
+    game_mode: SignalSource | None = None
     action_masks: np.ndarray | None = None
     reward_mode: str = "baseline"
     use_native_reward: bool = False
@@ -891,11 +912,15 @@ class MarioTaskConfig:
     no_progress_min_delta: int = 0
     terminate_on_life_loss: bool = True
     terminate_on_level_change: bool = True
+    game_complete_level: tuple[int, int] = (-1, -1)
+    game_complete_mode: int = -1
+    terminate_on_game_complete: bool = False
     stall_is_failure: bool = False
     task_conditioning: bool = False
     task_values: tuple[tuple[int | str, ...], ...] = ()
     emit_life_loss: bool = True
     emit_level_change: bool = True
+    emit_game_complete: bool = False
     emit_stalled: bool = True
 
     @classmethod
@@ -917,7 +942,7 @@ class MarioTaskConfig:
             task.get("termination", {}) if isinstance(task.get("termination"), Mapping) else {}
         )
         events = task.get("events", {}) if isinstance(task.get("events"), Mapping) else {}
-        supported_events = {"life_loss", "level_change", "stalled"}
+        supported_events = {"life_loss", "level_change", "game_complete", "stalled"}
         unknown_events = sorted(set(events) - supported_events)
         if unknown_events:
             raise ValueError(
@@ -926,6 +951,7 @@ class MarioTaskConfig:
         expected_events = {
             "life_loss": ("lives", "decrease"),
             "level_change": ("level", "change"),
+            "game_complete": ("game_mode", "equals"),
             "stalled": ("x", "unchanged_for"),
         }
         for event_name, (expected_signal, expected_operation) in expected_events.items():
@@ -939,6 +965,48 @@ class MarioTaskConfig:
                     f"Mario event {event_name!r} requires signal={expected_signal!r} "
                     f"and operation={expected_operation!r}"
                 )
+        game_complete_rule = events.get("game_complete", {})
+        game_complete_when = (
+            game_complete_rule.get("when", {})
+            if isinstance(game_complete_rule, Mapping)
+            else {}
+        )
+        raw_game_complete_level = (
+            game_complete_when.get("value", (-1, -1))
+            if isinstance(game_complete_when, Mapping)
+            else (-1, -1)
+        )
+        if game_complete_rule and (
+            not isinstance(game_complete_when, Mapping)
+            or game_complete_when.get("signal") != "level"
+        ):
+            raise ValueError("Mario game_complete event requires a level guard")
+        if (
+            not isinstance(raw_game_complete_level, Sequence)
+            or isinstance(raw_game_complete_level, str | bytes)
+            or len(raw_game_complete_level) != 2
+            or any(
+                not isinstance(value, int) or isinstance(value, bool)
+                for value in raw_game_complete_level
+            )
+        ):
+            raise ValueError("Mario game_complete event value must be a pair of integers")
+        game_complete_level = (
+            int(raw_game_complete_level[0]),
+            int(raw_game_complete_level[1]),
+        )
+        game_complete_mode = (
+            game_complete_rule.get("value", -1)
+            if isinstance(game_complete_rule, Mapping)
+            else -1
+        )
+        if not isinstance(game_complete_mode, int) or isinstance(game_complete_mode, bool):
+            raise ValueError("Mario game_complete event value must be an integer")
+        game_mode_source = signals.get("game_mode")
+        if game_complete_rule and not (
+            isinstance(game_mode_source, str) and game_mode_source.strip()
+        ):
+            raise ValueError("Mario game_complete event requires a scalar game_mode signal")
         reward = task.get("reward", {}) if isinstance(task.get("reward"), Mapping) else {}
         conditioning = (
             task.get("conditioning", {}) if isinstance(task.get("conditioning"), Mapping) else {}
@@ -980,6 +1048,7 @@ class MarioTaskConfig:
             score=signal_value("score", cls.score),
             lives=signal_value("lives", cls.lives),
             level=signal_value("level", cls.level),
+            game_mode=game_mode_source if game_complete_rule else None,
             action_masks=action_masks,
             reward_mode=reward_mode,
             use_native_reward=reward.get("use_native_reward", False),
@@ -995,13 +1064,17 @@ class MarioTaskConfig:
             max_episode_steps=int(termination.get("max_episode_steps", 0)),
             no_progress_timeout_steps=stalled_steps,
             no_progress_min_delta=int(termination.get("no_progress_min_delta", 0)),
+            game_complete_level=game_complete_level,
+            game_complete_mode=int(game_complete_mode),
             terminate_on_life_loss="life_loss" in failure_events,
             terminate_on_level_change="level_change" in success_events,
+            terminate_on_game_complete="game_complete" in success_events,
             stall_is_failure="stalled" in failure_events,
             task_conditioning=task_conditioning,
             task_values=task_values,
             emit_life_loss="life_loss" in events,
             emit_level_change="level_change" in events,
+            emit_game_complete="game_complete" in events,
             emit_stalled="stalled" in events,
         )
 
@@ -1019,7 +1092,8 @@ class MarioTaskKernel:
     LEVEL_CHANGE = np.uint64(1 << 1)
     STALLED = np.uint64(1 << 2)
     TIMEOUT = np.uint64(1 << 3)
-    event_names = ("life_loss", "level_change", "stalled", "timeout")
+    GAME_COMPLETE = np.uint64(1 << 4)
+    event_names = ("life_loss", "level_change", "stalled", "timeout", "game_complete")
 
     def __init__(
         self,
@@ -1031,21 +1105,23 @@ class MarioTaskKernel:
         self.num_envs = int(num_envs)
         self._native_observation_space = descriptor.native_observation_space
         self.observation_space = _policy_observation_space(self._native_observation_space)
-        self.bindings = SignalBindings(
-            descriptor,
-            {
-                "x": config.x,
-                "score": config.score,
-                "lives": config.lives,
-                "level": config.level,
-            },
-            self.num_envs,
-        )
+        signal_sources: dict[str, SignalSource] = {
+            "x": config.x,
+            "score": config.score,
+            "lives": config.lives,
+            "level": config.level,
+        }
+        if config.game_mode is not None:
+            signal_sources["game_mode"] = config.game_mode
+        self.bindings = SignalBindings(descriptor, signal_sources, self.num_envs)
         self._x_signal_names = (config.x,) if isinstance(config.x, str) else tuple(config.x)
         self._score_signal_name = str(config.score)
         self._lives_signal_name = str(config.lives)
         self._level_signal_names = (
             (config.level,) if isinstance(config.level, str) else tuple(config.level)
+        )
+        self._game_mode_signal_name = (
+            str(config.game_mode) if config.game_mode is not None else None
         )
         self._action_masks = None
         if config.action_masks is None:
@@ -1117,6 +1193,7 @@ class MarioTaskKernel:
         self._life_lost = np.zeros(self.num_envs, dtype=bool)
         self._level_changed = np.zeros(self.num_envs, dtype=bool)
         self._completion = np.zeros(self.num_envs, dtype=bool)
+        self._game_complete = np.zeros(self.num_envs, dtype=bool)
         self._stalled = np.zeros(self.num_envs, dtype=bool)
         self._life_transition_source = np.zeros(self.num_envs, dtype=np.int64)
         self._life_transition_target = np.zeros(self.num_envs, dtype=np.int64)
@@ -1158,6 +1235,7 @@ class MarioTaskKernel:
             self._life_lost,
             self._level_changed,
             self._completion,
+            self._game_complete,
             self._stalled,
             self._raw_reward,
             self._progress_component,
@@ -1187,15 +1265,21 @@ class MarioTaskKernel:
             config.max_episode_steps,
             config.no_progress_timeout_steps,
             config.no_progress_min_delta,
+            config.game_complete_level[0],
+            config.game_complete_level[1],
+            config.game_complete_mode,
             config.terminate_on_life_loss,
             config.terminate_on_level_change,
+            config.terminate_on_game_complete,
             config.stall_is_failure,
             config.emit_life_loss,
             config.emit_level_change,
+            config.emit_game_complete,
             config.emit_stalled,
         )
         # Compile once at bind time. The first real reset initializes all mutated state.
         self._run_compiled(
+            self._zero_signal,
             self._zero_signal,
             self._zero_signal,
             self._zero_signal,
@@ -1224,6 +1308,7 @@ class MarioTaskKernel:
             "level_changed": self._level_changed,
             "completion_event": self._completion,
             "level_complete": self._completion,
+            "game_complete": self._game_complete,
             "died": self._life_lost,
             "life_loss": self._life_lost,
             "death_x_pos": self._max_global_x,
@@ -1248,6 +1333,10 @@ class MarioTaskKernel:
                 self._level_transition_source,
                 self._level_transition_target,
             ),
+            "game_complete": (
+                self._level_transition_source,
+                self._level_transition_target,
+            ),
         }
         self._task_step = TaskStep(
             self._rewards,
@@ -1267,6 +1356,7 @@ class MarioTaskKernel:
         lives: np.ndarray,
         level_hi: np.ndarray,
         level_lo: np.ndarray,
+        game_mode: np.ndarray,
         provider_terminated: np.ndarray,
         provider_truncated: np.ndarray,
         native_rewards: np.ndarray | None = None,
@@ -1282,6 +1372,7 @@ class MarioTaskKernel:
                 lives,
                 level_hi,
                 level_lo,
+                game_mode,
                 native_rewards,
                 provider_terminated,
                 provider_truncated,
@@ -1391,6 +1482,11 @@ class MarioTaskKernel:
         else:
             level_values = signals[self._level_signal_names[0]]
             level_hi, level_lo = level_values[:, 0], level_values[:, 1]
+        game_mode = (
+            signals[self._game_mode_signal_name]
+            if self._game_mode_signal_name is not None
+            else self._zero_signal
+        )
         self._update_task_observation(level_hi, level_lo)
         self.has_events = self._run_compiled(
             x_hi,
@@ -1399,6 +1495,7 @@ class MarioTaskKernel:
             lives,
             level_hi,
             level_lo,
+            game_mode,
             provider_terminated,
             provider_truncated,
             np.asarray(native_rewards, dtype=np.float32),
@@ -1437,6 +1534,7 @@ class MarioTaskKernel:
         self._life_lost[mask] = False
         self._level_changed[mask] = False
         self._completion[mask] = False
+        self._game_complete[mask] = False
         self._stalled[mask] = False
 
 

@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from itertools import count
+from pathlib import Path
 from types import ModuleType
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
@@ -396,7 +397,7 @@ def add_play_source_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--model",
-        default="runs/smoke/final_model.zip",
+        default=None,
         help="Local rlab policy path. The artifact must have a .metadata.json sidecar.",
     )
     parser.set_defaults(
@@ -419,6 +420,13 @@ def positive_int_arg(value: str) -> int:
     return parsed
 
 
+def nonnegative_int_arg(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0 or parsed > 65535:
+        raise argparse.ArgumentTypeError("must be in [0, 65535]")
+    return parsed
+
+
 def attribution_opacity_arg(value: str) -> float:
     parsed = float(value)
     if not 0.0 <= parsed <= 1.0:
@@ -429,7 +437,7 @@ def attribution_opacity_arg(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlab play",
-        description="Show an rlab policy artifact playing a provider environment in a GUI window",
+        description="Run and inspect an rlab policy artifact in the interactive player dashboard",
     )
     add_play_source_args(parser)
     parser.add_argument(
@@ -454,9 +462,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument(
+        "--ui",
+        choices=("web", "pygame"),
+        default="web",
+        help="Use the browser dashboard (default) or the temporary PyGame compatibility UI.",
+    )
+    parser.add_argument(
+        "--port",
+        type=nonnegative_int_arg,
+        default=0,
+        help="Loopback dashboard port; use 0 to select an available port automatically.",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the dashboard URL without opening the default browser.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
-        help="Open an interactive policy debugger; press Enter to advance one step.",
+        help="Start paused for interactive transition debugging.",
     )
     parser.add_argument(
         "--continuous-play",
@@ -474,14 +499,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--show-obs",
         action="store_true",
-        help="Open a second window showing the four preprocessed frames fed to the policy.",
+        help=(
+            "With --ui pygame, open a second window showing the four preprocessed policy frames. "
+            "The web dashboard exposes them automatically."
+        ),
     )
     parser.add_argument(
         "--attribution",
         choices=ATTRIBUTION_MODES,
         default="none",
         help=(
-            "Overlay policy-input attribution in the observation window. "
+            "Overlay policy-input attribution in the observation panel. "
             "Grad-CAM is fast; occlusion is slower but perturbation-based."
         ),
     )
@@ -548,6 +576,7 @@ def resolved_play_launch_lines(
             f"seed={args.seed} episodes={args.episodes} "
             f"max_steps={task_max_episode_steps(policy_config)} "
             f"debug={getattr(args, 'debug', False)} "
+            f"ui={getattr(args, 'ui', 'web')} "
             f"respect_task_termination={getattr(args, 'respect_task_termination', False)}",
             "green",
         ),
@@ -680,14 +709,22 @@ def _observation_shape(value) -> str:
 
 @dataclass(frozen=True)
 class _PlaybackTransition:
+    sequence: int
     episode: int
     step: int
     seed: int | None
     start_id: str | None
     model_obs: object
-    decision: PolicyDecision
+    decision: PolicyDecision | None
+    action_source: str
+    executed_action: object
     diagnostics: StepDiagnostics | None
     info: dict[str, object]
+    before_frame: np.ndarray | None
+    after_frame: np.ndarray | None
+    before_frames: tuple[np.ndarray, ...]
+    after_frames: tuple[np.ndarray, ...]
+    attribution: np.ndarray | None
     pre_task: object
     next_task: object
     reward: float
@@ -743,8 +780,10 @@ class _PlaybackSession:
         self.active_seed: int | None = initial_seed
         self.episode = 1
         self.step_index = 0
+        self.sequence = 0
         self.total_reward = 0.0
         self.max_x_pos = 0
+        self.interactive = False
         self.last_transition: _PlaybackTransition | None = None
 
     @property
@@ -822,6 +861,7 @@ class _PlaybackSession:
         self.step_index = 0
         self.total_reward = 0.0
         self.max_x_pos = 0
+        self.interactive = False
         self.last_transition = None
         self.current_frame = optional_vector_env_frame(self.env)
         self.frames = optional_fast_env_frames(self.policy_obs)
@@ -830,12 +870,59 @@ class _PlaybackSession:
         return inspect_policy(self.model, self.model_obs)
 
     def step(self) -> _PlaybackTransition:
+        decision = sample_policy_decision(self.model, self.model_obs)
+        return self._advance(
+            decision=decision,
+            executed_action=decision.executed_action,
+            action_source="policy",
+        )
+
+    def manual_action(self, labels: set[str] | tuple[str, ...] | list[str]) -> int:
+        requested = {str(label).strip().casefold() for label in labels if str(label).strip()}
+        for index, meaning in enumerate(self.action_names):
+            normalized = str(meaning).strip().casefold()
+            parts = set() if normalized in {"", "noop", "no_op", "none"} else set(
+                part for part in normalized.split("_") if part and not part.startswith("p1")
+            )
+            if parts == requested:
+                return index
+        available = ", ".join(self.action_names) or "none"
+        raise ValueError(
+            f"no configured discrete action matches buttons {sorted(requested)!r}; "
+            f"available actions: {available}"
+        )
+
+    def step_human(self, labels: set[str] | tuple[str, ...] | list[str]) -> _PlaybackTransition:
+        action = self.manual_action(labels)
+        self.interactive = True
+        return self._advance(
+            decision=None,
+            executed_action=np.asarray(action),
+            action_source="human",
+        )
+
+    @staticmethod
+    def _frame_tuple(frames: deque[np.ndarray] | None) -> tuple[np.ndarray, ...]:
+        if frames is None:
+            return ()
+        return tuple(np.asarray(frame).copy() for frame in frames)
+
+    def _advance(
+        self,
+        *,
+        decision: PolicyDecision | None,
+        executed_action: object,
+        action_source: str,
+    ) -> _PlaybackTransition:
         model_obs = self.model_obs
         model_obs_snapshot = deepcopy(model_obs)
         pre_task = deepcopy(self.active_task)
-        decision = sample_policy_decision(self.model, model_obs)
+        before_frame = None if self.current_frame is None else self.current_frame.copy()
+        before_frames = self._frame_tuple(self.frames)
+        heatmap = None
         if (
-            self.attributor is not None
+            decision is not None
+            and self.attributor is not None
             and self.frames is not None
             and self.step_index % self.attribution_interval == 0
         ):
@@ -844,14 +931,8 @@ class _PlaybackSession:
                 model_obs,
                 decision.raw_action,
             )
-            if self.obs_viewer is not None:
-                self.obs_viewer.show(
-                    self.frames,
-                    heatmap=heatmap,
-                    heatmap_opacity=self.attribution_opacity,
-                )
 
-        batched_action = np.expand_dims(np.asarray(decision.executed_action), axis=0)
+        batched_action = np.expand_dims(np.asarray(executed_action), axis=0)
         policy_obs, rewards, dones, infos = self.env.step(batched_action)
         diagnostics = self.env.take_step_diagnostics()
         records = drain_runtime_records(self.env)
@@ -896,15 +977,27 @@ class _PlaybackSession:
         next_conditioning_info = dict(info.get("reset_info", {})) if boundary else info
         self._update_conditioning(next_conditioning_info)
         next_task = deepcopy(self.active_task)
+        self.policy_obs = policy_obs
+        self.current_frame = optional_vector_env_frame(self.env)
+        self.frames = optional_fast_env_frames(policy_obs)
+        self.sequence += 1
         transition = _PlaybackTransition(
+            sequence=self.sequence,
             episode=self.episode,
             step=self.step_index + 1,
             seed=self.active_seed,
             start_id=(diagnostics.start_id if diagnostics is not None else None),
             model_obs=model_obs_snapshot,
             decision=decision,
+            action_source=action_source,
+            executed_action=deepcopy(executed_action),
             diagnostics=diagnostics,
             info=dict(info),
+            before_frame=before_frame,
+            after_frame=None if self.current_frame is None else self.current_frame.copy(),
+            before_frames=before_frames,
+            after_frames=self._frame_tuple(self.frames),
+            attribution=None if heatmap is None else np.asarray(heatmap).copy(),
             pre_task=pre_task,
             next_task=next_task,
             reward=reward,
@@ -916,9 +1009,6 @@ class _PlaybackSession:
             boundary=boundary,
         )
         self.last_transition = transition
-        self.policy_obs = policy_obs
-        self.current_frame = optional_vector_env_frame(self.env)
-        self.frames = optional_fast_env_frames(policy_obs)
         if boundary:
             reset_lanes = getattr(self.model, "reset_lanes", None)
             if callable(reset_lanes):
@@ -949,6 +1039,17 @@ class _PlaybackSession:
             if not self.viewer.show(self.current_frame, overlay):
                 return False
         if self.obs_viewer is not None and self.frames is not None:
+            transition = self.last_transition
+            if (
+                transition is not None
+                and transition.attribution is not None
+                and transition.before_frames
+            ):
+                return self.obs_viewer.show(
+                    deque(transition.before_frames, maxlen=len(transition.before_frames)),
+                    heatmap=transition.attribution,
+                    heatmap_opacity=self.attribution_opacity,
+                )
             return self.obs_viewer.show(self.frames)
         return True
 
@@ -970,7 +1071,9 @@ def _transition_debug_text(
         for name, value in diagnostics.task_metrics.items()
         if name.endswith("_delta") and np.any(np.asarray(value) != 0)
     }
-    selected = transition.decision.selected_discrete_action
+    selected = (
+        None if transition.decision is None else transition.decision.selected_discrete_action
+    )
     controller = (
         action_display_name(selected, action_names)
         if selected is not None
@@ -1011,7 +1114,11 @@ def _transition_debug_text(
         field("observation", _observation_shape(transition.model_obs)),
         "",
         section("🎲", "POLICY", style="magenta"),
-        *policy_summary_lines(transition.decision, action_names),
+        *(
+            policy_summary_lines(transition.decision, action_names)
+            if transition.decision is not None
+            else [field("action source", ansi("human intervention", "yellow"))]
+        ),
         "",
         section("⚙", "TRANSITION", style="yellow"),
         field("controller", ansi(controller, "bold")),
@@ -1379,12 +1486,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv_list = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv_list)
+    if args.artifact_ref is None and not args.model:
+        parser.error(
+            "a model source is required; pass a W&B run/artifact, an hf:// model ref, "
+            "or --model /path/to/checkpoint.zip"
+        )
     args.respect_task_termination = not args.continuous_play
     explicit_dests = explicit_arg_dests(parser, argv_list)
     if args.attribution_interval is None:
         args.attribution_interval = 8 if args.attribution == "occlusion" else 1
     with startup_progress("Resolving model reference", disabled=args.no_progress):
         ref = model_source_ref(args)
+    if ref is None and not Path(str(args.model)).expanduser().is_file():
+        parser.error(f"local model checkpoint not found: {args.model}")
     with startup_progress(
         "Downloading model" if ref is not None else "Opening local model",
         disabled=args.no_progress,
@@ -1462,7 +1576,7 @@ def main(argv: list[str] | None = None) -> int:
             config=config,
             n_envs=1,
             seed=args.seed,
-            capture_step_diagnostics=args.debug,
+            capture_step_diagnostics=args.debug or args.ui == "web",
             rom_binding=rom_binding,
         )
     bind_action_space = getattr(model, "bind_action_space", None)
@@ -1481,22 +1595,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     with startup_progress("Resetting policy environment", disabled=args.no_progress):
         session.restart(args.seed)
-    if session.current_frame is not None:
+    if args.ui == "pygame" and session.current_frame is not None:
         with startup_progress("Creating game viewer", disabled=args.no_progress):
             session.viewer = PygameViewer(
                 session.current_frame.shape,
                 scale=DEFAULT_VIEWER_SCALE,
                 position=None,
             )
-    if (args.show_obs or attributor is not None) and session.frames is not None:
+    if (
+        args.ui == "pygame"
+        and (args.show_obs or attributor is not None)
+        and session.frames is not None
+    ):
         with startup_progress("Creating observation viewer", disabled=args.no_progress):
             session.obs_viewer = ObsStackViewer(
                 scale=DEFAULT_OBS_VIEWER_SCALE,
                 position=(40, 240),
             )
-    elif args.show_obs:
+    elif args.ui == "pygame" and args.show_obs:
         print("warning: policy observation is not a four-frame image stack", flush=True)
-    if session.viewer is None and not args.debug and args.episodes <= 0:
+    if args.ui == "pygame" and session.viewer is None and not args.debug and args.episodes <= 0:
         raise ValueError("non-rendering playback requires --debug or a positive --episodes limit")
     current_fps = args.fps
     actual_fps: float | None = None
@@ -1550,6 +1668,10 @@ def main(argv: list[str] | None = None) -> int:
             f"checkpoint_step={source.checkpoint_step or '-'} "
             f"environment_hash={source.run_config.get('environment_hash', '-')}"
         )
+        if args.ui == "web":
+            from rlab.play_web import run_web_playback
+
+            return run_web_playback(session, args, config_text=config_text)
         if args.debug:
             return _run_debugger(session, args, config_text)
         return _run_normal_playback(session, args, throttle)

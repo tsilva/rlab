@@ -1,0 +1,44 @@
+defaults:
+# Shared Mario goal contract supplies the provider, preprocessing, reward, and eval defaults.
+- ../_goal-common@_global_
+- _self_
+
+# This goal always begins a whole-game episode at World 1-1.
+template_vars:
+  state: Level1-1
+
+title: Sample-efficient SuperMarioBros-NES end-to-end completion
+
+train:
+  environment:
+    task:
+      signals:
+        game_mode: game_mode
+      events:
+        # Victory mode while the zero-based level counters remain [7, 3] completes World 8-4.
+        game_complete:
+          signal: game_mode
+          operation: equals
+          value: 2
+          when: {signal: level, value: [7, 3]}
+      termination:
+        # Life loss and ordinary level changes remain inside the same whole-game episode.
+        failure: []
+        success: [game_complete]
+        max_episode_steps: 144000
+
+eval:
+  environment:
+    task:
+      signals:
+        game_mode: game_mode
+      events:
+        game_complete:
+          signal: game_mode
+          operation: equals
+          value: 2
+          when: {signal: level, value: [7, 3]}
+      termination:
+        failure: []
+        success: [game_complete]
+        max_episode_steps: 144000

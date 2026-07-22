@@ -111,9 +111,8 @@ rlab eval run <checkpoint> --env-provider stable-retro-turbo
 rlab play <checkpoint> --env-provider stable-retro-turbo
 ```
 
-`rlab:Bandit-v0` has no renderer. Replay it headlessly with
-`rlab play <checkpoint> --debug` for interactive stepping or add a positive `--episodes` limit
-for unattended playback.
+`rlab:Bandit-v0` has no renderer, but its transition telemetry remains available in the player
+dashboard. Use `rlab play <checkpoint> --debug` to start paused for interactive stepping.
 
 For a ROM-backed Mario smoke run, use the same queue path with explicit smoke overrides:
 
@@ -178,6 +177,11 @@ environment contracts, and approved policy provenance. Local appends use a recov
 swap; Hub appends use an expected-parent commit. Existing image-backed and video-backed v3 trees
 remain readable, while new recordings use lossless video.
 
+Human recording opens the same loopback browser dashboard as policy playback. Focus the game view
+to send controls; focus loss, a stale input heartbeat, or loss of the controlling browser pauses or
+ends input instead of reusing stuck keys. Use `--ui pygame` for the compatibility window, or
+`--no-open` to print the capability-bearing dashboard URL without opening it automatically.
+
 External SB3 checkpoints are Python-executable content. Rlab privately stages and hashes the full
 resolved model closure, displays the ambient credential/authority risk, and requires approval for
 that exact invocation before deserialization. Dataset verification establishes structure and media
@@ -203,6 +207,9 @@ rlab play <wandb-run-url>                             # promoted model, else new
 rlab play <run-name>                                  # same resolution for a unique historical display name
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-basic_ppo
+rlab play <checkpoint> --debug --no-open             # start paused; print the browser URL
+rlab play <checkpoint> --ui pygame                   # temporary native compatibility UI
+rlab dataset record human-play --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent human
 rlab dataset record mario-level1-1 --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent random --episodes 1 --headless
 rlab dataset list mario-level1-1
 rlab dataset verify mario-level1-1
@@ -211,7 +218,6 @@ rlab dataset video mario-level1-1 replay.mp4
 rlab dataset upload mario-level1-1 owner/repository
 rlab dataset adopt /path/to/finalized-gymrec-group imported-recording
 rlab dataset export-minari mario-level1-1 owner/mario-level1-1-v0
-rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
 rlab experiment status --machine beast-3 --json
@@ -245,7 +251,15 @@ The command surface is intentionally one binary:
   `python -m rlab.train` is an internal learner entrypoint reserved for that supervisor, tests,
   and explicitly labelled W&B-disabled core microbenchmarks.
 - `rlab eval run` runs local/scripted or explicit-model evaluation. Queue-backed experiments evaluate saved checkpoints asynchronously; Modal uses bounded remote CPU workers, while explicit `rlab eval run` stays local.
-- `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo.
+- `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo in a
+  loopback browser workbench. The workbench keeps the game, policy input, sampled decision,
+  rewards, action histogram, events, and live numeric infos on one transition sequence. Panels can
+  detach into separate windows and the game can enter fullscreen without creating another
+  environment. One browser holds the control lease; other windows remain synchronized observers.
+  The bounded latest-frame stream uses binary PNG frames while reliable commands and telemetry use
+  JSON over the same authenticated WebSocket. `--ui pygame` preserves the previous viewer during
+  rollout. A model source is always explicit; bare `rlab play` does not guess from stale local
+  smoke outputs.
 - `rlab env` lists static provider contracts, inspects one qualified environment, or explicitly
   preflights a materialized recipe against the installed native runtime.
 - `rlab experiment` launches and observes training runs. `rlab fleet` owns infrastructure and queue-schema maintenance.

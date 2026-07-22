@@ -53,6 +53,7 @@ class DeterministicNativeVectorProvider:
         self._lives = np.full(num_envs, 3, dtype=np.int64)
         self._level_hi = np.ones(num_envs, dtype=np.int64)
         self._level_lo = np.ones(num_envs, dtype=np.int64)
+        self._game_mode = np.ones(num_envs, dtype=np.int64)
         self._ball_y = np.zeros(num_envs, dtype=np.int64)
         self._queued_steps: list[dict[str, Any]] = []
         self.reset_calls: list[dict[str, Any]] = []
@@ -69,6 +70,7 @@ class DeterministicNativeVectorProvider:
             "lives": self._lives,
             "level_hi": self._level_hi,
             "level_lo": self._level_lo,
+            "game_mode": self._game_mode,
             "ball_y": self._ball_y,
         }
         if start_ids is not None:
@@ -104,6 +106,7 @@ class DeterministicNativeVectorProvider:
         self._lives[mask] = 3
         self._level_hi[mask] = 1
         self._level_lo[mask] = 1
+        self._game_mode[mask] = 1
         self._ball_y[mask] = 0
         return self._observations, self._infos(starts)
 
@@ -122,6 +125,7 @@ class DeterministicNativeVectorProvider:
             ("lives", self._lives),
             ("level_hi", self._level_hi),
             ("level_lo", self._level_lo),
+            ("game_mode", self._game_mode),
             ("ball_y", self._ball_y),
         ):
             if name in values:
@@ -178,7 +182,15 @@ def descriptor_for(
         native_action_space=provider.single_action_space,
         signal_schema={
             name: SignalSpec(name, np.int64)
-            for name in ("x", "score", "lives", "level_hi", "level_lo", "ball_y")
+            for name in (
+                "x",
+                "score",
+                "lives",
+                "level_hi",
+                "level_lo",
+                "game_mode",
+                "ball_y",
+            )
         },
         start_catalog=("Level1-1", "Level1-2"),
         render_support=("rgb_array",),
@@ -796,6 +808,42 @@ class MarioKernelTests(unittest.TestCase):
         self.assertEqual(first_lane.metrics["global_x_pos"], 110)
         self.assertEqual(first_lane.metrics["global_max_x_pos"], 110)
         self.assertEqual(first_lane.metrics["progress_delta"], 10)
+
+    def test_game_complete_only_terminates_in_victory_mode_on_configured_final_level(self):
+        provider, _kernel, runtime = self.make_runtime(
+            terminate_on_level_change=False,
+            game_mode="game_mode",
+            game_complete_level=(7, 3),
+            game_complete_mode=2,
+            terminate_on_game_complete=True,
+            emit_game_complete=True,
+        )
+        runtime.reset()
+
+        provider.queue_step(level_hi=[7, 6], level_lo=[3, 3], x=[0, 0])
+        intermediate = runtime.step(np.asarray([0, 0]))
+        self.assertFalse(np.any(done_flags(intermediate)))
+
+        provider.queue_step(level_hi=[7, 6], level_lo=[3, 3], x=[100, 100])
+        pre_victory = runtime.step(np.asarray([0, 0]))
+        self.assertFalse(np.any(done_flags(pre_victory)))
+
+        provider.queue_step(level_hi=[7, 6], level_lo=[3, 3], game_mode=[2, 1], x=[100, 100])
+        final = runtime.step(np.asarray([0, 0]))
+        records = runtime.drain_records()
+        episodes = [record for record in records if isinstance(record, EpisodeRecord)]
+        final_events = [record for record in records if isinstance(record, TaskEventRecord)]
+
+        np.testing.assert_array_equal(final.terminated, [True, False])
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0].outcome, Outcome.SUCCESS)
+        self.assertIn("game_complete", episodes[0].events)
+        self.assertTrue(episodes[0].metrics["game_complete"])
+        self.assertEqual(episodes[0].metrics["completed_level_count"], 2)
+        self.assertEqual(episodes[0].metrics["global_max_x_pos"], 100)
+        self.assertTrue(
+            any("game_complete" in record.events for record in final_events)
+        )
 
     def test_reward_component_batches_avoid_step_info_materialization(self):
         provider, _kernel, runtime = self.make_runtime(

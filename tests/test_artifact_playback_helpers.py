@@ -845,9 +845,14 @@ class CommandAndArtifactTests(unittest.TestCase):
     def test_gui_playback_defaults_to_stochastic(self) -> None:
         parser = build_play_parser()
 
+        self.assertIsNone(parser.parse_args([]).model)
         self.assertFalse(hasattr(parser.parse_args([]), "deterministic"))
         self.assertFalse(parser.parse_args([]).debug)
         self.assertTrue(parser.parse_args(["--debug"]).debug)
+        self.assertEqual(parser.parse_args([]).ui, "web")
+        self.assertEqual(parser.parse_args(["--ui", "pygame"]).ui, "pygame")
+        self.assertEqual(parser.parse_args([]).port, 0)
+        self.assertFalse(parser.parse_args([]).no_open)
         self.assertFalse(hasattr(parser.parse_args([]), "respect_task_termination"))
         with self.assertRaises(SystemExit):
             parser.parse_args(["--respect-task-termination"])
@@ -880,6 +885,33 @@ class CommandAndArtifactTests(unittest.TestCase):
         self.assertIn("--env-provider", help_text)
         self.assertNotIn("--stochastic", help_text)
         self.assertNotIn("--no-stochastic", help_text)
+
+    def test_play_main_requires_an_explicit_source_before_startup(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch("rlab.play.resolve_single_model_source") as resolve_source,
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            play_main([])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("a model source is required", stderr.getvalue())
+        resolve_source.assert_not_called()
+
+    def test_play_main_rejects_a_missing_explicit_local_model_before_startup(self) -> None:
+        stderr = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("rlab.play.resolve_single_model_source") as resolve_source,
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            play_main(["--model", str(Path(tmp_dir) / "missing.zip")])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("local model checkpoint not found", stderr.getvalue())
+        resolve_source.assert_not_called()
 
     def test_play_main_checks_runtime_from_playback_metadata(self) -> None:
         class StopPlayback(Exception):
@@ -1075,7 +1107,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 patch("stable_baselines3.PPO.load", return_value=object()),
                 patch.object(sys, "stdout", io.StringIO()),
             ):
-                self.assertEqual(play_main(["--model", str(model_path)]), 0)
+                self.assertEqual(play_main(["--model", str(model_path), "--ui", "pygame"]), 0)
 
             make_env.assert_called_once()
             self.assertTrue(fake_env.closed)

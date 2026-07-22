@@ -36,6 +36,13 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0 or parsed > 65535:
+        raise argparse.ArgumentTypeError("expected an integer in [0, 65535]")
+    return parsed
+
+
 def _dataset_root_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--root",
@@ -114,6 +121,23 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--seed", type=int, default=0)
     record.add_argument("--headless", action="store_true")
     record.add_argument("--fps", type=_positive_float, default=None)
+    record.add_argument(
+        "--ui",
+        choices=("web", "pygame"),
+        default="web",
+        help="Human-control interface (default: web dashboard).",
+    )
+    record.add_argument(
+        "--port",
+        type=_nonnegative_int,
+        default=0,
+        help="Loopback web dashboard port; 0 chooses a free port.",
+    )
+    record.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the dashboard URL without opening a browser.",
+    )
     record.add_argument("--upload-live", action="store_true")
     sampling = record.add_mutually_exclusive_group()
     sampling.add_argument("--deterministic", action="store_true", default=None)

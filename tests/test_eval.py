@@ -684,6 +684,26 @@ class EvalMetricTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.task["termination"]["failure"], ["serve_stall"])
 
+    def test_eval_runtime_preserves_explicit_game_completion_success(self) -> None:
+        config = EnvConfig(
+            game="SuperMarioBros-Nes-v0",
+            task={
+                "termination": {
+                    "failure": [],
+                    "success": ["game_complete"],
+                    "max_episode_steps": 144000,
+                }
+            },
+        )
+
+        runtime_config = _eval_runtime_config(
+            config,
+            max_steps=144000,
+            semantics=target_for_game(config.game).eval_semantics,
+        )
+
+        self.assertEqual(runtime_config.task["termination"]["success"], ["game_complete"])
+
     def test_checkpoint_score_prefers_fewer_timesteps_after_completion_goal(self) -> None:
         slower_higher_reward = {
             "eval/full/outcome/success/rate/min": 1.0,

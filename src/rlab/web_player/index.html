@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>rlab player</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-brand">
+        <span class="eyebrow">RLAB PLAYER</span>
+        <h1 id="page-title">Player dashboard</h1>
+      </div>
+      <div class="header-status">
+        <span id="connection-status" class="badge warning">Connecting</span>
+        <span id="control-status" class="badge muted">Observer</span>
+      </div>
+    </header>
+
+    <main id="dashboard" class="dashboard">
+      <section class="panel game-panel" data-panel="game">
+        <header class="panel-header">
+          <div><span class="panel-kicker">ENVIRONMENT</span><h2>Game</h2></div>
+          <div class="panel-actions">
+            <button data-fullscreen="game" class="icon-button" title="Fullscreen game">Fullscreen</button>
+            <button data-detach="game" class="icon-button" title="Detach game panel">Detach</button>
+          </div>
+        </header>
+        <div id="game-stage" class="game-stage">
+          <canvas id="game-canvas" tabindex="0" aria-label="Live game frame; focus for human controls"></canvas>
+          <div id="game-empty" class="empty-state">This environment has no RGB renderer.</div>
+          <div id="game-overlay" class="game-overlay"></div>
+        </div>
+        <p class="panel-foot">Focus the game for human input · arrows move · Z=B · X=A · Enter=START · Shift=SELECT</p>
+      </section>
+
+      <aside class="panel control-panel transport" data-panel="controls" aria-labelledby="controls-heading">
+        <header class="panel-header control-panel-header">
+          <div><span class="panel-kicker">SESSION</span><h2 id="controls-heading">Controls</h2></div>
+          <button data-detach="controls" class="icon-button" title="Detach controls panel">Detach</button>
+        </header>
+        <p id="session-summary" class="session-summary" aria-live="polite">Waiting for session…</p>
+
+        <section class="control-section" aria-labelledby="playback-controls-heading">
+          <h3 id="playback-controls-heading" class="control-label">Playback</h3>
+          <div class="control-grid">
+            <button id="pause" title="Pause after the current transition">Pause</button>
+            <button id="play" class="primary" title="Run with the selected driver">Play</button>
+            <button id="step">Step</button>
+            <button id="step-ten">Step 10</button>
+            <button id="continue-event">To event</button>
+            <button id="continue-done">To boundary</button>
+          </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="session-controls-heading">
+          <h3 id="session-controls-heading" class="control-label">Session</h3>
+          <div class="control-field-row">
+            <label>Seed <input id="seed" inputmode="numeric"></label>
+            <button id="reset">Reset</button>
+          </div>
+          <div class="control-field-row">
+            <label>FPS <input id="fps" type="number" min="0" step="1" value="0"></label>
+            <button id="set-fps" class="quiet">Apply</button>
+          </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="driver-controls-heading">
+          <h3 id="driver-controls-heading" class="control-label">Driver</h3>
+          <div class="control-grid">
+            <button id="policy-driver" class="quiet">Policy</button>
+            <button id="human-driver" class="quiet">Take control</button>
+            <button id="inspect-policy" class="quiet control-wide">Inspect policy</button>
+            <button id="acquire-control" class="quiet control-wide">Control in this window</button>
+          </div>
+        </section>
+
+        <button id="end-session" class="danger quiet control-end">End session</button>
+      </aside>
+
+      <section class="panel" data-panel="policy">
+        <header class="panel-header">
+          <div><span class="panel-kicker">DECISION</span><h2>Policy distribution</h2></div>
+          <button data-detach="policy" class="icon-button">Detach</button>
+        </header>
+        <div id="policy-summary" class="stat-grid"></div>
+        <div id="policy-actions" class="action-probabilities empty-state">No sampled decision yet.</div>
+      </section>
+
+      <section class="panel" data-panel="reward">
+        <header class="panel-header">
+          <div><span class="panel-kicker">TRANSITION HISTORY</span><h2>Reward and return</h2></div>
+          <button data-detach="reward" class="icon-button">Detach</button>
+        </header>
+        <div id="reward-stats" class="stat-grid"></div>
+        <canvas id="reward-chart" class="chart" aria-label="Reward history"></canvas>
+        <div id="reward-legend" class="legend"></div>
+      </section>
+
+      <section class="panel" data-panel="actions">
+        <header class="panel-header">
+          <div><span class="panel-kicker">BEHAVIOR</span><h2>Action histogram</h2></div>
+          <button data-detach="actions" class="icon-button">Detach</button>
+        </header>
+        <canvas id="action-chart" class="chart" aria-label="Action histogram"></canvas>
+        <p id="action-caption" class="panel-foot">No policy actions observed.</p>
+      </section>
+
+      <section class="panel observation-panel" data-panel="observation">
+        <header class="panel-header">
+          <div><span class="panel-kicker">POLICY INPUT</span><h2>Observation and attribution</h2></div>
+          <button data-detach="observation" class="icon-button">Detach</button>
+        </header>
+        <div class="observation-stage">
+          <canvas id="observation-canvas"></canvas>
+          <div id="observation-empty" class="empty-state">No image stack is available.</div>
+        </div>
+        <pre id="model-input" class="compact-pre">No policy input yet.</pre>
+      </section>
+
+      <section class="panel" data-panel="signals">
+        <header class="panel-header">
+          <div><span class="panel-kicker">PROVIDER + TASK</span><h2>Live signals</h2></div>
+          <button data-detach="signals" class="icon-button">Detach</button>
+        </header>
+        <div class="signal-toolbar">
+          <label>Chart signal <select id="signal-select"><option value="">Choose a signal</option></select></label>
+        </div>
+        <canvas id="signal-chart" class="chart" aria-label="Selected signal history"></canvas>
+        <div class="table-scroll"><table id="signals-table"><tbody></tbody></table></div>
+      </section>
+
+      <section class="panel" data-panel="events">
+        <header class="panel-header">
+          <div><span class="panel-kicker">BOUNDARIES</span><h2>Events</h2></div>
+          <button data-detach="events" class="icon-button">Detach</button>
+        </header>
+        <ol id="event-list" class="event-list"><li class="empty-state">No events observed.</li></ol>
+      </section>
+
+      <section class="panel raw-panel" data-panel="raw">
+        <header class="panel-header">
+          <div><span class="panel-kicker">INSPECTOR</span><h2>Transition and configuration</h2></div>
+          <button data-detach="raw" class="icon-button">Detach</button>
+        </header>
+        <details open><summary>Current transition</summary><pre id="raw-transition">No transition yet.</pre></details>
+        <details><summary>Resolved playback configuration</summary><pre id="resolved-config">Waiting…</pre></details>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

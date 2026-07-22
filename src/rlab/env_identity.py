@@ -203,13 +203,14 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
             "increase",
             "unchanged_for",
             "equals_for",
+            "equals",
         }:
             raise ValueError(f"{label}.events.{name}.operation is unsupported: {operation!r}")
         if operation in {"unchanged_for", "equals_for"}:
             steps = raw_rule.get("steps")
             if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
                 raise ValueError(f"{label}.events.{name}.steps must be a positive integer")
-        if operation == "equals_for":
+        if operation in {"equals", "equals_for"}:
             value = raw_rule.get("value")
             if not isinstance(value, int | float) or isinstance(value, bool):
                 raise ValueError(f"{label}.events.{name}.value must be a number")
@@ -226,6 +227,7 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
         expected_events = {
             "life_loss": ("lives", "decrease"),
             "level_change": ("level", "change"),
+            "game_complete": ("game_mode", "equals"),
             "stalled": ("x", "unchanged_for"),
         }
         unknown_events = sorted(set(events) - set(expected_events))
@@ -240,6 +242,22 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
                 raise ValueError(
                     f"{label}.events.{name} requires signal={expected_signal!r} "
                     f"and operation={expected_operation!r}"
+                )
+        game_complete = events.get("game_complete")
+        if isinstance(game_complete, Mapping):
+            when = game_complete.get("when")
+            if not isinstance(when, Mapping) or when.get("signal") != "level":
+                raise ValueError(
+                    f"{label}.events.game_complete.when.signal must be 'level'"
+                )
+            value = when.get("value")
+            if (
+                not isinstance(value, list | tuple)
+                or len(value) != 2
+                or any(not isinstance(item, int) or isinstance(item, bool) for item in value)
+            ):
+                raise ValueError(
+                    f"{label}.events.game_complete.when.value must be a pair of integers"
                 )
     termination = task["termination"]
     event_outcomes: dict[str, str] = {}

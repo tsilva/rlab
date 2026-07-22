@@ -58,7 +58,7 @@ def _eval_runtime_config(
     termination = task_termination(config)
     success = list(termination.get("success", ()))
     failure = [name for name in termination.get("failure", ()) if name != "life_loss"]
-    if semantics.completion_reason == "level_change":
+    if semantics.completion_reason == "level_change" and not success:
         success = list(dict.fromkeys((*success, "level_change")))
     return with_task_termination(
         config,

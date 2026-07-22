@@ -35,6 +35,12 @@ new goal contracts. Dimension IDs must be unique and match `[A-Za-z0-9_.-]+`; un
 rather than silently rewritten. Starts use the same readable ID in training and evaluation. Provider
 `info` fields never become metrics automatically.
 
+Configuration-selected internal learner feedback, such as a snapshot curriculum's per-start
+priority statistic, is not telemetry merely because it has a readable name. Internal feedback
+identifiers do not use metric paths and are not published to W&B unless a separately registered
+metric explicitly projects them. If projected, the emitted name and semantics must appear in the
+registry below.
+
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
 Fleet never supplies W&B's internal `_step`; W&B assigns it in arrival order. It is not an

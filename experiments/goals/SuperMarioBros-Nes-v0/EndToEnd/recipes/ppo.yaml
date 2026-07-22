@@ -1,0 +1,9 @@
+defaults:
+- ../../../../recipes/_presets/mario-single-ppo@_global_
+- _self_
+
+reward_shape: score-v1
+recipe_id: ppo
+description: >-
+  Seed {seed} trains a whole-game {goal_id} PPO policy from Level1-1 through Level8-4,
+  preserving lives and level transitions within one episode until game completion or game-over.
