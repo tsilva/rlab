@@ -14,6 +14,7 @@ else:
 
 RUNTIME_INPUT_PATHS = (
     ".dockerignore",
+    "THIRD_PARTY_NOTICES.md",
     "containers/train/entrypoint.sh",
     "containers/train/rlab",
     "containers/train/smoke.py",

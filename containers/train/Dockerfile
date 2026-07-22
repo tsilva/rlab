@@ -119,6 +119,7 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 WORKDIR /src
 
 COPY pyproject.toml ./
+COPY THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 
 RUN --mount=type=cache,target=/root/.cache/uv \
