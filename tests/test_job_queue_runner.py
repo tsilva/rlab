@@ -1841,6 +1841,54 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "finalizing")
         self.assertIn("outcome = 'canceled'", conn.cursor_obj.executed_sqls[3])
 
+    def test_prestart_cancel_skips_publication_and_finalization(self) -> None:
+        launch = {
+            "launch_id": "train-7",
+            "job_kind": "train",
+            "job_id": 7,
+            "machine": "beast-3",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "state": "launching",
+            "cancel_requested": True,
+            "job_train_config": {
+                "checkpoint_eval_backend": "modal",
+                "telemetry_transport": "neon_mailbox_v1",
+                "wandb": True,
+            },
+        }
+        terminal_launch = {**launch, "state": "canceled"}
+        job = {"id": 7, "run_name": "run", "status": "canceled"}
+        conn = FakeConnection(
+            results=[
+                {"row": launch},
+                {"row": terminal_launch},
+                {"row": job},
+                {},
+            ]
+        )
+
+        job_queue.finish_train_launch_from_result(
+            conn,
+            launch_id="train-7",
+            result={
+                "schema_version": 1,
+                "job_kind": "train",
+                "job_id": 7,
+                "launch_id": "train-7",
+                "machine": "beast-3",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "status": "canceled",
+                "exit_code": 130,
+            },
+        )
+
+        job_params = conn.cursor_obj.executed_params_list[2]
+        self.assertEqual(job_params["status"], "canceled")
+        self.assertEqual(job_params["publication_status"], "disabled")
+        eval_params = conn.cursor_obj.executed_params_list[3]
+        self.assertEqual(eval_params["eval_status"], "canceled")
+        self.assertEqual(eval_params["eval_error"], "training canceled before container start")
+
     def test_idempotent_batch_returns_existing_jobs(self) -> None:
         existing = [
             {"id": 10, "request_hash": "same", "submission_ordinal": 0},

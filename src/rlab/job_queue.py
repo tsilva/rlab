@@ -4505,6 +4505,7 @@ def finish_train_launch_from_result(
                 raise RuntimeError(f"launch {launch_id} is not a train launch")
             train_config = dict(launch.get("job_train_config") or {})
             wandb_enabled = bool(train_config.get("wandb", False))
+            prestart_cancel = launch_status == "canceled" and launch["state"] == "launching"
             publication_status = str(live_publication.get("status") or "").strip()
             if publication_status not in {"pending", "complete", "disabled", "failed"}:
                 publication_status = "pending" if wandb_enabled else "disabled"
@@ -4512,11 +4513,13 @@ def finish_train_launch_from_result(
                 publication_status = "pending"
             if not wandb_enabled:
                 publication_status = "disabled"
+            if prestart_cancel:
+                publication_status = "disabled"
             publication_error = str(live_publication.get("error") or "").strip() or None
             publication_attempts = max(0, int(live_publication.get("attempts") or 0))
             eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
             telemetry_transport = str(train_config.get("telemetry_transport") or "legacy_local")
-            requires_finalization = (
+            requires_finalization = not prestart_cancel and (
                 telemetry_transport == "neon_mailbox_v1"
                 or eval_backend == "modal"
                 or publication_status not in {"complete", "disabled"}
@@ -4570,16 +4573,24 @@ def finish_train_launch_from_result(
             job = cur.fetchone()
             if not job:
                 raise RuntimeError(f"could not finish train job for launch {launch_id}")
-            if launch_status == "canceled" and job_status == "finalizing":
+            if launch_status == "canceled":
                 cur.execute(
                     """
                     UPDATE eval_runs
-                    SET status = 'finalizing', outcome = 'canceled',
-                      updated_at = now(), error = 'training canceled; finalization continues'
+                    SET status = %(eval_status)s, outcome = 'canceled',
+                      updated_at = now(), error = %(eval_error)s
                     WHERE train_job_id = %(job_id)s
                       AND status NOT IN ('complete', 'failed')
                     """,
-                    {"job_id": updated_launch["job_id"]},
+                    {
+                        "job_id": updated_launch["job_id"],
+                        "eval_status": "finalizing" if job_status == "finalizing" else "canceled",
+                        "eval_error": (
+                            "training canceled; finalization continues"
+                            if job_status == "finalizing"
+                            else "training canceled before container start"
+                        ),
+                    },
                 )
             cur.execute(
                 """
