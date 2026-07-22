@@ -10,7 +10,7 @@ import pytest
 from breakout_turbo_env import BreakoutVecEnv
 
 from rlab.env import EnvConfig, make_training_batch_runtime
-from rlab.snapshot_banks import load_breakout_snapshot_bank
+from rlab.snapshot_banks import _wandb_artifact_location, load_breakout_snapshot_bank
 
 
 def _sha256(value: bytes) -> str:
@@ -159,6 +159,20 @@ def test_loads_hash_bound_breakout_snapshot_bank(tmp_path: Path) -> None:
     assert bank.state_ids == ("snapshot-0", "snapshot-1")
     assert all(value.startswith(b"BTO1") for value in bank.states.values())
     assert bank.observation_sha256 == _observation_hashes
+
+
+def test_wandb_snapshot_bank_uri_requires_an_immutable_artifact_version() -> None:
+    uri = (
+        "wandb-artifact:tsilva/Breakout-Atari2600-v0/"
+        "breakout-post400-r400-snapshot-bank:v0/snapshot-bank.tar.gz"
+    )
+
+    assert _wandb_artifact_location(uri) == (
+        "tsilva/Breakout-Atari2600-v0/breakout-post400-r400-snapshot-bank:v0",
+        "snapshot-bank.tar.gz",
+    )
+    with pytest.raises(ValueError, match="artifact.*:vN"):
+        _wandb_artifact_location(uri.replace(":v0", ":latest"))
 
 
 def test_rejects_snapshot_bank_archive_hash_mismatch(tmp_path: Path) -> None:

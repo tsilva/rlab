@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -33,6 +34,8 @@ from rlab.training_backend import training_backend_config, training_backend_conf
 GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
 RECIPE = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/recipes/ppo.yaml")
 RUNTIME = "docker:ghcr.io/tsilva/rlab/rlab-train@sha256:" + "b" * 64
+POST400_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/post400-r400/_goal.yaml")
+POST400_RECIPE = POST400_GOAL.parent / "recipes/ppo-resume-129991680.yaml"
 
 
 def level1_1_recipe_document(*, seed: int = 7) -> dict:
@@ -45,6 +48,26 @@ def level1_1_recipe_document(*, seed: int = 7) -> dict:
         seed=seed,
         runtime_image_ref=RUNTIME,
     )
+
+
+def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:
+    materialized = compose_train_document(POST400_GOAL, POST400_RECIPE)
+    document = build_recipe_document(
+        materialized,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="post-400 acceptance lane regression",
+        seed=123,
+        runtime_image_ref=RUNTIME,
+    )
+
+    contract = evaluation_contract(document)
+    starts = [entry["start_state"] for entry in contract["manifest"]["episodes"]]
+    counts = Counter(starts)
+    assert contract["n_envs"] == 32
+    assert len(starts) == 100
+    assert len(counts) == 32
+    assert set(counts.values()) == {3, 4}
 
 
 def write_bundle(root: Path) -> None:

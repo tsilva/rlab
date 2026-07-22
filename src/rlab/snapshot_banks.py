@@ -5,6 +5,7 @@ import io
 import json
 import re
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -20,6 +21,7 @@ MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024**2
 MAX_STATE_BYTES = 4 * 1024**2
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SNAPSHOT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_WANDB_ARTIFACT_VERSION = re.compile(r"[A-Za-z0-9_.-]+:v[0-9]+")
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,44 @@ class BreakoutSnapshotBank:
     state_ids: tuple[str, ...]
     states: Mapping[str, bytes]
     observation_sha256: Mapping[str, str]
+
+
+def _wandb_artifact_location(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if (
+        parsed.scheme != "wandb-artifact"
+        or parsed.netloc
+        or len(parts) != 4
+        or not _WANDB_ARTIFACT_VERSION.fullmatch(parts[2])
+    ):
+        raise ValueError(
+            "snapshot W&B URI must be "
+            "wandb-artifact:<entity>/<project>/<artifact>:vN/<filename>"
+        )
+    filename = parts[3]
+    if PurePosixPath(filename).name != filename:
+        raise ValueError("snapshot W&B artifact filename must be a basename")
+    return f"{parts[0]}/{parts[1]}/{parts[2]}", filename
+
+
+def _read_wandb_artifact(uri: str) -> bytes:
+    ref, filename = _wandb_artifact_location(uri)
+    load_wandb_env()
+    import wandb
+
+    artifact = wandb.Api().artifact(ref, type="environment-snapshot-bank")
+    resolved_version = str(getattr(artifact, "version", "") or "")
+    if ref.rsplit(":", 1)[-1] != resolved_version:
+        raise ValueError(f"snapshot W&B artifact did not resolve to pinned version {ref!r}")
+    with tempfile.TemporaryDirectory(prefix="rlab-snapshot-bank-") as temporary_root:
+        root = Path(artifact.download(root=temporary_root))
+        path = root / filename
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"snapshot W&B artifact is missing regular file {filename!r}")
+        if path.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise ValueError("snapshot bank archive is too large")
+        return path.read_bytes()
 
 
 def _read_archive(uri: str) -> bytes:
@@ -46,7 +86,11 @@ def _read_archive(uri: str) -> bytes:
         if int(head["size"]) > MAX_ARCHIVE_BYTES:
             raise ValueError("snapshot bank archive is too large")
         return store.get_bytes(uri)
-    raise ValueError("snapshot_bank_uri must be an s3:// or file:// URI")
+    if parsed.scheme == "wandb-artifact":
+        return _read_wandb_artifact(uri)
+    raise ValueError(
+        "snapshot_bank_uri must be an s3://, file://, or pinned wandb-artifact: locator"
+    )
 
 
 def _safe_member_name(name: str) -> PurePosixPath:

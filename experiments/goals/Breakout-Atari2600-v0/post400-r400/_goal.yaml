@@ -110,7 +110,7 @@ train:
           reward_clip: false
           use_fire_reset: false
           snapshot_bank_uri: >-
-            s3://wandb/rlab/environment-snapshots/Breakout-Atari2600-v0/062e0ae9e4e3cddba1bfcde5288f936b0212a500356752ca2c6c4bfe9d5a1884/snapshot-bank.tar.gz
+            wandb-artifact:tsilva/Breakout-Atari2600-v0/breakout-post400-r400-snapshot-bank:v0/snapshot-bank.tar.gz
           snapshot_bank_sha256: 062e0ae9e4e3cddba1bfcde5288f936b0212a500356752ca2c6c4bfe9d5a1884
     preprocessing: &breakout_preprocessing
       frame_skip: 4
@@ -159,7 +159,7 @@ eval:
       <<: *breakout_env_config
       states: *snapshot_states
       state_probs: *snapshot_probs
-      n_envs: 16
+      n_envs: 32
       env_args:
         <<: *breakout_provider_args
     preprocessing: *breakout_preprocessing
