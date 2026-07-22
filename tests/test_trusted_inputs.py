@@ -13,6 +13,7 @@ import pytest
 
 from rlab.trusted_inputs import (
     ModelApprovalError,
+    SOURCE_ALLOWLIST_ENV,
     approve_staged_model,
     stage_model_input,
 )
@@ -73,8 +74,9 @@ def test_release_manifest_missing_bound_file_is_rejected() -> None:
 def test_noninteractive_external_model_requires_exact_manifest_hash() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         staged = stage_model_input(_checkpoint(Path(temporary)))
-        with pytest.raises(ModelApprovalError, match="approval is required"):
-            approve_staged_model(staged, interactive=False)
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ModelApprovalError, match="approval is required"):
+                approve_staged_model(staged, interactive=False)
         approved = approve_staged_model(
             staged,
             expected_hash=staged.manifest_hash,
@@ -82,6 +84,58 @@ def test_noninteractive_external_model_requires_exact_manifest_hash() -> None:
         )
         approved.verify()
         approved.cleanup()
+
+
+def test_source_allowlist_bypasses_interactive_approval_for_matching_source() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        source = "hf://tsilva/policy@" + "a" * 40
+        staged = stage_model_input(_checkpoint(Path(temporary)), source_identity=source)
+        with patch.dict(
+            os.environ,
+            {SOURCE_ALLOWLIST_ENV: "hf://someone-else/*, hf://tsilva/*"},
+            clear=True,
+        ):
+            approved = approve_staged_model(staged, interactive=False)
+        approved.verify()
+        approved.cleanup()
+
+
+def test_source_allowlist_loads_from_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        checkpoint_root = root / "checkpoint"
+        checkpoint_root.mkdir()
+        source = "hf://tsilva/policy@" + "a" * 40
+        staged = stage_model_input(_checkpoint(checkpoint_root), source_identity=source)
+        (root / ".env").write_text(
+            f'{SOURCE_ALLOWLIST_ENV}="hf://tsilva/*"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(root)
+        monkeypatch.delenv(SOURCE_ALLOWLIST_ENV, raising=False)
+        approved = approve_staged_model(staged, interactive=False)
+        approved.verify()
+        approved.cleanup()
+
+
+def test_source_allowlist_does_not_override_a_wrong_approval_hash() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        source = "hf://tsilva/policy@" + "a" * 40
+        staged = stage_model_input(_checkpoint(Path(temporary)), source_identity=source)
+        with (
+            patch.dict(
+                os.environ,
+                {SOURCE_ALLOWLIST_ENV: "hf://tsilva/*"},
+                clear=True,
+            ),
+            pytest.raises(ModelApprovalError, match="approval hash mismatch"),
+        ):
+            approve_staged_model(
+                staged,
+                expected_hash="0" * 64,
+                interactive=False,
+            )
+        staged.cleanup()
 
 
 def test_changed_staged_bytes_fail_before_loader() -> None:

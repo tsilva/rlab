@@ -24,11 +24,7 @@ from rlab.train import build_parser as build_train_parser, parse_train_args
 class TrainConfigFieldSchemaTests(unittest.TestCase):
     def test_internal_train_cli_requires_one_materialized_json_input(self) -> None:
         parser = build_train_parser()
-        options = {
-            option
-            for action in parser._actions
-            for option in action.option_strings
-        }
+        options = {option for action in parser._actions for option in action.option_strings}
 
         self.assertEqual(options, {"-h", "--help", "--train-config-json"})
         with self.assertRaises(SystemExit):
@@ -37,10 +33,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
     def test_playback_argument_registry_is_derived_from_environment_fields(self) -> None:
         self.assertEqual(
             PLAYBACK_ENV_ARG_KEYS,
-            {
-                field.dest: (field.dest,)
-                for field in env_config_arg_fields()
-            },
+            {field.dest: (field.dest,) for field in env_config_arg_fields()},
         )
 
     def test_train_config_json_rejects_invalid_field_types_before_execution(self) -> None:
@@ -126,11 +119,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             parse_json_value=json.loads,
             parse_obs_crop=lambda value: tuple(int(item) for item in value.split(",")),
         )
-        options = {
-            option
-            for action in parser._actions
-            for option in action.option_strings
-        }
+        options = {option for action in parser._actions for option in action.option_strings}
 
         self.assertIn("--checkpoint-eval-n-envs", options)
         self.assertNotIn("--post-train-eval-n-envs", options)
@@ -148,7 +137,7 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(parser.parse_args([]).checkpoint_eval_backend, "modal")
-        self.assertEqual(parser.parse_args([]).metrics_schema_version, 5)
+        self.assertEqual(parser.parse_args([]).metrics_schema_version, 6)
         self.assertEqual(
             parser.parse_args(["--checkpoint-eval-backend", "local"]).checkpoint_eval_backend,
             "local",
@@ -158,15 +147,27 @@ class TrainConfigFieldSchemaTests(unittest.TestCase):
             "none",
         )
 
-    def test_metrics_schema_version_accepts_frozen_v4_and_active_v5_only(self) -> None:
+    def test_metrics_schema_version_accepts_frozen_v4_v5_and_active_v6(self) -> None:
         self.assertEqual(
             validate_and_normalize_train_config({"metrics_schema_version": 4})[
                 "metrics_schema_version"
             ],
             4,
         )
-        with self.assertRaisesRegex(ValueError, "must be <= 5"):
-            validate_and_normalize_train_config({"metrics_schema_version": 6})
+        self.assertEqual(
+            validate_and_normalize_train_config({"metrics_schema_version": 5})[
+                "metrics_schema_version"
+            ],
+            5,
+        )
+        self.assertEqual(
+            validate_and_normalize_train_config({"metrics_schema_version": 6})[
+                "metrics_schema_version"
+            ],
+            6,
+        )
+        with self.assertRaisesRegex(ValueError, "must be <= 6"):
+            validate_and_normalize_train_config({"metrics_schema_version": 7})
 
     def test_no_eval_config_rejects_eval_owned_stop_behavior(self) -> None:
         with self.assertRaisesRegex(ValueError, "early_stop must be null"):

@@ -17,7 +17,8 @@ from rlab.file_utils import file_sha256 as sha256_file
 RECIPE_DOCUMENT_TYPE = "rlab.recipe"
 RECIPE_FORMAT_VERSION = 1
 MODEL_DOCUMENT_TYPE = "rlab.model"
-MODEL_FORMAT_VERSION = 1
+LEGACY_MODEL_FORMAT_VERSION = 1
+MODEL_FORMAT_VERSION = 2
 
 RECIPE_FILENAME = "recipe.json"
 MODEL_FILENAME = "model.json"
@@ -78,7 +79,7 @@ _EVAL_FIELDS = frozenset(
 )
 _PLAYBACK_FIELDS = frozenset({"environment", "seed"})
 _RECIPE_PROVENANCE_FIELDS = frozenset({"source_commit", "source_files", "runtime", "asset"})
-_MODEL_PROVENANCE_FIELDS = frozenset(
+_MODEL_PROVENANCE_FIELDS_V1 = frozenset(
     {
         "metadata_version",
         "kind",
@@ -108,6 +109,13 @@ _MODEL_PROVENANCE_FIELDS = frozenset(
         "repo_git_commit",
         "training_metadata",
         "training_metadata_hash",
+    }
+)
+_MODEL_PROVENANCE_FIELDS_V2 = frozenset(
+    {
+        *_MODEL_PROVENANCE_FIELDS_V1,
+        "snapshot_curriculum_preflight_sha256",
+        "snapshot_curriculum_session",
     }
 )
 _SECRET_FRAGMENTS = (
@@ -500,7 +508,44 @@ def validate_recipe_document(
     )
 
 
-def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, Any]:
+def _validate_snapshot_curriculum_session(value: object, *, label: str) -> None:
+    session = _required_mapping(value, label=label)
+    allowed = frozenset(
+        {
+            "semantic_id",
+            "generation",
+            "persistence",
+            "resume_behavior",
+            "archive_cell_count",
+            "archive_snapshot_count",
+            "completed_rollout",
+        }
+    )
+    _reject_unknown(session, allowed, label=label)
+    if session.get("semantic_id") != "snapshot_curriculum_v1":
+        raise PolicyDocumentError(f"{label}.semantic_id must be 'snapshot_curriculum_v1'")
+    if session.get("persistence") != "session_local":
+        raise PolicyDocumentError(f"{label}.persistence must be 'session_local'")
+    if session.get("resume_behavior") != "cold_archive":
+        raise PolicyDocumentError(f"{label}.resume_behavior must be 'cold_archive'")
+    for key in (
+        "generation",
+        "archive_cell_count",
+        "archive_snapshot_count",
+        "completed_rollout",
+    ):
+        item = session.get(key)
+        minimum = 1 if key == "generation" else 0
+        if not isinstance(item, int) or isinstance(item, bool) or item < minimum:
+            raise PolicyDocumentError(f"{label}.{key} must be an integer >= {minimum}")
+
+
+def _validate_model(
+    document: Mapping[str, Any],
+    source: str,
+    *,
+    provenance_fields: frozenset[str],
+) -> dict[str, Any]:
     _reject_unknown(document, _MODEL_FIELDS, label=source)
     checkpoint = _required_mapping(document.get("checkpoint"), label=f"{source}.checkpoint")
     recipe = _required_mapping(document.get("recipe"), label=f"{source}.recipe")
@@ -509,7 +554,7 @@ def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, An
     _reject_unknown(checkpoint, _CHECKPOINT_FIELDS, label=f"{source}.checkpoint")
     _reject_unknown(recipe, _RECIPE_BINDING_FIELDS, label=f"{source}.recipe")
     _reject_unknown(policy, _POLICY_FIELDS, label=f"{source}.policy")
-    _reject_unknown(provenance, _MODEL_PROVENANCE_FIELDS, label=f"{source}.provenance")
+    _reject_unknown(provenance, provenance_fields, label=f"{source}.provenance")
     if checkpoint.get("filename") != CHECKPOINT_FILENAME:
         raise PolicyDocumentError(f"{source}.checkpoint.filename must be {CHECKPOINT_FILENAME!r}")
     _required_sha256(checkpoint.get("sha256"), label=f"{source}.checkpoint.sha256")
@@ -541,9 +586,41 @@ def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, An
         raise PolicyDocumentError(f"{source}.recipe.format_version must be {RECIPE_FORMAT_VERSION}")
     _required_sha256(recipe.get("sha256"), label=f"{source}.recipe.sha256")
     _required_size(recipe.get("size_bytes"), label=f"{source}.recipe.size_bytes")
+    if "snapshot_curriculum_preflight_sha256" in provenance:
+        _required_sha256(
+            provenance["snapshot_curriculum_preflight_sha256"],
+            label=f"{source}.provenance.snapshot_curriculum_preflight_sha256",
+        )
+    if "snapshot_curriculum_session" in provenance:
+        _validate_snapshot_curriculum_session(
+            provenance["snapshot_curriculum_session"],
+            label=f"{source}.provenance.snapshot_curriculum_session",
+        )
     _assert_portable(provenance, label=f"{source}.provenance")
     _assert_finite_json(document, label=source)
     return deepcopy(dict(document))
+
+
+def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, Any]:
+    return _validate_model(
+        document,
+        source,
+        provenance_fields=_MODEL_PROVENANCE_FIELDS_V1,
+    )
+
+
+def _validate_model_v2(document: Mapping[str, Any], source: str) -> dict[str, Any]:
+    return _validate_model(
+        document,
+        source,
+        provenance_fields=_MODEL_PROVENANCE_FIELDS_V2,
+    )
+
+
+_MODEL_HANDLERS = {
+    LEGACY_MODEL_FORMAT_VERSION: _validate_model_v1,
+    MODEL_FORMAT_VERSION: _validate_model_v2,
+}
 
 
 def load_model_document(path: Path) -> dict[str, Any]:
@@ -552,7 +629,7 @@ def load_model_document(path: Path) -> dict[str, Any]:
         value,
         source=str(path),
         expected_type=MODEL_DOCUMENT_TYPE,
-        handlers={MODEL_FORMAT_VERSION: _validate_model_v1},
+        handlers=_MODEL_HANDLERS,
     )
 
 
@@ -736,7 +813,7 @@ def build_model_document(
     provenance = {
         key: deepcopy(value)
         for key, value in metadata.items()
-        if key in _MODEL_PROVENANCE_FIELDS and value not in (None, "")
+        if key in _MODEL_PROVENANCE_FIELDS_V2 and value not in (None, "")
     }
     if not provenance.get("reward_shape"):
         provenance.pop("reward_shape_is_default", None)
@@ -767,7 +844,7 @@ def build_model_document(
         },
         "provenance": provenance,
     }
-    return _validate_model_v1(document, MODEL_FILENAME)
+    return _validate_model_v2(document, MODEL_FILENAME)
 
 
 def model_document_as_metadata(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -775,7 +852,7 @@ def model_document_as_metadata(document: Mapping[str, Any]) -> dict[str, Any]:
         document,
         source=MODEL_FILENAME,
         expected_type=MODEL_DOCUMENT_TYPE,
-        handlers={MODEL_FORMAT_VERSION: _validate_model_v1},
+        handlers=_MODEL_HANDLERS,
     )
     metadata = deepcopy(dict(validated["provenance"]))
     metadata.update(validated["policy"])
@@ -938,9 +1015,7 @@ def evaluation_contract(recipe_document: Mapping[str, Any]) -> dict[str, Any]:
         handlers={RECIPE_FORMAT_VERSION: _validate_recipe_v1},
     )
     if "eval" not in validated["recipe"]:
-        raise PolicyDocumentError(
-            "training-only policy bundle has no evaluation contract"
-        )
+        raise PolicyDocumentError("training-only policy bundle has no evaluation contract")
     return deepcopy(dict(validated["recipe"]["eval"]))
 
 

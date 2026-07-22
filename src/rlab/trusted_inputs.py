@@ -10,8 +10,11 @@ import tempfile
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from rlab.dotenv import load_env_file
 
 
 MAX_MODEL_FILES = 64
@@ -23,6 +26,7 @@ MAX_ARCHIVE_MEMBER_BYTES = 4 * 1024**3
 MAX_ARCHIVE_TOTAL_BYTES = 12 * 1024**3
 MAX_ARCHIVE_COMPRESSION_RATIO = 1000
 APPROVAL_ENV = "RLAB_MODEL_APPROVAL"
+SOURCE_ALLOWLIST_ENV = "RLAB_MODEL_SOURCE_ALLOWLIST"
 
 
 class ModelApprovalError(PermissionError):
@@ -341,6 +345,20 @@ def _manifest_for_staged_root(
     return tuple(entries)
 
 
+def _source_allowlist_patterns() -> tuple[str, ...]:
+    load_env_file(key_filter=lambda key: key == SOURCE_ALLOWLIST_ENV)
+    value = str(os.environ.get(SOURCE_ALLOWLIST_ENV, ""))
+    return tuple(pattern for item in value.split(",") if (pattern := item.strip()))
+
+
+def _matching_source_allowlist_pattern(staged: StagedModelInput) -> str | None:
+    source = str(staged.source_identity or staged.source).strip()
+    return next(
+        (pattern for pattern in _source_allowlist_patterns() if fnmatchcase(source, pattern)),
+        None,
+    )
+
+
 def approve_staged_model(
     staged: StagedModelInput,
     *,
@@ -353,19 +371,20 @@ def approve_staged_model(
             raise ModelApprovalError(
                 f"model approval hash mismatch: expected {staged.manifest_hash}, got {supplied}"
             )
-    else:
+    elif _matching_source_allowlist_pattern(staged) is None:
         allow_prompt = sys.stdin.isatty() if interactive is None else bool(interactive)
         if not allow_prompt:
             raise ModelApprovalError(
                 "external model approval is required; rerun interactively or set "
-                f"{APPROVAL_ENV}={staged.manifest_hash}"
+                f"{APPROVAL_ENV}={staged.manifest_hash}, or configure "
+                f"{SOURCE_ALLOWLIST_ENV} for trusted sources"
             )
         print(
             "External Python model content can execute arbitrary code with your current "
             "operating-system authority, including access to ambient credentials.",
             file=sys.stderr,
         )
-        print(f"Source: {staged.source}", file=sys.stderr)
+        print(f"Source: {staged.source_identity or staged.source}", file=sys.stderr)
         for entry in staged.manifest:
             print(f"  {entry.sha256}  {entry.size_bytes:>10}  {entry.path}", file=sys.stderr)
         print(f"Approval manifest: {staged.manifest_hash}", file=sys.stderr)

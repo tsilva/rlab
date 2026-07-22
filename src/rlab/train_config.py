@@ -433,6 +433,7 @@ def validate_and_normalize_train_config(
 
     from rlab.checkpoint_eval_config import normalize_checkpoint_eval_stages
     from rlab.early_stop import normalize_early_stop_config
+    from rlab.snapshot_curriculum import normalize_snapshot_curriculum_config
 
     normalized = dict(train_config)
     validate_train_config_fields(normalized, label=label, required_keys=required_keys)
@@ -466,6 +467,15 @@ def validate_and_normalize_train_config(
             normalized["checkpoint_eval_acceptance"],
             label=f"{label}.checkpoint_eval_acceptance",
         )
+    if normalized.get("snapshot_curriculum") is not None:
+        n_envs = normalized.get("n_envs")
+        normalized["snapshot_curriculum"] = normalize_snapshot_curriculum_config(
+            normalized["snapshot_curriculum"],
+            label=f"{label}.snapshot_curriculum",
+            n_envs=int(n_envs) if n_envs is not None else None,
+        )
+        if int(normalized.get("metrics_schema_version", METRICS_SCHEMA_VERSION)) < 6:
+            raise ValueError(f"{label}.snapshot_curriculum requires metrics_schema_version >= 6")
     if normalized.get("stop_on_acceptance"):
         if normalized.get("early_stop") is not None:
             raise ValueError(f"{label}.early_stop is incompatible with stop_on_acceptance")
@@ -500,6 +510,16 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         queue_required=True,
         validation_min=1,
         source_section="train",
+    ),
+    TrainConfigField(
+        "snapshot_curriculum",
+        "--snapshot-curriculum",
+        type_name="json",
+        default=None,
+        serialize="json",
+        mapping_value=True,
+        source_section="train",
+        help="Optional bounded live-state restart curriculum configuration.",
     ),
     TrainConfigField(
         "training_backend",

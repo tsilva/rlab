@@ -54,7 +54,7 @@ from rlab.wandb_utils import (
 )
 
 
-MODEL_METADATA_VERSION = 6
+MODEL_METADATA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,7 @@ def build_model_metadata(
     model_path: Path,
     kind: str,
     checkpoint_step_value: int | None = None,
+    snapshot_curriculum_session: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     training = training_metadata(
         config,
@@ -89,7 +90,7 @@ def build_model_metadata(
     step = checkpoint_step(model_path)
     if step is None:
         step = checkpoint_step_value
-    return {
+    metadata = {
         "metadata_version": MODEL_METADATA_VERSION,
         "kind": kind,
         "filename": model_path.name,
@@ -131,6 +132,12 @@ def build_model_metadata(
         "training_metadata": training,
         "training_metadata_hash": stable_json_hash(training),
     }
+    preflight_sha256 = str(getattr(args, "snapshot_curriculum_preflight_sha256", "") or "").strip()
+    if preflight_sha256:
+        metadata["snapshot_curriculum_preflight_sha256"] = preflight_sha256
+    if snapshot_curriculum_session is not None:
+        metadata["snapshot_curriculum_session"] = deepcopy(dict(snapshot_curriculum_session))
+    return metadata
 
 
 def write_model_metadata(
@@ -139,6 +146,7 @@ def write_model_metadata(
     config: EnvConfig,
     kind: str,
     checkpoint_step_value: int | None = None,
+    snapshot_curriculum_session: Mapping[str, Any] | None = None,
 ) -> Path | None:
     if not model_path.is_file():
         return None
@@ -148,6 +156,7 @@ def write_model_metadata(
         model_path,
         kind,
         checkpoint_step_value=checkpoint_step_value,
+        snapshot_curriculum_session=snapshot_curriculum_session,
     )
     path = write_model_metadata_payload(
         model_path,
@@ -327,8 +336,7 @@ def init_wandb(args: argparse.Namespace, run_dir: str, config: EnvConfig):
     args.wandb_tags = ",".join(tags)
     wandb_config: dict[str, Any] = {**vars(args), **env_config_metadata(config)}
     wandb_config["metrics_schema_version"] = int(
-        getattr(args, "metrics_schema_version", METRICS_SCHEMA_VERSION)
-        or METRICS_SCHEMA_VERSION
+        getattr(args, "metrics_schema_version", METRICS_SCHEMA_VERSION) or METRICS_SCHEMA_VERSION
     )
     wandb_config["algorithm_id"] = str(getattr(args, "algorithm_id", "") or "").strip()
     wandb_config["model_class"] = str(getattr(args, "model_class", "") or "").strip()

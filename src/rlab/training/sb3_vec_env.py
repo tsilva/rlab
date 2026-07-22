@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -9,6 +9,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from rlab.batch_runtime import (
     BatchMetricRecord,
     BatchRuntime,
+    CurriculumStepAttribution,
     EpisodeRecord,
     StepDiagnostics,
     TaskEventRecord,
@@ -26,6 +27,10 @@ class RlabVecEnv(VecEnv):
         self.waiting = False
         self._actions: Any = None
         self._step_diagnostics: StepDiagnostics | None = None
+        self._curriculum_step: Any | None = None
+        self._snapshot_curriculum_enabled = (
+            getattr(runtime, "snapshot_curriculum", None) is not None
+        )
         self._seed_base: int | None = None
         self._dones = np.zeros(runtime.num_envs, dtype=bool)
         self._empty_infos: list[dict[str, Any]] = [{} for _ in range(runtime.num_envs)]
@@ -54,6 +59,7 @@ class RlabVecEnv(VecEnv):
         self.waiting = False
         self._actions = None
         self._step_diagnostics = None
+        self._curriculum_step = None
         return observations
 
     def step_async(self, actions: Any) -> None:
@@ -70,6 +76,22 @@ class RlabVecEnv(VecEnv):
         self.waiting = False
         self.reset_infos = self.runtime.reset_infos
         self._step_diagnostics = step.diagnostics
+        if self._snapshot_curriculum_enabled:
+            self._curriculum_step = CurriculumStepAttribution(
+                curriculum_cell_ids=np.asarray(step.curriculum_cell_ids, dtype=object).copy(),
+                curriculum_generations=np.asarray(
+                    step.curriculum_generations, dtype=np.int64
+                ).copy(),
+                curriculum_episode_indices=np.asarray(
+                    step.curriculum_episode_indices, dtype=np.int64
+                ).copy(),
+                curriculum_feedback_dones=np.asarray(
+                    step.curriculum_feedback_dones, dtype=np.bool_
+                ).copy(),
+                control_boundaries=np.asarray(step.control_boundaries, dtype=np.bool_).copy(),
+            )
+        else:
+            self._curriculum_step = None
         np.logical_or(step.terminated, step.truncated, out=self._dones)
         infos = self._empty_infos
         if np.any(self._dones):
@@ -88,17 +110,17 @@ class RlabVecEnv(VecEnv):
                 episode_return = float(info.pop("rlab_episode_return"))
                 episode_length = int(info.pop("rlab_episode_length"))
                 episode_elapsed = float(info.pop("rlab_episode_elapsed"))
-                info["terminal_observation"] = _copy_tree_lane(
-                    step.final_observations, lane_index
-                )
+                control_boundary = bool(info.pop("rlab_control_boundary", False))
+                info["terminal_observation"] = _copy_tree_lane(step.final_observations, lane_index)
                 info["TimeLimit.truncated"] = bool(step.truncated[lane_index])
                 if reset_columns is not None:
                     info["reset_info"] = reset_columns.lane(lane_index)
-                info["episode"] = {
-                    "r": episode_return,
-                    "l": episode_length,
-                    "t": round(episode_elapsed, 6),
-                }
+                if not control_boundary:
+                    info["episode"] = {
+                        "r": episode_return,
+                        "l": episode_length,
+                        "t": round(episode_elapsed, 6),
+                    }
                 infos[lane_index] = info
         return step.observations, step.rewards, self._dones, infos
 
@@ -106,6 +128,23 @@ class RlabVecEnv(VecEnv):
         diagnostics = self._step_diagnostics
         self._step_diagnostics = None
         return diagnostics
+
+    def take_curriculum_step(self) -> Any | None:
+        step = self._curriculum_step
+        self._curriculum_step = None
+        return step
+
+    def curriculum_begin_rollout(self) -> None:
+        self.runtime.curriculum_begin_rollout()
+
+    def curriculum_complete_rollout(self) -> dict[str, float]:
+        return self.runtime.curriculum_complete_rollout()
+
+    def submit_curriculum_feedback(self, cell_id: str, value_error: float) -> None:
+        self.runtime.submit_curriculum_feedback(cell_id, value_error)
+
+    def snapshot_curriculum_summary(self) -> Mapping[str, Any] | None:
+        return self.runtime.snapshot_curriculum_summary()
 
     def drain_records(
         self,

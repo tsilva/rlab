@@ -1670,6 +1670,14 @@ class CommandAndArtifactTests(unittest.TestCase):
                     None,
                 )
 
+            def fake_stage_and_approve(path, **kwargs):
+                self.assertEqual(path, str(model_path))
+                self.assertEqual(
+                    kwargs["source_identity"],
+                    "hf://tsilva/SuperMarioBros-NES_Level1-1/model.zip",
+                )
+                return approve_internal_model(path, execution_id="test-eval")
+
             output = io.StringIO()
             with (
                 patch("rlab.eval.resolve_single_model_source", side_effect=fake_resolve),
@@ -1677,9 +1685,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 patch("rlab.eval.assert_provider_runtime_available") as assert_runtime,
                 patch(
                     "rlab.eval.stage_and_approve_model",
-                    side_effect=lambda path, **_kwargs: approve_internal_model(
-                        path, execution_id="test-eval"
-                    ),
+                    side_effect=fake_stage_and_approve,
                 ),
                 patch("rlab.eval.load_policy_model", return_value="ppo"),
                 patch(

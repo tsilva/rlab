@@ -5,8 +5,8 @@ description = "Generic reinforcement-learning lab for training and evaluating ga
 readme = "README.md"
 requires-python = "==3.14.*"
 dependencies = [
-    "stable-retro-turbo==1.0.1.post33; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "stable-retro-turbo==1.0.1.post33; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "stable-retro-turbo==1.0.1.post35; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "stable-retro-turbo==1.0.1.post35; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "supermariobrosnes-turbo>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "supermariobrosnes-turbo>=0.4.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "breakout-turbo-env>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
@@ -69,7 +69,7 @@ constraint-dependencies = [
 
 [tool.uv.exclude-newer-package]
 breakout-turbo-env = "2026-07-21T07:46:17Z"
-stable-retro-turbo = "2026-07-20T15:21:27Z"
+stable-retro-turbo = "2026-07-22T17:30:25Z"
 supermariobrosnes-turbo = "2026-07-22T11:42:53Z"
 
 [tool.ruff]
@@ -92,7 +92,7 @@ train-image-build = [
     "packaging>=25,<26",
 ]
 train-runtime = [
-    "stable-retro-turbo==1.0.1.post33; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "stable-retro-turbo==1.0.1.post35; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "supermariobrosnes-turbo>=0.4.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "breakout-turbo-env>=0.4.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "stable-baselines3[extra]>=2.3,<3",

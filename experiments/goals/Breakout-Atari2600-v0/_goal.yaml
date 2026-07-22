@@ -8,7 +8,7 @@ tags:
 title: Atari 2600 Breakout wall completion
 objective:
   rank:
-  - max(train/episode/return/shaped/mean)
+  - max(train/episode/return/shaped/from/target/mean)
   - min(global_step)
 train:
   checkpoint_eval_backend: none
@@ -59,6 +59,8 @@ train:
         set: native
       signals:
         ball_y: ball_y
+        # The live-state curriculum groups reachable Breakout states by score stage.
+        score: score
       events:
         serve_stall:
           signal: ball_y

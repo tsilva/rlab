@@ -184,8 +184,13 @@ ends input instead of reusing stuck keys. Use `--ui pygame` for the compatibilit
 
 External SB3 checkpoints are Python-executable content. Rlab privately stages and hashes the full
 resolved model closure, displays the ambient credential/authority risk, and requires approval for
-that exact invocation before deserialization. Dataset verification establishes structure and media
-integrity; `--reexecute` additionally requires the exact provider contract and runtime bytes.
+that exact invocation before deserialization. Set `RLAB_MODEL_SOURCE_ALLOWLIST` in the process
+environment or local `.env` to a comma-separated list of case-sensitive shell-style source patterns
+to skip the prompt for sources you control, for example
+`RLAB_MODEL_SOURCE_ALLOWLIST='hf://tsilva/*,tsilva/*'` for Hugging Face and W&B namespaces.
+Allowlisting skips only interactive approval: immutable resolution, private closure staging, archive
+preflight, and byte-integrity verification still run. Dataset verification establishes structure and
+media integrity; `--reexecute` additionally requires the exact provider contract and runtime bytes.
 
 Dataset recordings and exports are observation/reproduction artifacts. They are never accepted as
 checkpoint-promotion or research-goal evidence.

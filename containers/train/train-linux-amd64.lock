@@ -101,7 +101,7 @@ shellingham==1.5.4 --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c8914
 six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
 smmap==5.0.3 --hash=sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f
 stable-baselines3==2.8.0 --hash=sha256:8c19d960b534a909f46dac5227662fc2d6be380e5c66cb04e1ad23edb23dc5a2
-stable-retro-turbo==1.0.1.post33 --hash=sha256:337745072e86e3b3ca77db7e20c651abcd390cd3da2608bf17668c94b4b2ecd8
+stable-retro-turbo==1.0.1.post35 --hash=sha256:730eebfc8a20cf3f8977381d3779d6c3791751df968bbd190d578253e84624f1
 supermariobrosnes-turbo==0.4.3 --hash=sha256:0f64307b772accf5bab0ccfbe7f729dde4b445feb35c0e0099fa0c9c3600961e
 sympy==1.14.0 --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
 synchronicity==0.12.5 --hash=sha256:fdbbb10d437bc08a6b0f814fc66fddd1b58ffed314533d42f1ab555801e781af

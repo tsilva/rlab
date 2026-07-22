@@ -114,8 +114,10 @@ class MetricsDocumentationTests(unittest.TestCase):
                     metric_names.validate_metric_name(name, schema_version=4),
                     name,
                 )
+                with self.assertRaisesRegex(ValueError, "unknown metric"):
+                    metric_names.validate_metric_name(name, schema_version=5)
         with self.assertRaisesRegex(ValueError, "unsupported metrics schema version"):
-            metric_names.validate_metric_name("global_step", schema_version=6)
+            metric_names.validate_metric_name("global_step", schema_version=7)
 
     def test_logger_boundary_rejects_misspelled_rlab_metrics(self) -> None:
         with self.assertRaisesRegex(ValueError, "logger boundary"):
@@ -158,9 +160,7 @@ class MetricsDocumentationTests(unittest.TestCase):
         names = set()
         for protocol in metric_names.EVAL_PROTOCOLS:
             names.update(
-                metric_names.eval_success_from_rate_metric(
-                    protocol, start, schema_version=4
-                )
+                metric_names.eval_success_from_rate_metric(protocol, start, schema_version=4)
                 for start in starts
             )
             names.update(

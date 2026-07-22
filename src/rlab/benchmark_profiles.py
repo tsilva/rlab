@@ -26,6 +26,7 @@ DEFAULT_RESULT_DIR = Path("logs/benchmarks")
 ALLOWED_KINDS = {
     "env_throughput",
     "local_smoke",
+    "train_loop_comparison",
     "train_loop_throughput",
 }
 COMMON_PROFILE_FIELDS = frozenset({"schema_version", "name", "kind", "description"})
@@ -65,6 +66,20 @@ PROFILE_FIELDS_BY_KIND = {
             "run_description",
             "run_name",
             "seed",
+        }
+    ),
+    "train_loop_comparison": frozenset(
+        {
+            "goal_file",
+            "baseline_recipe_file",
+            "candidate_recipe_file",
+            "recipe_overrides",
+            "required_metrics",
+            "candidate_required_metrics",
+            "run_description",
+            "seed",
+            "repeats",
+            "max_candidate_slowdown",
         }
     ),
 }
@@ -200,6 +215,50 @@ def validate_benchmark_profile(payload: Mapping[str, Any], *, label: str = "prof
         require_int(config, "timesteps", label=f"{label}.train_config", require_present=False)
         require_int(payload, "seed", label=label, minimum=0, require_present=False)
 
+    if kind == "train_loop_comparison":
+        require_non_empty_string(payload, "goal_file", label=label, require_present=False)
+        require_non_empty_string(
+            payload,
+            "baseline_recipe_file",
+            label=label,
+            require_present=False,
+        )
+        require_non_empty_string(
+            payload,
+            "candidate_recipe_file",
+            label=label,
+            require_present=False,
+        )
+        string_list(
+            payload.get("recipe_overrides", ()),
+            label=f"{label}.recipe_overrides",
+            allow_empty=True,
+        )
+        required_metrics = string_list(
+            payload.get("required_metrics", ()), label=f"{label}.required_metrics"
+        )
+        candidate_metrics = string_list(
+            payload.get("candidate_required_metrics", ()),
+            label=f"{label}.candidate_required_metrics",
+            allow_empty=True,
+        )
+        if not required_metrics:
+            raise ValueError(f"{label}.required_metrics must not be empty")
+        for metric_name in (*required_metrics, *candidate_metrics):
+            validate_metric_name(metric_name)
+        for recipe_field in ("baseline_recipe_file", "candidate_recipe_file"):
+            _train_loop_config(payload, recipe_file=str(payload[recipe_field]))
+        require_int(payload, "seed", label=label, minimum=0, require_present=False)
+        if "repeats" in payload:
+            require_int(payload, "repeats", label=label, minimum=1)
+        slowdown = payload.get("max_candidate_slowdown")
+        if (
+            isinstance(slowdown, bool)
+            or not isinstance(slowdown, int | float)
+            or not 0.0 <= float(slowdown) < 1.0
+        ):
+            raise ValueError(f"{label}.max_candidate_slowdown must be in [0, 1)")
+
     if kind == "local_smoke":
         if "workers" in payload:
             raise ValueError(f"{label} does not support invocation-local workers")
@@ -331,10 +390,15 @@ def _env_throughput_commands(profile: Mapping[str, Any]) -> list[BenchmarkComman
     return commands
 
 
-def _train_loop_config(profile: Mapping[str, Any]) -> dict[str, Any]:
+def _train_loop_config(
+    profile: Mapping[str, Any],
+    *,
+    recipe_file: str | None = None,
+    run_name: str | None = None,
+) -> dict[str, Any]:
     document = compose_train_document(
         Path(str(profile["goal_file"])),
-        Path(str(profile["recipe_file"])),
+        Path(str(recipe_file or profile["recipe_file"])),
         recipe_overrides=profile.get("recipe_overrides", ()),
     )
     config = dict(require_mapping(document["train_config"], label="train_config"))
@@ -348,7 +412,9 @@ def _train_loop_config(profile: Mapping[str, Any]) -> dict[str, Any]:
     config["wandb_mode"] = "disabled"
     config["wandb_artifact_storage_uri"] = ""
     config["seed"] = int(profile.get("seed", 123))
-    config["run_name"] = str(profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}")
+    config["run_name"] = str(
+        run_name or profile.get("run_name") or f"benchmark_{_slug(str(profile['name']))}"
+    )
     config["run_description"] = str(
         profile.get("run_description")
         or f"Benchmark profile {profile['name']} training-loop probe."
@@ -368,6 +434,33 @@ def _train_loop_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
     ]
 
 
+def _train_loop_comparison_commands(profile: Mapping[str, Any]) -> list[BenchmarkCommand]:
+    commands: list[BenchmarkCommand] = []
+    variants = {
+        "baseline": str(profile["baseline_recipe_file"]),
+        "candidate": str(profile["candidate_recipe_file"]),
+    }
+    repeats = int(profile.get("repeats", 2))
+    for repeat in range(repeats):
+        order = ("baseline", "candidate") if repeat % 2 == 0 else ("candidate", "baseline")
+        for variant in order:
+            label = f"{variant}-{repeat + 1}"
+            config = _train_loop_config(
+                profile,
+                recipe_file=variants[variant],
+                run_name=f"benchmark_{_slug(str(profile['name']))}_{label}",
+            )
+            commands.append(
+                _command(
+                    label,
+                    [sys.executable, "-m", "rlab.train", "--train-config-json", "/dev/stdin"],
+                    env={"RLAB_INTERNAL_LEARNER": "1"},
+                    stdin=json.dumps(config, sort_keys=True),
+                )
+            )
+    return commands
+
+
 def build_benchmark_commands(profile: BenchmarkProfile) -> list[BenchmarkCommand]:
     payload = profile.payload
     kind = profile.kind
@@ -377,4 +470,6 @@ def build_benchmark_commands(profile: BenchmarkProfile) -> list[BenchmarkCommand
         return _env_throughput_commands(payload)
     if kind == "train_loop_throughput":
         return _train_loop_commands(payload)
+    if kind == "train_loop_comparison":
+        return _train_loop_comparison_commands(payload)
     raise ValueError(f"unsupported benchmark profile kind {kind!r}")

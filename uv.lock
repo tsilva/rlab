@@ -21,7 +21,7 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 supermariobrosnes-turbo = "2026-07-22T11:42:53Z"
 breakout-turbo-env = "2026-07-21T07:46:17Z"
-stable-retro-turbo = "2026-07-20T15:21:27Z"
+stable-retro-turbo = "2026-07-22T17:30:25Z"
 
 [manifest]
 constraints = [
@@ -1824,8 +1824,8 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rich", specifier = ">=15,<16" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post33" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post33" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post35" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post35" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4.3" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.3" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
@@ -1858,7 +1858,7 @@ train-runtime = [
     { name = "psycopg2-binary", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
-    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post33" },
+    { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post35" },
     { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.3" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.12.0" },
@@ -1983,7 +1983,7 @@ extra = [
 
 [[package]]
 name = "stable-retro-turbo"
-version = "1.0.1.post33"
+version = "1.0.1.post35"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1991,8 +1991,8 @@ dependencies = [
     { name = "pyglet", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/f0/8416081abf0bd4691a75edc0138c3329be80e40244ddcd646bb57c08177e/stable_retro_turbo-1.0.1.post33-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:51ac704ba29d0124234a18d5db07414d6f99840674a3750ccefa3f8c940daf7d", size = 85899146, upload-time = "2026-07-20T15:21:21.14Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/51/907f144f7ee94c17ddc37672b524e450eb46add348f28a360ef247b5dd8f/stable_retro_turbo-1.0.1.post33-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:337745072e86e3b3ca77db7e20c651abcd390cd3da2608bf17668c94b4b2ecd8", size = 91574205, upload-time = "2026-07-20T15:21:26.271Z" },
+    { url = "https://files.pythonhosted.org/packages/18/6e/e4f8c9fca98d6e5959287cfdc6e150f6dc9fb4e580a3ef68441e5f449afb/stable_retro_turbo-1.0.1.post35-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:dcb8aad90e7d689ccc6af50db3f64477f593503c62910cf76cd775cb40ba18b1", size = 85905143, upload-time = "2026-07-22T17:30:18.073Z" },
+    { url = "https://files.pythonhosted.org/packages/81/d7/06df3e3f213ece9e4df93ed37dfbcb22fb91410b10ca0bde1edc6d21482f/stable_retro_turbo-1.0.1.post35-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:730eebfc8a20cf3f8977381d3779d6c3791751df968bbd190d578253e84624f1", size = 91580195, upload-time = "2026-07-22T17:30:24.622Z" },
 ]
 
 [[package]]

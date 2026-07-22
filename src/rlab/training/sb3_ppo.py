@@ -157,7 +157,20 @@ def backend_for_id(backend_id: str) -> Sb3PpoBackend:
 def contract_payload(backend_id: str) -> dict[str, Any]:
     if backend_id != "sb3.ppo":
         raise ValueError(f"SB3 PPO backend module does not define {backend_id!r}")
-    return {"schema_version": 1, "status": "available", "defaults": DEFAULT_CONFIG}
+    return {
+        "schema_version": 1,
+        "status": "available",
+        "defaults": DEFAULT_CONFIG,
+        "snapshot_curriculum_priority_metrics": list(
+            snapshot_curriculum_priority_metrics(backend_id)
+        ),
+    }
+
+
+def snapshot_curriculum_priority_metrics(backend_id: str) -> tuple[str, ...]:
+    if backend_id != "sb3.ppo":
+        raise ValueError(f"SB3 PPO backend module does not define {backend_id!r}")
+    return ("value_error",)
 
 
 def runtime_metadata(

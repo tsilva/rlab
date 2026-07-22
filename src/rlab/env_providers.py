@@ -122,6 +122,19 @@ class _StartInfoAdapter:
         mask = np.ones(self.env.num_envs, dtype=np.bool_)
         if native_options.get("reset_mask") is not None:
             mask = np.asarray(native_options["reset_mask"], dtype=np.bool_)
+        snapshots = native_options.get("snapshots")
+        if snapshots is None:
+            snapshot_mask = np.zeros(self.env.num_envs, dtype=np.bool_)
+        else:
+            snapshot_values = tuple(snapshots)
+            if len(snapshot_values) != self.env.num_envs:
+                raise ValueError(f"snapshots must contain {self.env.num_envs} lane values")
+            snapshot_mask = np.asarray(
+                [value is not None for value in snapshot_values],
+                dtype=np.bool_,
+            )
+            if np.any(snapshot_mask & ~mask):
+                raise ValueError("snapshot values may only select reset lanes")
         if start_ids is not None:
             start_ids = np.asarray(start_ids, dtype=object)
             if start_ids.shape != (self.env.num_envs,):
@@ -134,7 +147,9 @@ class _StartInfoAdapter:
                 if not bool(mask[lane]):
                     continue
                 if start_id is None:
-                    raise ValueError(f"selected lane {lane} has no start id")
+                    if bool(snapshot_mask[lane]):
+                        continue
+                    raise ValueError(f"selected non-snapshot lane {lane} has no start id")
                 try:
                     state_indices[lane] = catalog_indices[str(start_id)]
                 except KeyError as exc:
@@ -158,9 +173,20 @@ class _StartInfoAdapter:
                 result = dict(infos)
                 result["start_id"] = np.asarray(active_states(), dtype=object)
                 result["_start_id"] = mask.copy()
+                start_sources = np.full(self.env.num_envs, None, dtype=object)
+                start_sources[mask & ~snapshot_mask] = "target"
+                start_sources[mask & snapshot_mask] = "snapshot"
+                result["start_source"] = start_sources
+                result["_start_source"] = mask.copy()
                 return observations, result
         if state_indices is None:
-            return observations, infos
+            result = dict(infos)
+            start_sources = np.full(self.env.num_envs, None, dtype=object)
+            start_sources[mask & ~snapshot_mask] = "target"
+            start_sources[mask & snapshot_mask] = "snapshot"
+            result["start_source"] = start_sources
+            result["_start_source"] = mask.copy()
+            return observations, result
         state_indices = np.asarray(state_indices, dtype=np.int32)
         if state_indices.shape != (self.env.num_envs,):
             raise ValueError("provider state_index must contain one value per lane")
@@ -172,6 +198,11 @@ class _StartInfoAdapter:
         result = dict(infos)
         result["start_id"] = active_starts
         result["_start_id"] = mask.copy()
+        start_sources = np.full(self.env.num_envs, None, dtype=object)
+        start_sources[mask & ~snapshot_mask] = "target"
+        start_sources[mask & snapshot_mask] = "snapshot"
+        result["start_source"] = start_sources
+        result["_start_source"] = mask.copy()
         return observations, result
 
     def step(self, actions):
@@ -776,6 +807,27 @@ def provider_descriptor(
             )
         if action_preset is None:
             action_preset = declared_action["preset"]
+    snapshot_provider = provider.provider_id in {
+        BREAKOUT_TURBO_ENV_PROVIDER.provider_id,
+        STABLE_RETRO_TURBO_PROVIDER.provider_id,
+    }
+    snapshot_bank_configured = bool(
+        isinstance(config.env_args, Mapping)
+        and (
+            config.env_args.get("snapshot_bank_uri") or config.env_args.get("snapshot_bank_sha256")
+        )
+    )
+    supports_live_snapshots = bool(
+        snapshot_provider
+        and config.game == "Breakout-Atari2600-v0"
+        and not snapshot_bank_configured
+        and callable(getattr(native_env, "capture_snapshots", None))
+    )
+    deterministic_snapshots = bool(
+        supports_live_snapshots
+        and float(config.sticky_action_prob) == 0.0
+        and int(config.env_args.get("noop_reset_max", 0)) == 0
+    )
     return ProviderDescriptor(
         provider_id=provider.provider_id,
         native_observation_space=observation_space,
@@ -793,6 +845,8 @@ def provider_descriptor(
             tuple(str(value) for value in action_meanings) if action_meanings is not None else None
         ),
         action_table_hash=(str(action_table_hash) if action_table_hash is not None else None),
+        supports_live_snapshots=supports_live_snapshots,
+        live_snapshots_deterministic=deterministic_snapshots,
     )
 
 

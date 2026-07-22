@@ -847,10 +847,14 @@ class WebClient:
         client_id: str,
         socket: web.WebSocketResponse,
         subscriptions: set[str],
+        workspace_id: str,
+        window_id: str,
     ) -> None:
         self.client_id = client_id
         self.socket = socket
         self.subscriptions = subscriptions
+        self.workspace_id = workspace_id
+        self.window_id = window_id
         self.reliable: asyncio.Queue[str | bytes] = asyncio.Queue(CLIENT_QUEUE_LIMIT)
         self.event = asyncio.Event()
         self.latest_snapshot: str | None = None
@@ -914,6 +918,7 @@ class PlaybackWebServer:
         self.origin = ""
         self.clients: dict[str, WebClient] = {}
         self.control_holder: str | None = None
+        self.input_holder: str | None = None
         self.control_epoch = 0
         self.stop_event = asyncio.Event()
         self.ever_connected = False
@@ -943,7 +948,7 @@ class PlaybackWebServer:
 
     async def asset(self, request: web.Request) -> web.FileResponse:
         name = request.match_info["name"]
-        if name not in {"app.js", "styles.css"}:
+        if name not in {"app.js", "styles.css", "tabler-icons.svg"}:
             raise web.HTTPNotFound()
         return web.FileResponse(self.asset_root / name)
 
@@ -953,8 +958,11 @@ class PlaybackWebServer:
             "control_epoch": self.control_epoch,
             "control": {
                 "client_id": client.client_id,
+                "workspace_id": client.workspace_id,
+                "window_id": client.window_id,
                 "holder": self.control_holder,
-                "has_control": self.control_holder == client.client_id,
+                "input_holder": self.input_holder,
+                "has_control": self.control_holder == client.workspace_id,
             },
         }
 
@@ -1000,17 +1008,32 @@ class PlaybackWebServer:
                 if str(value) in {"telemetry", "game", "observation"}
             }
             client_id = uuid.uuid4().hex
-            client = WebClient(client_id, socket, subscriptions)
+            workspace_id = str(hello.get("workspace_id") or client_id)[:128]
+            if not workspace_id or any(
+                character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+                for character in workspace_id
+            ):
+                workspace_id = client_id
+            window_id = str(hello.get("window_id") or "main")[:128]
+            client = WebClient(
+                client_id,
+                socket,
+                subscriptions,
+                workspace_id,
+                window_id,
+            )
             self.clients[client_id] = client
             self.ever_connected = True
             if self.control_holder is None:
-                self.control_holder = client_id
+                self.control_holder = workspace_id
                 self.control_epoch += 1
             client.offer_reliable(
                 {
                     "type": "welcome",
                     "protocol": PROTOCOL_VERSION,
                     "client_id": client_id,
+                    "workspace_id": workspace_id,
+                    "window_id": window_id,
                     "history_limit": HISTORY_LIMIT,
                 }
             )
@@ -1039,8 +1062,9 @@ class PlaybackWebServer:
                     continue
                 kind = str(payload.get("type") or "")
                 if kind == "acquire_control":
-                    if self.control_holder != client_id:
-                        self.control_holder = client_id
+                    if self.control_holder != client.workspace_id:
+                        self.control_holder = client.workspace_id
+                        self.input_holder = None
                         self.control_epoch += 1
                         self.runner.clear_input()
                         self._broadcast_control()
@@ -1050,19 +1074,31 @@ class PlaybackWebServer:
                         for value in payload.get("subscriptions", ())
                         if str(value) in {"telemetry", "game", "observation"}
                     }
+                    for frame_kind, (sequence, packet) in self.runner.encoder.latest().items():
+                        subscription = "game" if frame_kind == FRAME_GAME else "observation"
+                        if subscription in client.subscriptions:
+                            client.offer_frame(frame_kind, sequence, packet)
                 elif kind == "history":
                     client.offer_reliable(self.runner.history_payload())
                 elif kind == "input":
-                    if self.control_holder != client_id:
+                    if self.control_holder != client.workspace_id:
                         client.offer_reliable({"type": "error", "error": "control lease required"})
                     else:
                         labels = payload.get("pressed", ())
-                        self.runner.update_input(
-                            labels if isinstance(labels, list) else (),
-                            focused=bool(payload.get("focused", False)),
-                        )
+                        focused = bool(payload.get("focused", False))
+                        if focused:
+                            if self.input_holder != client_id:
+                                self.runner.clear_input()
+                            self.input_holder = client_id
+                            self.runner.update_input(
+                                labels if isinstance(labels, list) else (),
+                                focused=True,
+                            )
+                        elif self.input_holder == client_id:
+                            self.input_holder = None
+                            self.runner.update_input((), focused=False)
                 elif kind == "command":
-                    if self.control_holder != client_id:
+                    if self.control_holder != client.workspace_id:
                         client.offer_reliable(
                             {
                                 "type": "command_result",
@@ -1100,7 +1136,17 @@ class PlaybackWebServer:
                 client.closed = True
                 client.event.set()
                 self.clients.pop(client.client_id, None)
-                if self.control_holder == client.client_id:
+                if self.input_holder == client.client_id:
+                    self.input_holder = None
+                    self.runner.clear_input()
+                controlling_workspace_closed = (
+                    self.control_holder == client.workspace_id
+                    and not any(
+                        candidate.workspace_id == client.workspace_id
+                        for candidate in self.clients.values()
+                    )
+                )
+                if controlling_workspace_closed:
                     self.control_holder = None
                     self.control_epoch += 1
                     self.runner.clear_input()
@@ -1173,6 +1219,7 @@ class PlaybackWebServer:
             [
                 web.get("/", self.page),
                 web.get("/panel/{panel}", self.page),
+                web.get("/workspace/{window}", self.page),
                 web.get("/assets/{name}", self.asset),
                 web.get("/ws", self.websocket),
             ]

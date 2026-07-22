@@ -174,6 +174,10 @@ def test_loopback_server_requires_exact_origin_and_fragment_token() -> None:
                 assert response.status == 200
                 assert response.headers["Cache-Control"] == "no-store"
                 assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+                icon_response = await client.get(f"{server.origin}/assets/tabler-icons.svg")
+                assert icon_response.status == 200
+                assert "image/svg+xml" in icon_response.headers["Content-Type"]
+                assert 'id="ti-player-play"' in await icon_response.text()
                 try:
                     await client.ws_connect(f"{server.origin}/ws", origin="http://example.test")
                 except WSServerHandshakeError as exc:
@@ -219,6 +223,17 @@ def test_loopback_server_requires_exact_origin_and_fragment_token() -> None:
                 assert observer_snapshot is not None
                 assert observer_snapshot["control"]["has_control"] is False
 
+                await observer.send_json(
+                    {"type": "subscribe", "subscriptions": ["telemetry", "game"]}
+                )
+                observer_received_latest_frame = False
+                for _ in range(4):
+                    message = await asyncio.wait_for(observer.receive(), timeout=2.0)
+                    if message.type == WSMsgType.BINARY:
+                        observer_received_latest_frame = True
+                        break
+                assert observer_received_latest_frame
+
                 await observer.send_json({"type": "acquire_control"})
                 acquired_snapshot = None
                 for _ in range(3):
@@ -229,6 +244,27 @@ def test_loopback_server_requires_exact_origin_and_fragment_token() -> None:
                 assert acquired_snapshot is not None
                 assert acquired_snapshot["control"]["has_control"] is True
                 assert acquired_snapshot["control_epoch"] > observer_snapshot["control_epoch"]
+
+                sibling = await client.ws_connect(f"{server.origin}/ws", origin=server.origin)
+                await sibling.send_json(
+                    {
+                        "type": "hello",
+                        "token": server.token,
+                        "subscriptions": ["telemetry"],
+                        "workspace_id": acquired_snapshot["control"]["workspace_id"],
+                        "window_id": "analysis-window",
+                    }
+                )
+                sibling_snapshot = None
+                for _ in range(4):
+                    message = await asyncio.wait_for(sibling.receive(), timeout=2.0)
+                    if message.type == WSMsgType.TEXT and message.json()["type"] == "snapshot":
+                        sibling_snapshot = message.json()
+                        break
+                assert sibling_snapshot is not None
+                assert sibling_snapshot["control"]["has_control"] is True
+                assert sibling_snapshot["control"]["window_id"] == "analysis-window"
+                await sibling.close()
 
                 await observer.send_json(
                     {"type": "command", "id": "stop", "name": "stop", "payload": {}}
@@ -249,9 +285,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     root = Path(__file__).parents[1] / "src" / "rlab" / "web_player"
     assert (root / "index.html").is_file()
     assert (root / "styles.css").is_file()
+    assert (root / "tabler-icons.svg").is_file()
     markup = (root / "index.html").read_text(encoding="utf-8")
     styles = (root / "styles.css").read_text(encoding="utf-8")
     script = (root / "app.js").read_text(encoding="utf-8")
+    icons = (root / "tabler-icons.svg").read_text(encoding="utf-8")
     assert markup.index('data-panel="game"') < markup.index('data-panel="controls"')
     assert '<aside class="panel control-panel transport"' in markup
     game_markup = markup[
@@ -260,8 +298,32 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "ENVIRONMENT" not in game_markup
     assert "Focus the game for human input" not in game_markup
     assert 'class="game-actions panel-actions"' in game_markup
-    assert 'height: calc(100dvh - 4.3rem)' in styles
-    assert "object-fit: contain" in styles
+    assert "aspect-ratio: 256 / 240" in styles
+    assert "grid-template-columns: repeat(12" in styles
+    assert ".icon-only" in styles
+    assert 'id="timeline-scrubber"' in markup
+    assert 'id="return-chart"' in markup
+    assert "separate scale" in markup
+    assert 'drawLines($("#return-chart")' in script
+    assert "data-drag-handle" in markup
+    assert 'aria-label="Move game panel"' in markup
+    assert "/assets/tabler-icons.svg#ti-player-play" in markup
+    assert 'id="ti-grip-vertical"' in icons
+    assert 'id="ti-player-play"' in icons
+    assert 'id="panel-shelf"' in markup
     assert "requestFullscreen" in script
+    assert 'id="raw-transition" class="json-view"' in markup
+    assert "function renderJson(" in script
+    for token_class in (
+        "json-key",
+        "json-string",
+        "json-number",
+        "json-boolean",
+        "json-null",
+    ):
+        assert f".{token_class}" in styles
     assert "/panel/" in script
+    assert "/workspace/" in script
+    assert "workspace_id" in script
+    assert "BroadcastChannel" in script
     assert "visibilitychange" in script

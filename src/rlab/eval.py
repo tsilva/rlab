@@ -93,8 +93,16 @@ class ScriptedPolicy:
         return np.asarray([action]), None
 
 
-def load_eval_model(model_path: str | Path, *, device: str) -> tuple[object, str]:
-    with stage_and_approve_model(model_path, source_identity=str(model_path)) as approved:
+def load_eval_model(
+    model_path: str | Path,
+    *,
+    device: str,
+    source_identity: str | None = None,
+) -> tuple[object, str]:
+    with stage_and_approve_model(
+        model_path,
+        source_identity=source_identity or str(model_path),
+    ) as approved:
         metadata = load_model_metadata(approved.model_path)
         algorithm_id = resolve_policy_algorithm(metadata)
         model = load_policy_model(approved, device=device, metadata=metadata)
@@ -227,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         model, model_policy = load_eval_model(
             args.model,
             device=resolve_sb3_device(args.device),
+            source_identity=str(source.artifact_name or ref or args.model),
         )
     else:
         model = None

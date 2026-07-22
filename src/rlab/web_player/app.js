@@ -4,13 +4,58 @@ const FRAME_OBSERVATION = 2;
 const panelName = location.pathname.startsWith("/panel/")
   ? location.pathname.slice("/panel/".length)
   : null;
+const workspaceWindowName = location.pathname.startsWith("/workspace/")
+  ? location.pathname.slice("/workspace/".length)
+  : null;
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+const WORKSPACE_ID_KEY = "rlab.player.workspace.id";
+const LAYOUT_KEY = "rlab.player.workspace.layout.v1";
+const SAVED_LAYOUTS_KEY = "rlab.player.workspace.saved.v1";
+const workspaceId = localStorage.getItem(WORKSPACE_ID_KEY) || crypto.randomUUID();
+localStorage.setItem(WORKSPACE_ID_KEY, workspaceId);
+const windowId = panelName ? `panel-${panelName}` : (workspaceWindowName || "main");
+const PANEL_LABELS = {
+  game: "Game",
+  controls: "Controls",
+  policy: "Policy distribution",
+  reward: "Reward and return",
+  actions: "Action history",
+  observation: "Observation and attribution",
+  signals: "Live signals",
+  events: "Events",
+  raw: "Transition inspector",
+};
+
+function defaultLayout() {
+  return {
+    version: 1,
+    revision: 0,
+    name: "Mario debug",
+    panels: {
+      game: { col: 1, row: 1, w: 7, h: 15, visible: true, window: "main" },
+      controls: { col: 8, row: 1, w: 2, h: 15, visible: true, window: "main" },
+      policy: { col: 10, row: 1, w: 3, h: 7, visible: true, window: "main" },
+      reward: { col: 10, row: 8, w: 3, h: 8, visible: true, window: "main" },
+      actions: { col: 1, row: 16, w: 4, h: 8, visible: false, window: "main" },
+      observation: { col: 5, row: 16, w: 5, h: 8, visible: false, window: "main" },
+      signals: { col: 10, row: 16, w: 3, h: 8, visible: false, window: "main" },
+      events: { col: 1, row: 24, w: 4, h: 7, visible: false, window: "main" },
+      raw: { col: 5, row: 24, w: 8, h: 7, visible: false, window: "main" },
+    },
+  };
+}
 
 const state = {
   socket: null,
   connected: false,
   clientId: null,
   snapshot: null,
+  liveSnapshot: null,
+  snapshots: new Map(),
+  frameBlobs: new Map([[FRAME_GAME, new Map()], [FRAME_OBSERVATION, new Map()]]),
+  inspectionSequence: null,
+  timelineSequences: [],
+  timelineWindow: Number(localStorage.getItem("rlab.player.timeline.window")) || 512,
   history: [],
   hasControl: false,
   frameSequence: new Map(),
@@ -22,24 +67,78 @@ const state = {
   lastStatus: null,
   actionNamesKey: "",
   selectedSignal: localStorage.getItem("rlab.player.signal") || "",
+  workspaceId,
+  windowId,
+  layout: null,
+  selectedPanel: null,
+  draggingPanel: null,
+  activeWindows: new Map(),
+  gameAspect: 256 / 240,
 };
+
+const workspaceChannel = "BroadcastChannel" in window
+  ? new BroadcastChannel(`rlab-player-${workspaceId}`)
+  : null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, Number(value) || minimum));
+}
+
+function normalizeLayout(value) {
+  const fallback = defaultLayout();
+  const source = value && typeof value === "object" ? value : {};
+  const panels = {};
+  Object.entries(fallback.panels).forEach(([name, defaults]) => {
+    const candidate = source.panels?.[name] || {};
+    const w = clamp(candidate.w ?? defaults.w, name === "game" ? 4 : 2, 12);
+    const h = clamp(candidate.h ?? defaults.h, name === "game" ? 8 : 4, 40);
+    panels[name] = {
+      col: clamp(candidate.col ?? defaults.col, 1, 13 - w),
+      row: clamp(candidate.row ?? defaults.row, 1, 200),
+      w,
+      h,
+      visible: candidate.visible === undefined ? defaults.visible : Boolean(candidate.visible),
+      window: typeof candidate.window === "string" && candidate.window ? candidate.window : defaults.window,
+    };
+  });
+  return {
+    version: 1,
+    revision: Number(source.revision) || 0,
+    name: typeof source.name === "string" && source.name.trim() ? source.name.trim().slice(0, 48) : fallback.name,
+    panels,
+  };
+}
+
+function readStoredLayout() {
+  try {
+    return normalizeLayout(JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null"));
+  } catch {
+    return defaultLayout();
+  }
+}
+
+function panelsInThisWindow() {
+  if (!state.layout) return [];
+  return Object.entries(state.layout.panels)
+    .filter(([, panel]) => panel.visible && panel.window === state.windowId)
+    .map(([name]) => name);
+}
+
 function subscriptions() {
-  if (!panelName) return ["telemetry", "game", "observation"];
-  if (panelName === "game") return ["telemetry", "game"];
-  if (panelName === "observation") return ["telemetry", "observation"];
-  return ["telemetry"];
+  const visible = new Set(panelsInThisWindow());
+  const values = ["telemetry"];
+  if (visible.has("game")) values.push("game");
+  if (visible.has("observation")) values.push("observation");
+  return values;
 }
 
 function setDetachedLayout() {
-  if (!panelName) return;
-  document.body.classList.add("detached");
-  const target = document.querySelector(`[data-panel="${CSS.escape(panelName)}"]`);
-  if (target) target.classList.add("detached-target");
-  $("#page-title").textContent = `${panelName[0].toUpperCase()}${panelName.slice(1)} panel`;
+  const secondary = state.windowId !== "main";
+  document.body.classList.toggle("secondary-window", secondary);
+  if (panelName) $("#page-title").textContent = `${PANEL_LABELS[panelName] || panelName} window`;
 }
 
 function showToast(message, error = false) {
@@ -54,7 +153,7 @@ function showToast(message, error = false) {
 function updateConnection(label, kind = "") {
   const badge = $("#connection-status");
   badge.textContent = label;
-  badge.className = `badge ${kind}`.trim();
+  badge.className = `sync-status ${kind}`.trim();
 }
 
 function connect() {
@@ -69,7 +168,14 @@ function connect() {
   socket.binaryType = "arraybuffer";
   updateConnection("Connecting", "warning");
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify({ type: "hello", token, subscriptions: subscriptions(), panel: panelName || "dashboard" }));
+    socket.send(JSON.stringify({
+      type: "hello",
+      token,
+      subscriptions: subscriptions(),
+      panel: panelName || "workspace",
+      workspace_id: state.workspaceId,
+      window_id: state.windowId,
+    }));
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") handleMessage(JSON.parse(event.data));
@@ -88,7 +194,7 @@ function handleMessage(message) {
   if (message.type === "welcome") {
     state.connected = true;
     state.clientId = message.client_id;
-    updateConnection("Live", "");
+    updateConnection("Synced", "");
     return;
   }
   if (message.type === "history") {
@@ -113,6 +219,46 @@ function handleMessage(message) {
   if (message.type === "error") showToast(message.error || "Player error", true);
 }
 
+function rememberFrame(kind, sequence, blob) {
+  const frames = state.frameBlobs.get(kind);
+  frames.set(sequence, blob);
+  while (frames.size > 1024) frames.delete(frames.keys().next().value);
+}
+
+function fitGameFrame() {
+  const stage = $("#game-stage");
+  const frame = $("#game-frame");
+  if (!stage || !frame) return;
+  const width = stage.clientWidth;
+  const height = stage.clientHeight;
+  if (!width || !height) return;
+  const fittedWidth = Math.min(width, height * state.gameAspect);
+  const fittedHeight = fittedWidth / state.gameAspect;
+  frame.style.width = `${Math.max(1, Math.floor(fittedWidth))}px`;
+  frame.style.height = `${Math.max(1, Math.floor(fittedHeight))}px`;
+  frame.style.aspectRatio = String(state.gameAspect);
+}
+
+async function drawFrameBlob(kind, blob) {
+  if (!blob) return false;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = kind === FRAME_GAME ? $("#game-canvas") : $("#observation-canvas");
+  if (!canvas) { bitmap.close(); return false; }
+  if (kind === FRAME_GAME) {
+    state.gameAspect = bitmap.width / Math.max(1, bitmap.height);
+    fitGameFrame();
+  }
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d", { alpha: false });
+  context.imageSmoothingEnabled = false;
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  if (kind === FRAME_GAME) $("#game-empty")?.setAttribute("hidden", "");
+  if (kind === FRAME_OBSERVATION) $("#observation-empty")?.setAttribute("hidden", "");
+  return true;
+}
+
 async function handleFrame(buffer) {
   const view = new DataView(buffer);
   if (buffer.byteLength <= FRAME_HEADER_BYTES) return;
@@ -122,33 +268,36 @@ async function handleFrame(buffer) {
   const sequence = Number(view.getBigUint64(8));
   if (sequence <= (state.receivedFrameSequence.get(kind) ?? -1)) return;
   state.receivedFrameSequence.set(kind, sequence);
-  const bitmap = await createImageBitmap(new Blob([buffer.slice(FRAME_HEADER_BYTES)], { type: "image/png" }));
-  if (sequence < (state.receivedFrameSequence.get(kind) ?? -1)) { bitmap.close(); return; }
-  const canvas = kind === FRAME_GAME ? $("#game-canvas") : $("#observation-canvas");
-  if (!canvas) { bitmap.close(); return; }
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const context = canvas.getContext("2d", { alpha: false });
-  context.imageSmoothingEnabled = false;
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close();
+  const blob = new Blob([buffer.slice(FRAME_HEADER_BYTES)], { type: "image/png" });
+  rememberFrame(kind, sequence, blob);
+  if (state.inspectionSequence === null || state.inspectionSequence === sequence) {
+    await drawFrameBlob(kind, blob);
+  }
   state.frameSequence.set(kind, sequence);
-  if (kind === FRAME_GAME) $("#game-empty")?.setAttribute("hidden", "");
-  if (kind === FRAME_OBSERVATION) $("#observation-empty")?.setAttribute("hidden", "");
   flushPendingSnapshot();
 }
 
 function requiredFrameKind(snapshot) {
-  if ((panelName === null || panelName === "game") && snapshot.transition?.after?.game_frame) return FRAME_GAME;
-  if (panelName === "observation" && Number(snapshot.transition?.before?.observation_frames || 0) > 0) return FRAME_OBSERVATION;
+  const visible = new Set(panelsInThisWindow());
+  if (visible.has("game") && snapshot.transition?.after?.game_frame) return FRAME_GAME;
+  if (visible.has("observation") && Number(snapshot.transition?.before?.observation_frames || 0) > 0) return FRAME_OBSERVATION;
   return null;
 }
 
 function applySnapshot(snapshot) {
   state.pendingSnapshot = null;
-  state.snapshot = snapshot;
+  state.liveSnapshot = snapshot;
+  state.snapshots.set(Number(snapshot.sequence), snapshot);
+  while (state.snapshots.size > 1024) state.snapshots.delete(state.snapshots.keys().next().value);
   state.hasControl = Boolean(snapshot.control?.has_control);
-  renderSnapshot();
+  if (state.inspectionSequence === null) {
+    state.snapshot = snapshot;
+    renderSnapshot();
+  } else {
+    updateControlState();
+    renderWorkspaceStatus();
+    renderTimeline();
+  }
 }
 
 function flushPendingSnapshot() {
@@ -172,7 +321,7 @@ function command(name, payload = {}) {
     id: crypto.randomUUID(),
     name,
     payload,
-    expected_revision: state.snapshot?.revision ?? null,
+    expected_revision: state.liveSnapshot?.revision ?? null,
   });
 }
 
@@ -201,12 +350,60 @@ function setStats(target, values) {
   target.replaceChildren(...values.map(([label, value]) => stat(label, value)));
 }
 
+function renderJson(target, value, fallback) {
+  if (value === null || value === undefined) {
+    target.textContent = fallback;
+    return;
+  }
+
+  const source = JSON.stringify(value, null, 2);
+  const tokens = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+
+  for (const match of source.matchAll(tokens)) {
+    fragment.append(document.createTextNode(source.slice(cursor, match.index)));
+    const token = document.createElement("span");
+    const raw = match[0];
+    if (raw.startsWith('"')) {
+      token.className = source.slice(match.index + raw.length).match(/^\s*:/)
+        ? "json-key"
+        : "json-string";
+    } else if (raw === "true" || raw === "false") {
+      token.className = "json-boolean";
+    } else if (raw === "null") {
+      token.className = "json-null";
+    } else {
+      token.className = "json-number";
+    }
+    token.textContent = raw;
+    fragment.append(token);
+    cursor = match.index + raw.length;
+  }
+  fragment.append(document.createTextNode(source.slice(cursor)));
+  target.replaceChildren(fragment);
+}
+
 function updateControlState() {
   const control = $("#control-status");
   control.textContent = state.hasControl ? "Controller" : "Observer";
   control.className = `badge ${state.hasControl ? "" : "muted"}`.trim();
-  $$(`.transport button:not(#acquire-control):not([data-detach])`).forEach((button) => { button.disabled = !state.hasControl; });
+  $$(".transport button:not(#acquire-control):not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
+    .forEach((button) => { button.disabled = !state.hasControl; });
   $("#acquire-control").disabled = !state.connected || state.hasControl;
+}
+
+function renderWorkspaceStatus() {
+  const live = state.liveSnapshot;
+  const shown = state.snapshot || live;
+  $("#workspace-sequence").textContent = `SEQ ${text(live?.sequence)}`;
+  if (state.inspectionSequence === null) {
+    $("#timeline-step").textContent = `STEP ${text(shown?.session?.step)}`;
+    $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)}`;
+  } else {
+    $("#timeline-step").textContent = `STEP ${text(shown?.session?.step)}`;
+    $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)} · LIVE ${text(live?.sequence)}`;
+  }
 }
 
 function renderSnapshot() {
@@ -215,21 +412,22 @@ function renderSnapshot() {
   const transition = snapshot.transition;
   configureMode(snapshot.mode || "playback");
   updateControlState();
+  renderWorkspaceStatus();
   $("#seed").value = text(session.seed, "");
   if (document.activeElement !== $("#fps")) $("#fps").value = Number(session.target_fps || 0);
   $("#session-summary").textContent = `EP ${session.episode} · STEP ${session.step} · SEQ ${snapshot.sequence} · ${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
   $("#resolved-config").textContent = session.config || "No configuration supplied.";
-  $("#raw-transition").textContent = transition ? JSON.stringify(transition, null, 2) : "No transition yet.";
+  renderJson($("#raw-transition"), transition, "No transition yet.");
   $("#model-input").textContent = transition?.before?.model_input?.join("\n") || "No policy input yet.";
   $("#game-overlay").textContent = transition
-    ? `seq ${transition.sequence} · ep ${transition.episode} · step ${transition.step}\nr ${number(transition.reward?.step, 2)} · return ${number(transition.reward?.return, 2)}\n${transition.action_source}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
+    ? `${state.inspectionSequence === null ? "" : "INSPECTING · "}seq ${transition.sequence} · ep ${transition.episode} · step ${transition.step}\nr ${number(transition.reward?.step, 2)} · return ${number(transition.reward?.return, 2)}\n${transition.action_source}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
     : `seed ${text(session.seed)} · ready`;
   const actionNamesKey = JSON.stringify(session.action_names || []);
   if (actionNamesKey !== state.actionNamesKey) {
     state.actionNamesKey = actionNamesKey;
     renderHistory();
   }
-  if (snapshot.status_message && snapshot.status_message !== state.lastStatus) {
+  if (state.inspectionSequence === null && snapshot.status_message && snapshot.status_message !== state.lastStatus) {
     state.lastStatus = snapshot.status_message;
     showToast(snapshot.status_message, snapshot.run_state === "paused" && /error|expired|unsupported|no configured/i.test(snapshot.status_message));
   }
@@ -237,11 +435,12 @@ function renderSnapshot() {
   renderReward(transition);
   renderSignals(transition);
   renderEvents();
-  if (transition && (!state.history.length || state.history.at(-1)?.sequence !== transition.sequence)) {
+  if (state.inspectionSequence === null && transition && (!state.history.length || state.history.at(-1)?.sequence !== transition.sequence)) {
     state.history.push(historyFromTransition(transition));
     if (state.history.length > 4096) state.history.shift();
     renderHistory();
   }
+  renderTimeline();
 }
 
 function configureMode(mode) {
@@ -249,15 +448,13 @@ function configureMode(mode) {
   state.mode = mode;
   const recording = mode === "recording";
   document.body.classList.toggle("recording", recording);
-  if (recording) {
-    $("#page-title").textContent = panelName ? `${panelName[0].toUpperCase()}${panelName.slice(1)} panel` : "Human recording dashboard";
-    document.querySelector(".eyebrow").textContent = "HUMAN RECORDING";
-  }
+  document.querySelector(".eyebrow").textContent = recording ? "HUMAN RECORDING" : "RLAB PLAYER";
   ["step", "step-ten", "continue-event", "continue-done", "reset", "policy-driver", "inspect-policy"].forEach((id) => {
     $(`#${id}`).hidden = recording;
   });
   $("#seed").closest("label").hidden = recording;
-  $("#human-driver").textContent = recording ? "Human controls" : "Take control";
+  const humanDriverLabel = $("#human-driver span");
+  if (humanDriverLabel) humanDriverLabel.textContent = recording ? "Human controls" : "Take control";
 }
 
 function historyFromTransition(transition) {
@@ -379,6 +576,14 @@ function drawLines(canvas, series) {
   });
 }
 
+function fitCanvasLabel(context, value, maxWidth) {
+  const label = String(value);
+  if (context.measureText(label).width <= maxWidth) return label;
+  let end = label.length;
+  while (end > 0 && context.measureText(`${label.slice(0, end)}…`).width > maxWidth) end -= 1;
+  return end > 0 ? `${label.slice(0, end)}…` : "…";
+}
+
 function drawHistogram(canvas, counts, names) {
   const { context, ratio, width, height } = resizeCanvas(canvas);
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -387,15 +592,18 @@ function drawHistogram(canvas, counts, names) {
   const max = Math.max(1, ...counts);
   const gap = 4;
   const barWidth = Math.max(4, (width - 24) / Math.max(1, counts.length) - gap);
+  const plotBottom = height - 30;
   counts.forEach((count, index) => {
-    const barHeight = (count / max) * (height - 42);
+    const barHeight = (count / max) * Math.max(0, plotBottom - 12);
     const x = 12 + index * (barWidth + gap);
     context.fillStyle = "#53d4e8";
-    context.fillRect(x, height - 22 - barHeight, barWidth, barHeight);
-    context.fillStyle = "#8da6b2";
-    context.font = "9px ui-monospace";
-    context.save(); context.translate(x + 2, height - 7); context.rotate(-0.45);
-    context.fillText((names[index] || String(index)).slice(0, 9), 0, 0); context.restore();
+    context.fillRect(x, plotBottom - barHeight, barWidth, barHeight);
+    context.fillStyle = "#d7e5ea";
+    context.font = "600 12px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const label = fitCanvasLabel(context, names[index] || String(index), barWidth + gap - 4);
+    context.fillText(label, x + barWidth / 2, height - 14);
   });
 }
 
@@ -404,10 +612,17 @@ function renderHistory() {
   drawLines($("#reward-chart"), [
     { values: points.map((point) => Number(point.reward_provider)), color: "#76a9ff" },
     { values: points.map((point) => Number(point.reward_shaped)), color: "#d794ff" },
+  ]);
+  drawLines($("#return-chart"), [
     { values: points.map((point) => Number(point.return)), color: "#60d394" },
   ]);
   $("#reward-legend").replaceChildren(...[
-    ["Provider reward", "#76a9ff"], ["Shaped reward", "#d794ff"], ["Return", "#60d394"],
+    ["Provider reward", "#76a9ff"], ["Shaped reward", "#d794ff"],
+  ].map(([label, color]) => {
+    const item = document.createElement("span"); item.textContent = label; item.style.setProperty("--legend-color", color); return item;
+  }));
+  $("#return-legend").replaceChildren(...[
+    ["Return", "#60d394"],
   ].map(([label, color]) => {
     const item = document.createElement("span"); item.textContent = label; item.style.setProperty("--legend-color", color); return item;
   }));
@@ -419,6 +634,77 @@ function renderHistory() {
   $("#action-caption").textContent = total ? `${total} sampled policy actions in the visible history.` : "No policy actions observed.";
   renderSignalChart();
   renderEvents();
+  renderTimeline();
+}
+
+function nearestFrameBlob(kind, sequence) {
+  const frames = state.frameBlobs.get(kind);
+  if (frames.has(sequence)) return frames.get(sequence);
+  const candidate = [...frames.keys()].filter((value) => value <= sequence).at(-1);
+  return candidate === undefined ? null : frames.get(candidate);
+}
+
+async function showFramesForSequence(sequence) {
+  const visible = new Set(panelsInThisWindow());
+  const tasks = [];
+  if (visible.has("game")) tasks.push(drawFrameBlob(FRAME_GAME, nearestFrameBlob(FRAME_GAME, sequence)));
+  if (visible.has("observation")) tasks.push(drawFrameBlob(FRAME_OBSERVATION, nearestFrameBlob(FRAME_OBSERVATION, sequence)));
+  const results = await Promise.all(tasks);
+  if (tasks.length && !results.some(Boolean)) showToast("This retained transition has telemetry but no retained image frame.", true);
+}
+
+function inspectSequence(sequence) {
+  const snapshot = state.snapshots.get(Number(sequence));
+  if (!snapshot) return;
+  state.inspectionSequence = Number(sequence);
+  state.snapshot = snapshot;
+  $("#return-live").hidden = false;
+  renderSnapshot();
+  showFramesForSequence(Number(sequence));
+}
+
+function returnToLive() {
+  state.inspectionSequence = null;
+  state.snapshot = state.liveSnapshot;
+  $("#return-live").hidden = true;
+  if (state.snapshot) {
+    renderSnapshot();
+    showFramesForSequence(Number(state.snapshot.sequence));
+  }
+}
+
+function renderTimeline() {
+  const scrubber = $("#timeline-scrubber");
+  if (!scrubber) return;
+  const all = [...state.snapshots.keys()].sort((a, b) => a - b);
+  state.timelineSequences = all.slice(-state.timelineWindow);
+  const sequences = state.timelineSequences;
+  scrubber.min = "0";
+  scrubber.max = String(Math.max(0, sequences.length - 1));
+  scrubber.disabled = sequences.length < 2;
+  const selected = state.inspectionSequence ?? sequences.at(-1);
+  const selectedIndex = sequences.indexOf(selected);
+  scrubber.value = String(selectedIndex < 0 ? Math.max(0, sequences.length - 1) : selectedIndex);
+  $("#timeline-zoom-label").textContent = `${state.timelineWindow} steps`;
+  renderWorkspaceStatus();
+
+  const markers = $("#timeline-markers");
+  if (!sequences.length) { markers.replaceChildren(); return; }
+  const minimum = sequences[0];
+  const maximum = sequences.at(-1);
+  const range = Math.max(1, maximum - minimum);
+  const interesting = state.history.filter((point) =>
+    Number(point.sequence) >= minimum
+    && Number(point.sequence) <= maximum
+    && (point.boundary || point.events?.length)
+  );
+  markers.replaceChildren(...interesting.slice(-120).map((point) => {
+    const marker = document.createElement("span");
+    marker.className = "timeline-marker";
+    marker.style.left = `${((Number(point.sequence) - minimum) / range) * 100}%`;
+    marker.style.setProperty("--marker-color", point.boundary ? "var(--red)" : "var(--magenta)");
+    return marker;
+  }));
 }
 
 function renderSignals(transition) {
@@ -461,6 +747,509 @@ function renderEvents() {
   }));
 }
 
+function panelsOverlap(a, b) {
+  return a.col < b.col + b.w
+    && a.col + a.w > b.col
+    && a.row < b.row + b.h
+    && a.row + a.h > b.row;
+}
+
+function resolveCollisions(movedName) {
+  const moved = state.layout.panels[movedName];
+  if (!moved?.visible) return;
+  moved.col = clamp(moved.col, 1, 13 - moved.w);
+  moved.row = clamp(moved.row, 1, 200);
+  const placed = [moved];
+  const others = Object.entries(state.layout.panels)
+    .filter(([name, panel]) => name !== movedName && panel.visible && panel.window === moved.window)
+    .sort(([, a], [, b]) => a.row - b.row || a.col - b.col);
+  others.forEach(([, panel]) => {
+    let collisions = placed.filter((candidate) => panelsOverlap(panel, candidate));
+    while (collisions.length) {
+      panel.row = Math.max(...collisions.map((candidate) => candidate.row + candidate.h));
+      collisions = placed.filter((candidate) => panelsOverlap(panel, candidate));
+    }
+    placed.push(panel);
+  });
+}
+
+function maxPanelRow(targetWindow = state.windowId) {
+  return Math.max(0, ...Object.values(state.layout.panels)
+    .filter((panel) => panel.visible && panel.window === targetWindow)
+    .map((panel) => panel.row + panel.h - 1));
+}
+
+function persistLayout({ announce = true } = {}) {
+  state.layout.revision = Number(state.layout.revision || 0) + 1;
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(state.layout));
+  if (announce) workspaceChannel?.postMessage({ type: "layout", layout: state.layout, source: state.windowId });
+}
+
+function updateLayoutTitle() {
+  $("#layout-name").textContent = state.layout.name;
+  $("#layout-name-input").value = state.layout.name;
+  document.title = `${state.layout.name} · rlab player`;
+}
+
+function applyLayout() {
+  const dashboard = $("#dashboard");
+  const visibleHere = [];
+  $$("[data-panel]").forEach((panel) => {
+    const name = panel.dataset.panel;
+    const config = state.layout.panels[name];
+    if (!config) return;
+    const shown = config.visible && config.window === state.windowId;
+    panel.hidden = !shown;
+    if (!shown) return;
+    visibleHere.push(name);
+    panel.style.gridColumn = `${config.col} / span ${config.w}`;
+    panel.style.gridRow = `${config.row} / span ${config.h}`;
+  });
+  document.body.classList.toggle("empty-workspace", visibleHere.length === 0);
+  const rows = Math.max(8, maxPanelRow());
+  dashboard.style.minHeight = `${rows * 32 + Math.max(0, rows - 1) * 10 + 12}px`;
+  updateLayoutTitle();
+  renderPanelShelf();
+  renderSavedLayouts();
+  requestAnimationFrame(() => { fitGameFrame(); renderHistory(); });
+  send({ type: "subscribe", subscriptions: subscriptions() });
+}
+
+function readSavedLayouts() {
+  try {
+    const value = JSON.parse(localStorage.getItem(SAVED_LAYOUTS_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function renderSavedLayouts() {
+  const target = $("#saved-layouts");
+  const saved = readSavedLayouts();
+  const rows = Object.keys(saved).sort().map((name) => {
+    const row = document.createElement("div");
+    row.className = "saved-layout-row";
+    const load = document.createElement("button");
+    load.type = "button";
+    load.className = "quiet";
+    load.textContent = name;
+    load.addEventListener("click", () => {
+      state.layout = normalizeLayout(saved[name]);
+      state.layout.name = name;
+      persistLayout();
+      applyLayout();
+      $("#layout-menu").hidden = true;
+      showToast(`Loaded layout “${name}”.`);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "quiet danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => {
+      const next = readSavedLayouts();
+      delete next[name];
+      localStorage.setItem(SAVED_LAYOUTS_KEY, JSON.stringify(next));
+      renderSavedLayouts();
+    });
+    row.append(load, remove);
+    return row;
+  });
+  if (!rows.length) {
+    const empty = document.createElement("span");
+    empty.className = "empty-state";
+    empty.textContent = "No named layouts saved yet.";
+    target.replaceChildren(empty);
+  } else target.replaceChildren(...rows);
+}
+
+function renderPanelShelf() {
+  const target = $("#panel-shelf-items");
+  const entries = Object.entries(PANEL_LABELS).filter(([name]) => {
+    const panel = state.layout.panels[name];
+    return !panel.visible || panel.window !== state.windowId;
+  });
+  const buttons = entries.map(([name, label]) => {
+    const config = state.layout.panels[name];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "shelf-item";
+    const title = document.createElement("span");
+    title.textContent = label;
+    const status = document.createElement("small");
+    status.textContent = config.visible ? "Move here" : "Restore";
+    button.append(title, status);
+    button.addEventListener("click", () => {
+      const windowHasPanels = Object.entries(state.layout.panels).some(([otherName, panel]) =>
+        otherName !== name && panel.visible && panel.window === state.windowId
+      );
+      config.visible = true;
+      config.window = state.windowId;
+      if (!windowHasPanels) {
+        config.col = 1;
+        config.row = 1;
+      } else if (Object.entries(state.layout.panels).some(([otherName, panel]) =>
+        otherName !== name && panel.visible && panel.window === state.windowId && panelsOverlap(config, panel)
+      )) config.row = maxPanelRow() + 1;
+      resolveCollisions(name);
+      persistLayout();
+      applyLayout();
+      showToast(`${label} moved into this window.`);
+    });
+    return button;
+  });
+  if (!buttons.length) {
+    const empty = document.createElement("span");
+    empty.className = "empty-state";
+    empty.textContent = "Every panel is visible in this window.";
+    target.replaceChildren(empty);
+  } else target.replaceChildren(...buttons);
+}
+
+function gridMetrics() {
+  const dashboard = $("#dashboard");
+  const rect = dashboard.getBoundingClientRect();
+  const gap = 10;
+  const column = (rect.width - gap * 11) / 12;
+  return { dashboard, rect, gap, column, row: 32, rowPitch: 42, columnPitch: column + gap };
+}
+
+function dropCell(event, config) {
+  const { rect, columnPitch, rowPitch } = gridMetrics();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  return {
+    col: clamp(Math.floor(x / columnPitch) + 1, 1, 13 - config.w),
+    row: clamp(Math.floor(y / rowPitch) + 1, 1, 200),
+  };
+}
+
+function showDropPreview(config, cell) {
+  const preview = $("#drop-preview");
+  preview.hidden = false;
+  preview.style.gridColumn = `${cell.col} / span ${config.w}`;
+  preview.style.gridRow = `${cell.row} / span ${config.h}`;
+}
+
+function hideDropPreview() {
+  $("#drop-preview").hidden = true;
+}
+
+function ensureResizeHandle(panel) {
+  if (panel.querySelector(".panel-resize")) return;
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "panel-resize";
+  handle.setAttribute("aria-label", `Resize ${PANEL_LABELS[panel.dataset.panel] || panel.dataset.panel}`);
+  const label = document.createElement("span");
+  label.textContent = "Resize";
+  handle.append(label);
+  panel.append(handle);
+  handle.addEventListener("pointerdown", (event) => beginResize(event, panel));
+}
+
+function beginResize(event, panel) {
+  event.preventDefault();
+  event.stopPropagation();
+  const name = panel.dataset.panel;
+  const config = state.layout.panels[name];
+  const start = { x: event.clientX, y: event.clientY, w: config.w, h: config.h };
+  const { columnPitch, rowPitch } = gridMetrics();
+  panel.classList.add("resizing");
+  const move = (next) => {
+    const minW = name === "game" ? 4 : 2;
+    const minH = name === "game" ? 8 : 4;
+    config.w = clamp(start.w + Math.round((next.clientX - start.x) / columnPitch), minW, 13 - config.col);
+    config.h = clamp(start.h + Math.round((next.clientY - start.y) / rowPitch), minH, 40);
+    panel.style.gridColumn = `${config.col} / span ${config.w}`;
+    panel.style.gridRow = `${config.row} / span ${config.h}`;
+    requestAnimationFrame(fitGameFrame);
+  };
+  const finish = () => {
+    panel.classList.remove("resizing");
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", finish);
+    resolveCollisions(name);
+    persistLayout();
+    applyLayout();
+    showToast(`${PANEL_LABELS[name]} resized.`);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", finish, { once: true });
+}
+
+function beginPanelDrag(event, panel) {
+  if (event.button !== 0) return;
+  const name = panel.dataset.panel;
+  const config = state.layout.panels[name];
+  const start = { x: event.clientX, y: event.clientY };
+  let moved = false;
+  let cell = { col: config.col, row: config.row };
+  const move = (next) => {
+    if (!moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
+    next.preventDefault();
+    moved = true;
+    state.draggingPanel = name;
+    panel.classList.add("dragging");
+    cell = dropCell(next, config);
+    showDropPreview(config, cell);
+  };
+  const finish = (next) => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", finish);
+    panel.classList.remove("dragging");
+    state.draggingPanel = null;
+    hideDropPreview();
+    if (!moved) return;
+    const bounds = $("#dashboard").getBoundingClientRect();
+    if (next.clientX < bounds.left || next.clientX > bounds.right || next.clientY < bounds.top) return;
+    Object.assign(config, cell, { visible: true, window: state.windowId });
+    resolveCollisions(name);
+    persistLayout();
+    applyLayout();
+    showToast(`${PANEL_LABELS[name]} moved.`);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", finish, { once: true });
+}
+
+function bindPanelLayout() {
+  const dashboard = $("#dashboard");
+  dashboard.append($("#drop-preview"));
+  $$("[data-panel]").forEach((panel) => {
+    ensureResizeHandle(panel);
+    const handle = panel.querySelector("[data-drag-handle]");
+    if (!handle) return;
+    handle.draggable = false;
+    handle.addEventListener("pointerdown", (event) => beginPanelDrag(event, panel));
+    handle.addEventListener("keydown", (event) => {
+      if (!event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const config = state.layout.panels[panel.dataset.panel];
+      const amount = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+      if (event.shiftKey) {
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") config.w = clamp(config.w + amount, panel.dataset.panel === "game" ? 4 : 2, 13 - config.col);
+        else config.h = clamp(config.h + amount, panel.dataset.panel === "game" ? 8 : 4, 40);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") config.col = clamp(config.col + amount, 1, 13 - config.w);
+      else config.row = clamp(config.row + amount, 1, 200);
+      resolveCollisions(panel.dataset.panel);
+      persistLayout();
+      applyLayout();
+    });
+  });
+}
+
+function positionMenu(menu, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  menu.hidden = false;
+  const width = menu.offsetWidth || 304;
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width))}px`;
+  menu.style.top = `${Math.min(window.innerHeight - menu.offsetHeight - 8, rect.bottom + 6)}px`;
+}
+
+function openPanelMenu(name, anchor) {
+  state.selectedPanel = name;
+  $("#panel-menu-title").textContent = PANEL_LABELS[name] || name;
+  $("#panel-dock-main").hidden = state.windowId === "main";
+  positionMenu($("#panel-menu"), anchor);
+}
+
+function windowUrl(targetWindow) {
+  return `${location.origin}/workspace/${encodeURIComponent(targetWindow)}#token=${encodeURIComponent(token)}`;
+}
+
+function movePanelToNewWindow(name) {
+  const targetWindow = `window-${crypto.randomUUID().slice(0, 8)}`;
+  const popup = window.open(windowUrl(targetWindow), `rlab-${targetWindow}`, "popup");
+  if (!popup) { showToast("The browser blocked the new workspace window.", true); return; }
+  const config = state.layout.panels[name];
+  config.window = targetWindow;
+  config.visible = true;
+  config.col = 1;
+  config.row = 1;
+  persistLayout();
+  applyLayout();
+  showToast(`${PANEL_LABELS[name]} moved to a synchronized window.`);
+}
+
+function bindWorkspaceMenus() {
+  $("#layout-name").addEventListener("click", (event) => positionMenu($("#layout-menu"), event.currentTarget));
+  $("#layouts-toggle").addEventListener("click", (event) => positionMenu($("#layout-menu"), event.currentTarget));
+  $$("[data-panel-menu]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openPanelMenu(button.dataset.panelMenu, button);
+  }));
+  $("#save-layout").addEventListener("click", () => {
+    const name = $("#layout-name-input").value.trim().slice(0, 48) || "Workspace";
+    state.layout.name = name;
+    const saved = readSavedLayouts();
+    saved[name] = state.layout;
+    localStorage.setItem(SAVED_LAYOUTS_KEY, JSON.stringify(saved));
+    persistLayout();
+    applyLayout();
+    $("#layout-menu").hidden = true;
+    showToast(`Layout “${name}” saved.`);
+  });
+  $("#reset-layout").addEventListener("click", () => {
+    state.layout = defaultLayout();
+    persistLayout();
+    applyLayout();
+    $("#layout-menu").hidden = true;
+    showToast("Default research layout restored.");
+  });
+  $("#panel-new-window").addEventListener("click", () => {
+    if (state.selectedPanel) movePanelToNewWindow(state.selectedPanel);
+    $("#panel-menu").hidden = true;
+  });
+  $("#panel-dock-main").addEventListener("click", () => {
+    const name = state.selectedPanel;
+    if (!name) return;
+    const config = state.layout.panels[name];
+    const appendRow = maxPanelRow("main") + 1;
+    config.window = "main";
+    config.visible = true;
+    if (Object.entries(state.layout.panels).some(([otherName, panel]) =>
+      otherName !== name && panel.visible && panel.window === "main" && panelsOverlap(config, panel)
+    )) config.row = appendRow;
+    resolveCollisions(name);
+    persistLayout();
+    applyLayout();
+    $("#panel-menu").hidden = true;
+    showToast(`${PANEL_LABELS[name]} docked to the main window.`);
+    if (state.windowId !== "main" && !panelsInThisWindow().length) setTimeout(() => window.close(), 250);
+  });
+  $("#panel-hide").addEventListener("click", () => {
+    const name = state.selectedPanel;
+    if (!name) return;
+    state.layout.panels[name].visible = false;
+    persistLayout();
+    applyLayout();
+    $("#panel-menu").hidden = true;
+    showToast(`${PANEL_LABELS[name]} moved to the panel shelf.`);
+  });
+  $("#panel-reset-size").addEventListener("click", () => {
+    const name = state.selectedPanel;
+    if (!name) return;
+    const defaults = defaultLayout().panels[name];
+    Object.assign(state.layout.panels[name], { w: defaults.w, h: defaults.h });
+    state.layout.panels[name].col = clamp(state.layout.panels[name].col, 1, 13 - defaults.w);
+    resolveCollisions(name);
+    persistLayout();
+    applyLayout();
+    $("#panel-menu").hidden = true;
+  });
+  $("#panels-toggle").addEventListener("click", () => {
+    const shelf = $("#panel-shelf");
+    shelf.hidden = false;
+    $("#panel-shelf-title").setAttribute("aria-expanded", "true");
+    shelf.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  $("#panel-shelf-title").addEventListener("click", (event) => {
+    const expanded = event.currentTarget.getAttribute("aria-expanded") === "true";
+    event.currentTarget.setAttribute("aria-expanded", String(!expanded));
+    $("#panel-shelf-items").hidden = expanded;
+  });
+  $("#new-window").addEventListener("click", () => {
+    const targetWindow = `window-${crypto.randomUUID().slice(0, 8)}`;
+    const popup = window.open(windowUrl(targetWindow), `rlab-${targetWindow}`, "popup");
+    if (!popup) showToast("The browser blocked the new workspace window.", true);
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("#panel-menu").contains(event.target) && !event.target.closest("[data-panel-menu]")) $("#panel-menu").hidden = true;
+    if (!$("#layout-menu").contains(event.target) && !event.target.closest("#layout-name, #layouts-toggle")) $("#layout-menu").hidden = true;
+  });
+}
+
+function reclaimWindow(closedWindow) {
+  if (state.windowId !== "main") return;
+  let changed = false;
+  Object.entries(state.layout.panels).forEach(([name, panel]) => {
+    if (panel.visible && panel.window === closedWindow) {
+      const appendRow = maxPanelRow("main") + 1;
+      panel.window = "main";
+      if (Object.entries(state.layout.panels).some(([otherName, candidate]) =>
+        otherName !== name && candidate.visible && candidate.window === "main" && panelsOverlap(panel, candidate)
+      )) panel.row = appendRow;
+      resolveCollisions(name);
+      changed = true;
+    }
+  });
+  if (changed) {
+    persistLayout();
+    applyLayout();
+    showToast("Panels from a closed window returned to the main workspace.");
+  }
+}
+
+function bindWorkspaceSync() {
+  if (workspaceChannel) {
+    workspaceChannel.addEventListener("message", (event) => {
+      const message = event.data || {};
+      if (message.type === "layout" && message.source !== state.windowId) {
+        const next = normalizeLayout(message.layout);
+        if (next.revision >= Number(state.layout.revision || 0)) {
+          state.layout = next;
+          applyLayout();
+        }
+      } else if (message.type === "heartbeat") {
+        state.activeWindows.set(message.window, Date.now());
+      } else if (message.type === "window-closing" && state.windowId === "main") {
+        setTimeout(() => {
+          const lastSeen = state.activeWindows.get(message.window) || 0;
+          if (Date.now() - lastSeen > 1800) reclaimWindow(message.window);
+        }, 2000);
+      }
+    });
+  }
+  window.addEventListener("storage", (event) => {
+    if (event.key !== LAYOUT_KEY || !event.newValue) return;
+    try {
+      const next = normalizeLayout(JSON.parse(event.newValue));
+      if (next.revision >= Number(state.layout.revision || 0)) {
+        state.layout = next;
+        applyLayout();
+      }
+    } catch { /* Ignore malformed local data. */ }
+  });
+  const heartbeat = () => workspaceChannel?.postMessage({ type: "heartbeat", window: state.windowId });
+  heartbeat();
+  setInterval(heartbeat, 1000);
+  window.addEventListener("beforeunload", () => workspaceChannel?.postMessage({ type: "window-closing", window: state.windowId }));
+}
+
+function bindTimeline() {
+  $("#timeline-scrubber").addEventListener("input", (event) => {
+    const sequence = state.timelineSequences[Number(event.target.value)];
+    if (sequence !== undefined) inspectSequence(sequence);
+  });
+  $("#return-live").addEventListener("click", returnToLive);
+  $("#timeline-zoom-out").addEventListener("click", () => {
+    state.timelineWindow = clamp(state.timelineWindow * 2, 128, 1024);
+    localStorage.setItem("rlab.player.timeline.window", String(state.timelineWindow));
+    renderTimeline();
+  });
+  $("#timeline-zoom-in").addEventListener("click", () => {
+    state.timelineWindow = clamp(state.timelineWindow / 2, 128, 1024);
+    localStorage.setItem("rlab.player.timeline.window", String(state.timelineWindow));
+    renderTimeline();
+  });
+}
+
+function initWorkspace() {
+  state.layout = readStoredLayout();
+  if (panelName && state.layout.panels[panelName]) {
+    state.layout.panels[panelName].visible = true;
+    state.layout.panels[panelName].window = state.windowId;
+    persistLayout();
+  }
+  setDetachedLayout();
+  bindPanelLayout();
+  bindWorkspaceMenus();
+  bindWorkspaceSync();
+  bindTimeline();
+  applyLayout();
+}
+
 function bindControls() {
   $("#acquire-control").addEventListener("click", () => send({ type: "acquire_control" }));
   $("#pause").addEventListener("click", () => command("pause"));
@@ -480,10 +1269,6 @@ function bindControls() {
     localStorage.setItem("rlab.player.signal", state.selectedSignal);
     renderSignalChart();
   });
-  $$('[data-detach]').forEach((button) => button.addEventListener("click", () => {
-    const panel = button.dataset.detach;
-    window.open(`${location.origin}/panel/${encodeURIComponent(panel)}#token=${encodeURIComponent(token)}`, `rlab-${panel}`, "popup,noopener");
-  }));
   $$('[data-fullscreen]').forEach((button) => button.addEventListener("click", () => {
     $("#game-stage").requestFullscreen({ navigationUI: "hide" }).catch((error) => showToast(error.message, true));
   }));
@@ -518,9 +1303,13 @@ function bindHumanInput() {
   }, 50);
 }
 
-window.addEventListener("resize", () => renderHistory());
-setDetachedLayout();
+window.addEventListener("resize", () => { fitGameFrame(); renderHistory(); });
+initWorkspace();
 bindControls();
 bindHumanInput();
 updateControlState();
+const chartObserver = new ResizeObserver(() => renderHistory());
+$$('.chart').forEach((canvas) => chartObserver.observe(canvas));
+const gameObserver = new ResizeObserver(fitGameFrame);
+gameObserver.observe($("#game-stage"));
 connect();

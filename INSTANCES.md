@@ -214,6 +214,19 @@ On 2026-07-20 the forward Breakout runtime baseline moved from
 `breakout-turbo-env==0.3.1` to `breakout-turbo-env==0.3.2`. The native action
 contract remains `Discrete(4)` (`NOOP`, `FIRE`, `RIGHT`, `LEFT`).
 
+On 2026-07-21 the forward Breakout runtime baseline moved to
+`breakout-turbo-env==0.4.0`. This is the first rlab baseline used by the bounded live-snapshot
+curriculum; deterministic continuation requires `sticky_action_prob=0` and `noop_reset_max=0`.
+
+On 2026-07-22 a source-dirty local MPS implementation benchmark ran the checked-in
+`train-loop-comparison-breakout-snapshot-curriculum` AB/BA profile at 16 environments, 64 rollout
+steps, one PPO epoch, and 8,192 transitions per sample. Baseline loop throughput averaged 1,954.8
+FPS and the 50-point curriculum candidate averaged 2,010.8 FPS (measured slowdown -2.87%), passing
+the 10% regression gate. A separate 1-point-bucket exercise forced the live path within 8,192
+transitions and recorded 4 cells, 14 resident snapshots, 3 completed value-error feedback
+trajectories, 18.75% curriculum transitions, and a capped maximum cell probability of 0.25. These
+are local implementation checks, not Beast production-capacity evidence.
+
 ## ROM Asset Registry and Cutover
 
 External ROMs are controlled by the v2 R2 registry and a full-file SHA-256 cache. Provision and

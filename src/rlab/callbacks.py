@@ -25,6 +25,21 @@ from rlab.eval_metrics import episode_reason_names
 from rlab.metric_names import (
     canonical_training_scalars,
     TRAIN_ARTIFACT_SAVE_SECONDS,
+    TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN,
+    TRAIN_SNAPSHOT_ADMISSION_ACCEPTED_COUNT,
+    TRAIN_SNAPSHOT_ADMISSION_CANDIDATE_COUNT,
+    TRAIN_SNAPSHOT_ARCHIVE_CELL_COUNT,
+    TRAIN_SNAPSHOT_ARCHIVE_EVICTED_COUNT,
+    TRAIN_SNAPSHOT_ARCHIVE_SNAPSHOT_COUNT,
+    TRAIN_SNAPSHOT_CAPTURE_CALL_COUNT,
+    TRAIN_SNAPSHOT_CAPTURE_SECONDS,
+    TRAIN_SNAPSHOT_FEEDBACK_TRAJECTORY_COUNT,
+    TRAIN_SNAPSHOT_RESET_EPISODE_COUNT,
+    TRAIN_SNAPSHOT_RESET_FORCED_BOUNDARY_COUNT,
+    TRAIN_SNAPSHOT_RESET_SECONDS,
+    TRAIN_SNAPSHOT_SAMPLING_EFFECTIVE_CELL_COUNT,
+    TRAIN_SNAPSHOT_SAMPLING_PROBABILITY_MAX,
+    TRAIN_SNAPSHOT_TRANSITION_SHARE,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MEAN,
     TRAIN_OUTCOME_SUCCESS_CURRENT_RATE_MIN,
     TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MEAN,
@@ -52,6 +67,7 @@ from rlab.metric_names import (
     validate_metric_payload,
 )
 from rlab.metric_store import MetricStore
+from rlab.snapshot_curriculum import snapshot_curriculum_artifact_summary
 
 
 def task_metric_source(start_id: Any) -> Any:
@@ -124,6 +140,9 @@ class LedgerCheckpointHelper(CallbackHelper):
             self.config,
             kind,
             checkpoint_step_value=step,
+            snapshot_curriculum_session=snapshot_curriculum_artifact_summary(
+                getattr(self.model, "env", None)
+            ),
         )
         checkpoint_id = self.metric_store.record_checkpoint(
             run_name=str(getattr(self.args, "run_name", "")),
@@ -613,6 +632,105 @@ class RolloutDiagnosticsHelper(CallbackHelper):
             )
 
 
+class SnapshotCurriculumFeedbackHelper(CallbackHelper):
+    """Attribute raw rollout GAE to true snapshot-origin episodes."""
+
+    _METRIC_MAP = {
+        "archive_cell_count": TRAIN_SNAPSHOT_ARCHIVE_CELL_COUNT,
+        "archive_snapshot_count": TRAIN_SNAPSHOT_ARCHIVE_SNAPSHOT_COUNT,
+        "admission_candidate_count": TRAIN_SNAPSHOT_ADMISSION_CANDIDATE_COUNT,
+        "admission_accepted_count": TRAIN_SNAPSHOT_ADMISSION_ACCEPTED_COUNT,
+        "evicted_count": TRAIN_SNAPSHOT_ARCHIVE_EVICTED_COUNT,
+        "capture_call_count": TRAIN_SNAPSHOT_CAPTURE_CALL_COUNT,
+        "snapshot_reset_count": TRAIN_SNAPSHOT_RESET_EPISODE_COUNT,
+        "forced_boundary_count": TRAIN_SNAPSHOT_RESET_FORCED_BOUNDARY_COUNT,
+        "feedback_trajectory_count": TRAIN_SNAPSHOT_FEEDBACK_TRAJECTORY_COUNT,
+        "transition_share": TRAIN_SNAPSHOT_TRANSITION_SHARE,
+        "sampling_probability_max": TRAIN_SNAPSHOT_SAMPLING_PROBABILITY_MAX,
+        "sampling_effective_cell_count": TRAIN_SNAPSHOT_SAMPLING_EFFECTIVE_CELL_COUNT,
+        "capture_seconds": TRAIN_SNAPSHOT_CAPTURE_SECONDS,
+        "reset_seconds": TRAIN_SNAPSHOT_RESET_SECONDS,
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._source: Any | None = None
+        self._steps: list[Any] = []
+        self._fragments: dict[tuple[int, int, int, str], list[float | int]] = {}
+
+    def _find_source(self) -> Any:
+        if self._source is not None:
+            return self._source
+        current = getattr(self.model, "env", None)
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if callable(getattr(current, "take_curriculum_step", None)):
+                self._source = current
+                return current
+            current = getattr(current, "venv", None) or getattr(current, "env", None)
+        raise RuntimeError("snapshot curriculum requires RlabVecEnv curriculum hooks")
+
+    def _on_rollout_start(self) -> None:
+        self._steps = []
+        self._find_source().curriculum_begin_rollout()
+
+    def _on_step(self) -> bool:
+        step = self._find_source().take_curriculum_step()
+        if step is None:
+            raise RuntimeError("snapshot curriculum step attribution is missing")
+        self._steps.append(step)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        rollout_buffer = getattr(self.model, "rollout_buffer", None)
+        if rollout_buffer is None:
+            raise RuntimeError("snapshot curriculum requires an on-policy rollout buffer")
+        advantages = np.asarray(rollout_buffer.advantages, dtype=np.float64)
+        if advantages.ndim != 2 or advantages.shape[0] != len(self._steps):
+            raise RuntimeError(
+                "snapshot curriculum attribution does not align with the rollout buffer"
+            )
+        source = self._find_source()
+        completed: list[tuple[tuple[int, int, int, str], float]] = []
+        for step_index, step in enumerate(self._steps):
+            cell_ids = np.asarray(step.curriculum_cell_ids, dtype=object)
+            generations = np.asarray(step.curriculum_generations, dtype=np.int64)
+            episode_indices = np.asarray(step.curriculum_episode_indices, dtype=np.int64)
+            feedback_dones = np.asarray(step.curriculum_feedback_dones, dtype=np.bool_)
+            if cell_ids.shape != (advantages.shape[1],):
+                raise RuntimeError("snapshot curriculum sidecar lane shape changed")
+            for lane in range(advantages.shape[1]):
+                cell_id = cell_ids[lane]
+                if cell_id is None:
+                    continue
+                key = (
+                    int(generations[lane]),
+                    lane,
+                    int(episode_indices[lane]),
+                    str(cell_id),
+                )
+                fragment = self._fragments.setdefault(key, [0.0, 0])
+                value = float(abs(advantages[step_index, lane]))
+                if not math.isfinite(value):
+                    raise RuntimeError("snapshot curriculum received non-finite raw GAE")
+                fragment[0] = float(fragment[0]) + value
+                fragment[1] = int(fragment[1]) + 1
+                if bool(feedback_dones[lane]):
+                    total, count = self._fragments.pop(key)
+                    completed.append((key, float(total) / int(count)))
+        for key, value_error in sorted(completed, key=lambda item: item[0]):
+            source.submit_curriculum_feedback(key[3], value_error)
+        metrics = source.curriculum_complete_rollout()
+        for internal_name, metric_name in self._METRIC_MAP.items():
+            self.logger.record(metric_name, float(metrics.get(internal_name, 0.0)))
+        self._steps = []
+
+    def _on_training_end(self) -> None:
+        self._steps = []
+        self._fragments.clear()
+
+
 class _BufferedStats:
     """Reusable contiguous storage for one rollout's vector batches."""
 
@@ -874,6 +992,7 @@ class RuntimeMetricsHelper(CallbackHelper):
         active_reward_signals: Sequence[str] = (),
         configured_starts: Sequence[str] = (),
         track_success: bool = False,
+        metrics_schema_version: int = 6,
     ) -> None:
         super().__init__()
         self.reward_stats = _RewardStatsAccumulator(
@@ -885,6 +1004,8 @@ class RuntimeMetricsHelper(CallbackHelper):
             _SuccessMetricsReducer(configured_starts=configured_starts) if track_success else None
         )
         self.pending_metrics: dict[str, int | float] = {}
+        self.metrics_schema_version = int(metrics_schema_version)
+        self.target_returns: deque[float] = deque(maxlen=100)
 
     def _on_records(self, records: Iterable[Any]) -> bool:
         for record in records:
@@ -896,6 +1017,15 @@ class RuntimeMetricsHelper(CallbackHelper):
                     reserve=num_envs * rollout_steps,
                 )
                 continue
+            if (
+                self.metrics_schema_version >= 6
+                and hasattr(record, "episode_return")
+                and str(getattr(record, "start_origin", "target")) == "target"
+            ):
+                self.target_returns.append(float(record.episode_return))
+                self.pending_metrics[TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN] = float(
+                    np.mean(self.target_returns)
+                )
             done_payload = self.done_metrics.consume(record)
             if done_payload:
                 self.pending_metrics.update(done_payload)

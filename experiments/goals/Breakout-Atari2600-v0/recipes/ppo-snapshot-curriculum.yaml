@@ -1,0 +1,28 @@
+defaults:
+- ../../../recipes/_presets/atari-ppo@_global_
+- _self_
+recipe_id: ppo-snapshot-curriculum
+description: >-
+  Seed {seed} trains the default high-throughput Breakout PPO policy for {goal_id} while reserving
+  approximately 20 percent of lanes for a bounded live-state curriculum keyed by 50-point score
+  stages and prioritized by value error plus staleness.
+train:
+  timesteps: 500000000
+  snapshot_curriculum:
+    cell:
+      # The goal declares this provider signal; no Breakout-specific archive code is required.
+      signal: score
+      # One cell per 50 points separates the major brick-layout/control regimes.
+      bucket_size: 50
+    # With 128 envs this deterministically assigns 26 lanes to restored states and 102 to Start.
+    snapshot_share: 0.20
+    # PPO supplies mean absolute raw GAE per completed restored-state trajectory.
+    priority_metric: value_error
+  backend:
+    config:
+      n_steps: 64
+      learning_rate: 2.5e-4
+      learning_rate_final: 5.0e-5
+      learning_rate_schedule_timesteps: 40001536
+      ent_coef_final: 0.002
+      ent_coef_schedule_timesteps: 40001536

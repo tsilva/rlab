@@ -9,6 +9,7 @@ from typing import Any
 from gymnasium import spaces
 
 from rlab.artifacts import write_model_metadata
+from rlab.snapshot_curriculum import snapshot_curriculum_artifact_summary
 from rlab.training_backend import BackendContext
 
 
@@ -177,6 +178,9 @@ def save_model_bundle(
         context.environment,
         kind,
         checkpoint_step_value=step,
+        snapshot_curriculum_session=snapshot_curriculum_artifact_summary(
+            getattr(model, "env", None)
+        ),
     )
     checkpoint_id = context.metric_store.record_checkpoint(
         run_name=str(context.args.run_name),
@@ -206,22 +210,47 @@ def run_sb3_on_policy(
         RlabCallback,
         RolloutDiagnosticsHelper,
         RuntimeMetricsHelper,
+        SnapshotCurriculumFeedbackHelper,
         ThroughputHelper,
     )
     from rlab.device import resolve_sb3_device
-    from rlab.env import make_training_vec_env, task_termination
+    from rlab.env import (
+        make_training_vec_env,
+        preflight_snapshot_curriculum_provider,
+        task_termination,
+    )
+    from rlab.file_utils import file_sha256
     from rlab.metric_store import metric_store_path
+    from rlab.policy_bundle import write_canonical_json
     from rlab.schedules import EntropyCoefficientScheduleHelper
     from rlab.training.sb3_helpers import GracefulStopHelper, Sb3HumanOutputFormatHelper
 
     args = context.args
     config = context.environment
     n_envs = int(args.resolved_n_envs)
+    preflight = preflight_snapshot_curriculum_provider(
+        config=config,
+        n_envs=n_envs,
+        seed=args.seed,
+        rom_binding=getattr(context, "rom_binding", None),
+        snapshot_curriculum=getattr(args, "snapshot_curriculum", None),
+    )
+    if preflight is not None:
+        preflight_path = context.run_dir / "snapshot_curriculum_preflight.json"
+        write_canonical_json(preflight_path, preflight)
+        args.snapshot_curriculum_preflight_sha256 = file_sha256(preflight_path)
+        print(
+            "snapshot curriculum provider preflight passed: "
+            f"provider={preflight['provider_id']} cell={preflight['cell_id']} "
+            f"lanes={preflight['preflight_lanes']}",
+            flush=True,
+        )
     env = make_training_vec_env(
         config=config,
         n_envs=n_envs,
         seed=args.seed,
         rom_binding=getattr(context, "rom_binding", None),
+        snapshot_curriculum=getattr(args, "snapshot_curriculum", None),
     )
     try:
         store_path = metric_store_path(context.run_dir)
@@ -250,8 +279,11 @@ def run_sb3_on_policy(
                     isinstance(config.task.get("termination"), Mapping)
                     and config.task["termination"].get("success")
                 ),
+                metrics_schema_version=int(args.metrics_schema_version),
             ),
         ]
+        if getattr(args, "snapshot_curriculum", None) is not None:
+            components.append(SnapshotCurriculumFeedbackHelper())
         if args.early_stop:
             components.append(
                 MetricThresholdStopHelper(

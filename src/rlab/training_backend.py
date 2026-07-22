@@ -152,6 +152,15 @@ def normalize_training_backend(
     normalized = module.normalize_config(dict(backend_config), label=f"{label}.config")
     backend = module.backend_for_id(backend_id)
     backend.validate(common_config, normalized)
+    from rlab.snapshot_curriculum import validate_snapshot_curriculum_runtime_contract
+
+    priority_resolver = getattr(module, "snapshot_curriculum_priority_metrics", None)
+    supported_priorities = priority_resolver(backend_id) if callable(priority_resolver) else ()
+    validate_snapshot_curriculum_runtime_contract(
+        common_config,
+        backend_id=backend_id,
+        supported_priority_metrics=supported_priorities,
+    )
     return {"id": backend_id, "config": normalized}
 
 

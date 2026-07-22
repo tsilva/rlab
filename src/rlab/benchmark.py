@@ -22,6 +22,8 @@ from rlab.benchmark_profiles import (
 )
 from rlab.env import default_run_dir
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.policy_bundle import build_recipe_document, write_canonical_json
+from rlab.recipe_documents import compose_train_document
 
 
 def _timestamp() -> str:
@@ -43,11 +45,43 @@ def _execution_commands(
     execution_id: str,
     output_dir: Path,
 ) -> list[BenchmarkCommand]:
-    if profile.kind != "train_loop_throughput":
+    if profile.kind not in {"train_loop_throughput", "train_loop_comparison"}:
         return commands
-    config = json.loads(commands[0].stdin or "{}")
-    config["runs_dir"] = str(output_dir / "runs" / f"{execution_id}-{profile.name}")
-    return [replace(commands[0], stdin=json.dumps(config, sort_keys=True))]
+    prepared: list[BenchmarkCommand] = []
+    runs_dir = str(output_dir / "runs" / f"{execution_id}-{profile.name}")
+    for command in commands:
+        config = json.loads(command.stdin or "{}")
+        config["runs_dir"] = runs_dir
+        if profile.kind == "train_loop_throughput":
+            recipe_file = str(profile.payload["recipe_file"])
+        else:
+            variant = "candidate" if command.label.startswith("candidate-") else "baseline"
+            recipe_file = str(profile.payload[f"{variant}_recipe_file"])
+        materialized = compose_train_document(
+            Path(str(profile.payload["goal_file"])),
+            Path(recipe_file),
+            recipe_overrides=profile.payload.get("recipe_overrides", ()),
+        )
+        recipe_document = build_recipe_document(
+            materialized,
+            repo_root=Path.cwd(),
+            source_commit=_git_commit() or "0" * 40,
+            run_description=str(config["run_description"]),
+            seed=int(config["seed"]),
+            runtime_image_ref="docker:rlab-benchmark@sha256:" + "0" * 64,
+        )
+        recipe_path = (
+            output_dir
+            / "runs"
+            / f"{execution_id}-{profile.name}"
+            / "contracts"
+            / str(config["run_name"])
+            / "recipe.json"
+        ).resolve()
+        write_canonical_json(recipe_path, recipe_document)
+        config["recipe_json_path"] = str(recipe_path)
+        prepared.append(replace(command, stdin=json.dumps(config, sort_keys=True)))
+    return prepared
 
 
 def _git_commit() -> str | None:
@@ -182,6 +216,61 @@ def validate_benchmark_results(
             missing = sorted(name for name, value in metrics.items() if value is None)
             if missing:
                 issues.append(f"training-loop metrics are missing: {', '.join(missing)}")
+
+    if profile.kind == "train_loop_comparison" and successful:
+        common_metrics = tuple(profile.payload.get("required_metrics", ()))
+        candidate_metrics = tuple(profile.payload.get("candidate_required_metrics", ()))
+        samples: list[dict[str, Any]] = []
+        loop_fps: dict[str, list[float]] = {"baseline": [], "candidate": []}
+        for command, result in zip(commands, results, strict=False):
+            if int(result["returncode"]) != 0:
+                continue
+            variant = "candidate" if command.label.startswith("candidate-") else "baseline"
+            config = json.loads(command.stdin or "{}")
+            base_dir = command.cwd or Path.cwd()
+            run_dir = base_dir / default_run_dir(
+                str(config["run_name"]), str(config.get("runs_dir") or "runs")
+            )
+            store_path = metric_store_path(run_dir)
+            required = common_metrics + (candidate_metrics if variant == "candidate" else ())
+            if not store_path.is_file():
+                issues.append(f"{command.label} metric store is missing: {store_path}")
+                continue
+            store = MetricStore(store_path)
+            metrics = {name: store.latest_metric(name) for name in required}
+            missing = sorted(name for name, value in metrics.items() if value is None)
+            if missing:
+                issues.append(f"{command.label} metrics are missing: {', '.join(missing)}")
+            loop_value = metrics.get("train/throughput/loop_fps")
+            if loop_value is not None:
+                loop_fps[variant].append(float(loop_value))
+            samples.append(
+                {
+                    "label": command.label,
+                    "variant": variant,
+                    "metric_store": str(store_path),
+                    "metrics": metrics,
+                }
+            )
+        evidence["samples"] = samples
+        if not loop_fps["baseline"] or not loop_fps["candidate"]:
+            issues.append("throughput comparison lacks baseline or candidate loop_fps samples")
+        else:
+            baseline_mean = sum(loop_fps["baseline"]) / len(loop_fps["baseline"])
+            candidate_mean = sum(loop_fps["candidate"]) / len(loop_fps["candidate"])
+            slowdown = 1.0 - candidate_mean / baseline_mean if baseline_mean > 0.0 else 1.0
+            maximum = float(profile.payload["max_candidate_slowdown"])
+            evidence["comparison"] = {
+                "baseline_loop_fps_mean": baseline_mean,
+                "candidate_loop_fps_mean": candidate_mean,
+                "candidate_slowdown_fraction": slowdown,
+                "max_candidate_slowdown": maximum,
+            }
+            if slowdown > maximum:
+                issues.append(
+                    "candidate training-loop slowdown exceeded gate: "
+                    f"{slowdown:.6f} > {maximum:.6f}"
+                )
 
     return {"passed": not issues, "issues": issues, "evidence": evidence}
 

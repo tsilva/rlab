@@ -298,14 +298,62 @@ def test_future_model_version_fails_before_checkpoint_access(tmp_path: Path) -> 
     write_bundle(tmp_path)
     model_path = tmp_path / "model.json"
     model = json.loads(model_path.read_text(encoding="utf-8"))
-    model["format_version"] = 2
+    model["format_version"] = 999
     model_path.write_text(json.dumps(model), encoding="utf-8")
 
     with patch("rlab.policy_bundle.sha256_file", side_effect=AssertionError("checkpoint read")):
         with pytest.raises(UnsupportedPolicyDocumentVersion) as error:
             load_policy_bundle(tmp_path)
     assert MODEL_DOCUMENT_TYPE in str(error.value)
-    assert "format_version 2" in str(error.value)
+    assert "format_version 999" in str(error.value)
+    assert "[1, 2]" in str(error.value)
+
+
+def test_model_v2_records_session_local_snapshot_curriculum_summary(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.zip"
+    checkpoint.write_bytes(b"checkpoint bytes")
+    recipe_document = level1_1_recipe_document()
+    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
+    metadata = {
+        "kind": "checkpoint",
+        "checkpoint_step": 500_000,
+        "algorithm_id": "ppo",
+        "model_class": "stable_baselines3.ppo.ppo.PPO",
+        "training_backend_id": "sb3.ppo",
+        "training_backend_config_hash": training_backend_config_hash(
+            recipe_document["recipe"]["train_config"]
+        ),
+        "snapshot_curriculum_preflight_sha256": "c" * 64,
+        "snapshot_curriculum_session": {
+            "semantic_id": "snapshot_curriculum_v1",
+            "generation": 1,
+            "persistence": "session_local",
+            "resume_behavior": "cold_archive",
+            "archive_cell_count": 17,
+            "archive_snapshot_count": 61,
+            "completed_rollout": 42,
+        },
+    }
+    model = build_model_document(checkpoint, recipe_path, metadata)
+    write_canonical_json(tmp_path / "model.json", model)
+
+    bundle = load_policy_bundle(tmp_path)
+
+    assert bundle.model["format_version"] == 2
+    assert (
+        bundle.model["provenance"]["snapshot_curriculum_session"]
+        == metadata["snapshot_curriculum_session"]
+    )
+
+
+def test_legacy_model_v1_remains_loadable(tmp_path: Path) -> None:
+    write_bundle(tmp_path)
+    model_path = tmp_path / "model.json"
+    model = json.loads(model_path.read_text(encoding="utf-8"))
+    model["format_version"] = 1
+    write_canonical_json(model_path, model)
+
+    assert load_policy_bundle(tmp_path).model["format_version"] == 1
 
 
 def test_known_recipe_schema_rejects_unknown_fields_and_urls(tmp_path: Path) -> None:
@@ -316,9 +364,7 @@ def test_known_recipe_schema_rejects_unknown_fields_and_urls(tmp_path: Path) -> 
         load_recipe_document(tmp_path / "recipe.json")
 
     document = level1_1_recipe_document()
-    document["provenance"]["runtime"]["packages"] = {
-        "bad": "https://example.invalid/policy"
-    }
+    document["provenance"]["runtime"]["packages"] = {"bad": "https://example.invalid/policy"}
     write_canonical_json(tmp_path / "recipe.json", document)
     with pytest.raises(PolicyDocumentError, match="URL"):
         load_recipe_document(tmp_path / "recipe.json")
@@ -349,10 +395,7 @@ def test_all_source_kinds_normalize_to_identical_eval_and_seed_requests(
         replace(local, source="training://job/42/checkpoint/8", revision="ledger-8"),
         replace(local, source="hf://tsilva/policy", revision="d" * 40),
     )
-    requests = [
-        normalized_evaluation_request(bundle, episodes=5, n_envs=1)
-        for bundle in sources
-    ]
+    requests = [normalized_evaluation_request(bundle, episodes=5, n_envs=1) for bundle in sources]
     assert requests[1:] == requests[:-1]
     assert len(requests[0]["seed_assignments"]) == 5
     assert requests[0]["seed_assignments"][0] == {

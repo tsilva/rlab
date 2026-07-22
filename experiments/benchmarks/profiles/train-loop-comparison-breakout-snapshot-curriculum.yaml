@@ -1,0 +1,26 @@
+schema_version: 1
+name: train-loop-comparison-breakout-snapshot-curriculum
+kind: train_loop_comparison
+description: >-
+  AB/BA comparison of the Breakout PPO baseline and live snapshot curriculum, excluding one-time
+  provider preflight from measured rollout throughput.
+goal_file: experiments/goals/Breakout-Atari2600-v0/_goal.yaml
+baseline_recipe_file: experiments/goals/Breakout-Atari2600-v0/recipes/ppo.yaml
+candidate_recipe_file: experiments/goals/Breakout-Atari2600-v0/recipes/ppo-snapshot-curriculum.yaml
+seed: 123
+repeats: 2
+recipe_overrides:
+- train.timesteps=8192
+- train.environment.env_config.n_envs=16
+- train.backend.config.n_steps=64
+- train.backend.config.batch_size=256
+- train.backend.config.n_epochs=1
+- train.checkpoint_freq=0
+run_description: AB/BA Breakout PPO snapshot-curriculum training-loop throughput comparison.
+required_metrics:
+- train/throughput/rollout_fps
+- train/throughput/loop_fps
+candidate_required_metrics:
+- train/curriculum/snapshot/transition/share
+- train/curriculum/snapshot/capture/call/count
+max_candidate_slowdown: 0.10

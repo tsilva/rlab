@@ -29,9 +29,7 @@ class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
     BREAKOUT_RECIPE = BREAKOUT_GOAL.parent / "recipes/ppo.yaml"
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
-    MARIO_END_TO_END_GOAL = Path(
-        "experiments/goals/SuperMarioBros-Nes-v0/EndToEnd/_goal.yaml"
-    )
+    MARIO_END_TO_END_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/EndToEnd/_goal.yaml")
     MARIO_SINGLE_RECIPES = MARIO_L11_GOAL.parent / "recipes"
 
     def test_explicit_goal_arg_contract_covers_provider_signatures(self) -> None:
@@ -103,7 +101,10 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
-        self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
+        self.assertEqual(
+            train_config["task"]["signals"],
+            {"ball_y": "ball_y", "score": "score"},
+        )
         self.assertEqual(
             train_config["task"]["events"],
             {
@@ -127,7 +128,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["selection_rank"],
             [
-                "max(train/episode/return/shaped/mean)",
+                "max(train/episode/return/shaped/from/target/mean)",
                 "min(global_step)",
             ],
         )
@@ -298,9 +299,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertEqual(report.counts["train_recipes"], 28)
+        self.assertEqual(report.counts["train_recipes"], 29)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
-        self.assertEqual(report.counts["benchmark_profiles"], 3)
+        self.assertEqual(report.counts["benchmark_profiles"], 4)
 
     def test_recipe_cannot_be_launched_for_a_different_goal(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not belong to goal"):
@@ -321,7 +322,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(
             train_config["selection_rank"],
             [
-                "max(train/episode/return/shaped/mean)",
+                "max(train/episode/return/shaped/from/target/mean)",
                 "min(global_step)",
             ],
         )
@@ -365,7 +366,11 @@ class ConfigValidationTests(unittest.TestCase):
             train_config["task"]["action"],
             {"set": "native"},
         )
-        self.assertEqual(train_config["task"]["signals"], {"ball_y": "ball_y"})
+        self.assertEqual(
+            train_config["task"]["signals"],
+            {"ball_y": "ball_y", "score": "score"},
+        )
+
         info_path = _stable_retro_packaged_data_path(
             train_config["game"],
             "data.json",
@@ -401,6 +406,24 @@ class ConfigValidationTests(unittest.TestCase):
             "stable-retro-turbo:Breakout-Atari2600-v0",
         )
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
+
+    def test_breakout_snapshot_curriculum_recipe_is_opt_in_and_resolves(self) -> None:
+        recipe = self.BREAKOUT_GOAL.parent / "recipes" / "ppo-snapshot-curriculum.yaml"
+        document = compose_train_document(self.BREAKOUT_GOAL, recipe)
+
+        self.assertEqual(document["recipe_id"], "ppo-snapshot-curriculum")
+        self.assertEqual(
+            document["train_config"]["snapshot_curriculum"],
+            {
+                "cell": {"signal": "score", "bucket_size": 50},
+                "snapshot_share": 0.2,
+                "priority_metric": "value_error",
+            },
+        )
+        self.assertNotIn(
+            "snapshot_curriculum",
+            compose_train_document(self.BREAKOUT_GOAL, self.BREAKOUT_RECIPE)["train_config"],
+        )
 
     def test_breakout_stable_updates_recipe_adds_late_update_guards(self) -> None:
         document = compose_train_document(

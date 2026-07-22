@@ -24,6 +24,7 @@ from rlab.callbacks import (
     RlabCallback,
     RolloutDiagnosticsHelper,
     RuntimeMetricsHelper,
+    SnapshotCurriculumFeedbackHelper,
     ThroughputHelper,
     task_metric_source,
 )
@@ -753,6 +754,63 @@ class RolloutDiagnosticsHelperTests(unittest.TestCase):
             payload["histograms"]["train/algorithm/ppo/policy/action_hist"],
             [0.0, 1.0, 1.0],
         )
+
+
+class SnapshotCurriculumFeedbackHelperTests(unittest.TestCase):
+    def test_accumulates_absolute_raw_gae_across_rollout_fragments(self) -> None:
+        class Source:
+            def __init__(self) -> None:
+                self.steps: list[SimpleNamespace] = []
+                self.feedback: list[tuple[str, float]] = []
+                self.rollout_starts = 0
+
+            def take_curriculum_step(self):
+                return self.steps.pop(0)
+
+            def curriculum_begin_rollout(self):
+                self.rollout_starts += 1
+
+            def submit_curriculum_feedback(self, cell_id, value_error):
+                self.feedback.append((cell_id, value_error))
+
+            def curriculum_complete_rollout(self):
+                return {}
+
+        def step(*, done: bool):
+            return SimpleNamespace(
+                curriculum_cell_ids=np.asarray(["score:1", None], dtype=object),
+                curriculum_generations=np.asarray([1, -1], dtype=np.int64),
+                curriculum_episode_indices=np.asarray([3, 0], dtype=np.int64),
+                curriculum_feedback_dones=np.asarray([done, False], dtype=np.bool_),
+            )
+
+        source = Source()
+        logger = SimpleNamespace(records={})
+        logger.record = lambda key, value: logger.records.__setitem__(key, value)
+        model = SimpleNamespace(
+            env=source,
+            logger=logger,
+            rollout_buffer=SimpleNamespace(advantages=np.asarray([[-2.0, 0.0], [1.0, 0.0]])),
+        )
+        helper = SnapshotCurriculumFeedbackHelper()
+        helper.model = model  # type: ignore[assignment]
+
+        source.steps = [step(done=False), step(done=False)]
+        helper._on_rollout_start()
+        helper._on_step()
+        helper._on_step()
+        helper._on_rollout_end()
+        self.assertEqual(source.feedback, [])
+
+        source.steps = [step(done=False), step(done=True)]
+        model.rollout_buffer.advantages = np.asarray([[3.0, 0.0], [-4.0, 0.0]])
+        helper._on_rollout_start()
+        helper._on_step()
+        helper._on_step()
+        helper._on_rollout_end()
+
+        self.assertEqual(source.feedback, [("score:1", 2.5)])
+        self.assertEqual(source.rollout_starts, 2)
 
 
 class RuntimeMetricsRewardTests(unittest.TestCase):

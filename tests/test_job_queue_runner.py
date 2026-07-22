@@ -556,7 +556,7 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(
             all(call["train_config"]["checkpoint_eval_backend"] == "none" for call in calls)
         )
-        self.assertTrue(all(call["train_config"]["metrics_schema_version"] == 5 for call in calls))
+        self.assertTrue(all(call["train_config"]["metrics_schema_version"] == 6 for call in calls))
         self.assertTrue(all(call["train_config"]["early_stop"] is None for call in calls))
         self.assertTrue(all(call["train_config"]["checkpoint_eval_stages"] == [] for call in calls))
         self.assertTrue(

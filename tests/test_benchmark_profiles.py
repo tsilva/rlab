@@ -36,12 +36,13 @@ class BenchmarkProfileTests(unittest.TestCase):
     def test_checked_in_benchmark_profiles_validate(self) -> None:
         profiles = load_benchmark_profiles()
 
-        self.assertEqual(len(profiles), 3)
+        self.assertEqual(len(profiles), 4)
         self.assertEqual(
             sorted(profile.name for profile in profiles),
             [
                 "local-smoke-mario-l11",
                 "mario-env-throughput-l11",
+                "train-loop-comparison-breakout-snapshot-curriculum",
                 "train-loop-throughput-mario-l11",
             ],
         )
@@ -237,6 +238,21 @@ required_metrics: [train/throughput/not_real]
         self.assertEqual(train_config["wandb_mode"], "disabled")
         self.assertEqual(train_config["seed"], 123)
 
+    def test_breakout_comparison_uses_ab_ba_order_and_algorithm_neutral_config(self) -> None:
+        profile = find_benchmark_profile("train-loop-comparison-breakout-snapshot-curriculum")
+        commands = build_benchmark_commands(profile)
+
+        self.assertEqual(
+            [command.label for command in commands],
+            ["baseline-1", "candidate-1", "candidate-2", "baseline-2"],
+        )
+        candidate = json.loads(commands[1].stdin or "{}")
+        baseline = json.loads(commands[0].stdin or "{}")
+        self.assertNotIn("snapshot_curriculum", baseline)
+        self.assertEqual(candidate["snapshot_curriculum"]["cell"]["signal"], "score")
+        self.assertEqual(candidate["snapshot_curriculum"]["priority_metric"], "value_error")
+        self.assertEqual(candidate["snapshot_curriculum"]["resolved_snapshot_lanes"], 3)
+
     def test_queue_backed_benchmark_commands_include_goal_and_recipe(self) -> None:
         command = build_benchmark_commands(find_benchmark_profile("local-smoke-mario-l11"))[0]
         self.assertIn("--goal-file", command.argv)
@@ -304,6 +320,42 @@ required_metrics: [train/throughput/not_real]
         self.assertEqual(
             sorted(validation["evidence"]["metrics"]),
             sorted(profile.payload["required_metrics"]),
+        )
+
+    def test_train_loop_comparison_gates_candidate_slowdown(self) -> None:
+        profile = find_benchmark_profile("train-loop-comparison-breakout-snapshot-curriculum")
+        commands = build_benchmark_commands(profile)
+        prepared = []
+        results = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for command in commands:
+                config = json.loads(command.stdin or "{}")
+                config["runs_dir"] = tmp
+                prepared_command = replace(command, stdin=json.dumps(config))
+                prepared.append(prepared_command)
+                store = MetricStore(metric_store_path(Path(tmp) / config["run_name"]))
+                store.init()
+                is_candidate = command.label.startswith("candidate-")
+                payload = {
+                    "train/throughput/rollout_fps": 100.0,
+                    "train/throughput/loop_fps": 95.0 if is_candidate else 100.0,
+                }
+                if is_candidate:
+                    payload.update(
+                        {
+                            "train/curriculum/snapshot/transition/share": 0.2,
+                            "train/curriculum/snapshot/capture/call/count": 1.0,
+                        }
+                    )
+                store.append_metrics(payload, step=1, source="test", publish=False)
+                results.append({"label": command.label, "returncode": 0, "stdout": ""})
+
+            validation = validate_benchmark_results(profile, prepared, results)
+
+        self.assertTrue(validation["passed"])
+        self.assertAlmostEqual(
+            validation["evidence"]["comparison"]["candidate_slowdown_fraction"],
+            0.05,
         )
 
     def test_benchmark_is_registered_on_unified_cli(self) -> None:

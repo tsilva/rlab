@@ -6,12 +6,41 @@ from numbers import Real
 from typing import Any, Mapping
 
 
-METRICS_SCHEMA_VERSION = 5
+METRICS_SCHEMA_VERSION = 6
 GLOBAL_STEP = "global_step"
 
 TRAIN_EPISODE_RETURN_SHAPED_MEAN = "train/episode/return/shaped/mean"
+TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN = "train/episode/return/shaped/from/target/mean"
 TRAIN_EPISODE_LENGTH_MEAN = "train/episode/length/mean"
 TRAIN_EPISODE_COUNT = "train/episode/count"
+
+TRAIN_SNAPSHOT_CURRICULUM_ROOT = "train/curriculum/snapshot"
+TRAIN_SNAPSHOT_ARCHIVE_CELL_COUNT = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/archive/cell/count"
+TRAIN_SNAPSHOT_ARCHIVE_SNAPSHOT_COUNT = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/archive/snapshot/count"
+TRAIN_SNAPSHOT_ADMISSION_CANDIDATE_COUNT = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/admission/candidate/count"
+)
+TRAIN_SNAPSHOT_ADMISSION_ACCEPTED_COUNT = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/admission/accepted/count"
+)
+TRAIN_SNAPSHOT_ARCHIVE_EVICTED_COUNT = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/archive/evicted/count"
+TRAIN_SNAPSHOT_CAPTURE_CALL_COUNT = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/capture/call/count"
+TRAIN_SNAPSHOT_RESET_EPISODE_COUNT = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/reset/episode/count"
+TRAIN_SNAPSHOT_RESET_FORCED_BOUNDARY_COUNT = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/reset/forced_boundary/count"
+)
+TRAIN_SNAPSHOT_FEEDBACK_TRAJECTORY_COUNT = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/feedback/trajectory/count"
+)
+TRAIN_SNAPSHOT_TRANSITION_SHARE = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/transition/share"
+TRAIN_SNAPSHOT_SAMPLING_PROBABILITY_MAX = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/sampling/probability/max"
+)
+TRAIN_SNAPSHOT_SAMPLING_EFFECTIVE_CELL_COUNT = (
+    f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/sampling/effective_cell/count"
+)
+TRAIN_SNAPSHOT_CAPTURE_SECONDS = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/capture/seconds"
+TRAIN_SNAPSHOT_RESET_SECONDS = f"{TRAIN_SNAPSHOT_CURRICULUM_ROOT}/reset/seconds"
 
 TRAIN_OUTCOME_TERMINAL_COUNT = "train/outcome/terminal/count"
 TRAIN_OUTCOME_SUCCESS_ROOT = "train/outcome/success"
@@ -160,11 +189,13 @@ def _definition(
     return MetricDefinition(name, description, unit, cadence, storage)
 
 
-METRIC_DEFINITIONS = (
+V5_METRIC_DEFINITIONS = (
     _definition(GLOBAL_STEP, "Policy environment transitions consumed.", "steps", "frame"),
     _definition(
         TRAIN_EPISODE_RETURN_SHAPED_MEAN,
-        "Rolling mean shaped return over the latest 100 completed training episodes.",
+        "Rolling mean shaped return over the latest 100 genuine completed training episodes "
+        "across target and snapshot origins; a snapshot-origin return starts at restoration, "
+        "and control boundaries are excluded.",
     ),
     _definition(
         TRAIN_EPISODE_LENGTH_MEAN,
@@ -502,6 +533,83 @@ METRIC_DEFINITIONS = (
 )
 
 
+V6_ONLY_METRIC_DEFINITIONS = (
+    _definition(
+        TRAIN_EPISODE_RETURN_SHAPED_FROM_TARGET_MEAN,
+        "Rolling mean shaped return over the latest 100 genuine target-origin training episodes.",
+        "return",
+    ),
+    _definition(TRAIN_SNAPSHOT_ARCHIVE_CELL_COUNT, "Current snapshot archive cell count.", "cells"),
+    _definition(
+        TRAIN_SNAPSHOT_ARCHIVE_SNAPSHOT_COUNT,
+        "Current resident snapshot handle count.",
+        "snapshots",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_ADMISSION_CANDIDATE_COUNT,
+        "Non-terminal cell-crossing candidates observed during the rollout.",
+        "transitions",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_ADMISSION_ACCEPTED_COUNT,
+        "Snapshot candidates accepted into cell reservoirs during the rollout.",
+        "snapshots",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_ARCHIVE_EVICTED_COUNT,
+        "Archive cells evicted during the rollout.",
+        "cells",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_CAPTURE_CALL_COUNT,
+        "Batched provider snapshot-capture calls during the rollout.",
+        "calls",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_RESET_EPISODE_COUNT,
+        "Snapshot-origin episodes started during the rollout.",
+        "episodes",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_RESET_FORCED_BOUNDARY_COUNT,
+        "Non-episode control truncations used to activate snapshot lanes.",
+        "boundaries",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_FEEDBACK_TRAJECTORY_COUNT,
+        "Completed snapshot-origin trajectories committed to the priority sampler.",
+        "trajectories",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_TRANSITION_SHARE,
+        "Fraction of policy transitions whose origin is the snapshot curriculum.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_SAMPLING_PROBABILITY_MAX,
+        "Largest final cell probability in the snapshot sampler.",
+        "fraction",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_SAMPLING_EFFECTIVE_CELL_COUNT,
+        "Inverse-Simpson effective cell count of the snapshot sampling distribution.",
+        "cells",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_CAPTURE_SECONDS,
+        "Provider snapshot-capture wall time accumulated during the rollout.",
+        "seconds",
+    ),
+    _definition(
+        TRAIN_SNAPSHOT_RESET_SECONDS,
+        "Provider reset wall time for reset calls containing snapshot lanes.",
+        "seconds",
+    ),
+)
+
+METRIC_DEFINITIONS = (*V5_METRIC_DEFINITIONS, *V6_ONLY_METRIC_DEFINITIONS)
+
+
 V4_ONLY_METRIC_DEFINITIONS = (
     _definition(TRAIN_EPISODE_COUNT, "Cumulative completed training episodes.", "episodes"),
     _definition(
@@ -610,12 +718,15 @@ def _definition_pattern(
 _DEFINITION_PATTERNS = tuple(
     (definition, _definition_pattern(definition.name)) for definition in METRIC_DEFINITIONS
 )
+_V5_DEFINITION_PATTERNS = tuple(
+    (definition, _definition_pattern(definition.name)) for definition in V5_METRIC_DEFINITIONS
+)
 _V4_DEFINITION_PATTERNS = tuple(
     (
         definition,
         _definition_pattern(definition.name, placeholders=_V4_PLACEHOLDER_PATTERNS),
     )
-    for definition in (*METRIC_DEFINITIONS, *V4_ONLY_METRIC_DEFINITIONS)
+    for definition in (*V5_METRIC_DEFINITIONS, *V4_ONLY_METRIC_DEFINITIONS)
 )
 
 
@@ -624,7 +735,7 @@ def _supported_schema_version(schema_version: int) -> int:
         version = int(schema_version)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"unsupported metrics schema version: {schema_version!r}") from exc
-    if version not in {4, METRICS_SCHEMA_VERSION}:
+    if version not in {4, 5, METRICS_SCHEMA_VERSION}:
         raise ValueError(f"unsupported metrics schema version: {version}")
     return version
 
@@ -633,7 +744,13 @@ def metric_definition(
     name: str, *, schema_version: int = METRICS_SCHEMA_VERSION
 ) -> MetricDefinition | None:
     version = _supported_schema_version(schema_version)
-    patterns = _V4_DEFINITION_PATTERNS if version == 4 else _DEFINITION_PATTERNS
+    patterns = (
+        _V4_DEFINITION_PATTERNS
+        if version == 4
+        else _V5_DEFINITION_PATTERNS
+        if version == 5
+        else _DEFINITION_PATTERNS
+    )
     for definition, pattern in patterns:
         if pattern.fullmatch(name):
             return definition
@@ -672,9 +789,7 @@ def stat_metric(prefix: str, stat: str) -> str:
     return validate_metric_name(f"{prefix}/{metric_path_segment(stat)}")
 
 
-def eval_metric(
-    protocol: str, suffix: str, *, schema_version: int = METRICS_SCHEMA_VERSION
-) -> str:
+def eval_metric(protocol: str, suffix: str, *, schema_version: int = METRICS_SCHEMA_VERSION) -> str:
     protocol = metric_path_segment(protocol)
     version = _supported_schema_version(schema_version)
     protocols = EVAL_PROTOCOLS if version == 4 else ACTIVE_EVAL_PROTOCOLS

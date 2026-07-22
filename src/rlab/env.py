@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import multiprocessing
+import time
+import traceback
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
@@ -302,9 +305,7 @@ def make_native_provider(
 
     provider = resolve_env_provider(config.env_provider)
     if provider.requires_external_rom_asset and rom_binding is None:
-        raise FileNotFoundError(
-            f"{provider.provider_id} requires a verified runtime ROM binding"
-        )
+        raise FileNotFoundError(f"{provider.provider_id} requires a verified runtime ROM binding")
 
     native_kwargs = provider_native_vec_kwargs(
         config,
@@ -331,6 +332,7 @@ def bind_native_provider(
     descriptor: ProviderDescriptor,
     global_lane_ids: tuple[int, ...] | None = None,
     capture_step_diagnostics: bool = False,
+    snapshot_curriculum: Mapping[str, Any] | None = None,
 ) -> BatchRuntime:
     """Transfer a constructed provider into the task runtime or close it on failure."""
 
@@ -344,6 +346,7 @@ def bind_native_provider(
             run_seed=seed,
             global_lane_ids=global_lane_ids,
             capture_step_diagnostics=capture_step_diagnostics,
+            snapshot_curriculum=snapshot_curriculum,
         )
         return runtime
     except BaseException:
@@ -396,6 +399,7 @@ def make_vec_envs(
     *,
     capture_step_diagnostics: bool = False,
     rom_binding: RomRuntimeBinding | None = None,
+    snapshot_curriculum: Mapping[str, Any] | None = None,
 ) -> Any:
     from rlab.training.sb3_vec_env import RlabVecEnv
 
@@ -405,6 +409,7 @@ def make_vec_envs(
         seed,
         capture_step_diagnostics=capture_step_diagnostics,
         rom_binding=rom_binding,
+        snapshot_curriculum=snapshot_curriculum,
     )
     vec_env = RlabVecEnv(runtime)
     vec_env.seed(seed)
@@ -419,6 +424,7 @@ def make_training_batch_runtime(
     global_lane_ids: tuple[int, ...] | None = None,
     capture_step_diagnostics: bool = False,
     rom_binding: RomRuntimeBinding | None = None,
+    snapshot_curriculum: Mapping[str, Any] | None = None,
 ) -> BatchRuntime:
     os.environ.setdefault("STABLE_RETRO_DISABLE_AUDIO", "1")
     config = resolve_mixed_state_config(config, n_envs=n_envs)
@@ -431,7 +437,117 @@ def make_training_batch_runtime(
         descriptor=descriptor,
         global_lane_ids=global_lane_ids,
         capture_step_diagnostics=capture_step_diagnostics,
+        snapshot_curriculum=snapshot_curriculum,
     )
+
+
+def _snapshot_preflight_lane_count(value: Mapping[str, Any], configured_n_envs: int) -> int:
+    from rlab.snapshot_curriculum import normalize_snapshot_curriculum_config
+
+    if configured_n_envs < 2:
+        raise ValueError("snapshot curriculum preflight requires at least two configured lanes")
+    for lanes in range(2, min(configured_n_envs, 32) + 1):
+        try:
+            normalize_snapshot_curriculum_config(value, n_envs=lanes)
+        except ValueError as exc:
+            if "resolves to" not in str(exc):
+                raise
+        else:
+            return lanes
+    return configured_n_envs
+
+
+def _snapshot_curriculum_preflight_child(
+    connection: Any,
+    config: EnvConfig,
+    configured_n_envs: int,
+    seed: int,
+    rom_binding: RomRuntimeBinding | None,
+    snapshot_curriculum: Mapping[str, Any],
+) -> None:
+    runtime: BatchRuntime | None = None
+    try:
+        preflight_lanes = _snapshot_preflight_lane_count(
+            snapshot_curriculum,
+            configured_n_envs,
+        )
+        runtime = make_training_batch_runtime(
+            config,
+            preflight_lanes,
+            seed,
+            rom_binding=rom_binding,
+            snapshot_curriculum=snapshot_curriculum,
+        )
+        connection.send(("ok", runtime.preflight_snapshot_round_trip(seed=seed)))
+    except BaseException as exc:
+        connection.send(
+            (
+                "error",
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(limit=20),
+                },
+            )
+        )
+    finally:
+        if runtime is not None:
+            runtime.close()
+        connection.close()
+
+
+def preflight_snapshot_curriculum_provider(
+    *,
+    config: EnvConfig,
+    n_envs: int,
+    seed: int,
+    rom_binding: RomRuntimeBinding | None,
+    snapshot_curriculum: Mapping[str, Any] | None,
+    timeout_seconds: float = 60.0,
+) -> dict[str, Any] | None:
+    """Run the live snapshot conformance probe in an isolated, disposable process."""
+
+    if snapshot_curriculum is None:
+        return None
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_snapshot_curriculum_preflight_child,
+        args=(sender, config, int(n_envs), int(seed), rom_binding, dict(snapshot_curriculum)),
+        name="rlab-snapshot-preflight",
+    )
+    started_at = time.perf_counter()
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout_seconds):
+            process.terminate()
+            process.join(timeout=10.0)
+            raise TimeoutError(
+                f"snapshot curriculum provider preflight exceeded {timeout_seconds:g} seconds"
+            )
+        status, payload = receiver.recv()
+    finally:
+        receiver.close()
+    process.join(timeout=10.0)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=10.0)
+        raise RuntimeError("snapshot curriculum provider preflight child did not exit")
+    if status != "ok":
+        raise RuntimeError(
+            "snapshot curriculum provider preflight failed: "
+            f"{payload['type']}: {payload['message']}\n{payload['traceback']}"
+        )
+    if process.exitcode != 0:
+        raise RuntimeError(
+            f"snapshot curriculum provider preflight exited with code {process.exitcode}"
+        )
+    return {
+        **dict(payload),
+        "elapsed_seconds": time.perf_counter() - started_at,
+        "isolation": "spawned_process",
+    }
 
 
 def make_training_vec_env(
@@ -440,12 +556,14 @@ def make_training_vec_env(
     seed: int,
     *,
     rom_binding: RomRuntimeBinding | None = None,
+    snapshot_curriculum: Mapping[str, Any] | None = None,
 ) -> Any:
     return make_vec_envs(
         config=config,
         n_envs=n_envs,
         seed=seed,
         rom_binding=rom_binding,
+        snapshot_curriculum=snapshot_curriculum,
     )
 
 
@@ -486,9 +604,7 @@ def assert_provider_runtime_available(
     provider = resolve_env_provider(config.env_provider)
     if provider.requires_external_rom_asset:
         if rom_binding is None:
-            raise FileNotFoundError(
-                f"{config.game} requires a verified external ROM asset binding"
-            )
+            raise FileNotFoundError(f"{config.game} requires a verified external ROM asset binding")
         if rom_binding.manifest.get("game") != config.game:
             raise ValueError("runtime ROM binding game mismatch")
     elif provider.provider_id == ALE_PY_PROVIDER.provider_id:

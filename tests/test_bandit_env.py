@@ -251,7 +251,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
     assert (run_dir / "learner_ready.json").is_file()
     assert (run_dir / "final_model.zip").is_file()
     metadata = json.loads((run_dir / "final_model.metadata.json").read_text())
-    assert metadata["metadata_version"] == 6
+    assert metadata["metadata_version"] == 7
     assert metadata["training_backend_id"] == "sb3.ppo"
     assert len(metadata["training_backend_config_hash"]) == 64
 

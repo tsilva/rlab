@@ -38,6 +38,8 @@ generated result and isolated run evidence under `logs/benchmarks/`.
 - `env_throughput`: paired native-provider and rlab runtime throughput benchmark
   for the current Mario provider.
 - `train_loop_throughput`: bounded W&B-disabled backend training-loop benchmark
+- `train_loop_comparison`: repeated AB/BA baseline-versus-candidate training-loop comparison with
+  an executable slowdown gate and optional candidate-only metric requirements
   for rollout/update throughput.
 
 Benchmark requests should default to real imported saved states, not `State.NONE`.

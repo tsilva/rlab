@@ -191,6 +191,40 @@ class GenericNativeProviderTests(unittest.TestCase):
 
         self.assertEqual(descriptor.observation_buffer_depth, 1)
 
+    def test_start_adapter_supports_snapshot_natural_and_unselected_lanes_together(self) -> None:
+        class MixedNative:
+            num_envs = 3
+            state_catalog = ("full",)
+
+            def __init__(self) -> None:
+                self.options = None
+
+            def reset(self, *, seed=None, options=None):
+                self.seed = seed
+                self.options = dict(options or {})
+                state_indices = np.asarray(self.options["state_indices"], dtype=np.int32)
+                return np.zeros((3, 1), dtype=np.uint8), {
+                    "state_index": state_indices,
+                }
+
+        native = MixedNative()
+        adapter = _StartInfoAdapter(native)
+        handle = object()
+        mask = np.asarray([True, True, False], dtype=np.bool_)
+        _observations, infos = adapter.reset(
+            seed=[None, 123, None],
+            options={
+                "reset_mask": mask,
+                "start_ids": np.asarray([None, "full", None], dtype=object),
+                "snapshots": (handle, None, None),
+            },
+        )
+
+        np.testing.assert_array_equal(native.options["state_indices"], [-1, 0, -1])
+        self.assertEqual(native.seed, [None, 123, None])
+        self.assertEqual(infos["start_source"].tolist(), ["snapshot", "target", None])
+        np.testing.assert_array_equal(infos["_start_source"], mask)
+
 
 class BreakoutTurboProviderTests(unittest.TestCase):
     @staticmethod
@@ -363,7 +397,7 @@ class MarioNativeProviderTests(unittest.TestCase):
     def test_runtime_minimum_contains_masked_reset_release(self) -> None:
         installed = Version(importlib.metadata.version("supermariobrosnes-turbo"))
         self.assertGreaterEqual(installed, Version("0.4.3"))
-        self.assertEqual(Version(retro.__version__), Version("1.0.1.post33"))
+        self.assertEqual(Version(retro.__version__), Version("1.0.1.post35"))
 
     def test_readable_goal_enum_args_normalize_to_provider_enums(self) -> None:
         config = self.config(

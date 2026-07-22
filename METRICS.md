@@ -1,4 +1,4 @@
-# Metrics schema v5
+# Metrics schema v6
 
 This file is the human contract for rlab telemetry. The Python registry in
 `src/rlab/metric_names.py` is the executable source of truth. Every emitted metric must match an
@@ -14,7 +14,7 @@ exact registry entry or a bounded template.
 - Fleet is the sole W&B writer for new `neon_mailbox_v1` runs. Training and evaluation workers never
   receive W&B credentials. Fleet preassigns the immutable W&B run id, publishes all streams to that
   run, and stores per-stream commit cursors in the W&B summary before deleting mailbox batches.
-- W&B config contains run-defining dimensions: `metrics_schema_version: 5`, `training_backend_id`,
+- W&B config contains run-defining dimensions: `metrics_schema_version: 6`, `training_backend_id`,
   `training_backend_config_hash`, `algorithm_id`, goal,
   environment, starts, seed, frame skip, environment count, hyperparameters, eval protocol, and
   runtime versions.
@@ -39,7 +39,11 @@ Configuration-selected internal learner feedback, such as a snapshot curriculum'
 priority statistic, is not telemetry merely because it has a readable name. Internal feedback
 identifiers do not use metric paths and are not published to W&B unless a separately registered
 metric explicitly projects them. If projected, the emitted name and semantics must appear in the
-registry below.
+registry below. For SB3 PPO and A2C, snapshot-curriculum `priority_metric: value_error` specifically
+means the arithmetic mean of `abs(A_t)` over one completed snapshot-origin trajectory, where `A_t`
+is raw GAE before PPO minibatch normalization. That scalar updates the archive's cell-level EMA and
+is intentionally not emitted; `train/curriculum/snapshot/feedback/trajectory/count` reports only how
+many such trajectory updates were committed.
 
 An episode metric is a **return**. `reward` is reserved for per-step shaping and component
 attribution. `global_step` counts policy environment transitions; frame skip remains run config.
@@ -48,16 +52,16 @@ environment-transition or checkpoint count. Charts and evaluation history use ex
 `global_step` for the x-axis. Asynchronous evaluation rows may arrive after later training rows
 without overwriting them.
 
-Schema v4 is frozen compatibility state. Its removed metrics, `screen`/`confirm` staged-evaluation
-families, parsing, and projections remain accepted when a run declares `metrics_schema_version: 4`.
-Existing W&B history is never rewritten. Newly materialized runs declare v5.
+Schemas v4 and v5 are frozen compatibility states. Their removed metrics, historical staged-evaluation
+families, parsing, and projections remain accepted when a run declares the corresponding
+`metrics_schema_version`. Existing W&B history is never rewritten. Newly materialized runs declare v6.
 
 ## Research interpretation
 
 - Mario ranks checkpoints only after acceptance: earliest `leader/checkpoint/step`, then highest
-  `eval/full/episode/return/mean`. Breakout is training-only and ranks seeded recipe cohorts by
-  worst, mean, then best final `train/episode/return/shaped/mean`; tied cohorts prefer fewer mean
-  policy transitions.
+  `eval/full/episode/return/mean`. Breakout is training-only and ranks current-contract seeded recipe
+  cohorts using `train/episode/return/shaped/from/target/mean`, which excludes snapshot-curriculum
+  origins and non-episode control boundaries; tied cohorts prefer fewer policy transitions.
 - Aggregate training `current/rate/*` is cumulative. Aggregate `window_100/rate/*` is the latest
   100 attempts. Global
   window-100 min/mean appear only after every configured start has 100 attempts. Always pair early
@@ -112,7 +116,7 @@ evidence remain authoritative in the database/R2.
 | Metric or template | Meaning | Unit | Cadence | Surface |
 |---|---|---|---|---|
 | `global_step` | Policy environment transitions consumed. | steps | frame | history |
-| `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 completed training episodes. The accumulator starts at the environment reset; for restored emulator snapshots it measures only reward earned after the restored state and excludes score/reward already present in the snapshot. | scalar | rollout | history |
+| `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 genuine completed training episodes across target and snapshot origins; a snapshot-origin return starts at restoration, and control boundaries are excluded. | scalar | rollout | history |
 | `train/episode/length/mean` | Rolling mean length over the latest 100 completed training episodes. | steps | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
 | `train/outcome/reason/{reason}/count` | Cumulative failed episodes containing a reason. | episodes | rollout | history |
@@ -205,4 +209,19 @@ evidence remain authoritative in the database/R2.
 | `leader/checkpoint/artifact_ref` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/eval_source` | Selected checkpoint summary field. | summary | selection | summary |
 | `leader/checkpoint/updated_at` | Selected checkpoint summary field. | summary | selection | summary |
+| `train/episode/return/shaped/from/target/mean` | Rolling mean shaped return over the latest 100 genuine target-origin training episodes. | return | rollout | history |
+| `train/curriculum/snapshot/archive/cell/count` | Current snapshot archive cell count. | cells | rollout | history |
+| `train/curriculum/snapshot/archive/snapshot/count` | Current resident snapshot handle count. | snapshots | rollout | history |
+| `train/curriculum/snapshot/admission/candidate/count` | Non-terminal cell-crossing candidates observed during the rollout. | transitions | rollout | history |
+| `train/curriculum/snapshot/admission/accepted/count` | Snapshot candidates accepted into cell reservoirs during the rollout. | snapshots | rollout | history |
+| `train/curriculum/snapshot/archive/evicted/count` | Archive cells evicted during the rollout. | cells | rollout | history |
+| `train/curriculum/snapshot/capture/call/count` | Batched provider snapshot-capture calls during the rollout. | calls | rollout | history |
+| `train/curriculum/snapshot/reset/episode/count` | Snapshot-origin episodes started during the rollout. | episodes | rollout | history |
+| `train/curriculum/snapshot/reset/forced_boundary/count` | Non-episode control truncations used to activate snapshot lanes. | boundaries | rollout | history |
+| `train/curriculum/snapshot/feedback/trajectory/count` | Completed snapshot-origin trajectories committed to the priority sampler. | trajectories | rollout | history |
+| `train/curriculum/snapshot/transition/share` | Fraction of policy transitions whose origin is the snapshot curriculum. | fraction | rollout | history |
+| `train/curriculum/snapshot/sampling/probability/max` | Largest final cell probability in the snapshot sampler. | fraction | rollout | history |
+| `train/curriculum/snapshot/sampling/effective_cell/count` | Inverse-Simpson effective cell count of the snapshot sampling distribution. | cells | rollout | history |
+| `train/curriculum/snapshot/capture/seconds` | Provider snapshot-capture wall time accumulated during the rollout. | seconds | rollout | history |
+| `train/curriculum/snapshot/reset/seconds` | Provider reset wall time for reset calls containing snapshot lanes. | seconds | rollout | history |
 <!-- METRIC_REGISTRY_END -->
