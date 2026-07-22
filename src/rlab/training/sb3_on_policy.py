@@ -69,6 +69,18 @@ def normalize_on_policy_config(
     resume = normalized["resume"]
     if resume is not None and not isinstance(resume, str):
         raise ValueError(f"{label}.resume must be a string or null")
+    approval = normalized["resume_approval_hash"]
+    manifest = normalized["resume_manifest"]
+    if resume is None:
+        if approval is not None or manifest is not None:
+            raise ValueError(f"{label} resume approval fields require resume")
+    elif (
+        not isinstance(approval, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", approval)
+        or not isinstance(manifest, list)
+        or not manifest
+    ):
+        raise ValueError(f"{label}.resume requires a pinned approval hash and byte manifest")
     return normalized
 
 

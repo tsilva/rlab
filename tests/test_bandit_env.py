@@ -302,7 +302,10 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
     metric_store = MetricStore(run_dir / "rlab.sqlite")
     assert metric_store.latest_metric("train/algorithm/a2c/update/value_loss") is not None
     assert metric_store.latest_metric("train/algorithm/ppo/update/value_loss") is None
-    assert isinstance(load_sb3_model(model_path, device="cpu"), A2C)
+    from rlab.trusted_inputs import approve_internal_model
+
+    with approve_internal_model(model_path, execution_id="test-bandit") as approved:
+        assert isinstance(load_sb3_model(approved, device="cpu"), A2C)
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])

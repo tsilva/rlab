@@ -149,18 +149,20 @@ def run_child(input_path: Path, output_path: Path) -> int:
             preview_capture=preview_capture,
             acceptance_contract=acceptance_contract,
             rom_binding=rom_binding,
+            internal_execution_id=f"modal-eval:{request.get('execution_id', 'unknown')}",
         )
     else:
         from rlab.env import resolve_env_config
         from rlab.env_metadata import env_config_from_config_dict
-        from rlab.policy_models import load_policy_model
+        from rlab.policy_models import load_internal_policy_model
 
         config = env_config_from_config_dict(dict(contract["environment"]))
         if config is None:
             raise ValueError("remote eval environment contract is invalid")
         model_path = Path(request["model_path"])
-        model = load_policy_model(
+        model = load_internal_policy_model(
             model_path,
+            execution_id=f"modal-eval:{request.get('execution_id', 'unknown')}",
             device="cpu",
             metadata=request.get("model_metadata"),
         )
@@ -320,6 +322,7 @@ def execute_attempt(
                 child_input,
                 {
                     "contract": contract,
+                    "execution_id": execution,
                     "bundle_root": str(root) if versioned_bundle else None,
                     "model_path": str(model_path),
                     "model_metadata": model_metadata,

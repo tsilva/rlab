@@ -2,12 +2,40 @@ from __future__ import annotations
 
 import contextlib
 import io
+import subprocess
+import sys
 import unittest
 
 from rlab.main import main
 
 
 class PublicCliHelpTests(unittest.TestCase):
+    def test_ordinary_help_does_not_import_optional_dataset_stack(self) -> None:
+        script = """
+import sys
+from rlab.main import main
+try:
+    main([\"--help\"])
+except SystemExit:
+    pass
+for name in sorted(sys.modules):
+    if name == \"datasets\" or name == \"minari\" or name.startswith(\"rlab.dataset_\"):
+        print(name)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        imported = [
+            line
+            for line in completed.stdout.splitlines()
+            if line == "datasets" or line == "minari" or line.startswith("rlab.dataset_")
+        ]
+        self.assertEqual(imported, [])
+
     def test_delegated_help_uses_complete_public_command(self) -> None:
         cases = (
             (("experiment", "launch", "--help"), "usage: rlab experiment launch"),
@@ -20,6 +48,9 @@ class PublicCliHelpTests(unittest.TestCase):
             (("benchmark", "run", "--help"), "usage: rlab benchmark run"),
             (("validate", "--help"), "usage: rlab validate"),
             (("env", "preflight", "--help"), "usage: rlab env preflight"),
+            (("dataset", "--help"), "usage: rlab dataset"),
+            (("dataset", "record", "--help"), "usage: rlab dataset record"),
+            (("dataset", "verify", "--help"), "usage: rlab dataset verify"),
             (("leaders", "runs", "--help"), "usage: rlab leaders runs"),
             (("reports", "plan", "--help"), "usage: rlab reports plan"),
             (("fleet", "service", "status", "--help"), "usage: rlab fleet service status"),

@@ -1004,6 +1004,32 @@ class JobQueueTests(unittest.TestCase):
                 machine="beast-3",
             )
 
+    def test_queue_resume_rejects_local_path_before_queue_mutation(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["training_backend"]["config"]["resume"] = "checkpoint.zip"
+
+        with self.assertRaisesRegex(ValueError, "rejects submitter-local"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
+    def test_queue_resume_requires_exact_manifest_attestation(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["training_backend"]["config"]["resume"] = (
+            "hf://owner/repository@" + "a" * 40 + "/model.zip"
+        )
+
+        with self.assertRaisesRegex(ValueError, "approved exact byte manifest"):
+            job_queue.enqueue_train_jobs_from_recipe_document(
+                object(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
     def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
         rejected_fields = {
             "env": {"action_set": "right-jump"},

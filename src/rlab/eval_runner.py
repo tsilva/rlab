@@ -36,7 +36,11 @@ from rlab.rom_runtime import (
     RomRuntimeBinding,
     ensure_local_rom_binding,
 )
-from rlab.policy_models import load_policy_model, resolve_policy_algorithm
+from rlab.policy_models import (
+    load_external_policy_model,
+    load_internal_policy_model,
+    resolve_policy_algorithm,
+)
 from rlab.targets import EvalSemantics, target_for_game
 from rlab.video import PolicyObservationPreview, write_video
 
@@ -395,6 +399,8 @@ def evaluate_policy_bundle(
     preview_capture: PolicyObservationPreview | None = None,
     acceptance_contract: dict[str, Any] | None = None,
     rom_binding: RomRuntimeBinding | None = None,
+    approval_hash: str | None = None,
+    internal_execution_id: str | None = None,
 ) -> tuple[dict[str, Any], Path | None]:
     request = normalized_evaluation_request(
         bundle,
@@ -424,7 +430,21 @@ def evaluate_policy_bundle(
     assert_provider_runtime_available(config, rom_binding=rom_binding)
     metadata = model_document_as_metadata(bundle.model)
     algorithm_id = resolve_policy_algorithm(metadata)
-    model = load_policy_model(bundle.checkpoint_path, device=device, metadata=metadata)
+    if internal_execution_id:
+        model = load_internal_policy_model(
+            bundle.checkpoint_path,
+            execution_id=internal_execution_id,
+            device=device,
+            metadata=metadata,
+        )
+    else:
+        model = load_external_policy_model(
+            bundle.checkpoint_path,
+            device=device,
+            metadata=metadata,
+            source_identity=bundle.source,
+            approval_hash=approval_hash,
+        )
     requested_episodes = int(request["episodes"])
     requested_n_envs = int(request["n_envs"])
     requested_seed = int(request["seed"])

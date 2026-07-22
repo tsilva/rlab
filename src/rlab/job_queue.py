@@ -1562,6 +1562,7 @@ def enqueue_train_jobs_from_recipe_document(
     train_config["runtime_input_sha256"] = str(runtime_input_sha256).strip()
     train_config["runtime_build_source_sha"] = str(runtime_build_source_sha).strip()
     train_config["source_sha"] = str(repo_git_commit or "").strip()
+    _validate_queue_resume_input(train_config)
     if backend == "none":
         train_config["early_stop"] = None
         train_config["checkpoint_eval_stages"] = []
@@ -1734,6 +1735,70 @@ def enqueue_train_jobs_from_recipe_document(
         if readiness_barrier is not None:
             readiness_barrier()
     return rows
+
+
+def _resume_backend_config(train_config: Mapping[str, Any]) -> dict[str, Any] | None:
+    backend = train_config.get("training_backend")
+    if not isinstance(backend, Mapping):
+        return None
+    config = backend.get("config")
+    return dict(config) if isinstance(config, Mapping) else None
+
+
+def _validate_queue_resume_input(train_config: Mapping[str, Any]) -> None:
+    config = _resume_backend_config(train_config)
+    if config is None or config.get("resume") is None:
+        return
+    source = str(config["resume"]).strip()
+    approval = config.get("resume_approval_hash")
+    manifest = config.get("resume_manifest")
+    pinned_hf = bool(re.match(r"^hf://[^/]+/[^/@]+@[0-9a-f]{40,64}(?:/.*)?$", source))
+    pinned_wandb = bool(re.match(r"^[^/]+/[^/]+/[^/:]+:v[0-9]+$", source))
+    if not (pinned_hf or pinned_wandb):
+        raise ValueError(
+            "queue-backed resume rejects submitter-local or mutable sources; publish the model "
+            "to Hugging Face or W&B and submit its immutable pinned locator"
+        )
+    if (
+        not isinstance(approval, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", approval)
+        or not isinstance(manifest, list)
+        or not manifest
+    ):
+        raise ValueError("queue-backed resume is missing its approved exact byte manifest")
+
+
+def _prepare_queue_resume_input(document: dict[str, Any], *, root: Path) -> None:
+    train_config = document.get("train_config")
+    if not isinstance(train_config, Mapping):
+        return
+    backend = train_config.get("training_backend")
+    if not isinstance(backend, Mapping) or not isinstance(backend.get("config"), Mapping):
+        return
+    backend_document = copy.deepcopy(dict(backend))
+    config = dict(backend_document["config"])
+    resume = config.get("resume")
+    if resume is None:
+        return
+    from rlab.model_sources import download_remote_model_source
+    from rlab.trusted_inputs import stage_and_approve_model
+
+    try:
+        resolved = download_remote_model_source(str(resume), root=root)
+    except Exception as exc:
+        raise ValueError(
+            "queue-backed resume accepts only a published Hugging Face or W&B model; "
+            "submitter-local paths can be used only by an explicit local execution"
+        ) from exc
+    pinned = str(resolved.artifact_name or "")
+    with stage_and_approve_model(resolved.model_path, source_identity=pinned) as approved:
+        config["resume"] = pinned
+        config["resume_approval_hash"] = approved.approval_hash
+        config["resume_manifest"] = [entry.as_dict() for entry in approved.staged.manifest]
+    backend_document["config"] = config
+    updated_train_config = copy.deepcopy(dict(train_config))
+    updated_train_config["training_backend"] = backend_document
+    document["train_config"] = updated_train_config
 
 
 def enqueue_train_job(
@@ -4019,6 +4084,10 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         args.recipe_file,
         recipe_overrides=args.recipe_overrides,
         env_provider=args.env_provider,
+    )
+    _prepare_queue_resume_input(
+        document,
+        root=default_repo_root() / "runs" / "queue-resume-sources",
     )
     backend = resolve_checkpoint_eval_backend(
         dict(document.get("train_config") or {}),

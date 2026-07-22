@@ -33,12 +33,26 @@ dependencies = [
 [project.scripts]
 rlab = "rlab.main:main"
 
+[project.optional-dependencies]
+dataset = [
+    "datasets>=5,<6",
+    "pillow>=11,<13",
+]
+dataset-minari = [
+    "datasets>=5,<6",
+    "pillow>=11,<13",
+    "minari>=0.5,<0.6",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rlab"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "THIRD_PARTY_NOTICES.md"
 
 [tool.uv]
 exclude-newer = "7 days"
@@ -52,9 +66,9 @@ constraint-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-breakout-turbo-env = "2026-07-21T07:46:16.759348Z"
-stable-retro-turbo = "2026-07-20T15:21:26.271359Z"
-supermariobrosnes-turbo = "2026-07-21T07:12:44.073250Z"
+breakout-turbo-env = "2026-07-21T07:46:17Z"
+stable-retro-turbo = "2026-07-20T15:21:27Z"
+supermariobrosnes-turbo = "2026-07-21T07:12:45Z"
 
 [tool.ruff]
 line-length = 100

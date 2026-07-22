@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -912,11 +913,14 @@ def _mapping_value(mapping: Any, key: str) -> Any:
 
 def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
     model_path, revision = download_model_artifact_with_revision(ref, root)
-    bundle = load_policy_bundle_from_checkpoint(model_path, source=ref, revision=revision or None)
+    pinned_ref = f"{ref.rsplit(':', 1)[0]}:{revision}"
+    bundle = load_policy_bundle_from_checkpoint(
+        model_path, source=pinned_ref, revision=revision or None
+    )
     return ResolvedModelSource(
         model_path=model_path,
-        artifact_ref=ref,
-        artifact_name=ref,
+        artifact_ref=pinned_ref,
+        artifact_name=pinned_ref,
         bundle=bundle,
         checkpoint_step=(
             int(bundle.model["checkpoint"]["step"])
@@ -926,6 +930,41 @@ def download_artifact_ref_source(ref: str, root: Path) -> ResolvedModelSource:
     )
 
 
+def download_remote_model_source(
+    ref: str,
+    *,
+    root: Path,
+    require_pinned: bool = False,
+) -> ResolvedModelSource:
+    """Resolve a supported remote model and optionally require its locator to be immutable."""
+    text = str(ref).strip()
+    if is_huggingface_model_ref(text):
+        resolved = download_huggingface_model_source(text, root=root)
+    else:
+        artifact_ref = text
+        if is_wandb_run_ref(text):
+            artifact_ref = str(
+                model_ref_from_run_path(
+                    text,
+                    default_project=None,
+                    kind="checkpoint",
+                    version="latest",
+                )
+                or ""
+            )
+        if not artifact_ref or "/" not in artifact_ref or ":" not in artifact_ref:
+            raise ValueError(
+                "remote model source must be a Hugging Face model or W&B model artifact"
+            )
+        resolved = download_artifact_ref_source(artifact_ref, root)
+    pinned = str(resolved.artifact_name or "")
+    if not pinned:
+        raise ValueError("remote model source did not resolve an immutable locator")
+    if require_pinned and pinned != text:
+        raise ValueError(f"remote model locator is not immutable: expected {pinned!r}")
+    return resolved
+
+
 def parse_huggingface_model_ref(value: str) -> tuple[str, str | None, str | None]:
     text = str(value or "").strip()
     if text.startswith(HUGGINGFACE_MODEL_SCHEME):
@@ -933,9 +972,12 @@ def parse_huggingface_model_ref(value: str) -> tuple[str, str | None, str | None
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) < 2:
             raise ValueError(f"expected Hugging Face model ref like hf://owner/repo, got {value!r}")
-        repo_id = "/".join(parts[:2])
+        repo_name, separator, revision = parts[1].partition("@")
+        if separator and not revision:
+            raise ValueError(f"Hugging Face model ref has an empty revision: {value!r}")
+        repo_id = f"{parts[0]}/{repo_name}"
         filename = "/".join(parts[2:]) or None
-        return repo_id, filename, None
+        return repo_id, filename, revision or None
 
     parsed = urlparse(text)
     if parsed.scheme not in {"http", "https"} or parsed.netloc != HUGGINGFACE_MODEL_URL_HOST:
@@ -985,6 +1027,45 @@ def _select_huggingface_checkpoint(
     return checkpoints[0]
 
 
+def _download_huggingface_release_closure(
+    *,
+    repo_id: str,
+    revision: str,
+    repo_files: set[str],
+    target_dir: Path,
+    hf_hub_download: Any,
+) -> None:
+    filename = "release_manifest.json"
+    if filename not in repo_files:
+        return
+    manifest_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            repo_type="model",
+            revision=revision,
+            filename=filename,
+            local_dir=target_dir,
+        )
+    )
+    if manifest_path.stat().st_size > 8 * 1024**2:
+        raise ValueError("Hugging Face release manifest exceeds 8 MiB")
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = document.get("artifacts") if isinstance(document, Mapping) else None
+    if not isinstance(artifacts, Mapping):
+        raise ValueError("Hugging Face release manifest has no artifact closure")
+    for bound_name in artifacts:
+        bound_name = str(bound_name)
+        if Path(bound_name).name != bound_name or bound_name not in repo_files:
+            raise ValueError(f"release manifest binds unavailable file {bound_name!r}")
+        hf_hub_download(
+            repo_id=repo_id,
+            repo_type="model",
+            revision=revision,
+            filename=bound_name,
+            local_dir=target_dir,
+        )
+
+
 def download_huggingface_model_source(
     ref: str,
     *,
@@ -1007,24 +1088,21 @@ def download_huggingface_model_source(
     resolved_revision = revision or parsed_revision or "main"
     api = HfApi()
     try:
+        immutable_revision = str(
+            api.model_info(repo_id=repo_id, revision=resolved_revision).sha or ""
+        )
+        if not immutable_revision:
+            raise ValueError("model repository did not return an immutable commit SHA")
         repo_files = set(
             api.list_repo_files(
                 repo_id=repo_id,
                 repo_type="model",
-                revision=resolved_revision,
+                revision=immutable_revision,
             )
         )
     except Exception as exc:
         raise SystemExit(f"Could not inspect Hugging Face model repo {repo_id}: {exc}") from exc
     if MODEL_FILENAME in repo_files:
-        try:
-            immutable_revision = str(
-                api.model_info(repo_id=repo_id, revision=resolved_revision).sha or resolved_revision
-            )
-        except Exception as exc:
-            raise SystemExit(
-                f"Could not resolve immutable Hugging Face revision for {repo_id}: {exc}"
-            ) from exc
         target_dir = root / safe_artifact_stem(f"{repo_id}@{immutable_revision}")
         target_dir.mkdir(parents=True, exist_ok=True)
         for bundle_filename in (CHECKPOINT_FILENAME, MODEL_FILENAME, RECIPE_FILENAME):
@@ -1041,6 +1119,13 @@ def download_huggingface_model_source(
                     f"Could not download required {bundle_filename} from {repo_id}@"
                     f"{immutable_revision}: {exc}"
                 ) from exc
+        _download_huggingface_release_closure(
+            repo_id=repo_id,
+            revision=immutable_revision,
+            repo_files=repo_files,
+            target_dir=target_dir,
+            hf_hub_download=hf_hub_download,
+        )
         bundle = load_policy_bundle(
             target_dir,
             source=f"hf://{repo_id}",
@@ -1052,10 +1137,9 @@ def download_huggingface_model_source(
             checkpoint_step=bundle.model["checkpoint"].get("step"),
             bundle=bundle,
         )
-    immutable_revision = resolved_revision
     checkpoint_filename = _select_huggingface_checkpoint(
         repo_id=repo_id,
-        revision=resolved_revision,
+        revision=immutable_revision,
         filename=filename or parsed_filename,
     )
     target_dir = root / safe_artifact_stem(f"{repo_id}@{immutable_revision}")
@@ -1094,11 +1178,18 @@ def download_huggingface_model_source(
         sidecar_path = checkpoint_path.with_suffix(".metadata.json")
         if metadata_path != sidecar_path:
             shutil.copy2(metadata_path, sidecar_path)
+    _download_huggingface_release_closure(
+        repo_id=repo_id,
+        revision=immutable_revision,
+        repo_files=repo_files,
+        target_dir=target_dir,
+        hf_hub_download=hf_hub_download,
+    )
 
     return ResolvedModelSource(
         model_path=checkpoint_path,
         artifact_ref=None,
-        artifact_name=f"hf://{repo_id}/{checkpoint_filename}",
+        artifact_name=f"hf://{repo_id}@{immutable_revision}/{checkpoint_filename}",
         checkpoint_step=checkpoint_step_from_artifact(None, checkpoint_path),
     )
 

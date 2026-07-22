@@ -74,8 +74,23 @@ class ConfigValidationTests(unittest.TestCase):
 
         train_config = document["train_config"]
         self.assertEqual(document["recipe_id"], "ppo")
-        self.assertEqual(train_config["timesteps"], 200_000_000)
+        self.assertEqual(train_config["timesteps"], 500_000_000)
         self.assertEqual(train_config["training_backend"]["id"], "sb3.ppo")
+        backend_config = train_config["training_backend"]["config"]
+        self.assertEqual(backend_config["n_steps"], 64)
+        self.assertEqual(backend_config["batch_size"], 256)
+        self.assertEqual(backend_config["n_epochs"], 4)
+        self.assertEqual(backend_config["learning_rate"], 2.5e-4)
+        self.assertEqual(backend_config["learning_rate_final"], 5.0e-5)
+        self.assertEqual(backend_config["learning_rate_schedule_timesteps"], 40_001_536)
+        self.assertEqual(backend_config["ent_coef"], 0.01)
+        self.assertEqual(backend_config["ent_coef_final"], 0.002)
+        self.assertEqual(backend_config["ent_coef_schedule_timesteps"], 40_001_536)
+        self.assertEqual(backend_config["gamma"], 0.99)
+        self.assertEqual(backend_config["gae_lambda"], 0.95)
+        self.assertEqual(backend_config["clip_range"], 0.1)
+        self.assertEqual(backend_config["vf_coef"], 0.5)
+        self.assertIsNone(backend_config.get("target_kl"))
         self.assertEqual(train_config["env_provider"], "breakout-turbo-env")
         self.assertEqual(train_config["game"], "Breakout-Atari2600-v0")
         self.assertEqual(train_config["state"], "Start")
@@ -472,9 +487,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(train_config["obs_crop_fill"], 0)
         self.assertEqual(train_config["task"]["action"], {"set": "native"})
-        self.assertEqual(
-            train_config["task"]["action"], breakout["train_config"]["task"]["action"]
-        )
+        self.assertEqual(train_config["task"]["action"], breakout["train_config"]["task"]["action"])
         self.assertEqual(train_config["task"]["reward"], breakout["train_config"]["task"]["reward"])
         for key in ("env_threads",):
             self.assertNotIn(key, train_config)

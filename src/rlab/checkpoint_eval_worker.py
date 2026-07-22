@@ -53,6 +53,7 @@ from rlab.metric_names import (
     validate_metric_payload,
 )
 from rlab.metric_store import MetricStore, metric_store_path
+from rlab.policy_models import load_internal_policy_model as load_policy_model
 from rlab.ranking import (
     objective_rank_strings,
     parse_objective_rank,
@@ -60,7 +61,6 @@ from rlab.ranking import (
     rank_score,
     require_objective_rank,
 )
-from rlab.policy_models import load_policy_model
 from rlab.seeds import DEFAULT_EVAL_SEED
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import resolve_wandb_namespace
@@ -378,6 +378,7 @@ def process_staged_eval(
     try:
         eval_model = load_policy_model(
             checkpoint_path,
+            execution_id=f"checkpoint-eval:{getattr(args, 'wandb_run_id', '')}:{checkpoint_id}",
             device=resolve_sb3_device(args.device),
         )
         episodes = int(stage["episodes"])
@@ -535,6 +536,7 @@ def process_eval(
     try:
         eval_model = load_policy_model(
             checkpoint_path,
+            execution_id=f"checkpoint-eval:{getattr(args, 'wandb_run_id', '')}:{checkpoint_id}",
             device=resolve_sb3_device(args.device),
         )
         episodes = int(args.post_train_eval_episodes)

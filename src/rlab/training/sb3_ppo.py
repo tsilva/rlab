@@ -37,6 +37,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "adam_eps": 1e-8,
     "target_kl": None,
     "resume": None,
+    "resume_approval_hash": None,
+    "resume_manifest": None,
 }
 
 _INTEGER_FIELDS = {
@@ -78,9 +80,8 @@ def validate_action_space(action_space) -> None:
 
 
 def _model_factory(context: BackendContext, env: Any, config: Any, device: str):
-    from stable_baselines3 import PPO
-
     from rlab.env import task_conditioning
+    from rlab.policy_models import load_pinned_remote_policy_model
     from rlab.schedules import apply_resume_hyperparameters, learning_rate_schedule
     from rlab.task_advantage import PerTaskAdvantagePPO, resolve_advantage_normalization_mode
 
@@ -90,8 +91,12 @@ def _model_factory(context: BackendContext, env: Any, config: Any, device: str):
         raise ValueError("per-task advantage normalization requires task conditioning")
     sb3_normalize_advantage = advantage_normalization == "global"
     if args.resume:
-        model = PPO.load(
+        model = load_pinned_remote_policy_model(
             args.resume,
+            download_root=context.run_dir / ".resume-source",
+            approval_hash=args.resume_approval_hash,
+            manifest=args.resume_manifest,
+            metadata={"algorithm_id": "ppo"},
             env=env,
             tensorboard_log=str(context.run_dir),
             device=device,
@@ -101,6 +106,8 @@ def _model_factory(context: BackendContext, env: Any, config: Any, device: str):
         apply_resume_hyperparameters(model, args)
         model.normalize_advantage = sb3_normalize_advantage
         return model
+
+    from stable_baselines3 import PPO
 
     model_cls = PerTaskAdvantagePPO if advantage_normalization == "per-task" else PPO
     return model_cls(

@@ -45,6 +45,7 @@ from rlab.model_sources import (
     single_model_artifact_ref,
     single_huggingface_model_ref,
 )
+from rlab.trusted_inputs import approve_internal_model
 from rlab.play import build_parser as build_play_parser
 from rlab.play import display_replay_config
 from rlab.play import main as play_main
@@ -1068,6 +1069,7 @@ class CommandAndArtifactTests(unittest.TestCase):
                 patch("rlab.play.assert_provider_runtime_available"),
                 patch("rlab.play.make_eval_vec_env", return_value=fake_env) as make_env,
                 patch("rlab.play.PygameViewer", FakeViewer),
+                patch("rlab.policy_models.load_external_policy_model", return_value=object()),
                 patch("stable_baselines3.PPO.load", return_value=object()),
                 patch.object(sys, "stdout", io.StringIO()),
             ):
@@ -1639,6 +1641,12 @@ class CommandAndArtifactTests(unittest.TestCase):
                 patch("rlab.eval.resolve_single_model_source", side_effect=fake_resolve),
                 patch("rlab.eval.apply_model_source_defaults", side_effect=fake_apply),
                 patch("rlab.eval.assert_provider_runtime_available") as assert_runtime,
+                patch(
+                    "rlab.eval.stage_and_approve_model",
+                    side_effect=lambda path, **_kwargs: approve_internal_model(
+                        path, execution_id="test-eval"
+                    ),
+                ),
                 patch("rlab.eval.load_policy_model", return_value="ppo"),
                 patch(
                     "rlab.eval.evaluate_model_episodes", side_effect=fake_evaluate_model_episodes
@@ -1670,6 +1678,12 @@ class CommandAndArtifactTests(unittest.TestCase):
         )
         self.assertEqual(
             parse_huggingface_model_ref(
+                "hf://tsilva/SuperMarioBros-NES_Level1-2@deadbeef/model.zip"
+            ),
+            ("tsilva/SuperMarioBros-NES_Level1-2", "model.zip", "deadbeef"),
+        )
+        self.assertEqual(
+            parse_huggingface_model_ref(
                 "https://huggingface.co/tsilva/SuperMarioBros-NES_Level1-2/resolve/main/model.zip"
             ),
             ("tsilva/SuperMarioBros-NES_Level1-2", "model.zip", "main"),
@@ -1679,16 +1693,21 @@ class CommandAndArtifactTests(unittest.TestCase):
         test_case = self
 
         class FakeApi:
+            def model_info(self, *, repo_id, revision):
+                test_case.assertEqual(repo_id, "tsilva/SuperMarioBros-NES_Level1-2")
+                test_case.assertEqual(revision, "main")
+                return types.SimpleNamespace(sha="deadbeef")
+
             def list_repo_files(self, *, repo_id, repo_type, revision):
                 test_case.assertEqual(repo_id, "tsilva/SuperMarioBros-NES_Level1-2")
                 test_case.assertEqual(repo_type, "model")
-                test_case.assertEqual(revision, "main")
+                test_case.assertEqual(revision, "deadbeef")
                 return ["README.md", "model_metadata.json", "ppo_test_500_steps.zip"]
 
         def fake_hf_hub_download(*, repo_id, repo_type, revision, filename, local_dir):
             test_case.assertEqual(repo_id, "tsilva/SuperMarioBros-NES_Level1-2")
             test_case.assertEqual(repo_type, "model")
-            test_case.assertEqual(revision, "main")
+            test_case.assertEqual(revision, "deadbeef")
             path = Path(local_dir) / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             if filename.endswith(".json"):
@@ -1712,7 +1731,7 @@ class CommandAndArtifactTests(unittest.TestCase):
             self.assertEqual(source.model_path.name, "ppo_test_500_steps.zip")
             self.assertEqual(
                 source.artifact_name,
-                "hf://tsilva/SuperMarioBros-NES_Level1-2/ppo_test_500_steps.zip",
+                "hf://tsilva/SuperMarioBros-NES_Level1-2@deadbeef/ppo_test_500_steps.zip",
             )
             self.assertIsNone(source.artifact_ref)
             self.assertEqual(source.checkpoint_step, 500)

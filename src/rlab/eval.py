@@ -35,6 +35,7 @@ from rlab.rom_assets import rom_asset_manifest_for_game
 from rlab.rom_runtime import ensure_local_rom_binding
 from rlab.seeds import DEFAULT_EVAL_SEED, validate_eval_seed
 from rlab.train_config import add_env_config_args, env_config_arg_fields
+from rlab.trusted_inputs import stage_and_approve_model
 
 
 def json_default(value):
@@ -93,10 +94,11 @@ class ScriptedPolicy:
 
 
 def load_eval_model(model_path: str | Path, *, device: str) -> tuple[object, str]:
-    metadata = load_model_metadata(Path(model_path))
-    algorithm_id = resolve_policy_algorithm(metadata)
-    model = load_policy_model(model_path, device=device, metadata=metadata)
-    return model, algorithm_id
+    with stage_and_approve_model(model_path, source_identity=str(model_path)) as approved:
+        metadata = load_model_metadata(approved.model_path)
+        algorithm_id = resolve_policy_algorithm(metadata)
+        model = load_policy_model(approved, device=device, metadata=metadata)
+        return model, algorithm_id
 
 
 def build_parser(*, prog: str = "rlab eval run") -> argparse.ArgumentParser:

@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -317,7 +317,13 @@ class EvalMetricTests(unittest.TestCase):
             )
 
             loaded = object()
-            with patch("rlab.eval.load_policy_model", return_value=loaded) as load_model:
+            approved = MagicMock()
+            approved.__enter__.return_value.model_path = model_path
+            approved.__exit__.return_value = None
+            with (
+                patch("rlab.eval.stage_and_approve_model", return_value=approved),
+                patch("rlab.eval.load_policy_model", return_value=loaded) as load_model,
+            ):
                 model, policy = load_eval_model(model_path, device="cpu")
 
             self.assertIs(model, loaded)

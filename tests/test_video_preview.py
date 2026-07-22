@@ -12,6 +12,7 @@ from rlab.video import (
     PolicyObservationPreview,
     policy_observation_mosaic,
     write_preview_video,
+    write_video,
 )
 
 
@@ -81,6 +82,26 @@ class PolicyObservationPreviewTests(unittest.TestCase):
         self.assertEqual(metadata["height"], 168)
         self.assertEqual(metadata["duration_seconds"], 1.0)
         self.assertEqual(metadata["size_bytes"], 3)
+
+    def test_browser_video_consumes_a_one_shot_iterator(self) -> None:
+        process = mock.Mock()
+        process.stdin = mock.Mock()
+        process.stdin.closed = False
+        process.stderr = mock.Mock()
+        process.stderr.read.return_value = b""
+        process.wait.return_value = 0
+        frames = (np.full((2, 3, 3), value, dtype=np.uint8) for value in (1, 2))
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch("rlab.video.shutil.which", return_value="/usr/bin/ffmpeg"),
+            mock.patch("rlab.video.subprocess.Popen", return_value=process),
+        ):
+            write_video(frames, Path(temporary) / "out.mp4", fps=30, scale=1)
+
+        self.assertEqual(process.stdin.write.call_count, 2)
+        self.assertEqual(process.stdin.write.call_args_list[0].args[0], bytes([1]) * 18)
+        self.assertEqual(process.stdin.write.call_args_list[1].args[0], bytes([2]) * 18)
 
 
 if __name__ == "__main__":

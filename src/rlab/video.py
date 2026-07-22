@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 import shutil
 import subprocess
+from itertools import chain
 import cv2
 import numpy as np
 
@@ -194,11 +195,13 @@ def write_preview_video(
     }
 
 
-def write_video(frames: list[np.ndarray], output: Path, fps: float, scale: int) -> None:
-    if not frames:
-        raise ValueError("No frames to write")
+def write_video(frames: Iterable[np.ndarray], output: Path, fps: float, scale: int) -> None:
+    frame_iterator = iter(frames)
+    try:
+        first_frame = np.asarray(next(frame_iterator))
+    except StopIteration as exc:
+        raise ValueError("No frames to write") from exc
     output.parent.mkdir(parents=True, exist_ok=True)
-    first_frame = frames[0]
     height, width = first_frame.shape[:2]
     out_size = (width * scale, height * scale)
     ffmpeg = shutil.which("ffmpeg")
@@ -240,13 +243,29 @@ def write_video(frames: list[np.ndarray], output: Path, fps: float, scale: int) 
     )
     assert process.stdin is not None
     try:
-        for frame in frames:
+        for frame in chain((first_frame,), frame_iterator):
+            frame = np.asarray(frame)
+            if frame.shape[:2] != (height, width) or frame.ndim != 3 or frame.shape[2] < 3:
+                raise ValueError(
+                    f"video frames must have a constant HxWx3 shape; got {frame.shape}"
+                )
             if scale != 1:
                 frame = cv2.resize(frame, out_size, interpolation=cv2.INTER_NEAREST)
-            process.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
-    finally:
+            process.stdin.write(np.ascontiguousarray(frame[..., :3], dtype=np.uint8).tobytes())
         process.stdin.close()
-    _, stderr = process.communicate()
-    if process.returncode != 0:
+        stderr = process.stderr.read() if process.stderr is not None else b""
+        return_code = process.wait()
+    except Exception:
+        if not process.stdin.closed:
+            process.stdin.close()
+        process.kill()
+        process.wait()
+        output.unlink(missing_ok=True)
+        raise
+    finally:
+        if process.stderr is not None:
+            process.stderr.close()
+    if return_code != 0:
+        output.unlink(missing_ok=True)
         message = stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"ffmpeg failed to write {output}: {message}")

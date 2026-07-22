@@ -247,7 +247,10 @@ def test_generic_policy_loader_dispatches_jerk(tmp_path) -> None:
     }
 
     assert resolve_policy_algorithm(metadata) == "jerk"
-    loaded = load_policy_model(path, device="cpu", metadata=metadata)
+    from rlab.trusted_inputs import approve_internal_model
+
+    with approve_internal_model(path, execution_id="test-jerk") as approved:
+        loaded = load_policy_model(approved, device="cpu", metadata=metadata)
     assert isinstance(loaded, JerkPolicy)
 
 

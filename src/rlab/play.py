@@ -1441,10 +1441,14 @@ def main(argv: list[str] | None = None) -> int:
         assert_provider_runtime_available(config, rom_binding=rom_binding)
 
     with startup_progress("Loading policy runtime", disabled=args.no_progress):
-        from rlab.policy_models import load_policy_model
+        from rlab.policy_models import load_external_policy_model
 
     with startup_progress("Loading model checkpoint", disabled=args.no_progress):
-        model = load_policy_model(args.model, device=resolve_sb3_device(args.device))
+        model = load_external_policy_model(
+            args.model,
+            device=resolve_sb3_device(args.device),
+            source_identity=str(source.artifact_name or ref or args.model),
+        )
     if args.attribution != "none":
         if not hasattr(model, "policy"):
             raise ValueError("policy attribution is unavailable for non-neural policies")

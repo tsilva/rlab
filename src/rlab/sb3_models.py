@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any, Literal
 
 from rlab.artifacts import load_model_metadata
+from rlab.trusted_inputs import ApprovedModelInput
 
 
 Sb3AlgorithmId = Literal["ppo", "a2c"]
@@ -50,14 +50,17 @@ def resolve_sb3_algorithm(metadata: Mapping[str, Any] | None) -> Sb3AlgorithmId:
 
 
 def load_sb3_model(
-    model_path: str | Path,
+    model_input: ApprovedModelInput,
     *,
     device: str,
     env: Any | None = None,
     tensorboard_log: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ):
-    path = Path(model_path)
+    if not isinstance(model_input, ApprovedModelInput):
+        raise TypeError("load_sb3_model requires an ApprovedModelInput")
+    model_input.verify()
+    path = model_input.model_path
     resolved_metadata = load_model_metadata(path) if metadata is None else dict(metadata)
     algorithm_id = resolve_sb3_algorithm(resolved_metadata)
     if algorithm_id == "a2c":

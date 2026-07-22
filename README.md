@@ -11,9 +11,18 @@ The normal workflow is to install the CLI once with `./install.sh`, then use `rl
 ## Install
 
 ```bash
-git clone git@github.com:tsilva/rlab.git
+RLAB_TAG=REPLACE_WITH_EXACT_RLAB_RELEASE_TAG
+git clone --branch "$RLAB_TAG" --depth 1 git@github.com:tsilva/rlab.git
 cd rlab
 ./install.sh
+```
+
+Install the lazy dataset stack only when recording or inspecting Gymrec v3 data:
+
+```bash
+./install.sh --extra dataset
+# Add Minari export support:
+./install.sh --extra dataset-minari
 ```
 
 If you are reinstalling after local changes:
@@ -161,6 +170,22 @@ leaderboards do not mix sweep arms. Each submission receives one generated
 `bx<16 hex>` `batch_id`, shared by all of its seeds and used as the W&B group.
 Use optional `campaign_id` to connect related submissions over time.
 
+### Gameplay datasets
+
+`rlab dataset` owns the current Gymrec v3 recording and observation lifecycle. It writes
+lossless RGB video while keeping provider-native actions, rewards, boundaries, infos, seeds,
+environment contracts, and approved policy provenance. Local appends use a recoverable atomic
+swap; Hub appends use an expected-parent commit. Existing image-backed and video-backed v3 trees
+remain readable, while new recordings use lossless video.
+
+External SB3 checkpoints are Python-executable content. Rlab privately stages and hashes the full
+resolved model closure, displays the ambient credential/authority risk, and requires approval for
+that exact invocation before deserialization. Dataset verification establishes structure and media
+integrity; `--reexecute` additionally requires the exact provider contract and runtime bytes.
+
+Dataset recordings and exports are observation/reproduction artifacts. They are never accepted as
+checkpoint-promotion or research-goal evidence.
+
 If `rlab-train-image.json` is absent, omit `--runtime-image-ref-file`. `rlab experiment launch --from-head` pins committed HEAD in an isolated worktree and waits for its exact-source receipt. The receipt may reuse an immutable image when the content-addressed runtime inputs match a prior source state; it never falls back without that proof. The exact source, recipe composition, runtime fingerprint, runtime build source, and digest remain recorded.
 
 ## Commands
@@ -178,6 +203,14 @@ rlab play <wandb-run-url>                             # promoted model, else new
 rlab play <run-name>                                  # same resolution for a unique historical display name
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-basic_ppo
+rlab dataset record mario-level1-1 --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent random --episodes 1 --headless
+rlab dataset list mario-level1-1
+rlab dataset verify mario-level1-1
+rlab dataset play mario-level1-1 --episode 1
+rlab dataset video mario-level1-1 replay.mp4
+rlab dataset upload mario-level1-1 owner/repository
+rlab dataset adopt /path/to/finalized-gymrec-group imported-recording
+rlab dataset export-minari mario-level1-1 owner/mario-level1-1-v0
 rlab play <checkpoint> --debug                       # Enter steps once; use help for commands
 rlab play <checkpoint> --attribution gradcam
 rlab play <checkpoint> --attribution occlusion --attribution-interval 12
@@ -200,6 +233,10 @@ rlab eval modal status
 rlab benchmark list
 rlab benchmark run mario-env-throughput-l11 --dry-run
 ```
+
+If a Hub repository contains incompatible physical schemas, `rlab dataset list` exposes each
+read-only virtual source as `hf://owner/repository#group=<feature-id>`. Select one group for
+playback, verification, export, or explicit adoption rather than implicitly merging schemas.
 
 The command surface is intentionally one binary:
 

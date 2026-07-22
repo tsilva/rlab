@@ -31,6 +31,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "value_net_arch": "",
     "normalize_advantage": False,
     "resume": None,
+    "resume_approval_hash": None,
+    "resume_manifest": None,
 }
 
 _NUMBER_FIELDS = {
@@ -54,20 +56,25 @@ def normalize_config(config: Mapping[str, Any], *, label: str) -> dict[str, Any]
 
 def _model_factory(context: BackendContext, env: Any, config: Any, device: str):
     del config
-    from stable_baselines3 import A2C
-
+    from rlab.policy_models import load_pinned_remote_policy_model
     from rlab.schedules import apply_a2c_resume_hyperparameters, learning_rate_schedule
 
     args = context.args
     if args.resume:
-        model = A2C.load(
+        model = load_pinned_remote_policy_model(
             args.resume,
+            download_root=context.run_dir / ".resume-source",
+            approval_hash=args.resume_approval_hash,
+            manifest=args.resume_manifest,
+            metadata={"algorithm_id": "a2c"},
             env=env,
             tensorboard_log=str(context.run_dir),
             device=device,
         )
         apply_a2c_resume_hyperparameters(model, args)
         return model
+
+    from stable_baselines3 import A2C
 
     return A2C(
         policy_name_for_observation_space(env.observation_space),
