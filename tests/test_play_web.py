@@ -303,6 +303,10 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert ".icon-only" in styles
     assert 'id="timeline-scrubber"' in markup
     assert 'id="return-chart"' in markup
+    assert 'id="pause" class="icon-only" aria-label="Pause"' in markup
+    assert 'id="step-ten" class="icon-only" aria-label="Step 10 times"' in markup
+    assert 'id="layouts-toggle" class="quiet icon-only"' in markup
+    assert "ti-device-desktop-share" in icons
     assert "separate scale" in markup
     assert 'drawLines($("#return-chart")' in script
     assert "data-drag-handle" in markup

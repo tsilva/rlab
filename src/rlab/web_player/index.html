@@ -20,9 +20,9 @@
         <span id="connection-status" class="sync-status warning">Connecting</span>
       </div>
       <div class="header-status">
-        <button id="layouts-toggle" class="quiet button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg><span>Layouts</span></button>
-        <button id="panels-toggle" class="quiet button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-grid"></use></svg><span>Panels</span></button>
-        <button id="new-window" class="quiet button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg><span>New window</span></button>
+        <button id="layouts-toggle" class="quiet icon-only" type="button" aria-label="Layouts" title="Layouts"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg></button>
+        <button id="panels-toggle" class="quiet icon-only" type="button" aria-label="Panels" title="Panels"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-grid"></use></svg></button>
+        <button id="new-window" class="quiet icon-only" type="button" aria-label="Open synchronized window" title="Open synchronized window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg></button>
         <span id="control-status" class="badge muted">Observer</span>
       </div>
     </header>
@@ -70,13 +70,13 @@
 
         <section class="control-section" aria-labelledby="playback-controls-heading">
           <h3 id="playback-controls-heading" class="control-label">Playback</h3>
-          <div class="control-grid">
-            <button id="pause" class="button-with-icon" title="Pause after the current transition"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-pause"></use></svg><span>Pause</span></button>
-            <button id="play" class="primary button-with-icon" title="Run with the selected driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play</span></button>
-            <button id="step" class="button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg><span>Step</span></button>
-            <button id="step-ten" class="button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg><span>Step 10</span></button>
-            <button id="continue-event" class="button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg><span>To event</span></button>
-            <button id="continue-done" class="button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg><span>To boundary</span></button>
+          <div class="control-grid transport-grid">
+            <button id="pause" class="icon-only" aria-label="Pause" title="Pause after the current transition"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-pause"></use></svg></button>
+            <button id="play" class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
+            <button id="step" class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
+            <button id="step-ten" class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
+            <button id="continue-event" class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
+            <button id="continue-done" class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
           </div>
         </section>
 
@@ -84,25 +84,25 @@
           <h3 id="session-controls-heading" class="control-label">Session</h3>
           <div class="control-field-row">
             <label>Seed <input id="seed" inputmode="numeric"></label>
-            <button id="reset" class="button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg><span>Reset</span></button>
+            <button id="reset" class="icon-only" aria-label="Reset with this seed" title="Reset with this seed"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg></button>
           </div>
           <div class="control-field-row">
             <label>FPS <input id="fps" type="number" min="0" step="1" value="0"></label>
-            <button id="set-fps" class="quiet button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg><span>Apply</span></button>
+            <button id="set-fps" class="quiet icon-only" aria-label="Apply FPS limit" title="Apply FPS limit"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
           </div>
         </section>
 
         <section class="control-section" aria-labelledby="driver-controls-heading">
           <h3 id="driver-controls-heading" class="control-label">Driver</h3>
-          <div class="control-grid">
-            <button id="policy-driver" class="quiet button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg><span>Policy</span></button>
-            <button id="human-driver" class="quiet button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg><span>Take control</span></button>
-            <button id="inspect-policy" class="quiet control-wide button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg><span>Inspect policy</span></button>
-            <button id="acquire-control" class="quiet control-wide button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg><span>Control in this window</span></button>
+          <div class="control-grid driver-grid">
+            <button id="policy-driver" class="quiet icon-only" aria-label="Use policy driver" title="Use policy driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg></button>
+            <button id="human-driver" class="quiet icon-only" aria-label="Take human control" title="Take human control"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg></button>
+            <button id="inspect-policy" class="quiet icon-only" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg></button>
+            <button id="acquire-control" class="quiet icon-only" aria-label="Control from this window" title="Control from this window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-device-desktop-share"></use></svg></button>
           </div>
         </section>
 
-        <button id="end-session" class="danger quiet control-end button-with-icon"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-power"></use></svg><span>End session</span></button>
+        <button id="end-session" class="danger quiet icon-only control-end" aria-label="End session" title="End session"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-power"></use></svg></button>
       </aside>
 
       <section class="panel" data-panel="policy">
@@ -202,7 +202,7 @@
       <div class="timeline-labels">
         <strong id="timeline-step">STEP —</strong>
         <span id="timeline-sequence">SEQ —</span>
-        <button id="return-live" class="quiet button-with-icon" type="button" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Return live</span></button>
+        <button id="return-live" class="quiet icon-only" type="button" aria-label="Return to live playback" title="Return to live playback" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
       </div>
       <div class="timeline-track">
         <input id="timeline-scrubber" type="range" min="0" max="0" value="0" aria-label="Inspect a retained transition">

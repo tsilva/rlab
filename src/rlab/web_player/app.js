@@ -453,8 +453,10 @@ function configureMode(mode) {
     $(`#${id}`).hidden = recording;
   });
   $("#seed").closest("label").hidden = recording;
-  const humanDriverLabel = $("#human-driver span");
-  if (humanDriverLabel) humanDriverLabel.textContent = recording ? "Human controls" : "Take control";
+  const humanDriver = $("#human-driver");
+  const humanDriverLabel = recording ? "Human controls" : "Take human control";
+  humanDriver.setAttribute("aria-label", humanDriverLabel);
+  humanDriver.title = humanDriverLabel;
 }
 
 function historyFromTransition(transition) {
