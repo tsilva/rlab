@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -326,6 +327,17 @@ class _BreakoutSnapshotBankAdapter:
                 normalized_seed[lane] = None
 
         observations, infos = self.env.reset(seed=normalized_seed, options=native_options)
+        for lane in np.flatnonzero(snapshot_mask):
+            state_id = str(requested_ids[lane])
+            actual_hash = hashlib.sha256(
+                np.ascontiguousarray(observations[lane]).tobytes(order="C")
+            ).hexdigest()
+            expected_hash = self.bank.observation_sha256[state_id]
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"snapshot {state_id!r} restored a different policy observation: "
+                    f"expected {expected_hash}, got {actual_hash}"
+                )
         self._active_starts[snapshot_mask] = requested_ids[snapshot_mask]
         if not isinstance(infos, Mapping):
             return observations, infos

@@ -29,6 +29,7 @@ class BreakoutSnapshotBank:
     manifest: Mapping[str, Any]
     state_ids: tuple[str, ...]
     states: Mapping[str, bytes]
+    observation_sha256: Mapping[str, str]
 
 
 def _read_archive(uri: str) -> bytes:
@@ -132,6 +133,7 @@ def load_breakout_snapshot_bank(uri: str, expected_sha256: str) -> BreakoutSnaps
     if not isinstance(raw_snapshots, list) or not raw_snapshots:
         raise ValueError("snapshot bank manifest must declare at least one snapshot")
     states: dict[str, bytes] = {}
+    observation_sha256: dict[str, str] = {}
     for entry in raw_snapshots:
         if not isinstance(entry, Mapping):
             raise ValueError("snapshot bank entries must be objects")
@@ -155,13 +157,20 @@ def load_breakout_snapshot_bank(uri: str, expected_sha256: str) -> BreakoutSnaps
             raise ValueError(f"snapshot {state_id!r} state size mismatch")
         if not state.startswith(b"BTO1"):
             raise ValueError(f"snapshot {state_id!r} is not a Breakout Turbo state")
+        expected_observation_sha = str(entry.get("observation_sha256") or "").lower()
+        if not _SHA256.fullmatch(expected_observation_sha):
+            raise ValueError(f"snapshot {state_id!r} has an invalid observation_sha256")
         states[state_id] = state
+        observation_sha256[state_id] = expected_observation_sha
+    if len(set(observation_sha256.values())) != len(observation_sha256):
+        raise ValueError("snapshot bank contains duplicate policy observation stacks")
     return BreakoutSnapshotBank(
         uri=uri,
         archive_sha256=actual_sha256,
         manifest=dict(manifest),
         state_ids=tuple(states),
         states=states,
+        observation_sha256=observation_sha256,
     )
 
 

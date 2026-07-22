@@ -19,9 +19,12 @@ class ProviderConstructorContract:
     canonical_args: frozenset[str]
     explicit_env_args: frozenset[str]
     required_values: Mapping[str, object]
+    optional_env_args: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        overlap = self.canonical_args & self.explicit_env_args
+        overlap = (self.canonical_args & self.explicit_env_args) | (
+            self.canonical_args & self.optional_env_args
+        ) | (self.explicit_env_args & self.optional_env_args)
         if overlap:
             raise ValueError(f"provider constructor argument ownership overlaps: {sorted(overlap)}")
         unknown_required = set(self.required_values) - set(self.explicit_env_args)
@@ -214,13 +217,12 @@ BREAKOUT_TURBO_ENV_PROVIDER = EnvProvider(
                 "reward_clip",
                 "rom_path",
                 "scenario",
-                "snapshot_bank_sha256",
-                "snapshot_bank_uri",
                 "use_fire_reset",
                 "use_restricted_actions",
             }
         ),
         required_values={},
+        optional_env_args=frozenset({"snapshot_bank_sha256", "snapshot_bank_uri"}),
     ),
 )
 
@@ -500,7 +502,9 @@ def validate_provider_constructor_args(
             f"{label} missing explicit {provider.provider_id} constructor argument(s): "
             + ", ".join(missing_args)
         )
-    unexpected_args = sorted(actual_args - contract.explicit_env_args)
+    unexpected_args = sorted(
+        actual_args - contract.explicit_env_args - contract.optional_env_args
+    )
     if unexpected_args:
         raise ValueError(
             f"{label} has unexpected or canonically-owned {provider.provider_id} "

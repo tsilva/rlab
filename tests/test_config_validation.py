@@ -301,7 +301,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertEqual(report.counts["train_recipes"], 26)
+        self.assertEqual(report.counts["train_recipes"], 27)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertEqual(report.counts["benchmark_profiles"], 3)
 

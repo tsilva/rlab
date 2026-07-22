@@ -45,9 +45,11 @@ def _snapshot_archive(tmp_path: Path) -> tuple[Path, str, dict[str, str]]:
     try:
         mask = np.ones(2, dtype=np.bool_)
         observations, _infos = source.reset(seed=[1, 2], options={"reset_mask": mask})
-        observations, _rewards, _terminated, _truncated, _infos = source.step(
-            np.asarray([2, 3], dtype=np.int64)
-        )
+        source.step(np.asarray([1, 1], dtype=np.int64))
+        for _ in range(8):
+            observations, _rewards, _terminated, _truncated, _infos = source.step(
+                np.asarray([2, 3], dtype=np.int64)
+            )
         states = source.get_state()
     finally:
         source.close()
@@ -68,6 +70,7 @@ def _snapshot_archive(tmp_path: Path) -> tuple[Path, str, dict[str, str]]:
                 "state_file": relative,
                 "state_sha256": _sha256(state),
                 "state_size_bytes": len(state),
+                "observation_sha256": observation_hashes[state_id],
             }
         )
     manifest = {
@@ -155,6 +158,7 @@ def test_loads_hash_bound_breakout_snapshot_bank(tmp_path: Path) -> None:
     assert bank.archive_sha256 == archive_sha256
     assert bank.state_ids == ("snapshot-0", "snapshot-1")
     assert all(value.startswith(b"BTO1") for value in bank.states.values())
+    assert bank.observation_sha256 == _observation_hashes
 
 
 def test_rejects_snapshot_bank_archive_hash_mismatch(tmp_path: Path) -> None:
@@ -162,6 +166,26 @@ def test_rejects_snapshot_bank_archive_hash_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="archive hash mismatch"):
         load_breakout_snapshot_bank(archive.resolve().as_uri(), "0" * 64)
+
+
+def test_rejects_duplicate_policy_observation_stacks(tmp_path: Path) -> None:
+    archive, _archive_sha256, _observation_hashes = _snapshot_archive(tmp_path)
+    extract_root = tmp_path / "extracted"
+    with tarfile.open(archive, "r:gz") as handle:
+        handle.extractall(extract_root, filter="data")
+    manifest_path = extract_root / "bank" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["snapshots"][1]["observation_sha256"] = manifest["snapshots"][0][
+        "observation_sha256"
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    duplicate_archive = tmp_path / "duplicate.tar.gz"
+    with tarfile.open(duplicate_archive, "w:gz") as handle:
+        handle.add(extract_root / "bank", arcname="bank")
+    duplicate_sha = _sha256(duplicate_archive.read_bytes())
+
+    with pytest.raises(ValueError, match="duplicate policy observation stacks"):
+        load_breakout_snapshot_bank(duplicate_archive.resolve().as_uri(), duplicate_sha)
 
 
 def test_runtime_resets_from_persisted_snapshot_distribution(tmp_path: Path) -> None:

@@ -23,7 +23,6 @@ train:
     env_config:
       <<: &breakout_env_config
         game: Breakout-Atari2600-v0
-        state: post400-000
         states: &snapshot_states
         - post400-000
         - post400-001
