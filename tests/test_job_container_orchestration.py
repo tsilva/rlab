@@ -104,6 +104,9 @@ class FakeHost:
     def write_payload(self, launch_id: str, payload) -> None:
         self.payload_calls.append((launch_id, dict(payload)))
 
+    def prepare_legacy_workspace(self, launch_id: str, payload) -> None:
+        self.write_payload(launch_id, payload)
+
     def create_train_container(self, **kwargs) -> HostOperationResult:
         if self.create_error is not None:
             raise self.create_error

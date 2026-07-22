@@ -258,13 +258,15 @@ class DockerHostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             host = DockerRunnerHost(machine(host_root=str(root)))
-            host.write_payload("train-12", {"job_id": 12})
+            Path(host.machine.paths.outputs_dir).mkdir(parents=True)
+            host.prepare_legacy_workspace("train-12", {"job_id": 12})
             self.assertEqual(
                 json.loads(Path(host.payload_host_path("train-12")).read_text(encoding="utf-8")),
                 {"job_id": 12},
             )
             output = Path(host.output_host_path("train-12"))
-            output.mkdir(parents=True)
+            self.assertTrue(output.is_dir())
+            host.prepare_legacy_workspace("train-12", {"job_id": 12})
             (output / "result.json").write_text('{"status":"succeeded"}\n', encoding="utf-8")
             observation = host.observe_result(str(output))
 

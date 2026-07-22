@@ -569,6 +569,30 @@ class DockerRunnerHost:
         if result.returncode != 0:
             raise RuntimeError(f"failed to write payload {path}: {result.stderr or result.stdout}")
 
+    def prepare_legacy_workspace(self, launch_id: str, payload: Mapping[str, Any]) -> None:
+        """Prepare exact bind sources when workspace layout v1 is dormant."""
+
+        output_path = self.output_host_path(launch_id)
+        script = (
+            "set -eu; umask 077; "
+            f"if [ -L {shlex.quote(output_path)} ]; then exit 72; fi; "
+            f"if [ -e {shlex.quote(output_path)} ]; then "
+            f"test -d {shlex.quote(output_path)}; "
+            f"else mkdir {shlex.quote(output_path)}; fi"
+        )
+        result = _run_machine_shell(
+            self.machine,
+            script,
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"failed to prepare legacy output {output_path}: "
+                f"{result.stderr or result.stdout}"
+            )
+        self.write_payload(launch_id, payload)
+
     def write_attempt_env(self, launch_id: str, values: Mapping[str, str]) -> str:
         if not values:
             raise ValueError("attempt environment must not be empty")

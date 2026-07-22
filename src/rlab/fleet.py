@@ -681,7 +681,7 @@ def _start_or_resume_launch_unleased(
             mailbox_env[ATTEMPT_TOKEN_ENV] = token
             attempt_env_path = host.write_attempt_env(launch_id, mailbox_env)
         if not layout_v1:
-            host.write_payload(launch_id, job_payload_for_launch(job, launch))
+            host.prepare_legacy_workspace(launch_id, job_payload_for_launch(job, launch))
         train_config = dict(job.get("train_config") or {})
         rom_asset_manifest = manifest_from_train_config(
             train_config,
