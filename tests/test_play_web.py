@@ -254,6 +254,12 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     script = (root / "app.js").read_text(encoding="utf-8")
     assert markup.index('data-panel="game"') < markup.index('data-panel="controls"')
     assert '<aside class="panel control-panel transport"' in markup
+    game_markup = markup[
+        markup.index('data-panel="game"') : markup.index('data-panel="controls"')
+    ]
+    assert "ENVIRONMENT" not in game_markup
+    assert "Focus the game for human input" not in game_markup
+    assert 'class="game-actions panel-actions"' in game_markup
     assert 'height: calc(100dvh - 4.3rem)' in styles
     assert "object-fit: contain" in styles
     assert "requestFullscreen" in script

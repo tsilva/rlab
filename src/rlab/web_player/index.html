@@ -21,19 +21,15 @@
 
     <main id="dashboard" class="dashboard">
       <section class="panel game-panel" data-panel="game">
-        <header class="panel-header">
-          <div><span class="panel-kicker">ENVIRONMENT</span><h2>Game</h2></div>
-          <div class="panel-actions">
+        <div id="game-stage" class="game-stage">
+          <canvas id="game-canvas" tabindex="0" aria-label="Live game frame. Focus it for human controls: arrows move, Z is B, X is A, Enter is Start, and Shift is Select."></canvas>
+          <div id="game-empty" class="empty-state">This environment has no RGB renderer.</div>
+          <div id="game-overlay" class="game-overlay"></div>
+          <div class="game-actions panel-actions">
             <button data-fullscreen="game" class="icon-button" title="Fullscreen game">Fullscreen</button>
             <button data-detach="game" class="icon-button" title="Detach game panel">Detach</button>
           </div>
-        </header>
-        <div id="game-stage" class="game-stage">
-          <canvas id="game-canvas" tabindex="0" aria-label="Live game frame; focus for human controls"></canvas>
-          <div id="game-empty" class="empty-state">This environment has no RGB renderer.</div>
-          <div id="game-overlay" class="game-overlay"></div>
         </div>
-        <p class="panel-foot">Focus the game for human input · arrows move · Z=B · X=A · Enter=START · Shift=SELECT</p>
       </section>
 
       <aside class="panel control-panel transport" data-panel="controls" aria-labelledby="controls-heading">
