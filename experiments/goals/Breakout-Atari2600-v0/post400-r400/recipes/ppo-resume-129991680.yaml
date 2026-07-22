@@ -17,8 +17,9 @@ train:
       ent_coef: 0.002
       ent_coef_final: null
       ent_coef_schedule_timesteps: 0
-      resume: tsilva/Breakout-Atari2600-v0/rlab-89bf32059537b62d0e507dfa-checkpoint:v259
-      resume_approval_hash: 3d67bea387421304e084186272e7bcd868671e976bca3762e3f6385fa45cd170
+      resume: >-
+        object-store:model-inputs/Breakout-Atari2600-v0/sha256/0cfc246f5400468d0b7955d396b660c6ed89f59ddbcb3c54cc01c35f2d990d37/model.zip
+      resume_approval_hash: 0ec6a7ad455861b7f5c4431c3edd73277dc62f2b3dcd403ae5183486cf979892
       resume_manifest:
       - path: model.json
         sha256: cbc37b9d7b216ee2f0810646b3322756f9932fbc60142449f931c88d5a93440b

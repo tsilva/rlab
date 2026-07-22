@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
-from rlab.modal_eval_storage import ObjectStore
+from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
 from rlab.wandb_utils import load_wandb_env
 
 
@@ -86,10 +86,22 @@ def _read_archive(uri: str) -> bytes:
         if int(head["size"]) > MAX_ARCHIVE_BYTES:
             raise ValueError("snapshot bank archive is too large")
         return store.get_bytes(uri)
+    if parsed.scheme == "object-store" and parsed.path:
+        path = unquote(parsed.path).strip("/")
+        if "\\" in path or ".." in PurePosixPath(path).parts:
+            raise ValueError("snapshot object-store locator has an unsafe path")
+        load_wandb_env()
+        store = ObjectStore(object_store_base_uri())
+        object_uri = store.uri(path)
+        head = store.head(object_uri)
+        if int(head["size"]) > MAX_ARCHIVE_BYTES:
+            raise ValueError("snapshot bank archive is too large")
+        return store.get_bytes(object_uri)
     if parsed.scheme == "wandb-artifact":
         return _read_wandb_artifact(uri)
     raise ValueError(
-        "snapshot_bank_uri must be an s3://, file://, or pinned wandb-artifact: locator"
+        "snapshot_bank_uri must be an object-store:, s3://, file://, or pinned "
+        "wandb-artifact: locator"
     )
 
 

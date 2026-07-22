@@ -2495,6 +2495,8 @@ def _resume_backend_config(train_config: Mapping[str, Any]) -> dict[str, Any] | 
 
 
 def _validate_queue_resume_input(train_config: Mapping[str, Any]) -> None:
+    from rlab.model_sources import is_object_store_model_ref, is_s3_model_ref
+
     config = _resume_backend_config(train_config)
     if config is None or config.get("resume") is None:
         return
@@ -2503,10 +2505,11 @@ def _validate_queue_resume_input(train_config: Mapping[str, Any]) -> None:
     manifest = config.get("resume_manifest")
     pinned_hf = bool(re.match(r"^hf://[^/]+/[^/@]+@[0-9a-f]{40,64}(?:/.*)?$", source))
     pinned_wandb = bool(re.match(r"^[^/]+/[^/]+/[^/:]+:v[0-9]+$", source))
-    if not (pinned_hf or pinned_wandb):
+    pinned_s3 = is_s3_model_ref(source) or is_object_store_model_ref(source)
+    if not (pinned_hf or pinned_wandb or pinned_s3):
         raise ValueError(
             "queue-backed resume rejects submitter-local or mutable sources; publish the model "
-            "to Hugging Face or W&B and submit its immutable pinned locator"
+            "to content-addressed S3, Hugging Face, or W&B and submit its immutable pinned locator"
         )
     if (
         not isinstance(approval, str)
@@ -2536,7 +2539,8 @@ def _prepare_queue_resume_input(document: dict[str, Any], *, root: Path) -> None
         resolved = download_remote_model_source(str(resume), root=root)
     except Exception as exc:
         raise ValueError(
-            "queue-backed resume accepts only a published Hugging Face or W&B model; "
+            "queue-backed resume accepts only a published content-addressed S3, Hugging Face, "
+            "or W&B model; "
             "submitter-local paths can be used only by an explicit local execution"
         ) from exc
     pinned = str(resolved.artifact_name or "")

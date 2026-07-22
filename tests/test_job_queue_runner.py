@@ -1035,6 +1035,50 @@ class JobQueueTests(unittest.TestCase):
                 machine="beast-3",
             )
 
+    def test_queue_resume_accepts_content_addressed_s3_locator(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["training_backend"]["config"].update(
+            {
+                "resume": "s3://bucket/models/sha256/" + "a" * 64 + "/model.zip",
+                "resume_approval_hash": "b" * 64,
+                "resume_manifest": [
+                    {"path": "model.zip", "sha256": "a" * 64, "size_bytes": 1}
+                ],
+            }
+        )
+
+        with patch.object(job_queue, "enqueue_train_job", return_value={"id": 1}):
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
+        self.assertEqual(len(rows), 2)
+
+    def test_queue_resume_accepts_portable_object_store_locator(self) -> None:
+        document = valid_train_recipe()
+        document["train_config"]["training_backend"]["config"].update(
+            {
+                "resume": "object-store:models/sha256/" + "a" * 64 + "/model.zip",
+                "resume_approval_hash": "b" * 64,
+                "resume_manifest": [
+                    {"path": "model.zip", "sha256": "a" * 64, "size_bytes": 1}
+                ],
+            }
+        )
+
+        with patch.object(job_queue, "enqueue_train_job", return_value={"id": 1}):
+            rows = job_queue.enqueue_train_jobs_from_recipe_document(
+                FakeConnection(),
+                document=document,
+                runtime_image_ref=RUNTIME_IMAGE_REF,
+                machine="beast-3",
+            )
+
+        self.assertEqual(len(rows), 2)
+
     def test_materialization_does_not_normalize_rejected_recipe_fields(self) -> None:
         rejected_fields = {
             "env": {"action_set": "right-jump"},

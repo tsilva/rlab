@@ -17,6 +17,7 @@ from rlab.trusted_inputs import (
     stage_model_input,
 )
 from rlab.policy_models import load_pinned_remote_policy_model
+from rlab.model_sources import download_remote_model_source
 
 
 def _checkpoint(root: Path) -> Path:
@@ -129,6 +130,34 @@ def test_pinned_remote_worker_reverifies_queued_manifest_before_load() -> None:
 
         assert loaded is sentinel
         loader.assert_called_once()
+
+
+def test_content_addressed_s3_model_ref_is_worker_pinnable() -> None:
+    source = "s3://bucket/models/sha256/" + "a" * 64 + "/model.zip"
+    sentinel = SimpleNamespace(model_path=Path("model.zip"), artifact_name=source)
+    with patch("rlab.model_sources.download_s3_model_source", return_value=sentinel) as loader:
+        resolved = download_remote_model_source(
+            source,
+            root=Path("download"),
+            require_pinned=True,
+        )
+
+    assert resolved is sentinel
+    loader.assert_called_once_with(source, root=Path("download"))
+
+
+def test_portable_object_store_model_ref_is_worker_pinnable() -> None:
+    source = "object-store:models/sha256/" + "a" * 64 + "/model.zip"
+    sentinel = SimpleNamespace(model_path=Path("model.zip"), artifact_name=source)
+    with patch("rlab.model_sources.download_s3_model_source", return_value=sentinel) as loader:
+        resolved = download_remote_model_source(
+            source,
+            root=Path("download"),
+            require_pinned=True,
+        )
+
+    assert resolved is sentinel
+    loader.assert_called_once_with(source, root=Path("download"))
 
 
 def test_sb3_deserialization_exists_only_behind_approved_loader() -> None:

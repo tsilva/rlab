@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -19,6 +20,7 @@ from rlab.env_metadata import (
     env_config_from_metadata,
     sanitize_env_config_metadata,
 )
+from rlab.file_utils import file_sha256
 from rlab.recipe_documents import load_goal_contract_document
 from rlab.policy_bundle import (
     CHECKPOINT_FILENAME,
@@ -43,6 +45,7 @@ from rlab.wandb_utils import (
 
 MODEL_KIND_CHOICES = ("final", "best", "checkpoint")
 HUGGINGFACE_MODEL_SCHEME = "hf://"
+OBJECT_STORE_MODEL_SCHEME = "object-store:"
 HUGGINGFACE_MODEL_URL_HOST = "huggingface.co"
 WANDB_RUN_URL_HOST = "wandb.ai"
 MODEL_ARTIFACT_KIND_SUFFIXES = tuple(f"-{kind}" for kind in MODEL_KIND_CHOICES)
@@ -57,6 +60,7 @@ ARTIFACT_PROJECT_COMPATIBILITY = (
     (None, "breakout"),
 )
 MAX_PARALLEL_ARTIFACT_LOOKUPS = 4
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass
@@ -113,6 +117,42 @@ def is_huggingface_model_ref(value: str) -> bool:
         return True
     parsed = urlparse(text)
     return parsed.scheme in {"http", "https"} and parsed.netloc == HUGGINGFACE_MODEL_URL_HOST
+
+
+def _content_addressed_model_parts(path: str) -> tuple[str, ...]:
+    decoded = unquote(path).strip("/")
+    pure = PurePosixPath(decoded)
+    if not decoded or "\\" in decoded or ".." in pure.parts:
+        return ()
+    parts = pure.parts
+    if (
+        len(parts) < 3
+        or parts[-3] != "sha256"
+        or not _SHA256.fullmatch(parts[-2])
+        or parts[-1] != CHECKPOINT_FILENAME
+    ):
+        return ()
+    return parts
+
+
+def is_s3_model_ref(value: str) -> bool:
+    parsed = urlparse(str(value or "").strip())
+    return bool(
+        parsed.scheme == "s3"
+        and parsed.netloc
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and _content_addressed_model_parts(parsed.path)
+    )
+
+
+def is_object_store_model_ref(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text.startswith(OBJECT_STORE_MODEL_SCHEME):
+        return False
+    path = text.removeprefix(OBJECT_STORE_MODEL_SCHEME)
+    return bool(_content_addressed_model_parts(path))
 
 
 def parse_wandb_run_ref(value: str, *, default_project: str | None = None) -> WandbRunRef | None:
@@ -940,6 +980,8 @@ def download_remote_model_source(
     text = str(ref).strip()
     if is_huggingface_model_ref(text):
         resolved = download_huggingface_model_source(text, root=root)
+    elif is_s3_model_ref(text) or is_object_store_model_ref(text):
+        resolved = download_s3_model_source(text, root=root)
     else:
         artifact_ref = text
         if is_wandb_run_ref(text):
@@ -954,7 +996,8 @@ def download_remote_model_source(
             )
         if not artifact_ref or "/" not in artifact_ref or ":" not in artifact_ref:
             raise ValueError(
-                "remote model source must be a Hugging Face model or W&B model artifact"
+                "remote model source must be a content-addressed S3 model, Hugging Face "
+                "model, or W&B model artifact"
             )
         resolved = download_artifact_ref_source(artifact_ref, root)
     pinned = str(resolved.artifact_name or "")
@@ -963,6 +1006,78 @@ def download_remote_model_source(
     if require_pinned and pinned != text:
         raise ValueError(f"remote model locator is not immutable: expected {pinned!r}")
     return resolved
+
+
+def download_s3_model_source(ref: str, *, root: Path) -> ResolvedModelSource:
+    """Download one content-addressed policy bundle from worker-accessible object storage."""
+    text = str(ref).strip()
+    logical = is_object_store_model_ref(text)
+    if not is_s3_model_ref(text) and not logical:
+        raise ValueError(
+            "object-store or S3 model locator must end with "
+            "sha256/<model-sha256>/model.zip"
+        )
+    from rlab.modal_eval_storage import (
+        ObjectNotFound,
+        ObjectStore,
+        object_store_base_uri,
+        write_downloaded_file,
+    )
+    from rlab.wandb_utils import load_wandb_env
+
+    parsed = urlparse(text)
+    path = (
+        text.removeprefix(OBJECT_STORE_MODEL_SCHEME).strip("/")
+        if logical
+        else parsed.path.strip("/")
+    )
+    parts = _content_addressed_model_parts(path)
+    expected_model_sha256 = parts[-2]
+    prefix = "/".join(parts[:-1])
+    target_dir = root / safe_artifact_stem(
+        f"{parsed.netloc or 'object-store'}-{expected_model_sha256}"
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    load_wandb_env()
+    store = ObjectStore(object_store_base_uri() if logical else f"s3://{parsed.netloc}")
+    downloaded: dict[str, Path] = {}
+    for filename in (MODEL_FILENAME, CHECKPOINT_FILENAME, RECIPE_FILENAME):
+        uri = (
+            store.uri(f"{prefix}/{filename}")
+            if logical
+            else f"s3://{parsed.netloc}/{prefix}/{filename}"
+        )
+        try:
+            store.head(uri)
+        except ObjectNotFound:
+            if filename == CHECKPOINT_FILENAME:
+                raise ValueError(
+                    f"object-store model closure is missing {CHECKPOINT_FILENAME}"
+                ) from None
+            continue
+        downloaded[filename] = write_downloaded_file(
+            store.presign_get(uri, expires_seconds=300),
+            target_dir / filename,
+        )
+    model_path = downloaded[CHECKPOINT_FILENAME]
+    actual_model_sha256 = file_sha256(model_path)
+    if actual_model_sha256 != expected_model_sha256:
+        raise ValueError("object-store model bytes do not match the content-addressed locator")
+    bundle = load_policy_bundle_from_checkpoint(
+        model_path,
+        source=text,
+        revision=expected_model_sha256,
+    )
+    return ResolvedModelSource(
+        model_path=model_path,
+        artifact_name=text,
+        checkpoint_step=(
+            int(bundle.model["checkpoint"]["step"])
+            if bundle is not None and bundle.model["checkpoint"].get("step") is not None
+            else None
+        ),
+        bundle=bundle,
+    )
 
 
 def parse_huggingface_model_ref(value: str) -> tuple[str, str | None, str | None]:
