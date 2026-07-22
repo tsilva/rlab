@@ -94,6 +94,42 @@ def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:
     assert set(counts.values()) == {3, 4}
 
 
+def test_bundle_omits_unselected_reward_default_and_accepts_legacy_false(
+    tmp_path: Path,
+) -> None:
+    materialized = compose_train_document(POST400_GOAL, POST400_RECIPE)
+    recipe_document = build_recipe_document(
+        materialized,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="no reward catalog regression",
+        seed=123,
+        runtime_image_ref=RUNTIME,
+    )
+    checkpoint = tmp_path / "model.zip"
+    checkpoint.write_bytes(b"checkpoint bytes")
+    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
+    metadata = {
+        "kind": "checkpoint",
+        "checkpoint_step": 500_000,
+        "algorithm_id": "ppo",
+        "model_class": "stable_baselines3.ppo.ppo.PPO",
+        "training_backend_id": "sb3.ppo",
+        "training_backend_config_hash": training_backend_config_hash(
+            recipe_document["recipe"]["train_config"]
+        ),
+        "reward_shape_is_default": False,
+    }
+    model_document = build_model_document(checkpoint, recipe_path, metadata)
+    assert "reward_shape_is_default" not in model_document["provenance"]
+
+    # Historical bundles emitted the argparse False default even when no reward
+    # program was selected; keep those exact artifacts evaluable.
+    model_document["provenance"]["reward_shape_is_default"] = False
+    write_canonical_json(tmp_path / "model.json", model_document)
+    load_policy_bundle(tmp_path)
+
+
 def write_bundle(root: Path) -> None:
     checkpoint = root / "model.zip"
     checkpoint.write_bytes(b"checkpoint bytes")

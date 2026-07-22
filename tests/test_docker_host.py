@@ -273,6 +273,24 @@ class DockerHostTests(unittest.TestCase):
         self.assertEqual(observation.state, "present")
         self.assertEqual(observation.payload, {"status": "succeeded"})
 
+    def test_remote_legacy_workspace_creates_only_exact_leaf_with_sudo(self) -> None:
+        host = DockerRunnerHost(
+            machine(backend="docker_ssh", host_root="/home/tsilva/rlab")
+        )
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(
+            docker_host,
+            "_run_machine_shell",
+            side_effect=[result, result],
+        ) as run:
+            host.prepare_legacy_workspace("train-176", {"job_id": 176})
+
+        prepare_script = run.call_args_list[0].args[1]
+        self.assertIn("sudo -n install -d", prepare_script)
+        self.assertIn("-m 0700 /home/tsilva/rlab/outputs/train-176", prepare_script)
+        self.assertNotIn("chown", prepare_script)
+        self.assertIn("stat -c %u:%g", prepare_script)
+
     def test_checkpoint_coordinator_recovery_command_is_bounded(self) -> None:
         host = DockerRunnerHost(machine())
         result = subprocess.CompletedProcess([], 0, "", "")

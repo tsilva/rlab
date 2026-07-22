@@ -738,6 +738,8 @@ def build_model_document(
         for key, value in metadata.items()
         if key in _MODEL_PROVENANCE_FIELDS and value not in (None, "")
     }
+    if not provenance.get("reward_shape"):
+        provenance.pop("reward_shape_is_default", None)
     document = {
         "document_type": MODEL_DOCUMENT_TYPE,
         "format_version": MODEL_FORMAT_VERSION,
@@ -804,6 +806,8 @@ def _validate_cross_document_contract(model: Mapping[str, Any], recipe: Mapping[
     ):
         model_value = model["provenance"].get(key)
         recipe_value = train_config.get(key)
+        if key == "reward_shape_is_default" and model_value is False and recipe_value is None:
+            continue
         if model_value not in (None, "") and model_value != recipe_value:
             raise PolicyDocumentError(f"model.json {key} disagrees with recipe.json")
     backend = _required_mapping(

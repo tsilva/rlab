@@ -573,13 +573,27 @@ class DockerRunnerHost:
         """Prepare exact bind sources when workspace layout v1 is dormant."""
 
         output_path = self.output_host_path(launch_id)
-        script = (
-            "set -eu; umask 077; "
-            f"if [ -L {shlex.quote(output_path)} ]; then exit 72; fi; "
-            f"if [ -e {shlex.quote(output_path)} ]; then "
-            f"test -d {shlex.quote(output_path)}; "
-            f"else mkdir {shlex.quote(output_path)}; fi"
-        )
+        quoted_output = shlex.quote(output_path)
+        if self.machine.backend == "docker_ssh":
+            script = (
+                "set -eu; umask 077; owner=$(id -u); group=$(id -g); "
+                f"if [ -L {quoted_output} ]; then exit 72; fi; "
+                f"if [ -e {quoted_output} ]; then "
+                f"test -d {quoted_output}; "
+                "else "
+                f"sudo -n install -d -o \"$owner\" -g \"$group\" -m 0700 {quoted_output}; "
+                "fi; "
+                f"test ! -L {quoted_output}; test -d {quoted_output}; "
+                f'test "$(stat -c %u:%g {quoted_output})" = "$owner:$group"'
+            )
+        else:
+            script = (
+                "set -eu; umask 077; "
+                f"if [ -L {quoted_output} ]; then exit 72; fi; "
+                f"if [ -e {quoted_output} ]; then "
+                f"test -d {quoted_output}; "
+                f"else mkdir {quoted_output}; fi"
+            )
         result = _run_machine_shell(
             self.machine,
             script,
