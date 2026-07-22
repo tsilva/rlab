@@ -23,8 +23,10 @@ from rlab.workspace_helper import (
     delete_prepare,
     install_key_policy,
     recover_reservation_intent,
+    release_generation_env_intent,
     release_reservation_intent,
     reserve_workspace,
+    reserve_generation_env,
     reservation_intent_path,
     unlink_attempt_env,
 )
@@ -280,3 +282,33 @@ def test_key_policy_is_digest_bound_and_drain_inventory_detects_residue(
             receipt_nonce="n" * 32,
         )
     assert inventory["counts"]["discovered_protected_journals"] == 1
+
+
+def test_recovery_env_generation_is_exclusive_receipted_and_identity_unlinked(
+    tmp_path: Path,
+) -> None:
+    contract = manifest(tmp_path)
+    initial = reserve_workspace(
+        contract,
+        payload=b'{"job": 1}\n',
+        attempt_env={"ATTEMPT_TOKEN": "initial-secret"},
+    )
+    release_reservation_intent(contract, receipt_sha256=initial["receipt_sha256"])
+    unlink_attempt_env(contract, initial["leaves"]["env"])
+
+    receipt = reserve_generation_env(
+        contract,
+        container_generation=2,
+        attempt_env={"WANDB_API_KEY": "recovery-secret"},
+    )
+    assert "recovery-secret" not in json.dumps(receipt)
+    assert Path(contract.env_path).read_text(encoding="utf-8") == (
+        "WANDB_API_KEY=recovery-secret\n"
+    )
+    release_generation_env_intent(
+        contract,
+        container_generation=2,
+        receipt_sha256=receipt["receipt_sha256"],
+    )
+    unlink_attempt_env(contract, receipt["env_identity"])
+    assert not Path(contract.env_path).exists()

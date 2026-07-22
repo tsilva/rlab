@@ -1241,6 +1241,19 @@ CREATE TABLE IF NOT EXISTS workspace_cleanup_proofs (
   FOREIGN KEY (launch_id) REFERENCES job_launches(launch_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS workspace_proof_reducer_states (
+  launch_id TEXT NOT NULL REFERENCES job_launches(launch_id) ON DELETE CASCADE,
+  lifecycle_generation BIGINT NOT NULL CHECK (lifecycle_generation >= 1),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending','reducing','blocked','ready')),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_due_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_attempt_at TIMESTAMPTZ,
+  ready_at TIMESTAMPTZ,
+  last_error TEXT,
+  PRIMARY KEY (launch_id, lifecycle_generation)
+);
+
 CREATE TABLE IF NOT EXISTS workspace_cleanup_rows (
   id BIGSERIAL PRIMARY KEY,
   launch_id TEXT NOT NULL,
@@ -1480,6 +1493,9 @@ CREATE INDEX IF NOT EXISTS artifact_durability_run_idx
 CREATE INDEX IF NOT EXISTS workspace_cleanup_ready_idx
   ON workspace_cleanup_rows (next_retry_at, id)
   WHERE workspace_state IN ('pending', 'deleting', 'host_deleted');
+CREATE INDEX IF NOT EXISTS workspace_proof_reducer_due_idx
+  ON workspace_proof_reducer_states (next_due_at, launch_id)
+  WHERE state IN ('pending','blocked');
 CREATE INDEX IF NOT EXISTS workspace_cleanup_review_idx
   ON workspace_cleanup_rows (launch_id, lifecycle_generation)
   WHERE workspace_state = 'rollback_review';
@@ -1489,6 +1505,12 @@ CREATE INDEX IF NOT EXISTS workspace_batch_due_idx
 CREATE INDEX IF NOT EXISTS workspace_signer_outbox_due_idx
   ON workspace_authorization_outbox (next_retry_at, created_at)
   WHERE state IN ('pending', 'leased');
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_single_phase_capability_idx
+  ON workspace_capabilities (
+    capability_kind, launch_id, lifecycle_generation, control_revision
+  )
+  WHERE launch_id IS NOT NULL AND revoked_at IS NULL
+    AND capability_kind IN ('train_claim','cleanup_canary','promotion_enqueue_only');
 
 CREATE OR REPLACE FUNCTION workspace_enforce_train_insert()
 RETURNS trigger
@@ -1497,6 +1519,8 @@ AS $$
 DECLARE
   control workspace_rollout_controls%ROWTYPE;
   capability_id TEXT;
+  consumed_kind TEXT;
+  consumed_schedule_id TEXT;
 BEGIN
   SELECT * INTO control FROM workspace_rollout_controls WHERE singleton=TRUE;
   IF control.protocol_mode = 'dormant' OR NOT control.work_creation_paused THEN
@@ -1512,11 +1536,39 @@ BEGIN
   WHERE workspace_capabilities.capability_id=capability_id
     AND capability_kind IN ('qualification_enqueue','promotion_enqueue_only')
     AND machine=NEW.machine AND control_revision=control.control_revision
+    AND capability_json->>'submission_key'=NEW.submission_key
+    AND capability_json->>'request_hash'=NEW.request_hash
     AND remaining_count > 0 AND revoked_at IS NULL
     AND (expires_at IS NULL OR expires_at > now())
-  RETURNING workspace_capabilities.capability_id INTO capability_id;
+  RETURNING workspace_capabilities.capability_id,
+    workspace_capabilities.capability_kind,
+    workspace_capabilities.schedule_id
+    INTO capability_id, consumed_kind, consumed_schedule_id;
   IF capability_id IS NULL THEN
     RAISE EXCEPTION 'work creation capability is absent, stale, or exhausted';
+  END IF;
+  INSERT INTO workspace_capabilities (
+    capability_id, capability_kind, schedule_id, machine, launch_id,
+    lifecycle_generation, control_revision, capability_json,
+    remaining_count, predecessor_capability_id
+  ) VALUES (
+    capability_id || ':claim:' || NEW.id::text, 'train_claim', consumed_schedule_id,
+    NEW.machine, 'train-' || NEW.id::text, 1, control.control_revision,
+    jsonb_build_object('train_job_id', NEW.id, 'submission_key', NEW.submission_key,
+      'request_hash', NEW.request_hash), 1, capability_id
+  );
+  IF consumed_kind='qualification_enqueue' THEN
+    INSERT INTO workspace_capabilities (
+      capability_id, capability_kind, schedule_id, machine, launch_id,
+      lifecycle_generation, control_revision, capability_json,
+      remaining_count, predecessor_capability_id
+    ) VALUES (
+      capability_id || ':cleanup:' || NEW.id::text, 'cleanup_canary',
+      consumed_schedule_id, NEW.machine, 'train-' || NEW.id::text, 1,
+      control.control_revision,
+      jsonb_build_object('train_job_id', NEW.id, 'submission_key', NEW.submission_key,
+        'request_hash', NEW.request_hash), 1, capability_id
+    );
   END IF;
   RETURN NEW;
 END;
@@ -1549,12 +1601,11 @@ BEGIN
   IF rollout.protocol_mode = 'dormant' OR NOT rollout.work_creation_paused THEN
     RETURN NEW;
   END IF;
-  capability_id := NULLIF(current_setting('rlab.workspace_claim_capability_id', TRUE), '');
   UPDATE workspace_capabilities
   SET remaining_count=remaining_count-1,
       consumed_at=CASE WHEN remaining_count=1 THEN now() ELSE consumed_at END
-  WHERE workspace_capabilities.capability_id=capability_id
-    AND capability_kind='train_claim' AND machine=NEW.machine
+  WHERE capability_kind='train_claim' AND machine=NEW.machine
+    AND launch_id='train-' || NEW.id::text AND lifecycle_generation=1
     AND control_revision=rollout.control_revision
     AND remaining_count > 0 AND revoked_at IS NULL
   RETURNING workspace_capabilities.capability_id INTO capability_id;
@@ -1583,6 +1634,7 @@ RESET_TABLES = (
     "workspace_cleanup_batches",
     "workspace_cleanup_rows",
     "workspace_cleanup_proofs",
+    "workspace_proof_reducer_states",
     "workspace_capabilities",
     "workspace_promotion_receipts",
     "workspace_qualification_receipts",
@@ -1847,6 +1899,7 @@ def export_existing_tables(conn, export_dir: Path) -> Path:
             "machine_drain_zero_receipts": "machine, control_revision",
             "artifact_durability_receipts": "train_job_id, ledger_id, object_kind",
             "workspace_cleanup_proofs": "launch_id, lifecycle_generation",
+            "workspace_proof_reducer_states": "launch_id, lifecycle_generation",
             "workspace_cleanup_batch_rows": "batch_id, ordinal",
             "workspace_authorization_outbox": "batch_id",
             "workspace_signer_leases": "signer_id",
@@ -1898,6 +1951,7 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                   workspace_cleanup_batches,
                   workspace_cleanup_rows,
                   workspace_cleanup_proofs,
+                  workspace_proof_reducer_states,
                   workspace_capabilities,
                   workspace_promotion_receipts,
                   workspace_qualification_receipts,
@@ -1961,6 +2015,7 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
                      OR to_regclass('telemetry_obligations') IS NULL
                      OR to_regclass('artifact_durability_receipts') IS NULL
                      OR to_regclass('workspace_cleanup_proofs') IS NULL
+                     OR to_regclass('workspace_proof_reducer_states') IS NULL
                      OR to_regclass('workspace_cleanup_rows') IS NULL
                      OR to_regclass('workspace_cleanup_batches') IS NULL
                      OR to_regclass('workspace_cleanup_batch_rows') IS NULL
@@ -2659,6 +2714,14 @@ def enqueue_train_job(
     def insert() -> dict[str, Any]:
         acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
+            workspace_capability = str(
+                os.environ.get("RLAB_WORKSPACE_ENQUEUE_CAPABILITY_ID") or ""
+            ).strip()
+            if workspace_capability:
+                cur.execute(
+                    "SELECT set_config('rlab.workspace_enqueue_capability_id', %(value)s, TRUE)",
+                    {"value": workspace_capability},
+                )
             cur.execute(
                 """
                 INSERT INTO train_jobs (
@@ -3310,7 +3373,12 @@ def finalize_machine_drain(conn, *, machine: str, control_revision: int) -> dict
                        ON manifest.launch_id=generation.launch_id
                       AND manifest.generation=generation.workspace_generation
                      WHERE manifest.machine=%(machine)s
-                       AND generation.env_cleanup_state <> 'unlinked')
+                       AND (
+                         generation.env_cleanup_state <> 'unlinked'
+                         OR generation.env_intent_cleanup_state NOT IN (
+                           'not_created','cleaned'
+                         )
+                       ))
                   + (SELECT COUNT(*) FROM workspace_container_members member
                      JOIN workspace_manifests manifest
                        ON manifest.launch_id=member.launch_id
@@ -3376,6 +3444,7 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
                   WHERE launch.state IN ('succeeded','failed','canceled')
                     AND (
                       generation.env_cleanup_state <> 'unlinked'
+                      OR generation.env_intent_cleanup_state IN ('present','failed')
                       OR EXISTS (
                         SELECT 1 FROM workspace_container_members member
                         WHERE member.launch_id=generation.launch_id
@@ -3384,6 +3453,22 @@ def machines_with_service_work(conn=None) -> tuple[str, ...]:
                           AND member.state <> 'absent'
                       )
                     )
+                  UNION ALL
+                  SELECT manifest.machine
+                  FROM workspace_cleanup_rows cleanup
+                  JOIN workspace_manifests manifest
+                    ON manifest.launch_id=cleanup.launch_id
+                   AND manifest.generation=cleanup.lifecycle_generation
+                  LEFT JOIN machine_controls cleanup_control
+                    ON cleanup_control.machine=manifest.machine
+                  WHERE cleanup.workspace_state IN ('pending','deleting','host_deleted')
+                    AND NOT COALESCE(cleanup_control.drained, FALSE)
+                  UNION ALL
+                  SELECT machine FROM machine_controls
+                  WHERE drain_requested AND NOT drained
+                  UNION ALL
+                  SELECT machine FROM host_operation_leases
+                  WHERE state IN ('registered','running','reconciling')
                 ) work
                 ORDER BY machine
                 """

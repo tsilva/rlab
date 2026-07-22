@@ -62,9 +62,13 @@ from rlab.workspace_gc import (
     WorkspaceNotReady,
     attest_launch_workspace_layout,
     authorize_cleanup_batch,
+    authorize_workspace_cleanup_canary,
+    authorize_workspace_enqueue,
+    begin_recovery_container_generation,
     claim_cleanup_rows,
     complete_workspace_qualification_schedule,
     completed_journal_cleanup_due,
+    complete_recovery_env_reservation,
     create_telemetry_obligation,
     create_workspace_qualification_schedule,
     drain_inventory_request,
@@ -79,6 +83,7 @@ from rlab.workspace_gc import (
     make_terminal_env_eligible,
     mark_journal_cleaned,
     mark_prepare_receipt_cleaned,
+    mark_recovery_env_intent_cleaned,
     mark_reservation_intent_cleaned,
     mark_reservation_recovered_for_retry,
     persist_reservation_receipt,
@@ -92,6 +97,7 @@ from rlab.workspace_gc import (
     reduce_cleanup_proof,
     record_workspace_qualification_receipt,
     record_workspace_promotion_receipt,
+    record_proof_reducer_result,
     register_host_operation_lease,
     resolve_rollback_review,
     register_container_generation,
@@ -952,6 +958,22 @@ def cleanup_terminal_credentials(conn, host: DockerRunnerHost, *, limit: int = 3
                     container_generation=container_generation,
                     receipt=receipt,
                 )
+            if str(target.get("env_intent_cleanup_state") or "not_created") not in {
+                "not_created",
+                "cleaned",
+            }:
+                reservation = dict(target.get("env_reservation_receipt") or {})
+                host.release_recovery_env_intent(
+                    manifest,
+                    container_generation=container_generation,
+                    receipt_sha256=str(reservation["receipt_sha256"]),
+                )
+                mark_recovery_env_intent_cleaned(
+                    conn,
+                    launch_id=launch_id,
+                    workspace_generation=workspace_generation,
+                    container_generation=container_generation,
+                )
             cleaned += 1
         except Exception as exc:
             mark_terminal_credential_cleanup_failure(
@@ -1259,8 +1281,12 @@ def run_workspace_gc_pass(conn, *, host: DockerRunnerHost) -> dict[str, int]:
     for launch_id in due_proof_reduction_launches(conn, limit=8):
         try:
             reduce_cleanup_proof(conn, launch_id=launch_id)
+            record_proof_reducer_result(conn, launch_id=launch_id, ready=True)
             reduced += 1
-        except WorkspaceNotReady:
+        except WorkspaceNotReady as exc:
+            record_proof_reducer_result(
+                conn, launch_id=launch_id, ready=False, error=str(exc)
+            )
             not_ready += 1
 
     prepared_rows: list[dict[str, Any]] = []
@@ -1409,13 +1435,133 @@ def recover_live_publication(conn, *, host: DockerRunnerHost) -> int:
                 operation_kind="wandb_publication_recovery",
                 resource_scope=f"workspace:{recovery['launch_id']}",
             ):
+                launch_id = str(recovery["launch_id"])
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT lifecycle_generation FROM job_launches
+                        WHERE launch_id=%(launch_id)s
+                        """,
+                        {"launch_id": launch_id},
+                    )
+                    launch = cur.fetchone()
+                if not launch:
+                    raise RuntimeError("W&B recovery launch manifest is absent")
+                generation = int(launch["lifecycle_generation"])
+                stored = load_workspace_manifest(
+                    conn, launch_id=launch_id, generation=generation
+                )
+                if stored is None:
+                    raise RuntimeError("W&B recovery requires a layout-v1 manifest")
+                manifest, _manifest_row = stored
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(MAX(container_generation), 1) + 1 AS next_generation
+                        FROM workspace_container_generations
+                        WHERE launch_id=%(launch_id)s
+                          AND workspace_generation=%(generation)s
+                        """,
+                        {"launch_id": launch_id, "generation": generation},
+                    )
+                    proposed_generation = max(2, int(cur.fetchone()["next_generation"]))
+                container_name = (
+                    f"rlab-wandb-recovery-{launch_id}-g{proposed_generation}"
+                )
+                container_generation = begin_recovery_container_generation(
+                    conn,
+                    launch_id=launch_id,
+                    workspace_generation=generation,
+                    purpose="wandb_recovery",
+                    env_path=manifest.env_path,
+                    member_kind="wandb",
+                    container_name=container_name,
+                    runtime_image_ref=str(recovery["runtime_image_ref"]),
+                )
+                if container_generation != proposed_generation:
+                    raise RuntimeError("W&B recovery generation allocation changed")
+                recovery_env = load_shared_runner_env(
+                    default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE
+                )
+                env_reservation = host.reserve_recovery_env(
+                    manifest,
+                    container_generation=container_generation,
+                    attempt_env=recovery_env,
+                )
+                complete_recovery_env_reservation(
+                    conn,
+                    launch_id=launch_id,
+                    workspace_generation=generation,
+                    container_generation=container_generation,
+                    receipt=env_reservation,
+                )
+                host.release_recovery_env_intent(
+                    manifest,
+                    container_generation=container_generation,
+                    receipt_sha256=str(env_reservation["receipt_sha256"]),
+                )
+                mark_recovery_env_intent_cleaned(
+                    conn,
+                    launch_id=launch_id,
+                    workspace_generation=generation,
+                    container_generation=container_generation,
+                )
+
+                def attested(receipt: Mapping[str, Any]) -> None:
+                    mark_container_member_state(
+                        conn,
+                        launch_id=launch_id,
+                        workspace_generation=generation,
+                        container_generation=container_generation,
+                        member_kind="wandb",
+                        state="attested_unreleased",
+                        container_id=str(receipt["container_id"]),
+                        mount_attestation=receipt,
+                    )
+                    mark_container_generation_released(
+                        conn,
+                        launch_id=launch_id,
+                        workspace_generation=generation,
+                        container_generation=container_generation,
+                    )
+                    env_receipt = host.unlink_reserved_attempt_env(
+                        manifest,
+                        expected_identity=env_reservation["env_identity"],
+                    )
+                    mark_env_unlinked(
+                        conn,
+                        launch_id=launch_id,
+                        workspace_generation=generation,
+                        container_generation=container_generation,
+                        receipt=env_receipt,
+                    )
+
+                def absent(receipt: Mapping[str, Any]) -> None:
+                    mark_terminal_member_absent(
+                        conn,
+                        launch_id=launch_id,
+                        workspace_generation=generation,
+                        container_generation=container_generation,
+                        member_kind="wandb",
+                        ordinal=0,
+                        receipt={
+                            "container_name": container_name,
+                            "container_id": receipt.get("container_id"),
+                            "verified_absent_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
+
                 run_wandb_publisher_recovery_container(
                     host,
-                    launch_id=str(recovery["launch_id"]),
+                    launch_id=launch_id,
                     run_name=str(
                         recovery.get("run_name") or f"train_job_{recovery['id']}"
                     ),
                     runtime_image_ref=str(recovery["runtime_image_ref"]),
+                    attempt_env_path=manifest.env_path,
+                    on_attested=attested,
+                    on_absent=absent,
+                    container_name=container_name,
                 )
     except Exception as exc:
         error = repr(exc)
@@ -1525,7 +1671,7 @@ def run_service_machine_pass(
             if time.monotonic() < deadline_monotonic:
                 credentials_cleaned += cleanup_terminal_credentials(conn, host)
             drain_finalized = False
-            if time.monotonic() < deadline_monotonic:
+            if bool(control.get("drain_requested")) and time.monotonic() < deadline_monotonic:
                 drain_finalized = try_finalize_requested_drain(conn, host)
             if progress:
                 progress(
@@ -1840,6 +1986,44 @@ def cmd_workspace_gc_complete_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workspace_gc_authorize_canary(args: argparse.Namespace) -> int:
+    conn = _connect_from_args(args)
+    try:
+        result = authorize_workspace_cleanup_canary(
+            conn,
+            schedule_id=args.schedule_id,
+            cleanup_row_id=args.cleanup_row_id,
+            rollout_owner=args.owner,
+        )
+    finally:
+        conn.close()
+    print(json.dumps(json_safe(result), sort_keys=True))
+    return 0
+
+
+def cmd_workspace_gc_authorize_enqueue(args: argparse.Namespace) -> int:
+    conn = _connect_from_args(args)
+    try:
+        result = authorize_workspace_enqueue(
+            conn,
+            schedule_id=args.schedule_id,
+            machine=args.machine,
+            submission_key=args.submission_key,
+            request_hash=args.request_hash,
+            rollout_owner=args.owner,
+            promotion_only=bool(args.promotion_only),
+        )
+    finally:
+        conn.close()
+    payload = json_safe(result)
+    payload["usage"] = (
+        f"RLAB_WORKSPACE_ENQUEUE_CAPABILITY_ID={result['capability_id']} "
+        "<exact queue submission>"
+    )
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
 def _set_gc_rollout(args: argparse.Namespace, *, mode: str, paused: bool, enabled: bool) -> int:
     conn = _connect_from_args(args)
     try:
@@ -2027,6 +2211,23 @@ def build_parser() -> argparse.ArgumentParser:
     gc_complete.add_argument("--schedule-id", required=True)
     gc_complete.add_argument("--owner", required=True)
     gc_complete.set_defaults(func=cmd_workspace_gc_complete_schedule)
+
+    gc_canary = workspace_gc_commands.add_parser("authorize-canary")
+    add_database_arg(gc_canary)
+    gc_canary.add_argument("--schedule-id", required=True)
+    gc_canary.add_argument("--cleanup-row-id", type=int, required=True)
+    gc_canary.add_argument("--owner", required=True)
+    gc_canary.set_defaults(func=cmd_workspace_gc_authorize_canary)
+
+    gc_enqueue = workspace_gc_commands.add_parser("authorize-enqueue")
+    add_database_arg(gc_enqueue)
+    gc_enqueue.add_argument("--schedule-id", required=True)
+    gc_enqueue.add_argument("--machine", required=True)
+    gc_enqueue.add_argument("--submission-key", required=True)
+    gc_enqueue.add_argument("--request-hash", required=True)
+    gc_enqueue.add_argument("--owner", required=True)
+    gc_enqueue.add_argument("--promotion-only", action="store_true")
+    gc_enqueue.set_defaults(func=cmd_workspace_gc_authorize_enqueue)
 
     def add_rollout_control_args(command: argparse.ArgumentParser) -> None:
         add_database_arg(command)

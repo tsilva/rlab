@@ -59,13 +59,19 @@ Use `rlab fleet workspace-gc status` and `doctor` first. A safe rollout is delib
 
 1. `qualify` enters paused qualification mode at an expected revision.
 2. `create-schedule` records the exact host set and global concurrency cap.
-3. Run the counterbalanced benchmark and canaries described by the schedule.
+3. Use `authorize-enqueue` for each exact submission key/request hash and pass the returned
+   capability only through `RLAB_WORKSPACE_ENQUEUE_CAPABILITY_ID` on that submission. The insert
+   atomically mints its one train-claim and cleanup-canary capability; both are bound to the
+   deterministic launch and lifecycle generation. `authorize-canary` exists only for exact
+   preexisting residual rows in the schedule. Run the counterbalanced benchmark and canaries.
 4. `record-qualification` accepts only evidence satisfying all throughput, tail, mixed-backlog,
    boundary, service-rate, and quiescence limits.
 5. `complete-schedule` fails until every scheduled host has a receipt.
 6. `enable-machine` binds each machine revision to its exact passed receipt SHA-256.
-7. `promote` enters paused `promotion_verifying`; it does not resume ordinary admission.
-8. Run one ordinary evidence-bound verification launch, then use `record-promotion` after its
+7. `promote` enters paused `promotion_verifying`; it does not resume ordinary admission. Issue
+   exactly one `authorize-enqueue --promotion-only` capability; it deliberately mints no cleanup
+   bypass.
+8. Run that ordinary evidence-bound verification launch, then use `record-promotion` after its
    cleanup and journal cleanup complete and the quiescence gate passes.
 9. `activate` performs the final revision-checked gate. It requires all admitted machines to be
    qualified, a healthy signer lease, no active host-operation lease or rollback-review row, and

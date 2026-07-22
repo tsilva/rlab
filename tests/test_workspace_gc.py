@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from rlab.workspace_gc import DurabilityReceipt
+from rlab.job_queue import WORKSPACE_SCHEMA_SQL
+from rlab.workspace_gc import DurabilityReceipt, record_workspace_qualification_receipt
 
 
 def receipt(**overrides) -> DurabilityReceipt:
@@ -42,3 +43,21 @@ def test_durability_receipt_rejects_unbound_hashes() -> None:
     with pytest.raises(ValueError, match="SHA-256"):
         receipt(policy_sha256="metadata-only").validate()
 
+
+def test_qualification_receipt_fails_before_database_when_evidence_is_incomplete() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        record_workspace_qualification_receipt(
+            None,
+            schedule_id="schedule",
+            machine="beast-3",
+            machine_control_revision=1,
+            evidence={"paired_blocks": 5},
+        )
+
+
+def test_schema_contains_database_enforced_pause_drain_and_promotion_gates() -> None:
+    assert "workspace_train_insert_gate" in WORKSPACE_SCHEMA_SQL
+    assert "workspace_train_claim_gate" in WORKSPACE_SCHEMA_SQL
+    assert "machine_controls_drain_guard" in WORKSPACE_SCHEMA_SQL
+    assert "workspace_promotion_receipts" in WORKSPACE_SCHEMA_SQL
+    assert "workspace_qualification_receipts" in WORKSPACE_SCHEMA_SQL

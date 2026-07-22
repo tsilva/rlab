@@ -274,7 +274,10 @@ class DockerHostTests(unittest.TestCase):
     def test_checkpoint_coordinator_recovery_command_is_bounded(self) -> None:
         host = DockerRunnerHost(machine())
         result = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run:
+        with (
+            mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run,
+            mock.patch.object(host, "container_is_absent", return_value=True),
+        ):
             docker_host.run_checkpoint_coordinator_container(
                 host,
                 launch_id="train-12",
@@ -282,7 +285,7 @@ class DockerHostTests(unittest.TestCase):
                 runtime_image_ref=RUNTIME_IMAGE_REF,
             )
 
-        args = run.call_args.args[1]
+        args = run.call_args_list[0].args[1]
         text = " ".join(args)
         self.assertIn("--drain-and-exit", args)
         self.assertIn("/output/train-12/runs/run-12", text)
@@ -291,7 +294,17 @@ class DockerHostTests(unittest.TestCase):
     def test_wandb_recovery_container_is_cpu_only_and_bounded(self) -> None:
         host = DockerRunnerHost(machine())
         result = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run:
+        attestation = {"container_id": "cid", "container_name": "recovery"}
+        with (
+            mock.patch.object(docker_host, "_run_machine_docker", return_value=result) as run,
+            mock.patch.object(host, "attest_recovery_container", return_value=attestation),
+            mock.patch.object(
+                host,
+                "remove_container",
+                return_value=docker_host.HostOperationResult(ok=True),
+            ),
+            mock.patch.object(host, "container_is_absent", return_value=True),
+        ):
             docker_host.run_wandb_publisher_recovery_container(
                 host,
                 launch_id="train-12",
@@ -299,13 +312,14 @@ class DockerHostTests(unittest.TestCase):
                 runtime_image_ref=RUNTIME_IMAGE_REF,
             )
 
-        args = run.call_args.args[1]
+        args = run.call_args_list[0].args[1]
         self.assertIn("rlab.wandb_publisher", args)
         self.assertIn("/output/train-12/publisher.stop", args)
         self.assertNotIn("--gpus", args)
         self.assertIn("rlab-wandb-recovery-train-12", args)
         self.assertIn("105s", args)
-        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+        start_call = next(call for call in run.call_args_list if call.args[1][:2] == ["start", "--attach"])
+        self.assertEqual(start_call.kwargs["timeout"], 120)
 
     def test_import_order_has_no_cycles(self) -> None:
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
@@ -321,6 +335,51 @@ class DockerHostTests(unittest.TestCase):
             env=env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_train_attestation_rejects_an_extra_broad_workspace_bind(self) -> None:
+        host = DockerRunnerHost(machine())
+        document = [
+            {
+                "Id": "container-id",
+                "Config": {
+                    "Image": docker_host.docker_image_ref(RUNTIME_IMAGE_REF),
+                    "Labels": {
+                        LAUNCH_ID_LABEL: "train-12",
+                        docker_host.MANAGED_LABEL: "true",
+                    },
+                    "Entrypoint": ["rlab-container-entrypoint"],
+                    "Cmd": ["rlab", "run-job"],
+                },
+                "Mounts": [
+                    {
+                        "Type": "bind",
+                        "Source": host.payload_host_path("train-12"),
+                        "Destination": host.payload_container_path("train-12"),
+                        "RW": False,
+                    },
+                    {
+                        "Type": "bind",
+                        "Source": host.output_host_path("train-12"),
+                        "Destination": host.output_container_path("train-12"),
+                        "RW": True,
+                    },
+                    {
+                        "Type": "bind",
+                        "Source": host.machine.paths.host_root,
+                        "Destination": "/unexpected",
+                        "RW": True,
+                    },
+                ],
+            }
+        ]
+        result = subprocess.CompletedProcess([], 0, json.dumps(document), "")
+        with mock.patch.object(docker_host, "_run_machine_docker", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "broad/exclusive"):
+                host.attest_train_container(
+                    container_name="train-container",
+                    launch_id="train-12",
+                    runtime_image_ref=RUNTIME_IMAGE_REF,
+                )
 
 
 if __name__ == "__main__":

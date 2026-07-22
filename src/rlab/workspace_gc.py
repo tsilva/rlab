@@ -367,6 +367,20 @@ def register_container_generation(
                       %(launch_id)s, %(workspace_generation)s, %(container_generation)s,
                       %(member_kind)s, %(ordinal)s, %(container_name)s, %(runtime_image_ref)s
                     )
+                    ON CONFLICT (
+                      launch_id, workspace_generation, container_generation, member_kind, ordinal
+                    ) DO NOTHING
+                    """,
+                    {
+                        "launch_id": launch_id,
+                        "workspace_generation": int(workspace_generation),
+                        "container_generation": int(container_generation),
+                        "member_kind": str(member["member_kind"]),
+                        "ordinal": ordinal,
+                        "container_name": str(member["container_name"]),
+                        "runtime_image_ref": str(member["runtime_image_ref"]),
+                    },
+                )
 
 
 def begin_recovery_container_generation(
@@ -518,22 +532,6 @@ def mark_recovery_env_intent_cleaned(
             )
             if not cur.fetchone():
                 raise WorkspaceStateConflict("recovery env intent cleanup changed")
-                    ON CONFLICT (
-                      launch_id, workspace_generation, container_generation, member_kind, ordinal
-                    ) DO NOTHING
-                    """,
-                    {
-                        "launch_id": launch_id,
-                        "workspace_generation": int(workspace_generation),
-                        "container_generation": int(container_generation),
-                        "member_kind": str(member["member_kind"]),
-                        "ordinal": ordinal,
-                        "container_name": str(member["container_name"]),
-                        "runtime_image_ref": str(member["runtime_image_ref"]),
-                    },
-                )
-
-
 def mark_container_member_state(
     conn,
     *,
@@ -659,6 +657,7 @@ def terminal_credential_cleanup_targets(
               generation.container_generation, generation.env_path,
               generation.env_device, generation.env_inode,
               generation.env_cleanup_state, manifest.manifest_json,
+              generation.env_reservation_receipt, generation.env_intent_cleanup_state,
               COALESCE(jsonb_agg(jsonb_build_object(
                 'member_kind', member.member_kind,
                 'ordinal', member.ordinal,
@@ -680,6 +679,7 @@ def terminal_credential_cleanup_targets(
               AND launch.state IN ('succeeded','failed','canceled')
               AND (
                 generation.env_cleanup_state <> 'unlinked'
+                OR generation.env_intent_cleanup_state IN ('present','failed')
                 OR EXISTS (
                   SELECT 1 FROM workspace_container_members pending_member
                   WHERE pending_member.launch_id=generation.launch_id
@@ -696,6 +696,7 @@ def terminal_credential_cleanup_targets(
               generation.container_generation, generation.env_path,
               generation.env_device, generation.env_inode,
               generation.env_cleanup_state, manifest.manifest_json, generation.created_at
+              , generation.env_reservation_receipt, generation.env_intent_cleanup_state
             ORDER BY generation.created_at
             LIMIT %(limit)s
             """,
@@ -1135,7 +1136,7 @@ def _proof_snapshot(conn, *, launch_id: str) -> dict[str, Any]:
 
         cur.execute(
             """
-            SELECT container_generation, env_cleanup_state
+            SELECT container_generation, env_cleanup_state, env_intent_cleanup_state
             FROM workspace_container_generations
             WHERE launch_id=%(launch_id)s AND workspace_generation=%(generation)s
             ORDER BY container_generation
@@ -1143,7 +1144,11 @@ def _proof_snapshot(conn, *, launch_id: str) -> dict[str, Any]:
             {"launch_id": launch_id, "generation": generation},
         )
         generations = [dict(row) for row in cur.fetchall()]
-        if not generations or any(row["env_cleanup_state"] != "unlinked" for row in generations):
+        if not generations or any(
+            row["env_cleanup_state"] != "unlinked"
+            or row["env_intent_cleanup_state"] not in {"not_created", "cleaned"}
+            for row in generations
+        ):
             raise WorkspaceNotReady("credential environment cleanup is incomplete")
         cur.execute(
             """
@@ -1382,11 +1387,13 @@ def claim_cleanup_rows(
             control = cur.fetchone()
             if (
                 not control
-                or not control["cleanup_enabled"]
                 or control["drain_requested"]
                 or control["drained"]
                 or control["host_mutation_quarantined"]
             ):
+                return []
+            machine_enabled = bool(control["cleanup_enabled"])
+            if rollout["protocol_mode"] != "qualification" and not machine_enabled:
                 return []
             cur.execute(
                 """
@@ -1399,6 +1406,18 @@ def claim_cleanup_rows(
                     AND p.lifecycle_generation=r.lifecycle_generation
                   WHERE l.machine=%(machine)s
                     AND r.workspace_state='pending'
+                    AND (
+                      %(machine_enabled)s OR EXISTS (
+                        SELECT 1 FROM workspace_capabilities capability
+                        WHERE capability.capability_kind='cleanup_canary'
+                          AND capability.machine=l.machine
+                          AND capability.launch_id=r.launch_id
+                          AND capability.lifecycle_generation=r.lifecycle_generation
+                          AND capability.control_revision=%(rollout_revision)s
+                          AND capability.remaining_count > 0
+                          AND capability.revoked_at IS NULL
+                      )
+                    )
                     AND (r.next_retry_at IS NULL OR r.next_retry_at <= now())
                     AND NOT EXISTS (
                       SELECT 1 FROM host_operation_leases h
@@ -1421,9 +1440,38 @@ def claim_cleanup_rows(
                     "limit": limit,
                     "attempt_id": attempt_id,
                     "control_revision": int(control["control_revision"]),
+                    "machine_enabled": machine_enabled,
+                    "rollout_revision": int(rollout["control_revision"]),
                 },
             )
-            return [dict(row) for row in cur.fetchall()]
+            claimed = [dict(row) for row in cur.fetchall()]
+            if not machine_enabled:
+                for row in claimed:
+                    cur.execute(
+                        """
+                        UPDATE workspace_capabilities
+                        SET remaining_count=remaining_count-1,
+                          consumed_at=CASE WHEN remaining_count=1 THEN now()
+                            ELSE consumed_at END
+                        WHERE capability_kind='cleanup_canary'
+                          AND machine=%(machine)s AND launch_id=%(launch_id)s
+                          AND lifecycle_generation=%(generation)s
+                          AND control_revision=%(control_revision)s
+                          AND remaining_count > 0 AND revoked_at IS NULL
+                        RETURNING capability_id
+                        """,
+                        {
+                            "machine": machine,
+                            "launch_id": row["launch_id"],
+                            "generation": int(row["lifecycle_generation"]),
+                            "control_revision": int(rollout["control_revision"]),
+                        },
+                    )
+                    if not cur.fetchone():
+                        raise WorkspaceStateConflict(
+                            "cleanup canary capability changed while claiming row"
+                        )
+            return claimed
 
 
 def record_delete_prepare(
@@ -1875,11 +1923,34 @@ def due_proof_reduction_launches(conn, *, limit: int = 25) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT l.launch_id
+            INSERT INTO workspace_proof_reducer_states (
+              launch_id, lifecycle_generation, state, next_due_at
+            )
+            SELECT l.launch_id, l.lifecycle_generation, 'pending', now()
             FROM job_launches l
             JOIN train_jobs t ON t.id=l.job_id
             WHERE l.workspace_layout_version=1
               AND l.state='succeeded' AND t.status='succeeded'
+              AND NOT EXISTS (
+                SELECT 1 FROM workspace_cleanup_proofs p
+                WHERE p.launch_id=l.launch_id
+                  AND p.lifecycle_generation=l.lifecycle_generation
+              )
+            ON CONFLICT (launch_id, lifecycle_generation) DO NOTHING
+            """
+        )
+        cur.execute(
+            """
+            SELECT l.launch_id
+            FROM job_launches l
+            JOIN train_jobs t ON t.id=l.job_id
+            JOIN workspace_proof_reducer_states reducer
+              ON reducer.launch_id=l.launch_id
+             AND reducer.lifecycle_generation=l.lifecycle_generation
+            WHERE l.workspace_layout_version=1
+              AND l.state='succeeded' AND t.status='succeeded'
+              AND reducer.state IN ('pending','blocked')
+              AND reducer.next_due_at <= now()
               AND NOT EXISTS (
                 SELECT 1 FROM workspace_cleanup_proofs p
                 WHERE p.launch_id=l.launch_id
@@ -1891,6 +1962,33 @@ def due_proof_reduction_launches(conn, *, limit: int = 25) -> list[str]:
             {"limit": max(1, int(limit))},
         )
         return [str(row["launch_id"]) for row in cur.fetchall()]
+
+
+def record_proof_reducer_result(
+    conn, *, launch_id: str, ready: bool, error: str | None = None
+) -> None:
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workspace_proof_reducer_states reducer
+                SET state=CASE WHEN %(ready)s THEN 'ready' ELSE 'blocked' END,
+                  attempts=attempts+1, last_attempt_at=now(),
+                  ready_at=CASE WHEN %(ready)s THEN now() ELSE ready_at END,
+                  next_due_at=CASE WHEN %(ready)s THEN now()
+                    ELSE now() + interval '5 seconds' END,
+                  last_error=CASE WHEN %(ready)s THEN NULL ELSE %(error)s END
+                FROM job_launches launch
+                WHERE reducer.launch_id=%(launch_id)s
+                  AND launch.launch_id=reducer.launch_id
+                  AND reducer.lifecycle_generation=launch.lifecycle_generation
+                """,
+                {
+                    "launch_id": launch_id,
+                    "ready": bool(ready),
+                    "error": str(error or "")[:4000],
+                },
+            )
 
 
 def close_due_telemetry_obligations(conn, *, limit: int = 100) -> int:
@@ -2080,6 +2178,15 @@ def workspace_gc_status(conn, *, machine: str | None = None) -> dict[str, Any]:
             """
         )
         signer = [dict(row) for row in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT state, COUNT(*) AS count, MIN(next_due_at) AS oldest_due_at,
+              MAX(last_error) FILTER (WHERE last_error IS NOT NULL) AS sample_error
+            FROM workspace_proof_reducer_states
+            GROUP BY state ORDER BY state
+            """
+        )
+        reducers = [dict(row) for row in cur.fetchall()]
     return {
         "rollout": rollout,
         "machine_controls": controls,
@@ -2088,6 +2195,7 @@ def workspace_gc_status(conn, *, machine: str | None = None) -> dict[str, Any]:
         "lifecycle": lifecycle,
         "artifact_durability": durability,
         "signer_outbox": signer,
+        "proof_reducer": reducers,
     }
 
 
@@ -2449,6 +2557,11 @@ def create_workspace_qualification_schedule(
     cap = int(schedule.get("global_concurrency_cap") or 0)
     if cap < 1:
         raise ValueError("qualification schedule requires a positive global concurrency cap")
+    budgets = schedule.get("machine_budgets")
+    if not isinstance(budgets, Mapping) or set(map(str, budgets)) != set(machines):
+        raise ValueError("qualification schedule requires one budget for every machine")
+    if any(int(budgets[machine]) < 1 for machine in machines):
+        raise ValueError("qualification machine budgets must be positive")
     digest = sha256_json(dict(schedule))
     schedule_id = f"wqs-{digest[:24]}"
     with conn:
@@ -2488,6 +2601,93 @@ def create_workspace_qualification_schedule(
                     "qualification rollout revision/owner is not current and paused"
                 )
             return dict(row)
+
+
+def authorize_workspace_enqueue(
+    conn,
+    *,
+    schedule_id: str,
+    machine: str,
+    submission_key: str,
+    request_hash: str,
+    rollout_owner: str,
+    promotion_only: bool = False,
+) -> dict[str, Any]:
+    capability_id = f"wcap-enqueue-{uuid.uuid4().hex}"
+    kind = "promotion_enqueue_only" if promotion_only else "qualification_enqueue"
+    with conn:
+        acquire_work_creation_xact_lock(conn, exclusive=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT schedule.*, control.protocol_mode,
+                  control.control_revision AS current_revision
+                FROM workspace_qualification_schedules schedule
+                JOIN workspace_rollout_controls control ON control.singleton
+                WHERE schedule.schedule_id=%(schedule_id)s
+                  AND schedule.rollout_owner=%(rollout_owner)s
+                  AND control.work_creation_paused
+                FOR UPDATE OF schedule
+                """,
+                {"schedule_id": schedule_id, "rollout_owner": rollout_owner},
+            )
+            schedule = cur.fetchone()
+            expected_mode = "promotion_verifying" if promotion_only else "qualification"
+            expected_state = "passed" if promotion_only else "running"
+            if (
+                not schedule
+                or schedule["protocol_mode"] != expected_mode
+                or schedule["state"] != expected_state
+                or (
+                    not promotion_only
+                    and int(schedule["control_revision"])
+                    != int(schedule["current_revision"])
+                )
+            ):
+                raise WorkspaceStateConflict("enqueue schedule is not active in the expected mode")
+            budgets = dict(schedule["schedule_json"].get("machine_budgets") or {})
+            if machine not in budgets:
+                raise WorkspaceStateConflict("machine is outside the qualification schedule")
+            cur.execute(
+                """
+                SELECT COUNT(*) AS used FROM workspace_capabilities
+                WHERE schedule_id=%(schedule_id)s AND machine=%(machine)s
+                  AND capability_kind=%(kind)s
+                """,
+                {"schedule_id": schedule_id, "machine": machine, "kind": kind},
+            )
+            used = int(cur.fetchone()["used"])
+            if (promotion_only and used >= 1) or (
+                not promotion_only and used >= int(budgets[machine])
+            ):
+                raise WorkspaceStateConflict("machine qualification submission budget is exhausted")
+            capability = {
+                "submission_key": submission_key,
+                "request_hash": request_hash,
+                "schedule_sha256": schedule["schedule_sha256"],
+            }
+            cur.execute(
+                """
+                INSERT INTO workspace_capabilities (
+                  capability_id, capability_kind, schedule_id, machine,
+                  control_revision, capability_json, remaining_count, expires_at
+                ) VALUES (
+                  %(capability_id)s, %(kind)s, %(schedule_id)s, %(machine)s,
+                  %(control_revision)s, %(capability_json)s, 1,
+                  now() + interval '1 hour'
+                )
+                RETURNING *
+                """,
+                {
+                    "capability_id": capability_id,
+                    "kind": kind,
+                    "schedule_id": schedule_id,
+                    "machine": machine,
+                    "control_revision": int(schedule["current_revision"]),
+                    "capability_json": json_arg(capability),
+                },
+            )
+            return dict(cur.fetchone())
 
 
 def complete_workspace_qualification_schedule(
@@ -2532,6 +2732,62 @@ def complete_workspace_qualification_schedule(
                 {"schedule_id": schedule_id},
             )
             return dict(cur.fetchone())
+
+
+def authorize_workspace_cleanup_canary(
+    conn,
+    *,
+    schedule_id: str,
+    cleanup_row_id: int,
+    rollout_owner: str,
+) -> dict[str, Any]:
+    capability_id = f"wcap-cleanup-{uuid.uuid4().hex}"
+    with conn:
+        acquire_work_creation_xact_lock(conn, exclusive=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO workspace_capabilities (
+                  capability_id, capability_kind, schedule_id, machine,
+                  launch_id, lifecycle_generation, control_revision,
+                  capability_json, remaining_count
+                )
+                SELECT %(capability_id)s, 'cleanup_canary', schedule.schedule_id,
+                  manifest.machine, row.launch_id, row.lifecycle_generation,
+                  control.control_revision,
+                  jsonb_build_object(
+                    'cleanup_row_id', row.id,
+                    'manifest_sha256', row.manifest_sha256,
+                    'schedule_sha256', schedule.schedule_sha256
+                  ), 1
+                FROM workspace_cleanup_rows row
+                JOIN workspace_manifests manifest ON manifest.launch_id=row.launch_id
+                  AND manifest.generation=row.lifecycle_generation
+                JOIN workspace_qualification_schedules schedule
+                  ON schedule.schedule_id=%(schedule_id)s
+                JOIN workspace_rollout_controls control ON control.singleton
+                WHERE row.id=%(cleanup_row_id)s AND row.workspace_state='pending'
+                  AND schedule.state='running'
+                  AND schedule.rollout_owner=%(rollout_owner)s
+                  AND control.protocol_mode='qualification'
+                  AND control.control_revision=schedule.control_revision
+                  AND control.work_creation_paused
+                  AND schedule.schedule_json->'machines' ? manifest.machine
+                RETURNING *
+                """,
+                {
+                    "capability_id": capability_id,
+                    "schedule_id": schedule_id,
+                    "cleanup_row_id": int(cleanup_row_id),
+                    "rollout_owner": rollout_owner,
+                },
+            )
+            row = cur.fetchone()
+            if not row:
+                raise WorkspaceStateConflict(
+                    "cleanup canary row is not pending in the active qualification schedule"
+                )
+            return dict(row)
 
 
 def resolve_rollback_review(
@@ -2596,16 +2852,30 @@ def register_host_operation_lease(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT control_revision, host_mutation_quarantined, drained
+                SELECT control_revision, host_mutation_quarantined, drained,
+                  CASE WHEN %(launch_id)s IS NULL THEN NULL ELSE (
+                    SELECT row.workspace_state FROM workspace_cleanup_rows row
+                    WHERE row.launch_id=%(launch_id)s
+                      AND row.lifecycle_generation=%(lifecycle_generation)s
+                  ) END AS workspace_state
                 FROM machine_controls WHERE machine=%(machine)s FOR UPDATE
                 """,
-                {"machine": machine},
+                {
+                    "machine": machine,
+                    "launch_id": launch_id,
+                    "lifecycle_generation": lifecycle_generation,
+                },
             )
             control = cur.fetchone()
             if not control:
                 raise WorkspaceStateConflict(f"machine control does not exist: {machine}")
             if control["host_mutation_quarantined"] or control["drained"]:
                 raise WorkspaceStateConflict("host mutation is quarantined or drained")
+            if control.get("workspace_state") in IRREVERSIBLE_WORKSPACE_STATES:
+                raise WorkspaceStateConflict(
+                    f"host mutation rejected from workspace state "
+                    f"{control['workspace_state']}"
+                )
             cur.execute(
                 """
                 INSERT INTO host_operation_leases (
@@ -2657,3 +2927,49 @@ def finish_host_operation_lease(
             )
             if not cur.fetchone():
                 raise WorkspaceStateConflict("host operation lease is not active")
+
+
+def quarantine_expired_host_operation_leases(conn, *, limit: int = 25) -> int:
+    quarantined = 0
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT operation_id, machine
+                FROM host_operation_leases
+                WHERE state IN ('registered','running','reconciling')
+                  AND deadline_at <= now()
+                ORDER BY machine, deadline_at
+                LIMIT %(limit)s
+                """,
+                {"limit": max(1, min(int(limit), 100))},
+            )
+            rows = [dict(row) for row in cur.fetchall()]
+            for row in rows:
+                acquire_machine_control_xact_lock(conn, machine=str(row["machine"]))
+                cur.execute(
+                    """
+                    UPDATE host_operation_leases
+                    SET state='failed', completed_at=now(), heartbeat_at=now(),
+                      last_error='operation lease expired with ambiguous host outcome'
+                    WHERE operation_id=%(operation_id)s
+                      AND state IN ('registered','running','reconciling')
+                    """,
+                    {"operation_id": row["operation_id"]},
+                )
+                cur.execute(
+                    """
+                    UPDATE machine_controls
+                    SET host_mutation_quarantined=TRUE, cleanup_enabled=FALSE,
+                      normal_admission_disabled=TRUE,
+                      control_revision=control_revision+1,
+                      reason=%(reason)s, updated_at=now()
+                    WHERE machine=%(machine)s
+                    """,
+                    {
+                        "machine": row["machine"],
+                        "reason": f"expired host operation {row['operation_id']}",
+                    },
+                )
+                quarantined += 1
+    return quarantined

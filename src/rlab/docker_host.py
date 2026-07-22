@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1117,6 +1117,56 @@ class DockerRunnerHost:
             "attested_at": datetime.now(UTC).isoformat(),
         }
 
+    def attest_recovery_container(
+        self,
+        *,
+        container_name: str,
+        launch_id: str,
+        runtime_image_ref: str,
+        member_kind: str,
+    ) -> dict[str, Any]:
+        result = _run_machine_docker(
+            self.machine,
+            ["container", "inspect", container_name],
+            capture=True,
+            deadline_monotonic=self.deadline_monotonic,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"cannot inspect recovery container {container_name}")
+        try:
+            document = json.loads(result.stdout)[0]
+        except (json.JSONDecodeError, IndexError, TypeError) as exc:
+            raise RuntimeError("recovery container inspect returned invalid JSON") from exc
+        mounts = list(document.get("Mounts") or ())
+        expected_source = os.path.normpath(self.output_host_path(launch_id))
+        expected_destination = os.path.normpath(self.output_container_path(launch_id))
+        if len(mounts) != 1:
+            raise RuntimeError("recovery container must have exactly one mount")
+        mount = mounts[0]
+        if (
+            mount.get("Type") != "bind"
+            or os.path.normpath(str(mount.get("Source") or "")) != expected_source
+            or os.path.normpath(str(mount.get("Destination") or ""))
+            != expected_destination
+            or not bool(mount.get("RW"))
+        ):
+            raise RuntimeError("recovery container exact output mount attestation failed")
+        config = dict(document.get("Config") or {})
+        if str(config.get("Image") or "") != docker_image_ref(runtime_image_ref):
+            raise RuntimeError("recovery container image attestation failed")
+        return {
+            "container_id": str(document.get("Id") or ""),
+            "container_name": container_name,
+            "member_kind": member_kind,
+            "runtime_image_ref": runtime_image_ref,
+            "mount": {
+                "source": expected_source,
+                "destination": expected_destination,
+                "writable": True,
+            },
+            "attested_at": datetime.now(UTC).isoformat(),
+        }
+
     def remove_runtime_image(self, image_ref: str) -> HostOperationResult:
         result = _run_machine_docker(
             self.machine,
@@ -1365,6 +1415,9 @@ def run_checkpoint_coordinator_container(
     )
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
+    container_name = f"rlab-checkpoint-recovery-{launch_id}"
+    if not host.container_is_absent(container_name):
+        raise RuntimeError("checkpoint recovery container object remains after exit")
 
 
 def run_wandb_publisher_recovery_container(
@@ -1373,19 +1426,23 @@ def run_wandb_publisher_recovery_container(
     launch_id: str,
     run_name: str,
     runtime_image_ref: str,
+    attempt_env_path: str | None = None,
+    on_attested: Callable[[Mapping[str, Any]], None] | None = None,
+    on_absent: Callable[[Mapping[str, Any]], None] | None = None,
+    container_name: str | None = None,
 ) -> None:
     """Drain the durable SQLite outbox in a CPU-only container on the launch host."""
 
     container_output = host.output_container_path(launch_id)
-    result = _run_machine_docker(
+    container_name = container_name or f"rlab-wandb-recovery-{launch_id}"
+    created = _run_machine_docker(
         host.machine,
         [
-            "run",
-            "--rm",
+            "create",
             "--name",
-            f"rlab-wandb-recovery-{launch_id}",
+            container_name,
             "--env-file",
-            host.machine.paths.env_file,
+            attempt_env_path or host.machine.paths.env_file,
             "--mount",
             exact_bind_mount(
                 host.output_host_path(launch_id),
@@ -1411,5 +1468,34 @@ def run_wandb_publisher_recovery_container(
         timeout=120,
         deadline_monotonic=host.deadline_monotonic,
     )
-    if result.returncode:
-        raise RuntimeError(result.stderr or result.stdout)
+    if created.returncode:
+        raise RuntimeError(created.stderr or created.stdout)
+    attestation = host.attest_recovery_container(
+        container_name=container_name,
+        launch_id=launch_id,
+        runtime_image_ref=runtime_image_ref,
+        member_kind="wandb",
+    )
+    if on_attested:
+        on_attested(attestation)
+    error: str | None = None
+    try:
+        result = _run_machine_docker(
+            host.machine,
+            ["start", "--attach", container_name],
+            capture=True,
+            timeout=120,
+            deadline_monotonic=host.deadline_monotonic,
+        )
+        if result.returncode:
+            error = str(result.stderr or result.stdout)
+    finally:
+        removed = host.remove_container(container_name, force=True)
+        if not removed.ok and not host.container_is_absent(container_name):
+            raise RuntimeError(removed.detail or "W&B recovery container removal failed")
+        if not host.container_is_absent(container_name):
+            raise RuntimeError("W&B recovery container remains after removal")
+        if on_absent:
+            on_absent(attestation)
+    if error:
+        raise RuntimeError(error)

@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -340,7 +341,8 @@ def cmd_recover(args: argparse.Namespace) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT t.*, l.launch_id, l.output_uri, r.status AS eval_run_status
+                SELECT t.*, l.launch_id, l.lifecycle_generation, l.output_uri,
+                  r.status AS eval_run_status
                 FROM train_jobs t
                 JOIN job_launches l ON l.job_id = t.id
                 LEFT JOIN eval_runs r ON r.train_job_id = t.id
@@ -372,12 +374,45 @@ def cmd_recover(args: argparse.Namespace) -> int:
         machine = resolve_machine(load_machine_registry(), str(row["machine"]))
         host = DockerRunnerHost(machine)
         run_name = str(row.get("run_name") or f"train_job_{row['id']}")
-        run_checkpoint_coordinator_container(
-            host,
-            launch_id=str(row["launch_id"]),
-            run_name=run_name,
-            runtime_image_ref=str(row["runtime_image_ref"]),
+        from rlab.workspace_gc import (
+            finish_host_operation_lease,
+            register_host_operation_lease,
+            workspace_protocol_mode,
         )
+
+        operation_id = None
+        if workspace_protocol_mode(conn) != "dormant":
+            operation_id = register_host_operation_lease(
+                conn,
+                machine=machine.name,
+                operation_kind="checkpoint_artifact_recovery",
+                resource_scope=f"workspace:{row['launch_id']}",
+                source_revision="modal-eval-recovery-v1",
+                owner="operator-cli",
+                max_duration=timedelta(minutes=16),
+                launch_id=str(row["launch_id"]),
+                lifecycle_generation=int(row["lifecycle_generation"]),
+            )
+        try:
+            run_checkpoint_coordinator_container(
+                host,
+                launch_id=str(row["launch_id"]),
+                run_name=run_name,
+                runtime_image_ref=str(row["runtime_image_ref"]),
+            )
+        except Exception as exc:
+            if operation_id:
+                finish_host_operation_lease(
+                    conn, operation_id=operation_id, error=str(exc), evidence={}
+                )
+            raise
+        else:
+            if operation_id:
+                finish_host_operation_lease(
+                    conn,
+                    operation_id=operation_id,
+                    evidence={"container_absent": True},
+                )
         with conn:
             with conn.cursor() as cur:
                 cur.execute(

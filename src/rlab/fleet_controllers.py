@@ -533,6 +533,8 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
         close_due_telemetry_obligations,
         due_proof_reduction_launches,
         finalize_host_deleted,
+        quarantine_expired_host_operation_leases,
+        record_proof_reducer_result,
         reduce_cleanup_proof,
         workspace_protocol_mode,
     )
@@ -550,10 +552,14 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
             finalized = 0
             obligations_closed = 0
             artifacts_verified = 0
+            expired_operations = 0
             error = None
             try:
                 conn = connect(database_url(use_direct=True))
                 try:
+                    expired_operations = quarantine_expired_host_operation_leases(
+                        conn, limit=25
+                    )
                     protocol_mode = workspace_protocol_mode(conn)
                     policy_path = str(
                         os.environ.get("RLAB_ARTIFACT_DURABILITY_POLICY_FILE") or ""
@@ -573,8 +579,14 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
                     for launch_id in launch_ids:
                         try:
                             reduce_cleanup_proof(conn, launch_id=launch_id)
+                            record_proof_reducer_result(
+                                conn, launch_id=launch_id, ready=True
+                            )
                             reduced += 1
-                        except WorkspaceNotReady:
+                        except WorkspaceNotReady as exc:
+                            record_proof_reducer_result(
+                                conn, launch_id=launch_id, ready=False, error=str(exc)
+                            )
                             pending += 1
                     finalized = finalize_host_deleted(conn, limit=100)
                 finally:
@@ -585,13 +597,24 @@ def run_workspace_controller(repo_root: Path, *, once: bool = False) -> int:
                 "error"
                 if error
                 else "reconciling"
-                if reduced or finalized or obligations_closed or artifacts_verified
+                if reduced
+                or finalized
+                or obligations_closed
+                or artifacts_verified
+                or expired_operations
                 else "idle"
             )
             if not error:
                 last_success_at = time.time()
             assertion.update(
-                bool(pending or reduced or finalized or obligations_closed or artifacts_verified)
+                bool(
+                    pending
+                    or reduced
+                    or finalized
+                    or obligations_closed
+                    or artifacts_verified
+                    or expired_operations
+                )
             )
             _write_controller_heartbeat(
                 heartbeat,
