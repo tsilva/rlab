@@ -76,7 +76,7 @@ def test_manifest_rejects_unsafe_launch_id() -> None:
 
 def test_exact_bind_mount_is_nonrecursive_and_exact() -> None:
     assert exact_bind_mount("/srv/a.json", "/input/a.json", readonly=True) == (
-        "type=bind,src=/srv/a.json,dst=/input/a.json,bind-nonrecursive=true,readonly"
+        "type=bind,src=/srv/a.json,dst=/input/a.json,bind-recursive=disabled,readonly"
     )
 
 

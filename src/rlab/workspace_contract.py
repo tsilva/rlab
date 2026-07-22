@@ -367,7 +367,7 @@ def exact_bind_mount(source: str, destination: str, *, readonly: bool) -> str:
         "type=bind",
         f"src={source_path}",
         f"dst={destination_path}",
-        "bind-nonrecursive=true",
+        "bind-recursive=disabled",
     ]
     if readonly:
         parts.append("readonly")

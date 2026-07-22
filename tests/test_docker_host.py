@@ -187,7 +187,7 @@ class DockerHostTests(unittest.TestCase):
         digest = ROM_MANIFEST["sha256"]
         self.assertIn(
             f"src=/tmp/rlab/rom-cache/sha256/{digest},"
-            f"dst=/rom-cache/sha256/{digest},bind-nonrecursive=true,readonly",
+            f"dst=/rom-cache/sha256/{digest},bind-recursive=disabled,readonly",
             text,
         )
         self.assertIn("RLAB_ROM_CACHE_DIR=/rom-cache", text)
