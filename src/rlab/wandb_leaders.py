@@ -56,6 +56,10 @@ WANDB_RUNS_PER_PAGE = 200
 class RunScore:
     goal_slug: str
     recipe_slug: str
+    reward_shape: str
+    reward_shape_sha256: str
+    effective_goal_contract_sha256: str
+    reward_shape_is_default: bool
     run_id: str
     run_name: str
     url: str
@@ -67,6 +71,10 @@ class RunScore:
 class RunLeader:
     goal_slug: str
     recipe_slug: str
+    reward_shape: str
+    reward_shape_sha256: str
+    effective_goal_contract_sha256: str
+    reward_shape_is_default: bool
     seeds: int
     worst_seed: float
     mean_seed: float
@@ -78,6 +86,10 @@ class RunLeader:
 class CheckpointLeader:
     goal_slug: str
     recipe_slug: str
+    reward_shape: str
+    reward_shape_sha256: str
+    effective_goal_contract_sha256: str
+    reward_shape_is_default: bool
     run_id: str
     run_name: str
     url: str
@@ -211,6 +223,13 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
     return RunScore(
         goal_slug=goal_slug,
         recipe_slug=recipe_slug,
+        reward_shape=_first_text(config.get("reward_shape")),
+        reward_shape_sha256=_first_text(config.get("reward_shape_sha256")),
+        effective_goal_contract_sha256=_first_text(
+            config.get("effective_goal_contract_sha256"),
+            config.get("goal_contract_sha256"),
+        ),
+        reward_shape_is_default=bool(config.get("reward_shape_is_default", False)),
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
@@ -220,12 +239,25 @@ def run_score(run: Any, *, objective_keys: Sequence[str]) -> RunScore | None:
 
 
 def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[RunLeader]:
-    grouped: dict[tuple[str, str], list[RunScore]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str, str], list[RunScore]] = defaultdict(list)
     for score in scores:
-        grouped[(score.goal_slug, score.recipe_slug)].append(score)
+        shape_identity = score.reward_shape_sha256 or score.reward_shape or "legacy"
+        grouped[
+            (
+                score.goal_slug,
+                score.recipe_slug,
+                shape_identity,
+                score.effective_goal_contract_sha256,
+            )
+        ].append(score)
 
     leaders: list[RunLeader] = []
-    for (goal_slug, recipe_slug), group_scores in grouped.items():
+    for (
+        goal_slug,
+        recipe_slug,
+        _shape_identity,
+        effective_goal_hash,
+    ), group_scores in grouped.items():
         if len(group_scores) < min_seeds:
             continue
         ordered_runs = tuple(sorted(group_scores, key=lambda item: item.objective, reverse=True))
@@ -234,6 +266,10 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
             RunLeader(
                 goal_slug=goal_slug,
                 recipe_slug=recipe_slug,
+                reward_shape=group_scores[0].reward_shape,
+                reward_shape_sha256=group_scores[0].reward_shape_sha256,
+                effective_goal_contract_sha256=effective_goal_hash,
+                reward_shape_is_default=group_scores[0].reward_shape_is_default,
                 seeds=len(ordered_runs),
                 worst_seed=min(values),
                 mean_seed=mean(values),
@@ -243,7 +279,14 @@ def rank_run_leaders(scores: Iterable[RunScore], *, min_seeds: int = 1) -> list[
         )
     return sorted(
         leaders,
-        key=lambda item: (item.worst_seed, item.mean_seed, item.best_seed, item.seeds),
+        key=lambda item: (
+            item.reward_shape_is_default,
+            item.reward_shape,
+            item.worst_seed,
+            item.mean_seed,
+            item.best_seed,
+            item.seeds,
+        ),
         reverse=True,
     )
 
@@ -299,6 +342,13 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
             _tag_value(tags, "goal:"),
         ),
         recipe_slug=_first_text(config.get("recipe_slug"), getattr(run, "group", "")),
+        reward_shape=_first_text(config.get("reward_shape")),
+        reward_shape_sha256=_first_text(config.get("reward_shape_sha256")),
+        effective_goal_contract_sha256=_first_text(
+            config.get("effective_goal_contract_sha256"),
+            config.get("goal_contract_sha256"),
+        ),
+        reward_shape_is_default=bool(config.get("reward_shape_is_default", False)),
         run_id=str(getattr(run, "id", "") or ""),
         run_name=str(getattr(run, "name", "") or ""),
         url=str(getattr(run, "url", "") or ""),
@@ -317,11 +367,24 @@ def checkpoint_leader(run: Any) -> CheckpointLeader | None:
 
 
 def rank_checkpoint_leaders(leaders: Iterable[CheckpointLeader]) -> list[CheckpointLeader]:
-    return sorted(
-        leaders,
-        key=lambda item: item.rank_score,
-        reverse=True,
+    grouped: dict[tuple[str, str, str], list[CheckpointLeader]] = defaultdict(list)
+    for leader in leaders:
+        shape_identity = leader.reward_shape_sha256 or leader.reward_shape or "legacy"
+        grouped[(leader.goal_slug, shape_identity, leader.effective_goal_contract_sha256)].append(
+            leader
+        )
+    ordered_groups = sorted(
+        grouped.values(),
+        key=lambda rows: (
+            not rows[0].reward_shape_is_default,
+            rows[0].reward_shape or "legacy",
+        ),
     )
+    return [
+        leader
+        for rows in ordered_groups
+        for leader in sorted(rows, key=lambda item: item.rank_score, reverse=True)
+    ]
 
 
 def wandb_runs(
@@ -351,17 +414,17 @@ def print_json(rows: Sequence[Any]) -> None:
 
 
 def print_run_leaders(rows: Sequence[RunLeader]) -> None:
-    print("goal_slug\trecipe_slug\tseeds\tworst_seed\tmean_seed\tbest_seed")
+    print("goal_slug\trecipe_slug\treward_shape\tseeds\tworst_seed\tmean_seed\tbest_seed")
     for row in rows:
         print(
-            f"{row.goal_slug}\t{row.recipe_slug}\t{row.seeds}\t"
+            f"{row.goal_slug}\t{row.recipe_slug}\t{row.reward_shape or 'legacy'}\t{row.seeds}\t"
             f"{row.worst_seed:.6g}\t{row.mean_seed:.6g}\t{row.best_seed:.6g}"
         )
 
 
 def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
     print(
-        "goal_slug\trecipe_slug\tobjective\tobjective_name\tsuccess_min\t"
+        "goal_slug\trecipe_slug\treward_shape\tobjective\tobjective_name\tsuccess_min\t"
         "success_mean\tsteps_to_goal\treturn\tprogress\tstep\trun\tartifact_ref"
     )
     for row in rows:
@@ -372,7 +435,8 @@ def print_checkpoint_leaders(rows: Sequence[CheckpointLeader]) -> None:
         )
         progress = f"{row.progress_max:.6g}" if row.progress_max is not None else ""
         print(
-            f"{row.goal_slug}\t{row.recipe_slug}\t{row.objective:.6g}\t"
+            f"{row.goal_slug}\t{row.recipe_slug}\t{row.reward_shape or 'legacy'}\t"
+            f"{row.objective:.6g}\t"
             f"{row.objective_name}\t{success_rate}\t"
             f"{success_rate_mean}\t{steps_to_goal}\t{row.return_mean:.6g}\t"
             f"{progress}\t"
@@ -390,6 +454,11 @@ def add_common_args(parser: argparse.ArgumentParser, *, suppress_defaults: bool 
         "--goal",
         default=default,
         help="Limit to one W&B config.goal_slug.",
+    )
+    parser.add_argument(
+        "--reward-shape",
+        default=default,
+        help="Limit to one W&B config.reward_shape; required for an unambiguous winner query.",
     )
     parser.add_argument(
         "--limit",
@@ -450,7 +519,9 @@ def cmd_runs(args: argparse.Namespace) -> int:
                 lazy=False,
             )
         )
-        if score is not None and (not args.goal or score.goal_slug == args.goal)
+        if score is not None
+        and (not args.goal or score.goal_slug == args.goal)
+        and (not args.reward_shape or score.reward_shape == args.reward_shape)
     ]
     leaders = rank_run_leaders(scores, min_seeds=max(1, int(args.min_seeds)))[
         : max(0, int(args.limit))
@@ -474,8 +545,15 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
                 order=CHECKPOINT_PRIMARY_ORDER,
             )
         )
-        if leader is not None and (not args.goal or leader.goal_slug == args.goal)
+        if leader is not None
+        and (not args.goal or leader.goal_slug == args.goal)
+        and (not args.reward_shape or leader.reward_shape == args.reward_shape)
     ]
+    reward_shapes = {leader.reward_shape for leader in leaders if leader.reward_shape}
+    if not args.reward_shape and int(args.limit) == 1 and len(reward_shapes) > 1:
+        raise ValueError(
+            "multiple reward shapes match; pass --reward-shape for a single-winner query"
+        )
     ranked = rank_checkpoint_leaders(leaders)[: max(0, int(args.limit))]
     if args.json:
         print_json(ranked)

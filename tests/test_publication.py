@@ -161,6 +161,19 @@ def test_mario_publication_identity_is_exact_and_provider_neutral() -> None:
     )
 
 
+def test_non_default_reward_shape_gets_a_bounded_repository_suffix() -> None:
+    metadata = model_metadata()
+    metadata.update(
+        reward_shape="score-step-0p01-v1",
+        reward_shape_sha256="sha256:" + "a" * 64,
+        reward_shape_is_default=False,
+    )
+    identity = publication_identity_from_model_metadata("Level1-1", metadata)
+
+    assert identity.policy_variant.endswith("shape-score-step-0p01-v1-aaaaaaaa")
+    assert len(identity.repo_name) <= 96
+
+
 @pytest.mark.parametrize(
     ("provider", "game", "family"),
     [

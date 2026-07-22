@@ -1,6 +1,7 @@
 defaults:
 - ../../../../recipes/_presets/mario-single-ppo@_global_
 - _self_
+reward_shape: score-v1
 recipe_id: ppo
 description: >-
   Seed {seed} trains the stable low-KL late-decay {goal_id} PPO policy-search baseline,

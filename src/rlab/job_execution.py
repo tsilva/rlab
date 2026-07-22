@@ -66,6 +66,9 @@ def normalize_train_config(
     if goal_slug:
         config["goal_slug"] = goal_slug
         append_unique_wandb_tag(tags, f"goal_id:{goal_slug}")
+    reward_shape = str(config.get("reward_shape") or "").strip()
+    if reward_shape:
+        append_unique_wandb_tag(tags, f"reward_shape:{reward_shape}")
     goal_path = str(job.get("goal_path") or config.get("goal_path") or "").strip()
     if goal_path:
         config["goal_path"] = goal_path

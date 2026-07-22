@@ -277,6 +277,9 @@ env_args:
 The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
 or `multi_discrete`), a preset from the selected game provider's packaged
 `metadata.json`, or an inline exact table of controller-label combinations.
+Mario runtime 0.4.2 provides the canonical `basic`, `standard`, `right-jump`,
+and `basic-start` presets; `standard` extends `basic` with `DOWN` for
+pipe-dependent levels.
 rlab records the resolved ordered table, action meanings, preset, and semantic
 hash in environment/run metadata and rejects provider overrides whose resolved
 hash differs. Historical `env_args.action_set` and Mario task-level action-set
@@ -289,6 +292,27 @@ Active research contracts live under `experiments/goals/`. Each goal owns its la
 `experiments/recipes/_presets/`. A recipe from one goal cannot be launched against another goal.
 For current Mario work, read the goal's `_goal.yaml` before choosing recipes, caps, metrics, or
 promotion criteria.
+
+Goals may own a finite named reward catalog. Launchable recipes pin one `reward_shape`, and the
+existing dotlist override can select another complete registered shape without mutating individual
+reward fields:
+
+```yaml
+reward_shapes:
+  program_kind: mario-v1
+  default: score-v1
+  definitions:
+    score-v1: { ... }
+    score-step-0p01-v1: { ... }
+```
+
+```bash
+rlab experiment launch --goal-file <goal> --recipe-file <recipe> \
+  --set reward_shape=score-step-0p01-v1 --run-description "Mario step-cost comparison"
+```
+
+Catalog-backed runs record the readable key and executable semantic hash. Raw
+`train.environment.task.reward.*` overrides are rejected so a run always names a complete shape.
 
 Train recipes are validated against the queue-backed schema before enqueue. Extra research metadata is preserved, but required launch, naming, W&B, seed, selection, and train-config fields must be present and well-formed.
 

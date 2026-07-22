@@ -1,6 +1,7 @@
 defaults:
 - ../../../../recipes/_presets/mario-single-on-policy@_global_
 - _self_
+reward_shape: score-v1
 recipe_id: a2c
 description: >-
   Seed {seed} trains an SB3 A2C {goal_id} baseline while preserving the goal's environment,

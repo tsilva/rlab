@@ -22,6 +22,7 @@ from rlab.env_registry import (
     validate_provider_constructor_args,
 )
 from rlab.goal_schema import validate_goal_document_shape
+from rlab.reward_programs import goal_for_contract_validation, validate_reward_shape_catalog
 from rlab.machines import DEFAULT_MACHINE_REGISTRY, load_machine_registry
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.metric_names import metric_path_segment
@@ -482,6 +483,9 @@ def validate_goal_contract_document(
     repo_root: Path,
 ) -> None:
     label = f"goal file {_display_path(path, repo_root)}"
+    authored_document = document
+    validate_reward_shape_catalog(document, label=label)
+    document = goal_for_contract_validation(document, label=label)
     if "schema_version" in document:
         raise ValueError(f"{label}.schema_version is not part of goal contracts")
     if "status" in document:
@@ -549,8 +553,7 @@ def validate_goal_contract_document(
     if "checkpoint_eval_stages" in train:
         if train.get("stop_on_acceptance") is True:
             raise ValueError(
-                f"{label}.train.checkpoint_eval_stages is incompatible with "
-                "stop_on_acceptance"
+                f"{label}.train.checkpoint_eval_stages is incompatible with stop_on_acceptance"
             )
         normalize_checkpoint_eval_stages(
             train["checkpoint_eval_stages"],
@@ -614,7 +617,7 @@ def validate_goal_contract_document(
                 f"{label}.train.environment start identifiers must be safe metric dimensions"
             ) from exc
 
-    validate_goal_document_shape(document, label=label)
+    validate_goal_document_shape(authored_document, label=label)
     _validate_goal_eval(document, label=label)
 
 

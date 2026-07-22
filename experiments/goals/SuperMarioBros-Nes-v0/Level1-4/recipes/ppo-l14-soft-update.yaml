@@ -1,6 +1,7 @@
 defaults:
 - ../../../../recipes/_presets/mario-single-ppo@_global_
 - _self_
+reward_shape: score-v1
 recipe_id: ppo-l14-soft-update
 description: >-
   Seed {seed} trains the {goal_id} B257 soft-update PPO recipe, preserving the common

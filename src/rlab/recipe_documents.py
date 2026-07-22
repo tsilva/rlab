@@ -32,6 +32,7 @@ from rlab.recipe_schema import (
     train_recipe_id,
     validate_materialized_train_recipe,
 )
+from rlab.reward_programs import select_goal_reward_shape
 from rlab.seeds import validate_training_seed
 from rlab.train_config import train_config_keys_in_source_section, train_config_keys_owned_by
 
@@ -59,6 +60,7 @@ SOURCE_RECIPE_FIELDS = frozenset(
         "metadata",
         "notes",
         "recipe_id",
+        "reward_shape",
         "schema_version",
         "seeds",
         TEMPLATE_VARS_KEY,
@@ -155,9 +157,7 @@ def _eval_train_defaults(document: Mapping[str, Any]) -> dict[str, Any]:
         return {}
     defaults: dict[str, Any] = {"post_train_eval_episodes": copy.deepcopy(episodes)}
     if "acceptance" in eval_section:
-        defaults["checkpoint_eval_acceptance"] = copy.deepcopy(
-            eval_section["acceptance"]
-        )
+        defaults["checkpoint_eval_acceptance"] = copy.deepcopy(eval_section["acceptance"])
     environment = eval_section.get("environment")
     if not isinstance(environment, Mapping):
         return defaults
@@ -300,6 +300,7 @@ def _load_rendered_goal_composition(
     env_provider: str | None = None,
 ) -> ComposedDocument:
     composition = load_composed_mapping(path, cycle_label="goal")
+    _validate_reward_catalog_source_ownership(composition.sources)
     return ComposedDocument(
         document=render_template_vars(
             _goal_with_environment_provider(composition.document, env_provider),
@@ -309,6 +310,43 @@ def _load_rendered_goal_composition(
         ),
         sources=composition.sources,
     )
+
+
+def _validate_reward_catalog_source_ownership(sources: Sequence[Path]) -> None:
+    program_owner: Path | None = None
+    default_owner: Path | None = None
+    definition_owners: dict[str, Path] = {}
+    for source in sources:
+        payload = load_mapping_document(source, label=f"goal source {source}")
+        catalog = payload.get("reward_shapes")
+        if not isinstance(catalog, Mapping):
+            continue
+        if "program_kind" in catalog:
+            if program_owner is not None:
+                raise ValueError(
+                    "reward_shapes.program_kind cannot be shadowed across goal sources: "
+                    f"{program_owner} and {source}"
+                )
+            program_owner = source
+        if "default" in catalog:
+            if default_owner is not None:
+                raise ValueError(
+                    "reward_shapes.default cannot be shadowed across goal sources: "
+                    f"{default_owner} and {source}"
+                )
+            default_owner = source
+        definitions = catalog.get("definitions")
+        if not isinstance(definitions, Mapping):
+            continue
+        for raw_key in definitions:
+            key = str(raw_key)
+            previous = definition_owners.get(key)
+            if previous is not None:
+                raise ValueError(
+                    f"reward shape {key!r} cannot be redefined across goal sources: "
+                    f"{previous} and {source}"
+                )
+            definition_owners[key] = source
 
 
 def _reject_active_specs_path(path: Path) -> None:
@@ -534,6 +572,7 @@ def compose_train_document(
         goal_path,
         env_provider=env_provider,
     )
+    authored_goal_document = goal_composition.document
     if goal_composition.sources:
         from rlab.config_validation import validate_goal_contract_document
 
@@ -549,6 +588,48 @@ def compose_train_document(
         recipe_override_list,
         label=f"recipe overrides for {recipe_path}",
     )
+    selector_value = source_document.pop("reward_shape", None)
+    selector = None
+    if selector_value is not None:
+        if not isinstance(selector_value, str) or not selector_value.strip():
+            raise ValueError("reward_shape must be a non-empty string")
+        selector = selector_value.strip()
+    selected_reward = select_goal_reward_shape(
+        goal_composition.document,
+        selector,
+        label=f"goal file {goal_path}",
+    )
+    if selected_reward is not None:
+        train_section = source_document.get("train")
+        source_environment = (
+            train_section.get("environment") if isinstance(train_section, Mapping) else None
+        )
+        source_task = (
+            source_environment.get("task") if isinstance(source_environment, Mapping) else None
+        )
+        if isinstance(source_task, Mapping) and "reward" in source_task:
+            raise ValueError(
+                "catalog goals reject raw reward overrides and recipe-authored task.reward; "
+                "select a named reward_shape"
+            )
+        raw_reward_override = next(
+            (
+                item
+                for item in recipe_override_list
+                if item.split("=", 1)[0].strip().startswith("train.environment.task.reward")
+                or item.split("=", 1)[0].strip().startswith("reward_shapes")
+            ),
+            None,
+        )
+        if raw_reward_override is not None:
+            raise ValueError(
+                "catalog goals reject raw reward overrides; select a named reward_shape instead: "
+                f"{raw_reward_override}"
+            )
+        goal_composition = ComposedDocument(
+            document=selected_reward.goal,
+            sources=goal_composition.sources,
+        )
     recipe_id = train_recipe_id(source_document)
     goal_context = template_context_from_path(goal_path, goal_composition.document)
     document = render_template_vars(
@@ -570,9 +651,20 @@ def compose_train_document(
         path=goal_path,
         goal_composition=goal_composition,
     )
-    document["train_config"]["goal_contract_sha256"] = goal_contract_sha256(
+    document["train_config"]["goal_contract_sha256"] = goal_contract_sha256(authored_goal_document)
+    document["train_config"]["effective_goal_contract_sha256"] = goal_contract_sha256(
         goal_composition.document
     )
+    if selected_reward is not None:
+        document["train_config"].update(
+            {
+                "reward_program_kind": selected_reward.program_kind,
+                "reward_program_revision": selected_reward.program_revision,
+                "reward_shape": selected_reward.key,
+                "reward_shape_sha256": selected_reward.semantic_sha256,
+                "reward_shape_is_default": selected_reward.is_default,
+            }
+        )
     document = attach_environment_identity(document)
     if recipe_override_list:
         document["recipe_overrides"] = recipe_override_list

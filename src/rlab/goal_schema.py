@@ -4,7 +4,9 @@ from collections.abc import Mapping
 from typing import Any
 
 
-GOAL_FIELDS = frozenset({"eval", "goal_id", "objective", "release", "tags", "title", "train"})
+GOAL_FIELDS = frozenset(
+    {"eval", "goal_id", "objective", "release", "reward_shapes", "tags", "title", "train"}
+)
 GOAL_OBJECTIVE_FIELDS = frozenset({"rank", "states"})
 GOAL_TRAIN_FIELDS = frozenset(
     {
@@ -15,9 +17,7 @@ GOAL_TRAIN_FIELDS = frozenset(
         "stop_on_acceptance",
     }
 )
-GOAL_EVAL_FIELDS = frozenset(
-    {"acceptance", "env_config", "environment", "episodes", "policy"}
-)
+GOAL_EVAL_FIELDS = frozenset({"acceptance", "env_config", "environment", "episodes", "policy"})
 
 
 def _reject_unknown_fields(

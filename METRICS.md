@@ -21,6 +21,10 @@ exact registry entry or a bounded template.
 - `goal_contract_sha256` is the semantic SHA-256 of the fully composed, rendered, validated goal
   contract. Generated goal reports use it with `goal_slug` to keep current-contract leaderboards
   comparable; runs without the current fingerprint remain historical evidence only.
+- Catalog-backed runs also record `effective_goal_contract_sha256`, `reward_program_kind`,
+  `reward_program_revision`, `reward_shape`, `reward_shape_sha256`, and
+  `reward_shape_is_default`. Reward-derived returns are comparable only when the selected reward
+  semantic identity and effective goal contract match; the readable key alone is not sufficient.
 - `leader/checkpoint/*` contains the selected checkpoint's rank values and provenance.
 - W&B is the permanent metric history. R2 is the permanent byte store for checkpoints, metadata,
   raw episode evidence, and videos. Postgres retains orchestration state and artifact locations.

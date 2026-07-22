@@ -1,5 +1,6 @@
 defaults:
 - _self_
+reward_shape: score-v1
 recipe_id: jerk
 description: >-
   Seed {seed} searches deterministic {goal_id} attempts with vectorized Just Enough Retained

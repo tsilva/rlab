@@ -11,6 +11,7 @@ from typing import Any
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 import yaml
+from yaml.constructor import ConstructorError
 
 
 YAML_EXTENSIONS = {".yaml", ".yml"}
@@ -26,6 +27,46 @@ QUEUE_TEMPLATE_VALUES: dict[str, Any] = {
 QUEUE_TEMPLATE_FIELDS = frozenset(QUEUE_TEMPLATE_VALUES)
 
 _LEVEL_ID_RE = re.compile(r"^Level(?P<world>\d+)-(?P<level>\d+)$", re.IGNORECASE)
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    seen: dict[Any, yaml.Node] = {}
+    for key_node, _value_node in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in seen
+        except TypeError as exc:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        seen[key] = key_node
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 @dataclass(frozen=True)
@@ -105,9 +146,7 @@ def _environment_template_context_from_document(document: Mapping[str, Any]) -> 
         return context
     env_config = environment.get("env_config")
     game = (
-        _concrete_template_source(env_config.get("game"))
-        if isinstance(env_config, Mapping)
-        else ""
+        _concrete_template_source(env_config.get("game")) if isinstance(env_config, Mapping) else ""
     )
     if not game and isinstance(env_config, Mapping):
         env_args = env_config.get("env_args")
@@ -158,10 +197,7 @@ def template_context_from_path(
             or _concrete_template_source(document.get("goal_slug"))
             or goal_id
         )
-        recipe_slug = (
-            _concrete_template_source(document.get("recipe_id"))
-            or recipe_slug
-        )
+        recipe_slug = _concrete_template_source(document.get("recipe_id")) or recipe_slug
 
     game_slug = slugify_template_value(game)
     goal_slug = slugify_template_value(goal_id)
@@ -172,7 +208,9 @@ def template_context_from_path(
     return {
         key: value
         for key, value in {
-            "env_id": environment_context.get("env_id", "") if isinstance(document, Mapping) else "",
+            "env_id": environment_context.get("env_id", "")
+            if isinstance(document, Mapping)
+            else "",
             "env_provider": environment_context.get("env_provider", "")
             if isinstance(document, Mapping)
             else "",
@@ -231,9 +269,7 @@ def _validate_template_var_usage(document: Mapping[str, Any], *, label: str) -> 
         pending.extend(new_dependencies)
     unused = sorted(declared - used)
     if unused:
-        raise ValueError(
-            f"{label}.{TEMPLATE_VARS_KEY} declares unused fields: {', '.join(unused)}"
-        )
+        raise ValueError(f"{label}.{TEMPLATE_VARS_KEY} declares unused fields: {', '.join(unused)}")
 
 
 def _template_vars_from_document(
@@ -433,7 +469,7 @@ def render_template_vars(
 def load_config_document(path: Path, *, default: Any = None) -> Any:
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() in YAML_EXTENSIONS:
-        loaded = yaml.safe_load(text)
+        loaded = yaml.load(text, Loader=_UniqueKeySafeLoader)
     else:
         loaded = json.loads(text)
     return default if loaded is None else loaded

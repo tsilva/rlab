@@ -75,9 +75,7 @@ _EVAL_FIELDS = frozenset(
         "asset",
     }
 )
-_RECIPE_PROVENANCE_FIELDS = frozenset(
-    {"source_commit", "source_files", "runtime", "asset"}
-)
+_RECIPE_PROVENANCE_FIELDS = frozenset({"source_commit", "source_files", "runtime", "asset"})
 _MODEL_PROVENANCE_FIELDS = frozenset(
     {
         "metadata_version",
@@ -93,6 +91,13 @@ _MODEL_PROVENANCE_FIELDS = frozenset(
         "retry_of_job_id",
         "goal_slug",
         "goal_sha256",
+        "goal_contract_sha256",
+        "effective_goal_contract_sha256",
+        "reward_program_kind",
+        "reward_program_revision",
+        "reward_shape",
+        "reward_shape_sha256",
+        "reward_shape_is_default",
         "recipe_slug",
         "recipe_sha256",
         "queue_train_job_id",
@@ -353,7 +358,9 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
     required_recipe = {"goal", "recipe_id", "description", "train", "train_config", "eval"}
     missing = sorted(required_recipe - set(recipe))
     if missing:
-        raise PolicyDocumentError(f"{source}.recipe missing required field(s): {', '.join(missing)}")
+        raise PolicyDocumentError(
+            f"{source}.recipe missing required field(s): {', '.join(missing)}"
+        )
     goal = _required_mapping(recipe.get("goal"), label=f"{source}.recipe.goal")
     train_config = _required_mapping(
         recipe.get("train_config"), label=f"{source}.recipe.train_config"
@@ -425,9 +432,7 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
             manifest_index(evaluation)
         except ValueError as exc:
             raise PolicyDocumentError(f"{source}.recipe.eval manifest is invalid: {exc}") from exc
-    runtime = _required_mapping(
-        provenance.get("runtime"), label=f"{source}.provenance.runtime"
-    )
+    runtime = _required_mapping(provenance.get("runtime"), label=f"{source}.provenance.runtime")
     _reject_unknown(runtime, frozenset({"image_ref", "packages"}), label=f"{source}.runtime")
     image_ref = _required_text(runtime.get("image_ref"), label=f"{source} runtime image_ref")
     if not re.fullmatch(r"docker:[^\s]+@sha256:[0-9a-f]{64}", image_ref):
@@ -478,9 +483,7 @@ def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, An
             f"{source}.checkpoint.kind must be 'checkpoint', 'best', or 'final'"
         )
     step = checkpoint.get("step")
-    if step is not None and (
-        not isinstance(step, int) or isinstance(step, bool) or step < 0
-    ):
+    if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 0):
         raise PolicyDocumentError(f"{source}.checkpoint.step must be a non-negative integer")
     _required_text(checkpoint.get("algorithm_id"), label=f"{source}.checkpoint.algorithm_id")
     _required_text(checkpoint.get("model_class"), label=f"{source}.checkpoint.model_class")
@@ -497,13 +500,9 @@ def _validate_model_v1(document: Mapping[str, Any], source: str) -> dict[str, An
     if recipe.get("filename") != RECIPE_FILENAME:
         raise PolicyDocumentError(f"{source}.recipe.filename must be {RECIPE_FILENAME!r}")
     if recipe.get("document_type") != RECIPE_DOCUMENT_TYPE:
-        raise PolicyDocumentError(
-            f"{source}.recipe.document_type must be {RECIPE_DOCUMENT_TYPE!r}"
-        )
+        raise PolicyDocumentError(f"{source}.recipe.document_type must be {RECIPE_DOCUMENT_TYPE!r}")
     if recipe.get("format_version") != RECIPE_FORMAT_VERSION:
-        raise PolicyDocumentError(
-            f"{source}.recipe.format_version must be {RECIPE_FORMAT_VERSION}"
-        )
+        raise PolicyDocumentError(f"{source}.recipe.format_version must be {RECIPE_FORMAT_VERSION}")
     _required_sha256(recipe.get("sha256"), label=f"{source}.recipe.sha256")
     _required_size(recipe.get("size_bytes"), label=f"{source}.recipe.size_bytes")
     _assert_portable(provenance, label=f"{source}.provenance")
@@ -536,7 +535,9 @@ def _portable_source_path(path: object, *, repo_root: Path) -> str:
     try:
         return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError as exc:
-        raise PolicyDocumentError(f"recipe source path is outside the repository: {candidate}") from exc
+        raise PolicyDocumentError(
+            f"recipe source path is outside the repository: {candidate}"
+        ) from exc
 
 
 def _resolve_recipe_templates(value: object, replacements: Mapping[str, object]) -> object:
@@ -702,9 +703,7 @@ def build_model_document(
             "algorithm_id": str(metadata.get("algorithm_id") or ""),
             "model_class": str(metadata.get("model_class") or ""),
             "training_backend_id": str(metadata.get("training_backend_id") or ""),
-            "training_backend_config_hash": str(
-                metadata.get("training_backend_config_hash") or ""
-            ),
+            "training_backend_config_hash": str(metadata.get("training_backend_config_hash") or ""),
         },
         "provenance": provenance,
     }
@@ -728,9 +727,7 @@ def model_document_as_metadata(document: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _validate_cross_document_contract(
-    model: Mapping[str, Any], recipe: Mapping[str, Any]
-) -> None:
+def _validate_cross_document_contract(model: Mapping[str, Any], recipe: Mapping[str, Any]) -> None:
     checkpoint = model["checkpoint"]
     policy = model["policy"]
     if checkpoint["algorithm_id"] != policy["algorithm_id"]:
@@ -738,6 +735,19 @@ def _validate_cross_document_contract(
     if checkpoint["model_class"] != policy["model_class"]:
         raise PolicyDocumentError("model.json checkpoint and policy model_class disagree")
     train_config = recipe["recipe"]["train_config"]
+    for key in (
+        "goal_contract_sha256",
+        "effective_goal_contract_sha256",
+        "reward_program_kind",
+        "reward_program_revision",
+        "reward_shape",
+        "reward_shape_sha256",
+        "reward_shape_is_default",
+    ):
+        model_value = model["provenance"].get(key)
+        recipe_value = train_config.get(key)
+        if model_value not in (None, "") and model_value != recipe_value:
+            raise PolicyDocumentError(f"model.json {key} disagrees with recipe.json")
     backend = _required_mapping(
         train_config.get("training_backend"),
         label="recipe.json training backend",
@@ -771,9 +781,7 @@ def _validate_cross_document_contract(
         recipe_environment_hash is not None
         and training_metadata.get("environment_hash") != recipe_environment_hash
     ):
-        raise PolicyDocumentError(
-            "model.json training environment hash disagrees with recipe.json"
-        )
+        raise PolicyDocumentError("model.json training environment hash disagrees with recipe.json")
 
 
 def load_policy_bundle(
@@ -785,7 +793,9 @@ def load_policy_bundle(
     checkpoint_path = root / CHECKPOINT_FILENAME
     model_path = root / MODEL_FILENAME
     recipe_path = root / RECIPE_FILENAME
-    missing = [path.name for path in (checkpoint_path, model_path, recipe_path) if not path.is_file()]
+    missing = [
+        path.name for path in (checkpoint_path, model_path, recipe_path) if not path.is_file()
+    ]
     if missing:
         raise PolicyDocumentError(f"policy bundle {root} is missing: {', '.join(missing)}")
     model = load_model_document(model_path)

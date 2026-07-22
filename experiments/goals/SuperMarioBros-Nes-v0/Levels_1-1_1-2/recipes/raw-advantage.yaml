@@ -1,6 +1,7 @@
 defaults:
 - ../../../../recipes/_presets/mario-mixed-ppo@_global_
 - _self_
+reward_shape: score-v1
 recipe_id: raw-advantage
 description: >-
   Seed {seed} trains the task-conditioned {goal_id} PPO policy with raw advantages instead

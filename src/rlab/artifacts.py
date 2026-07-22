@@ -103,6 +103,13 @@ def build_model_metadata(
         "goal_slug": getattr(args, "goal_slug", ""),
         "goal_path": getattr(args, "goal_path", ""),
         "goal_sha256": getattr(args, "goal_sha256", ""),
+        "goal_contract_sha256": getattr(args, "goal_contract_sha256", ""),
+        "effective_goal_contract_sha256": getattr(args, "effective_goal_contract_sha256", ""),
+        "reward_program_kind": getattr(args, "reward_program_kind", ""),
+        "reward_program_revision": getattr(args, "reward_program_revision", ""),
+        "reward_shape": getattr(args, "reward_shape", ""),
+        "reward_shape_sha256": getattr(args, "reward_shape_sha256", ""),
+        "reward_shape_is_default": getattr(args, "reward_shape_is_default", False),
         "recipe_slug": getattr(args, "recipe_slug", ""),
         "recipe_path": getattr(args, "recipe_path", ""),
         "recipe_sha256": getattr(args, "recipe_sha256", ""),
@@ -667,7 +674,9 @@ def log_wandb_model_artifact(
             artifact.add_reference(uri, name=filename)
     elif reference_uri:
         artifact.add_reference(reference_uri, name=model_path.name)
-        artifact.add_file(str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name)
+        artifact.add_file(
+            str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name
+        )
     elif versioned_bundle:
         assert model_sidecar is not None and recipe_sidecar is not None
         artifact.add_file(str(model_path), name=CHECKPOINT_FILENAME)
@@ -675,7 +684,9 @@ def log_wandb_model_artifact(
         artifact.add_file(str(recipe_sidecar), name=RECIPE_FILENAME)
     else:
         artifact.add_file(str(model_path), name=model_path.name)
-        artifact.add_file(str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name)
+        artifact.add_file(
+            str(model_metadata_path(model_path)), name=model_metadata_path(model_path).name
+        )
     wandb_log_started_at = timer()
     logged_artifact = wandb_run.log_artifact(artifact, aliases=aliases)
     if logged_artifact is not None and hasattr(logged_artifact, "wait"):

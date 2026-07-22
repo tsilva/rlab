@@ -1,6 +1,7 @@
 defaults:
 - ../../../../recipes/_presets/mario-mixed-ppo@_global_
 - _self_
+reward_shape: score-v1
 recipe_id: ppo
 description: >-
   Seed {seed} trains a task-conditioned {goal_id} PPO policy with per-task advantage

@@ -818,6 +818,22 @@ class MarioKernelTests(unittest.TestCase):
         np.testing.assert_array_equal(metric_record.metrics["time_penalty_component"], [-0.5, -0.5])
         np.testing.assert_allclose(metric_record.metrics["shaped_reward"], [10.5, 3.9])
 
+    def test_score_step_0p01_penalty_is_subtracted_once_per_step(self):
+        provider, _kernel, runtime = self.make_runtime(
+            reward_mode="score",
+            use_native_reward=False,
+            time_penalty=0.01,
+        )
+        runtime.reset()
+        provider.queue_step(x=[0, 0], score=[0, 0], rewards=[9.0, 9.0])
+        runtime.step(np.asarray([0, 0]))
+
+        metric_record = next(
+            record for record in runtime.drain_records() if isinstance(record, BatchMetricRecord)
+        )
+        np.testing.assert_allclose(metric_record.metrics["time_penalty_component"], [-0.01, -0.01])
+        np.testing.assert_allclose(metric_record.metrics["shaped_reward"], [-0.01, -0.01])
+
     def test_canonical_task_softcodes_signal_bindings_and_stall_outcome(self):
         config = EnvConfig(
             game="SuperMarioBros-Nes-v0",

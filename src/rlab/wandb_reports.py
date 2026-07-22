@@ -55,6 +55,7 @@ from rlab.metric_names import (
 )
 from rlab.ranking import RankCriterion, objective_rank_strings, require_objective_rank
 from rlab.recipe_documents import goal_contract_sha256, repo_git_commit
+from rlab.reward_programs import select_goal_reward_shape
 from rlab.wandb_utils import (
     load_wandb_env,
     resolve_wandb_project,
@@ -133,6 +134,9 @@ class GoalReportSpec:
     goal_title: str
     goal_path: Path
     goal_contract_sha256: str
+    effective_goal_contract_sha256: str
+    reward_shape: str
+    reward_shape_sha256: str
     starts: tuple[str, ...]
     rank: tuple[RankCriterion, ...]
     sections: tuple[str, ...]
@@ -150,6 +154,9 @@ class GoalReportSpec:
             "goal_id": self.goal_id,
             "goal_path": str(self.goal_path),
             "goal_contract_sha256": self.goal_contract_sha256,
+            "effective_goal_contract_sha256": self.effective_goal_contract_sha256,
+            "reward_shape": self.reward_shape,
+            "reward_shape_sha256": self.reward_shape_sha256,
             "starts": list(self.starts),
             "rank": list(objective_rank_strings(self.rank)),
             "sections": list(self.sections),
@@ -258,7 +265,9 @@ def _format_goal_title(template: str, *, goal_id: str, goal_title: str) -> str:
     try:
         return template.format(goal_id=goal_id, goal_title=goal_title)
     except KeyError as exc:
-        raise ValueError(f"goal report title uses unknown template variable: {exc.args[0]}") from exc
+        raise ValueError(
+            f"goal report title uses unknown template variable: {exc.args[0]}"
+        ) from exc
 
 
 def compile_report_specs(
@@ -272,9 +281,7 @@ def compile_report_specs(
     manifest = _load_yaml(manifest_path, label=f"report manifest {manifest_path}")
     _reject_unknown(manifest, {"schema_version", "portfolio", "goal"}, str(manifest_path))
     if manifest.get("schema_version") != REPORT_SCHEMA_VERSION:
-        raise ValueError(
-            f"{manifest_path}.schema_version must equal {REPORT_SCHEMA_VERSION}"
-        )
+        raise ValueError(f"{manifest_path}.schema_version must equal {REPORT_SCHEMA_VERSION}")
     portfolio_config = _mapping(manifest.get("portfolio"), label=f"{manifest_path}.portfolio")
     goal_config = _mapping(manifest.get("goal"), label=f"{manifest_path}.goal")
     _reject_unknown(portfolio_config, {"title", "sections"}, f"{manifest_path}.portfolio")
@@ -322,9 +329,7 @@ def compile_report_specs(
                     raise ValueError(f"{override_path}.enabled must be a boolean")
                 enabled = override["enabled"]
             if "title" in override:
-                title_template = _non_empty_text(
-                    override["title"], label=f"{override_path}.title"
-                )
+                title_template = _non_empty_text(override["title"], label=f"{override_path}.title")
             if "sections" in override:
                 sections = _sections(
                     override["sections"],
@@ -334,17 +339,26 @@ def compile_report_specs(
         if not enabled:
             continue
         goal_title = _non_empty_text(document.get("title"), label=f"{goal_path}.title")
+        selected_reward = select_goal_reward_shape(
+            document,
+            None,
+            label=f"goal report {goal_path}",
+        )
+        effective_goal = selected_reward.goal if selected_reward is not None else document
         compiled_goals.append(
             GoalReportSpec(
                 identity=f"{MARIO_FAMILY}/goal/{goal_id}",
-                title=_format_goal_title(
-                    title_template, goal_id=goal_id, goal_title=goal_title
-                ),
+                title=_format_goal_title(title_template, goal_id=goal_id, goal_title=goal_title),
                 project=_goal_project(document),
                 goal_id=goal_id,
                 goal_title=goal_title,
                 goal_path=goal_path.relative_to(repo_root),
                 goal_contract_sha256=goal_contract_sha256(document),
+                effective_goal_contract_sha256=goal_contract_sha256(effective_goal),
+                reward_shape=selected_reward.key if selected_reward is not None else "",
+                reward_shape_sha256=(
+                    selected_reward.semantic_sha256 if selected_reward is not None else ""
+                ),
                 starts=_goal_starts(document),
                 rank=require_objective_rank(document["objective"]["rank"]),
                 sections=sections,
@@ -354,7 +368,9 @@ def compile_report_specs(
         raise ValueError(f"no enabled Mario goal report found for {goal!r}")
     projects = {compiled.project for compiled in compiled_goals}
     if len(projects) != 1:
-        raise ValueError(f"Mario goal reports must resolve to one W&B project, got {sorted(projects)}")
+        raise ValueError(
+            f"Mario goal reports must resolve to one W&B project, got {sorted(projects)}"
+        )
     identities = [compiled.identity for compiled in compiled_goals]
     if len(set(identities)) != len(identities):
         raise ValueError("compiled report identities must be unique")
@@ -375,10 +391,17 @@ def validate_report_declarations(repo_root: Path | str = Path(".")) -> int:
 
 
 def _current_filter_text(goal: GoalReportSpec) -> str:
-    return (
+    text = (
         f"Config('goal_slug') = '{goal.goal_id}' and "
         f"Config('goal_contract_sha256') = '{goal.goal_contract_sha256}'"
     )
+    if goal.reward_shape:
+        text += (
+            f" and Config('effective_goal_contract_sha256') = "
+            f"'{goal.effective_goal_contract_sha256}'"
+            f" and Config('reward_shape_sha256') = '{goal.reward_shape_sha256}'"
+        )
+    return text
 
 
 def _active_filter_text(goal: GoalReportSpec) -> str:
@@ -394,8 +417,7 @@ def _historical_filter_text(goal: GoalReportSpec) -> str:
 
 def _leader_filter_text(goal: GoalReportSpec) -> str:
     return (
-        _current_filter_text(goal)
-        + f" and SummaryMetric('{LEADER_CHECKPOINT_ARTIFACT_REF}') != ''"
+        _current_filter_text(goal) + f" and SummaryMetric('{LEADER_CHECKPOINT_ARTIFACT_REF}') != ''"
     )
 
 
@@ -453,7 +475,11 @@ def _leader_runset(wr, goal: GoalReportSpec, *, entity: str):
             for metric, ascending in _leader_order_spec(goal.rank)
         ],
         pinned_columns=LEADER_COLUMNS,
-        visible_columns=[*LEADER_COLUMNS, "tags:__ALL__", f"summary:{LEADER_CHECKPOINT_EVAL_SOURCE}"],
+        visible_columns=[
+            *LEADER_COLUMNS,
+            "tags:__ALL__",
+            f"summary:{LEADER_CHECKPOINT_EVAL_SOURCE}",
+        ],
         column_order=LEADER_COLUMNS,
         column_widths=COLUMN_WIDTHS,
         lock_columns=True,
@@ -503,6 +529,7 @@ def _goal_section_blocks(wr, section: str, goal: GoalReportSpec, *, entity: str)
             wr.MarkdownBlock(
                 f"**Goal:** `{goal.goal_id}`  \n"
                 f"**Contract:** `{goal.goal_contract_sha256}`  \n"
+                f"**Reward shape:** `{goal.reward_shape or 'inline/legacy'}`  \n"
                 f"**Starts:** {starts}  \n"
                 f"**Checkpoint ranking:** {rank}"
             ),
@@ -846,7 +873,9 @@ def _preflight_existing(
             and extract_report_identity(getattr(report, "description", "")) is None
         ]
         if len(legacy) > 1:
-            raise ValueError("multiple legacy checkpoint leaderboard reports require manual cleanup")
+            raise ValueError(
+                "multiple legacy checkpoint leaderboard reports require manual cleanup"
+            )
         if legacy:
             existing[portfolio.identity] = legacy[0]
     return existing
@@ -870,7 +899,11 @@ def _replace_and_save(desired, existing):
 
 
 def sync_reports(
-    specs: Sequence[ReportSpec], *, api=None, entity: str | None = None, source_sha: str | None = None
+    specs: Sequence[ReportSpec],
+    *,
+    api=None,
+    entity: str | None = None,
+    source_sha: str | None = None,
 ) -> list[dict[str, str]]:
     import wandb
 
@@ -947,9 +980,7 @@ def _normalized_report(value: Any) -> Any:
             if not str(key).startswith("_") and key not in ignored
         }
         for grouping in normalized.get("grouping", ()):
-            if grouping.get("section") == "config" and grouping.get("name", "").endswith(
-                ".value"
-            ):
+            if grouping.get("section") == "config" and grouping.get("name", "").endswith(".value"):
                 grouping["section"] = grouping["name"].removesuffix(".value")
                 grouping["name"] = "value"
         return normalized
@@ -996,7 +1027,11 @@ def verify_reports(
     for identity, rows in sorted(index.items()):
         if len(rows) > 1:
             issues.append({"identity": identity, "issue": "duplicate"})
-        elif include_orphans and identity.startswith(f"{MARIO_FAMILY}/") and identity not in desired_ids:
+        elif (
+            include_orphans
+            and identity.startswith(f"{MARIO_FAMILY}/")
+            and identity not in desired_ids
+        ):
             issues.append({"identity": identity, "issue": "orphan"})
     existing_by_id = {identity: rows[0] for identity, rows in index.items() if len(rows) == 1}
     goals = [spec for spec in specs if isinstance(spec, GoalReportSpec)]
@@ -1056,10 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, sort_keys=True))
         else:
             for spec in specs:
-                print(
-                    f"{spec.kind}\t{spec.identity}\t{spec.project}\t"
-                    f"{','.join(spec.sections)}"
-                )
+                print(f"{spec.kind}\t{spec.identity}\t{spec.project}\t{','.join(spec.sections)}")
         return 0
     if args.command == "sync":
         for result in sync_reports(specs):

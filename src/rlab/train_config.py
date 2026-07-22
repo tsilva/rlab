@@ -460,9 +460,7 @@ def validate_and_normalize_train_config(
         )
     if normalized.get("stop_on_acceptance"):
         if normalized.get("early_stop") is not None:
-            raise ValueError(
-                f"{label}.early_stop is incompatible with stop_on_acceptance"
-            )
+            raise ValueError(f"{label}.early_stop is incompatible with stop_on_acceptance")
         if normalized.get("checkpoint_eval_stages"):
             raise ValueError(
                 f"{label}.checkpoint_eval_stages is incompatible with stop_on_acceptance"
@@ -954,6 +952,49 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         default="",
         cli_exposed=False,
         help="Semantic hash of the fully composed goal contract recorded in W&B config.",
+    ),
+    TrainConfigField(
+        "effective_goal_contract_sha256",
+        "--effective-goal-contract-sha256",
+        default="",
+        cli_exposed=False,
+        help="Semantic hash of the selected, catalog-free effective goal contract.",
+    ),
+    TrainConfigField(
+        "reward_program_kind",
+        "--reward-program-kind",
+        default="",
+        cli_exposed=False,
+        help="Versioned task-specific reward program compiler kind.",
+    ),
+    TrainConfigField(
+        "reward_program_revision",
+        "--reward-program-revision",
+        default="",
+        cli_exposed=False,
+        help="Executable reward-kernel revision selected by the reward program.",
+    ),
+    TrainConfigField(
+        "reward_shape",
+        "--reward-shape",
+        default="",
+        cli_exposed=False,
+        help="Goal-owned named reward shape selected for this run.",
+    ),
+    TrainConfigField(
+        "reward_shape_sha256",
+        "--reward-shape-sha256",
+        default="",
+        cli_exposed=False,
+        help="Semantic hash of the selected executable reward shape.",
+    ),
+    TrainConfigField(
+        "reward_shape_is_default",
+        "--reward-shape-is-default",
+        kind="bool_optional",
+        default=False,
+        cli_exposed=False,
+        help="Whether the selected reward shape is the goal catalog default.",
     ),
     TrainConfigField(
         "recipe_slug",

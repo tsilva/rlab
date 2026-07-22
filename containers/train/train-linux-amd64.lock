@@ -102,7 +102,7 @@ six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be89
 smmap==5.0.3 --hash=sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f
 stable-baselines3==2.8.0 --hash=sha256:8c19d960b534a909f46dac5227662fc2d6be380e5c66cb04e1ad23edb23dc5a2
 stable-retro-turbo==1.0.1.post33 --hash=sha256:337745072e86e3b3ca77db7e20c651abcd390cd3da2608bf17668c94b4b2ecd8
-supermariobrosnes-turbo==0.4.1 --hash=sha256:7f57142423ae69a0626f4744e4d4f58ef4dd48bead4eae1ffdefdbd20f2bbdd0
+supermariobrosnes-turbo==0.4.2 --hash=sha256:8b88cd23c9a557cffe592b50da33b22aa580a4da4d0093b05e67dc96506b6b30
 sympy==1.14.0 --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
 synchronicity==0.12.5 --hash=sha256:fdbbb10d437bc08a6b0f814fc66fddd1b58ffed314533d42f1ab555801e781af
 tensorboard==2.20.0 --hash=sha256:9dc9f978cb84c0723acf9a345d96c184f0293d18f166bb8d59ee098e6cfaaba6

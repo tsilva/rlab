@@ -4005,7 +4005,8 @@ def build_train_enqueue_parser() -> argparse.ArgumentParser:
         help=(
             "Hydra/OmegaConf dotlist recipe override. Repeat for sweeps, for example "
             "--set recipe_id=lr2e4 "
-            "--set train.backend.config.learning_rate=2e-4."
+            "--set train.backend.config.learning_rate=2e-4 or select a complete goal-owned "
+            "reward program with --set reward_shape=score-step-0p01-v1."
         ),
     )
     return parser

@@ -18,7 +18,7 @@ When running or changing fleet shepherd behavior, make unused host runtime-image
 
 - Use PyPI `stable-retro-turbo`; import path remains `stable_retro`.
 - Current required forward runtime is `stable-retro-turbo==1.0.1.post33`.
-- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.4.1`.
+- Current minimum Mario runtime is `supermariobrosnes-turbo>=0.4.2`.
 - Current minimum Breakout runtime is `breakout-turbo-env>=0.4.0`.
 - Native-vector code should use `stable_retro.RetroVecEnv`, whose constructor follows the original `RetroEnv` positional signature plus vector-only keyword arguments; do not use the removed `StableRetroNativeVecEnv` name.
 - Runtime version source of truth: `pyproject.toml` minimums and the resolved versions in `uv.lock`. Use `uv sync --frozen`; make overrides explicit in recipes, fleet policy, run descriptions, and W&B tags.

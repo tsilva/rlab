@@ -106,7 +106,9 @@ def normalize_action_configuration(
 
 
 def _packaged_action_sets(provider_id: str, game: str) -> Mapping[str, Any]:
-    if game == "SuperMarioBros-Nes-v0" and provider_id in MARIO_PROVIDERS:
+    # Stable Retro does not package the canonical aliases exposed by the dedicated
+    # Mario runtime, so keep the equivalent compatibility tables on that provider.
+    if game == "SuperMarioBros-Nes-v0" and provider_id == "stable-retro-turbo":
         return MARIO_ACTION_TABLES
     if provider_id == "stable-retro-turbo":
         import stable_retro

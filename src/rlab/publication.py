@@ -265,11 +265,7 @@ def policy_variant_from_contract(
     if isinstance(action_contract, Mapping) and action_contract.get("preset"):
         action_set = str(action_contract["preset"]).strip()
         meanings = action_contract.get("meanings")
-        if (
-            not isinstance(meanings, Sequence)
-            or isinstance(meanings, str | bytes)
-            or not meanings
-        ):
+        if not isinstance(meanings, Sequence) or isinstance(meanings, str | bytes) or not meanings:
             raise ValueError("publication action contract meanings must be a non-empty list")
     else:
         target_for_game(game).action_names_for_set(action_set)
@@ -312,15 +308,33 @@ def publication_identity_from_model_metadata(
             )
     algorithm = normalize_algorithm_id(model_metadata.get("algorithm_id"))
     validate_algorithm_model_class(algorithm, model_metadata.get("model_class"))
+    game_family = normalize_publication_component(family, label="game family")
+    goal_component = normalize_publication_component(goal_id, label="goal id")
+    policy_variant = policy_variant_from_contract(
+        preprocessing,
+        task,
+        game=game,
+        action_contract=action_contract,
+    )
+    reward_shape = str(model_metadata.get("reward_shape") or "").strip()
+    reward_shape_sha256 = str(model_metadata.get("reward_shape_sha256") or "").strip()
+    if reward_shape and not bool(model_metadata.get("reward_shape_is_default", False)):
+        raw_shape_component = normalize_publication_component(
+            reward_shape, label="reward shape"
+        ).lower()
+        digest = reward_shape_sha256.removeprefix("sha256:")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("non-default publication reward_shape_sha256 must be a SHA-256")
+        policy_budget = 96 - (len(game_family) + len(goal_component) + len(algorithm) + 3)
+        shape_budget = policy_budget - len(policy_variant) - len("-shape--") - 8
+        if shape_budget < 1:
+            raise ValueError("publication identity leaves no room for reward-shape provenance")
+        shape_component = raw_shape_component[:shape_budget].rstrip("-")
+        policy_variant = f"{policy_variant}-shape-{shape_component}-{digest[:8]}"
     return PublicationIdentity(
-        game_family=normalize_publication_component(family, label="game family"),
-        goal=normalize_publication_component(goal_id, label="goal id"),
-        policy_variant=policy_variant_from_contract(
-            preprocessing,
-            task,
-            game=game,
-            action_contract=action_contract,
-        ),
+        game_family=game_family,
+        goal=goal_component,
+        policy_variant=policy_variant,
         algorithm=algorithm,
     )
 
@@ -769,9 +783,7 @@ not a schema-v1 release and has no `v1` tag. A current release requires new stoc
             "preprocessing": _markdown_value(
                 json.dumps(preprocessing, sort_keys=True, separators=(",", ":"))
             ),
-            "action": _markdown_value(
-                json.dumps(action, sort_keys=True, separators=(",", ":"))
-            ),
+            "action": _markdown_value(json.dumps(action, sort_keys=True, separators=(",", ":"))),
             "run_value": run_value,
             "recipe": _markdown_value(source.get("recipe") or "legacy"),
             "seed": _markdown_value(
