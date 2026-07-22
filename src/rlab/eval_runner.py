@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,34 @@ def _reset_policy_lanes(model: Any, dones: Any) -> None:
         reset_lanes(dones)
 
 
+def _acceptance_runtime_config(
+    config: EnvConfig,
+    *,
+    acceptance_contract: Mapping[str, Any] | None,
+    n_envs: int,
+) -> EnvConfig:
+    """Pin each vector lane to the start declared by the evidence manifest."""
+
+    if acceptance_contract is None:
+        return config
+    planned = manifest_index(acceptance_contract)
+    lane_starts: list[str] = []
+    for lane in range(n_envs):
+        starts = {
+            str(entry.get("start_state") or "").strip()
+            for (entry_lane, _ordinal), entry in planned.items()
+            if entry_lane == lane
+        }
+        if starts == {""}:
+            return config
+        if "" in starts or len(starts) != 1:
+            raise ValueError(
+                "acceptance manifest must declare one fixed start state per vector lane"
+            )
+        lane_starts.append(starts.pop())
+    return replace(config, state="", states=tuple(lane_starts), state_probs=())
+
+
 def _evaluate_model_episodes_vector(
     *,
     model,
@@ -106,6 +135,11 @@ def _evaluate_model_episodes_vector(
         max_steps=max_steps,
         semantics=semantics,
         exact_task_contract=exact_task_contract,
+    )
+    vec_config = _acceptance_runtime_config(
+        vec_config,
+        acceptance_contract=acceptance_contract,
+        n_envs=n_envs,
     )
     eval_env = make_eval_vec_env(
         config=vec_config,

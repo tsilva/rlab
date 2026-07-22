@@ -106,7 +106,7 @@ evidence remain authoritative in the database/R2.
 | Metric or template | Meaning | Unit | Cadence | Surface |
 |---|---|---|---|---|
 | `global_step` | Policy environment transitions consumed. | steps | frame | history |
-| `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 completed training episodes. | scalar | rollout | history |
+| `train/episode/return/shaped/mean` | Rolling mean shaped return over the latest 100 completed training episodes. The accumulator starts at the environment reset; for restored emulator snapshots it measures only reward earned after the restored state and excludes score/reward already present in the snapshot. | scalar | rollout | history |
 | `train/episode/length/mean` | Rolling mean length over the latest 100 completed training episodes. | steps | rollout | history |
 | `train/outcome/terminal/count` | Cumulative terminal episode records. | episodes | rollout | history |
 | `train/outcome/reason/{reason}/count` | Cumulative failed episodes containing a reason. | episodes | rollout | history |

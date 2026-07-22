@@ -216,6 +216,7 @@ def modal_preflight(
                 and probe.get("app_name") == app_name
                 and probe.get("runtime_image_ref") == runtime_image_ref
                 and probe.get("train_config_contract_sha256") == expected_contract
+                and probe.get("object_store_configured") is True
             )
             if runtime_input_sha256:
                 probe_ok = probe_ok and (probe.get("runtime_input_sha256") == runtime_input_sha256)

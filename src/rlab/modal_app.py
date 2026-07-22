@@ -18,6 +18,10 @@ registry_ref = runtime_image_ref.removeprefix("docker:")
 app_name = modal_app_name(config.app_name_prefix, runtime_image_ref)
 registry_secret_name = os.environ.get("RLAB_MODAL_REGISTRY_SECRET", "").strip()
 registry_secret = modal.Secret.from_name(registry_secret_name) if registry_secret_name else None
+object_store_secret_name = (
+    os.environ.get("RLAB_MODAL_OBJECT_STORE_SECRET", "").strip() or "rlab-object-store"
+)
+object_store_secret = modal.Secret.from_name(object_store_secret_name)
 image = modal.Image.from_registry(registry_ref, secret=registry_secret)
 image = image.env({"RLAB_MODAL_EVAL_RUNTIME_IMAGE": runtime_image_ref})
 app = modal.App(app_name)
@@ -75,6 +79,8 @@ def stage_rom(payload: dict) -> dict[str, Any]:
     startup_timeout=config.startup_timeout_seconds,
     single_use_containers=config.single_use_containers,
     include_source=False,
+    serialized=True,
+    secrets=[object_store_secret],
     volumes={str(rom_cache_root): rom_volume.with_mount_options(read_only=True)},
 )
 def evaluate_checkpoint(payload: dict) -> dict:
@@ -98,6 +104,8 @@ def evaluate_checkpoint(payload: dict) -> dict:
     startup_timeout=config.startup_timeout_seconds,
     single_use_containers=True,
     include_source=False,
+    serialized=True,
+    secrets=[object_store_secret],
 )
 def startup_probe() -> dict[str, Any]:
     """Prove the deployed image can import its packaged evaluator contract."""
@@ -106,4 +114,14 @@ def startup_probe() -> dict[str, Any]:
     return {
         **runtime_contract(runtime_image_ref=runtime_image_ref),
         "app_name": app_name,
+        "object_store_configured": all(
+            os.environ.get(name, "").strip()
+            for name in (
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_REGION",
+                "AWS_S3_ENDPOINT_URL",
+                "CHECKPOINT_BUCKET_URI",
+            )
+        ),
     }

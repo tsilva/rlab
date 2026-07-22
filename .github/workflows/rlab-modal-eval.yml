@@ -148,6 +148,8 @@ jobs:
               raise SystemExit(f"unexpected Modal startup probe result: {result!r}")
           if int(result.get("schema_version") or 0) != TRAIN_CONFIG_CONTRACT_SCHEMA_VERSION:
               raise SystemExit(f"unexpected Modal startup probe schema: {result!r}")
+          if result.get("object_store_configured") is not True:
+              raise SystemExit(f"Modal object store is not configured: {result!r}")
           contract_sha = str(result.get("train_config_contract_sha256") or "")
           if len(contract_sha) != 64:
               raise SystemExit(f"unexpected Modal train-config contract: {result!r}")

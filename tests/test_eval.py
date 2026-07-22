@@ -22,7 +22,11 @@ from rlab.eval_metrics import (
     summarize_episode_results,
 )
 from rlab.callbacks import _DoneMetricsReducer
-from rlab.eval_runner import _eval_runtime_config, evaluate_model_episodes
+from rlab.eval_runner import (
+    _acceptance_runtime_config,
+    _eval_runtime_config,
+    evaluate_model_episodes,
+)
 from rlab.metric_names import EVAL_FULL_DURATION_SECONDS, metric_path_segment
 from rlab.modal_eval_protocol import SEED_PROTOCOL
 from rlab.targets import target_for_game
@@ -34,6 +38,7 @@ from rlab.checkpoint_eval_worker import (
 )
 from rlab.task_kernels import default_task_document
 from rlab.video import PolicyObservationPreview
+from rlab.checkpoint_acceptance import build_checkpoint_eval_contract
 
 
 MARIO_RANK = [
@@ -907,6 +912,41 @@ class EvalMetricTests(unittest.TestCase):
         self.assertTrue(result["level_complete"])
         self.assertFalse(result["terminated"])
         self.assertTrue(result["truncated"])
+
+    def test_acceptance_runtime_pins_manifest_starts_instead_of_sampling(self) -> None:
+        starts = ("post400-000", "post400-001")
+        contract = build_checkpoint_eval_contract(
+            environment={
+                "env_provider": "breakout-turbo-env",
+                "env_config": {"states": list(starts), "state_probs": [1, 1]},
+            },
+            episodes=4,
+            n_envs=2,
+            max_steps=10,
+            seed=10_000,
+            seed_protocol=SEED_PROTOCOL,
+            acceptance=[
+                {
+                    "metric": "eval/full/outcome/success/rate/min",
+                    "operator": ">=",
+                    "threshold": 1.0,
+                }
+            ],
+        )
+
+        runtime_config = _acceptance_runtime_config(
+            EnvConfig(
+                game="Breakout-Atari2600-v0",
+                states=starts,
+                state_probs=(1.0, 1.0),
+            ),
+            acceptance_contract=contract,
+            n_envs=2,
+        )
+
+        self.assertEqual(runtime_config.state, "")
+        self.assertEqual(runtime_config.states, starts)
+        self.assertEqual(runtime_config.state_probs, ())
 
     def test_vector_eval_accumulates_completed_slots_independently(self) -> None:
         class FakeModel:

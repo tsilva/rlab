@@ -463,6 +463,7 @@ class ModalEvalContractTests(unittest.TestCase):
                 "runtime_image_ref": image_ref,
                 "source_sha": "source",
                 "train_config_contract_sha256": train_config_contract_sha256(),
+                "object_store_configured": True,
             }
             report = modal_eval_cli.modal_preflight(
                 runtime_image_ref=image_ref,
