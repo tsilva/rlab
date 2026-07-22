@@ -111,6 +111,8 @@ def _acceptance_runtime_config(
                 "acceptance manifest must declare one fixed start state per vector lane"
             )
         lane_starts.append(starts.pop())
+    if len(set(lane_starts)) == 1:
+        return replace(config, state=lane_starts[0], states=(), state_probs=())
     return replace(config, state="", states=tuple(lane_starts), state_probs=())
 
 

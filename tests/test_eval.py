@@ -948,6 +948,25 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(runtime_config.states, starts)
         self.assertEqual(runtime_config.state_probs, ())
 
+        shared_contract = build_checkpoint_eval_contract(
+            environment={"game": "Breakout-Atari2600-v0", "state": "full"},
+            episodes=2,
+            n_envs=2,
+            max_steps=10,
+            seed=10_000,
+            seed_protocol=SEED_PROTOCOL,
+            acceptance=contract["acceptance"],
+        )
+        shared_runtime_config = _acceptance_runtime_config(
+            EnvConfig(game="Breakout-Atari2600-v0", state="full"),
+            acceptance_contract=shared_contract,
+            n_envs=2,
+        )
+
+        self.assertEqual(shared_runtime_config.state, "full")
+        self.assertEqual(shared_runtime_config.states, ())
+        self.assertEqual(shared_runtime_config.state_probs, ())
+
     def test_vector_eval_accumulates_completed_slots_independently(self) -> None:
         class FakeModel:
             def predict(self, obs, deterministic):
