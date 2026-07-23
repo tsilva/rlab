@@ -41,7 +41,7 @@ SERVICE_INTERVAL_SECONDS = 30
 CONTROLLER_NAMES = ("machine", "evaluation", "wandb", "workspace")
 CONTROLLER_POLL_SECONDS = 2
 CONTROL_PLANE_PROTOCOL_VERSION = 4
-CONTROLLER_READINESS_TIMEOUT_SECONDS = 10.0
+CONTROLLER_READINESS_TIMEOUT_SECONDS = 120.0
 CONTROLLER_INSTALL_HEARTBEAT_TIMEOUT_SECONDS = 180.0
 CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS = 70.0
 CONTROLLER_HEARTBEAT_PROTOCOL_VERSION = 2
@@ -1411,7 +1411,7 @@ def reload_controller_service(
         os.replace(candidate, item.plist)
         replaced = True
         started_after = time.time()
-        _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
+        _bootstrap_launch_agent(item, runner=runner, retry_busy=True)
         expected_fingerprint = controller_source_fingerprint(paths.repo_root)
         deadline = time.monotonic() + CONTROLLER_READINESS_TIMEOUT_SECONDS
         while not service_is_running(item.label, runner=runner):
@@ -1429,18 +1429,37 @@ def reload_controller_service(
                         "reloaded W&B controller did not publish matching readiness evidence"
                     )
                 time.sleep(0.1)
-    except Exception:
+    except Exception as reload_error:
+        rollback_errors: list[str] = []
         if service_is_loaded(item.label, runner=runner):
-            runner(
+            result = runner(
                 ["launchctl", "bootout", _target(item.label)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
+            if result.returncode:
+                rollback_errors.append(
+                    "unload: "
+                    + str(redact(result.stderr or result.stdout or result.returncode))
+                )
+            else:
+                try:
+                    _wait_for_service_unloaded(item.label, runner=runner)
+                except Exception as exc:
+                    rollback_errors.append(f"unload wait: {exc}")
         if replaced:
             _atomic_write(item.plist, old_plist)
         if was_loaded:
-            _bootstrap_launch_agent(item, runner=runner, retry_busy=True)
+            try:
+                _bootstrap_launch_agent(item, runner=runner, retry_busy=True)
+            except Exception as exc:
+                rollback_errors.append(f"restore: {exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"{controller} controller reload failed ({reload_error}); "
+                "rollback also failed: " + "; ".join(rollback_errors)
+            ) from reload_error
         raise
     finally:
         candidate.unlink(missing_ok=True)

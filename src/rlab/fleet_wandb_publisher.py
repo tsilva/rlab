@@ -1819,6 +1819,7 @@ def run_publisher_actor(
 def _validate_publisher_schema(conn) -> None:
     required_columns = {
         ("metric_batches", "wandb_confirmed_at"),
+        ("train_jobs", "telemetry_protocol_version"),
     }
     with conn.cursor() as cur:
         cur.execute(
