@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import mean, median, pstdev
+from statistics import median
 from typing import Any, Iterator, Mapping
 from urllib.parse import urlparse
 

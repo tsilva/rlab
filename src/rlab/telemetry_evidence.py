@@ -6,7 +6,6 @@ from typing import Any
 
 from rlab.job_queue import json_arg
 from rlab.telemetry_integrity import (
-    EVIDENCE_VERSION,
     build_eval_scope_exact,
     build_run_final_exact,
     build_training_success_scope_exact,
@@ -170,12 +169,6 @@ def persist_evidence_scope(
     scope_kind = str(evidence.get("scope_kind") or "")
     if scope_kind not in {"eval_scope_exact", "training_success_scope_exact"}:
         raise ValueError("unsupported authoritative evidence scope")
-    scope_sha256 = str(evidence.get("scope_sha256") or sha256_json(evidence))
-    scope_key = str(
-        evidence.get("execution_key")
-        or evidence.get("success_event", {}).get("event_id")
-        or scope_sha256
-    )
     with conn:
         with conn.cursor() as cur:
             return insert_evidence_scope(

@@ -579,33 +579,34 @@ class AutoresearchStudyTests(unittest.TestCase):
             {"action": "reserve_search_pair", "candidate_id": first_id},
         )
 
-    def test_wandb_evidence_uses_all_start_counts_and_history_peak(self) -> None:
-        class FakeRun:
-            id = "rlab-42"
-            state = "finished"
-            url = "https://wandb.ai/e/p/runs/rlab-42"
-            summary = {
-                "global_step": {"max": 50_176},
+    def test_authoritative_evidence_uses_all_start_counts_and_canonical_peak(
+        self,
+    ) -> None:
+        facts = {
+            "scope_sha256": "a" * 64,
+            "comparability_sha256": "b" * 64,
+            "wandb_url": "https://wandb.ai/e/p/runs/rlab-42",
+            "dimensions": {"rank_direction": "maximize"},
+            "metrics": {
+                "global_step": 50_176,
                 "train/outcome/success/from/A/count": 2,
                 "train/outcome/success/from/B/count": 0,
-            }
-
-            @staticmethod
-            def scan_history(**_kwargs):
-                return iter(
-                    [
-                        {"global_step": 20_000, "train/outcome/success/window_100/rate/min": 0.4},
-                        {"global_step": 30_000, "train/outcome/success/window_100/rate/min": 0.91},
-                        {"global_step": 40_000, "train/outcome/success/window_100/rate/min": 0.85},
-                    ]
-                )
-
-        fake_api = SimpleNamespace(run=lambda _path: FakeRun())
-        fake_wandb = SimpleNamespace(Api=lambda timeout: fake_api)
-        with mock.patch.dict("sys.modules", {"wandb": fake_wandb}):
+                "train/outcome/success/window_100/rate/min/peak": 0.91,
+                "train/outcome/success/window_100/rate/min/first_threshold_step": 30_000,
+            },
+        }
+        connection = mock.MagicMock()
+        with (
+            mock.patch.dict("os.environ", {"DATABASE_URL": "postgres://test"}),
+            mock.patch("rlab.job_queue.connect", return_value=connection),
+            mock.patch(
+                "rlab.telemetry_evidence.training_facts_by_wandb_run_id",
+                return_value=facts,
+            ),
+        ):
             evidence = study.fetch_training_evidence(
-                url=FakeRun.url,
-                expected_run_id=FakeRun.id,
+                url="https://wandb.ai/e/p/runs/rlab-42",
+                expected_run_id="rlab-42",
                 starts=["A", "B"],
                 strong_threshold=0.9,
             )
@@ -614,6 +615,8 @@ class AutoresearchStudyTests(unittest.TestCase):
         self.assertEqual(evidence["peak_window_100_rate_min"], 0.91)
         self.assertEqual(evidence["first_strong_step"], 30_000)
         self.assertTrue(evidence["strong"])
+        self.assertEqual(evidence["authority"], "run_final_exact")
+        connection.close.assert_called_once_with()
 
     def test_eval_backed_or_unverified_terminal_pauses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

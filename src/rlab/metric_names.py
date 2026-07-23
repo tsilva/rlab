@@ -509,25 +509,59 @@ V5_METRIC_DEFINITIONS = (
     ),
     _definition(
         LEADER_CHECKPOINT_ACCEPTANCE_PASS,
-        "Canonical promoted-checkpoint acceptance verdict restamped from database promotion state.",
+        "Diagnostic projection of the promoted-checkpoint verdict; "
+        "`eval_scope_exact` is authoritative.",
         "boolean",
         "selection",
         "summary",
     ),
     *(
-        _definition(name, "Selected checkpoint summary field.", "summary", "selection", "summary")
-        for name in (
-            LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
-            LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
-            LEADER_CHECKPOINT_OBJECTIVE,
-            LEADER_CHECKPOINT_RETURN_MEAN,
-            LEADER_CHECKPOINT_BEST_RETURN,
-            LEADER_CHECKPOINT_RANK_VALUES,
-            LEADER_CHECKPOINT_PROGRESS_MAX,
-            LEADER_CHECKPOINT_STEP,
-            LEADER_CHECKPOINT_ARTIFACT_REF,
-            LEADER_CHECKPOINT_EVAL_SOURCE,
-            LEADER_CHECKPOINT_UPDATED_AT,
+        _definition(name, description, "summary", "selection", "summary")
+        for name, description in (
+            (
+                LEADER_CHECKPOINT_SUCCESS_RATE_MIN,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_SUCCESS_RATE_MEAN,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_OBJECTIVE,
+                "Diagnostic selected-checkpoint projection; never a ranking input.",
+            ),
+            (
+                LEADER_CHECKPOINT_RETURN_MEAN,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_BEST_RETURN,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_RANK_VALUES,
+                "Diagnostic rendering of authoritative rank values.",
+            ),
+            (
+                LEADER_CHECKPOINT_PROGRESS_MAX,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_STEP,
+                "Diagnostic selected-checkpoint projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_ARTIFACT_REF,
+                "Diagnostic immutable artifact reference projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_EVAL_SOURCE,
+                "Diagnostic evaluation-source projection.",
+            ),
+            (
+                LEADER_CHECKPOINT_UPDATED_AT,
+                "Diagnostic projection update time.",
+            ),
         )
     ),
 )
