@@ -178,6 +178,12 @@ def test_loopback_server_requires_exact_origin_and_fragment_token() -> None:
                 assert icon_response.status == 200
                 assert "image/svg+xml" in icon_response.headers["Content-Type"]
                 assert 'id="ti-player-play"' in await icon_response.text()
+                panel_response = await client.get(
+                    f"{server.origin}/assets/panels/catalog.js"
+                )
+                assert panel_response.status == 200
+                assert "javascript" in panel_response.headers["Content-Type"]
+                assert "PANEL_CATALOG" in await panel_response.text()
                 try:
                     await client.ws_connect(f"{server.origin}/ws", origin="http://example.test")
                 except WSServerHandshakeError as exc:
@@ -286,15 +292,33 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert (root / "index.html").is_file()
     assert (root / "styles.css").is_file()
     assert (root / "tabler-icons.svg").is_file()
+    panel_root = root / "panels"
+    panel_names = {
+        "game",
+        "controls",
+        "policy",
+        "reward",
+        "actions",
+        "observation",
+        "signals",
+        "events",
+        "raw",
+    }
+    assert all((panel_root / f"{name}.js").is_file() for name in panel_names)
     markup = (root / "index.html").read_text(encoding="utf-8")
     styles = (root / "styles.css").read_text(encoding="utf-8")
     script = (root / "app.js").read_text(encoding="utf-8")
     icons = (root / "tabler-icons.svg").read_text(encoding="utf-8")
-    assert markup.index('data-panel="game"') < markup.index('data-panel="controls"')
-    assert '<aside class="panel control-panel transport"' in markup
-    game_markup = markup[
-        markup.index('data-panel="game"') : markup.index('data-panel="controls"')
-    ]
+    catalog = (panel_root / "catalog.js").read_text(encoding="utf-8")
+    runtime = (panel_root / "runtime.js").read_text(encoding="utf-8")
+    shared = (panel_root / "shared.js").read_text(encoding="utf-8")
+    game_markup = (panel_root / "game.js").read_text(encoding="utf-8")
+    controls_markup = (panel_root / "controls.js").read_text(encoding="utf-8")
+    reward_markup = (panel_root / "reward.js").read_text(encoding="utf-8")
+    raw_markup = (panel_root / "raw.js").read_text(encoding="utf-8")
+    assert '<main id="dashboard" class="dashboard"></main>' in markup
+    assert 'data-panel="' not in markup
+    assert 'className: "control-panel transport"' in controls_markup
     assert "ENVIRONMENT" not in game_markup
     assert "Focus the game for human input" not in game_markup
     assert 'class="game-actions panel-actions"' in game_markup
@@ -302,9 +326,9 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "grid-template-columns: repeat(12" in styles
     assert ".icon-only" in styles
     assert 'id="timeline-scrubber"' in markup
-    assert 'id="return-chart"' in markup
-    assert 'id="pause" class="icon-only" aria-label="Pause"' in markup
-    assert 'id="step-ten" class="icon-only" aria-label="Step 10 times"' in markup
+    assert "data-return-chart" in reward_markup
+    assert 'data-command="pause" class="icon-only" aria-label="Pause"' in controls_markup
+    assert 'data-command="step-ten" class="icon-only" aria-label="Step 10 times"' in controls_markup
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert "ti-device-desktop-share" in icons
     assert "separate scale" not in markup
@@ -312,21 +336,21 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "Research workspace" not in markup
     assert "panel-kicker" not in markup
     assert 'id="workspace-sequence"' not in markup
-    assert '<details class="control-section session-settings">' in markup
+    assert '<details class="control-section session-settings">' in controls_markup
     assert '#workspace-sequence' not in script
     assert "panel-shelf-title" not in script
     assert "scrollIntoView" not in script
-    assert '${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}' in script
-    assert 'drawLines($("#return-chart")' in script
-    assert "data-drag-handle" in markup
-    assert 'aria-label="Move game panel"' in markup
-    assert "/assets/tabler-icons.svg#ti-player-play" in markup
+    assert '${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}' in controls_markup
+    assert "drawLines(returnChart" in reward_markup
+    assert "data-drag-handle" in game_markup
+    assert 'aria-label="Move game panel"' in game_markup
+    assert "/assets/tabler-icons.svg#ti-player-play" in controls_markup
     assert 'id="ti-grip-vertical"' in icons
     assert 'id="ti-player-play"' in icons
     assert 'id="panel-shelf" class="floating-menu panel-shelf" hidden' in markup
-    assert "requestFullscreen" in script
-    assert 'id="raw-transition" class="json-view"' in markup
-    assert "function renderJson(" in script
+    assert "requestFullscreen" in game_markup
+    assert 'data-transition class="json-view"' in raw_markup
+    assert "function renderJson(" in shared
     for token_class in (
         "json-key",
         "json-string",
@@ -349,4 +373,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "preview.style.height" in script
     assert ".panel-drag-overlay" in styles
     assert ".dashboard.drag-receiving" in styles
-    assert "visibilitychange" in script
+    assert "visibilitychange" in game_markup
+    assert "PANEL_CATALOG" in catalog
+    assert 'module: "./game.js"' in catalog
+    assert "defaultPanelLayout" in catalog
+    assert "import(definition.module)" in runtime
+    assert "async ensureMounted" in runtime
+    assert "this.unmount(name)" in runtime
+    assert "new PanelRuntime" in script

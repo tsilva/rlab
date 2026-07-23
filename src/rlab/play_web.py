@@ -947,10 +947,18 @@ class PlaybackWebServer:
         return web.FileResponse(self.asset_root / "index.html")
 
     async def asset(self, request: web.Request) -> web.FileResponse:
-        name = request.match_info["name"]
-        if name not in {"app.js", "styles.css", "tabler-icons.svg"}:
+        relative = Path(request.match_info["path"])
+        root = self.asset_root.resolve()
+        candidate = (root / relative).resolve()
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or candidate.suffix not in {".js", ".css", ".svg"}
+            or not candidate.is_relative_to(root)
+            or not candidate.is_file()
+        ):
             raise web.HTTPNotFound()
-        return web.FileResponse(self.asset_root / name)
+        return web.FileResponse(candidate)
 
     def _snapshot_for(self, client: WebClient, snapshot: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -1220,7 +1228,7 @@ class PlaybackWebServer:
                 web.get("/", self.page),
                 web.get("/panel/{panel}", self.page),
                 web.get("/workspace/{window}", self.page),
-                web.get("/assets/{name}", self.asset),
+                web.get("/assets/{path:.*}", self.asset),
                 web.get("/ws", self.websocket),
             ]
         )

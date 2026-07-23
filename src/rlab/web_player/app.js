@@ -1,6 +1,15 @@
+import {
+  FRAME_GAME,
+  FRAME_OBSERVATION,
+  PANEL_CATALOG,
+  defaultPanelLayout,
+  panelLabels,
+  panelSubscriptions,
+} from "./panels/catalog.js";
+import { PanelRuntime } from "./panels/runtime.js";
+import { text } from "./panels/shared.js";
+
 const FRAME_HEADER_BYTES = 16;
-const FRAME_GAME = 1;
-const FRAME_OBSERVATION = 2;
 const panelName = location.pathname.startsWith("/panel/")
   ? location.pathname.slice("/panel/".length)
   : null;
@@ -14,34 +23,14 @@ const SAVED_LAYOUTS_KEY = "rlab.player.workspace.saved.v1";
 const workspaceId = localStorage.getItem(WORKSPACE_ID_KEY) || crypto.randomUUID();
 localStorage.setItem(WORKSPACE_ID_KEY, workspaceId);
 const windowId = panelName ? `panel-${panelName}` : (workspaceWindowName || "main");
-const PANEL_LABELS = {
-  game: "Game",
-  controls: "Controls",
-  policy: "Policy distribution",
-  reward: "Reward and return",
-  actions: "Action history",
-  observation: "Observation and attribution",
-  signals: "Live signals",
-  events: "Events",
-  raw: "Transition inspector",
-};
+const PANEL_LABELS = panelLabels();
 
 function defaultLayout() {
   return {
     version: 1,
     revision: 0,
     name: "Mario debug",
-    panels: {
-      game: { col: 1, row: 1, w: 7, h: 15, visible: true, window: "main" },
-      controls: { col: 8, row: 1, w: 2, h: 15, visible: true, window: "main" },
-      policy: { col: 10, row: 1, w: 3, h: 7, visible: true, window: "main" },
-      reward: { col: 10, row: 8, w: 3, h: 8, visible: true, window: "main" },
-      actions: { col: 1, row: 16, w: 4, h: 8, visible: false, window: "main" },
-      observation: { col: 5, row: 16, w: 5, h: 8, visible: false, window: "main" },
-      signals: { col: 10, row: 16, w: 3, h: 8, visible: false, window: "main" },
-      events: { col: 1, row: 24, w: 4, h: 7, visible: false, window: "main" },
-      raw: { col: 5, row: 24, w: 8, h: 7, visible: false, window: "main" },
-    },
+    panels: defaultPanelLayout(),
   };
 }
 
@@ -61,12 +50,9 @@ const state = {
   frameSequence: new Map(),
   receivedFrameSequence: new Map(),
   pendingSnapshot: null,
-  pressed: new Set(),
-  gameFocused: false,
   mode: null,
   lastStatus: null,
   actionNamesKey: "",
-  selectedSignal: localStorage.getItem("rlab.player.signal") || "",
   workspaceId,
   windowId,
   layout: null,
@@ -76,8 +62,8 @@ const state = {
   dragTarget: null,
   remoteDrag: null,
   activeWindows: new Map(),
-  gameAspect: 256 / 240,
 };
+let panelRuntime = null;
 
 const workspaceChannel = "BroadcastChannel" in window
   ? new BroadcastChannel(`rlab-player-${workspaceId}`)
@@ -96,8 +82,9 @@ function normalizeLayout(value) {
   const panels = {};
   Object.entries(fallback.panels).forEach(([name, defaults]) => {
     const candidate = source.panels?.[name] || {};
-    const w = clamp(candidate.w ?? defaults.w, name === "game" ? 4 : 2, 12);
-    const h = clamp(candidate.h ?? defaults.h, name === "game" ? 8 : 4, 40);
+    const minimum = PANEL_CATALOG[name].minimum;
+    const w = clamp(candidate.w ?? defaults.w, minimum.w, 12);
+    const h = clamp(candidate.h ?? defaults.h, minimum.h, 40);
     panels[name] = {
       col: clamp(candidate.col ?? defaults.col, 1, 13 - w),
       row: clamp(candidate.row ?? defaults.row, 1, 200),
@@ -131,11 +118,7 @@ function panelsInThisWindow() {
 }
 
 function subscriptions() {
-  const visible = new Set(panelsInThisWindow());
-  const values = ["telemetry"];
-  if (visible.has("game")) values.push("game");
-  if (visible.has("observation")) values.push("observation");
-  return values;
+  return panelSubscriptions(panelsInThisWindow());
 }
 
 function setDetachedLayout() {
@@ -215,7 +198,16 @@ function handleMessage(message) {
   }
   if (message.type === "command_result") {
     if (!message.ok) showToast(message.error || "Command failed", true);
-    else if (message.inspection?.kind === "policy") renderPolicy(message.inspection.decision, true);
+    else if (message.inspection?.kind === "policy") {
+      panelRuntime.invoke("policy", "inspect", message.inspection.decision);
+      workspaceChannel?.postMessage({
+        type: "panel-inspection",
+        source: state.windowId,
+        panel: "policy",
+        method: "inspect",
+        value: message.inspection.decision,
+      });
+    }
     return;
   }
   if (message.type === "error") showToast(message.error || "Player error", true);
@@ -225,40 +217,6 @@ function rememberFrame(kind, sequence, blob) {
   const frames = state.frameBlobs.get(kind);
   frames.set(sequence, blob);
   while (frames.size > 1024) frames.delete(frames.keys().next().value);
-}
-
-function fitGameFrame() {
-  const stage = $("#game-stage");
-  const frame = $("#game-frame");
-  if (!stage || !frame) return;
-  const width = stage.clientWidth;
-  const height = stage.clientHeight;
-  if (!width || !height) return;
-  const fittedWidth = Math.min(width, height * state.gameAspect);
-  const fittedHeight = fittedWidth / state.gameAspect;
-  frame.style.width = `${Math.max(1, Math.floor(fittedWidth))}px`;
-  frame.style.height = `${Math.max(1, Math.floor(fittedHeight))}px`;
-  frame.style.aspectRatio = String(state.gameAspect);
-}
-
-async function drawFrameBlob(kind, blob) {
-  if (!blob) return false;
-  const bitmap = await createImageBitmap(blob);
-  const canvas = kind === FRAME_GAME ? $("#game-canvas") : $("#observation-canvas");
-  if (!canvas) { bitmap.close(); return false; }
-  if (kind === FRAME_GAME) {
-    state.gameAspect = bitmap.width / Math.max(1, bitmap.height);
-    fitGameFrame();
-  }
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const context = canvas.getContext("2d", { alpha: false });
-  context.imageSmoothingEnabled = false;
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close();
-  if (kind === FRAME_GAME) $("#game-empty")?.setAttribute("hidden", "");
-  if (kind === FRAME_OBSERVATION) $("#observation-empty")?.setAttribute("hidden", "");
-  return true;
 }
 
 async function handleFrame(buffer) {
@@ -273,7 +231,7 @@ async function handleFrame(buffer) {
   const blob = new Blob([buffer.slice(FRAME_HEADER_BYTES)], { type: "image/png" });
   rememberFrame(kind, sequence, blob);
   if (state.inspectionSequence === null || state.inspectionSequence === sequence) {
-    await drawFrameBlob(kind, blob);
+    await panelRuntime.renderFrame(kind, blob);
   }
   state.frameSequence.set(kind, sequence);
   flushPendingSnapshot();
@@ -327,72 +285,11 @@ function command(name, payload = {}) {
   });
 }
 
-function text(value, fallback = "—") {
-  return value === null || value === undefined || value === "" ? fallback : String(value);
-}
-
-function number(value, digits = 3) {
-  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
-}
-
-function stat(label, value) {
-  const box = document.createElement("div");
-  box.className = "stat";
-  const key = document.createElement("span");
-  key.className = "stat-label";
-  key.textContent = label;
-  const rendered = document.createElement("span");
-  rendered.className = "stat-value";
-  rendered.textContent = text(value);
-  box.append(key, rendered);
-  return box;
-}
-
-function setStats(target, values) {
-  target.replaceChildren(...values.map(([label, value]) => stat(label, value)));
-}
-
-function renderJson(target, value, fallback) {
-  if (value === null || value === undefined) {
-    target.textContent = fallback;
-    return;
-  }
-
-  const source = JSON.stringify(value, null, 2);
-  const tokens = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;
-  const fragment = document.createDocumentFragment();
-  let cursor = 0;
-
-  for (const match of source.matchAll(tokens)) {
-    fragment.append(document.createTextNode(source.slice(cursor, match.index)));
-    const token = document.createElement("span");
-    const raw = match[0];
-    if (raw.startsWith('"')) {
-      token.className = source.slice(match.index + raw.length).match(/^\s*:/)
-        ? "json-key"
-        : "json-string";
-    } else if (raw === "true" || raw === "false") {
-      token.className = "json-boolean";
-    } else if (raw === "null") {
-      token.className = "json-null";
-    } else {
-      token.className = "json-number";
-    }
-    token.textContent = raw;
-    fragment.append(token);
-    cursor = match.index + raw.length;
-  }
-  fragment.append(document.createTextNode(source.slice(cursor)));
-  target.replaceChildren(fragment);
-}
-
 function updateControlState() {
   const control = $("#control-status");
   control.textContent = state.hasControl ? "Controller" : "Observer";
   control.className = `badge ${state.hasControl ? "" : "muted"}`.trim();
-  $$(".transport button:not(#acquire-control):not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
-    .forEach((button) => { button.disabled = !state.hasControl; });
-  $("#acquire-control").disabled = !state.connected || state.hasControl;
+  panelRuntime?.invoke("controls", "updateControl");
 }
 
 function renderWorkspaceStatus() {
@@ -413,15 +310,6 @@ function renderSnapshot() {
   configureMode(snapshot.mode || "playback");
   updateControlState();
   renderWorkspaceStatus();
-  $("#seed").value = text(session.seed, "");
-  if (document.activeElement !== $("#fps")) $("#fps").value = Number(session.target_fps || 0);
-  $("#session-summary").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
-  $("#resolved-config").textContent = session.config || "No configuration supplied.";
-  renderJson($("#raw-transition"), transition, "No transition yet.");
-  $("#model-input").textContent = transition?.before?.model_input?.join("\n") || "No policy input yet.";
-  $("#game-overlay").textContent = transition
-    ? `${state.inspectionSequence === null ? "" : "INSPECTING · "}EP ${transition.episode} · STEP ${transition.step} · r ${number(transition.reward?.step, 2)} · R ${number(transition.reward?.return, 2)} · ${String(transition.action_source || "—").toUpperCase()}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
-    : `seed ${text(session.seed)} · ready`;
   const actionNamesKey = JSON.stringify(session.action_names || []);
   if (actionNamesKey !== state.actionNamesKey) {
     state.actionNamesKey = actionNamesKey;
@@ -431,10 +319,10 @@ function renderSnapshot() {
     state.lastStatus = snapshot.status_message;
     showToast(snapshot.status_message, snapshot.run_state === "paused" && /error|expired|unsupported|no configured/i.test(snapshot.status_message));
   }
-  renderPolicy(transition?.decision || null, false);
-  renderReward(transition);
-  renderSignals(transition);
-  renderEvents();
+  panelRuntime.renderSnapshot(snapshot, {
+    history: state.history,
+    inspection: state.inspectionSequence !== null,
+  });
   if (state.inspectionSequence === null && transition && (!state.history.length || state.history.at(-1)?.sequence !== transition.sequence)) {
     state.history.push(historyFromTransition(transition));
     if (state.history.length > 4096) state.history.shift();
@@ -449,14 +337,6 @@ function configureMode(mode) {
   const recording = mode === "recording";
   document.body.classList.toggle("recording", recording);
   document.querySelector(".eyebrow").textContent = recording ? "HUMAN RECORDING" : "RLAB PLAYER";
-  ["step", "step-ten", "continue-event", "continue-done", "reset", "policy-driver", "inspect-policy"].forEach((id) => {
-    $(`#${id}`).hidden = recording;
-  });
-  $("#seed").closest("label").hidden = recording;
-  const humanDriver = $("#human-driver");
-  const humanDriverLabel = recording ? "Human controls" : "Take human control";
-  humanDriver.setAttribute("aria-label", humanDriverLabel);
-  humanDriver.title = humanDriverLabel;
 }
 
 function historyFromTransition(transition) {
@@ -478,164 +358,8 @@ function historyFromTransition(transition) {
   };
 }
 
-function renderPolicy(decision, inspection) {
-  const summary = $("#policy-summary");
-  const actions = $("#policy-actions");
-  if (!decision) {
-    setStats(summary, [["Mode", state.snapshot?.driver || "—"], ["Decision", "Unavailable"]]);
-    actions.className = "action-probabilities empty-state";
-    actions.textContent = "No sampled policy decision for this transition.";
-    return;
-  }
-  setStats(summary, [
-    [inspection ? "Inspection" : "Mode", inspection ? "Policy" : (decision.sampled ? "Stochastic" : "Policy")],
-    ["V(s)", number(decision.value, 4)],
-    ["Entropy", number(decision.entropy, 4)],
-    ["Log p", number(decision.log_probability, 4)],
-  ]);
-  const probabilities = decision.probabilities;
-  if (!Array.isArray(probabilities)) {
-    actions.className = "action-probabilities";
-    actions.textContent = `Executed ${JSON.stringify(decision.executed_action)} · mean ${JSON.stringify(decision.mean)} · std ${JSON.stringify(decision.stddev)}`;
-    return;
-  }
-  const names = state.snapshot?.session?.action_names || [];
-  const rows = probabilities.map((probability, index) => {
-    const row = document.createElement("div");
-    row.className = `action-row ${index === decision.selected_action ? "selected" : ""}`;
-    const label = document.createElement("span");
-    label.textContent = names[index] || `action ${index}`;
-    const track = document.createElement("div");
-    track.className = "probability-track";
-    const fill = document.createElement("div");
-    fill.className = "probability-fill";
-    fill.style.width = `${Math.max(0, Math.min(100, Number(probability) * 100))}%`;
-    track.append(fill);
-    const amount = document.createElement("span");
-    amount.textContent = `${(Number(probability) * 100).toFixed(1)}%`;
-    row.append(label, track, amount);
-    return row;
-  });
-  actions.className = "action-probabilities";
-  actions.replaceChildren(...rows);
-}
-
-function renderReward(transition) {
-  const reward = transition?.reward || {};
-  setStats($("#reward-stats"), [
-    ["Provider r", number(reward.provider, 3)],
-    ["Shaped r", number(reward.shaped, 3)],
-    ["Return", number(reward.return, 2)],
-    ["Outcome", transition?.outcome || "continuing"],
-  ]);
-}
-
-function resizeCanvas(canvas) {
-  const ratio = window.devicePixelRatio || 1;
-  const width = Math.max(240, canvas.clientWidth);
-  const height = Math.max(120, canvas.clientHeight);
-  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
-  }
-  return { context: canvas.getContext("2d"), ratio, width, height };
-}
-
-function drawLines(canvas, series) {
-  const { context, ratio, width, height } = resizeCanvas(canvas);
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = "#071117";
-  context.fillRect(0, 0, width, height);
-  const values = series.flatMap((item) => item.values.filter(Number.isFinite));
-  if (!values.length) {
-    context.fillStyle = "#8da6b2";
-    context.font = "12px system-ui";
-    context.fillText("No history yet", 12, 22);
-    return;
-  }
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (min === max) { min -= 1; max += 1; }
-  const padding = 12;
-  context.strokeStyle = "#1d3541";
-  context.lineWidth = 1;
-  for (let index = 1; index < 4; index += 1) {
-    const y = padding + ((height - padding * 2) * index) / 4;
-    context.beginPath(); context.moveTo(padding, y); context.lineTo(width - padding, y); context.stroke();
-  }
-  series.forEach(({ values: points, color }) => {
-    context.strokeStyle = color;
-    context.lineWidth = 1.5;
-    context.beginPath();
-    points.forEach((value, index) => {
-      if (!Number.isFinite(value)) return;
-      const x = padding + (index / Math.max(1, points.length - 1)) * (width - padding * 2);
-      const y = height - padding - ((value - min) / (max - min)) * (height - padding * 2);
-      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-    });
-    context.stroke();
-  });
-}
-
-function fitCanvasLabel(context, value, maxWidth) {
-  const label = String(value);
-  if (context.measureText(label).width <= maxWidth) return label;
-  let end = label.length;
-  while (end > 0 && context.measureText(`${label.slice(0, end)}…`).width > maxWidth) end -= 1;
-  return end > 0 ? `${label.slice(0, end)}…` : "…";
-}
-
-function drawHistogram(canvas, counts, names) {
-  const { context, ratio, width, height } = resizeCanvas(canvas);
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = "#071117"; context.fillRect(0, 0, width, height);
-  const max = Math.max(1, ...counts);
-  const gap = 4;
-  const barWidth = Math.max(4, (width - 24) / Math.max(1, counts.length) - gap);
-  const plotBottom = height - 30;
-  counts.forEach((count, index) => {
-    const barHeight = (count / max) * Math.max(0, plotBottom - 12);
-    const x = 12 + index * (barWidth + gap);
-    context.fillStyle = "#53d4e8";
-    context.fillRect(x, plotBottom - barHeight, barWidth, barHeight);
-    context.fillStyle = "#d7e5ea";
-    context.font = "600 12px system-ui, sans-serif";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    const label = fitCanvasLabel(context, names[index] || String(index), barWidth + gap - 4);
-    context.fillText(label, x + barWidth / 2, height - 14);
-  });
-}
-
 function renderHistory() {
-  const points = state.history.slice(-1024);
-  drawLines($("#reward-chart"), [
-    { values: points.map((point) => Number(point.reward_provider)), color: "#76a9ff" },
-    { values: points.map((point) => Number(point.reward_shaped)), color: "#d794ff" },
-  ]);
-  drawLines($("#return-chart"), [
-    { values: points.map((point) => Number(point.return)), color: "#60d394" },
-  ]);
-  $("#reward-legend").replaceChildren(...[
-    ["Provider reward", "#76a9ff"], ["Shaped reward", "#d794ff"],
-  ].map(([label, color]) => {
-    const item = document.createElement("span"); item.textContent = label; item.style.setProperty("--legend-color", color); return item;
-  }));
-  $("#return-legend").replaceChildren(...[
-    ["Return", "#60d394"],
-  ].map(([label, color]) => {
-    const item = document.createElement("span"); item.textContent = label; item.style.setProperty("--legend-color", color); return item;
-  }));
-  const names = state.snapshot?.session?.action_names || [];
-  const counts = Array.from({ length: names.length || 1 }, () => 0);
-  points.forEach((point) => { if (Number.isInteger(point.action) && point.action >= 0) counts[point.action] = (counts[point.action] || 0) + 1; });
-  drawHistogram($("#action-chart"), counts, names);
-  const total = counts.reduce((sum, value) => sum + value, 0);
-  $("#action-caption").textContent = total ? `${total} sampled policy actions in the visible history.` : "No policy actions observed.";
-  renderSignalChart();
-  renderEvents();
+  panelRuntime.renderHistory(state.history, state.snapshot);
   renderTimeline();
 }
 
@@ -649,8 +373,8 @@ function nearestFrameBlob(kind, sequence) {
 async function showFramesForSequence(sequence) {
   const visible = new Set(panelsInThisWindow());
   const tasks = [];
-  if (visible.has("game")) tasks.push(drawFrameBlob(FRAME_GAME, nearestFrameBlob(FRAME_GAME, sequence)));
-  if (visible.has("observation")) tasks.push(drawFrameBlob(FRAME_OBSERVATION, nearestFrameBlob(FRAME_OBSERVATION, sequence)));
+  if (visible.has("game")) tasks.push(panelRuntime.renderFrame(FRAME_GAME, nearestFrameBlob(FRAME_GAME, sequence)));
+  if (visible.has("observation")) tasks.push(panelRuntime.renderFrame(FRAME_OBSERVATION, nearestFrameBlob(FRAME_OBSERVATION, sequence)));
   const results = await Promise.all(tasks);
   if (tasks.length && !results.some(Boolean)) showToast("This retained transition has telemetry but no retained image frame.", true);
 }
@@ -709,46 +433,6 @@ function renderTimeline() {
   }));
 }
 
-function renderSignals(transition) {
-  const signals = transition?.signals || {};
-  const select = $("#signal-select");
-  const known = new Set([...state.history.flatMap((point) => Object.keys(point.signals || {})), ...Object.keys(signals)]);
-  const currentOptions = new Set([...select.options].map((option) => option.value));
-  [...known].sort().forEach((name) => {
-    if (!currentOptions.has(name)) {
-      const option = document.createElement("option"); option.value = name; option.textContent = name; select.append(option);
-    }
-  });
-  if (state.selectedSignal && known.has(state.selectedSignal)) select.value = state.selectedSignal;
-  const body = $("#signals-table tbody");
-  body.replaceChildren(...Object.entries(signals).map(([name, value]) => {
-    const row = document.createElement("tr");
-    const key = document.createElement("td"); key.textContent = name;
-    const rendered = document.createElement("td"); rendered.textContent = number(value, 4);
-    row.append(key, rendered); return row;
-  }));
-  renderSignalChart();
-}
-
-function renderSignalChart() {
-  const name = $("#signal-select").value;
-  drawLines($("#signal-chart"), [{ values: state.history.slice(-1024).map((point) => Number(point.signals?.[name])), color: "#f0c36a" }]);
-}
-
-function renderEvents() {
-  const events = state.history.filter((point) => point.boundary || point.events?.length).slice(-100).reverse();
-  const list = $("#event-list");
-  if (!events.length) {
-    const empty = document.createElement("li"); empty.className = "empty-state"; empty.textContent = "No events observed."; list.replaceChildren(empty); return;
-  }
-  list.replaceChildren(...events.map((point) => {
-    const item = document.createElement("li"); item.className = `event-item ${point.boundary ? "boundary" : ""}`;
-    const label = document.createElement("div"); label.textContent = point.events?.length ? point.events.join(" · ") : "episode boundary";
-    const meta = document.createElement("div"); meta.className = "event-meta"; meta.textContent = `seq ${point.sequence} · ep ${point.episode} · step ${point.step}`;
-    item.append(label, meta); return item;
-  }));
-}
-
 function panelsOverlap(a, b) {
   return a.col < b.col + b.w
     && a.col + a.w > b.col
@@ -795,28 +479,32 @@ function updateLayoutTitle() {
   document.title = `${state.layout.name} · rlab player`;
 }
 
-function applyLayout() {
+async function applyLayout() {
   const dashboard = $("#dashboard");
-  const visibleHere = [];
-  $$("[data-panel]").forEach((panel) => {
-    const name = panel.dataset.panel;
-    const config = state.layout.panels[name];
-    if (!config) return;
-    const shown = config.visible && config.window === state.windowId;
-    panel.hidden = !shown;
-    if (!shown) return;
-    visibleHere.push(name);
-    panel.style.gridColumn = `${config.col} / span ${config.w}`;
-    panel.style.gridRow = `${config.row} / span ${config.h}`;
-  });
+  const visibleHere = panelsInThisWindow();
   document.body.classList.toggle("empty-workspace", visibleHere.length === 0);
   const rows = Math.max(8, maxPanelRow());
   dashboard.style.minHeight = `${rows * 32 + Math.max(0, rows - 1) * 10 + 12}px`;
   updateLayoutTitle();
   renderPanelShelf();
   renderSavedLayouts();
-  requestAnimationFrame(() => { fitGameFrame(); renderHistory(); });
   send({ type: "subscribe", subscriptions: subscriptions() });
+  await panelRuntime.sync(state.layout, state.windowId);
+  if (state.snapshot) {
+    panelRuntime.renderSnapshot(state.snapshot, {
+      history: state.history,
+      inspection: state.inspectionSequence !== null,
+    });
+    panelRuntime.renderHistory(state.history, state.snapshot);
+    const sequence = Number(state.snapshot.sequence);
+    const gameFrame = nearestFrameBlob(FRAME_GAME, sequence);
+    const observationFrame = nearestFrameBlob(FRAME_OBSERVATION, sequence);
+    if (visibleHere.includes("game") && gameFrame) panelRuntime.renderFrame(FRAME_GAME, gameFrame);
+    if (visibleHere.includes("observation") && observationFrame) {
+      panelRuntime.renderFrame(FRAME_OBSERVATION, observationFrame);
+    }
+  }
+  requestAnimationFrame(() => panelRuntime.resize());
 }
 
 function readSavedLayouts() {
@@ -1074,13 +762,12 @@ function beginResize(event, panel) {
   const { columnPitch, rowPitch } = gridMetrics();
   panel.classList.add("resizing");
   const move = (next) => {
-    const minW = name === "game" ? 4 : 2;
-    const minH = name === "game" ? 8 : 4;
+    const { w: minW, h: minH } = PANEL_CATALOG[name].minimum;
     config.w = clamp(start.w + Math.round((next.clientX - start.x) / columnPitch), minW, 13 - config.col);
     config.h = clamp(start.h + Math.round((next.clientY - start.y) / rowPitch), minH, 40);
     panel.style.gridColumn = `${config.col} / span ${config.w}`;
     panel.style.gridRow = `${config.row} / span ${config.h}`;
-    requestAnimationFrame(fitGameFrame);
+    requestAnimationFrame(() => panelRuntime.resize());
   };
   const finish = () => {
     panel.classList.remove("resizing");
@@ -1173,30 +860,39 @@ function beginPanelDrag(event, panel) {
   document.addEventListener("keydown", keydown);
 }
 
-function bindPanelLayout() {
-  const dashboard = $("#dashboard");
-  dashboard.append($("#drop-preview"));
-  $$("[data-panel]").forEach((panel) => {
-    ensureResizeHandle(panel);
-    const handle = panel.querySelector("[data-drag-handle]");
-    if (!handle) return;
+function bindPanelElement(panel, name) {
+  ensureResizeHandle(panel);
+  const handle = panel.querySelector("[data-drag-handle]");
+  if (handle) {
     handle.draggable = false;
     handle.addEventListener("pointerdown", (event) => beginPanelDrag(event, panel));
     handle.addEventListener("keydown", (event) => {
       if (!event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
-      const config = state.layout.panels[panel.dataset.panel];
+      const config = state.layout.panels[name];
+      const minimum = PANEL_CATALOG[name].minimum;
       const amount = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
       if (event.shiftKey) {
-        if (event.key === "ArrowLeft" || event.key === "ArrowRight") config.w = clamp(config.w + amount, panel.dataset.panel === "game" ? 4 : 2, 13 - config.col);
-        else config.h = clamp(config.h + amount, panel.dataset.panel === "game" ? 8 : 4, 40);
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") config.col = clamp(config.col + amount, 1, 13 - config.w);
-      else config.row = clamp(config.row + amount, 1, 200);
-      resolveCollisions(panel.dataset.panel);
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          config.w = clamp(config.w + amount, minimum.w, 13 - config.col);
+        } else config.h = clamp(config.h + amount, minimum.h, 40);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        config.col = clamp(config.col + amount, 1, 13 - config.w);
+      } else config.row = clamp(config.row + amount, 1, 200);
+      resolveCollisions(name);
       persistLayout();
       applyLayout();
     });
+  }
+  const menu = panel.querySelector("[data-panel-menu]");
+  menu?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openPanelMenu(name, menu);
   });
+}
+
+function bindPanelLayout() {
+  $("#dashboard").append($("#drop-preview"));
 }
 
 function positionMenu(menu, anchor) {
@@ -1238,10 +934,6 @@ function bindWorkspaceMenus() {
     $("#panels-toggle").setAttribute("aria-expanded", "false");
     positionMenu($("#layout-menu"), event.currentTarget);
   });
-  $$("[data-panel-menu]").forEach((button) => button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    openPanelMenu(button.dataset.panelMenu, button);
-  }));
   $("#save-layout").addEventListener("click", () => {
     const name = $("#layout-name-input").value.trim().slice(0, 48) || "Workspace";
     state.layout.name = name;
@@ -1392,6 +1084,13 @@ function bindWorkspaceSync() {
       } else if (message.type === "panel-drag-end" && state.remoteDrag?.id === message.drag) {
         state.remoteDrag = null;
         setPanelDragUi(false);
+      } else if (
+        message.type === "panel-inspection"
+        && message.source !== state.windowId
+        && message.panel === "policy"
+        && message.method === "inspect"
+      ) {
+        panelRuntime.invoke("policy", "inspect", message.value);
       } else if (message.type === "window-closing" && state.windowId === "main") {
         setTimeout(() => {
           const lastSeen = state.activeWindows.get(message.window) || 0;
@@ -1452,66 +1151,23 @@ function initWorkspace() {
   applyLayout();
 }
 
-function bindControls() {
-  $("#acquire-control").addEventListener("click", () => send({ type: "acquire_control" }));
-  $("#pause").addEventListener("click", () => command("pause"));
-  $("#play").addEventListener("click", () => command("play", { driver: state.snapshot?.driver || "policy" }));
-  $("#step").addEventListener("click", () => command("step", { count: 1 }));
-  $("#step-ten").addEventListener("click", () => command("step", { count: 10 }));
-  $("#continue-event").addEventListener("click", () => command("continue", { target: "any" }));
-  $("#continue-done").addEventListener("click", () => command("continue", { target: "done" }));
-  $("#reset").addEventListener("click", () => command("reset", { seed: $("#seed").value }));
-  $("#set-fps").addEventListener("click", () => command("set_fps", { fps: Number($("#fps").value) }));
-  $("#policy-driver").addEventListener("click", () => command("set_driver", { driver: "policy" }));
-  $("#human-driver").addEventListener("click", () => command("set_driver", { driver: "human" }));
-  $("#inspect-policy").addEventListener("click", () => command("inspect_policy"));
-  $("#end-session").addEventListener("click", () => command("stop"));
-  $("#signal-select").addEventListener("change", (event) => {
-    state.selectedSignal = event.target.value;
-    localStorage.setItem("rlab.player.signal", state.selectedSignal);
-    renderSignalChart();
-  });
-  $$('[data-fullscreen]').forEach((button) => button.addEventListener("click", () => {
-    $("#game-stage").requestFullscreen({ navigationUI: "hide" }).catch((error) => showToast(error.message, true));
-  }));
-}
+panelRuntime = new PanelRuntime({
+  catalog: PANEL_CATALOG,
+  container: $("#dashboard"),
+  services: {
+    getState: () => state,
+    send,
+    command,
+    showToast,
+  },
+  onMount: bindPanelElement,
+  onError: (name, error) => {
+    console.error(`Panel ${name} failed`, error);
+    showToast(`${PANEL_LABELS[name] || name} panel failed to load.`, true);
+  },
+});
 
-function bindHumanInput() {
-  const canvas = $("#game-canvas");
-  const mapping = new Map([
-    ["ArrowUp", "up"], ["ArrowDown", "down"], ["ArrowLeft", "left"], ["ArrowRight", "right"],
-    ["z", "b"], ["Z", "b"], ["x", "a"], ["X", "a"], ["Enter", "start"], ["Shift", "select"],
-  ]);
-  const publish = (focused = state.gameFocused) => send({ type: "input", pressed: [...state.pressed], focused });
-  canvas.addEventListener("focus", () => { state.gameFocused = true; publish(true); });
-  canvas.addEventListener("blur", () => { state.gameFocused = false; state.pressed.clear(); publish(false); });
-  canvas.addEventListener("keydown", (event) => {
-    const label = mapping.get(event.key);
-    if (!label) return;
-    event.preventDefault();
-    state.pressed.add(label); publish(true);
-  });
-  canvas.addEventListener("keyup", (event) => {
-    const label = mapping.get(event.key);
-    if (!label) return;
-    event.preventDefault();
-    state.pressed.delete(label); publish(true);
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { state.gameFocused = false; state.pressed.clear(); publish(false); }
-  });
-  setInterval(() => {
-    if (state.gameFocused && state.hasControl && state.snapshot?.driver === "human") publish(true);
-  }, 50);
-}
-
-window.addEventListener("resize", () => { fitGameFrame(); renderHistory(); });
+window.addEventListener("resize", () => panelRuntime.resize());
 initWorkspace();
-bindControls();
-bindHumanInput();
 updateControlState();
-const chartObserver = new ResizeObserver(() => renderHistory());
-$$('.chart').forEach((canvas) => chartObserver.observe(canvas));
-const gameObserver = new ResizeObserver(fitGameFrame);
-gameObserver.observe($("#game-stage"));
 connect();
