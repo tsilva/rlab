@@ -118,6 +118,13 @@ def _diagnostics(conn, run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]
               (SELECT acceptance_committed_at FROM eval_runs WHERE train_job_id=%(run)s) AS acceptance_committed_at,
               (SELECT stop_delivery_slo_met FROM eval_runs WHERE train_job_id=%(run)s) AS stop_delivery_slo_met,
               (SELECT promoted_eval_job_id FROM eval_runs WHERE train_job_id=%(run)s) AS promoted_eval_job_id
+              ,
+              (SELECT exact FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_exact,
+              (SELECT cleanup_eligible FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_cleanup_eligible,
+              (SELECT classification FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_classification,
+              (SELECT disposition FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_disposition,
+              (SELECT reasons FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_reasons,
+              (SELECT state_json FROM telemetry_integrity WHERE train_job_id=%(run)s ORDER BY telemetry_generation DESC LIMIT 1) AS telemetry_state_json
             """,
             {"run": int(run_id)},
         )
@@ -275,6 +282,17 @@ def current_incidents(
             )
         )
     if status in TERMINAL_STATUSES:
+        if int(row.get("telemetry_protocol_version") or 1) == 2 and not bool(
+            diagnostics.get("telemetry_exact")
+        ):
+            incidents.append(
+                _incident(
+                    run_id,
+                    "telemetry_integrity_unsafe",
+                    str(diagnostics.get("telemetry_classification") or "missing"),
+                    ", ".join(diagnostics.get("telemetry_reasons") or ["integrity record absent"]),
+                )
+            )
         terminal_counters = {
             "pending_metric_batches": int(diagnostics.get("pending_metric_batches") or 0),
             "unhandled_commands": int(diagnostics.get("unhandled_commands") or 0),
@@ -297,6 +315,9 @@ def terminal_classification(projection: Mapping[str, Any]) -> str | None:
     if status == "canceled":
         return "canceled"
     if status != "succeeded":
+        return "operational_failure"
+    integrity = projection.get("telemetry_integrity") or {}
+    if bool(integrity.get("required")) and not bool(integrity.get("exact")):
         return "operational_failure"
     outcome = str((projection.get("evaluation") or {}).get("outcome") or "")
     if outcome == "accepted":
@@ -388,6 +409,17 @@ def run_projection(conn, run_id: int) -> dict[str, Any]:
             "oldest_unconfirmed_submitted_at": diagnostics.get("oldest_unconfirmed_submitted_at"),
             "artifact_status": row.get("artifact_status"),
             "artifact_projection_attempts": int(row.get("artifact_projection_attempts") or 0),
+        },
+        "telemetry_integrity": {
+            "required": int(row.get("telemetry_protocol_version") or 1) == 2,
+            "protocol_version": int(row.get("telemetry_protocol_version") or 1),
+            "generation": int(row.get("telemetry_generation") or 1),
+            "exact": bool(diagnostics.get("telemetry_exact")),
+            "cleanup_eligible": bool(diagnostics.get("telemetry_cleanup_eligible")),
+            "classification": diagnostics.get("telemetry_classification"),
+            "disposition": diagnostics.get("telemetry_disposition"),
+            "reasons": list(diagnostics.get("telemetry_reasons") or []),
+            "state": diagnostics.get("telemetry_state_json") or {},
         },
         "wandb": {
             "run_id": row.get("wandb_run_id"),

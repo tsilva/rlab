@@ -487,6 +487,19 @@ def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
             )
             cur.execute(
                 """
+                UPDATE telemetry_recovery_manifests
+                SET state = 'complete', owner = NULL, last_error = NULL,
+                    updated_at = now()
+                WHERE train_job_id = %(run)s
+                  AND telemetry_generation = %(generation)s
+                """,
+                {
+                    "run": int(train_job_id),
+                    "generation": int(job["telemetry_generation"]),
+                },
+            )
+            cur.execute(
+                """
                 SELECT * FROM telemetry_producers
                 WHERE train_job_id = %(run)s
                   AND telemetry_generation = %(generation)s
@@ -644,16 +657,280 @@ def delete_rooted_operational_batches(
             cur.execute(
                 """
                 DELETE FROM metric_batches b
-                USING metric_streams s, worker_attempts w
+                USING metric_streams s, worker_attempts w, telemetry_integrity i
                 WHERE b.stream_id = s.stream_id
                   AND s.attempt_id = w.attempt_id
                   AND w.train_job_id = %(run)s
+                  AND i.train_job_id = w.train_job_id
+                  AND i.cleanup_eligible = TRUE
                   AND b.archived_at IS NOT NULL
                   AND b.archive_root_sha256 IS NOT NULL
                 """,
                 {"run": int(train_job_id)},
             )
             return int(cur.rowcount)
+
+
+def prepare_legacy_forensic_ledger(conn, *, train_job_id: int) -> int:
+    """Ledger every surviving v1 byte without claiming that deleted bytes are recoverable."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM train_jobs
+                WHERE id = %(run)s AND telemetry_protocol_version = 1
+                FOR UPDATE
+                """,
+                {"run": int(train_job_id)},
+            )
+            job = cur.fetchone()
+            if not job:
+                raise ValueError("legacy forensic preparation requires a protocol-v1 run")
+            if str(job["telemetry_integrity_classification"]) == "intact_with_proof":
+                raise RuntimeError("legacy forensic preparation cannot manufacture intact proof")
+            cur.execute(
+                """
+                SELECT attempt_id,
+                       row_number() OVER (ORDER BY created_at, attempt_id) - 1 AS ordinal
+                FROM worker_attempts
+                WHERE train_job_id = %(run)s
+                ORDER BY created_at, attempt_id
+                """,
+                {"run": int(train_job_id)},
+            )
+            attempts = [dict(row) for row in cur.fetchall()]
+            for attempt in attempts:
+                ordinal = int(attempt["ordinal"])
+                identity = f"legacy-forensic:{attempt['attempt_id']}"
+                cur.execute(
+                    """
+                    INSERT INTO telemetry_producers (
+                      train_job_id, telemetry_generation, producer_ordinal,
+                      producer_identity, attempt_id, producer_kind, state
+                    ) VALUES (
+                      %(run)s, 1, %(ordinal)s, %(identity)s, %(attempt_id)s,
+                      'legacy_forensic', 'registered'
+                    )
+                    ON CONFLICT (
+                      train_job_id, telemetry_generation, producer_ordinal
+                    ) DO NOTHING
+                    """,
+                    {
+                        "run": int(train_job_id),
+                        "ordinal": ordinal,
+                        "identity": identity,
+                        "attempt_id": str(attempt["attempt_id"]),
+                    },
+                )
+                cur.execute(
+                    """
+                    INSERT INTO telemetry_expected_obligations (
+                      train_job_id, telemetry_generation, obligation_key,
+                      obligation_kind, producer_ordinal
+                    ) VALUES (
+                      %(run)s, 1, %(key)s, 'legacy_forensic', %(ordinal)s
+                    )
+                    ON CONFLICT DO NOTHING
+                    """,
+                    {
+                        "run": int(train_job_id),
+                        "key": f"legacy-forensic:{attempt['attempt_id']}",
+                        "ordinal": ordinal,
+                    },
+                )
+                cur.execute(
+                    """
+                    SELECT b.batch_sequence, b.payload
+                    FROM metric_batches b
+                    JOIN metric_streams s ON s.stream_id = b.stream_id
+                    WHERE s.attempt_id = %(attempt_id)s
+                    ORDER BY b.batch_sequence
+                    """,
+                    {"attempt_id": str(attempt["attempt_id"])},
+                )
+                for batch in cur.fetchall():
+                    cur.execute(
+                        """
+                        SELECT rlab_append_canonical_telemetry_event(
+                          %(attempt_id)s, %(identity)s, 'legacy_metric_batch',
+                          'metric_batch_zlib_json_v1', %(payload)s, FALSE
+                        )
+                        """,
+                        {
+                            "attempt_id": str(attempt["attempt_id"]),
+                            "identity": f"legacy-batch:{int(batch['batch_sequence'])}",
+                            "payload": bytes(batch["payload"]),
+                        },
+                    )
+                cur.execute(
+                    """
+                    SELECT rlab_append_canonical_telemetry_event(
+                      %(attempt_id)s, 'legacy-forensic-close',
+                      'legacy_forensic_terminal', 'canonical_json_v1',
+                      convert_to(
+                        jsonb_build_object(
+                          'classification', %(classification)s,
+                          'claim', 'surviving-bytes-only'
+                        )::text,
+                        'UTF8'
+                      ),
+                      TRUE
+                    )
+                    """,
+                    {
+                        "attempt_id": str(attempt["attempt_id"]),
+                        "classification": str(
+                            job["telemetry_integrity_classification"]
+                        ),
+                    },
+                )
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET telemetry_no_more_producers = TRUE,
+                    telemetry_durability_policy = COALESCE(
+                      telemetry_durability_policy, 'queued_dual_r2_v1'
+                    )
+                WHERE id = %(run)s
+                """,
+                {"run": int(train_job_id)},
+            )
+    return len(attempts)
+
+
+def finalize_legacy_loss_adjudicated_root(
+    conn, *, train_job_id: int
+) -> dict[str, Any]:
+    """Root surviving bytes and permanent incident evidence without intactness."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM train_jobs WHERE id = %(run)s FOR UPDATE
+                """,
+                {"run": int(train_job_id)},
+            )
+            job = cur.fetchone()
+            if not job or int(job["telemetry_protocol_version"]) != 1:
+                raise ValueError("legacy adjudication requires a protocol-v1 run")
+            if str(job["telemetry_integrity_classification"]) not in {
+                "degraded",
+                "legacy_unknown",
+            }:
+                raise RuntimeError("legacy adjudication requires a permanent loss classification")
+            cur.execute(
+                """
+                SELECT producer_ordinal, producer_identity, final_sequence, final_sha256
+                FROM telemetry_producers
+                WHERE train_job_id = %(run)s AND telemetry_generation = 1
+                ORDER BY producer_ordinal
+                """,
+                {"run": int(train_job_id)},
+            )
+            producers = [dict(row) for row in cur.fetchall()]
+            if not producers or any(row["final_sequence"] is None for row in producers):
+                raise RuntimeError("legacy forensic producers are not terminal")
+            cur.execute(
+                """
+                SELECT
+                  s.producer_ordinal, s.first_sequence, s.last_sequence,
+                  s.compressed_sha256,
+                  jsonb_agg(r.receipt_json ORDER BY r.copy_role) AS receipts
+                FROM telemetry_archive_segments s
+                JOIN telemetry_archive_receipts r
+                  ON r.train_job_id=s.train_job_id
+                 AND r.telemetry_generation=s.telemetry_generation
+                 AND r.producer_ordinal=s.producer_ordinal
+                 AND r.first_sequence=s.first_sequence
+                 AND r.last_sequence=s.last_sequence
+                WHERE s.train_job_id=%(run)s AND s.telemetry_generation=1
+                  AND s.claim_state='verified'
+                GROUP BY s.producer_ordinal, s.first_sequence, s.last_sequence,
+                         s.compressed_sha256
+                ORDER BY s.producer_ordinal, s.first_sequence
+                """,
+                {"run": int(train_job_id)},
+            )
+            segments = [dict(row) for row in cur.fetchall()]
+            coverage: dict[int, int] = {}
+            for segment in segments:
+                roles = {row["copy_role"] for row in segment["receipts"]}
+                if roles != {"primary", "backup"}:
+                    raise RuntimeError("legacy adjudication requires dual archive receipts")
+                ordinal = int(segment["producer_ordinal"])
+                if int(segment["first_sequence"]) != coverage.get(ordinal, 0) + 1:
+                    raise RuntimeError("legacy forensic archive coverage contains a gap")
+                coverage[ordinal] = int(segment["last_sequence"])
+            for producer in producers:
+                if coverage.get(int(producer["producer_ordinal"])) != int(
+                    producer["final_sequence"]
+                ):
+                    raise RuntimeError("legacy forensic archive coverage is incomplete")
+            cur.execute(
+                """
+                SELECT incident_key, severity, category, state, details_json
+                FROM telemetry_incidents
+                WHERE train_job_id=%(run)s AND telemetry_generation=1
+                ORDER BY incident_key
+                """,
+                {"run": int(train_job_id)},
+            )
+            incidents = [dict(row) for row in cur.fetchall()]
+            root = {
+                "version": "telemetry-legacy-loss-root-v1",
+                "train_job_id": int(train_job_id),
+                "telemetry_generation": 1,
+                "classification": str(job["telemetry_integrity_classification"]),
+                "claim": "all-surviving-bytes-dual-archived-no-reconstruction",
+                "producer_claims": producers,
+                "segments": segments,
+                "incidents": incidents,
+            }
+            root_sha256 = sha256_bytes(canonical_json_bytes(root))
+            coverage_sha256 = sha256_json(producers)
+            cur.execute(
+                """
+                INSERT INTO telemetry_archive_roots (
+                  train_job_id, telemetry_generation, root_kind, root_sha256,
+                  coverage_sha256, policy_name, root_json
+                ) VALUES (
+                  %(run)s, 1, 'legacy_loss_adjudicated', %(root)s,
+                  %(coverage)s, 'queued_dual_r2_v1', %(document)s
+                )
+                """,
+                {
+                    "run": int(train_job_id),
+                    "root": root_sha256,
+                    "coverage": coverage_sha256,
+                    "document": json_arg(root),
+                },
+            )
+            cur.execute(
+                """
+                UPDATE metric_batches b
+                SET archived_at=COALESCE(archived_at, now()),
+                    archive_root_sha256=%(root)s
+                FROM metric_streams s, worker_attempts w
+                WHERE b.stream_id=s.stream_id AND s.attempt_id=w.attempt_id
+                  AND w.train_job_id=%(run)s
+                """,
+                {"run": int(train_job_id), "root": root_sha256},
+            )
+            cur.execute(
+                """
+                UPDATE telemetry_recovery_manifests
+                SET state='complete', updated_at=now(), last_error=NULL
+                WHERE train_job_id=%(run)s AND telemetry_generation=1
+                """,
+                {"run": int(train_job_id)},
+            )
+            finalized = {**root, "root_sha256": root_sha256}
+    from rlab.telemetry_reducer import reduce_run_integrity
+
+    reduce_run_integrity(conn, train_job_id=int(train_job_id))
+    return finalized
 
 
 def new_archiver_owner() -> str:

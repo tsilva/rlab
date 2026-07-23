@@ -235,7 +235,7 @@ async function handleFrame(buffer) {
   if (magic !== "RLP1") return;
   const kind = view.getUint8(4);
   const sequence = Number(view.getBigUint64(8));
-  if (sequence <= (state.receivedFrameSequence.get(kind) ?? -1)) return;
+  if (sequence < (state.receivedFrameSequence.get(kind) ?? -1)) return;
   state.receivedFrameSequence.set(kind, sequence);
   const blob = new Blob([buffer.slice(FRAME_HEADER_BYTES)], { type: "image/png" });
   rememberFrame(kind, sequence, blob);

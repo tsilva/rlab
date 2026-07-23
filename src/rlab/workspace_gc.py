@@ -1012,9 +1012,16 @@ def _proof_snapshot(conn, *, launch_id: str) -> dict[str, Any]:
               l.state AS launch_state, l.finished_at AS launch_finished_at,
               t.id AS train_job_id, t.status AS train_status,
               t.live_publication_status, t.train_config,
+              t.telemetry_protocol_version, t.telemetry_generation,
+              i.exact AS telemetry_exact,
+              i.cleanup_eligible AS telemetry_cleanup_eligible,
+              i.disposition AS telemetry_integrity_disposition,
               r.status AS eval_status, r.complete_announcement_seen, r.outcome AS eval_outcome
             FROM job_launches l
             JOIN train_jobs t ON t.id=l.job_id
+            LEFT JOIN telemetry_integrity i
+              ON i.train_job_id=t.id
+             AND i.telemetry_generation=t.telemetry_generation
             LEFT JOIN eval_runs r ON r.train_job_id=t.id
             WHERE l.launch_id=%(launch_id)s
             FOR UPDATE OF l, t
@@ -1031,7 +1038,13 @@ def _proof_snapshot(conn, *, launch_id: str) -> dict[str, Any]:
             raise WorkspaceNotReady("launch does not have an attested layout-v1 workspace")
         if root["launch_state"] != "succeeded" or root["train_status"] != "succeeded":
             raise WorkspaceNotReady("training lifecycle is not authoritatively successful")
-        if root["live_publication_status"] not in {"complete", "disabled"}:
+        protocol_v2 = int(root.get("telemetry_protocol_version") or 1) == 2
+        if protocol_v2:
+            if not bool(root.get("telemetry_exact")):
+                raise WorkspaceNotReady("canonical telemetry integrity is not exact")
+            if not bool(root.get("telemetry_cleanup_eligible")):
+                raise WorkspaceNotReady("canonical telemetry cleanup is not eligible")
+        elif root["live_publication_status"] not in {"complete", "disabled"}:
             raise WorkspaceNotReady("W&B publication is not closed")
         backend = str((root.get("train_config") or {}).get("checkpoint_eval_backend") or "local")
         if backend == "modal" and root.get("eval_status") != "complete":
@@ -1098,9 +1111,11 @@ def _proof_snapshot(conn, *, launch_id: str) -> dict[str, Any]:
             {"launch_id": launch_id, "generation": generation},
         )
         obligations = [dict(row) for row in cur.fetchall()]
-        if not obligations:
+        if not obligations and not protocol_v2:
             raise WorkspaceNotReady("expected telemetry obligation set is absent")
         for obligation in obligations:
+            if protocol_v2:
+                continue
             if obligation["disposition"] not in TERMINAL_TELEMETRY_DISPOSITIONS:
                 raise WorkspaceNotReady("telemetry obligations are not durably closed")
             stream_id = obligation.get("expected_stream_id")

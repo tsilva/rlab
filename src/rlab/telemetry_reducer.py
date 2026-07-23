@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from rlab.job_queue import json_arg
@@ -179,7 +180,20 @@ def reduce_run_integrity(conn, *, train_job_id: int) -> dict[str, Any]:
                 {"run": int(train_job_id)},
             )
             facts = cur.fetchone()
-            cleanup_eligible = bool(result.cleanup_eligible and facts and wandb_terminal)
+            legacy_cleanup_eligible = bool(
+                root
+                and str(root["root_kind"]) == "legacy_loss_adjudicated"
+                and not recovery_pending
+                and int(receipt_counts["receipts"])
+                >= int(receipt_counts["segments"]) * required_per_segment
+                and root["finalized_at"] is not None
+                and (datetime.now(UTC) - root["finalized_at"]).total_seconds()
+                >= 7 * 24 * 60 * 60
+            )
+            cleanup_eligible = bool(
+                (result.cleanup_eligible and facts and wandb_terminal)
+                or legacy_cleanup_eligible
+            )
             reasons = list(result.reasons)
             if result.exact and not facts:
                 reasons.append("run_final_facts_pending")

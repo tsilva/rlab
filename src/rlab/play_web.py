@@ -227,6 +227,22 @@ def history_point(transition: _PlaybackTransition) -> dict[str, Any]:
     }
 
 
+def _frame_packet(kind: int, sequence: int, frame: np.ndarray) -> bytes:
+    output = io.BytesIO()
+    Image.fromarray(frame, mode="RGB").save(
+        output,
+        format="PNG",
+        compress_level=1,
+    )
+    return FRAME_HEADER.pack(
+        FRAME_MAGIC,
+        kind,
+        FRAME_CODEC_PNG,
+        0,
+        sequence,
+    ) + output.getvalue()
+
+
 class FrameEncoder:
     def __init__(self) -> None:
         self._condition = threading.Condition()
@@ -269,19 +285,7 @@ class FrameEncoder:
                 pending = self._pending
                 self._pending = {}
             for kind, (sequence, frame) in pending.items():
-                output = io.BytesIO()
-                Image.fromarray(frame, mode="RGB").save(
-                    output,
-                    format="PNG",
-                    compress_level=1,
-                )
-                packet = FRAME_HEADER.pack(
-                    FRAME_MAGIC,
-                    kind,
-                    FRAME_CODEC_PNG,
-                    0,
-                    sequence,
-                ) + output.getvalue()
+                packet = _frame_packet(kind, sequence, frame)
                 with self._condition:
                     self._latest[kind] = (sequence, packet)
 
@@ -320,6 +324,8 @@ class WebPlaybackRunner:
         self.history: deque[dict[str, Any]] = deque(maxlen=HISTORY_LIMIT)
         self._snapshot_lock = threading.Lock()
         self._latest_snapshot: dict[str, Any] = {}
+        self._episode_start_snapshot: dict[str, Any] = {}
+        self._episode_start_frames: dict[int, tuple[int, bytes]] = {}
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="rlab-playback-runtime")
         self.revision = 0
@@ -372,6 +378,15 @@ class WebPlaybackRunner:
     def snapshot(self) -> dict[str, Any]:
         with self._snapshot_lock:
             return dict(self._latest_snapshot)
+
+    def episode_start_payload(
+        self,
+    ) -> tuple[dict[str, Any], dict[int, tuple[int, bytes]]]:
+        with self._snapshot_lock:
+            return (
+                dict(self._episode_start_snapshot),
+                dict(self._episode_start_frames),
+            )
 
     def history_payload(self) -> dict[str, Any]:
         return {"type": "history", "points": list(self.history)}
@@ -442,6 +457,7 @@ class WebPlaybackRunner:
             attribution = None
             sequence = self.session.sequence
         self.encoder.submit(FRAME_GAME, sequence, game_frame)
+        obs_image = None
         if obs_frames:
             obs_image = render_obs_stack(
                 deque(obs_frames, maxlen=len(obs_frames)),
@@ -451,8 +467,23 @@ class WebPlaybackRunner:
             )
             self.encoder.submit(FRAME_OBSERVATION, sequence, obs_image)
         payload = self._snapshot_payload(transition)
+        episode_start_frames: dict[int, tuple[int, bytes]] = {}
+        if transition is None and self.session.step_index == 0:
+            if game_frame is not None:
+                episode_start_frames[FRAME_GAME] = (
+                    sequence,
+                    _frame_packet(FRAME_GAME, sequence, game_frame),
+                )
+            if obs_image is not None:
+                episode_start_frames[FRAME_OBSERVATION] = (
+                    sequence,
+                    _frame_packet(FRAME_OBSERVATION, sequence, obs_image),
+                )
         with self._snapshot_lock:
             self._latest_snapshot = payload
+            if transition is None and self.session.step_index == 0:
+                self._episode_start_snapshot = payload
+                self._episode_start_frames = episode_start_frames
 
     def _set_state(self, state: str, *, message: str | None = None) -> None:
         self.run_state = state
@@ -521,6 +552,7 @@ class WebPlaybackRunner:
                         int(seed_value),
                         reset_episode_index=False,
                     )
+                self.session.last_transition = None
                 self.sampling_mode = mode
                 self.driver = driver
                 self.clear_input()
@@ -907,11 +939,15 @@ class WebClient:
         self.latest_snapshot_key: tuple[int, int, int] = (-1, -1, -1)
         self.sent_snapshot_key: tuple[int, int, int] = (-1, -1, -1)
         self.latest_frames: dict[int, tuple[int, bytes]] = {}
-        self.sent_frames: dict[int, int] = {}
+        self.sent_frames: dict[int, tuple[int, bytes]] = {}
         self.closed = False
 
-    def offer_reliable(self, payload: Mapping[str, Any]) -> None:
-        rendered = json.dumps(payload, separators=(",", ":"), allow_nan=False)
+    def offer_reliable(self, payload: Mapping[str, Any] | bytes) -> None:
+        rendered = (
+            payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload, separators=(",", ":"), allow_nan=False)
+        )
         try:
             self.reliable.put_nowait(rendered)
         except asyncio.QueueFull:
@@ -951,9 +987,9 @@ class WebClient:
                 await self.socket.send_str(self.latest_snapshot)
                 self.sent_snapshot_key = self.latest_snapshot_key
             for kind, (sequence, packet) in tuple(self.latest_frames.items()):
-                if sequence > self.sent_frames.get(kind, -1):
+                if (sequence, packet) != self.sent_frames.get(kind):
                     await self.socket.send_bytes(packet)
-                    self.sent_frames[kind] = sequence
+                    self.sent_frames[kind] = (sequence, packet)
 
 
 class PlaybackWebServer:
@@ -1108,6 +1144,19 @@ class PlaybackWebServer:
                 }
             )
             client.offer_reliable(self.runner.history_payload())
+            episode_start_payload = getattr(self.runner, "episode_start_payload", None)
+            if callable(episode_start_payload):
+                episode_start_snapshot, episode_start_frames = episode_start_payload()
+                if episode_start_snapshot:
+                    client.offer_reliable(
+                        self._snapshot_for(client, episode_start_snapshot)
+                    )
+                for frame_kind, (_sequence, packet) in episode_start_frames.items():
+                    subscription = (
+                        "game" if frame_kind == FRAME_GAME else "observation"
+                    )
+                    if subscription in client.subscriptions:
+                        client.offer_reliable(packet)
             client.offer_snapshot(self._snapshot_for(client, self.runner.snapshot()))
             for frame_kind, (sequence, packet) in self.runner.encoder.latest().items():
                 subscription = "game" if frame_kind == FRAME_GAME else "observation"
@@ -1241,7 +1290,7 @@ class PlaybackWebServer:
 
     async def pump(self) -> None:
         latest_snapshot_key = (-1, -1)
-        latest_frames: dict[int, int] = {}
+        latest_frames: dict[int, tuple[int, bytes]] = {}
         while not self.stop_event.is_set():
             snapshot = self.runner.snapshot()
             key = (int(snapshot.get("revision", 0)), int(snapshot.get("sequence", 0)))
@@ -1251,9 +1300,9 @@ class PlaybackWebServer:
                     if "telemetry" in client.subscriptions:
                         client.offer_snapshot(self._snapshot_for(client, snapshot))
             for kind, (sequence, packet) in self.runner.encoder.latest().items():
-                if sequence == latest_frames.get(kind):
+                if (sequence, packet) == latest_frames.get(kind):
                     continue
-                latest_frames[kind] = sequence
+                latest_frames[kind] = (sequence, packet)
                 subscription = "game" if kind == FRAME_GAME else "observation"
                 for client in tuple(self.clients.values()):
                     if subscription in client.subscriptions:

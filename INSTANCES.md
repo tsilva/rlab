@@ -479,6 +479,51 @@ W&B readiness while retaining the aggregate readiness fields. Operational rollou
 seconds for prepared or reused runtimes and no more than 6 minutes for an immediate launch after a
 genuine runtime change; measured acceptance belongs in canary evidence rather than this runbook.
 
+## Telemetry v2 cutover, durability, and capacity (2026-07-23)
+
+Telemetry v2 uses the queue database only as an append ledger and work index. Canonical run bytes
+live under immutable content-addressed archive objects. Queue-backed runs use
+`queued_dual_r2_v1`: a fleet-only primary plus an independently administered backup, both
+create-only and fully read-verified. Local runs use an fsynced SQLite/source root plus an
+independently rooted immutable mirror. `local_singlecopy_optout_v1` is explicit, is never reported
+durable or exact, and is ineligible for scientific ranking, promotion, or ordinary exact cleanup.
+
+Cutover operations must proceed in this order:
+
+1. Write the host cutover marker, take the fleet admission lock, increment the database cutover
+   generation, fence legacy admission, enable the destructive hold, and bind the new service W&B
+   credential generation.
+2. Re-scan queue rows, workspace registries, OS/container processes, W&B generations, and named
+   legacy database sessions. Existing command/stop and telemetry append paths remain available.
+3. Wait for every pre-fence legacy learner to terminate. Terminate named old publishers only after
+   `safe_to_stop_legacy_publishers` is true.
+4. Classify the entire protocol-v1 population. Surviving continuous bytes alone remain
+   `legacy_unknown`; known gaps are `degraded`. No migration tool synthesizes deleted points.
+5. For unrecoverable v1 runs, ledger and dual-archive every surviving byte, finalize a permanent
+   `legacy_loss_adjudicated` root, wait the retention delay, then remove only redundant operational
+   buffers. Exact v2 cleanup requires `telemetry_integrity.cleanup_eligible`.
+6. Enable v2 admission only after dual-read parity, exact evidence consumers, archive recovery,
+   generational W&B replay, and the canary re-scan pass.
+
+Workers receive no archive-delete or object-overwrite capability. Canonical archive claims are
+committed before remote I/O; receipts are committed only after full object readback. Database
+transactions are never held during remote archive or W&B operations. Archive, W&B, and artifact
+recovery have separate bounded executors, per-run/global budgets, round-robin fairness, poison
+isolation, progress watermarks, and watchdog state. An ambiguous W&B SDK return remains ambiguous
+until an unsampled exact prefix read verifies stable identities and digests. Any foreign writer,
+conflict, duplicate, or past-step hole quarantines that generation; repair creates a fresh
+service-owned run and replays from ordinal zero before atomically changing the active pointer.
+
+Local control-plane capacity validation on 2026-07-23 exercised 1,000 producers and 10 events per
+producer (10,000 events, the required 10× stream-count stress point). On the development Mac,
+deterministic archive encoding completed in 0.1161 seconds for 443,843 compressed bytes,
+normalization produced 10,000 W&B rows in 0.0950 seconds, and the fair scheduler drained 10,000
+items in 0.0068 seconds. Unit coverage also verifies independent executor lanes and poison
+isolation. These are control-plane measurements, not GPU learner-throughput acceptance. No live
+PostgreSQL URL was present for this verification, so database migration/load acceptance and the
+no-training-throughput-regression canary remain rollout gates; the admission/destructive hold must
+not be released on these local numbers alone.
+
 ## Native Vector Runtime V2 Acceptance (2026-07-10)
 
 The consolidated Mario runtime was compared against the deleted fused implementation from source

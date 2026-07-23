@@ -1211,6 +1211,35 @@ def accept_attempt_result(
                     "job_id": int(attempt["eval_job_id"]),
                 },
             )
+            if int(train_config.get("telemetry_protocol_version") or 1) == 2:
+                cur.execute(
+                    """
+                    SELECT rlab_append_canonical_telemetry_event(
+                      %(attempt_id)s,
+                      %(event_identity)s,
+                      'evaluation_result',
+                      'canonical_json_v1',
+                      %(payload)s,
+                      TRUE
+                    )
+                    """,
+                    {
+                        "attempt_id": str(attempt["attempt_id"]),
+                        "event_identity": (
+                            f"evaluation-result:{attempt['execution_key']}:"
+                            f"{attempt['attempt_id']}"
+                        ),
+                        "payload": json.dumps(
+                            {
+                                "validated_result": validated,
+                                "decision": decision,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8"),
+                    },
+                )
             if (
                 int(train_config.get("telemetry_protocol_version") or 1) == 2
                 and bool(passed)
@@ -1773,8 +1802,7 @@ def dispatch_pending(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT j.*, t.telemetry_protocol_version, t.telemetry_generation
-            FROM eval_jobs j
+            SELECT j.* FROM eval_jobs j
             JOIN train_jobs t ON t.id = j.train_job_id
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.status IN ('pending', 'blocked_budget')
@@ -1931,31 +1959,33 @@ def dispatch_pending(
                     )
                     SELECT
                       %(attempt_id)s, %(train_job_id)s, %(job_id)s, 'eval', 'modal',
-                      'launching', now(), %(protocol_version)s, %(generation)s,
-                      CASE WHEN %(protocol_version)s = 2 THEN (
+                      'launching', now(), t.telemetry_protocol_version,
+                      t.telemetry_generation,
+                      CASE WHEN t.telemetry_protocol_version = 2 THEN (
                         SELECT COALESCE(max(producer_ordinal), -1) + 1
                         FROM telemetry_producers
                         WHERE train_job_id = %(train_job_id)s
-                          AND telemetry_generation = %(generation)s
+                          AND telemetry_generation = t.telemetry_generation
                       ) ELSE NULL END,
-                      CASE WHEN %(protocol_version)s = 2
+                      CASE WHEN t.telemetry_protocol_version = 2
                         THEN 'eval:' || %(job_id)s::text || ':' || %(attempt_id)s
                         ELSE NULL
                       END
+                    FROM train_jobs t WHERE t.id = %(train_job_id)s
                     ON CONFLICT (attempt_id) DO NOTHING
-                    RETURNING producer_ordinal, producer_identity
+                    RETURNING protocol_version, telemetry_generation,
+                              producer_ordinal, producer_identity
                     """,
                     {
                         "attempt_id": attempt_id,
                         "train_job_id": int(job["train_job_id"]),
                         "job_id": int(job["id"]),
-                        "protocol_version": int(job.get("telemetry_protocol_version") or 1),
-                        "generation": int(job.get("telemetry_generation") or 1),
                     },
                 )
                 worker_attempt = cur.fetchone()
                 if (
-                    int(job.get("telemetry_protocol_version") or 1) == 2
+                    worker_attempt is not None
+                    and int(worker_attempt.get("protocol_version") or 1) == 2
                     and worker_attempt is not None
                 ):
                     cur.execute(
@@ -1970,7 +2000,7 @@ def dispatch_pending(
                         """,
                         {
                             "run": int(job["train_job_id"]),
-                            "generation": int(job.get("telemetry_generation") or 1),
+                            "generation": int(worker_attempt["telemetry_generation"]),
                             "ordinal": int(worker_attempt["producer_ordinal"]),
                             "identity": str(worker_attempt["producer_identity"]),
                             "attempt_id": attempt_id,
@@ -1987,7 +2017,7 @@ def dispatch_pending(
                         """,
                         {
                             "run": int(job["train_job_id"]),
-                            "generation": int(job.get("telemetry_generation") or 1),
+                            "generation": int(worker_attempt["telemetry_generation"]),
                             "key": f"eval-attempt:{attempt_id}",
                             "ordinal": int(worker_attempt["producer_ordinal"]),
                         },

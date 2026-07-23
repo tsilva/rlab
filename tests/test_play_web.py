@@ -58,6 +58,41 @@ def test_playback_environment_title_uses_configured_env_id() -> None:
     assert _session_environment_id(session, human_args()) == "BreakoutTurbo-v0"
 
 
+def test_web_playback_retains_step_zero_snapshot_and_frame() -> None:
+    session = argparse.Namespace(
+        config={"game": "Game-v0"},
+        current_frame=np.zeros((4, 5, 3), dtype=np.uint8),
+        frames=(),
+        sequence=0,
+        step_index=0,
+        episode=1,
+        active_seed=42,
+        active_task=None,
+        total_reward=0.0,
+        max_x_pos=0,
+        action_names=(),
+        interactive=False,
+        last_transition=None,
+    )
+    runner = WebPlaybackRunner(session, human_args(episodes=0), config_text="")
+
+    runner._publish(None)
+
+    snapshot, frames = runner.episode_start_payload()
+    assert snapshot["sequence"] == 0
+    assert snapshot["session"]["step"] == 0
+    assert snapshot["transition"] is None
+    sequence, packet = frames[FRAME_GAME]
+    assert sequence == 0
+    assert FRAME_HEADER.unpack_from(packet) == (
+        b"RLP1",
+        FRAME_GAME,
+        FRAME_CODEC_PNG,
+        0,
+        0,
+    )
+
+
 def test_next_episode_dispatches_seed_sampling_and_driver_atomically() -> None:
     transition = argparse.Namespace(boundary=False, events=())
     session = argparse.Namespace(

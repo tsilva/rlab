@@ -108,10 +108,54 @@ acceptance W&B history.
 `eval/acceptance/pass` is per-checkpoint history. W&B summarizes that history with `max`, so the
 summary means that some checkpoint passed; it is not the run verdict. The authoritative verdict is
 the database promotion record (`eval_runs.outcome`, `promoted_eval_job_id`, and `promotion_json`).
-At terminal publication, that record restamps `rlab/goal/outcome`, the canonical variable
+At terminal publication, that record restamps `rlab/goal/outcome`, the diagnostic
 `leader/checkpoint/*` fields, and the accepted W&B projection. Later rejected checkpoint projections
-remain in history and never modify canonical leader fields. Raw acceptance aggregates and episode
-evidence remain authoritative in the database/R2.
+remain in history and never modify the active projection. Raw acceptance aggregates and episode
+evidence remain authoritative in indexed exact evidence and immutable archives.
+
+## Canonical telemetry v2 and integrity
+
+W&B is an append-only, at-least-once diagnostic projection. It is not a metric ledger, evaluation
+authority, promotion input, ranking input, cohort manifest, or cleanup receipt. A visible W&B point
+is identified by `_rlab_event_id`, `_rlab_output_index`, `_rlab_output_ordinal`,
+`_rlab_payload_sha256`, `_rlab_predecessor_sha256`, `_rlab_adapter_version`,
+`_rlab_normalization_version`, and `_rlab_projection_generation`. These are projection metadata,
+not scientific metrics. W&B `_step` is the generation offset plus the zero-based output ordinal;
+`global_step` retains its scientific meaning as policy transitions consumed.
+
+The canonical identity of every metric, control, command ACK, evaluation result, and terminal close
+is `(train_job_id, telemetry_generation, producer_ordinal, source_sequence)`. The authoritative
+archive is deterministic UTF-8 JSONL compressed with deterministic gzip. Its segment SHA-256 covers
+the uncompressed JSONL bytes; an additional SHA-256 covers the compressed object. Metric values use
+the closed `telemetry-adapters-v1` registry. Finite floats are encoded by their exact hexadecimal
+binary64 representation. Unknown types, unsafe rich values, mutable media references, and
+non-finite floats are integrity incidents rather than silently coerced values.
+
+`telemetry_integrity-v1` is the single status record used by status, cleanup, evidence
+materialization, and scientific consumers. Its fields mean:
+
+- `classification`: `intact_with_proof`, `degraded`, `legacy_unknown`, or `pending`. Only the first
+  may support exact v2 facts. A v1 run is never classified intact from cursor values or absence of
+  retained batches.
+- `disposition`: `exact`, `legacy_loss_adjudicated`, `durability_opted_out`, or `pending`.
+- `exact`: expected and realized obligations are identical and terminal, all producer final claims
+  match contiguous archive coverage, the producer set is fenced, policy-required receipts exist,
+  recovery is complete, and no canonical integrity incident is open.
+- `cleanup_eligible`: stronger than `exact`; exact runs additionally require finalized
+  `run_final_exact` facts and a terminal W&B disposition. Legacy loss adjudication requires dual
+  archives of every surviving byte, a permanent incident, and the retention delay.
+- `expected_set_sha256`, `coverage_sha256`, `archive_root_sha256`, and `facts_sha256`: content
+  identities for the obligation set, producer coverage, immutable run root, and final facts.
+- `state_json`: fence state, archive policy and receipts, recovery/executor health, evidence
+  freshness, cohort comparability, W&B generation health, and cleanup reasons.
+
+The authoritative evidence interfaces are `eval_scope_exact`,
+`training_success_scope_exact`, and `run_final_exact`. Contract-key equality is exact; evaluation
+contracts include stochastic action sampling, provider/environment arguments, preprocessing,
+reward and event semantics, starts, termination, runtime/dependencies/evaluator/assets, immutable
+checkpoint receipts, the full episode manifest, and complete results. Cohort rankings require the
+complete expected seed manifest and the declared `rank_direction` and tie-breaks. W&B summaries,
+database job status alone, object-store listing scans, and retained-batch absence fail closed.
 
 ## Registry
 
@@ -200,18 +244,18 @@ evidence remain authoritative in the database/R2.
 | `eval/acceptance/episodes/completed` | Valid planned episode rows completed before acceptance or fail-fast rejection. | episodes | acceptance evaluation | history |
 | `eval/acceptance/duration/seconds` | Acceptance-worker evaluation wall duration. | seconds | acceptance evaluation | history |
 | `eval/full/by_start` | Structured full-evaluation evidence by start and reason. | table | evaluation | history |
-| `leader/checkpoint/acceptance_pass` | Canonical promoted-checkpoint acceptance verdict restamped from database promotion state. | boolean | selection | summary |
-| `leader/checkpoint/success_rate_min` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/success_rate_mean` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/objective` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/return_mean` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/best_return` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/rank_values` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/progress_max` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/step` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/artifact_ref` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/eval_source` | Selected checkpoint summary field. | summary | selection | summary |
-| `leader/checkpoint/updated_at` | Selected checkpoint summary field. | summary | selection | summary |
+| `leader/checkpoint/acceptance_pass` | Diagnostic projection of the promoted-checkpoint verdict; `eval_scope_exact` is authoritative. | boolean | selection | summary |
+| `leader/checkpoint/success_rate_min` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/success_rate_mean` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/objective` | Diagnostic selected-checkpoint projection; never a ranking input. | summary | selection | summary |
+| `leader/checkpoint/return_mean` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/best_return` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/rank_values` | Diagnostic rendering of authoritative rank values. | summary | selection | summary |
+| `leader/checkpoint/progress_max` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/step` | Diagnostic selected-checkpoint projection. | summary | selection | summary |
+| `leader/checkpoint/artifact_ref` | Diagnostic immutable artifact reference projection. | summary | selection | summary |
+| `leader/checkpoint/eval_source` | Diagnostic evaluation-source projection. | summary | selection | summary |
+| `leader/checkpoint/updated_at` | Diagnostic projection update time. | summary | selection | summary |
 | `train/episode/return/shaped/from/target/mean` | Rolling mean shaped return over the latest 100 genuine target-origin training episodes. | return | rollout | history |
 | `train/curriculum/snapshot/archive/cell/count` | Current snapshot archive cell count. | cells | rollout | history |
 | `train/curriculum/snapshot/archive/snapshot/count` | Current resident snapshot handle count. | snapshots | rollout | history |

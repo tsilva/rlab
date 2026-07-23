@@ -2887,20 +2887,6 @@ def enqueue_train_job(
     def insert() -> dict[str, Any]:
         acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT cutover_generation
-                FROM telemetry_rollout_controls
-                WHERE singleton = TRUE
-                FOR SHARE
-                """
-            )
-            cutover = cur.fetchone()
-            cutover_generation = int(cutover["cutover_generation"])
-            cur.execute(
-                "SELECT set_config('rlab.telemetry_cutover_generation', %(value)s, TRUE)",
-                {"value": str(cutover_generation)},
-            )
             workspace_capability = str(
                 os.environ.get("RLAB_WORKSPACE_ENQUEUE_CAPABILITY_ID") or ""
             ).strip()
@@ -2911,6 +2897,17 @@ def enqueue_train_job(
                 )
             cur.execute(
                 """
+                WITH cutover AS MATERIALIZED (
+                  SELECT
+                    cutover_generation,
+                    set_config(
+                      'rlab.telemetry_cutover_generation',
+                      cutover_generation::text,
+                      TRUE
+                    ) AS installed_marker
+                  FROM telemetry_rollout_controls
+                  WHERE singleton = TRUE
+                )
                 INSERT INTO train_jobs (
                   goal_slug, goal_path, goal_sha256, recipe_slug, recipe_path, recipe_sha256,
                   repo_git_commit,
@@ -2922,19 +2919,19 @@ def enqueue_train_job(
                   retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
                 )
-                VALUES (
+                SELECT
                   %(goal_slug)s, %(goal_path)s, %(goal_sha256)s, %(recipe_slug)s,
                   %(recipe_path)s, %(recipe_sha256)s,
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
                   %(telemetry_transport)s,
                   %(telemetry_protocol_version)s, %(telemetry_durability_policy)s,
-                  %(telemetry_generation)s,
+                  cutover.cutover_generation,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
                   %(run_description)s, %(seed)s, %(wandb_group)s, %(wandb_tags)s
-                )
+                FROM cutover
                 RETURNING *
                 """,
                 {
@@ -2953,7 +2950,6 @@ def enqueue_train_job(
                     "telemetry_transport": str(config["telemetry_transport"]),
                     "telemetry_protocol_version": 2,
                     "telemetry_durability_policy": "queued_dual_r2_v1",
-                    "telemetry_generation": cutover_generation,
                     "batch_id": batch_id,
                     "campaign_id": campaign_id,
                     "submission_key": submission_key,
@@ -3159,6 +3155,58 @@ def claim_job_launch(
             launch = dict(row["launch_json"])
             attempt_json = row.get("attempt_json") or {}
             launch["worker_attempt_id"] = str(attempt_json.get("attempt_id") or launch["launch_id"])
+            recovery_manifest = {
+                "version": "telemetry-recovery-manifest-v1",
+                "train_job_id": int(job["id"]),
+                "attempt_id": str(launch["worker_attempt_id"]),
+                "telemetry_protocol_version": int(job.get("telemetry_protocol_version") or 2),
+                "telemetry_generation": int(job.get("telemetry_generation") or 1),
+                "parser_version": "metric-mailbox-v2",
+                "adapter_version": "telemetry-adapters-v1",
+                "archive_policy": str(
+                    job.get("telemetry_durability_policy") or "queued_dual_r2_v1"
+                ),
+                "configuration_sha256": _hash_json(dict(job.get("train_config") or {})),
+                "absolute_source_paths": [str(launch.get("output_uri") or output_uri)],
+                "wandb_routing": {
+                    "run_id": str(
+                        (job.get("train_config") or {}).get("wandb_run_id") or ""
+                    ),
+                    "project": str(
+                        (job.get("train_config") or {}).get("wandb_project") or ""
+                    ),
+                },
+                "recovery_owner": "rlab-telemetry-recovery",
+            }
+            recovery_sha256 = _hash_json(recovery_manifest)
+            cur.execute(
+                """
+                INSERT INTO telemetry_recovery_manifests (
+                  train_job_id, telemetry_generation, manifest_sha256,
+                  parser_version, archive_policy, absolute_source_paths,
+                  manifest_json
+                ) VALUES (
+                  %(run)s, %(generation)s, %(sha256)s, 'metric-mailbox-v2',
+                  %(policy)s, %(paths)s, %(manifest)s
+                )
+                ON CONFLICT (train_job_id, telemetry_generation) DO UPDATE
+                SET manifest_json = CASE
+                  WHEN telemetry_recovery_manifests.manifest_sha256 = EXCLUDED.manifest_sha256
+                  THEN EXCLUDED.manifest_json
+                  ELSE telemetry_recovery_manifests.manifest_json
+                END
+                """,
+                {
+                    "run": int(job["id"]),
+                    "generation": int(job.get("telemetry_generation") or 1),
+                    "sha256": recovery_sha256,
+                    "policy": str(
+                        job.get("telemetry_durability_policy") or "queued_dual_r2_v1"
+                    ),
+                    "paths": recovery_manifest["absolute_source_paths"],
+                    "manifest": json_arg(recovery_manifest),
+                },
+            )
             record_job_event(
                 conn,
                 job_id=int(job["id"]),
@@ -4930,6 +4978,33 @@ def finish_train_launch_from_result(
                         ),
                     },
                 )
+            cur.execute(
+                """
+                SELECT rlab_append_canonical_telemetry_event(
+                  %(launch_id)s,
+                  'launcher-terminal:' || %(launch_id)s,
+                  'attempt_terminal',
+                  'canonical_json_v1',
+                  convert_to(%(terminal_payload)s, 'UTF8'),
+                  TRUE
+                )
+                FROM telemetry_producers p
+                WHERE p.attempt_id = %(launch_id)s
+                  AND p.state IN ('registered', 'active')
+                """,
+                {
+                    "launch_id": launch_id,
+                    "terminal_payload": json.dumps(
+                        {
+                            "status": launch_status,
+                            "exit_code": int(exit_code),
+                            "error": error,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
             cur.execute(
                 """
                 UPDATE worker_attempts
