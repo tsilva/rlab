@@ -1039,3 +1039,7 @@ def playback_contract(recipe_document: Mapping[str, Any]) -> dict[str, Any]:
 
 def evaluation_contract_sha256(recipe_document: Mapping[str, Any]) -> str:
     return canonical_json_sha256(evaluation_contract(recipe_document))
+
+
+def playback_contract_sha256(recipe_document: Mapping[str, Any]) -> str:
+    return canonical_json_sha256(playback_contract(recipe_document))

@@ -35,6 +35,8 @@ from rlab.policy_bundle import (
     load_model_document,
     load_recipe_document,
     model_document_path,
+    playback_contract,
+    playback_contract_sha256,
     recipe_document_path,
 )
 from rlab.train_config import materialized_train_args
@@ -106,6 +108,8 @@ def checkpoint_announcement(
     recipe_sha256: str | None = None,
     recipe_format_version: int | None = None,
     evaluation_contract_sha256_value: str | None = None,
+    playback_contract_sha256_value: str | None = None,
+    playback_contract_value: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     announcement = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
@@ -119,12 +123,15 @@ def checkpoint_announcement(
         "metadata_sha256": metadata_sha256,
         "runtime_image_ref": str(getattr(args, "runtime_image_ref", "")),
         "wandb_run_id": str(getattr(args, "wandb_run_id", "")),
-        "eval": _eval_payload(args),
         "checkpoint_created_at": datetime.fromtimestamp(
             float(row["created_at"]), tz=UTC
         ).isoformat().replace("+00:00", "Z"),
         "upload_completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+    if playback_contract_value is None:
+        announcement["eval"] = _eval_payload(args)
+    else:
+        announcement["playback"] = playback_contract_value
     if recipe_uri is not None:
         announcement.update(
             model_document_uri=metadata_uri,
@@ -132,8 +139,11 @@ def checkpoint_announcement(
             recipe_uri=recipe_uri,
             recipe_sha256=recipe_sha256,
             recipe_format_version=int(recipe_format_version or 0),
-            evaluation_contract_sha256=evaluation_contract_sha256_value,
         )
+        if evaluation_contract_sha256_value is not None:
+            announcement["evaluation_contract_sha256"] = evaluation_contract_sha256_value
+        if playback_contract_sha256_value is not None:
+            announcement["playback_contract_sha256"] = playback_contract_sha256_value
     return announcement
 
 
@@ -201,7 +211,17 @@ def process_upload(
             ),
             evaluation_contract_sha256_value=(
                 evaluation_contract_sha256(recipe_document)
-                if recipe_document is not None
+                if recipe_document is not None and "eval" in recipe_document["recipe"]
+                else None
+            ),
+            playback_contract_sha256_value=(
+                playback_contract_sha256(recipe_document)
+                if recipe_document is not None and "playback" in recipe_document["recipe"]
+                else None
+            ),
+            playback_contract_value=(
+                playback_contract(recipe_document)
+                if recipe_document is not None and "playback" in recipe_document["recipe"]
                 else None
             ),
         )
@@ -265,6 +285,8 @@ def process_upload(
 
 
 def import_decisions(store: MetricStore, object_store: ObjectStore, args) -> int:
+    if str(getattr(args, "checkpoint_eval_backend", "local")) == "none":
+        return 0
     imported = 0
     for row in store.checkpoints():
         if str(row.get("kind")) != "checkpoint" or not row.get("sha256"):

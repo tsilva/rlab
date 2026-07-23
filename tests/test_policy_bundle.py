@@ -20,6 +20,7 @@ from rlab.policy_bundle import (
     build_recipe_document,
     canonical_json_bytes,
     evaluation_contract,
+    playback_contract_sha256,
     playback_contract,
     load_policy_bundle,
     load_recipe_document,
@@ -70,6 +71,7 @@ def test_breakout_bundle_is_playable_but_has_no_evaluation_contract(
     assert document["recipe"]["train_config"]["checkpoint_eval_backend"] == "none"
     assert "eval" not in document["recipe"]
     assert playback_contract(document)["environment"]["game"] == "Breakout-Atari2600-v0"
+    assert len(playback_contract_sha256(document)) == 64
     with pytest.raises(PolicyDocumentError, match="no evaluation contract"):
         evaluation_contract(document)
 

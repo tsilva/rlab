@@ -50,13 +50,22 @@ from rlab.modal_eval_protocol import (
     build_execution_contract,
     execution_key,
     job_key,
+    validate_announcement,
     validate_attempt_result,
 )
 from rlab.modal_eval_storage import ObjectStore, file_sha256
 from rlab.modal_eval_worker import execute_attempt
+from rlab.policy_bundle import (
+    build_model_document,
+    build_recipe_document,
+    playback_contract_sha256,
+    write_canonical_json,
+)
+from rlab.recipe_documents import compose_train_document
 from rlab.rom_assets import install_rom_file
 from rlab.checkpoint_coordinator import process_upload, reconcile_orphan_models
 from rlab.metric_store import MetricStore
+from rlab.training_backend import training_backend_config_hash
 from rlab import checkpoint_coordinator, modal_eval_cli
 from tests.db_fakes import FakeConnection
 
@@ -2129,6 +2138,89 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 [call.args[1]["step"] for call in mailbox.append_event.call_args_list],
                 [100, 200],
             )
+
+    def test_versioned_training_only_bundle_is_ready_and_playback_bound(self) -> None:
+        goal = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
+        recipe = goal.parent / "recipes/ppo-snapshot-curriculum.yaml"
+        runtime_ref = "docker:example.invalid/rlab@sha256:" + "f" * 64
+        materialized = compose_train_document(goal, recipe)
+        recipe_document = build_recipe_document(
+            materialized,
+            repo_root=Path.cwd(),
+            source_commit="a" * 40,
+            run_description="training-only checkpoint publication regression",
+            seed=123,
+            runtime_image_ref=runtime_ref,
+        )
+        train_config = dict(recipe_document["recipe"]["train_config"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "model.zip"
+            model.write_bytes(b"checkpoint")
+            recipe_path = write_canonical_json(root / "model.recipe.json", recipe_document)
+            model_document = build_model_document(
+                model,
+                recipe_path,
+                {
+                    "kind": "checkpoint",
+                    "checkpoint_step": 500_000,
+                    "queue_train_job_id": 9,
+                    "runtime_image_ref": runtime_ref,
+                    "algorithm_id": "ppo",
+                    "model_class": "stable_baselines3.ppo.ppo.PPO",
+                    "training_backend_id": "sb3.ppo",
+                    "training_backend_config_hash": training_backend_config_hash(train_config),
+                },
+            )
+            model_document_path = write_canonical_json(root / "model.model.json", model_document)
+            metric_store = MetricStore(root / "rlab.sqlite")
+            metric_store.init()
+            metric_store.record_checkpoint(
+                run_name="smoke",
+                kind="checkpoint",
+                step=500_000,
+                path=model,
+                metadata_path=model_document_path,
+                eval_required=False,
+            )
+            objects = ObjectStore((root / "objects").resolve().as_uri())
+            mailbox = mock.MagicMock()
+            args = SimpleNamespace(
+                **{
+                    **train_config,
+                    "queue_train_job_id": 9,
+                    "telemetry_transport": "neon_mailbox_v1",
+                    "runtime_image_ref": runtime_ref,
+                    "wandb_run_id": "rlab-smoke",
+                    "wandb": True,
+                }
+            )
+
+            with mock.patch(
+                "rlab.telemetry_mailbox.WorkerMailbox.from_env",
+                return_value=mailbox,
+            ):
+                row = metric_store.pending_artifact_uploads(limit=1)[0]
+                self.assertTrue(process_upload(metric_store, objects, args, row))
+
+            announcement = mailbox.append_event.call_args.args[1]
+            self.assertEqual(
+                announcement["playback_contract_sha256"],
+                playback_contract_sha256(recipe_document),
+            )
+            self.assertNotIn("evaluation_contract_sha256", announcement)
+            self.assertEqual(
+                validate_announcement(
+                    announcement,
+                    materialized_train_config={
+                        **train_config,
+                        "runtime_image_ref": runtime_ref,
+                    },
+                ),
+                announcement,
+            )
+            _verify_checkpoint_artifacts(objects, announcement)
 
     def test_s3_client_forces_sigv4_for_r2_presigned_urls(self) -> None:
         store = ObjectStore("s3://bucket/prefix")

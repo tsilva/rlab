@@ -55,6 +55,7 @@ from rlab.modal_eval_storage import (
 from rlab.policy_bundle import (
     evaluation_contract_sha256,
     model_document_as_metadata,
+    playback_contract_sha256,
     validate_recipe_document,
 )
 
@@ -94,7 +95,8 @@ def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, 
     ]
     if versioned_bundle:
         artifacts.append((str(announcement["recipe_uri"]), str(announcement["recipe_sha256"])))
-    asset = announcement["eval"].get("asset")
+    eval_contract = announcement.get("eval")
+    asset = eval_contract.get("asset") if isinstance(eval_contract, Mapping) else None
     if isinstance(asset, Mapping):
         artifacts.append((str(asset["object_uri"]), str(asset["sha256"])))
 
@@ -124,8 +126,14 @@ def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, 
         raise ValueError("model document checkpoint binding mismatch")
     if str(model_document["recipe"]["sha256"]) != str(announcement["recipe_sha256"]):
         raise ValueError("model document recipe binding mismatch")
-    if evaluation_contract_sha256(recipe) != str(announcement["evaluation_contract_sha256"]):
-        raise ValueError("recipe evaluation contract binding mismatch")
+    if "evaluation_contract_sha256" in announcement:
+        if evaluation_contract_sha256(recipe) != str(announcement["evaluation_contract_sha256"]):
+            raise ValueError("recipe evaluation contract binding mismatch")
+    elif "playback_contract_sha256" in announcement:
+        if playback_contract_sha256(recipe) != str(announcement["playback_contract_sha256"]):
+            raise ValueError("recipe playback contract binding mismatch")
+    else:
+        raise ValueError("checkpoint announcement lacks a portable contract binding")
 
 
 class ModalInvoker(Protocol):

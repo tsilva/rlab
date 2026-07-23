@@ -8,6 +8,7 @@ from typing import Any
 
 from rlab.early_stop import evaluate_early_stop_config
 from rlab.env_registry import resolve_env_provider
+from rlab.policy_bundle import canonical_json_sha256
 from rlab.checkpoint_acceptance import (
     CheckpointEvalContractCompiler,
     SEED_PROTOCOL,
@@ -62,12 +63,32 @@ def validate_announcement(
     _sha256(announcement.get("sha256"), label="checkpoint hash")
     _sha256(announcement.get("model_document_sha256"), label="model document hash")
     _sha256(announcement.get("recipe_sha256"), label="recipe hash")
-    _sha256(
-        announcement.get("evaluation_contract_sha256"),
-        label="evaluation contract hash",
-    )
+    training_only = str(materialized_train_config.get("checkpoint_eval_backend") or "") == "none"
+    if training_only:
+        playback_hash = _sha256(
+            announcement.get("playback_contract_sha256"),
+            label="playback contract hash",
+        )
+        playback = announcement.get("playback")
+        if not isinstance(playback, Mapping):
+            raise ValueError("training-only checkpoint announcement is missing playback contract")
+        if canonical_json_sha256(dict(playback)) != playback_hash:
+            raise ValueError("checkpoint announcement playback contract hash mismatch")
+        if announcement.get("evaluation_contract_sha256") not in (None, ""):
+            raise ValueError(
+                "training-only checkpoint announcement must not claim an evaluation contract"
+            )
+    else:
+        _sha256(
+            announcement.get("evaluation_contract_sha256"),
+            label="evaluation contract hash",
+        )
     if int(announcement.get("recipe_format_version") or 0) < 1:
         raise ValueError("checkpoint announcement recipe format version is invalid")
+    if training_only:
+        if announcement.get("eval") is not None:
+            raise ValueError("training-only checkpoint announcement must not include eval contract")
+        return dict(announcement)
     eval_contract = announcement.get("eval")
     if not isinstance(eval_contract, Mapping):
         raise ValueError("checkpoint announcement is missing eval contract")
