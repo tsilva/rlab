@@ -138,6 +138,22 @@ def _shutdown_wandb_actors(actors: dict[int, subprocess.Popen]) -> None:
             process.wait(timeout=1)
 
 
+def _wandb_actor_state(
+    repo_root: Path,
+    *,
+    run_id: int,
+    process: subprocess.Popen,
+) -> dict[str, object] | None:
+    path = repo_root / "logs" / "fleet" / "wandb-actors" / f"train-{int(run_id)}.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError, OSError, ValueError, TypeError:
+        return None
+    if int(state.get("pid") or 0) != int(process.pid):
+        return None
+    return dict(state)
+
+
 def _wandb_actor_session_timed_out(
     repo_root: Path,
     *,
@@ -145,22 +161,51 @@ def _wandb_actor_session_timed_out(
     process: subprocess.Popen,
     now: float | None = None,
 ) -> bool:
-    path = repo_root / "logs" / "fleet" / "wandb-actors" / f"train-{int(run_id)}.json"
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError, OSError, ValueError, TypeError:
-        return False
-    if int(state.get("pid") or 0) != int(process.pid):
+    state = _wandb_actor_state(repo_root, run_id=run_id, process=process)
+    if state is None:
         return False
     if str(state.get("phase") or "") != "publishing":
         return False
     try:
-        started_at = float(state["session_started_at"])
+        progress_at = float(
+            state.get("progress_at")
+            or state.get("updated_at")
+            or state["session_started_at"]
+        )
     except KeyError, TypeError, ValueError:
         return False
-    return (time.time() if now is None else float(now)) - started_at > (
+    return (time.time() if now is None else float(now)) - progress_at > (
         WANDB_ACTOR_SESSION_TIMEOUT_SECONDS
     )
+
+
+def _recover_stalled_wandb_actor(
+    repo_root: Path,
+    *,
+    run_id: int,
+    process: subprocess.Popen,
+    state: dict[str, object] | None,
+) -> int:
+    lease_owner = str((state or {}).get("lease_owner") or "").strip()
+    if not lease_owner:
+        return 0
+    from rlab.fleet_wandb_publisher import recover_stalled_actor_claim
+
+    stage = str((state or {}).get("stage") or "unknown")
+    error = (
+        "W&B publisher actor made no progress for "
+        f"{WANDB_ACTOR_SESSION_TIMEOUT_SECONDS:g}s: stage={stage}"
+    )
+    conn = connect(database_url(use_direct=True))
+    try:
+        return recover_stalled_actor_claim(
+            conn,
+            train_job_id=int(run_id),
+            lease_owner=lease_owner,
+            error=error,
+        )
+    finally:
+        conn.close()
 
 
 class SleepAssertion:
@@ -436,6 +481,11 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                     run_id=run_id,
                     process=process,
                 ):
+                    state = _wandb_actor_state(
+                        repo_root,
+                        run_id=run_id,
+                        process=process,
+                    )
                     process.terminate()
                     try:
                         process.wait(timeout=WANDB_ACTOR_SHUTDOWN_SECONDS)
@@ -443,6 +493,20 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                         process.kill()
                         process.wait(timeout=1)
                     actors.pop(run_id, None)
+                    try:
+                        _recover_stalled_wandb_actor(
+                            repo_root,
+                            run_id=run_id,
+                            process=process,
+                            state=state,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"failed to release stalled W&B actor claim for train/{run_id}: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     continue
                 if returncode is None:
                     continue

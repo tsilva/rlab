@@ -754,6 +754,22 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("state IN ('launching', 'running')", statement)
         self.assertIn("status IN ('launching', 'running')", statement)
 
+    def test_machine_reload_blockers_ignore_finalization_only_rows(self) -> None:
+        conn = FakeConnection(
+            results=[
+                {"row": {"train_jobs": "train_jobs"}},
+                {"row": {"count": 0}},
+            ]
+        )
+
+        self.assertEqual(job_queue.count_machine_reload_blockers(conn), 0)
+
+        statement = conn.cursor_obj.executed_sqls[1]
+        self.assertIn("status IN ('launching', 'starting', 'running')", statement)
+        self.assertNotIn("'finalizing'", statement)
+        self.assertIn("provider <> 'checkpoint-recovery'", statement)
+        self.assertIn("host_operation_leases", statement)
+
     def test_runtime_validator_receives_execution_complete_config_before_insert(self) -> None:
         validated = []
         conn = FakeConnection(row={"id": 9})
@@ -1697,6 +1713,65 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(conn.cursor_obj.executed_params_list[2]["state"], "succeeded")
         self.assertEqual(conn.cursor_obj.executed_params_list[3]["status"], "finalizing")
+
+    def test_failed_launch_with_durability_work_releases_capacity_then_finalizes(self) -> None:
+        launch = {
+            "launch_id": "train-7",
+            "job_kind": "train",
+            "job_id": 7,
+            "machine": "beast-3",
+            "runtime_image_ref": RUNTIME_IMAGE_REF,
+            "state": "running",
+            "cancel_requested": False,
+            "job_train_config": {
+                "wandb": True,
+                "checkpoint_eval_backend": "none",
+                "telemetry_transport": "neon_mailbox_v1",
+            },
+        }
+        terminal_launch = {**launch, "state": "failed"}
+        job = {"id": 7, "run_name": "run", "status": "finalizing"}
+        conn = FakeConnection(
+            results=[
+                {"row": {"job_id": 7}},
+                {"row": launch},
+                {"row": terminal_launch},
+                {"row": job},
+                {},
+            ]
+        )
+
+        job_queue.finish_train_launch_from_result(
+            conn,
+            launch_id="train-7",
+            result={
+                "schema_version": 1,
+                "job_kind": "train",
+                "job_id": 7,
+                "launch_id": "train-7",
+                "machine": "beast-3",
+                "runtime_image_ref": RUNTIME_IMAGE_REF,
+                "status": "failed",
+                "exit_code": 1,
+                "error": "checkpoint coordinator exited",
+                # A false or missing worker hint cannot weaken the queue's
+                # materialized Neon/Modal finalization contract.
+                "durability_finalization_required": False,
+                "checkpoint_coordinator_status": "awaiting_artifact_recovery",
+                "live_publication": {"status": "pending", "attempts": 0},
+            },
+        )
+
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["state"], "failed")
+        self.assertEqual(conn.cursor_obj.executed_params_list[3]["status"], "finalizing")
+        self.assertEqual(
+            conn.cursor_obj.executed_params_list[4]["eval_status"],
+            "awaiting_artifact_recovery",
+        )
+        self.assertIn(
+            "durability finalization continues",
+            conn.cursor_obj.executed_params_list[4]["eval_error"],
+        )
 
     def test_retry_finalization_preserves_successful_launch(self) -> None:
         source = {

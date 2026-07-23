@@ -121,6 +121,7 @@ def project_payload_to_run(
     payload: Mapping[str, Any],
     *,
     allow_artifact_references: bool = True,
+    artifact_wait_timeout_seconds: float = 30.0,
 ) -> Any | None:
     train_config = dict(payload["train_config"])
     run_id = str(train_config["wandb_run_id"])
@@ -233,10 +234,11 @@ def project_payload_to_run(
             else:
                 artifact.add_reference(checkpoint_uri)
             logged_artifact = run.log_artifact(artifact, aliases=aliases)
-            if publication_schema == "v3":
+            if publication_schema in {"v2", "v3"}:
                 wait = getattr(logged_artifact, "wait", None)
-                if callable(wait):
-                    wait()
+                if not callable(wait):
+                    raise RuntimeError("W&B artifact handle does not support wait()")
+                wait(timeout=max(float(artifact_wait_timeout_seconds), 0.1))
             return logged_artifact
     decision = dict(payload["decision"])
     purpose = str(payload["purpose"])

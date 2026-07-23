@@ -36,6 +36,28 @@ class WorkerModules:
     publisher: str | None
 
 
+class RequiredWorkerExited(RuntimeError):
+    def __init__(
+        self,
+        *,
+        component: str,
+        phase: str,
+        returncode: int,
+        log_path: str,
+        log_tail: str,
+    ) -> None:
+        self.component = str(component)
+        self.phase = str(phase)
+        self.returncode = int(returncode)
+        self.log_path = str(log_path)
+        self.log_tail = str(log_tail)
+        super().__init__(
+            f"required training worker exited during {self.phase}: "
+            f"{self.component} {self.log_path} returncode={self.returncode}; "
+            f"{self.log_tail}"
+        )
+
+
 def worker_modules(
     eval_backend: str,
     *,
@@ -221,11 +243,14 @@ def run_training_process(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
-                raise RuntimeError(
-                    "training worker exited before required readiness: "
-                    f"{getattr(failed_worker, '_rlab_log_path', '')} "
-                    f"returncode={failed_worker.returncode}; "
-                    f"{worker_log_tail([failed_worker])}"
+                raise RequiredWorkerExited(
+                    component=str(
+                        getattr(failed_worker, "_rlab_name", "required_worker")
+                    ),
+                    phase="running" if readiness_written else "startup",
+                    returncode=int(failed_worker.returncode or 0),
+                    log_path=str(getattr(failed_worker, "_rlab_log_path", "")),
+                    log_tail=worker_log_tail([failed_worker]),
                 )
             if command_inbox_dir is not None and process.poll() is None:
                 for command_path in sorted(command_inbox_dir.glob("*.json")):
@@ -304,6 +329,7 @@ def start_worker(
     )
     process._rlab_log_file = log_file  # type: ignore[attr-defined]
     process._rlab_log_path = log_path  # type: ignore[attr-defined]
+    process._rlab_name = name  # type: ignore[attr-defined]
     return process
 
 
@@ -369,6 +395,40 @@ def base_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _execution_failure(
+    exc: BaseException,
+    *,
+    phase: str,
+    component: str = "training_supervisor",
+) -> dict[str, Any]:
+    if isinstance(exc, RequiredWorkerExited):
+        return {
+            "component": exc.component,
+            "phase": exc.phase,
+            "returncode": exc.returncode,
+            "log_path": exc.log_path,
+            "log_tail": exc.log_tail,
+            "error": str(exc),
+        }
+    return {
+        "component": component,
+        "phase": str(phase),
+        "returncode": 1,
+        "log_path": None,
+        "log_tail": None,
+        "error": repr(exc),
+    }
+
+
+def _failed_worker_result(
+    workers: list[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    return next(
+        (worker for worker in workers if int(worker.get("returncode") or 0) != 0),
+        None,
+    )
+
+
 def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
     job = dict(payload["job"])
     log_dir = output_dir / "logs"
@@ -399,6 +459,11 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         telemetry_transport=telemetry_transport,
     )
     coordinator_present = modules.artifact_uploader == "rlab.checkpoint_coordinator"
+    log_path = log_dir / f"train_job_{job['id']}_{uuid.uuid4().hex[:8]}.log"
+    returncode = 1
+    failure: dict[str, Any] | None = None
+    producer_results: list[dict[str, Any]] = []
+    publisher_results: list[dict[str, Any]] = []
     try:
         if modules.publisher:
             publisher_workers.append(
@@ -433,22 +498,11 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                     stop_file=producer_stop_file,
                 )
             )
-    except Exception:
-        stop_workers(producer_workers, producer_stop_file)
-        stop_workers(publisher_workers, publisher_stop_file)
-        raise
-    if telemetry_transport == "neon_mailbox_v1":
-        try:
+        if telemetry_transport == "neon_mailbox_v1":
             wait_for_mailbox_preflight(
                 publisher_workers[0],
                 run_dir / "mailbox_relay_ready.json",
             )
-        except Exception:
-            stop_workers(producer_workers, producer_stop_file)
-            stop_workers(publisher_workers, publisher_stop_file)
-            raise
-    log_path = log_dir / f"train_job_{job['id']}_{uuid.uuid4().hex[:8]}.log"
-    try:
         with log_path.open("w", encoding="utf-8") as log_file:
             train_env = os.environ.copy()
             train_env["RLAB_INTERNAL_LEARNER"] = "1"
@@ -465,20 +519,58 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
                 command_inbox_dir=run_dir / "mailbox_commands" / "inbox",
                 command_receipt_dir=run_dir / "mailbox_commands" / "receipts",
             )
-    finally:
-        producer_results = stop_workers(
-            producer_workers,
-            producer_stop_file,
-            timeout=120.0 if coordinator_present else 30.0,
+    except Exception as exc:
+        failure = _execution_failure(
+            exc,
+            phase=(
+                "running"
+                if (output_dir / "readiness.json").is_file()
+                else "startup"
+            ),
         )
-        publisher_results = stop_workers(publisher_workers, publisher_stop_file, timeout=135.0)
-        worker_results = [*producer_results, *publisher_results]
+    finally:
+        try:
+            producer_results = stop_workers(
+                producer_workers,
+                producer_stop_file,
+                timeout=120.0 if coordinator_present else 30.0,
+            )
+        except Exception as exc:
+            if failure is None:
+                failure = _execution_failure(
+                    exc,
+                    phase="draining",
+                    component="producer_workers",
+                )
+        try:
+            publisher_results = stop_workers(
+                publisher_workers,
+                publisher_stop_file,
+                timeout=135.0,
+            )
+        except Exception as exc:
+            if failure is None:
+                failure = _execution_failure(
+                    exc,
+                    phase="draining",
+                    component="publisher_workers",
+                )
+    worker_results = [*producer_results, *publisher_results]
     metadata_job = dict(job)
     metadata_job["train_config"] = {
         **dict(job.get("train_config") or {}),
         "runs_dir": str(output_dir / "runs"),
     }
-    metadata = collect_result_metadata(metadata_job)
+    try:
+        metadata = collect_result_metadata(metadata_job)
+    except Exception as exc:
+        metadata = {}
+        if failure is None:
+            failure = _execution_failure(
+                exc,
+                phase="draining",
+                component="result_metadata",
+            )
     producer_failed = any(int(worker.get("returncode") or 0) != 0 for worker in producer_results)
     publisher_failed = any(int(worker.get("returncode") or 0) != 0 for worker in publisher_results)
     critical_worker_failure = (
@@ -486,7 +578,30 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
         if telemetry_transport == "neon_mailbox_v1"
         else not modal_eval and (producer_failed or (not wandb_enabled and publisher_failed))
     )
-    status = "succeeded" if returncode == 0 and not critical_worker_failure else "failed"
+    if failure is None and critical_worker_failure:
+        failed_worker = _failed_worker_result(worker_results) or {}
+        failure = {
+            "component": (
+                "checkpoint_coordinator"
+                if "checkpoint_coordinator" in str(failed_worker.get("log_path") or "")
+                else "telemetry_relay"
+                if "wandb_publisher" in str(failed_worker.get("log_path") or "")
+                else "required_worker"
+            ),
+            "phase": "draining",
+            "returncode": int(failed_worker.get("returncode") or 1),
+            "log_path": str(failed_worker.get("log_path") or "") or None,
+            "log_tail": None,
+            "error": "required local evaluation/artifact worker did not drain cleanly",
+        }
+    status = (
+        "succeeded"
+        if returncode == 0 and not critical_worker_failure and failure is None
+        else "failed"
+    )
+    exit_code = int(returncode or 0)
+    if status == "failed" and exit_code == 0:
+        exit_code = 1
     publisher_drained = bool(publisher_results) and all(
         int(worker.get("returncode") or 0) == 0 for worker in publisher_results
     )
@@ -496,7 +611,7 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
     result = {
         **base_result(payload),
         "status": status,
-        "exit_code": returncode,
+        "exit_code": exit_code,
         "train": {
             "status": status,
             "result": metadata,
@@ -524,6 +639,8 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             "status": "disabled" if eval_disabled else "enabled",
         },
     }
+    if failure is not None:
+        result["failure"] = failure
     if telemetry_transport == "neon_mailbox_v1":
         result["telemetry_handoff"] = {
             "transport": telemetry_transport,
@@ -547,10 +664,19 @@ def run_train_payload(payload: Mapping[str, Any], output_dir: Path) -> dict[str,
             if incomplete_artifacts or coordinator_failed
             else "complete"
         )
-    if returncode != 0:
+    result["durability_finalization_required"] = bool(
+        telemetry_transport == "neon_mailbox_v1"
+        or modal_eval
+        or (
+            wandb_enabled
+            and str(result["live_publication"]["status"]) not in {"complete", "disabled"}
+        )
+        or result.get("checkpoint_coordinator_status") == "awaiting_artifact_recovery"
+    )
+    if failure is not None:
+        result["error"] = str(failure["error"])
+    elif returncode != 0:
         result["error"] = f"train process exited {returncode}"
-    elif critical_worker_failure:
-        result["error"] = "required local evaluation/artifact worker did not drain cleanly"
     if telemetry_transport == "neon_mailbox_v1" and status == "succeeded":
         store_path = metric_store_path(run_dir)
         for path in (

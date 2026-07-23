@@ -194,6 +194,7 @@ def current_incidents(
             )
     if publication_incident is not None:
         incidents.append(publication_incident)
+    terminal_failure_reported = False
     if status in {"failed", "finalization_failed"} and publication_incident is None:
         incidents.append(
             _incident(
@@ -203,6 +204,7 @@ def current_incidents(
                 str(row.get("error") or f"run terminalized as {status}"),
             )
         )
+        terminal_failure_reported = True
     if status == "canceled" and not row.get("cancel_requested"):
         incidents.append(
             _incident(
@@ -222,6 +224,14 @@ def current_incidents(
         if field == "launch_error" and expected_cancel_error and bool(row.get("cancel_requested")):
             if str(row.get("launch_state") or "") == "canceled":
                 continue
+        if (
+            field == "launch_error"
+            and terminal_failure_reported
+            and str(row.get("launch_state") or "") == "failed"
+            and str(row.get("launch_error") or "").strip()
+            == str(row.get("error") or "").strip()
+        ):
+            continue
         if field == "eval_error" and diagnostics.get("eval_outcome") is not None:
             if not int(diagnostics.get("failed_eval_jobs") or 0):
                 continue

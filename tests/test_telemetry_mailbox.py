@@ -16,6 +16,7 @@ from rlab.telemetry_mailbox import (
     encode_metric_batch,
     mark_submitted_batches,
     pending_metric_run_ids,
+    release_metric_batch_claims_by_owner,
     schedule_artifact_publications,
 )
 from rlab.telemetry_relay import CommandRelay, main as relay_main
@@ -222,6 +223,25 @@ class TelemetryBatchTests(unittest.TestCase):
         self.assertEqual(lease_update.args[1]["delay"], 5.0)
         self.assertFalse(lease_update.args[1]["refresh_submitted_at"])
         self.assertIn("ELSE COALESCE(submitted_at, now()) END", lease_update.args[0])
+
+    def test_stalled_actor_claim_release_is_scoped_by_run_and_owner(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 4
+
+        released = release_metric_batch_claims_by_owner(
+            conn,
+            train_job_id=7,
+            owner="actor-7-session",
+            error="watchdog timeout",
+        )
+
+        self.assertEqual(released, 4)
+        statement, params = cursor.execute.call_args.args
+        self.assertIn("a.train_job_id = %(train_job_id)s", statement)
+        self.assertIn("b.lease_owner = %(owner)s", statement)
+        self.assertEqual(params["train_job_id"], 7)
+        self.assertEqual(params["owner"], "actor-7-session")
 
     def test_cursor_reassertion_refreshes_confirmation_window(self) -> None:
         conn = mock.MagicMock()

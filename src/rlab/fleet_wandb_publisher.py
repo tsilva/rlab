@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from rlab.checkpoint_eval_worker import update_best_checkpoint_summary
 from rlab.env import resolve_env_config
@@ -27,6 +27,7 @@ from rlab.telemetry_mailbox import (
     mark_submitted_batches,
     pending_metric_run_ids,
     release_metric_batch_claims,
+    release_metric_batch_claims_by_owner,
     release_wandb_run_lock,
 )
 from rlab.job_queue import record_job_event
@@ -59,7 +60,7 @@ from rlab.metric_names import (
 
 
 SUMMARY_CURSOR_KEY = "_rlab_telemetry_cursors"
-DEFAULT_BATCH_LIMIT = 100
+DEFAULT_BATCH_LIMIT = 20
 ACTOR_POLL_SECONDS = 2.0
 MAX_FINALIZATION_ATTEMPTS = 3
 FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
@@ -119,6 +120,12 @@ def _write_actor_state(
     *,
     phase: str,
     session_started_at: float | None,
+    lease_owner: str | None = None,
+    progress_at: float | None = None,
+    stage: str | None = None,
+    claimed_batches: int = 0,
+    completed_batches: int = 0,
+    completed_frames: int = 0,
 ) -> None:
     global _ACTOR_SOURCE_FINGERPRINT
     from rlab.fleet_service import controller_source_fingerprint
@@ -128,14 +135,22 @@ def _write_actor_state(
     path = _actor_state_path(train_job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    now = time.time()
     temporary.write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "pid": os.getpid(),
                 "train_job_id": int(train_job_id),
                 "phase": phase,
                 "session_started_at": session_started_at,
-                "updated_at": time.time(),
+                "lease_owner": lease_owner,
+                "progress_at": now if progress_at is None else float(progress_at),
+                "stage": stage or phase,
+                "claimed_batches": max(0, int(claimed_batches)),
+                "completed_batches": max(0, int(completed_batches)),
+                "completed_frames": max(0, int(completed_frames)),
+                "updated_at": now,
                 "source_fingerprint": _ACTOR_SOURCE_FINGERPRINT,
             },
             sort_keys=True,
@@ -725,16 +740,7 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
                           THEN 'failed' ELSE 'finishing' END,
                         live_publication_next_retry_at = CASE WHEN %(terminal)s
                           THEN NULL
-                          ELSE now() + (%(retry_delay)s * interval '1 second') END,
-                        status = CASE WHEN %(terminal)s
-                          AND status IN ('finalizing', 'succeeded')
-                          THEN 'finalization_failed' ELSE status END,
-                        finished_at = CASE WHEN %(terminal)s
-                          AND status IN ('finalizing', 'succeeded')
-                          THEN now() ELSE finished_at END,
-                        error = CASE WHEN %(terminal)s
-                          AND status IN ('finalizing', 'succeeded')
-                          THEN %(error)s ELSE error END
+                          ELSE now() + (%(retry_delay)s * interval '1 second') END
                     WHERE id = %(id)s AND live_publication_status = 'finishing'
                     """,
                     {
@@ -1027,13 +1033,33 @@ def _record_committed_effects(
                 )
 
 
+def _report_actor_progress(
+    progress: Callable[..., None] | None,
+    stage: str,
+    *,
+    claimed_batches: int,
+    completed_batches: int = 0,
+    completed_frames: int = 0,
+) -> None:
+    if progress is not None:
+        progress(
+            stage=stage,
+            claimed_batches=max(0, int(claimed_batches)),
+            completed_batches=max(0, int(completed_batches)),
+            completed_frames=max(0, int(completed_frames)),
+        )
+
+
 def publish_claimed_run(
     conn,
     run: dict[str, Any],
     batches: list[dict[str, Any]],
+    *,
+    progress: Callable[..., None] | None = None,
 ) -> int:
     train_config = _train_config(run)
     decoded: dict[int, list[dict[str, Any]]] = {}
+    decoded_frames = 0
     for batch in batches:
         try:
             frames = decode_metric_batch(
@@ -1050,6 +1076,14 @@ def publish_claimed_run(
                 f"unsupported telemetry frame kinds: {sorted(unsupported)}"
             )
         decoded[int(batch["id"])] = frames
+        decoded_frames += len(frames)
+        _report_actor_progress(
+            progress,
+            "decoded",
+            claimed_batches=len(batches),
+            completed_batches=len(decoded),
+            completed_frames=decoded_frames,
+        )
     pristine = _publication_is_pristine(conn, run)
     remote_state = (
         WandbPublicationState(state="", cursors={}, step_max=None)
@@ -1057,6 +1091,12 @@ def publish_claimed_run(
         else _remote_publication_state(train_config)
     )
     remote = remote_state.cursors
+    _report_actor_progress(
+        progress,
+        "remote_inspected",
+        claimed_batches=len(batches),
+        completed_frames=decoded_frames,
+    )
     durable_floor = _durable_cursor_floor(conn, int(run["id"]))
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
@@ -1082,6 +1122,13 @@ def publish_claimed_run(
             decoded=decoded,
             wandb_url=None,
             artifact_receipts=artifact_receipts,
+        )
+        _report_actor_progress(
+            progress,
+            "confirmed_committed",
+            claimed_batches=len(batches),
+            completed_batches=len(confirmed),
+            completed_frames=decoded_frames,
         )
         run["live_publication_attempts"] = 0
     regressed_floor = {
@@ -1109,6 +1156,12 @@ def publish_claimed_run(
             update_finish_state=str(run.get("status") or "")
             in {"succeeded", "failed", "finalization_failed", "canceled"},
         )
+        _report_actor_progress(
+            progress,
+            "session_open",
+            claimed_batches=len(batches),
+            completed_frames=decoded_frames,
+        )
         try:
             wandb_url = str(getattr(projector.run, "url", "") or "") or None
             args = SimpleNamespace(**train_config) if unpublished else None
@@ -1118,6 +1171,8 @@ def publish_claimed_run(
                 else None
             )
             artifact_api_run = None
+            projected_batches = 0
+            projected_frames = 0
             for batch in unpublished:
                 for frame in decoded[int(batch["id"])]:
                     try:
@@ -1144,23 +1199,13 @@ def publish_claimed_run(
                                 pass
                             else:
                                 adopted = True
-                        logged_artifact = (
-                            None
-                            if adopted
-                            else project_payload_to_run(
+                        if not adopted:
+                            project_payload_to_run(
                                 projector.run,
                                 payload,
                                 allow_artifact_references=True,
+                                artifact_wait_timeout_seconds=WANDB_API_TIMEOUT_SECONDS,
                             )
-                        )
-                        if (
-                            publication_schema in {"v2", "v3"}
-                            and logged_artifact is not None
-                        ):
-                            wait = getattr(logged_artifact, "wait", None)
-                            if not callable(wait):
-                                raise RuntimeError("W&B artifact handle does not support wait()")
-                            wait(timeout=WANDB_API_TIMEOUT_SECONDS)
                     else:
                         assert args is not None and config is not None
                         _publish_frame(
@@ -1172,6 +1217,22 @@ def publish_claimed_run(
                             args=args,
                             config=config,
                         )
+                    projected_frames += 1
+                    _report_actor_progress(
+                        progress,
+                        "frame_projected",
+                        claimed_batches=len(batches),
+                        completed_batches=projected_batches,
+                        completed_frames=projected_frames,
+                    )
+                projected_batches += 1
+                _report_actor_progress(
+                    progress,
+                    "batch_projected",
+                    claimed_batches=len(batches),
+                    completed_batches=projected_batches,
+                    completed_frames=projected_frames,
+                )
             merged = _merge_cursor_mappings(remote, durable_floor, expected)
             projector.run.summary[SUMMARY_CURSOR_KEY] = merged
             if session_step_max is not None:
@@ -1180,7 +1241,21 @@ def publish_claimed_run(
                     summary_step = int(session_step_max)
                 projector.run.summary["global_step"] = {"max": summary_step}
         finally:
+            _report_actor_progress(
+                progress,
+                "session_closing",
+                claimed_batches=len(batches),
+                completed_batches=len(unpublished),
+                completed_frames=decoded_frames,
+            )
             projector.close()
+        _report_actor_progress(
+            progress,
+            "session_closed",
+            claimed_batches=len(batches),
+            completed_batches=len(unpublished),
+            completed_frames=decoded_frames,
+        )
         if unpublished:
             mark_submitted_batches(conn, unpublished)
         if reassert_cursor_floor:
@@ -1189,6 +1264,13 @@ def publish_claimed_run(
                 awaiting_confirmation,
                 refresh_submitted_at=True,
             )
+        _report_actor_progress(
+            progress,
+            "submission_committed",
+            claimed_batches=len(batches),
+            completed_batches=len(unpublished) + len(confirmed),
+            completed_frames=decoded_frames,
+        )
     if awaiting_confirmation or unpublished:
         with conn:
             with conn.cursor() as cur:
@@ -1209,9 +1291,15 @@ def publish_claimed_run(
     return len(confirmed)
 
 
-def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> int:
+def _drain_claim(
+    conn,
+    run: dict[str, Any],
+    batches: list[dict[str, Any]],
+    *,
+    progress: Callable[..., None] | None = None,
+) -> int:
     try:
-        return publish_claimed_run(conn, run, batches)
+        return publish_claimed_run(conn, run, batches, progress=progress)
     except Exception as exc:
         release_metric_batch_claims(conn, batches, error=repr(exc))
         current_attempts = int(run.get("live_publication_attempts") or 0)
@@ -1260,13 +1348,7 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
                         live_publication_attempts = %(attempts)s,
                         live_publication_next_retry_at = CASE WHEN %(terminal)s
                           THEN NULL
-                          ELSE now() + (%(retry_delay)s * interval '1 second') END,
-                        status = CASE WHEN %(terminal)s AND status = 'finalizing'
-                          THEN 'finalization_failed' ELSE status END,
-                        finished_at = CASE WHEN %(terminal)s AND status = 'finalizing'
-                          THEN now() ELSE finished_at END,
-                        error = CASE WHEN %(terminal)s AND status = 'finalizing'
-                          THEN %(error)s ELSE error END
+                          ELSE now() + (%(retry_delay)s * interval '1 second') END
                     WHERE id = %(train_job_id)s
                     """,
                     {
@@ -1296,6 +1378,82 @@ def _drain_claim(conn, run: dict[str, Any], batches: list[dict[str, Any]]) -> in
         release_wandb_run_lock(conn, int(run["id"]))
 
 
+def recover_stalled_actor_claim(
+    conn,
+    *,
+    train_job_id: int,
+    lease_owner: str,
+    error: str,
+) -> int:
+    released = release_metric_batch_claims_by_owner(
+        conn,
+        train_job_id=int(train_job_id),
+        owner=lease_owner,
+        error=error,
+    )
+    if not released:
+        return 0
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status, live_publication_attempts
+                FROM train_jobs
+                WHERE id = %(train_job_id)s
+                FOR UPDATE
+                """,
+                {"train_job_id": int(train_job_id)},
+            )
+            row = cur.fetchone()
+            if not row:
+                return released
+            attempts = int(row.get("live_publication_attempts") or 0) + 1
+            bounded = str(row.get("status") or "") in {
+                "finalizing",
+                "succeeded",
+                "failed",
+                "canceled",
+                "finalization_failed",
+            }
+            exhausted = bounded and attempts >= MAX_FINALIZATION_ATTEMPTS
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET live_publication_status = %(publication_status)s,
+                    live_publication_attempts = %(attempts)s,
+                    live_publication_error = %(error)s,
+                    live_publication_next_retry_at = CASE
+                      WHEN %(exhausted)s THEN NULL ELSE now() END
+                WHERE id = %(train_job_id)s
+                """,
+                {
+                    "train_job_id": int(train_job_id),
+                    "publication_status": "failed" if exhausted else "pending",
+                    "attempts": attempts,
+                    "error": str(error)[:4000],
+                    "exhausted": exhausted,
+                },
+            )
+            record_job_event(
+                conn,
+                job_id=int(train_job_id),
+                event_type=(
+                    "live_publication_failed"
+                    if exhausted
+                    else "live_publication_retry"
+                ),
+                message=str(error)[:4000],
+                metadata={
+                    "attempts": attempts,
+                    "terminal": False,
+                    "watchdog": "no_progress",
+                    "released_batches": released,
+                    "lease_owner": lease_owner,
+                },
+            )
+    return released
+
+
 def drain_once(
     conn,
     *,
@@ -1303,6 +1461,7 @@ def drain_once(
     limit: int = DEFAULT_BATCH_LIMIT,
     exclude_train_job_ids: tuple[int, ...] = (),
     train_job_id: int | None = None,
+    progress: Callable[..., None] | None = None,
 ) -> int:
     owner = owner or f"fleet-publisher-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     claim = claim_run_metric_batches(
@@ -1318,7 +1477,12 @@ def drain_once(
             return int(finalize_finishing_run(conn, int(train_job_id)))
         return 0
     run, batches = claim
-    return _drain_claim(conn, run, batches)
+    _report_actor_progress(
+        progress,
+        "claimed",
+        claimed_batches=len(batches),
+    )
+    return _drain_claim(conn, run, batches, progress=progress)
 
 
 def _publisher_actor_done(conn, train_job_id: int) -> bool:
@@ -1377,16 +1541,44 @@ def run_publisher_actor(
             if callable(stop_requested) and stop_requested():
                 return published
             session_started_at = time.time()
+            lease_owner = (
+                f"fleet-publisher-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+            )
+
+            def report_progress(
+                *,
+                stage: str,
+                claimed_batches: int,
+                completed_batches: int = 0,
+                completed_frames: int = 0,
+            ) -> None:
+                _write_actor_state(
+                    int(train_job_id),
+                    phase="publishing",
+                    session_started_at=session_started_at,
+                    lease_owner=lease_owner,
+                    progress_at=time.time(),
+                    stage=stage,
+                    claimed_batches=claimed_batches,
+                    completed_batches=completed_batches,
+                    completed_frames=completed_frames,
+                )
+
             _write_actor_state(
                 int(train_job_id),
                 phase="publishing",
                 session_started_at=session_started_at,
+                lease_owner=lease_owner,
+                progress_at=session_started_at,
+                stage="claiming",
             )
             try:
                 published += drain_once(
                     conn,
+                    owner=lease_owner,
                     limit=max(1, int(limit)),
                     train_job_id=int(train_job_id),
+                    progress=report_progress,
                 )
             finally:
                 _write_actor_state(

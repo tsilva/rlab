@@ -1338,11 +1338,21 @@ def reload_controller_service(
     if controller not in CONTROLLER_NAMES:
         raise ValueError(f"unknown fleet controller: {controller}")
     if controller != "wandb":
-        counter = count_nonterminal_jobs or _default_count_nonterminal_jobs
+        counter = count_nonterminal_jobs or (
+            _default_count_machine_reload_blockers
+            if controller == "machine"
+            else _default_count_nonterminal_jobs
+        )
         nonterminal = int(counter(paths.repo_root))
         if nonterminal:
+            description = (
+                "active execution blocker"
+                if controller == "machine"
+                else "nonterminal job"
+            )
             raise RuntimeError(
-                f"refusing to reload the {controller} controller with {nonterminal} nonterminal job(s)"
+                f"refusing to reload the {controller} controller with "
+                f"{nonterminal} {description}(s)"
             )
     item = controller_service_paths(paths, controller)
     if not item.plist.is_file():
@@ -1769,6 +1779,16 @@ def _default_count_nonterminal_jobs(repo_root: Path) -> int:
     conn = _connect_queue(repo_root)
     try:
         return int(count_nonterminal_jobs(conn))
+    finally:
+        conn.close()
+
+
+def _default_count_machine_reload_blockers(repo_root: Path) -> int:
+    from rlab.job_queue import count_machine_reload_blockers
+
+    conn = _connect_queue(repo_root)
+    try:
+        return int(count_machine_reload_blockers(conn))
     finally:
         conn.close()
 

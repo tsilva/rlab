@@ -590,6 +590,24 @@ class RunObservabilityTests(unittest.TestCase):
             ["wandb_publication_failed"],
         )
 
+    def test_terminal_launch_error_is_not_reported_twice(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 65,
+                "status": "failed",
+                "error": "checkpoint coordinator exited",
+                "launch_state": "failed",
+                "launch_error": "checkpoint coordinator exited",
+                "eval_status": "failed",
+            },
+            {},
+        )
+
+        self.assertEqual(
+            [incident["category"] for incident in incidents],
+            ["terminal_operational_failure"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,37 @@ Read `SPECS.md` before either mode. The remaining goal, recipe, and hardware rea
 
 ## Launch mode
 
-Resolve exactly:
+### Interpret ablation requests
+
+Treat multiple bare assignments listed on separate lines as separate ablation
+runs. Do not combine them into one run unless the user explicitly says
+`combine`, `together`, or `same run`.
+
+Build a launch matrix before queue mutation. Each row must contain one requested
+variant, its goal, recipe, seed, and complete override list. Resolve conceptual
+assignments through the least-changed checked-in goal or recipe when necessary,
+and never carry an assignment or override from one row into another. If a
+variant's mapping is ambiguous, ask one concise question before launching any
+row whose meaning depends on that choice.
+
+For example:
+
+```text
+noop=0
+noop_reset=30
+```
+
+means two runs: one changing only policy NOOP availability and one changing only
+reset-time NOOP sampling. It does not mean one run with both changes.
+
+Submit all independent rows promptly without waiting for an earlier row to
+start or finish, unless the user requested sequencing or the declared machine
+capacity cannot safely admit them. Report the resolved matrix so the user can
+see that the variants are isolated.
+
+### Resolve each launch row
+
+For each row, resolve exactly:
 
 - one goal under `experiments/goals/`
 - one recipe under `experiments/recipes/`
@@ -45,7 +75,7 @@ Resolve exactly:
 
 Read `INSTANCES.md`, the selected goal, and the selected recipe. If the goal or recipe is ambiguous, ask one concise question. Never guess between candidates. Do not ask for a machine when none was given.
 
-From the repository root, run:
+From the repository root, run once per row:
 
 ```bash
 rlab experiment launch \

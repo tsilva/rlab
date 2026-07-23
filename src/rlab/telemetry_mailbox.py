@@ -628,6 +628,39 @@ def release_metric_batch_claims(
             )
 
 
+def release_metric_batch_claims_by_owner(
+    conn,
+    *,
+    train_job_id: int,
+    owner: str,
+    error: str,
+) -> int:
+    owner = str(owner).strip()
+    if not owner:
+        return 0
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE metric_batches b
+                SET lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_error = %(error)s
+                FROM metric_streams s
+                JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                WHERE b.stream_id = s.stream_id
+                  AND a.train_job_id = %(train_job_id)s
+                  AND b.lease_owner = %(owner)s
+                """,
+                {
+                    "train_job_id": int(train_job_id),
+                    "owner": owner,
+                    "error": str(error)[:4000],
+                },
+            )
+            return int(cur.rowcount)
+
+
 def commit_published_batches(conn, batches: Sequence[Mapping[str, Any]]) -> None:
     if not batches:
         return

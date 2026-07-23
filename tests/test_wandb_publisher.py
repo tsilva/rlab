@@ -29,6 +29,7 @@ from rlab.fleet_wandb_publisher import (
     drain_cycle_parallel,
     finalize_finishing_run,
     publish_claimed_run,
+    recover_stalled_actor_claim,
     run_publisher_actor,
 )
 from rlab.metric_names import (
@@ -376,7 +377,7 @@ class WandbPublisherTests(unittest.TestCase):
                 result = project_payload_to_run(run, payload)
 
             self.assertIs(result, logged_artifact)
-            logged_artifact.wait.assert_called_once_with()
+            logged_artifact.wait.assert_called_once_with(timeout=30.0)
             artifact = run.log_artifact.call_args.args[0]
             self.assertEqual(
                 artifact.files,
@@ -412,6 +413,7 @@ class WandbPublisherTests(unittest.TestCase):
                 "rlab.fleet_wandb_publisher._publisher_actor_done",
                 side_effect=[False, True],
             ),
+            mock.patch("rlab.fleet_wandb_publisher._write_actor_state") as write_state,
             mock.patch("rlab.fleet_wandb_publisher.time.sleep") as sleep,
         ):
             published = run_publisher_actor(
@@ -423,10 +425,19 @@ class WandbPublisherTests(unittest.TestCase):
 
         self.assertEqual(published, 5)
         self.assertEqual(drain.call_count, 2)
-        self.assertEqual(
-            drain.call_args_list[0].kwargs,
-            {"limit": 100, "train_job_id": 41},
+        first_call = drain.call_args_list[0].kwargs
+        self.assertEqual(first_call["limit"], 100)
+        self.assertEqual(first_call["train_job_id"], 41)
+        self.assertTrue(first_call["owner"].startswith("fleet-publisher-"))
+        self.assertTrue(callable(first_call["progress"]))
+        publishing = next(
+            call
+            for call in write_state.call_args_list
+            if call.kwargs.get("phase") == "publishing"
         )
+        self.assertEqual(publishing.kwargs["stage"], "claiming")
+        self.assertEqual(publishing.kwargs["lease_owner"], first_call["owner"])
+        self.assertIsNotNone(publishing.kwargs["progress_at"])
         sleep.assert_called_once_with(2.0)
         statements = [
             call.args[0]
@@ -434,6 +445,44 @@ class WandbPublisherTests(unittest.TestCase):
         ]
         self.assertTrue(any("pg_try_advisory_lock" in statement for statement in statements))
         self.assertTrue(any("pg_advisory_unlock" in statement for statement in statements))
+
+    def test_stalled_actor_releases_only_its_claim_and_records_retry(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            "status": "finalizing",
+            "live_publication_attempts": 1,
+        }
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.release_metric_batch_claims_by_owner",
+                return_value=3,
+            ) as release,
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+        ):
+            released = recover_stalled_actor_claim(
+                conn,
+                train_job_id=41,
+                lease_owner="actor-41-session",
+                error="no progress",
+            )
+
+        self.assertEqual(released, 3)
+        release.assert_called_once_with(
+            conn,
+            train_job_id=41,
+            owner="actor-41-session",
+            error="no progress",
+        )
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_status = %(publication_status)s" in call.args[0]
+        )
+        self.assertEqual(update.args[1]["publication_status"], "pending")
+        self.assertEqual(update.args[1]["attempts"], 2)
+        event.assert_called_once()
+        self.assertFalse(event.call_args.kwargs["metadata"]["terminal"])
 
     def test_parallel_cycle_uses_one_isolated_process_per_run(self) -> None:
         with (
@@ -1085,6 +1134,7 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual(update.args[1]["attempts"], 3)
         self.assertTrue(update.args[1]["terminal"])
         self.assertNotIn("DELETE FROM metric_batches", update.args[0])
+        self.assertNotIn("THEN 'finalization_failed'", update.args[0])
         event.assert_called_once()
 
     def test_recent_artifact_visibility_lag_does_not_consume_finalization_attempt(self) -> None:
@@ -1445,6 +1495,7 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual(failure_update.args[1]["attempts"], 3)
         self.assertTrue(failure_update.args[1]["terminal"])
         self.assertIn("artifact", failure_update.args[1]["error"])
+        self.assertNotIn("THEN 'finalization_failed'", failure_update.args[0])
 
     def test_late_evaluations_keep_their_checkpoint_steps_without_internal_step(self) -> None:
         run = FakeRun()

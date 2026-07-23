@@ -53,6 +53,42 @@ class FleetServiceTests(unittest.TestCase):
                 )
             )
 
+    def test_wandb_manager_uses_recent_progress_not_total_session_age(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_path = root / "logs" / "fleet" / "wandb-actors" / "train-7.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 123,
+                        "phase": "publishing",
+                        "session_started_at": 100.0,
+                        "progress_at": 250.0,
+                        "stage": "frame_projected",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            process = mock.Mock(pid=123)
+
+            self.assertFalse(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=300.0,
+                )
+            )
+            self.assertTrue(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=371.0,
+                )
+            )
+
     def test_service_queue_connections_bypass_the_pool_for_session_locks(self) -> None:
         connection = object()
         with (
@@ -980,6 +1016,21 @@ class FleetServiceTests(unittest.TestCase):
 
         self.assertEqual(count, 3)
         count_nonterminal_jobs.assert_called_once_with(connection)
+        connection.close.assert_called_once_with()
+
+    def test_default_machine_reload_blockers_delegate_to_execution_api(self) -> None:
+        connection = mock.Mock()
+        with (
+            mock.patch.object(fleet_service, "_connect_queue", return_value=connection),
+            mock.patch(
+                "rlab.job_queue.count_machine_reload_blockers",
+                return_value=2,
+            ) as count_blockers,
+        ):
+            count = fleet_service._default_count_machine_reload_blockers(Path("/repo"))
+
+        self.assertEqual(count, 2)
+        count_blockers.assert_called_once_with(connection)
         connection.close.assert_called_once_with()
 
     def test_default_discover_machines_delegates_to_queue_api(self) -> None:

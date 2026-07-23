@@ -3652,6 +3652,43 @@ def count_nonterminal_jobs(conn=None) -> int:
             conn.close()
 
 
+def count_machine_reload_blockers(conn=None) -> int:
+    """Count execution-side work that cannot tolerate a machine-controller reload."""
+
+    owned_connection = conn is None
+    if owned_connection:
+        conn = connect(database_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('train_jobs') AS train_jobs")
+            schema_row = cur.fetchone()
+            if not schema_row or schema_row["train_jobs"] is None:
+                return 0
+            cur.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM train_jobs
+                   WHERE status IN ('launching', 'starting', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM job_launches
+                   WHERE state IN ('launching', 'running'))
+                  +
+                  (SELECT COUNT(*) FROM worker_attempts
+                   WHERE status IN ('launching', 'running')
+                     AND provider <> 'checkpoint-recovery')
+                  +
+                  (SELECT COUNT(*) FROM host_operation_leases
+                   WHERE state IN ('registered', 'running', 'reconciling'))
+                  AS count
+                """
+            )
+            row = cur.fetchone()
+        return int(row["count"] if row else 0)
+    finally:
+        if owned_connection:
+            conn.close()
+
+
 def claim_live_publication_recovery(conn, *, machine: str) -> dict[str, Any] | None:
     """Claim one CPU-only publisher recovery after its Docker launch is terminal."""
 
@@ -4676,21 +4713,19 @@ def finish_train_launch_from_result(
             publication_attempts = max(0, int(live_publication.get("attempts") or 0))
             eval_backend = str(train_config.get("checkpoint_eval_backend") or "local")
             telemetry_transport = str(train_config.get("telemetry_transport") or "legacy_local")
+            explicit_finalization = result.get("durability_finalization_required")
             requires_finalization = not prestart_cancel and (
-                telemetry_transport == "neon_mailbox_v1"
+                bool(explicit_finalization)
+                or telemetry_transport == "neon_mailbox_v1"
                 or eval_backend == "modal"
                 or publication_status not in {"complete", "disabled"}
             )
             if launch_status == "canceled":
                 job_status = "finalizing" if requires_finalization else "canceled"
+            elif requires_finalization:
+                job_status = "finalizing"
             elif launch_status != "succeeded":
                 job_status = "failed"
-            elif (
-                telemetry_transport == "neon_mailbox_v1"
-                or eval_backend == "modal"
-                or publication_status not in {"complete", "disabled"}
-            ):
-                job_status = "finalizing"
             else:
                 job_status = "succeeded"
             cur.execute(
@@ -4749,6 +4784,39 @@ def finish_train_launch_from_result(
                         ),
                     },
                 )
+            elif job_status == "finalizing":
+                checkpoint_recovery = (
+                    str(result.get("checkpoint_coordinator_status") or "")
+                    == "awaiting_artifact_recovery"
+                )
+                cur.execute(
+                    """
+                    UPDATE eval_runs
+                    SET status = %(eval_status)s,
+                      updated_at = now(),
+                      error = CASE
+                        WHEN %(checkpoint_recovery)s
+                          THEN 'checkpoint coordinator drain ended with incomplete uploads'
+                        ELSE COALESCE(error, %(eval_error)s)
+                      END
+                    WHERE train_job_id = %(job_id)s
+                      AND status NOT IN ('complete', 'failed', 'canceled')
+                    """,
+                    {
+                        "job_id": updated_launch["job_id"],
+                        "eval_status": (
+                            "awaiting_artifact_recovery"
+                            if checkpoint_recovery
+                            else "finalizing"
+                        ),
+                        "checkpoint_recovery": checkpoint_recovery,
+                        "eval_error": (
+                            "training process failed; durability finalization continues"
+                            if launch_status == "failed"
+                            else None
+                        ),
+                    },
+                )
             cur.execute(
                 """
                 UPDATE worker_attempts
@@ -4765,19 +4833,6 @@ def finish_train_launch_from_result(
                     "error": error,
                 },
             )
-            if (
-                str(result.get("checkpoint_coordinator_status") or "")
-                == "awaiting_artifact_recovery"
-            ):
-                cur.execute(
-                    """
-                    UPDATE eval_runs SET status = 'awaiting_artifact_recovery',
-                      error = 'checkpoint coordinator drain ended with incomplete uploads',
-                      updated_at = now()
-                    WHERE train_job_id = %(job_id)s AND status <> 'complete'
-                    """,
-                    {"job_id": updated_launch["job_id"]},
-                )
             record_job_event(
                 conn,
                 job_id=int(job["id"]),

@@ -37,6 +37,7 @@ from rlab.policy_bundle import (
     recipe_document_path,
 )
 from rlab.train_config import materialized_train_args
+from rlab.wandb_artifacts import model_metadata_path
 
 
 MAX_UPLOAD_ATTEMPTS = 3
@@ -207,7 +208,7 @@ def reconcile_orphan_models(store: MetricStore, args, run_dir: Path) -> int:
         kind = str(bundle.model["checkpoint"]["kind"])
         step_value = bundle.model["checkpoint"].get("step")
         step = int(step_value) if step_value is not None else checkpoint_step(model_path)
-        metadata_path = bundle.model_path
+        metadata_path = model_metadata_path(model_path)
         store.record_checkpoint(
             run_name=str(getattr(args, "run_name", run_dir.name)),
             kind=kind,
@@ -215,6 +216,7 @@ def reconcile_orphan_models(store: MetricStore, args, run_dir: Path) -> int:
             path=model_path,
             metadata_path=metadata_path,
             sha256=None,
+            eval_required=str(getattr(args, "checkpoint_eval_backend", "local")) != "none",
         )
         recovered += 1
     return recovered
