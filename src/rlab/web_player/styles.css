@@ -315,6 +315,15 @@ input, select { color: var(--text); background: #09151c; border: 1px solid #3150
 }
 .playback-fps label { color: var(--muted); font-size: .7rem; }
 .playback-fps input { width: 100%; min-width: 0; }
+.playback-sampling {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: .38rem;
+  margin-top: .48rem;
+}
+.playback-sampling label { color: var(--muted); font-size: .7rem; }
+.playback-sampling select { width: 100%; min-width: 0; }
 .control-hint { margin: .24rem 0 0; color: var(--muted); font-size: .6rem; }
 .control-field-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .38rem; }
 .control-field-row + .control-field-row { margin-top: .4rem; }

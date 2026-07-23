@@ -306,6 +306,11 @@ function updateControlState() {
 function renderWorkspaceStatus() {
   const live = state.liveSnapshot;
   const shown = state.snapshot || live;
+  const samplingMode = live?.session?.sampling_mode || "stochastic";
+  const samplingStatus = $("#sampling-status");
+  samplingStatus.hidden = live?.mode === "recording";
+  samplingStatus.textContent = samplingMode === "deterministic" ? "Deterministic" : "Stochastic";
+  samplingStatus.className = `badge ${samplingMode === "deterministic" ? "warning" : "muted"}`;
   $("#timeline-step").textContent = `EP ${text(shown?.session?.episode)} · STEP ${text(shown?.session?.step)}`;
   if (state.inspectionSequence === null) {
     $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)}`;
@@ -542,6 +547,7 @@ function renderSavedLayouts() {
     load.type = "button";
     load.className = "quiet";
     load.textContent = name;
+    load.title = `Load layout ${name}`;
     load.addEventListener("click", () => {
       state.layout = normalizeLayout(saved[name]);
       state.layout.name = name;
@@ -554,6 +560,7 @@ function renderSavedLayouts() {
     remove.type = "button";
     remove.className = "quiet danger";
     remove.textContent = "Delete";
+    remove.title = `Delete layout ${name}`;
     remove.addEventListener("click", () => {
       const next = readSavedLayouts();
       delete next[name];
@@ -583,6 +590,7 @@ function renderPanelShelf() {
     button.type = "button";
     button.className = "shelf-item";
     button.setAttribute("aria-label", config.visible ? `Move ${label} to this window` : `Show ${label}`);
+    button.title = button.getAttribute("aria-label");
     const title = document.createElement("span");
     title.textContent = label;
     button.append(title);
@@ -762,6 +770,7 @@ function ensureResizeHandle(panel) {
   handle.type = "button";
   handle.className = "panel-resize";
   handle.setAttribute("aria-label", `Resize ${PANEL_LABELS[panel.dataset.panel] || panel.dataset.panel}`);
+  handle.title = handle.getAttribute("aria-label");
   const label = document.createElement("span");
   label.textContent = "Resize";
   handle.append(label);

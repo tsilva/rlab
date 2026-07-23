@@ -24,6 +24,14 @@ export function mount({ definition, services }) {
           <button data-command="set-fps" class="quiet icon-only" aria-label="Apply play FPS" title="Apply play FPS"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
         </div>
         <p id="playback-fps-hint" class="control-hint">0 runs playback uncapped</p>
+        <div class="playback-sampling">
+          <label for="playback-sampling">Sampling</label>
+          <select id="playback-sampling" data-sampling aria-describedby="playback-sampling-hint">
+            <option value="stochastic">Stochastic</option>
+            <option value="deterministic">Deterministic</option>
+          </select>
+        </div>
+        <p id="playback-sampling-hint" class="control-hint">Playback only · evaluation remains stochastic</p>
       </section>
       <details class="control-section session-settings">
         <summary>Session settings</summary>
@@ -49,6 +57,7 @@ export function mount({ definition, services }) {
 
   const seed = element.querySelector("[data-seed]");
   const fps = element.querySelector("[data-fps]");
+  const sampling = element.querySelector("[data-sampling]");
   const acquire = element.querySelector("[data-acquire]");
   const playbackToggle = element.querySelector("[data-playback-toggle]");
   const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
@@ -65,6 +74,7 @@ export function mount({ definition, services }) {
     "continue-done": () => services.command("continue", { target: "done" }),
     reset: () => services.command("reset", { seed: seed.value }),
     "set-fps": () => services.command("set_fps", { fps: Number(fps.value) }),
+    "set-sampling-mode": () => services.command("set_sampling_mode", { mode: sampling.value }),
     policy: () => services.command("set_driver", { driver: "policy" }),
     human: () => services.command("set_driver", { driver: "human" }),
     inspect: () => services.command("inspect_policy"),
@@ -78,12 +88,14 @@ export function mount({ definition, services }) {
     event.preventDefault();
     commands["set-fps"]();
   });
+  sampling.addEventListener("change", commands["set-sampling-mode"]);
   acquire.addEventListener("click", () => services.send({ type: "acquire_control" }));
 
   const updateControl = () => {
     const state = services.getState();
     element.querySelectorAll("button:not([data-acquire]):not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
       .forEach((button) => { button.disabled = !state.hasControl; });
+    sampling.disabled = !state.hasControl;
     acquire.disabled = !state.connected || state.hasControl;
   };
 
@@ -110,6 +122,9 @@ export function mount({ definition, services }) {
       const session = snapshot.session || {};
       seed.value = text(session.seed, "");
       if (document.activeElement !== fps) fps.value = Number(session.target_fps || 0);
+      if (document.activeElement !== sampling) {
+        sampling.value = session.sampling_mode || "stochastic";
+      }
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
       renderPlaybackToggle(snapshot.run_state);
       const recording = snapshot.mode === "recording";
@@ -121,6 +136,8 @@ export function mount({ definition, services }) {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;
       });
       element.querySelector(".session-settings").hidden = recording;
+      element.querySelector(".playback-sampling").hidden = recording;
+      element.querySelector("#playback-sampling-hint").hidden = recording;
       seed.closest("label").hidden = recording;
       const human = element.querySelector('[data-command="human"]');
       const humanLabel = recording ? "Human controls" : "Take human control";

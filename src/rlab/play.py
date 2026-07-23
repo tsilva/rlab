@@ -869,8 +869,12 @@ class _PlaybackSession:
     def inspect_policy(self) -> PolicyDecision:
         return inspect_policy(self.model, self.model_obs)
 
-    def step(self) -> _PlaybackTransition:
-        decision = sample_policy_decision(self.model, self.model_obs)
+    def step(self, *, deterministic: bool = False) -> _PlaybackTransition:
+        decision = (
+            inspect_policy(self.model, self.model_obs)
+            if deterministic
+            else sample_policy_decision(self.model, self.model_obs)
+        )
         return self._advance(
             decision=decision,
             executed_action=decision.executed_action,

@@ -21,6 +21,7 @@
         <button id="layouts-toggle" class="quiet icon-only" type="button" aria-label="Layouts" title="Layouts"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg></button>
         <button id="panels-toggle" class="quiet icon-only" type="button" aria-label="Panels" title="Panels" aria-controls="panel-shelf" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-grid"></use></svg></button>
         <button id="new-window" class="quiet icon-only" type="button" aria-label="Open synchronized window" title="Open synchronized window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg></button>
+        <span id="sampling-status" class="badge muted" hidden>Stochastic</span>
         <span id="control-status" class="badge muted">Observer</span>
       </div>
     </header>
@@ -28,18 +29,18 @@
     <div id="layout-menu" class="floating-menu layout-menu" hidden>
       <label>Layout name <input id="layout-name-input" value="Default layout" maxlength="48"></label>
       <div class="menu-actions">
-        <button id="save-layout" class="primary button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-device-floppy"></use></svg><span>Save layout</span></button>
-        <button id="reset-layout" class="quiet button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-restore"></use></svg><span>Reset default</span></button>
+        <button id="save-layout" class="primary button-with-icon" type="button" title="Save layout"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-device-floppy"></use></svg><span>Save layout</span></button>
+        <button id="reset-layout" class="quiet button-with-icon" type="button" title="Reset default layout"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-restore"></use></svg><span>Reset default</span></button>
       </div>
       <div id="saved-layouts" class="saved-layouts"></div>
     </div>
 
     <div id="panel-menu" class="floating-menu panel-menu" hidden>
       <strong id="panel-menu-title">Panel</strong>
-      <button id="panel-new-window" class="button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg><span>Move to new window</span></button>
-      <button id="panel-dock-main" class="button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg><span>Dock to main window</span></button>
-      <button id="panel-hide" class="button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-eye-off"></use></svg><span>Hide panel</span></button>
-      <button id="panel-reset-size" class="button-with-icon" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-restore"></use></svg><span>Reset size</span></button>
+      <button id="panel-new-window" class="button-with-icon" type="button" title="Move panel to a new synchronized window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-external-link"></use></svg><span>Move to new window</span></button>
+      <button id="panel-dock-main" class="button-with-icon" type="button" title="Dock panel in the main window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-layout-dashboard"></use></svg><span>Dock to main window</span></button>
+      <button id="panel-hide" class="button-with-icon" type="button" title="Hide panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-eye-off"></use></svg><span>Hide panel</span></button>
+      <button id="panel-reset-size" class="button-with-icon" type="button" title="Reset panel size"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-restore"></use></svg><span>Reset size</span></button>
     </div>
 
     <div id="panel-shelf" class="floating-menu panel-shelf" hidden aria-label="Available panels">

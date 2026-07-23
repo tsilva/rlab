@@ -20,7 +20,7 @@ export function mount({ definition, services }) {
       return;
     }
     setStats(summary, [
-      [inspection ? "Inspection" : "Mode", inspection ? "Policy" : (decision.sampled ? "Stochastic" : "Policy")],
+      [inspection ? "Inspection" : "Mode", inspection ? "Policy" : (decision.sampled ? "Stochastic" : "Deterministic")],
       ["V(s)", number(decision.value, 4)],
       ["Entropy", number(decision.entropy, 4)],
       ["Log p", number(decision.log_probability, 4)],

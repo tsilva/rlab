@@ -5,7 +5,7 @@ import asyncio
 import io
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 from aiohttp import ClientSession, WSServerHandshakeError, WSMsgType
@@ -22,6 +22,7 @@ from rlab.play_web import (
     HumanRecordingRunner,
     PlaybackCommand,
     PlaybackWebServer,
+    WebPlaybackRunner,
     _session_environment_id,
     run_web_playback,
     transition_payload,
@@ -55,6 +56,32 @@ def test_playback_environment_title_uses_configured_env_id() -> None:
     )
 
     assert _session_environment_id(session, human_args()) == "BreakoutTurbo-v0"
+
+
+def test_web_playback_sampling_mode_selects_policy_action_path() -> None:
+    transition = argparse.Namespace(boundary=False, events=())
+    session = argparse.Namespace(
+        config={"game": "Game-v0"},
+        last_transition=None,
+        step=Mock(return_value=transition),
+    )
+    runner = WebPlaybackRunner(session, human_args(), config_text="")
+    runner._publish = Mock()
+
+    runner._apply(
+        PlaybackCommand(
+            "sampling",
+            "client",
+            "set_sampling_mode",
+            {"mode": "deterministic"},
+            None,
+        )
+    )
+    runner.run_state = "playing"
+    runner._step_once()
+
+    assert runner.sampling_mode == "deterministic"
+    session.step.assert_called_once_with(deterministic=True)
 
 
 def test_human_dataset_recording_defaults_to_web_dashboard() -> None:
@@ -373,6 +400,7 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     shared = (panel_root / "shared.js").read_text(encoding="utf-8")
     game_markup = (panel_root / "game.js").read_text(encoding="utf-8")
     controls_markup = (panel_root / "controls.js").read_text(encoding="utf-8")
+    policy_markup = (panel_root / "policy.js").read_text(encoding="utf-8")
     reward_markup = (panel_root / "reward.js").read_text(encoding="utf-8")
     signals_markup = (panel_root / "signals.js").read_text(encoding="utf-8")
     raw_markup = (panel_root / "raw.js").read_text(encoding="utf-8")
@@ -403,11 +431,19 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert '<label for="playback-fps">Play FPS</label>' in controls_markup
     assert 'id="playback-fps" data-fps type="number" min="0"' in controls_markup
     assert 'data-command="set-fps"' in controls_markup
+    assert '<select id="playback-sampling" data-sampling' in controls_markup
+    assert '<option value="stochastic">Stochastic</option>' in controls_markup
+    assert '<option value="deterministic">Deterministic</option>' in controls_markup
+    assert 'services.command("set_sampling_mode", { mode: sampling.value })' in controls_markup
     assert 'fps.addEventListener("keydown"' in controls_markup
     assert 'commands["set-fps"]();' in controls_markup
     assert 'element.querySelector(".session-settings").hidden = recording' in controls_markup
     assert ".playback-fps" in styles
+    assert ".playback-sampling" in styles
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
+    assert 'id="save-layout" class="primary button-with-icon" type="button" title="Save layout"' in markup
+    assert 'id="reset-layout" class="quiet button-with-icon" type="button" title="Reset default layout"' in markup
+    assert 'id="panel-hide" class="button-with-icon" type="button" title="Hide panel"' in markup
     assert "ti-device-desktop-share" in icons
     assert "separate scale" not in markup
     assert "shared scale" not in markup
@@ -471,6 +507,13 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "async ensureMounted" in runtime
     assert "this.unmount(name)" in runtime
     assert "new PanelRuntime" in script
+    assert "load.title = `Load layout ${name}`" in script
+    assert "remove.title = `Delete layout ${name}`" in script
+    assert 'button.title = button.getAttribute("aria-label")' in script
+    assert 'handle.title = handle.getAttribute("aria-label")' in script
+    assert 'id="sampling-status" class="badge muted" hidden' in markup
+    assert 'samplingMode === "deterministic" ? "Deterministic" : "Stochastic"' in script
+    assert 'decision.sampled ? "Stochastic" : "Deterministic"' in policy_markup
     assert 'panelRuntime.invoke("controls", "render", snapshot)' in script
     assert 'name: "Default layout"' in script
     assert "state.liveSnapshot?.session?.env_id" in script

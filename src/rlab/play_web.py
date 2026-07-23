@@ -325,6 +325,7 @@ class WebPlaybackRunner:
         self.revision = 0
         self.run_state = "paused"
         self.driver = "policy"
+        self.sampling_mode = "stochastic"
         self.target_fps = max(0.0, float(args.fps))
         self.remaining_steps = 0
         self.continue_target: str | None = None
@@ -413,6 +414,7 @@ class WebPlaybackRunner:
                 "action_names": list(self.session.action_names),
                 "event_names": event_names,
                 "env_id": self.environment_id,
+                "sampling_mode": self.sampling_mode,
                 "target_fps": self.target_fps,
                 "episodes_limit": int(self.args.episodes),
                 "history_size": len(self.history),
@@ -506,6 +508,18 @@ class WebPlaybackRunner:
                 self.target_fps = fps
                 self.revision += 1
                 self._publish(self.session.last_transition)
+            elif command.name == "set_sampling_mode":
+                mode = str(command.payload.get("mode") or "")
+                if mode not in {"stochastic", "deterministic"}:
+                    raise ValueError(f"unsupported sampling mode {mode!r}")
+                self.sampling_mode = mode
+                self._status_message = (
+                    "deterministic playback selected · non-evidence"
+                    if mode == "deterministic"
+                    else "stochastic playback selected"
+                )
+                self.revision += 1
+                self._publish(self.session.last_transition)
             elif command.name == "set_driver":
                 driver = str(command.payload.get("driver") or "policy")
                 if driver not in {"policy", "human"}:
@@ -553,7 +567,7 @@ class WebPlaybackRunner:
             transition = (
                 self.session.step_human(self._human_labels())
                 if self.driver == "human"
-                else self.session.step()
+                else self.session.step(deterministic=self.sampling_mode == "deterministic")
             )
         except Exception as exc:
             self._set_state("paused", message=str(exc))
@@ -737,6 +751,7 @@ class HumanRecordingRunner:
                     "action_names": [],
                     "event_names": [],
                     "env_id": self.environment_id,
+                    "sampling_mode": None,
                     "target_fps": self.target_fps,
                     "episodes_limit": int(getattr(self.args, "episodes", None) or 0),
                     "history_size": len(self.history),
