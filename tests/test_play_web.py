@@ -466,10 +466,25 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "ENVIRONMENT" not in game_markup
     assert "Focus the game for human input" not in game_markup
     assert 'class="game-actions panel-actions"' in game_markup
+    assert "game-overlay" not in game_markup
+    assert ".game-overlay" not in styles
+    assert 'id="timeline-label">EP — · STEP — · SEQ —' in markup
+    assert 'id="timeline-step"' not in markup
+    assert 'id="timeline-sequence"' not in markup
+    assert '$("#timeline-label").textContent' in script
+    assert 'state.inspectionSequence === null ? null : "INSPECTING"' in script
     assert "aspect-ratio: 256 / 240" in styles
     assert "grid-template-columns: repeat(12" in styles
     assert ".icon-only" in styles
-    assert 'id="timeline-scrubber"' in markup
+    assert 'id="timeline-scrubber" type="range" min="0" max="0" step="1"' in markup
+    assert 'id="return-live"' not in markup
+    assert 'id="timeline-zoom-out"' not in markup
+    assert 'id="timeline-zoom-in"' not in markup
+    assert 'id="timeline-zoom-label"' not in markup
+    assert "timelineWindow" not in script
+    assert "state.timelineSequences = all;" in script
+    assert 'scrubber.step = "1";' in script
+    assert "if (index === state.timelineSequences.length - 1) returnToLive();" in script
     assert "data-return-chart" in reward_markup
     assert controls_markup.count("data-playback-toggle data-requires-active-episode class=") == 1
     assert 'data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only"' in controls_markup
@@ -486,6 +501,10 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "Boolean(session.awaiting_next_episode)" in controls_markup
     assert "nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode" in controls_markup
     assert '<label for="playback-fps">Play FPS</label>' in controls_markup
+    assert '<details class="playback-settings">' in controls_markup
+    assert "<summary>Playback settings</summary>" in controls_markup
+    assert '<details class="playback-settings" open>' not in controls_markup
+    assert '<div class="playback-settings-body">' in controls_markup
     assert 'id="playback-fps" data-fps type="number" min="0"' in controls_markup
     assert 'data-command="set-fps"' in controls_markup
     assert '<select id="playback-sampling" data-sampling' in controls_markup
@@ -497,11 +516,21 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'element.querySelector(".session-settings").hidden = recording' in controls_markup
     assert ".playback-fps" in styles
     assert ".playback-sampling" in styles
+    assert ".playback-settings-body" in styles
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert 'id="save-layout" class="primary button-with-icon" type="button" title="Save layout"' in markup
     assert 'id="reset-layout" class="quiet button-with-icon" type="button" title="Reset default layout"' in markup
     assert 'id="panel-hide" class="button-with-icon" type="button" title="Hide panel"' in markup
-    assert "ti-device-desktop-share" in icons
+    assert "ti-device-desktop-share" not in icons
+    assert "Control from this window" not in controls_markup
+    assert "data-acquire" not in controls_markup
+    assert 'class="driver-switch" role="group" aria-label="Driver selection"' in controls_markup
+    assert 'data-driver-option="policy"' in controls_markup
+    assert 'data-driver-option="human"' in controls_markup
+    assert 'aria-pressed="true" aria-label="Use policy driver"' in controls_markup
+    assert 'aria-pressed="false" aria-label="Take human control"' in controls_markup
+    assert 'option.dataset.driverOption === snapshot.driver' in controls_markup
+    assert '.driver-option[aria-pressed="true"]' in styles
     assert "separate scale" not in markup
     assert "shared scale" not in markup
     assert "Research workspace" not in markup

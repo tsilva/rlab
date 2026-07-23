@@ -19,20 +19,25 @@ export function mount({ definition, services }) {
           <button data-command="continue-done" data-requires-active-episode class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
           <button data-command="next-episode" data-next-episode class="primary button-with-icon control-wide" aria-label="Play next episode" title="Start the prepared next episode" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play next episode</span></button>
         </div>
-        <div class="playback-fps">
-          <label for="playback-fps">Play FPS</label>
-          <input id="playback-fps" data-fps type="number" min="0" step="1" value="0" inputmode="decimal" aria-describedby="playback-fps-hint">
-          <button data-command="set-fps" class="quiet icon-only" aria-label="Apply play FPS" title="Apply play FPS"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
-        </div>
-        <p id="playback-fps-hint" class="control-hint">0 runs playback uncapped</p>
-        <div class="playback-sampling">
-          <label for="playback-sampling">Sampling</label>
-          <select id="playback-sampling" data-sampling aria-describedby="playback-sampling-hint">
-            <option value="stochastic">Stochastic</option>
-            <option value="deterministic">Deterministic</option>
-          </select>
-        </div>
-        <p id="playback-sampling-hint" class="control-hint">Playback only · evaluation remains stochastic</p>
+        <details class="playback-settings">
+          <summary>Playback settings</summary>
+          <div class="playback-settings-body">
+            <div class="playback-fps">
+              <label for="playback-fps">Play FPS</label>
+              <input id="playback-fps" data-fps type="number" min="0" step="1" value="0" inputmode="decimal" aria-describedby="playback-fps-hint">
+              <button data-command="set-fps" class="quiet icon-only" aria-label="Apply play FPS" title="Apply play FPS"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
+            </div>
+            <p id="playback-fps-hint" class="control-hint">0 runs playback uncapped</p>
+            <div class="playback-sampling">
+              <label for="playback-sampling">Sampling</label>
+              <select id="playback-sampling" data-sampling aria-describedby="playback-sampling-hint">
+                <option value="stochastic">Stochastic</option>
+                <option value="deterministic">Deterministic</option>
+              </select>
+            </div>
+            <p id="playback-sampling-hint" class="control-hint">Playback only · evaluation remains stochastic</p>
+          </div>
+        </details>
       </section>
       <details class="control-section session-settings">
         <summary>Session settings</summary>
@@ -45,11 +50,12 @@ export function mount({ definition, services }) {
       </details>
       <section class="control-section" aria-labelledby="driver-controls-heading">
         <h3 id="driver-controls-heading" class="control-label">Driver</h3>
-        <div class="control-grid driver-grid">
-          <button data-command="policy" class="quiet icon-only" aria-label="Use policy driver" title="Use policy driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg></button>
-          <button data-command="human" class="quiet icon-only" aria-label="Take human control" title="Take human control"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg></button>
+        <div class="driver-controls">
+          <div class="driver-switch" role="group" aria-label="Driver selection">
+            <button data-command="policy" data-driver-option="policy" class="quiet button-with-icon driver-option" aria-pressed="true" aria-label="Use policy driver" title="Use policy driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg><span>Policy</span></button>
+            <button data-command="human" data-driver-option="human" class="quiet button-with-icon driver-option" aria-pressed="false" aria-label="Take human control" title="Take human control"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg><span>Human</span></button>
+          </div>
           <button data-command="inspect" class="quiet icon-only" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg></button>
-          <button data-acquire class="quiet icon-only" aria-label="Control from this window" title="Control from this window"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-device-desktop-share"></use></svg></button>
         </div>
       </section>
       <button data-command="stop" class="danger quiet icon-only control-end" aria-label="End session" title="End session"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-power"></use></svg></button>
@@ -59,10 +65,12 @@ export function mount({ definition, services }) {
   const seed = element.querySelector("[data-seed]");
   const fps = element.querySelector("[data-fps]");
   const sampling = element.querySelector("[data-sampling]");
-  const acquire = element.querySelector("[data-acquire]");
   const playbackToggle = element.querySelector("[data-playback-toggle]");
   const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
   const nextEpisode = element.querySelector("[data-next-episode]");
+  const driverControls = element.querySelector(".driver-controls");
+  const driverSwitch = element.querySelector(".driver-switch");
+  const driverOptions = [...element.querySelectorAll("[data-driver-option]")];
   const commands = {
     pause: () => services.command("pause"),
     play: () => services.command("play", {
@@ -92,11 +100,10 @@ export function mount({ definition, services }) {
     commands["set-fps"]();
   });
   sampling.addEventListener("change", commands["set-sampling-mode"]);
-  acquire.addEventListener("click", () => services.send({ type: "acquire_control" }));
 
   const updateControl = () => {
     const state = services.getState();
-    element.querySelectorAll("button:not([data-acquire]):not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
+    element.querySelectorAll("button:not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
       .forEach((button) => { button.disabled = !state.hasControl; });
     const session = state.liveSnapshot?.session || state.snapshot?.session || {};
     element.querySelectorAll("[data-requires-active-episode]")
@@ -105,7 +112,6 @@ export function mount({ definition, services }) {
       });
     nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode;
     sampling.disabled = !state.hasControl;
-    acquire.disabled = !state.connected || state.hasControl;
   };
 
   const renderPlaybackToggle = (runState) => {
@@ -136,7 +142,15 @@ export function mount({ definition, services }) {
       }
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
       renderPlaybackToggle(snapshot.run_state);
+      driverOptions.forEach((option) => {
+        option.setAttribute(
+          "aria-pressed",
+          String(option.dataset.driverOption === snapshot.driver),
+        );
+      });
       const recording = snapshot.mode === "recording";
+      driverControls.classList.toggle("recording", recording);
+      driverSwitch.classList.toggle("single-option", recording);
       nextEpisode.hidden = recording || !session.awaiting_next_episode;
       nextEpisode.title = session.can_start_next_episode
         ? "Start the prepared next episode"

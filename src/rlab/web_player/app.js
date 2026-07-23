@@ -48,7 +48,6 @@ const state = {
   frameBlobs: new Map([[FRAME_GAME, new Map()], [FRAME_OBSERVATION, new Map()]]),
   inspectionSequence: null,
   timelineSequences: [],
-  timelineWindow: Number(localStorage.getItem("rlab.player.timeline.window")) || 512,
   history: [],
   hasControl: false,
   frameSequence: new Map(),
@@ -311,12 +310,14 @@ function renderWorkspaceStatus() {
   samplingStatus.hidden = live?.mode === "recording";
   samplingStatus.textContent = samplingMode === "deterministic" ? "Deterministic" : "Stochastic";
   samplingStatus.className = `badge ${samplingMode === "deterministic" ? "warning" : "muted"}`;
-  $("#timeline-step").textContent = `EP ${text(shown?.session?.episode)} · STEP ${text(shown?.session?.step)}`;
-  if (state.inspectionSequence === null) {
-    $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)}`;
-  } else {
-    $("#timeline-sequence").textContent = `SEQ ${text(shown?.sequence)} · LIVE ${text(live?.sequence)}`;
-  }
+  const timelineContext = [
+    state.inspectionSequence === null ? null : "INSPECTING",
+    `EP ${text(shown?.session?.episode)}`,
+    `STEP ${text(shown?.session?.step)}`,
+    `SEQ ${text(shown?.sequence)}`,
+    state.inspectionSequence === null ? null : `LIVE ${text(live?.sequence)}`,
+  ];
+  $("#timeline-label").textContent = timelineContext.filter(Boolean).join(" · ");
 }
 
 function renderSnapshot() {
@@ -400,7 +401,6 @@ function inspectSequence(sequence) {
   if (!snapshot) return;
   state.inspectionSequence = Number(sequence);
   state.snapshot = snapshot;
-  $("#return-live").hidden = false;
   renderSnapshot();
   showFramesForSequence(Number(sequence));
 }
@@ -408,7 +408,6 @@ function inspectSequence(sequence) {
 function returnToLive() {
   state.inspectionSequence = null;
   state.snapshot = state.liveSnapshot;
-  $("#return-live").hidden = true;
   if (state.snapshot) {
     renderSnapshot();
     showFramesForSequence(Number(state.snapshot.sequence));
@@ -419,15 +418,15 @@ function renderTimeline() {
   const scrubber = $("#timeline-scrubber");
   if (!scrubber) return;
   const all = [...state.snapshots.keys()].sort((a, b) => a - b);
-  state.timelineSequences = all.slice(-state.timelineWindow);
+  state.timelineSequences = all;
   const sequences = state.timelineSequences;
   scrubber.min = "0";
   scrubber.max = String(Math.max(0, sequences.length - 1));
+  scrubber.step = "1";
   scrubber.disabled = sequences.length < 2;
   const selected = state.inspectionSequence ?? sequences.at(-1);
   const selectedIndex = sequences.indexOf(selected);
   scrubber.value = String(selectedIndex < 0 ? Math.max(0, sequences.length - 1) : selectedIndex);
-  $("#timeline-zoom-label").textContent = `${state.timelineWindow} steps`;
   renderWorkspaceStatus();
 
   const markers = $("#timeline-markers");
@@ -1146,19 +1145,11 @@ function bindWorkspaceSync() {
 
 function bindTimeline() {
   $("#timeline-scrubber").addEventListener("input", (event) => {
-    const sequence = state.timelineSequences[Number(event.target.value)];
-    if (sequence !== undefined) inspectSequence(sequence);
-  });
-  $("#return-live").addEventListener("click", returnToLive);
-  $("#timeline-zoom-out").addEventListener("click", () => {
-    state.timelineWindow = clamp(state.timelineWindow * 2, 128, 1024);
-    localStorage.setItem("rlab.player.timeline.window", String(state.timelineWindow));
-    renderTimeline();
-  });
-  $("#timeline-zoom-in").addEventListener("click", () => {
-    state.timelineWindow = clamp(state.timelineWindow / 2, 128, 1024);
-    localStorage.setItem("rlab.player.timeline.window", String(state.timelineWindow));
-    renderTimeline();
+    const index = Number(event.target.value);
+    const sequence = state.timelineSequences[index];
+    if (sequence === undefined) return;
+    if (index === state.timelineSequences.length - 1) returnToLive();
+    else inspectSequence(sequence);
   });
 }
 

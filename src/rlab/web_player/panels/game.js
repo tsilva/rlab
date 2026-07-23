@@ -1,5 +1,3 @@
-import { number, text } from "./shared.js";
-
 const FRAME_GAME = 1;
 
 export function mount({ definition, services }) {
@@ -12,7 +10,6 @@ export function mount({ definition, services }) {
         <canvas id="game-canvas" tabindex="0" aria-label="Live game frame. Focus it for human controls: arrows move, Z is B, X is A, Enter is Start, and Shift is Select."></canvas>
       </div>
       <div id="game-empty" class="game-empty empty-state">This environment has no RGB renderer.</div>
-      <div id="game-overlay" class="game-overlay"></div>
       <div class="game-actions panel-actions">
         <button data-drag-handle class="icon-button icon-only panel-drag" type="button" aria-label="Move game panel" title="Move game panel"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-grip-vertical"></use></svg></button>
         <button data-fullscreen class="icon-button icon-only" type="button" aria-label="Fullscreen game" title="Fullscreen game"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-maximize"></use></svg></button>
@@ -24,7 +21,6 @@ export function mount({ definition, services }) {
   const stage = element.querySelector(".game-stage");
   const frame = element.querySelector(".game-frame");
   const canvas = element.querySelector("canvas");
-  const overlay = element.querySelector(".game-overlay");
   const empty = element.querySelector(".game-empty");
   const pressed = new Set();
   let focused = false;
@@ -84,14 +80,6 @@ export function mount({ definition, services }) {
 
   return {
     element,
-    render(snapshot, view) {
-      if (!snapshot) return;
-      const transition = snapshot.transition;
-      const session = snapshot.session || {};
-      overlay.textContent = transition
-        ? `${view.inspection ? "INSPECTING · " : ""}EP ${transition.episode} · STEP ${transition.step} · r ${number(transition.reward?.step, 2)} · R ${number(transition.reward?.return, 2)} · ${String(transition.action_source || "—").toUpperCase()}${snapshot.interactive ? " · NON-EVIDENCE" : ""}`
-        : `seed ${text(session.seed)} · ready`;
-    },
     async renderFrame(kind, blob) {
       if (kind !== FRAME_GAME || !blob) return false;
       const bitmap = await createImageBitmap(blob);

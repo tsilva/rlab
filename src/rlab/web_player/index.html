@@ -52,18 +52,11 @@
 
     <section id="timeline" class="timeline" aria-label="Bounded trajectory inspection">
       <div class="timeline-labels">
-        <strong id="timeline-step">STEP —</strong>
-        <span id="timeline-sequence">SEQ —</span>
-        <button id="return-live" class="quiet icon-only" type="button" aria-label="Return to live playback" title="Return to live playback" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
+        <strong id="timeline-label">EP — · STEP — · SEQ —</strong>
       </div>
       <div class="timeline-track">
-        <input id="timeline-scrubber" type="range" min="0" max="0" value="0" aria-label="Inspect a retained transition">
+        <input id="timeline-scrubber" type="range" min="0" max="0" step="1" value="0" aria-label="Inspect a retained transition one step at a time">
         <div id="timeline-markers" class="timeline-markers" aria-hidden="true"></div>
-      </div>
-      <div class="timeline-zoom" aria-label="Timeline scale">
-        <button id="timeline-zoom-out" class="quiet icon-only" type="button" aria-label="Zoom timeline out" title="Zoom timeline out"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-zoom-out"></use></svg></button>
-        <span id="timeline-zoom-label">512 steps</span>
-        <button id="timeline-zoom-in" class="quiet icon-only" type="button" aria-label="Zoom timeline in" title="Zoom timeline in"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-zoom-in"></use></svg></button>
       </div>
     </section>
 
