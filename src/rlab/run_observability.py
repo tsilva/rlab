@@ -108,8 +108,8 @@ def _diagnostics(conn, run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND (a.attempt_number>1 OR a.retry_round>0)) AS eval_retries,
               (SELECT COUNT(*) FROM eval_attempts a JOIN eval_jobs j ON j.id=a.eval_job_id WHERE j.train_job_id=%(run)s AND a.status IN ('failed','expired')) AS failed_eval_attempts,
               (SELECT COUNT(*) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s) AS pending_metric_batches,
-              (SELECT COUNT(*) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence) AS unconfirmed_metric_batches,
-              (SELECT MIN(b.submitted_at) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence) AS oldest_unconfirmed_submitted_at,
+              (SELECT COUNT(*) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence AND NOT (b.lease_owner IS NOT NULL AND b.lease_expires_at > clock_timestamp())) AS unconfirmed_metric_batches,
+              (SELECT MIN(b.submitted_at) FROM metric_batches b JOIN metric_streams s ON s.stream_id=b.stream_id JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND b.batch_sequence <= s.submitted_sequence AND b.batch_sequence > s.published_sequence AND NOT (b.lease_owner IS NOT NULL AND b.lease_expires_at > clock_timestamp())) AS oldest_unconfirmed_submitted_at,
               (SELECT COUNT(*) FROM attempt_events e JOIN worker_attempts w ON w.attempt_id=e.attempt_id WHERE w.train_job_id=%(run)s AND (e.last_error IS NOT NULL OR e.attempts>0)) AS errored_mailbox_events,
               (SELECT COUNT(*) FROM attempt_commands c JOIN worker_attempts w ON w.attempt_id=c.attempt_id WHERE w.train_job_id=%(run)s AND (c.delivered_at IS NULL OR c.acknowledged_at IS NULL)) AS unhandled_commands,
               (SELECT COUNT(*) FROM metric_streams s JOIN worker_attempts w ON w.attempt_id=s.attempt_id WHERE w.train_job_id=%(run)s AND NOT (s.accepted_sequence=s.submitted_sequence AND s.submitted_sequence=s.published_sequence AND s.final_sequence IS NOT NULL AND s.published_sequence=s.final_sequence)) AS incomplete_streams,
@@ -154,6 +154,7 @@ def current_incidents(
     wandb_enabled = isinstance(train_config, Mapping) and bool(train_config.get("wandb", False))
     publication_status = str(row.get("live_publication_status") or "")
     publication_attempts = int(row.get("live_publication_attempts") or 0)
+    publication_error = str(row.get("live_publication_error") or "")
     publication_incident: dict[str, Any] | None = None
     unconfirmed_batches = int(diagnostics.get("unconfirmed_metric_batches") or 0)
     oldest_unconfirmed = diagnostics.get("oldest_unconfirmed_submitted_at")
@@ -171,6 +172,13 @@ def current_incidents(
                     or row.get("error")
                     or f"publication failed after {publication_attempts} attempt(s)"
                 ),
+            )
+        elif publication_error.startswith("publisher actor"):
+            publication_incident = _incident(
+                run_id,
+                "publisher_unavailable",
+                "wandb",
+                publication_error,
             )
         elif (
             unconfirmed_batches

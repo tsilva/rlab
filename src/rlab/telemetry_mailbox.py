@@ -144,6 +144,8 @@ def decode_metric_batch(payload: bytes, *, schema_version: int = 5) -> list[dict
 
 
 def mailbox_connect(database_url: str):
+    from rlab.database_tls import postgres_ssl_options
+
     options: dict[str, object] = {
         "connect_timeout": 10,
         "keepalives": 1,
@@ -152,11 +154,8 @@ def mailbox_connect(database_url: str):
         "keepalives_count": 3,
         "tcp_user_timeout": 30000,
         "cursor_factory": psycopg2.extras.RealDictCursor,
-        "sslmode": str(os.environ.get("RLAB_DATABASE_SSLMODE") or "verify-full"),
+        **postgres_ssl_options(),
     }
-    root_cert = str(os.environ.get("PGSSLROOTCERT") or "").strip()
-    if root_cert:
-        options["sslrootcert"] = root_cert
     return psycopg2.connect(
         database_url,
         **options,
@@ -761,7 +760,8 @@ def mark_submitted_batches(
                     lease_expires_at = now() + (%(delay)s * interval '1 second'),
                     last_error = NULL,
                     submitted_at = CASE WHEN %(refresh_submitted_at)s
-                      THEN now() ELSE COALESCE(submitted_at, now()) END
+                      THEN clock_timestamp()
+                      ELSE COALESCE(submitted_at, clock_timestamp()) END
                 WHERE id = ANY(%(ids)s)
                 """,
                 {

@@ -40,7 +40,7 @@ SERVICE_LABEL = "com.rlab.fleet-service"
 SERVICE_INTERVAL_SECONDS = 30
 CONTROLLER_NAMES = ("machine", "evaluation", "wandb", "workspace")
 CONTROLLER_POLL_SECONDS = 2
-CONTROL_PLANE_PROTOCOL_VERSION = 3
+CONTROL_PLANE_PROTOCOL_VERSION = 4
 CONTROLLER_READINESS_TIMEOUT_SECONDS = 10.0
 CONTROLLER_INSTALL_HEARTBEAT_TIMEOUT_SECONDS = 180.0
 CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS = 70.0
@@ -1321,6 +1321,7 @@ def _wandb_readiness_matches(
             and float(payload.get("last_reconciled_at") or 0.0) >= float(started_after)
             and str(payload.get("source_fingerprint") or "") == source_fingerprint
             and int(payload.get("protocol_version") or 0) == CONTROL_PLANE_PROTOCOL_VERSION
+            and str(payload.get("phase") or "") in {"idle", "reconciling"}
         )
     except TypeError, ValueError:
         return False

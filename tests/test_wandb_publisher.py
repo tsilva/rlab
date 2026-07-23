@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from rlab.fleet_wandb_publisher import (
     WandbFinalizationVerificationError,
     WandbPublicationState,
     _canonical_goal_summary,
+    _close_projector_with_heartbeat,
     _artifact_receipts_from_remote,
     _cursor_mapping,
     _drain_claim,
@@ -47,8 +49,12 @@ from rlab.policy_bundle import (
     write_canonical_json,
 )
 from rlab.training_backend import training_backend_config_hash
-from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
-from rlab import wandb_publisher
+from rlab.wandb_publisher import (
+    WandbArtifactAcknowledgmentTimeout,
+    project_payload_to_run,
+    publish_pending_frames,
+)
+from rlab import fleet_wandb_publisher, wandb_publisher
 from rlab.wandb_utils import configure_wandb_metrics
 from tests.test_policy_bundle import RUNTIME, level1_1_recipe_document
 
@@ -299,14 +305,10 @@ class WandbPublisherTests(unittest.TestCase):
                         "algorithm_id": "ppo",
                         "model_class": "stable_baselines3.ppo.ppo.PPO",
                         "training_backend_id": "sb3.ppo",
-                        "training_backend_config_hash": training_backend_config_hash(
-                            train_config
-                        ),
+                        "training_backend_config_hash": training_backend_config_hash(train_config),
                         "training_metadata": {
                             "environment": recipe_document["recipe"]["environment"],
-                            "environment_hash": recipe_document["recipe"][
-                                "environment_hash"
-                            ],
+                            "environment_hash": recipe_document["recipe"]["environment_hash"],
                         },
                     },
                 ),
@@ -401,6 +403,50 @@ class WandbPublisherTests(unittest.TestCase):
                 run.log_artifact.call_args.kwargs["aliases"],
                 ["latest", "step-100"],
             )
+            from wandb.sdk.artifacts.exceptions import WaitTimeoutError
+
+            logged_artifact.wait.side_effect = WaitTimeoutError("slow acknowledgment")
+            with (
+                mock.patch.dict(
+                    "sys.modules",
+                    {"wandb": SimpleNamespace(Artifact=NativeArtifact)},
+                ),
+                mock.patch.object(wandb_publisher, "ObjectStore", FakeObjectStore),
+                mock.patch.object(
+                    wandb_publisher,
+                    "object_store_base_uri",
+                    return_value="s3://bucket",
+                ),
+                self.assertRaises(WandbArtifactAcknowledgmentTimeout),
+            ):
+                project_payload_to_run(run, payload)
+
+    def test_close_heartbeat_runs_while_wandb_finish_is_blocked(self) -> None:
+        release = threading.Event()
+        progress: list[dict[str, object]] = []
+
+        def report(**payload) -> None:
+            progress.append(dict(payload))
+            if len(progress) >= 2:
+                release.set()
+
+        projector = mock.MagicMock()
+        projector.close.side_effect = lambda: release.wait(timeout=1.0)
+
+        _close_projector_with_heartbeat(
+            projector,
+            progress=report,
+            claimed_batches=3,
+            completed_batches=2,
+            completed_frames=5,
+            heartbeat_seconds=0.01,
+        )
+
+        projector.close.assert_called_once_with()
+        self.assertGreaterEqual(len(progress), 2)
+        self.assertTrue(all(item["stage"] == "session_closing" for item in progress))
+        close_started = {item["close_started_at"] for item in progress}
+        self.assertEqual(len(close_started), 1)
 
     def test_publisher_actor_survives_idle_gaps_until_remote_completion(self) -> None:
         conn = mock.MagicMock()
@@ -431,9 +477,7 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertTrue(first_call["owner"].startswith("fleet-publisher-"))
         self.assertTrue(callable(first_call["progress"]))
         publishing = next(
-            call
-            for call in write_state.call_args_list
-            if call.kwargs.get("phase") == "publishing"
+            call for call in write_state.call_args_list if call.kwargs.get("phase") == "publishing"
         )
         self.assertEqual(publishing.kwargs["stage"], "claiming")
         self.assertEqual(publishing.kwargs["lease_owner"], first_call["owner"])
@@ -445,6 +489,68 @@ class WandbPublisherTests(unittest.TestCase):
         ]
         self.assertTrue(any("pg_try_advisory_lock" in statement for statement in statements))
         self.assertTrue(any("pg_advisory_unlock" in statement for statement in statements))
+
+    def test_actor_refuses_mixed_controller_source_before_database_connect(self) -> None:
+        with (
+            mock.patch(
+                "rlab.fleet_service.controller_source_fingerprint",
+                return_value="observed",
+            ),
+            mock.patch("rlab.fleet_wandb_publisher._write_actor_state") as write_state,
+            mock.patch("rlab.job_queue.connect") as connect,
+        ):
+            code = fleet_wandb_publisher.main(
+                [
+                    "--train-job-id",
+                    "41",
+                    "--expected-source-fingerprint",
+                    "expected",
+                ]
+            )
+
+        self.assertEqual(
+            code,
+            fleet_wandb_publisher.ACTOR_SOURCE_MISMATCH_EXIT_CODE,
+        )
+        connect.assert_not_called()
+        self.assertEqual(write_state.call_args.kwargs["phase"], "startup_failed")
+        self.assertEqual(
+            write_state.call_args.kwargs["stage"],
+            "source_fingerprint_mismatch",
+        )
+
+    def test_actor_database_start_failure_writes_state_and_returns_error(self) -> None:
+        with (
+            mock.patch(
+                "rlab.fleet_service.controller_source_fingerprint",
+                return_value="source",
+            ),
+            mock.patch("rlab.fleet_wandb_publisher._write_actor_state") as write_state,
+            mock.patch("rlab.job_queue.database_url", return_value="database"),
+            mock.patch(
+                "rlab.job_queue.connect",
+                side_effect=RuntimeError("missing CA"),
+            ),
+        ):
+            code = fleet_wandb_publisher.main(
+                [
+                    "--train-job-id",
+                    "41",
+                    "--expected-source-fingerprint",
+                    "source",
+                ]
+            )
+
+        self.assertEqual(
+            code,
+            fleet_wandb_publisher.ACTOR_START_FAILED_EXIT_CODE,
+        )
+        self.assertEqual(write_state.call_args.kwargs["phase"], "startup_failed")
+        self.assertEqual(
+            write_state.call_args.kwargs["stage"],
+            "database_connect",
+        )
+        self.assertIn("missing CA", write_state.call_args.kwargs["error"])
 
     def test_stalled_actor_releases_only_its_claim_and_records_retry(self) -> None:
         conn = mock.MagicMock()
@@ -484,6 +590,36 @@ class WandbPublisherTests(unittest.TestCase):
         event.assert_called_once()
         self.assertFalse(event.call_args.kwargs["metadata"]["terminal"])
 
+    def test_close_timeout_records_distinct_durable_event(self) -> None:
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {
+            "status": "running",
+            "live_publication_attempts": 0,
+        }
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.release_metric_batch_claims_by_owner",
+                return_value=2,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+        ):
+            recover_stalled_actor_claim(
+                conn,
+                train_job_id=41,
+                lease_owner="actor-41-close",
+                error="close exceeded deadline",
+                watchdog="close_timeout",
+            )
+
+        self.assertEqual(
+            event.call_args.kwargs["event_type"],
+            "wandb_session_close_timeout",
+        )
+        self.assertEqual(
+            event.call_args.kwargs["metadata"]["watchdog"],
+            "close_timeout",
+        )
+
     def test_parallel_cycle_uses_one_isolated_process_per_run(self) -> None:
         with (
             mock.patch(
@@ -515,6 +651,9 @@ class WandbPublisherTests(unittest.TestCase):
             call.args[0][call.args[0].index("--train-job-id") + 1] for call in popen.call_args_list
         }
         self.assertEqual(train_ids, {"41", "42", "43"})
+        self.assertTrue(
+            all("--expected-source-fingerprint" in call.args[0] for call in popen.call_args_list)
+        )
         self.assertTrue(all(call.kwargs["start_new_session"] for call in popen.call_args_list))
 
     def test_resumed_projection_can_flush_without_finishing_active_run(self) -> None:
@@ -1061,6 +1200,92 @@ class WandbPublisherTests(unittest.TestCase):
 
         resume.assert_not_called()
 
+    def test_cursor_only_confirmation_commits_before_artifact_membership(self) -> None:
+        payload = {
+            "train_config": {"wandb_run_id": "rlab-7"},
+            "artifact_publication_schema": "v3",
+            "content_mode": "wandb_native_v1",
+            "train_job_id": 7,
+            "ledger_id": 3,
+            "artifact_kind": "checkpoint",
+            "publication_role": "availability",
+            "promotion_revision": 0,
+            "publication_stream_id": "artifact-v3-7-3-availability-r0",
+            "announcement_sha256": "1" * 64,
+            "checkpoint_step": 300,
+            "checkpoint_sha256": "2" * 64,
+            "checkpoint_uri": "s3://bucket/model.zip",
+            "metadata_uri": "s3://bucket/metadata.json",
+            "metadata_sha256": "3" * 64,
+            "recipe_uri": "s3://bucket/recipe.json",
+            "recipe_sha256": "4" * 64,
+            "artifact_aliases": ["step-300"],
+        }
+        run = {
+            "id": 7,
+            "status": "running",
+            "wandb_url": "https://wandb/run",
+            "train_config": {"wandb": True, "wandb_run_id": "rlab-7"},
+        }
+        cursor_batch = {
+            "id": 1,
+            "stream_id": "train-7",
+            "batch_sequence": 1,
+            "submitted_sequence": 1,
+            "payload": b"cursor",
+        }
+        artifact_batch = {
+            "id": 2,
+            "stream_id": "artifact-v3-7-3-availability-r0",
+            "batch_sequence": 1,
+            "submitted_sequence": 1,
+            "payload": b"artifact",
+        }
+        remote = SimpleNamespace(logged_artifacts=lambda: [])
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher._publication_is_pristine",
+                return_value=False,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._remote_publication_state",
+                return_value=WandbPublicationState(
+                    state="running",
+                    cursors={
+                        "train-7": 1,
+                        "artifact-v3-7-3-availability-r0": 1,
+                    },
+                    step_max=None,
+                ),
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher.decode_metric_batch",
+                side_effect=[[], [{"kind": "projection", "payload": payload}]],
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._hydrate_receipt_payload",
+                side_effect=lambda value: value,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._wandb_api_run",
+                return_value=remote,
+            ),
+            mock.patch("rlab.fleet_wandb_publisher._record_committed_effects") as committed,
+            self.assertRaises(WandbArtifactVisibilityError),
+        ):
+            publish_claimed_run(
+                mock.MagicMock(),
+                run,
+                [cursor_batch, artifact_batch],
+            )
+
+        committed.assert_called_once()
+        self.assertEqual(
+            committed.call_args.kwargs["batches"],
+            [cursor_batch],
+        )
+
     def test_crashed_run_with_eight_missing_cursors_fails_confirmation(self) -> None:
         batches = [
             {
@@ -1177,6 +1402,51 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertFalse(update.args[1]["terminal"])
         self.assertEqual(update.args[1]["retry_delay"], 5)
         self.assertTrue(event.call_args.kwargs["metadata"]["visibility_propagating"])
+
+    def test_artifact_wait_timeout_is_reconciled_before_replay(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        run = {
+            "id": 64,
+            "status": "finalizing",
+            "live_publication_attempts": 2,
+        }
+        batches = [
+            {
+                "id": 9,
+                "stream_id": "artifact-v3-64-1-availability-r0",
+                "batch_sequence": 1,
+                "submitted_at": None,
+            }
+        ]
+        error = WandbArtifactAcknowledgmentTimeout("acknowledgment pending")
+        error.batch_id = 9
+
+        with (
+            mock.patch(
+                "rlab.fleet_wandb_publisher.publish_claimed_run",
+                side_effect=error,
+            ),
+            mock.patch(
+                "rlab.fleet_wandb_publisher._mark_artifact_acknowledgment_pending"
+            ) as pending,
+            mock.patch("rlab.fleet_wandb_publisher.release_metric_batch_claims"),
+            mock.patch("rlab.fleet_wandb_publisher.record_job_event") as event,
+            mock.patch("rlab.fleet_wandb_publisher.release_wandb_run_lock"),
+            self.assertRaises(WandbArtifactAcknowledgmentTimeout),
+        ):
+            _drain_claim(conn, run, batches)
+
+        pending.assert_called_once_with(conn, 9)
+        update = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "live_publication_attempts = %(attempts)s" in call.args[0]
+        )
+        self.assertEqual(update.args[1]["attempts"], 2)
+        self.assertFalse(update.args[1]["terminal"])
+        self.assertEqual(update.args[1]["retry_delay"], 5)
+        self.assertTrue(event.call_args.kwargs["metadata"]["artifact_acknowledgment_pending"])
 
     def test_stale_artifact_visibility_lag_consumes_finalization_attempt(self) -> None:
         conn = mock.MagicMock()

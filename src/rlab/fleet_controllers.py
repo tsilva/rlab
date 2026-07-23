@@ -25,7 +25,9 @@ REMOTE_PASS_BUDGET_SECONDS = 55.0
 MAX_WANDB_ACTORS = 16
 WANDB_ACTOR_SHUTDOWN_SECONDS = 5.0
 WANDB_ACTOR_SESSION_TIMEOUT_SECONDS = 120.0
+WANDB_ACTOR_CLOSE_TIMEOUT_SECONDS = 300.0
 WANDB_ACTOR_CONTENTION_BACKOFF_SECONDS = 30.0
+WANDB_ACTOR_FAILURE_BACKOFF_SECONDS = 5.0
 WANDB_ACTOR_LOCK_BUSY_EXIT_CODE = 75
 CONTROLLER_MAX_BACKOFF_SECONDS = 60.0
 
@@ -154,18 +156,52 @@ def _wandb_actor_state(
     return dict(state)
 
 
-def _wandb_actor_session_timed_out(
+def _wandb_actors_starting(
+    repo_root: Path,
+    actors: dict[int, subprocess.Popen],
+    *,
+    source_fingerprint: str,
+) -> bool:
+    for run_id, process in actors.items():
+        if process.poll() is not None:
+            continue
+        state = _wandb_actor_state(
+            repo_root,
+            run_id=run_id,
+            process=process,
+        )
+        if (
+            state is None
+            or str(state.get("source_fingerprint") or "") != source_fingerprint
+            or str(state.get("phase") or "") not in {"idle", "publishing"}
+        ):
+            return True
+    return False
+
+
+def _wandb_actor_watchdog_reason(
     repo_root: Path,
     *,
     run_id: int,
     process: subprocess.Popen,
     now: float | None = None,
-) -> bool:
+) -> str | None:
     state = _wandb_actor_state(repo_root, run_id=run_id, process=process)
     if state is None:
-        return False
+        return None
     if str(state.get("phase") or "") != "publishing":
-        return False
+        return None
+    current_time = time.time() if now is None else float(now)
+    if str(state.get("stage") or "") == "session_closing":
+        try:
+            close_started_at = float(state["close_started_at"])
+        except KeyError, TypeError, ValueError:
+            close_started_at = 0.0
+        if close_started_at and current_time - close_started_at > (
+            WANDB_ACTOR_CLOSE_TIMEOUT_SECONDS
+        ):
+            return "close_timeout"
+        return None
     try:
         progress_at = float(
             state.get("progress_at")
@@ -173,9 +209,27 @@ def _wandb_actor_session_timed_out(
             or state["session_started_at"]
         )
     except KeyError, TypeError, ValueError:
-        return False
-    return (time.time() if now is None else float(now)) - progress_at > (
-        WANDB_ACTOR_SESSION_TIMEOUT_SECONDS
+        return None
+    if current_time - progress_at > WANDB_ACTOR_SESSION_TIMEOUT_SECONDS:
+        return "no_progress"
+    return None
+
+
+def _wandb_actor_session_timed_out(
+    repo_root: Path,
+    *,
+    run_id: int,
+    process: subprocess.Popen,
+    now: float | None = None,
+) -> bool:
+    return (
+        _wandb_actor_watchdog_reason(
+            repo_root,
+            run_id=run_id,
+            process=process,
+            now=now,
+        )
+        is not None
     )
 
 
@@ -185,6 +239,7 @@ def _recover_stalled_wandb_actor(
     run_id: int,
     process: subprocess.Popen,
     state: dict[str, object] | None,
+    watchdog: str,
 ) -> int:
     lease_owner = str((state or {}).get("lease_owner") or "").strip()
     if not lease_owner:
@@ -193,9 +248,10 @@ def _recover_stalled_wandb_actor(
 
     stage = str((state or {}).get("stage") or "unknown")
     error = (
-        "W&B publisher actor made no progress for "
-        f"{WANDB_ACTOR_SESSION_TIMEOUT_SECONDS:g}s: stage={stage}"
-    )
+        (f"W&B publisher session close exceeded {WANDB_ACTOR_CLOSE_TIMEOUT_SECONDS:g}s")
+        if watchdog == "close_timeout"
+        else (f"W&B publisher actor made no progress for {WANDB_ACTOR_SESSION_TIMEOUT_SECONDS:g}s")
+    ) + f": stage={stage}"
     conn = connect(database_url(use_direct=True))
     try:
         return recover_stalled_actor_claim(
@@ -203,6 +259,7 @@ def _recover_stalled_wandb_actor(
             train_job_id=int(run_id),
             lease_owner=lease_owner,
             error=error,
+            watchdog=watchdog,
         )
     finally:
         conn.close()
@@ -236,6 +293,85 @@ def _has_work() -> bool:
         return count_nonterminal_jobs(conn) > 0
     finally:
         conn.close()
+
+
+def _record_wandb_actor_failure(
+    conn,
+    *,
+    run_id: int,
+    error: str,
+    returncode: int,
+    retry_delay_seconds: float,
+    state: dict[str, object] | None,
+) -> None:
+    from rlab.job_queue import record_job_event
+
+    message = str(error)[:4000]
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET live_publication_status = CASE
+                      WHEN live_publication_status IN ('complete', 'disabled', 'failed')
+                      THEN live_publication_status ELSE 'pending' END,
+                    live_publication_error = %(error)s,
+                    live_publication_next_retry_at =
+                      clock_timestamp() + (%(retry_delay)s * interval '1 second')
+                WHERE id = %(run_id)s
+                  AND live_publication_status NOT IN ('complete', 'disabled', 'failed')
+                """,
+                {
+                    "run_id": int(run_id),
+                    "error": message,
+                    "retry_delay": max(float(retry_delay_seconds), 0.0),
+                },
+            )
+            record_job_event(
+                conn,
+                job_id=int(run_id),
+                event_type=(
+                    "publisher_actor_start_failed"
+                    if str((state or {}).get("phase") or "") == "startup_failed"
+                    else "publisher_actor_exited"
+                ),
+                message=message,
+                metadata={
+                    "returncode": int(returncode),
+                    "retry_delay_seconds": max(float(retry_delay_seconds), 0.0),
+                    "actor_phase": str((state or {}).get("phase") or "unknown"),
+                    "actor_stage": str((state or {}).get("stage") or "unknown"),
+                    "actor_source_fingerprint": str((state or {}).get("source_fingerprint") or ""),
+                    "expected_source_fingerprint": str(
+                        (state or {}).get("expected_source_fingerprint") or ""
+                    ),
+                },
+            )
+
+
+def _record_wandb_actor_recovered(conn, *, run_id: int) -> None:
+    from rlab.job_queue import record_job_event
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE train_jobs
+                SET live_publication_error = NULL,
+                    live_publication_next_retry_at = NULL
+                WHERE id = %(run_id)s
+                  AND live_publication_status NOT IN ('complete', 'disabled', 'failed')
+                  AND live_publication_error LIKE 'publisher actor%%'
+                """,
+                {"run_id": int(run_id)},
+            )
+            record_job_event(
+                conn,
+                job_id=int(run_id),
+                event_type="publisher_actor_recovered",
+                message="W&B publisher actor passed startup and source-fingerprint checks",
+                metadata={},
+            )
 
 
 def run_machine_controller(repo_root: Path, *, once: bool = False) -> int:
@@ -450,6 +586,9 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
 
     actors: dict[int, subprocess.Popen] = {}
     ownership_backoff: dict[int, float] = {}
+    actor_failures: dict[int, dict[str, object]] = {}
+    pending_failure_records: list[dict[str, object]] = []
+    pending_recoveries: set[int] = set()
     assertion = SleepAssertion()
     heartbeat, readiness = _controller_state_paths(repo_root, "wandb")
     source_fingerprint = controller_source_fingerprint(repo_root)
@@ -474,13 +613,70 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
         )
         while True:
             now = time.monotonic()
+            observed_source_fingerprint = controller_source_fingerprint(repo_root)
+            if observed_source_fingerprint != source_fingerprint:
+                _shutdown_wandb_actors(actors)
+                actors.clear()
+                error = (
+                    "W&B controller source changed while running; reload required: "
+                    f"started={source_fingerprint}, observed={observed_source_fingerprint}"
+                )
+                _write_controller_readiness(
+                    readiness,
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                )
+                _write_controller_heartbeat(
+                    heartbeat,
+                    controller="wandb",
+                    source_fingerprint=source_fingerprint,
+                    started_at=started_at,
+                    phase="error",
+                    last_success_at=last_success_at,
+                    last_error=error,
+                )
+                if once:
+                    raise RuntimeError(error)
+                time.sleep(backoff)
+                backoff = min(CONTROLLER_MAX_BACKOFF_SECONDS, backoff * 2)
+                continue
             for run_id, process in list(actors.items()):
                 returncode = process.poll()
-                if returncode is None and _wandb_actor_session_timed_out(
+                state = _wandb_actor_state(
                     repo_root,
                     run_id=run_id,
                     process=process,
+                )
+                if (
+                    returncode is None
+                    and state is not None
+                    and str(state.get("source_fingerprint") or "") != source_fingerprint
                 ):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=WANDB_ACTOR_SHUTDOWN_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1)
+                    returncode = process.returncode or 1
+                    state["phase"] = "startup_failed"
+                    state["stage"] = "source_fingerprint_mismatch"
+                    state["error"] = (
+                        "publisher actor source fingerprint mismatch: "
+                        f"manager={source_fingerprint}, "
+                        f"actor={state.get('source_fingerprint') or 'unknown'}"
+                    )
+                watchdog = (
+                    None
+                    if returncode is not None
+                    else _wandb_actor_watchdog_reason(
+                        repo_root,
+                        run_id=run_id,
+                        process=process,
+                    )
+                )
+                if returncode is None and watchdog is not None:
                     state = _wandb_actor_state(
                         repo_root,
                         run_id=run_id,
@@ -499,6 +695,7 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                             run_id=run_id,
                             process=process,
                             state=state,
+                            watchdog=watchdog,
                         )
                     except Exception as exc:
                         print(
@@ -509,13 +706,60 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                         )
                     continue
                 if returncode is None:
+                    if (
+                        run_id in actor_failures
+                        and state is not None
+                        and str(state.get("source_fingerprint") or "") == source_fingerprint
+                        and str(state.get("phase") or "") in {"idle", "publishing"}
+                    ):
+                        actor_failures.pop(run_id, None)
+                        pending_recoveries.add(run_id)
                     continue
                 actors.pop(run_id, None)
                 if returncode == WANDB_ACTOR_LOCK_BUSY_EXIT_CODE:
                     ownership_backoff[run_id] = now + WANDB_ACTOR_CONTENTION_BACKOFF_SECONDS
+                    continue
+                if returncode == 0:
+                    if run_id in actor_failures:
+                        actor_failures.pop(run_id, None)
+                        pending_recoveries.add(run_id)
+                    continue
+                previous_delay = float((actor_failures.get(run_id) or {}).get("delay") or 0.0)
+                delay = min(
+                    CONTROLLER_MAX_BACKOFF_SECONDS,
+                    max(
+                        WANDB_ACTOR_FAILURE_BACKOFF_SECONDS,
+                        previous_delay * 2,
+                    ),
+                )
+                error = str(
+                    (state or {}).get("error")
+                    or f"publisher actor exited unexpectedly: returncode={returncode}"
+                )[:4000]
+                actor_failures[run_id] = {
+                    "next_at": now + delay,
+                    "delay": delay,
+                    "error": error,
+                    "returncode": int(returncode),
+                }
+                pending_failure_records.append(
+                    {
+                        "run_id": int(run_id),
+                        "error": error,
+                        "returncode": int(returncode),
+                        "retry_delay_seconds": delay,
+                        "state": state,
+                    }
+                )
             try:
                 conn = connect(database_url(use_direct=True))
                 try:
+                    for failure in pending_failure_records:
+                        _record_wandb_actor_failure(conn, **failure)
+                    pending_failure_records.clear()
+                    for run_id in sorted(pending_recoveries):
+                        _record_wandb_actor_recovered(conn, run_id=run_id)
+                    pending_recoveries.clear()
                     schedule_artifact_publications(conn, limit=10)
                     run_ids = pending_metric_run_ids(conn, limit=10_000)
                 finally:
@@ -543,39 +787,98 @@ def run_wandb_manager(repo_root: Path, *, once: bool = False) -> int:
                     continue
                 if ownership_backoff.get(run_id, 0.0) > now:
                     continue
+                if float((actor_failures.get(run_id) or {}).get("next_at") or 0.0) > now:
+                    continue
                 ownership_backoff.pop(run_id, None)
-                actors[run_id] = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-m",
-                        "rlab.fleet_wandb_publisher",
-                        "--train-job-id",
-                        str(run_id),
-                    ],
-                    cwd=repo_root,
-                    stdin=subprocess.DEVNULL,
-                    close_fds=True,
+                try:
+                    actors[run_id] = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "rlab.fleet_wandb_publisher",
+                            "--train-job-id",
+                            str(run_id),
+                            "--expected-source-fingerprint",
+                            source_fingerprint,
+                        ],
+                        cwd=repo_root,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                    )
+                except OSError as exc:
+                    previous_delay = float((actor_failures.get(run_id) or {}).get("delay") or 0.0)
+                    delay = min(
+                        CONTROLLER_MAX_BACKOFF_SECONDS,
+                        max(
+                            WANDB_ACTOR_FAILURE_BACKOFF_SECONDS,
+                            previous_delay * 2,
+                        ),
+                    )
+                    error = (f"publisher actor process start failed: {type(exc).__name__}: {exc}")[
+                        :4000
+                    ]
+                    actor_failures[run_id] = {
+                        "next_at": now + delay,
+                        "delay": delay,
+                        "error": error,
+                        "returncode": 1,
+                    }
+                    pending_failure_records.append(
+                        {
+                            "run_id": int(run_id),
+                            "error": error,
+                            "returncode": 1,
+                            "retry_delay_seconds": delay,
+                            "state": None,
+                        }
+                    )
+            actor_starting = _wandb_actors_starting(
+                repo_root,
+                actors,
+                source_fingerprint=source_fingerprint,
+            )
+            phase = (
+                "error"
+                if actor_failures
+                else (
+                    "starting"
+                    if actor_starting
+                    else ("reconciling" if run_ids or actors else "idle")
                 )
+            )
+            actor_error = (
+                "; ".join(
+                    f"train/{run_id}: {failure.get('error')}"
+                    for run_id, failure in sorted(actor_failures.items())
+                )[:4000]
+                if actor_failures
+                else None
+            )
             _write_controller_readiness(
                 readiness,
                 source_fingerprint=source_fingerprint,
                 started_at=started_at,
-                phase="reconciling" if run_ids or actors else "idle",
+                phase=phase,
             )
-            last_success_at = time.time()
+            if not actor_failures:
+                last_success_at = time.time()
             _write_controller_heartbeat(
                 heartbeat,
                 controller="wandb",
                 source_fingerprint=source_fingerprint,
                 started_at=started_at,
-                phase="reconciling" if run_ids or actors else "idle",
+                phase=phase,
                 last_success_at=last_success_at,
-                last_error=None,
+                last_error=actor_error,
             )
             backoff = POLL_SECONDS
             if once:
-                for process in actors.values():
-                    process.wait(timeout=60)
+                for run_id, process in actors.items():
+                    returncode = process.wait(timeout=60)
+                    if returncode not in {0, WANDB_ACTOR_LOCK_BUSY_EXIT_CODE}:
+                        raise RuntimeError(
+                            f"W&B publisher actor train/{run_id} exited {returncode}"
+                        )
                 return 0
             time.sleep(POLL_SECONDS)
     finally:

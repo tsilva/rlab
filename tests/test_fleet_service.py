@@ -89,6 +89,160 @@ class FleetServiceTests(unittest.TestCase):
                 )
             )
 
+    def test_wandb_readiness_waits_for_matching_actor_startup_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = mock.Mock(pid=123)
+            process.poll.return_value = None
+            actors = {7: process}
+
+            self.assertTrue(
+                fleet_controllers._wandb_actors_starting(
+                    root,
+                    actors,
+                    source_fingerprint="source",
+                )
+            )
+            state_path = root / "logs" / "fleet" / "wandb-actors" / "train-7.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 123,
+                        "phase": "publishing",
+                        "source_fingerprint": "source",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                fleet_controllers._wandb_actors_starting(
+                    root,
+                    actors,
+                    source_fingerprint="source",
+                )
+            )
+
+    def test_wandb_close_uses_phase_specific_absolute_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_path = root / "logs" / "fleet" / "wandb-actors" / "train-7.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 123,
+                        "phase": "publishing",
+                        "session_started_at": 50.0,
+                        "progress_at": 390.0,
+                        "stage": "session_closing",
+                        "close_started_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            process = mock.Mock(pid=123)
+
+            self.assertFalse(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=400.0,
+                )
+            )
+            self.assertTrue(
+                fleet_controllers._wandb_actor_session_timed_out(
+                    root,
+                    run_id=7,
+                    process=process,
+                    now=401.0,
+                )
+            )
+
+    def test_wandb_readiness_rejects_error_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.make_paths(Path(temporary))
+            paths.readiness.parent.mkdir(parents=True)
+            paths.readiness.write_text(
+                json.dumps(
+                    {
+                        "pid": 123,
+                        "started_at": 200.0,
+                        "last_reconciled_at": 201.0,
+                        "source_fingerprint": "source",
+                        "protocol_version": fleet_service.CONTROL_PLANE_PROTOCOL_VERSION,
+                        "phase": "error",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(
+                fleet_service._wandb_readiness_matches(
+                    paths,
+                    source_fingerprint="source",
+                    started_after=199.0,
+                )
+            )
+
+    def test_actor_start_failure_is_durable_and_retryable(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        with mock.patch("rlab.job_queue.record_job_event") as event:
+            fleet_controllers._record_wandb_actor_failure(
+                conn,
+                run_id=7,
+                error="publisher actor startup failed: missing CA",
+                returncode=77,
+                retry_delay_seconds=20.0,
+                state={
+                    "phase": "startup_failed",
+                    "stage": "database_connect",
+                    "source_fingerprint": "source",
+                    "expected_source_fingerprint": "source",
+                },
+            )
+
+        update = cursor.execute.call_args.args
+        self.assertIn("live_publication_error", update[0])
+        self.assertEqual(update[1]["retry_delay"], 20.0)
+        event.assert_called_once()
+        self.assertEqual(
+            event.call_args.kwargs["event_type"],
+            "publisher_actor_start_failed",
+        )
+
+    def test_wandb_manager_refuses_source_drift_before_spawning_children(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            heartbeat = root / "heartbeat.json"
+            readiness = root / "readiness.json"
+            with (
+                mock.patch.object(
+                    fleet_controllers,
+                    "_controller_state_paths",
+                    return_value=(heartbeat, readiness),
+                ),
+                mock.patch.object(
+                    fleet_controllers,
+                    "controller_source_fingerprint",
+                    side_effect=["started", "changed"],
+                ),
+                mock.patch.object(fleet_controllers, "SleepAssertion"),
+                mock.patch.object(
+                    fleet_controllers.subprocess,
+                    "Popen",
+                ) as popen,
+                self.assertRaisesRegex(RuntimeError, "source changed"),
+            ):
+                fleet_controllers.run_wandb_manager(root, once=True)
+
+            saved = json.loads(heartbeat.read_text(encoding="utf-8"))
+
+        popen.assert_not_called()
+        self.assertEqual(saved["phase"], "error")
+
     def test_service_queue_connections_bypass_the_pool_for_session_locks(self) -> None:
         connection = object()
         with (

@@ -162,10 +162,13 @@ Promotion uses a monotonically increasing database revision and a separate recei
 prefer the highest visible promotion and safely fall back to the newest visible playable artifact.
 The publisher manager starts exactly one persistent isolated W&B SDK owner for each active run; its
 concurrency is independent of the 10-call Modal limit. The actor survives idle producer gaps,
-drains up to 100 ordered durable batches per claim, and rechecks remotely submitted cursors after
-five seconds. A publication session that remains inside the W&B SDK for more than two minutes is
-terminated by the manager and retried from durable state. A submitted cursor may remain pending for
-at most two minutes; a missing cursor on a
+drains up to 20 ordered durable batches per claim, and rechecks remotely submitted cursors after
+five seconds. A publishing stage that makes no progress for two minutes is terminated and retried
+from durable state. Session close emits a liveness heartbeat and has a separate five-minute
+absolute deadline so W&B's bounded internal retries are not mistaken for a dead actor. Manager and
+child source fingerprints must match, unexpected child exits make readiness unhealthy, and
+verified PostgreSQL TLS resolves an explicit root certificate or the pinned certifi bundle before
+connecting. A submitted cursor may remain pending for at most two minutes; a missing cursor on a
 terminal W&B run fails immediately. Finalizing runs exhaust publication after three failed passes,
 retain their mailbox payloads, and can re-arm only residual batches with
 `rlab experiment retry-finalization --run <run-id>`. That explicit replay is at-least-once because

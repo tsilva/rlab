@@ -56,6 +56,10 @@ from rlab.wandb_artifacts import (
 )
 
 
+class WandbArtifactAcknowledgmentTimeout(RuntimeError):
+    """W&B may have committed an artifact despite timing out its wait call."""
+
+
 class WandbProjector:
     """Own one resumed W&B run for both live outbox and final projections."""
 
@@ -238,7 +242,17 @@ def project_payload_to_run(
                 wait = getattr(logged_artifact, "wait", None)
                 if not callable(wait):
                     raise RuntimeError("W&B artifact handle does not support wait()")
-                wait(timeout=max(float(artifact_wait_timeout_seconds), 0.1))
+                try:
+                    wait(timeout=max(float(artifact_wait_timeout_seconds), 0.1))
+                except Exception as exc:
+                    from wandb.sdk.artifacts.exceptions import WaitTimeoutError
+
+                    if not isinstance(exc, WaitTimeoutError):
+                        raise
+                    raise WandbArtifactAcknowledgmentTimeout(
+                        "W&B artifact acknowledgment timed out; exact remote "
+                        "membership must be reconciled before replay"
+                    ) from exc
             return logged_artifact
     decision = dict(payload["decision"])
     purpose = str(payload["purpose"])

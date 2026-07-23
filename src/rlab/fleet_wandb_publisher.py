@@ -41,6 +41,7 @@ from rlab.policy_bundle import (
 )
 from rlab.wandb_artifacts import artifact_collection_name
 from rlab.wandb_publisher import (
+    WandbArtifactAcknowledgmentTimeout,
     WandbProjector,
     _publish_frame,
     project_payload_to_run,
@@ -67,6 +68,8 @@ FINALIZATION_RETRY_DELAYS_SECONDS = (15, 30, 60)
 ARTIFACT_VISIBILITY_RETRY_SECONDS = 5
 WANDB_API_TIMEOUT_SECONDS = 30
 ACTOR_LOCK_BUSY_EXIT_CODE = 75
+ACTOR_SOURCE_MISMATCH_EXIT_CODE = 76
+ACTOR_START_FAILED_EXIT_CODE = 77
 TERMINAL_WANDB_STATES = frozenset({"finished", "crashed", "failed", "killed"})
 SUPPORTED_FRAME_KINDS = {
     "history",
@@ -126,6 +129,9 @@ def _write_actor_state(
     claimed_batches: int = 0,
     completed_batches: int = 0,
     completed_frames: int = 0,
+    close_started_at: float | None = None,
+    expected_source_fingerprint: str | None = None,
+    error: str | None = None,
 ) -> None:
     global _ACTOR_SOURCE_FINGERPRINT
     from rlab.fleet_service import controller_source_fingerprint
@@ -139,7 +145,7 @@ def _write_actor_state(
     temporary.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "pid": os.getpid(),
                 "train_job_id": int(train_job_id),
                 "phase": phase,
@@ -150,8 +156,11 @@ def _write_actor_state(
                 "claimed_batches": max(0, int(claimed_batches)),
                 "completed_batches": max(0, int(completed_batches)),
                 "completed_frames": max(0, int(completed_frames)),
+                "close_started_at": close_started_at,
                 "updated_at": now,
                 "source_fingerprint": _ACTOR_SOURCE_FINGERPRINT,
+                "expected_source_fingerprint": expected_source_fingerprint,
+                "error": error,
             },
             sort_keys=True,
         )
@@ -198,18 +207,24 @@ def _hydrate_artifact_projection_payload(payload: dict[str, Any]) -> dict[str, A
                 raise ValueError("artifact checkpoint hash mismatch")
             with tempfile.TemporaryDirectory(prefix="rlab-artifact-verify-") as temporary:
                 root = Path(temporary)
-                encoded_model = json.dumps(
-                    document,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8") + b"\n"
-                encoded_recipe = json.dumps(
-                    recipe_document,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8") + b"\n"
+                encoded_model = (
+                    json.dumps(
+                        document,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                encoded_recipe = (
+                    json.dumps(
+                        recipe_document,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
                 (root / CHECKPOINT_FILENAME).write_bytes(model_bytes)
                 (root / MODEL_FILENAME).write_bytes(encoded_model)
                 (root / RECIPE_FILENAME).write_bytes(encoded_recipe)
@@ -627,7 +642,12 @@ def _wandb_finalization_failures(
     return failures
 
 
-def finalize_finishing_run(conn, train_job_id: int) -> bool:
+def finalize_finishing_run(
+    conn,
+    train_job_id: int,
+    *,
+    progress: Callable[..., None] | None = None,
+) -> bool:
     lock_key = f"rlab-wandb-run:{int(train_job_id)}"
     with conn.cursor() as cur:
         cur.execute(
@@ -695,11 +715,22 @@ def finalize_finishing_run(conn, train_job_id: int) -> bool:
             }
             for key, value in _canonical_goal_summary(run).items():
                 projector.run.summary[key] = value
-            projector.close()
+            _close_projector_with_heartbeat(
+                projector,
+                progress=progress,
+                claimed_batches=0,
+                completed_batches=0,
+                completed_frames=0,
+            )
             deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
                 remote = _wandb_api_run(train_config)
                 failures = _wandb_finalization_failures(run, remote, expected)
+                _report_actor_progress(
+                    progress,
+                    "finalization_verified",
+                    claimed_batches=0,
+                )
                 if not failures:
                     break
                 time.sleep(1.0)
@@ -889,6 +920,33 @@ def _artifact_visibility_is_propagating(
     return age < REMOTE_CONFIRM_TIMEOUT_SECONDS
 
 
+def _artifact_identity(payload: dict[str, Any]) -> tuple[int, int, str, int]:
+    return (
+        int(payload["train_job_id"]),
+        int(payload["ledger_id"]),
+        str(payload["publication_role"]),
+        int(payload.get("promotion_revision") or 0),
+    )
+
+
+def _mark_artifact_acknowledgment_pending(conn, batch_id: int) -> None:
+    """Persist the start of an indeterminate artifact-acknowledgment window."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE metric_batches
+                SET submitted_at = COALESCE(submitted_at, clock_timestamp()),
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_error = 'W&B artifact acknowledgment pending'
+                WHERE id = %(batch_id)s
+                """,
+                {"batch_id": int(batch_id)},
+            )
+
+
 def _raise_for_stalled_confirmations(
     batches: list[dict[str, Any]],
     remote: WandbPublicationState,
@@ -1047,6 +1105,7 @@ def _report_actor_progress(
     claimed_batches: int,
     completed_batches: int = 0,
     completed_frames: int = 0,
+    close_started_at: float | None = None,
 ) -> None:
     if progress is not None:
         progress(
@@ -1054,7 +1113,48 @@ def _report_actor_progress(
             claimed_batches=max(0, int(claimed_batches)),
             completed_batches=max(0, int(completed_batches)),
             completed_frames=max(0, int(completed_frames)),
+            close_started_at=close_started_at,
         )
+
+
+def _close_projector_with_heartbeat(
+    projector: WandbProjector,
+    *,
+    progress: Callable[..., None] | None,
+    claimed_batches: int,
+    completed_batches: int,
+    completed_frames: int,
+    heartbeat_seconds: float = 10.0,
+) -> None:
+    close_started_at = time.time()
+    stopped = threading.Event()
+
+    def report_close_progress() -> None:
+        _report_actor_progress(
+            progress,
+            "session_closing",
+            claimed_batches=claimed_batches,
+            completed_batches=completed_batches,
+            completed_frames=completed_frames,
+            close_started_at=close_started_at,
+        )
+
+    def heartbeat() -> None:
+        while not stopped.wait(max(float(heartbeat_seconds), 0.1)):
+            report_close_progress()
+
+    report_close_progress()
+    thread = threading.Thread(
+        target=heartbeat,
+        name="rlab-wandb-close-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        projector.close()
+    finally:
+        stopped.set()
+        thread.join(timeout=1.0)
 
 
 def publish_claimed_run(
@@ -1107,25 +1207,60 @@ def publish_claimed_run(
     durable_floor = _durable_cursor_floor(conn, int(run["id"]))
     confirmed, awaiting_confirmation, unpublished = _partition_batches(batches, remote)
     if confirmed:
+        artifact_batches: list[dict[str, Any]] = []
+        cursor_only_batches: list[dict[str, Any]] = []
+        for batch in confirmed:
+            if any(
+                str(frame.get("kind") or "") == "projection"
+                and str(frame.get("payload", {}).get("artifact_publication_schema") or "")
+                in {"v2", "v3"}
+                for frame in decoded[int(batch["id"])]
+            ):
+                artifact_batches.append(batch)
+            else:
+                cursor_only_batches.append(batch)
+        if cursor_only_batches:
+            _record_committed_effects(
+                conn,
+                run=run,
+                batches=cursor_only_batches,
+                decoded=decoded,
+                wandb_url=None,
+            )
+            _report_actor_progress(
+                progress,
+                "cursor_confirmations_committed",
+                claimed_batches=len(batches),
+                completed_batches=len(cursor_only_batches),
+                completed_frames=decoded_frames,
+            )
         artifact_payloads = [
             _hydrate_receipt_payload(
                 _repair_artifact_projection_identity(dict(frame["payload"]), train_config)
             )
-            for batch in confirmed
+            for batch in artifact_batches
             for frame in decoded[int(batch["id"])]
             if str(frame.get("kind") or "") == "projection"
             and str(frame.get("payload", {}).get("artifact_publication_schema") or "")
             in {"v2", "v3"}
         ]
-        artifact_receipts = (
-            _artifact_receipts_from_remote(_wandb_api_run(train_config), artifact_payloads)
-            if artifact_payloads
-            else []
-        )
+        artifact_receipts = []
+        if artifact_payloads:
+            artifact_receipts = _artifact_receipts_from_remote(
+                _wandb_api_run(train_config),
+                artifact_payloads,
+            )
+            _report_actor_progress(
+                progress,
+                "artifact_membership_verified",
+                claimed_batches=len(batches),
+                completed_batches=len(cursor_only_batches),
+                completed_frames=decoded_frames,
+            )
         _record_committed_effects(
             conn,
             run=run,
-            batches=confirmed,
+            batches=artifact_batches,
             decoded=decoded,
             wandb_url=None,
             artifact_receipts=artifact_receipts,
@@ -1151,6 +1286,33 @@ def publish_claimed_run(
         _raise_for_stalled_confirmations(awaiting_confirmation, remote_state)
         mark_submitted_batches(conn, awaiting_confirmation)
     wandb_url: str | None = None
+    adopted_artifacts: set[tuple[int, int, str, int]] = set()
+    artifact_api_run = None
+    for batch in unpublished:
+        for frame in decoded[int(batch["id"])]:
+            if str(frame.get("kind") or "") != "projection":
+                continue
+            raw_payload = dict(frame["payload"])
+            publication_schema = str(raw_payload.get("artifact_publication_schema") or "")
+            if publication_schema not in {"v2", "v3"} or pristine:
+                continue
+            payload = _repair_artifact_projection_identity(raw_payload, train_config)
+            payload = _hydrate_artifact_projection_payload(payload)
+            if artifact_api_run is None:
+                artifact_api_run = _wandb_api_run(train_config)
+            try:
+                _artifact_receipts_from_remote(artifact_api_run, [payload])
+            except WandbArtifactVisibilityError:
+                if _artifact_visibility_is_propagating([batch]):
+                    raise
+            else:
+                adopted_artifacts.add(_artifact_identity(payload))
+            _report_actor_progress(
+                progress,
+                "artifact_membership_inspected",
+                claimed_batches=len(batches),
+                completed_frames=decoded_frames,
+            )
     if unpublished or reassert_cursor_floor:
         session_step_max = remote_state.step_max
         expected: dict[str, int] = {}
@@ -1177,7 +1339,6 @@ def publish_claimed_run(
                 if args is not None
                 else None
             )
-            artifact_api_run = None
             projected_batches = 0
             projected_frames = 0
             for batch in unpublished:
@@ -1193,26 +1354,23 @@ def publish_claimed_run(
                     if kind == "projection":
                         payload = _repair_artifact_projection_identity(payload, train_config)
                         payload = _hydrate_artifact_projection_payload(payload)
-                        publication_schema = str(
-                            payload.get("artifact_publication_schema") or ""
+                        publication_schema = str(payload.get("artifact_publication_schema") or "")
+                        adopted = (
+                            publication_schema in {"v2", "v3"}
+                            and _artifact_identity(payload) in adopted_artifacts
                         )
-                        adopted = False
-                        if publication_schema in {"v2", "v3"} and not pristine:
-                            if artifact_api_run is None:
-                                artifact_api_run = _wandb_api_run(train_config)
-                            try:
-                                _artifact_receipts_from_remote(artifact_api_run, [payload])
-                            except WandbArtifactVisibilityError:
-                                pass
-                            else:
-                                adopted = True
                         if not adopted:
-                            project_payload_to_run(
-                                projector.run,
-                                payload,
-                                allow_artifact_references=True,
-                                artifact_wait_timeout_seconds=WANDB_API_TIMEOUT_SECONDS,
-                            )
+                            try:
+                                project_payload_to_run(
+                                    projector.run,
+                                    payload,
+                                    allow_artifact_references=True,
+                                    artifact_wait_timeout_seconds=WANDB_API_TIMEOUT_SECONDS,
+                                )
+                            except WandbArtifactAcknowledgmentTimeout as exc:
+                                exc.batch_id = int(batch["id"])
+                                exc.artifact_identity = _artifact_identity(payload)
+                                raise
                     else:
                         assert args is not None and config is not None
                         _publish_frame(
@@ -1248,14 +1406,13 @@ def publish_claimed_run(
                     summary_step = int(session_step_max)
                 projector.run.summary["global_step"] = {"max": summary_step}
         finally:
-            _report_actor_progress(
-                progress,
-                "session_closing",
+            _close_projector_with_heartbeat(
+                projector,
+                progress=progress,
                 claimed_batches=len(batches),
                 completed_batches=len(unpublished),
                 completed_frames=decoded_frames,
             )
-            projector.close()
         _report_actor_progress(
             progress,
             "session_closed",
@@ -1308,11 +1465,30 @@ def _drain_claim(
     try:
         return publish_claimed_run(conn, run, batches, progress=progress)
     except Exception as exc:
+        acknowledgment_pending = isinstance(exc, WandbArtifactAcknowledgmentTimeout)
+        acknowledgment_batch = next(
+            (batch for batch in batches if int(batch["id"]) == int(getattr(exc, "batch_id", -1))),
+            None,
+        )
+        acknowledgment_propagating = bool(
+            acknowledgment_pending
+            and acknowledgment_batch is not None
+            and (
+                _submitted_at(acknowledgment_batch.get("submitted_at")) is None
+                or _artifact_visibility_is_propagating([acknowledgment_batch])
+            )
+        )
+        if acknowledgment_batch is not None:
+            _mark_artifact_acknowledgment_pending(
+                conn,
+                int(acknowledgment_batch["id"]),
+            )
         release_metric_batch_claims(conn, batches, error=repr(exc))
         current_attempts = int(run.get("live_publication_attempts") or 0)
-        visibility_propagating = isinstance(
-            exc, WandbArtifactVisibilityError
-        ) and _artifact_visibility_is_propagating(batches)
+        visibility_propagating = acknowledgment_propagating or (
+            isinstance(exc, WandbArtifactVisibilityError)
+            and _artifact_visibility_is_propagating(batches)
+        )
         attempts = current_attempts if visibility_propagating else current_attempts + 1
         invalid_batch = isinstance(exc, InvalidTelemetryBatchError)
         run_status = str(run.get("status") or "")
@@ -1341,7 +1517,14 @@ def _drain_claim(
         )
         error = (
             str(exc)
-            if isinstance(exc, (WandbCursorConfirmationError, WandbArtifactVisibilityError))
+            if isinstance(
+                exc,
+                (
+                    WandbCursorConfirmationError,
+                    WandbArtifactVisibilityError,
+                    WandbArtifactAcknowledgmentTimeout,
+                ),
+            )
             else repr(exc)
         )[:4000]
         with conn:
@@ -1378,6 +1561,7 @@ def _drain_claim(
                         "terminal": terminal,
                         "run_status": str(run.get("status") or ""),
                         "visibility_propagating": visibility_propagating,
+                        "artifact_acknowledgment_pending": acknowledgment_pending,
                     },
                 )
         raise
@@ -1391,6 +1575,7 @@ def recover_stalled_actor_claim(
     train_job_id: int,
     lease_owner: str,
     error: str,
+    watchdog: str = "no_progress",
 ) -> int:
     released = release_metric_batch_claims_by_owner(
         conn,
@@ -1447,13 +1632,17 @@ def recover_stalled_actor_claim(
                 event_type=(
                     "live_publication_failed"
                     if exhausted
-                    else "live_publication_retry"
+                    else (
+                        "wandb_session_close_timeout"
+                        if watchdog == "close_timeout"
+                        else "live_publication_retry"
+                    )
                 ),
                 message=str(error)[:4000],
                 metadata={
                     "attempts": attempts,
                     "terminal": False,
-                    "watchdog": "no_progress",
+                    "watchdog": watchdog,
                     "released_batches": released,
                     "lease_owner": lease_owner,
                 },
@@ -1481,7 +1670,13 @@ def drain_once(
     if claim is None:
         if train_job_id is not None:
             _reconcile_terminal_artifact_publication(conn, int(train_job_id))
-            return int(finalize_finishing_run(conn, int(train_job_id)))
+            return int(
+                finalize_finishing_run(
+                    conn,
+                    int(train_job_id),
+                    progress=progress,
+                )
+            )
         return 0
     run, batches = claim
     _report_actor_progress(
@@ -1518,6 +1713,7 @@ def run_publisher_actor(
     poll_seconds: float = ACTOR_POLL_SECONDS,
     once: bool = False,
     stop_requested: Any | None = None,
+    expected_source_fingerprint: str | None = None,
 ) -> int:
     """Own one run until publication completes, surviving idle producer gaps.
 
@@ -1543,6 +1739,7 @@ def run_publisher_actor(
             int(train_job_id),
             phase="idle",
             session_started_at=None,
+            expected_source_fingerprint=expected_source_fingerprint,
         )
         while True:
             if callable(stop_requested) and stop_requested():
@@ -1558,6 +1755,7 @@ def run_publisher_actor(
                 claimed_batches: int,
                 completed_batches: int = 0,
                 completed_frames: int = 0,
+                close_started_at: float | None = None,
             ) -> None:
                 _write_actor_state(
                     int(train_job_id),
@@ -1569,6 +1767,8 @@ def run_publisher_actor(
                     claimed_batches=claimed_batches,
                     completed_batches=completed_batches,
                     completed_frames=completed_frames,
+                    close_started_at=close_started_at,
+                    expected_source_fingerprint=expected_source_fingerprint,
                 )
 
             _write_actor_state(
@@ -1578,6 +1778,7 @@ def run_publisher_actor(
                 lease_owner=lease_owner,
                 progress_at=session_started_at,
                 stage="claiming",
+                expected_source_fingerprint=expected_source_fingerprint,
             )
             try:
                 published += drain_once(
@@ -1592,6 +1793,7 @@ def run_publisher_actor(
                     int(train_job_id),
                     phase="idle",
                     session_started_at=None,
+                    expected_source_fingerprint=expected_source_fingerprint,
                 )
             done = _publisher_actor_done(conn, int(train_job_id))
             # Do not leave a read transaction open while an active producer is idle.
@@ -1666,6 +1868,9 @@ def drain_cycle_parallel(
         }
     started = 0
     failed = 0
+    from rlab.fleet_service import controller_source_fingerprint
+
+    source_fingerprint = controller_source_fingerprint(repo_root)
     for train_job_id in run_ids:
         try:
             subprocess.Popen(
@@ -1677,6 +1882,8 @@ def drain_cycle_parallel(
                     str(max(1, int(limit))),
                     "--train-job-id",
                     str(train_job_id),
+                    "--expected-source-fingerprint",
+                    source_fingerprint,
                 ],
                 cwd=repo_root,
                 stdin=subprocess.DEVNULL,
@@ -1702,19 +1909,55 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH_LIMIT)
     parser.add_argument("--train-job-id", type=int)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--expected-source-fingerprint")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from rlab.fleet_service import controller_source_fingerprint, redact
     from rlab.job_queue import connect, database_url
+
+    expected_source_fingerprint = str(args.expected_source_fingerprint or "").strip()
+    observed_source_fingerprint = controller_source_fingerprint(Path.cwd())
+    if expected_source_fingerprint and observed_source_fingerprint != expected_source_fingerprint:
+        error = (
+            "publisher actor source fingerprint mismatch: "
+            f"expected={expected_source_fingerprint}, "
+            f"observed={observed_source_fingerprint}"
+        )
+        if args.train_job_id is not None:
+            _write_actor_state(
+                int(args.train_job_id),
+                phase="startup_failed",
+                session_started_at=None,
+                stage="source_fingerprint_mismatch",
+                expected_source_fingerprint=expected_source_fingerprint,
+                error=error,
+            )
+        print(error, file=sys.stderr)
+        return ACTOR_SOURCE_MISMATCH_EXIT_CODE
 
     # Publishing holds a session-scoped per-run lock for the whole W&B
     # session, so it must not use a PgBouncer-backed connection.
     stop_event = threading.Event()
     if args.train_job_id is not None and not args.once:
         signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_event.set())
-    conn = connect(database_url(use_direct=True))
+    try:
+        conn = connect(database_url(use_direct=True))
+    except Exception as exc:
+        error = str(redact(f"publisher actor startup failed: {type(exc).__name__}: {exc}"))[:4000]
+        if args.train_job_id is not None:
+            _write_actor_state(
+                int(args.train_job_id),
+                phase="startup_failed",
+                session_started_at=None,
+                stage="database_connect",
+                expected_source_fingerprint=expected_source_fingerprint or None,
+                error=error,
+            )
+        print(error, file=sys.stderr)
+        return ACTOR_START_FAILED_EXIT_CODE
     try:
         try:
             if args.train_job_id is not None:
@@ -1724,6 +1967,7 @@ def main(argv: list[str] | None = None) -> int:
                     limit=max(1, args.limit),
                     once=bool(args.once),
                     stop_requested=stop_event.is_set,
+                    expected_source_fingerprint=expected_source_fingerprint or None,
                 )
             else:
                 published = drain_once(conn, limit=max(1, args.limit))

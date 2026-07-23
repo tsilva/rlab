@@ -473,6 +473,33 @@ class RunObservabilityTests(unittest.TestCase):
             "wandb_cursor_confirmation_stalled",
         )
 
+    def test_active_publisher_lease_is_excluded_from_cursor_stall_query(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {}
+        cursor.fetchall.return_value = []
+
+        run_observability._diagnostics(conn, 63)
+
+        statement = cursor.execute.call_args_list[0].args[0]
+        self.assertIn("b.lease_owner IS NOT NULL", statement)
+        self.assertIn("b.lease_expires_at > clock_timestamp()", statement)
+
+    def test_actor_start_failure_has_distinct_incident(self) -> None:
+        incidents = run_observability.current_incidents(
+            {
+                "id": 63,
+                "status": "running",
+                "eval_status": "active",
+                "live_publication_status": "pending",
+                "live_publication_error": ("publisher actor startup failed: missing PostgreSQL CA"),
+                "train_config": {"wandb": True},
+            },
+            {},
+        )
+
+        self.assertEqual(incidents[0]["category"], "publisher_unavailable")
+
     def test_budget_block_is_attention_once_and_not_a_potential_bug(self) -> None:
         active = {
             **self.projection(status="succeeded", outcome="accepted"),

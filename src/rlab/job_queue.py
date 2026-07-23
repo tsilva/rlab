@@ -1898,6 +1898,8 @@ def normalize_machine(value: str | None) -> str:
 
 
 def connect(url: str):
+    from rlab.database_tls import postgres_ssl_options
+
     options: dict[str, object] = {
         "connect_timeout": 10,
         "keepalives": 1,
@@ -1906,11 +1908,8 @@ def connect(url: str):
         "keepalives_count": 3,
         "tcp_user_timeout": 30000,
         "cursor_factory": psycopg2.extras.RealDictCursor,
-        "sslmode": str(os.environ.get("RLAB_DATABASE_SSLMODE") or "verify-full"),
+        **postgres_ssl_options(),
     }
-    root_cert = str(os.environ.get("PGSSLROOTCERT") or "").strip()
-    if root_cert:
-        options["sslrootcert"] = root_cert
     return psycopg2.connect(
         url,
         **options,

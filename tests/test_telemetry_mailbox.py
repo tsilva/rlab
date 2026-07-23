@@ -223,7 +223,10 @@ class TelemetryBatchTests(unittest.TestCase):
         lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
         self.assertEqual(lease_update.args[1]["delay"], 5.0)
         self.assertFalse(lease_update.args[1]["refresh_submitted_at"])
-        self.assertIn("ELSE COALESCE(submitted_at, now()) END", lease_update.args[0])
+        self.assertIn(
+            "ELSE COALESCE(submitted_at, clock_timestamp()) END",
+            lease_update.args[0],
+        )
 
     def test_wandb_confirmation_retains_canonical_source(self) -> None:
         conn = mock.MagicMock()
