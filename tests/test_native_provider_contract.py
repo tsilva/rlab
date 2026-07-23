@@ -355,6 +355,27 @@ class BreakoutTurboProviderTests(unittest.TestCase):
             self.assertIsNone(kernel._observation_mask)
             self.assertEqual(kernel.action_space, gym.spaces.Discrete(4))
             self.assertTrue(kernel.observation_encoding_is_view)
+
+            life_loss_kernel = _bound_task_kernel(
+                self.config(
+                    task={
+                        "id": "identity",
+                        "action": {"set": "native"},
+                        "signals": {"lives": "lives"},
+                        "events": {
+                            "life_loss": {
+                                "signal": "lives",
+                                "operation": "decrease",
+                            }
+                        },
+                        "termination": {"failure": ["life_loss"]},
+                        "reward": {"reward_mode": "native"},
+                    }
+                ),
+                descriptor,
+                2,
+            )
+            self.assertEqual(life_loss_kernel.event_names, ("life_loss",))
         finally:
             env.close()
 

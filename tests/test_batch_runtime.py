@@ -990,6 +990,76 @@ class RlabVecEnvTests(unittest.TestCase):
         fifth = runtime.step(np.zeros((2, 3), dtype=np.int8))
         np.testing.assert_array_equal(fifth.terminated, [True, False])
 
+    def test_identity_decrease_failure_resets_only_the_life_lost_lane(self):
+        provider = DeterministicNativeVectorProvider()
+        descriptor = descriptor_for(provider)
+        kernel = IdentityTaskDefinition(
+            signals={"lives": "lives"},
+            events={
+                "life_loss": {
+                    "signal": "lives",
+                    "operation": "decrease",
+                }
+            },
+            termination={"failure": ["life_loss"]},
+        ).bind(descriptor, provider.num_envs)
+        runtime = BatchRuntime(provider, descriptor, kernel, run_seed=11)
+        runtime.reset()
+
+        provider.queue_step(lives=[2, 3], rewards=[0.0, 0.0])
+        first = runtime.step(np.zeros((2, 3), dtype=np.int8))
+
+        np.testing.assert_array_equal(first.terminated, [True, False])
+        np.testing.assert_array_equal(first.truncated, [False, False])
+        np.testing.assert_array_equal(provider.reset_calls[-1]["mask"], [True, False])
+        record = next(
+            record for record in runtime.drain_records() if isinstance(record, EpisodeRecord)
+        )
+        self.assertEqual(record.events, ("life_loss",))
+        self.assertEqual(record.outcome, Outcome.FAILURE)
+
+        provider.queue_step(lives=[3, 2], rewards=[0.0, 0.0])
+        second = runtime.step(np.zeros((2, 3), dtype=np.int8))
+
+        np.testing.assert_array_equal(second.terminated, [False, True])
+        np.testing.assert_array_equal(provider.reset_calls[-1]["mask"], [False, True])
+
+    def test_identity_decrease_arms_on_first_step_when_reset_signal_is_unavailable(self):
+        provider = DeterministicNativeVectorProvider()
+        descriptor = ProviderDescriptor(
+            provider_id="step-only",
+            native_observation_space=provider.single_observation_space,
+            native_action_space=provider.single_action_space,
+            signal_schema={
+                "lives": SignalSpec(
+                    "lives",
+                    np.int64,
+                    available_on_reset=False,
+                    available_on_step=True,
+                )
+            },
+        )
+        kernel = IdentityTaskDefinition(
+            signals={"lives": "lives"},
+            events={
+                "life_loss": {
+                    "signal": "lives",
+                    "operation": "decrease",
+                }
+            },
+            termination={"failure": ["life_loss"]},
+        ).bind(descriptor, provider.num_envs)
+        runtime = BatchRuntime(provider, descriptor, kernel, run_seed=11)
+        runtime.reset()
+
+        provider.queue_step(lives=[2, 3], rewards=[0.0, 0.0])
+        first = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        self.assertFalse(done_flags(first).any())
+
+        provider.queue_step(lives=[1, 3], rewards=[0.0, 0.0])
+        second = runtime.step(np.zeros((2, 3), dtype=np.int8))
+        np.testing.assert_array_equal(second.terminated, [True, False])
+
     def test_sb3_facade_returns_same_step_reset_observation_and_drains_records(self):
         provider = DeterministicNativeVectorProvider()
         descriptor = descriptor_for(provider)

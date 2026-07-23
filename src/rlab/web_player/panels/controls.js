@@ -18,6 +18,12 @@ export function mount({ definition, services }) {
           <button data-command="continue-event" class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
           <button data-command="continue-done" class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
         </div>
+        <div class="playback-fps">
+          <label for="playback-fps">Play FPS</label>
+          <input id="playback-fps" data-fps type="number" min="0" step="1" value="0" inputmode="decimal" aria-describedby="playback-fps-hint">
+          <button data-command="set-fps" class="quiet icon-only" aria-label="Apply play FPS" title="Apply play FPS"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
+        </div>
+        <p id="playback-fps-hint" class="control-hint">0 runs playback uncapped</p>
       </section>
       <details class="control-section session-settings">
         <summary>Session settings</summary>
@@ -25,10 +31,6 @@ export function mount({ definition, services }) {
           <div class="control-field-row">
             <label>Seed <input data-seed inputmode="numeric"></label>
             <button data-command="reset" class="icon-only" aria-label="Reset with this seed" title="Reset with this seed"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg></button>
-          </div>
-          <div class="control-field-row">
-            <label>FPS <input data-fps type="number" min="0" step="1" value="0"></label>
-            <button data-command="set-fps" class="quiet icon-only" aria-label="Apply FPS limit" title="Apply FPS limit"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
           </div>
         </div>
       </details>
@@ -52,7 +54,11 @@ export function mount({ definition, services }) {
   const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
   const commands = {
     pause: () => services.command("pause"),
-    play: () => services.command("play", { driver: services.getState().snapshot?.driver || "policy" }),
+    play: () => services.command("play", {
+      driver: services.getState().liveSnapshot?.driver
+        || services.getState().snapshot?.driver
+        || "policy",
+    }),
     step: () => services.command("step", { count: 1 }),
     "step-ten": () => services.command("step", { count: 10 }),
     "continue-event": () => services.command("continue", { target: "any" }),
@@ -67,6 +73,11 @@ export function mount({ definition, services }) {
   element.querySelectorAll("[data-command]").forEach((button) => {
     button.addEventListener("click", () => commands[button.dataset.command]());
   });
+  fps.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commands["set-fps"]();
+  });
   acquire.addEventListener("click", () => services.send({ type: "acquire_control" }));
 
   const updateControl = () => {
@@ -79,6 +90,7 @@ export function mount({ definition, services }) {
   const renderPlaybackToggle = (runState) => {
     const running = ["playing", "stepping", "continuing"].includes(runState);
     const command = running ? "pause" : "play";
+    if (playbackToggle.dataset.command === command) return;
     const label = running ? "Pause" : "Play";
     playbackToggle.dataset.command = command;
     playbackToggle.classList.toggle("primary", !running);
@@ -92,7 +104,8 @@ export function mount({ definition, services }) {
   return {
     element,
     updateControl,
-    render(snapshot) {
+    render(snapshot, view = {}) {
+      if (view.inspection) snapshot = services.getState().liveSnapshot || snapshot;
       if (!snapshot) { updateControl(); return; }
       const session = snapshot.session || {};
       seed.value = text(session.seed, "");
@@ -100,9 +113,14 @@ export function mount({ definition, services }) {
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
       renderPlaybackToggle(snapshot.run_state);
       const recording = snapshot.mode === "recording";
+      fps.min = recording ? "1" : "0";
+      element.querySelector("#playback-fps-hint").textContent = recording
+        ? "Recording FPS must be at least 1"
+        : "0 runs playback uncapped";
       ["step", "step-ten", "continue-event", "continue-done", "reset", "policy", "inspect"].forEach((name) => {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;
       });
+      element.querySelector(".session-settings").hidden = recording;
       seed.closest("label").hidden = recording;
       const human = element.querySelector('[data-command="human"]');
       const humanLabel = recording ? "Human controls" : "Take human control";

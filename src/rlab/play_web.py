@@ -41,6 +41,15 @@ INPUT_HEARTBEAT_SECONDS = 0.25
 LAST_CLIENT_GRACE_SECONDS = 30.0
 
 
+def _session_environment_id(session: Any, args: argparse.Namespace) -> str | None:
+    config = getattr(session, "config", None)
+    game = config.get("game") if isinstance(config, Mapping) else getattr(config, "game", None)
+    for value in (game, getattr(session, "environment_id", None), getattr(args, "env_id", None)):
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
 def _json_value(value: Any, *, depth: int = 0) -> Any:
     if depth >= MAX_JSON_DEPTH:
         return f"<{type(value).__name__}>"
@@ -326,6 +335,7 @@ class WebPlaybackRunner:
         self._input_updated_at = 0.0
         self._input_focused = False
         self._status_message: str | None = None
+        self.environment_id = _session_environment_id(session, args)
 
     @property
     def stopped(self) -> bool:
@@ -402,6 +412,7 @@ class WebPlaybackRunner:
                 "max_x_pos": self.session.max_x_pos,
                 "action_names": list(self.session.action_names),
                 "event_names": event_names,
+                "env_id": self.environment_id,
                 "target_fps": self.target_fps,
                 "episodes_limit": int(self.args.episodes),
                 "history_size": len(self.history),
@@ -616,6 +627,7 @@ class HumanRecordingRunner:
         self.run_state = "paused"
         self.target_fps = max(float(getattr(args, "fps", None) or session.fps), 1.0)
         self._status_message = "Focus the game view, then press Play to begin recording"
+        self.environment_id = _session_environment_id(session, args)
 
     @property
     def stopped(self) -> bool:
@@ -724,6 +736,7 @@ class HumanRecordingRunner:
                     "max_x_pos": 0,
                     "action_names": [],
                     "event_names": [],
+                    "env_id": self.environment_id,
                     "target_fps": self.target_fps,
                     "episodes_limit": int(getattr(self.args, "episodes", None) or 0),
                     "history_size": len(self.history),

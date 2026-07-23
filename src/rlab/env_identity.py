@@ -215,13 +215,16 @@ def validate_task_config(task: Mapping[str, Any], *, label: str = "task") -> Non
             if not isinstance(value, int | float) or isinstance(value, bool):
                 raise ValueError(f"{label}.events.{name}.value must be a number")
     if task_id == "identity":
+        supported_operations = {"decrease", "equals_for"}
         unsupported_events = sorted(
-            name for name, rule in events.items() if rule.get("operation") != "equals_for"
+            name
+            for name, rule in events.items()
+            if rule.get("operation") not in supported_operations
         )
         if unsupported_events:
             raise ValueError(
-                f"{label} identity events require operation='equals_for': "
-                + ", ".join(unsupported_events)
+                f"{label} identity events support only operations "
+                "'decrease' and 'equals_for': " + ", ".join(unsupported_events)
             )
     if task_id == "mario":
         expected_events = {

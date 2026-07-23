@@ -33,7 +33,7 @@ function defaultLayout() {
   return {
     version: pairedWorkspace ? 2 : 1,
     revision: 0,
-    name: "Mario debug",
+    name: "Default layout",
     panels: defaultPanelLayout({ paired: pairedWorkspace }),
   };
 }
@@ -254,7 +254,9 @@ function requiredFrameKind(snapshot) {
 
 function applySnapshot(snapshot) {
   state.pendingSnapshot = null;
+  const previousEnvironmentId = state.liveSnapshot?.session?.env_id;
   state.liveSnapshot = snapshot;
+  if (snapshot.session?.env_id !== previousEnvironmentId) updateLayoutTitle();
   state.snapshots.set(Number(snapshot.sequence), snapshot);
   while (state.snapshots.size > 1024) state.snapshots.delete(state.snapshots.keys().next().value);
   state.hasControl = Boolean(snapshot.control?.has_control);
@@ -262,6 +264,7 @@ function applySnapshot(snapshot) {
     state.snapshot = snapshot;
     renderSnapshot();
   } else {
+    panelRuntime.invoke("controls", "render", snapshot);
     updateControlState();
     renderWorkspaceStatus();
     renderTimeline();
@@ -480,11 +483,13 @@ function persistLayout({ announce = true } = {}) {
 }
 
 function updateLayoutTitle() {
+  const environmentId = String(state.liveSnapshot?.session?.env_id || "").trim();
+  const environmentTitle = environmentId || "Environment";
   const title = panelName
-    ? `${PANEL_LABELS[panelName] || panelName} window`
+    ? `${environmentTitle} · ${PANEL_LABELS[panelName] || panelName}`
     : pairedWorkspace && state.windowId === STATS_WINDOW_ID
-      ? `${state.layout.name} stats`
-      : state.layout.name;
+      ? `${environmentTitle} · Stats`
+      : environmentTitle;
   $("#page-title").textContent = title;
   $("#layout-name-input").value = state.layout.name;
   document.title = `${title} · rlab player`;

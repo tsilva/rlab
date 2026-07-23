@@ -22,6 +22,7 @@ from rlab.play_web import (
     HumanRecordingRunner,
     PlaybackCommand,
     PlaybackWebServer,
+    _session_environment_id,
     run_web_playback,
     transition_payload,
 )
@@ -29,6 +30,7 @@ from rlab.play_web import (
 
 class FakeHumanSession:
     fps = 60.0
+    environment_id = "Game-v0"
 
     def action_from_labels(self, labels):
         return tuple(sorted(labels))
@@ -44,6 +46,15 @@ def human_args(**overrides):
     }
     values.update(overrides)
     return argparse.Namespace(**values)
+
+
+def test_playback_environment_title_uses_configured_env_id() -> None:
+    session = argparse.Namespace(
+        config={"game": "BreakoutTurbo-v0"},
+        environment_id="recording-fallback",
+    )
+
+    assert _session_environment_id(session, human_args()) == "BreakoutTurbo-v0"
 
 
 def test_human_dataset_recording_defaults_to_web_dashboard() -> None:
@@ -198,6 +209,7 @@ def test_human_recording_runner_requires_fresh_focus_and_streams_transition_stat
     assert action == ("A", "RIGHT")
     assert snapshot["mode"] == "recording"
     assert snapshot["interactive"] is True
+    assert snapshot["session"]["env_id"] == "Game-v0"
     assert snapshot["transition"]["reward"]["return"] == 2.5
     assert snapshot["transition"]["signals"] == {"x_pos": 11.0}
     assert runner.history_payload()["points"][0]["action_source"] == "human"
@@ -362,8 +374,12 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     game_markup = (panel_root / "game.js").read_text(encoding="utf-8")
     controls_markup = (panel_root / "controls.js").read_text(encoding="utf-8")
     reward_markup = (panel_root / "reward.js").read_text(encoding="utf-8")
+    signals_markup = (panel_root / "signals.js").read_text(encoding="utf-8")
     raw_markup = (panel_root / "raw.js").read_text(encoding="utf-8")
     assert '<main id="dashboard" class="dashboard"></main>' in markup
+    assert '<h1 id="page-title">Environment</h1>' in markup
+    assert 'value="Default layout"' in markup
+    assert "Mario debug" not in markup
     assert 'data-panel="' not in markup
     assert 'className: "control-panel transport"' in controls_markup
     assert "ENVIRONMENT" not in game_markup
@@ -377,10 +393,20 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert controls_markup.count("data-playback-toggle class=") == 1
     assert 'data-command="play" data-playback-toggle class="primary icon-only"' in controls_markup
     assert 'data-command="pause" class="icon-only"' not in controls_markup
+    assert "services.getState().liveSnapshot?.driver" in controls_markup
+    assert "if (view.inspection) snapshot = services.getState().liveSnapshot || snapshot;" in controls_markup
     assert 'playbackToggle.dataset.command = command' in controls_markup
+    assert "if (playbackToggle.dataset.command === command) return;" in controls_markup
     assert 'playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`)' in controls_markup
     assert "repeat(5, minmax(0, 1fr))" in styles
     assert 'data-command="step-ten" class="icon-only" aria-label="Step 10 times"' in controls_markup
+    assert '<label for="playback-fps">Play FPS</label>' in controls_markup
+    assert 'id="playback-fps" data-fps type="number" min="0"' in controls_markup
+    assert 'data-command="set-fps"' in controls_markup
+    assert 'fps.addEventListener("keydown"' in controls_markup
+    assert 'commands["set-fps"]();' in controls_markup
+    assert 'element.querySelector(".session-settings").hidden = recording' in controls_markup
+    assert ".playback-fps" in styles
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert "ti-device-desktop-share" in icons
     assert "separate scale" not in markup
@@ -408,6 +434,10 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "function formatAxisValue(" in shared
     assert "context.fillText(labels[index], plot.left - 6, y)" in shared
     assert "const scale = lineChartScale([0, max])" in shared
+    assert 'class="signal-toolbar-label">Chart signal</span>' in signals_markup
+    assert "grid-template-columns: max-content minmax(0, 1fr)" in styles
+    assert ".signal-toolbar select" in styles
+    assert "text-overflow: ellipsis" in styles
     for token_class in (
         "json-key",
         "json-string",
@@ -441,6 +471,10 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "async ensureMounted" in runtime
     assert "this.unmount(name)" in runtime
     assert "new PanelRuntime" in script
+    assert 'panelRuntime.invoke("controls", "render", snapshot)' in script
+    assert 'name: "Default layout"' in script
+    assert "state.liveSnapshot?.session?.env_id" in script
+    assert "Mario debug" not in script
     assert 'new URLSearchParams(location.search).get("workspace") === "paired"' in script
     assert '"rlab.player.workspace.layout.v2"' in script
     assert "pairedWorkspace && closedWindow === STATS_WINDOW_ID" in script

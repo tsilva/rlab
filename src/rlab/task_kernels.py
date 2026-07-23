@@ -215,6 +215,44 @@ def _identity_equals_for_event_kernel(
 
 
 @njit(cache=True, nogil=True)
+def _identity_decrease_event_kernel(
+    values,
+    previous_values,
+    previous_valid,
+    transition_sources,
+    transition_targets,
+    event_bit,
+    event_outcome,
+    terminated,
+    truncated,
+    outcomes,
+    event_bits,
+):
+    for lane in range(values.shape[0]):
+        current_value = values[lane]
+        transition_sources[lane] = previous_values[lane] if previous_valid[lane] else current_value
+        transition_targets[lane] = current_value
+        decreased = previous_valid[lane] and current_value < previous_values[lane]
+        previous_values[lane] = current_value
+        previous_valid[lane] = True
+        if not decreased:
+            continue
+
+        event_bits[lane] |= event_bit
+        if event_outcome == 2:
+            terminated[lane] = True
+            truncated[lane] = False
+            outcomes[lane] = 2
+        elif event_outcome == 1 and outcomes[lane] != 2:
+            terminated[lane] = True
+            truncated[lane] = False
+            outcomes[lane] = 1
+        elif event_outcome == 3 and not terminated[lane]:
+            truncated[lane] = True
+            outcomes[lane] = 3
+
+
+@njit(cache=True, nogil=True)
 def _mario_step_kernel(
     x_hi,
     x_lo,
@@ -636,13 +674,22 @@ class SignalBindings:
             raise ValueError(f"semantic signal {semantic_name!r} must be scalar per lane")
         return values
 
+    def scalar_dtype(self, semantic_name: str) -> np.dtype:
+        source = self.source(semantic_name)
+        names = (source,) if isinstance(source, str) else source
+        if len(names) != 1 or self._specs[names[0]].shape:
+            raise ValueError(f"semantic signal {semantic_name!r} must be scalar per lane")
+        return self._specs[names[0]].dtype
+
+
 @dataclass(frozen=True)
-class IdentityEqualsForEvent:
+class IdentityEvent:
     name: str
     signal: str
-    value: int | float
-    steps: int
+    operation: str
     outcome: Outcome = Outcome.NEUTRAL
+    value: int | float | None = None
+    steps: int = 0
 
 
 class IdentityTaskDefinition:
@@ -683,17 +730,32 @@ class IdentityTaskDefinition:
                 if event_name in event_outcomes:
                     raise ValueError(f"identity event {event_name!r} has multiple outcomes")
                 event_outcomes[event_name] = outcome
-        compiled_events: list[IdentityEqualsForEvent] = []
+        compiled_events: list[IdentityEvent] = []
         for name, rule in raw_events.items():
-            if rule.get("operation") != "equals_for":
-                raise ValueError(f"identity event {name!r} requires operation='equals_for'")
+            operation = str(rule.get("operation", ""))
+            if operation not in {"decrease", "equals_for"}:
+                raise ValueError(
+                    f"identity event {name!r} supports only operations 'decrease' and 'equals_for'"
+                )
+            if operation == "equals_for":
+                value = rule.get("value")
+                steps = rule.get("steps")
+                if not isinstance(value, int | float) or isinstance(value, bool):
+                    raise ValueError(
+                        f"identity equals_for event {name!r} requires a numeric value"
+                    )
+                if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
+                    raise ValueError(
+                        f"identity equals_for event {name!r} requires positive steps"
+                    )
             compiled_events.append(
-                IdentityEqualsForEvent(
+                IdentityEvent(
                     name=str(name),
                     signal=str(rule["signal"]),
-                    value=rule["value"],
-                    steps=int(rule["steps"]),
+                    operation=operation,
                     outcome=event_outcomes.get(str(name), Outcome.NEUTRAL),
+                    value=rule.get("value"),
+                    steps=int(rule.get("steps", 0)),
                 )
             )
         self.events = tuple(compiled_events)
@@ -726,7 +788,7 @@ class IdentityTaskKernel:
         max_episode_steps: int = 0,
         action_values: Sequence[Any] | None = None,
         signals: Mapping[str, SignalSource] | None = None,
-        events: Sequence[IdentityEqualsForEvent] = (),
+        events: Sequence[IdentityEvent] = (),
     ):
         self.num_envs = int(num_envs)
         self._native_observation_space = descriptor.native_observation_space
@@ -766,6 +828,36 @@ class IdentityTaskKernel:
         self._event_consecutive_steps = tuple(
             np.zeros(self.num_envs, dtype=np.int64) for _event in self._event_configs
         )
+        event_dtypes = tuple(
+            self._signal_bindings.scalar_dtype(event.signal) for event in self._event_configs
+        )
+        for event, dtype in zip(self._event_configs, event_dtypes, strict=True):
+            if event.operation == "decrease" and (
+                not np.issubdtype(dtype, np.number) or np.issubdtype(dtype, np.bool_)
+            ):
+                raise ValueError(
+                    f"identity decrease event {event.name!r} requires a numeric signal"
+                )
+        self._event_previous_values = tuple(
+            np.empty(self.num_envs, dtype=dtype) for dtype in event_dtypes
+        )
+        self._event_previous_valid = tuple(
+            np.zeros(self.num_envs, dtype=np.bool_) for _event in self._event_configs
+        )
+        self._event_transition_sources = tuple(
+            np.empty(self.num_envs, dtype=dtype) for dtype in event_dtypes
+        )
+        self._event_transition_targets = tuple(
+            np.empty(self.num_envs, dtype=dtype) for dtype in event_dtypes
+        )
+        self._event_transitions = {
+            event.name: (
+                self._event_transition_sources[index],
+                self._event_transition_targets[index],
+            )
+            for index, event in enumerate(self._event_configs)
+            if event.operation == "decrease"
+        }
         self._observation_mask = observation_mask
         self._observation_mask_fill = int(observation_mask_fill)
         self._observation_source_shape = observation_source_shape
@@ -847,18 +939,33 @@ class IdentityTaskKernel:
         if self._signal_bindings is not None:
             for index, event in enumerate(self._event_configs):
                 values = self._signal_bindings.scalar(event.signal, signals)
-                _identity_equals_for_event_kernel(
-                    values,
-                    event.value,
-                    event.steps,
-                    self._event_consecutive_steps[index],
-                    np.uint64(1 << index),
-                    int(event.outcome),
-                    self._terminated,
-                    self._truncated,
-                    self._outcomes,
-                    self._events,
-                )
+                if event.operation == "equals_for":
+                    _identity_equals_for_event_kernel(
+                        values,
+                        event.value,
+                        event.steps,
+                        self._event_consecutive_steps[index],
+                        np.uint64(1 << index),
+                        int(event.outcome),
+                        self._terminated,
+                        self._truncated,
+                        self._outcomes,
+                        self._events,
+                    )
+                else:
+                    _identity_decrease_event_kernel(
+                        values,
+                        self._event_previous_values[index],
+                        self._event_previous_valid[index],
+                        self._event_transition_sources[index],
+                        self._event_transition_targets[index],
+                        np.uint64(1 << index),
+                        int(event.outcome),
+                        self._terminated,
+                        self._truncated,
+                        self._outcomes,
+                        self._events,
+                    )
         return TaskStep(
             self._rewards,
             self._terminated,
@@ -866,6 +973,7 @@ class IdentityTaskKernel:
             self._outcomes,
             self._events,
             {},
+            self._event_transitions,
         )
 
     def on_reset(
@@ -877,14 +985,26 @@ class IdentityTaskKernel:
         del reset_observations
         mask = np.asarray(mask, dtype=bool)
         if self._signal_bindings is not None:
-            for event, consecutive_steps in zip(
-                self._event_configs,
-                self._event_consecutive_steps,
-                strict=True,
+            for index, (event, consecutive_steps) in enumerate(
+                zip(
+                    self._event_configs,
+                    self._event_consecutive_steps,
+                    strict=True,
+                )
             ):
-                if self._signal_bindings.available_on_reset(event.signal):
+                available_on_reset = self._signal_bindings.available_on_reset(event.signal)
+                reset_values = (
                     self._signal_bindings.scalar(event.signal, reset_signals, mask=mask)
+                    if available_on_reset
+                    else None
+                )
                 consecutive_steps[mask] = 0
+                if event.operation == "decrease":
+                    if reset_values is None:
+                        self._event_previous_valid[index][mask] = False
+                    else:
+                        self._event_previous_values[index][mask] = reset_values[mask]
+                        self._event_previous_valid[index][mask] = True
         self._episode_steps[mask] = 0
 
 

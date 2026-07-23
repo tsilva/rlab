@@ -8,7 +8,10 @@ export function mount({ definition }) {
     label: definition.label,
     body: `
       <div class="signal-toolbar">
-        <label>Chart signal <select data-select><option value="">Choose a signal</option></select></label>
+        <label>
+          <span class="signal-toolbar-label">Chart signal</span>
+          <select data-select><option value="">Choose a signal</option></select>
+        </label>
       </div>
       <canvas data-chart class="chart" aria-label="Selected signal history"></canvas>
       <div class="table-scroll"><table><tbody data-body></tbody></table></div>
