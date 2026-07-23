@@ -1804,12 +1804,49 @@ def run_publisher_actor(
                 return published
             time.sleep(max(float(poll_seconds), 0.01))
     finally:
+        # A publisher failure may leave the connection in an aborted transaction.
+        # Advisory locks are session scoped, so rollback first and then release the
+        # lock explicitly without masking the original publication exception.
+        conn.rollback()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_advisory_unlock(hashtextextended(%(key)s, 0))",
                 {"key": actor_key},
             )
         conn.rollback()
+
+
+def _validate_publisher_schema(conn) -> None:
+    required_columns = {
+        ("metric_batches", "wandb_confirmed_at"),
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND (table_name, column_name) IN (
+                SELECT * FROM unnest(%(tables)s::text[], %(columns)s::text[])
+              )
+            """,
+            {
+                "tables": [table for table, _column in sorted(required_columns)],
+                "columns": [column for _table, column in sorted(required_columns)],
+            },
+        )
+        present = {
+            (str(row["table_name"]), str(row["column_name"]))
+            for row in cur.fetchall()
+        }
+    conn.rollback()
+    missing = sorted(required_columns - present)
+    if missing:
+        rendered = ", ".join(f"{table}.{column}" for table, column in missing)
+        raise RuntimeError(
+            "publisher database schema is incompatible; missing "
+            f"{rendered}; run `rlab fleet queue setup` while the fleet is quiescent"
+        )
 
 
 def drain_cycle(conn, *, max_runs: int = 10, limit: int = 20) -> dict[str, int]:
@@ -1959,6 +1996,25 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return ACTOR_START_FAILED_EXIT_CODE
     try:
+        try:
+            _validate_publisher_schema(conn)
+        except Exception as exc:
+            error = str(
+                redact(
+                    f"publisher actor startup failed: {type(exc).__name__}: {exc}"
+                )
+            )[:4000]
+            if args.train_job_id is not None:
+                _write_actor_state(
+                    int(args.train_job_id),
+                    phase="startup_failed",
+                    session_started_at=None,
+                    stage="database_schema",
+                    expected_source_fingerprint=expected_source_fingerprint or None,
+                    error=error,
+                )
+            print(error, file=sys.stderr)
+            return ACTOR_START_FAILED_EXIT_CODE
         try:
             if args.train_job_id is not None:
                 published = run_publisher_actor(

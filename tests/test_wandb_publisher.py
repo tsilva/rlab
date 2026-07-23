@@ -552,6 +552,37 @@ class WandbPublisherTests(unittest.TestCase):
         )
         self.assertIn("missing CA", write_state.call_args.kwargs["error"])
 
+    def test_actor_schema_start_failure_writes_state_and_returns_error(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+        with (
+            mock.patch(
+                "rlab.fleet_service.controller_source_fingerprint",
+                return_value="source",
+            ),
+            mock.patch("rlab.fleet_wandb_publisher._write_actor_state") as write_state,
+            mock.patch("rlab.job_queue.database_url", return_value="database"),
+            mock.patch("rlab.job_queue.connect", return_value=conn),
+        ):
+            code = fleet_wandb_publisher.main(
+                [
+                    "--train-job-id",
+                    "41",
+                    "--expected-source-fingerprint",
+                    "source",
+                ]
+            )
+
+        self.assertEqual(
+            code,
+            fleet_wandb_publisher.ACTOR_START_FAILED_EXIT_CODE,
+        )
+        self.assertEqual(write_state.call_args.kwargs["phase"], "startup_failed")
+        self.assertEqual(write_state.call_args.kwargs["stage"], "database_schema")
+        self.assertIn("metric_batches.wandb_confirmed_at", write_state.call_args.kwargs["error"])
+        conn.close.assert_called_once_with()
+
     def test_stalled_actor_releases_only_its_claim_and_records_retry(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value

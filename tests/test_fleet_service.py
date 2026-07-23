@@ -429,8 +429,15 @@ class FleetServiceTests(unittest.TestCase):
                 count_nonterminal_jobs=lambda _root: 0,
                 runner=runner,
             )
+            payload = plistlib.loads(item.plist.read_bytes())
 
         self.assertTrue(reloaded)
+        arguments = payload["ProgramArguments"]
+        protocol_index = arguments.index("--protocol-version")
+        self.assertEqual(
+            int(arguments[protocol_index + 1]),
+            fleet_service.CONTROL_PLANE_PROTOCOL_VERSION,
+        )
         target = f"gui/{os.getuid()}/{item.label}"
         self.assertIn(["launchctl", "bootout", target], commands)
         self.assertIn(
@@ -523,6 +530,34 @@ class FleetServiceTests(unittest.TestCase):
 
         self.assertEqual([item.pid for item in direct], [43])
         self.assertEqual([item.pgid for item in orphan], [42])
+
+    def test_publisher_validation_ignores_actor_that_exits_after_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+
+            def runner(argv, **_kwargs):
+                if argv[:2] == ["ps", "-axo"]:
+                    return completed(
+                        argv,
+                        stdout=(
+                            "43 42 42 python -m rlab.fleet_wandb_publisher "
+                            "--train-job-id 67\n"
+                        ),
+                    )
+                if argv[:2] == ["ps", "-p"]:
+                    return completed(argv, returncode=1)
+                if "-d" in argv and "cwd" in argv:
+                    return completed(argv, returncode=1)
+                return completed(argv)
+
+            self.assertEqual(
+                fleet_service._publisher_processes(
+                    root,
+                    expected_process_groups=(42,),
+                    runner=runner,
+                ),
+                [],
+            )
 
     def test_launch_preflight_accepts_compatible_controllers_with_active_jobs(self) -> None:
         status = {

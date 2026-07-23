@@ -1236,6 +1236,18 @@ def _publisher_processes(
                 f"refusing to stop W&B publisher pid {pid}: invalid train job id"
             ) from exc
         cwd = _process_cwd(pid, runner=runner)
+        if cwd is None:
+            still_running = runner(
+                ["ps", "-p", str(pid), "-o", "pid="],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if still_running.returncode or not (still_running.stdout or "").strip():
+                # The actor exited after the initial process snapshot. It no
+                # longer needs cleanup and must not turn a safe reload into a
+                # false verification failure.
+                continue
         if cwd != repo_root.resolve():
             raise RuntimeError(
                 f"refusing to stop unverified W&B publisher pid {pid}: cwd={cwd}"
@@ -1358,6 +1370,15 @@ def reload_controller_service(
     item = controller_service_paths(paths, controller)
     if not item.plist.is_file():
         raise FileNotFoundError(f"fleet controller is not installed: {item.plist}")
+    old_plist = item.plist.read_bytes()
+    replacement = render_controller_launch_agent_plist(paths, controller)
+    candidate = item.plist.with_name(f".{item.plist.name}.candidate")
+    _atomic_write(candidate, replacement)
+    try:
+        _validate_candidate_plist(candidate, runner=runner)
+    except Exception:
+        candidate.unlink(missing_ok=True)
+        raise
     was_loaded = service_is_loaded(item.label, runner=runner)
     captured: list[_PublisherProcess] = []
     manager_pid: int | None = None
@@ -1371,39 +1392,58 @@ def reload_controller_service(
             runner=runner,
         )
         item.readiness.unlink(missing_ok=True)
-    if was_loaded:
-        runner(
-            ["launchctl", "bootout", _target(item.label)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    if controller == "wandb":
-        _stop_legacy_wandb_publishers(
-            paths.repo_root,
-            captured,
-            expected_process_groups=(manager_pid,) if manager_pid is not None else (),
-            runner=runner,
-        )
-    started_after = time.time()
-    _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
-    expected_fingerprint = controller_source_fingerprint(paths.repo_root)
-    deadline = time.monotonic() + CONTROLLER_READINESS_TIMEOUT_SECONDS
-    while not service_is_running(item.label, runner=runner):
-        if time.monotonic() >= deadline:
-            raise RuntimeError(f"reloaded {controller} controller did not start")
-        time.sleep(0.1)
-    if controller == "wandb":
-        while not _wandb_readiness_matches(
-            item,
-            source_fingerprint=expected_fingerprint,
-            started_after=started_after,
-        ):
+    replaced = False
+    try:
+        if was_loaded:
+            runner(
+                ["launchctl", "bootout", _target(item.label)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        if controller == "wandb":
+            _stop_legacy_wandb_publishers(
+                paths.repo_root,
+                captured,
+                expected_process_groups=(manager_pid,) if manager_pid is not None else (),
+                runner=runner,
+            )
+        os.replace(candidate, item.plist)
+        replaced = True
+        started_after = time.time()
+        _bootstrap_launch_agent(item, runner=runner, retry_busy=was_loaded)
+        expected_fingerprint = controller_source_fingerprint(paths.repo_root)
+        deadline = time.monotonic() + CONTROLLER_READINESS_TIMEOUT_SECONDS
+        while not service_is_running(item.label, runner=runner):
             if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    "reloaded W&B controller did not publish matching readiness evidence"
-                )
+                raise RuntimeError(f"reloaded {controller} controller did not start")
             time.sleep(0.1)
+        if controller == "wandb":
+            while not _wandb_readiness_matches(
+                item,
+                source_fingerprint=expected_fingerprint,
+                started_after=started_after,
+            ):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "reloaded W&B controller did not publish matching readiness evidence"
+                    )
+                time.sleep(0.1)
+    except Exception:
+        if service_is_loaded(item.label, runner=runner):
+            runner(
+                ["launchctl", "bootout", _target(item.label)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        if replaced:
+            _atomic_write(item.plist, old_plist)
+        if was_loaded:
+            _bootstrap_launch_agent(item, runner=runner, retry_busy=True)
+        raise
+    finally:
+        candidate.unlink(missing_ok=True)
     return True
 
 
