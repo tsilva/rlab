@@ -431,6 +431,7 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert (root / "index.html").is_file()
     assert (root / "styles.css").is_file()
     assert (root / "tabler-icons.svg").is_file()
+    assert (root / "tabler-chevron-down.svg").is_file()
     panel_root = root / "panels"
     panel_names = {
         "game",
@@ -490,11 +491,28 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only"' in controls_markup
     assert 'data-command="pause" class="icon-only"' not in controls_markup
     assert "services.getState().liveSnapshot?.driver" in controls_markup
+    assert "services.playFromCurrentPosition(" in controls_markup
+    assert "services.pauseCurrentPlayback()" in controls_markup
+    assert "services.canReplayInspection()" in controls_markup
+    assert "state.replayingInspection" in controls_markup
+    assert "Replay from the selected step" in controls_markup
+    assert "function canReplayInspection()" in script
+    assert 'state.liveSnapshot?.run_state !== "paused"' in script
+    assert "function scheduleInspectionReplay()" in script
+    assert "const reachedEpisodeEnd" in script
+    assert "if (nextSequence === state.timelineSequences.at(-1)) returnToLive();" in script
+    assert "stopInspectionReplay({ render: false });" in script
     assert "if (view.inspection) snapshot = services.getState().liveSnapshot || snapshot;" in controls_markup
     assert 'playbackToggle.dataset.command = command' in controls_markup
     assert "if (playbackToggle.dataset.command === command) return;" in controls_markup
     assert 'playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`)' in controls_markup
-    assert "repeat(5, minmax(0, 1fr))" in styles
+    assert "repeat(4, minmax(0, 1fr))" in styles
+    assert "Continue to episode boundary" not in controls_markup
+    assert 'data-command="continue-done"' not in controls_markup
+    assert "End session" not in controls_markup
+    assert 'data-command="stop"' not in controls_markup
+    assert "ti-flag-3" not in icons
+    assert "ti-power" not in icons
     assert 'data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times"' in controls_markup
     assert 'data-command="next-episode" data-next-episode' in controls_markup
     assert 'services.command("next_episode")' in controls_markup
@@ -559,6 +577,9 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'class="signal-toolbar-label">Chart signal</span>' in signals_markup
     assert "grid-template-columns: max-content minmax(0, 1fr)" in styles
     assert ".signal-toolbar select" in styles
+    assert 'background-image: url("/assets/tabler-chevron-down.svg")' in styles
+    assert "background-position: right .85rem center" in styles
+    assert "padding-right: 2.2rem" in styles
     assert "text-overflow: ellipsis" in styles
     for token_class in (
         "json-key",
@@ -576,6 +597,8 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'type: "panel-drag-move"' in script
     assert 'type: "panel-drag-target"' in script
     assert 'type: "panel-drag-end"' in script
+    assert "state.dragTarget?.window === state.windowId" in script
+    assert "state.dragTarget.move >= message.move" in script
     assert "setPointerCapture" in script
     assert "clientPointFromScreen" in script
     assert "preview.style.width" in script

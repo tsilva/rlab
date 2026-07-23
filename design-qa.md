@@ -42,3 +42,62 @@
 - [x] Verify both directions in the actual browser-rendered player.
 
 final result: passed
+
+---
+
+# Dropdown chevron spacing design QA
+
+**Comparison target**
+
+- Source visual truth: `/var/folders/wz/x29jb7_x5rdc_5dcjr4qnhg00000gn/T/codex-clipboard-62cbebaa-13f5-49ae-8190-0bbc4c43ca2a.png`
+- Browser-rendered implementation: `/Users/tsilva/.codex/visualizations/2026/07/23/019f8f0d-dd60-79a3-9345-8650130dbcfd/rlab-select-chevron-after-matched.png`
+- Focused side-by-side comparison: `/Users/tsilva/.codex/visualizations/2026/07/23/019f8f0d-dd60-79a3-9345-8650130dbcfd/rlab-select-chevron-comparison.png`
+- Viewport: 1265 × 712 CSS px at 1× density.
+- Source pixels: 586 × 286. Implementation pixels: 1265 × 712; the Live Signals region was normalized to 586 × 286 for the focused comparison.
+- State: dark theme, paired Stats workspace, empty Live Signals history, signal dropdown showing “Choose a signal.”
+
+**Full-view comparison evidence**
+
+- The implementation retains the existing panel grid, typography, borders, colors, control height, and empty-state content. The only visible control change is the dropdown chevron placement and its reserved text space.
+
+**Focused comparison evidence**
+
+- The matched-width select measures 509 CSS px versus approximately 512 px in the source.
+- The chevron is positioned 13.6 CSS px from the right edge, with 35.2 CSS px reserved for the icon and clearance. It no longer crowds the border or overlaps long option text.
+
+**Required fidelity surfaces**
+
+- Fonts and typography: unchanged from the existing player; label and option hierarchy remain consistent.
+- Spacing and layout rhythm: corrected right-edge chevron inset; field dimensions and surrounding grid spacing remain unchanged.
+- Colors and visual tokens: existing dark surface, border, and foreground tokens are preserved.
+- Image quality and asset fidelity: the chevron uses a crisp Tabler icon asset matching the player’s existing icon family.
+- Copy and content: unchanged.
+
+**Findings**
+
+- No remaining actionable P0, P1, or P2 mismatch for the requested dropdown-arrow spacing.
+
+**Comparison history**
+
+- Initial P2: the native select arrow sat too close to the right border.
+- Fix: replaced the browser-native arrow with the project’s Tabler chevron, inset it by 0.85rem, and reserved 2.2rem of right padding.
+- Post-fix evidence: the focused side-by-side comparison shows clear right-edge breathing room at the matched field width.
+
+**Interaction and runtime verification**
+
+- Playback Sampling successfully changed from stochastic to deterministic after the custom select styling was applied.
+- Browser console errors: none.
+- Automated player tests: 13 passed.
+
+**Implementation checklist**
+
+- [x] Apply shared select styling.
+- [x] Preserve dropdown interaction.
+- [x] Verify Live Signals at the reference field width.
+- [x] Check the browser console and player test suite.
+
+**Follow-up polish**
+
+- None required for this change.
+
+final result: passed

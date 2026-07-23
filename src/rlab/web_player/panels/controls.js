@@ -16,7 +16,6 @@ export function mount({ definition, services }) {
           <button data-command="step" data-requires-active-episode class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
           <button data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
           <button data-command="continue-event" data-requires-active-episode class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
-          <button data-command="continue-done" data-requires-active-episode class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
           <button data-command="next-episode" data-next-episode class="primary button-with-icon control-wide" aria-label="Play next episode" title="Start the prepared next episode" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play next episode</span></button>
         </div>
         <details class="playback-settings">
@@ -58,7 +57,6 @@ export function mount({ definition, services }) {
           <button data-command="inspect" class="quiet icon-only" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg></button>
         </div>
       </section>
-      <button data-command="stop" class="danger quiet icon-only control-end" aria-label="End session" title="End session"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-power"></use></svg></button>
     `,
   });
 
@@ -72,16 +70,15 @@ export function mount({ definition, services }) {
   const driverSwitch = element.querySelector(".driver-switch");
   const driverOptions = [...element.querySelectorAll("[data-driver-option]")];
   const commands = {
-    pause: () => services.command("pause"),
-    play: () => services.command("play", {
-      driver: services.getState().liveSnapshot?.driver
+    pause: () => services.pauseCurrentPlayback(),
+    play: () => services.playFromCurrentPosition(
+      services.getState().liveSnapshot?.driver
         || services.getState().snapshot?.driver
         || "policy",
-    }),
+    ),
     step: () => services.command("step", { count: 1 }),
     "step-ten": () => services.command("step", { count: 10 }),
     "continue-event": () => services.command("continue", { target: "any" }),
-    "continue-done": () => services.command("continue", { target: "done" }),
     "next-episode": () => services.command("next_episode"),
     reset: () => services.command("reset", { seed: seed.value }),
     "set-fps": () => services.command("set_fps", { fps: Number(fps.value) }),
@@ -89,7 +86,6 @@ export function mount({ definition, services }) {
     policy: () => services.command("set_driver", { driver: "policy" }),
     human: () => services.command("set_driver", { driver: "human" }),
     inspect: () => services.command("inspect_policy"),
-    stop: () => services.command("stop"),
   };
   element.querySelectorAll("[data-command]").forEach((button) => {
     button.addEventListener("click", () => commands[button.dataset.command]());
@@ -110,21 +106,29 @@ export function mount({ definition, services }) {
       .forEach((button) => {
         button.disabled = !state.hasControl || Boolean(session.awaiting_next_episode);
       });
+    playbackToggle.disabled = !state.hasControl || (
+      Boolean(session.awaiting_next_episode)
+      && !state.replayingInspection
+      && !services.canReplayInspection()
+    );
     nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode;
     sampling.disabled = !state.hasControl;
   };
 
   const renderPlaybackToggle = (runState) => {
-    const running = ["playing", "stepping", "continuing"].includes(runState);
+    const running = services.getState().replayingInspection
+      || ["playing", "stepping", "continuing"].includes(runState);
     const command = running ? "pause" : "play";
+    playbackToggle.title = running
+      ? "Pause after the current transition"
+      : (services.canReplayInspection()
+        ? "Replay from the selected step"
+        : "Play with the selected driver");
     if (playbackToggle.dataset.command === command) return;
     const label = running ? "Pause" : "Play";
     playbackToggle.dataset.command = command;
     playbackToggle.classList.toggle("primary", !running);
     playbackToggle.setAttribute("aria-label", label);
-    playbackToggle.title = running
-      ? "Pause after the current transition"
-      : "Play with the selected driver";
     playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`);
   };
 
@@ -159,7 +163,7 @@ export function mount({ definition, services }) {
       element.querySelector("#playback-fps-hint").textContent = recording
         ? "Recording FPS must be at least 1"
         : "0 runs playback uncapped";
-      ["step", "step-ten", "continue-event", "continue-done", "reset", "policy", "inspect"].forEach((name) => {
+      ["step", "step-ten", "continue-event", "reset", "policy", "inspect"].forEach((name) => {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;
       });
       element.querySelector(".session-settings").hidden = recording;

@@ -47,6 +47,8 @@ const state = {
   snapshots: new Map(),
   frameBlobs: new Map([[FRAME_GAME, new Map()], [FRAME_OBSERVATION, new Map()]]),
   inspectionSequence: null,
+  replayingInspection: false,
+  inspectionReplayTimer: null,
   timelineSequences: [],
   history: [],
   hasControl: false,
@@ -293,6 +295,78 @@ function command(name, payload = {}) {
     payload,
     expected_revision: state.liveSnapshot?.revision ?? null,
   });
+}
+
+function inspectionEpisodeSequences() {
+  if (state.inspectionSequence === null) return [];
+  const selected = state.snapshots.get(Number(state.inspectionSequence));
+  const episode = selected?.transition?.episode ?? selected?.session?.episode;
+  if (episode === undefined || episode === null) return [];
+  return state.timelineSequences.filter(
+    (sequence) => {
+      const snapshot = state.snapshots.get(Number(sequence));
+      return (snapshot?.transition?.episode ?? snapshot?.session?.episode) === episode;
+    },
+  );
+}
+
+function canReplayInspection() {
+  if (state.liveSnapshot?.run_state !== "paused") return false;
+  const sequences = inspectionEpisodeSequences();
+  const selectedIndex = sequences.indexOf(Number(state.inspectionSequence));
+  return selectedIndex >= 0 && selectedIndex < sequences.length - 1;
+}
+
+function stopInspectionReplay({ render = true } = {}) {
+  if (state.inspectionReplayTimer !== null) {
+    window.clearTimeout(state.inspectionReplayTimer);
+    state.inspectionReplayTimer = null;
+  }
+  const wasReplaying = state.replayingInspection;
+  state.replayingInspection = false;
+  if (render && wasReplaying && state.snapshot) renderSnapshot();
+}
+
+function inspectionReplayDelay() {
+  const fps = Number(state.liveSnapshot?.session?.target_fps || 0);
+  return fps > 0 ? 1000 / fps : 0;
+}
+
+function scheduleInspectionReplay() {
+  state.inspectionReplayTimer = window.setTimeout(() => {
+    state.inspectionReplayTimer = null;
+    if (!state.replayingInspection) return;
+    const sequences = inspectionEpisodeSequences();
+    const selectedIndex = sequences.indexOf(Number(state.inspectionSequence));
+    const nextSequence = sequences[selectedIndex + 1];
+    if (selectedIndex < 0 || nextSequence === undefined) {
+      stopInspectionReplay();
+      return;
+    }
+    const reachedEpisodeEnd = selectedIndex + 1 === sequences.length - 1;
+    if (reachedEpisodeEnd) state.replayingInspection = false;
+    if (nextSequence === state.timelineSequences.at(-1)) returnToLive();
+    else inspectSequence(nextSequence);
+    if (!reachedEpisodeEnd) scheduleInspectionReplay();
+  }, inspectionReplayDelay());
+}
+
+function playFromCurrentPosition(driver) {
+  if (canReplayInspection()) {
+    state.replayingInspection = true;
+    renderSnapshot();
+    scheduleInspectionReplay();
+    return;
+  }
+  command("play", { driver });
+}
+
+function pauseCurrentPlayback() {
+  if (state.replayingInspection) {
+    stopInspectionReplay();
+    return;
+  }
+  command("pause");
 }
 
 function updateControlState() {
@@ -1097,6 +1171,10 @@ function bindWorkspaceSync() {
         });
       } else if (message.type === "panel-drag-target" && state.dragSession?.id === message.drag && message.source === state.windowId) {
         if (message.move < state.dragSession.move) return;
+        if (
+          state.dragTarget?.window === state.windowId
+          && state.dragTarget.move >= message.move
+        ) return;
         if (message.cell) {
           state.dragTarget = {
             window: message.target,
@@ -1145,6 +1223,7 @@ function bindWorkspaceSync() {
 
 function bindTimeline() {
   $("#timeline-scrubber").addEventListener("input", (event) => {
+    stopInspectionReplay({ render: false });
     const index = Number(event.target.value);
     const sequence = state.timelineSequences[index];
     if (sequence === undefined) return;
@@ -1175,6 +1254,9 @@ panelRuntime = new PanelRuntime({
     getState: () => state,
     send,
     command,
+    canReplayInspection,
+    playFromCurrentPosition,
+    pauseCurrentPlayback,
     showToast,
   },
   onMount: bindPanelElement,
