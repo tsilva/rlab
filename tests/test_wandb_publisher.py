@@ -852,7 +852,7 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertFalse(resume.call_args.kwargs["update_finish_state"])
         submitted.assert_called_once_with(conn, batches, refresh_submitted_at=True)
 
-    def test_remote_confirmation_restores_submitted_sequence_before_publish_commit(self) -> None:
+    def test_remote_confirmation_never_advances_canonical_or_deletes_source(self) -> None:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
         batch = {"id": 1, "stream_id": "artifact-v2-7-3-availability-r0", "batch_sequence": 1}
@@ -874,10 +874,11 @@ class WandbPublisherTests(unittest.TestCase):
             "submitted_sequence = GREATEST(submitted_sequence, %(sequence)s)",
             advance.args[0],
         )
-        self.assertIn(
-            "published_sequence = GREATEST(published_sequence, %(sequence)s)",
-            advance.args[0],
-        )
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertFalse(any("published_sequence = GREATEST" in sql for sql in statements))
+        self.assertFalse(any("DELETE FROM metric_batches" in sql for sql in statements))
+        confirmation = next(sql for sql in statements if "wandb_confirmed_at" in sql)
+        self.assertIn("UPDATE metric_batches", confirmation)
 
     def test_artifact_receipt_requires_exact_api_visible_membership(self) -> None:
         payload = {

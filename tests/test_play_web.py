@@ -460,6 +460,10 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     raw_markup = (panel_root / "raw.js").read_text(encoding="utf-8")
     assert '<main id="dashboard" class="dashboard"></main>' in markup
     assert '<h1 id="page-title">Environment</h1>' in markup
+    assert 'class="workspace-status"' not in markup
+    assert markup.index('id="new-window"') < markup.index('id="connection-status"')
+    assert markup.index('id="connection-status"') < markup.index('id="sampling-status"')
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in styles
     assert 'value="Default layout"' in markup
     assert "Mario debug" not in markup
     assert 'data-panel="' not in markup
@@ -474,6 +478,8 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'id="timeline-sequence"' not in markup
     assert '$("#timeline-label").textContent' in script
     assert 'state.inspectionSequence === null ? null : "INSPECTING"' in script
+    assert "grid-template-columns: minmax(0, 1fr)" in styles
+    assert ".timeline-labels { min-width: 0; overflow: hidden;" in styles
     assert "aspect-ratio: 256 / 240" in styles
     assert "grid-template-columns: repeat(12" in styles
     assert ".icon-only" in styles

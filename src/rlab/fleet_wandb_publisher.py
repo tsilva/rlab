@@ -946,7 +946,6 @@ def _record_committed_effects(
                     """
                     UPDATE metric_streams
                     SET submitted_sequence = GREATEST(submitted_sequence, %(sequence)s),
-                        published_sequence = GREATEST(published_sequence, %(sequence)s),
                         updated_at = now()
                     WHERE stream_id = %(stream_id)s
                     """,
@@ -977,7 +976,14 @@ def _record_committed_effects(
                 )
             if batch_ids:
                 cur.execute(
-                    "DELETE FROM metric_batches WHERE id = ANY(%(ids)s)",
+                    """
+                    UPDATE metric_batches
+                    SET wandb_confirmed_at = COALESCE(wandb_confirmed_at, now()),
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        last_error = NULL
+                    WHERE id = ANY(%(ids)s)
+                    """,
                     {"ids": batch_ids},
                 )
             cur.execute(
@@ -989,13 +995,14 @@ def _record_committed_effects(
                         JOIN metric_streams s ON s.stream_id = b.stream_id
                         JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                         WHERE a.train_job_id = t.id
+                          AND b.wandb_confirmed_at IS NULL
                       )
                       AND NOT EXISTS (
                         SELECT 1 FROM metric_streams s
                         JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                         WHERE a.train_job_id = t.id
                           AND (s.final_sequence IS NULL
-                               OR s.published_sequence < s.final_sequence)
+                               OR s.submitted_sequence < s.final_sequence)
                       ) THEN 'pending'
                       ELSE 'live'
                     END,

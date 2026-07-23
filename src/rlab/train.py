@@ -38,6 +38,7 @@ from rlab.training_backend import (
 )
 from rlab.rom_assets import manifest_from_train_config
 from rlab.rom_runtime import bind_cached_rom, runtime_cache_root
+from rlab.telemetry_cutover import require_runtime_admission
 
 
 GRACEFUL_STOP_SIGNAL = getattr(signal, "SIGUSR1", None)
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             "a queue-backed Docker job"
         )
     args = parse_train_args(argv)
+    require_runtime_admission(dict(args._materialized_train_config), environment=os.environ)
     recipe_json_path = Path(str(getattr(args, "recipe_json_path", "") or ""))
     if not recipe_json_path.is_file():
         raise RuntimeError("queue-backed training requires the canonical versioned recipe.json")

@@ -65,6 +65,7 @@ from rlab.checkpoint_acceptance import (
 )
 from rlab.modal_eval_config import load_modal_eval_config
 from rlab.modal_eval_protocol import SEED_PROTOCOL
+from rlab.telemetry_schema import TELEMETRY_V2_SCHEMA_SQL, TELEMETRY_V2_TABLES
 
 
 SCHEMA_SQL = """
@@ -1760,6 +1761,7 @@ REVOKE ALL ON workspace_authorization_outbox,
 """
 
 RESET_TABLES = (
+    *TELEMETRY_V2_TABLES,
     "workspace_authorization_history",
     "workspace_authorization_outbox",
     "workspace_cleanup_batch_rows",
@@ -1896,15 +1898,22 @@ def normalize_machine(value: str | None) -> str:
 
 
 def connect(url: str):
+    options: dict[str, object] = {
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 10,
+        "keepalives_interval": 5,
+        "keepalives_count": 3,
+        "tcp_user_timeout": 30000,
+        "cursor_factory": psycopg2.extras.RealDictCursor,
+        "sslmode": str(os.environ.get("RLAB_DATABASE_SSLMODE") or "verify-full"),
+    }
+    root_cert = str(os.environ.get("PGSSLROOTCERT") or "").strip()
+    if root_cert:
+        options["sslrootcert"] = root_cert
     return psycopg2.connect(
         url,
-        connect_timeout=10,
-        keepalives=1,
-        keepalives_idle=10,
-        keepalives_interval=5,
-        keepalives_count=3,
-        tcp_user_timeout=30000,
-        cursor_factory=psycopg2.extras.RealDictCursor,
+        **options,
     )
 
 
@@ -1943,6 +1952,7 @@ def apply_schema(conn) -> None:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
             cur.execute(WORKSPACE_SCHEMA_SQL)
+            cur.execute(TELEMETRY_V2_SCHEMA_SQL)
 
 
 def grant_worker_mailbox_role(conn, role: str) -> None:
@@ -2077,6 +2087,19 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
+                  telemetry_run_facts,
+                  telemetry_evidence_scopes,
+                  wandb_projection_rows,
+                  wandb_projection_generations,
+                  telemetry_recovery_manifests,
+                  telemetry_integrity,
+                  telemetry_incidents,
+                  telemetry_archive_roots,
+                  telemetry_archive_receipts,
+                  telemetry_archive_segments,
+                  telemetry_expected_obligations,
+                  telemetry_producers,
+                  telemetry_rollout_controls,
                   workspace_authorization_history,
                   workspace_authorization_outbox,
                   workspace_cleanup_batch_rows,
@@ -2118,11 +2141,23 @@ def reset_schema(conn, *, export_dir: Path) -> Path:
             )
             cur.execute(SCHEMA_SQL)
             cur.execute(WORKSPACE_SCHEMA_SQL)
+            cur.execute(TELEMETRY_V2_SCHEMA_SQL)
             cur.execute(
                 """
                 DO $$
                 BEGIN
                   IF to_regclass('train_jobs') IS NULL
+                     OR to_regclass('telemetry_rollout_controls') IS NULL
+                     OR to_regclass('telemetry_producers') IS NULL
+                     OR to_regclass('telemetry_expected_obligations') IS NULL
+                     OR to_regclass('telemetry_archive_segments') IS NULL
+                     OR to_regclass('telemetry_archive_receipts') IS NULL
+                     OR to_regclass('telemetry_archive_roots') IS NULL
+                     OR to_regclass('telemetry_integrity') IS NULL
+                     OR to_regclass('wandb_projection_generations') IS NULL
+                     OR to_regclass('wandb_projection_rows') IS NULL
+                     OR to_regclass('telemetry_evidence_scopes') IS NULL
+                     OR to_regclass('telemetry_run_facts') IS NULL
                      OR to_regclass('job_launches') IS NULL
                      OR to_regclass('machine_controls') IS NULL
                      OR to_regclass('runtime_image_states') IS NULL
@@ -2757,6 +2792,8 @@ def enqueue_train_job(
         ]
     )
     config["telemetry_transport"] = "neon_mailbox_v1"
+    config["telemetry_protocol_version"] = 2
+    config["telemetry_durability_policy"] = "queued_dual_r2_v1"
     runtime_image_ref = normalize_runtime_image_ref(runtime_image_ref)
     provider_id = str(config.get("env_provider") or "stable-retro-turbo").strip()
     provider = resolve_env_provider(provider_id)
@@ -2850,6 +2887,20 @@ def enqueue_train_job(
     def insert() -> dict[str, Any]:
         acquire_fleet_admission_xact_lock(conn)
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT cutover_generation
+                FROM telemetry_rollout_controls
+                WHERE singleton = TRUE
+                FOR SHARE
+                """
+            )
+            cutover = cur.fetchone()
+            cutover_generation = int(cutover["cutover_generation"])
+            cur.execute(
+                "SELECT set_config('rlab.telemetry_cutover_generation', %(value)s, TRUE)",
+                {"value": str(cutover_generation)},
+            )
             workspace_capability = str(
                 os.environ.get("RLAB_WORKSPACE_ENQUEUE_CAPABILITY_ID") or ""
             ).strip()
@@ -2865,6 +2916,8 @@ def enqueue_train_job(
                   repo_git_commit,
                   repo_dirty, recipe_payload_json, runtime_image_ref, machine, train_config,
                   telemetry_transport,
+                  telemetry_protocol_version, telemetry_durability_policy,
+                  telemetry_generation,
                   batch_id, campaign_id, submission_key, submission_ordinal, request_hash,
                   retry_of_job_id, run_name, run_description, seed,
                   wandb_group, wandb_tags
@@ -2875,6 +2928,8 @@ def enqueue_train_job(
                   %(repo_git_commit)s, %(repo_dirty)s, %(recipe_payload_json)s,
                   %(runtime_image_ref)s, %(machine)s, %(train_config)s,
                   %(telemetry_transport)s,
+                  %(telemetry_protocol_version)s, %(telemetry_durability_policy)s,
+                  %(telemetry_generation)s,
                   %(batch_id)s, %(campaign_id)s, %(submission_key)s,
                   %(submission_ordinal)s, %(request_hash)s,
                   %(retry_of_job_id)s, %(run_name)s,
@@ -2896,6 +2951,9 @@ def enqueue_train_job(
                     "machine": machine,
                     "train_config": json_arg(config),
                     "telemetry_transport": str(config["telemetry_transport"]),
+                    "telemetry_protocol_version": 2,
+                    "telemetry_durability_policy": "queued_dual_r2_v1",
+                    "telemetry_generation": cutover_generation,
                     "batch_id": batch_id,
                     "campaign_id": campaign_id,
                     "submission_key": submission_key,
@@ -3029,19 +3087,68 @@ def claim_job_launch(
                 ),
                 inserted_attempt AS (
                   INSERT INTO worker_attempts (
-                    attempt_id, train_job_id, task_kind, provider, status
+                    attempt_id, train_job_id, task_kind, provider, status,
+                    protocol_version, telemetry_generation, producer_ordinal,
+                    producer_identity
                   )
-                  SELECT launch_id, job_id, 'train', backend, 'launching'
-                  FROM inserted_launch
+                  SELECT
+                    launch_id, job_id, 'train', backend, 'launching',
+                    updated.telemetry_protocol_version,
+                    updated.telemetry_generation,
+                    0,
+                    'train-learner'
+                  FROM inserted_launch, updated
                   ON CONFLICT (attempt_id) DO UPDATE
-                  SET provider = EXCLUDED.provider
+                  SET provider = EXCLUDED.provider,
+                      protocol_version = EXCLUDED.protocol_version,
+                      telemetry_generation = EXCLUDED.telemetry_generation,
+                      producer_ordinal = EXCLUDED.producer_ordinal,
+                      producer_identity = EXCLUDED.producer_identity
                   RETURNING *
+                ),
+                registered_producer AS (
+                  INSERT INTO telemetry_producers (
+                    train_job_id, telemetry_generation, producer_ordinal,
+                    producer_identity, attempt_id, producer_kind, state
+                  )
+                  SELECT
+                    inserted_attempt.train_job_id,
+                    inserted_attempt.telemetry_generation,
+                    inserted_attempt.producer_ordinal,
+                    inserted_attempt.producer_identity,
+                    inserted_attempt.attempt_id,
+                    'training',
+                    'registered'
+                  FROM inserted_attempt
+                  ON CONFLICT (
+                    train_job_id, telemetry_generation, producer_ordinal
+                  ) DO UPDATE
+                  SET attempt_id = EXCLUDED.attempt_id,
+                      producer_identity = EXCLUDED.producer_identity
+                  RETURNING *
+                ),
+                registered_obligation AS (
+                  INSERT INTO telemetry_expected_obligations (
+                    train_job_id, telemetry_generation, obligation_key,
+                    obligation_kind, producer_ordinal
+                  )
+                  SELECT
+                    registered_producer.train_job_id,
+                    registered_producer.telemetry_generation,
+                    'training-terminal',
+                    'training',
+                    registered_producer.producer_ordinal
+                  FROM registered_producer
+                  ON CONFLICT (
+                    train_job_id, telemetry_generation, obligation_key
+                  ) DO NOTHING
+                  RETURNING obligation_key
                 )
                 SELECT
                   row_to_json(updated) AS job_json,
                   row_to_json(inserted_launch) AS launch_json,
                   row_to_json(inserted_attempt) AS attempt_json
-                FROM updated, inserted_launch, inserted_attempt
+                FROM updated, inserted_launch, inserted_attempt, registered_producer
                 """,
                 params,
             )
@@ -3969,7 +4076,13 @@ def job_payload_for_launch(job: Mapping[str, Any], launch: Mapping[str, Any]) ->
         "output_uri": launch["output_uri"],
         "telemetry": {
             "transport": telemetry_transport,
-            "protocol_version": 1,
+            "protocol_version": int(
+                job.get("telemetry_protocol_version")
+                or (job.get("train_config") or {}).get("telemetry_protocol_version")
+                or 1
+            ),
+            "generation": int(job.get("telemetry_generation") or 1),
+            "producer_ordinal": 0,
             "attempt_id": str(launch.get("worker_attempt_id") or launch["launch_id"]),
         },
     }

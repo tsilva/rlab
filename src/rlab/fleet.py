@@ -592,6 +592,10 @@ def _start_or_resume_launch_unleased(
                     )
                     attempt_env[ATTEMPT_ID_ENV] = launch_id
                     attempt_env[ATTEMPT_TOKEN_ENV] = token
+                    attempt_env["RLAB_TELEMETRY_ADMISSION_FENCED"] = "1"
+                    attempt_env["RLAB_TELEMETRY_CUTOVER_GENERATION"] = str(
+                        int(job.get("telemetry_generation") or 1)
+                    )
                 else:
                     attempt_env = load_shared_runner_env(
                         default_repo_root() / DEFAULT_SHARED_RUNNER_ENV_FILE
@@ -679,6 +683,10 @@ def _start_or_resume_launch_unleased(
             )
             mailbox_env[ATTEMPT_ID_ENV] = launch_id
             mailbox_env[ATTEMPT_TOKEN_ENV] = token
+            mailbox_env["RLAB_TELEMETRY_ADMISSION_FENCED"] = "1"
+            mailbox_env["RLAB_TELEMETRY_CUTOVER_GENERATION"] = str(
+                int(job.get("telemetry_generation") or 1)
+            )
             attempt_env_path = host.write_attempt_env(launch_id, mailbox_env)
         if not layout_v1:
             host.prepare_legacy_workspace(launch_id, job_payload_for_launch(job, launch))

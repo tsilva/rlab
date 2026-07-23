@@ -12,12 +12,14 @@ from rlab.telemetry_mailbox import (
     MailboxProtocolError,
     WorkerMailbox,
     claim_run_metric_batches,
+    commit_published_batches,
     decode_metric_batch,
     encode_metric_batch,
     mark_submitted_batches,
     pending_metric_run_ids,
     release_metric_batch_claims_by_owner,
     schedule_artifact_publications,
+    discard_disabled_metric_batches,
 )
 from rlab.telemetry_relay import CommandRelay, main as relay_main
 
@@ -217,12 +219,37 @@ class TelemetryBatchTests(unittest.TestCase):
             conn,
             [{"id": 1, "stream_id": "train-7", "batch_sequence": 3}],
         )
-
         calls = conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         lease_update = next(call for call in calls if "lease_expires_at" in call.args[0])
         self.assertEqual(lease_update.args[1]["delay"], 5.0)
         self.assertFalse(lease_update.args[1]["refresh_submitted_at"])
         self.assertIn("ELSE COALESCE(submitted_at, now()) END", lease_update.args[0])
+
+    def test_wandb_confirmation_retains_canonical_source(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+
+        commit_published_batches(
+            conn,
+            [{"id": 1, "stream_id": "train-7", "batch_sequence": 3}],
+        )
+
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("wandb_confirmed_at" in sql for sql in statements))
+        self.assertFalse(any("DELETE FROM metric_batches" in sql for sql in statements))
+        self.assertFalse(any("published_sequence = GREATEST" in sql for sql in statements))
+
+    def test_wandb_opt_out_retains_source_for_archive(self) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 4
+
+        self.assertEqual(discard_disabled_metric_batches(conn), 4)
+
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("UPDATE metric_batches", statement)
+        self.assertIn("retained for canonical archive", statement)
+        self.assertNotIn("DELETE FROM metric_batches", statement)
 
     def test_stalled_actor_claim_release_is_scoped_by_run_and_owner(self) -> None:
         conn = mock.MagicMock()

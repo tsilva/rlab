@@ -19,7 +19,7 @@ import psycopg2.extras
 from rlab.metric_names import validate_metric_payload
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 TRANSPORT_NAME = "neon_mailbox_v1"
 MAILBOX_DATABASE_ENV = "WORKER_MAILBOX_DATABASE_URL"
 ATTEMPT_ID_ENV = "RLAB_WORKER_ATTEMPT_ID"
@@ -144,16 +144,22 @@ def decode_metric_batch(payload: bytes, *, schema_version: int = 5) -> list[dict
 
 
 def mailbox_connect(database_url: str):
+    options: dict[str, object] = {
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 10,
+        "keepalives_interval": 5,
+        "keepalives_count": 3,
+        "tcp_user_timeout": 30000,
+        "cursor_factory": psycopg2.extras.RealDictCursor,
+        "sslmode": str(os.environ.get("RLAB_DATABASE_SSLMODE") or "verify-full"),
+    }
+    root_cert = str(os.environ.get("PGSSLROOTCERT") or "").strip()
+    if root_cert:
+        options["sslrootcert"] = root_cert
     return psycopg2.connect(
         database_url,
-        connect_timeout=10,
-        keepalives=1,
-        keepalives_idle=10,
-        keepalives_interval=5,
-        keepalives_count=3,
-        tcp_user_timeout=30000,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-        sslmode="require",
+        **options,
     )
 
 
@@ -328,12 +334,23 @@ def issue_worker_attempt_token(
     with conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT train_job_id FROM worker_attempts WHERE attempt_id = %(attempt_id)s",
+                """
+                SELECT a.train_job_id, a.protocol_version, a.telemetry_generation,
+                       p.producer_ordinal
+                FROM worker_attempts a
+                LEFT JOIN telemetry_producers p
+                  ON p.attempt_id = a.attempt_id
+                WHERE a.attempt_id = %(attempt_id)s
+                """,
                 {"attempt_id": str(attempt_id)},
             )
             attempt = cur.fetchone()
             if not attempt:
                 raise RuntimeError(f"worker attempt cannot receive a token: {attempt_id}")
+            if int(attempt["protocol_version"]) == 2 and attempt["producer_ordinal"] is None:
+                raise RuntimeError(
+                    "v2 worker credential cannot be issued before producer registration"
+                )
             cur.execute(
                 """
                 SELECT pg_advisory_xact_lock(
@@ -387,6 +404,7 @@ def claim_run_metric_batches(
             JOIN worker_attempts a ON a.attempt_id = s.attempt_id
             JOIN train_jobs t ON t.id = a.train_job_id
             WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
+              AND b.wandb_confirmed_at IS NULL
               AND (
                 t.telemetry_transport = 'neon_mailbox_v1'
                 OR (
@@ -475,6 +493,7 @@ def claim_run_metric_batches(
                         )
                       )
                       AND (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
+                      AND b.wandb_confirmed_at IS NULL
                     ORDER BY b.created_at, b.id
                     FOR UPDATE OF b SKIP LOCKED
                     LIMIT %(limit)s
@@ -516,6 +535,7 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
               JOIN worker_attempts a ON a.attempt_id = s.attempt_id
               JOIN train_jobs t ON t.id = a.train_job_id
               WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
+                AND b.wandb_confirmed_at IS NULL
                 AND (
                   t.telemetry_transport = 'neon_mailbox_v1'
                   OR (
@@ -662,6 +682,13 @@ def release_metric_batch_claims_by_owner(
 
 
 def commit_published_batches(conn, batches: Sequence[Mapping[str, Any]]) -> None:
+    """Record legacy W&B confirmation without authorizing source deletion.
+
+    Canonical archive receipts, not W&B state, own payload deletion in telemetry
+    protocol v2.  This compatibility helper deliberately leaves
+    ``published_sequence`` and the source rows untouched.
+    """
+
     if not batches:
         return
     grouped: dict[str, int] = {}
@@ -676,13 +703,23 @@ def commit_published_batches(conn, batches: Sequence[Mapping[str, Any]]) -> None
                 cur.execute(
                     """
                     UPDATE metric_streams
-                    SET published_sequence = GREATEST(published_sequence, %(sequence)s),
+                    SET submitted_sequence = GREATEST(submitted_sequence, %(sequence)s),
                         updated_at = now()
                     WHERE stream_id = %(stream_id)s
                     """,
                     {"stream_id": stream_id, "sequence": sequence},
                 )
-            cur.execute("DELETE FROM metric_batches WHERE id = ANY(%(ids)s)", {"ids": ids})
+            cur.execute(
+                """
+                UPDATE metric_batches
+                SET wandb_confirmed_at = COALESCE(wandb_confirmed_at, now()),
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_error = NULL
+                WHERE id = ANY(%(ids)s)
+                """,
+                {"ids": ids},
+            )
 
 
 def mark_submitted_batches(
@@ -746,30 +783,24 @@ def mailbox_storage_bytes(conn) -> int:
 
 
 def discard_disabled_metric_batches(conn) -> int:
-    """Acknowledge transient batches for runs that explicitly opted out of W&B."""
+    """Record W&B opt-out without discarding canonical source payloads."""
 
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                WITH discarded AS (
-                  DELETE FROM metric_batches b
-                  USING metric_streams s, worker_attempts a, train_jobs t
-                  WHERE s.stream_id = b.stream_id
-                    AND a.attempt_id = s.attempt_id
-                    AND t.id = a.train_job_id
-                    AND NOT COALESCE((t.train_config->>'wandb')::boolean, FALSE)
-                  RETURNING b.stream_id, b.batch_sequence
-                ), advanced AS (
-                  SELECT stream_id, max(batch_sequence) AS sequence
-                  FROM discarded GROUP BY stream_id
-                )
-                UPDATE metric_streams s
-                SET published_sequence = GREATEST(s.published_sequence, advanced.sequence),
-                    updated_at = now()
-                FROM advanced
-                WHERE s.stream_id = advanced.stream_id
-                RETURNING s.stream_id
+                UPDATE metric_batches b
+                SET wandb_confirmed_at = COALESCE(b.wandb_confirmed_at, now()),
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_error = 'W&B explicitly disabled; retained for canonical archive'
+                FROM metric_streams s, worker_attempts a, train_jobs t
+                WHERE s.stream_id = b.stream_id
+                  AND a.attempt_id = s.attempt_id
+                  AND t.id = a.train_job_id
+                  AND NOT COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                  AND b.wandb_confirmed_at IS NULL
+                RETURNING b.id
                 """
             )
             return cur.rowcount

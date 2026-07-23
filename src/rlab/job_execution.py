@@ -116,6 +116,12 @@ def normalize_train_config(
         config["source_sha"] = str(job["repo_git_commit"])
     if job.get("machine"):
         config["machine"] = job["machine"]
+    if job.get("telemetry_protocol_version") is not None:
+        config["telemetry_protocol_version"] = int(job["telemetry_protocol_version"])
+    if job.get("telemetry_generation") is not None:
+        config["telemetry_generation"] = int(job["telemetry_generation"])
+    if job.get("telemetry_durability_policy"):
+        config["telemetry_durability_policy"] = str(job["telemetry_durability_policy"])
     if require_explicit_train_fields:
         require_explicit_queue_train_config(config)
     config["wandb_artifact_storage_uri"] = resolve_artifact_storage_uri(

@@ -82,7 +82,7 @@ button.danger { color: #ffabb0; border-color: #673840; }
   top: 0;
   z-index: 30;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: .8rem;
   align-items: center;
   min-height: 3rem;
@@ -92,14 +92,13 @@ button.danger { color: #ffabb0; border-color: #673840; }
   backdrop-filter: blur(12px);
 }
 
-.app-brand, .workspace-status, .header-status {
+.app-brand, .header-status {
   display: flex;
   align-items: center;
   gap: .58rem;
   min-width: 0;
 }
 
-.workspace-status { justify-content: center; }
 .header-status { justify-content: flex-end; }
 .header-divider { width: 1px; height: 1.3rem; background: #31505e; }
 
@@ -406,15 +405,14 @@ td:last-child { text-align: right; }
 
 .timeline {
   display: grid;
-  grid-template-columns: auto minmax(8rem, 1fr);
-  align-items: center;
-  gap: .8rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .22rem;
   margin: .6rem 1rem 0;
   padding: .58rem .72rem;
   border-top: 1px solid rgba(49, 80, 94, .58);
   border-bottom: 1px solid rgba(49, 80, 94, .58);
 }
-.timeline-labels { min-width: 12rem; color: var(--cyan); font: 700 .68rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.timeline-labels { min-width: 0; overflow: hidden; color: var(--cyan); font: 700 .68rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; text-overflow: ellipsis; }
 .timeline-track { position: relative; min-width: 0; }
 #timeline-scrubber { width: 100%; accent-color: var(--cyan); }
 .timeline-markers { position: absolute; inset: .1rem .45rem auto; height: .6rem; pointer-events: none; }
@@ -430,21 +428,17 @@ td:last-child { text-align: right; }
 
 body.secondary-window .app-brand .eyebrow,
 body.secondary-window .app-brand .header-divider { display: none; }
-body.secondary-window .workspace-status { justify-content: flex-start; }
 body.stats-window #timeline { display: none; }
 body.stats-window .dashboard { padding-bottom: .7rem; }
 body.empty-workspace .dashboard::after { content: "Choose Panels to move synchronized views into this window."; grid-column: 1 / -1; grid-row: 1 / span 5; align-self: stretch; display: grid; place-items: center; padding: 2rem; color: var(--muted); text-align: center; border: 1px dashed var(--border); border-radius: .66rem; }
 body.recording #timeline { opacity: .72; }
 
 @media (max-width: 1100px) {
-  .app-header { grid-template-columns: minmax(0, 1fr) auto; }
-  .workspace-status { display: none; }
   .header-status { justify-content: flex-end; }
   .dashboard { display: flex; flex-direction: column; min-height: 0; }
   .panel { flex: none; min-height: 20rem; height: auto !important; }
   .game-panel { height: min(72dvh, 44rem) !important; }
   .panel.transport { min-height: auto; }
-  .timeline { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {

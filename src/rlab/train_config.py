@@ -1094,6 +1094,37 @@ TRAIN_CONFIG_FIELDS: tuple[TrainConfigField, ...] = (
         help="Internal queue-owned telemetry transport contract.",
     ),
     TrainConfigField(
+        "telemetry_protocol_version",
+        "--telemetry-protocol-version",
+        type_name="int",
+        default=2,
+        choices=(2,),
+        cli_exposed=False,
+        help="Canonical telemetry producer and recovery protocol.",
+    ),
+    TrainConfigField(
+        "telemetry_generation",
+        "--telemetry-generation",
+        type_name="int",
+        default=1,
+        cli_exposed=False,
+        help="Cutover generation binding this producer credential and canonical ledger.",
+    ),
+    TrainConfigField(
+        "telemetry_durability_policy",
+        "--telemetry-durability-policy",
+        default="local_mirrored_v1",
+        choices=(
+            "queued_dual_r2_v1",
+            "local_mirrored_v1",
+            "local_singlecopy_optout_v1",
+        ),
+        help=(
+            "Telemetry archive durability contract. local_singlecopy_optout_v1 is an "
+            "explicit durability opt-out and is never eligible for durable completion."
+        ),
+    ),
+    TrainConfigField(
         "no_wandb_artifacts",
         "--no-wandb-artifacts",
         kind="store_true",
