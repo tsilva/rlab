@@ -607,19 +607,27 @@ def ingest_mailbox_announcements(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT e.*, r.contract_json, r.next_announcement_id,
-              t.recipe_payload_json AS queued_recipe_document,
-              r.train_job_id AS authoritative_train_job_id
-            FROM attempt_events e
-            JOIN worker_attempts a ON a.attempt_id = e.attempt_id
-            JOIN eval_runs r ON r.train_job_id = a.train_job_id
-            JOIN train_jobs t ON t.id = r.train_job_id
-            WHERE e.event_type IN (
-                'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
-              )
-              AND t.telemetry_transport = 'neon_mailbox_v1'
-              AND (e.next_retry_at IS NULL OR e.next_retry_at <= now())
-            ORDER BY e.id
+            WITH ranked_events AS (
+              SELECT e.*, r.contract_json, r.next_announcement_id,
+                t.recipe_payload_json AS queued_recipe_document,
+                r.train_job_id AS authoritative_train_job_id,
+                row_number() OVER (
+                  PARTITION BY r.train_job_id
+                  ORDER BY e.id
+                ) AS run_event_ordinal
+              FROM attempt_events e
+              JOIN worker_attempts a ON a.attempt_id = e.attempt_id
+              JOIN eval_runs r ON r.train_job_id = a.train_job_id
+              JOIN train_jobs t ON t.id = r.train_job_id
+              WHERE e.event_type IN (
+                  'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+                )
+                AND t.telemetry_transport = 'neon_mailbox_v1'
+                AND (e.next_retry_at IS NULL OR e.next_retry_at <= now())
+            )
+            SELECT *
+            FROM ranked_events
+            ORDER BY run_event_ordinal, id
             LIMIT %(limit)s
             """,
             {"limit": max(1, int(limit))},

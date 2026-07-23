@@ -1174,6 +1174,20 @@ class ModalEvalSchedulingTests(unittest.TestCase):
             all(insert < delete for insert, delete in zip(ledger_inserts, delete_indexes))
         )
 
+    def test_mailbox_ingestion_interleaves_runs_to_prevent_checkpoint_starvation(
+        self,
+    ) -> None:
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+
+        self.assertEqual(ingest_mailbox_announcements(conn, mock.MagicMock()), 0)
+
+        selection = cursor.execute.call_args_list[0].args[0]
+        self.assertIn("row_number() OVER", selection)
+        self.assertIn("PARTITION BY r.train_job_id", selection)
+        self.assertIn("ORDER BY run_event_ordinal, id", selection)
+
     def test_none_backend_ingests_checkpoint_without_creating_eval_job(self) -> None:
         event = {
             "id": 1,

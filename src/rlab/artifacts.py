@@ -9,7 +9,6 @@ import shutil
 import sys
 import tempfile
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -224,8 +223,13 @@ def install_model_bundle(
     """
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex
-    staged_checkpoint = model_path.parent / f".{model_path.stem}.{token}.zip"
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix=".checkpoint-staging-",
+            dir=model_path.parent,
+        )
+    )
+    staged_checkpoint = staging_dir / model_path.name
     staged_paths: list[Path] = [staged_checkpoint]
     try:
         save_checkpoint(staged_checkpoint)
@@ -307,6 +311,7 @@ def install_model_bundle(
     finally:
         for staged in staged_paths:
             staged.unlink(missing_ok=True)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def write_model_metadata_payload(

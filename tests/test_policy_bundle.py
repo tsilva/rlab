@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from rlab.artifacts import install_model_bundle
+from rlab.checkpoint_coordinator import reconcile_orphan_models
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_mapping
 from rlab.env_metadata import training_metadata
@@ -32,6 +33,7 @@ from rlab.policy_bundle import (
 )
 from rlab.eval_runner import normalized_evaluation_request
 from rlab.recipe_documents import compose_train_document
+from rlab.metric_store import MetricStore
 from rlab.train_config import validate_and_normalize_train_config
 from rlab.training_backend import training_backend_config, training_backend_config_hash
 
@@ -137,6 +139,52 @@ def test_atomic_bundle_install_commits_only_a_complete_replayable_bundle(
             checkpoint_step_value=100,
         )
     assert not list(model_path.parent.glob(".*.zip"))
+
+
+def test_atomic_bundle_install_survives_concurrent_orphan_reconciliation(
+    tmp_path: Path,
+) -> None:
+    recipe_document = level1_1_recipe_document()
+    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
+    train_config = dict(recipe_document["recipe"]["train_config"])
+    config = resolve_env_config(env_config_from_mapping(train_config))
+    run_dir = tmp_path / "run"
+    model_path = run_dir / "checkpoints" / "model_100_steps.zip"
+    store = MetricStore(run_dir / "rlab.sqlite")
+    store.init()
+    args = argparse.Namespace(
+        **{
+            **train_config,
+            "recipe_json_path": str(recipe_path),
+            "run_name": "concurrent-cleanup",
+            "run_description": "Concurrent checkpoint cleanup regression.",
+            "queue_train_job_id": 9,
+            "runtime_image_ref": RUNTIME,
+            "source_sha": "a" * 40,
+            "algorithm_id": "ppo",
+            "model_class": "stable_baselines3.ppo.ppo.PPO",
+            "training_backend_id": "sb3.ppo",
+            "training_backend_config_hash": training_backend_config_hash(train_config),
+        }
+    )
+
+    def save_during_reconciliation(staged_path: Path) -> None:
+        staged_path.write_bytes(b"checkpoint")
+        reconcile_orphan_models(store, args, run_dir)
+
+    install_model_bundle(
+        model_path,
+        save_checkpoint=save_during_reconciliation,
+        args=args,
+        config=config,
+        kind="checkpoint",
+        checkpoint_step_value=100,
+    )
+
+    bundle = load_policy_bundle_from_checkpoint(model_path)
+    assert bundle is not None
+    assert bundle.checkpoint_path.read_bytes() == b"checkpoint"
+    assert not list(model_path.parent.glob(".checkpoint-staging-*"))
 
 
 def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:
