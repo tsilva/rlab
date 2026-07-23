@@ -106,8 +106,8 @@ train:
           obs_grayscale: true
           obs_layout: chw
           frame_stack: 4
-          # Keep reset noops disabled; snapshot restores bypass them as well.
-          noop_reset_max: 0
+          # Sample up to 30 reset noops; snapshot restores bypass them.
+          noop_reset_max: 30
           reward_clip: false
           use_fire_reset: false
           snapshot_bank_uri: >-

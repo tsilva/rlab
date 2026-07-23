@@ -39,8 +39,8 @@ train:
           obs_grayscale: true
           obs_layout: chw
           frame_stack: 4
-          # Keep reset noops disabled across equivalent Breakout providers.
-          noop_reset_max: 0
+          # Sample up to 30 reset noops across equivalent Breakout providers.
+          noop_reset_max: 30
           reward_clip: false
           use_fire_reset: false
     preprocessing: &breakout_preprocessing

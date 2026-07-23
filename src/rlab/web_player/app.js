@@ -1244,13 +1244,38 @@ function bindWorkspaceSync() {
 }
 
 function bindTimeline() {
-  $("#timeline-scrubber").addEventListener("input", (event) => {
+  const scrubber = $("#timeline-scrubber");
+  const selectIndex = (index) => {
     stopInspectionReplay({ render: false });
-    const index = Number(event.target.value);
     const sequence = state.timelineSequences[index];
     if (sequence === undefined) return;
     if (index === state.timelineSequences.length - 1) returnToLive();
     else inspectSequence(sequence);
+  };
+  scrubber.addEventListener("input", (event) => {
+    selectIndex(Number(event.target.value));
+  });
+  scrubber.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      const index = clamp(
+        Number(scrubber.value) + direction,
+        0,
+        Math.max(0, state.timelineSequences.length - 1),
+      );
+      scrubber.value = String(index);
+      selectIndex(index);
+      return;
+    }
+    if (event.code !== "Space" || event.repeat) return;
+    event.preventDefault();
+    const running = state.replayingInspection
+      || ["playing", "stepping", "continuing"].includes(
+        state.liveSnapshot?.run_state,
+      );
+    if (running) pauseCurrentPlayback();
+    else playFromCurrentPosition();
   });
 }
 

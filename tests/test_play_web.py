@@ -569,6 +569,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "grid-template-columns: repeat(12" in styles
     assert ".icon-only" in styles
     assert 'id="timeline-scrubber" type="range" min="0" max="0" step="1"' in markup
+    assert 'title="Left/Right: move one step · Space: play or pause"' in markup
+    assert 'event.key === "ArrowLeft" || event.key === "ArrowRight"' in script
+    assert 'if (event.code !== "Space" || event.repeat) return;' in script
+    assert "if (running) pauseCurrentPlayback();" in script
+    assert "else playFromCurrentPosition();" in script
     assert 'id="return-live"' not in markup
     assert 'id="timeline-zoom-out"' not in markup
     assert 'id="timeline-zoom-in"' not in markup

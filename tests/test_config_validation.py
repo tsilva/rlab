@@ -101,7 +101,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["task"]["action"]["set"], "native")
         self.assertFalse(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
-        self.assertEqual(train_config["env_args"]["noop_reset_max"], 0)
+        self.assertEqual(train_config["env_args"]["noop_reset_max"], 30)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(
@@ -391,7 +391,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "obs_grayscale": True,
                 "obs_layout": "chw",
                 "frame_stack": 4,
-                "noop_reset_max": 0,
+                "noop_reset_max": 30,
                 "reward_clip": False,
                 "use_fire_reset": False,
             },
@@ -454,7 +454,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
 
-    def test_all_breakout_recipes_disable_reset_noops(self) -> None:
+    def test_all_breakout_recipes_use_30_reset_noops(self) -> None:
         recipe_root = self.BREAKOUT_GOAL.parent
         recipes = sorted(recipe_root.glob("**/recipes/*.yaml"))
         self.assertTrue(recipes)
@@ -463,7 +463,7 @@ class ConfigValidationTests(unittest.TestCase):
             document = compose_train_document(goal, recipe)
             self.assertEqual(
                 document["train_config"]["env_args"]["noop_reset_max"],
-                0,
+                30,
                 str(recipe),
             )
 
