@@ -403,6 +403,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "requestFullscreen" in game_markup
     assert 'data-transition class="json-view"' in raw_markup
     assert "function renderJson(" in shared
+    assert "function niceTickStep(" in shared
+    assert "function lineChartScale(" in shared
+    assert "function formatAxisValue(" in shared
+    assert "context.fillText(labels[index], plot.left - 6, y)" in shared
+    assert "const scale = lineChartScale([0, max])" in shared
     for token_class in (
         "json-key",
         "json-string",

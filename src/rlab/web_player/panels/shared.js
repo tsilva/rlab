@@ -86,6 +86,44 @@ function resizeCanvas(canvas) {
   return { context: canvas.getContext("2d"), ratio, width, height };
 }
 
+function niceTickStep(span, intervals = 4) {
+  const rough = span / intervals;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const normalized = rough / magnitude;
+  const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return factor * magnitude;
+}
+
+function lineChartScale(values) {
+  let dataMin = Math.min(...values);
+  let dataMax = Math.max(...values);
+  if (dataMin === dataMax) {
+    const margin = dataMin === 0 ? 1 : Math.abs(dataMin) * 0.1;
+    dataMin -= margin;
+    dataMax += margin;
+  }
+  const step = niceTickStep(dataMax - dataMin);
+  const min = Math.floor(dataMin / step) * step;
+  const max = Math.ceil(dataMax / step) * step;
+  const intervals = Math.max(1, Math.round((max - min) / step));
+  return {
+    min,
+    max,
+    step,
+    ticks: Array.from({ length: intervals + 1 }, (_, index) => min + index * step),
+  };
+}
+
+function formatAxisValue(value, step) {
+  const absolute = Math.abs(value);
+  if (absolute >= 1e6 || (absolute > 0 && absolute < 1e-4)) {
+    return value.toExponential(1).replace(".0e", "e").replace("e+", "e");
+  }
+  const decimals = Math.min(6, Math.max(0, -Math.floor(Math.log10(Math.abs(step)))));
+  const rendered = value.toFixed(decimals);
+  return rendered === "-0" ? "0" : rendered;
+}
+
 export function drawLines(canvas, series) {
   const { context, ratio, width, height } = resizeCanvas(canvas);
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -96,30 +134,45 @@ export function drawLines(canvas, series) {
   if (!values.length) {
     context.fillStyle = "#8da6b2";
     context.font = "12px system-ui";
+    context.textAlign = "left";
+    context.textBaseline = "alphabetic";
     context.fillText("No history yet", 12, 22);
     return;
   }
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (min === max) { min -= 1; max += 1; }
-  const padding = 12;
+  const scale = lineChartScale(values);
+  const labels = scale.ticks.map((value) => formatAxisValue(value, scale.step));
+  context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const labelWidth = Math.max(...labels.map((label) => context.measureText(label).width));
+  const plot = {
+    left: Math.ceil(labelWidth) + 16,
+    right: width - 12,
+    top: 10,
+    bottom: height - 10,
+  };
   context.strokeStyle = "#1d3541";
   context.lineWidth = 1;
-  for (let index = 1; index < 4; index += 1) {
-    const y = padding + ((height - padding * 2) * index) / 4;
+  context.fillStyle = "#8da6b2";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  scale.ticks.forEach((tick, index) => {
+    const y = plot.bottom
+      - ((tick - scale.min) / (scale.max - scale.min)) * (plot.bottom - plot.top);
     context.beginPath();
-    context.moveTo(padding, y);
-    context.lineTo(width - padding, y);
+    context.moveTo(plot.left, y);
+    context.lineTo(plot.right, y);
     context.stroke();
-  }
+    context.fillText(labels[index], plot.left - 6, y);
+  });
   series.forEach(({ values: points, color }) => {
     context.strokeStyle = color;
     context.lineWidth = 1.5;
     context.beginPath();
     points.forEach((value, index) => {
       if (!Number.isFinite(value)) return;
-      const x = padding + (index / Math.max(1, points.length - 1)) * (width - padding * 2);
-      const y = height - padding - ((value - min) / (max - min)) * (height - padding * 2);
+      const x = plot.left
+        + (index / Math.max(1, points.length - 1)) * (plot.right - plot.left);
+      const y = plot.bottom
+        - ((value - scale.min) / (scale.max - scale.min)) * (plot.bottom - plot.top);
       if (index === 0) context.moveTo(x, y);
       else context.lineTo(x, y);
     });
@@ -142,14 +195,40 @@ export function drawHistogram(canvas, counts, names) {
   context.fillStyle = "#071117";
   context.fillRect(0, 0, width, height);
   const max = Math.max(1, ...counts);
+  const scale = lineChartScale([0, max]);
+  const labels = scale.ticks.map((value) => formatAxisValue(value, scale.step));
+  context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const labelWidth = Math.max(...labels.map((label) => context.measureText(label).width));
+  const plot = {
+    left: Math.ceil(labelWidth) + 16,
+    right: width - 12,
+    top: 10,
+    bottom: height - 30,
+  };
+  context.strokeStyle = "#1d3541";
+  context.lineWidth = 1;
+  context.fillStyle = "#8da6b2";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  scale.ticks.forEach((tick, index) => {
+    const y = plot.bottom
+      - ((tick - scale.min) / (scale.max - scale.min)) * (plot.bottom - plot.top);
+    context.beginPath();
+    context.moveTo(plot.left, y);
+    context.lineTo(plot.right, y);
+    context.stroke();
+    context.fillText(labels[index], plot.left - 6, y);
+  });
   const gap = 4;
-  const barWidth = Math.max(4, (width - 24) / Math.max(1, counts.length) - gap);
-  const plotBottom = height - 30;
+  const barWidth = Math.max(
+    4,
+    (plot.right - plot.left) / Math.max(1, counts.length) - gap,
+  );
   counts.forEach((count, index) => {
-    const barHeight = (count / max) * Math.max(0, plotBottom - 12);
-    const x = 12 + index * (barWidth + gap);
+    const barHeight = (count / scale.max) * Math.max(0, plot.bottom - plot.top);
+    const x = plot.left + index * (barWidth + gap);
     context.fillStyle = "#53d4e8";
-    context.fillRect(x, plotBottom - barHeight, barWidth, barHeight);
+    context.fillRect(x, plot.bottom - barHeight, barWidth, barHeight);
     context.fillStyle = "#d7e5ea";
     context.font = "600 12px system-ui, sans-serif";
     context.textAlign = "center";
