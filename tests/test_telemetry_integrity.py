@@ -18,6 +18,7 @@ from rlab.telemetry_integrity import (
     decode_canonical_segment,
     normalize_wandb_rows,
     reduce_integrity,
+    require_exact_contract_match,
     require_comparable_run_facts,
     write_fsync,
 )
@@ -117,6 +118,57 @@ class CanonicalTelemetryTests(unittest.TestCase):
         self.assertEqual(rows[0]["ordinal"], 9)
         self.assertEqual(rows[0]["payload"]["_rlab_output_ordinal"], 9)
         self.assertIn("event-1", rows[0]["stable_key"])
+
+    def test_multirow_metric_batch_gets_contiguous_output_ordinals(self) -> None:
+        event = self.event(
+            1,
+            {
+                "frames": [
+                    {
+                        "kind": "history",
+                        "global_step": 10,
+                        "payload": {"loss": 1.0},
+                    },
+                    {
+                        "kind": "history",
+                        "global_step": 20,
+                        "payload": {"loss": 0.5},
+                    },
+                ]
+            },
+        )
+        event = CanonicalEvent(
+            producer=event.producer,
+            source_sequence=event.source_sequence,
+            event_id=event.event_id,
+            kind="metric_batch",
+            payload=event.payload,
+        )
+        rows = normalize_wandb_rows(event, first_ordinal=7)
+        self.assertEqual([7, 8], [row["ordinal"] for row in rows])
+        self.assertEqual([10, 20], [row["payload"]["global_step"] for row in rows])
+
+    def test_evaluation_contract_mismatch_matrix_fails_exactly(self) -> None:
+        base = eval_contract()
+        variants = {
+            "provider": {
+                **base,
+                "environment": {
+                    **base["environment"],
+                    "provider": "other-provider",
+                },
+            },
+            "preprocessing": {**base, "preprocessing": {"version": 2}},
+            "reward": {**base, "reward": {"program_sha256": "b" * 64}},
+            "runtime": {**base, "runtime_image_digest": "sha256:" + "b" * 64},
+            "evaluator": {**base, "evaluator_implementation_sha256": "b" * 64},
+            "rom": {**base, "assets": {"rom_sha256": "b" * 64}},
+            "action": {**base, "action_sampling": "deterministic"},
+        }
+        for label, changed in variants.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(TelemetryContractError, "mismatch"):
+                    require_exact_contract_match(base, changed, label="eval")
 
     def test_integrity_requires_exact_sets_coverage_and_archive_receipts(self) -> None:
         result = reduce_integrity(

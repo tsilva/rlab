@@ -12,7 +12,7 @@ export function mount({ definition, services }) {
   const summary = element.querySelector("[data-summary]");
   const actions = element.querySelector("[data-actions]");
 
-  const renderDecision = (decision, inspection = false) => {
+  const renderDecision = (decision) => {
     if (!decision) {
       setStats(summary, [["Mode", services.getState().snapshot?.driver || "—"], ["Decision", "Unavailable"]]);
       actions.className = "action-probabilities empty-state";
@@ -20,7 +20,7 @@ export function mount({ definition, services }) {
       return;
     }
     setStats(summary, [
-      [inspection ? "Inspection" : "Mode", inspection ? "Policy" : (decision.sampled ? "Stochastic" : "Deterministic")],
+      ["Mode", decision.sampled ? "Stochastic" : "Deterministic"],
       ["V(s)", number(decision.value, 4)],
       ["Entropy", number(decision.entropy, 4)],
       ["Log p", number(decision.log_probability, 4)],
@@ -53,7 +53,6 @@ export function mount({ definition, services }) {
 
   return {
     element,
-    render(snapshot) { renderDecision(snapshot?.transition?.decision || null, false); },
-    inspect(decision) { renderDecision(decision, true); },
+    render(snapshot) { renderDecision(snapshot?.transition?.decision || null); },
   };
 }

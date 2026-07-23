@@ -7,7 +7,6 @@ from typing import Any, Iterable, Mapping, Protocol, Sequence
 from rlab.job_queue import json_arg
 from rlab.telemetry_archive import canonical_event_from_ledger_row
 from rlab.telemetry_integrity import (
-    canonical_json_bytes,
     normalize_wandb_rows,
     sha256_bytes,
     sha256_json,
@@ -55,11 +54,16 @@ def new_projection_generation(
     with conn:
         with conn.cursor() as cur:
             cur.execute(
+                "SELECT id FROM train_jobs WHERE id = %(run)s FOR UPDATE",
+                {"run": int(train_job_id)},
+            )
+            if not cur.fetchone():
+                raise ValueError("unknown train job")
+            cur.execute(
                 """
                 SELECT COALESCE(max(projection_generation), 0) + 1 AS generation
                 FROM wandb_projection_generations
                 WHERE train_job_id = %(run)s
-                FOR UPDATE
                 """,
                 {"run": int(train_job_id)},
             )
@@ -87,6 +91,56 @@ def new_projection_generation(
             )
             result = dict(cur.fetchone())
     return result
+
+
+def repair_quarantined_generation(
+    conn,
+    *,
+    train_job_id: int,
+    quarantined_generation: int,
+    service_credential_generation: int,
+    fresh_wandb_run_id: str,
+) -> dict[str, Any]:
+    """Seal incident evidence and materialize a full ordinal-zero replay generation."""
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE wandb_projection_generations
+                SET sealed_at = COALESCE(sealed_at, now())
+                WHERE train_job_id=%(run)s
+                  AND projection_generation=%(generation)s
+                  AND state='quarantined'
+                RETURNING step_offset
+                """,
+                {
+                    "run": int(train_job_id),
+                    "generation": int(quarantined_generation),
+                },
+            )
+            old = cur.fetchone()
+            if not old:
+                raise RuntimeError("W&B repair requires a quarantined source generation")
+    fresh = new_projection_generation(
+        conn,
+        train_job_id=int(train_job_id),
+        service_credential_generation=int(service_credential_generation),
+        wandb_run_id=str(fresh_wandb_run_id),
+        step_offset=0,
+    )
+    total = 0
+    while True:
+        count = materialize_projection_rows(
+            conn,
+            train_job_id=int(train_job_id),
+            projection_generation=int(fresh["projection_generation"]),
+            max_events=1000,
+        )
+        total += count
+        if count == 0:
+            break
+    return {**fresh, "replayed_rows": total}
 
 
 def materialize_projection_rows(
@@ -247,7 +301,7 @@ def claim_projection_row(
                  AND g.projection_generation = r.projection_generation
                 WHERE (%(run)s IS NULL OR r.train_job_id = %(run)s)
                   AND g.state IN ('publishing', 'verifying')
-                  AND r.state IN ('pending', 'ambiguous')
+                  AND r.state = 'pending'
                   AND (r.claim_expires_at IS NULL OR r.claim_expires_at <= now())
                   AND NOT EXISTS (
                     SELECT 1 FROM wandb_projection_rows prior

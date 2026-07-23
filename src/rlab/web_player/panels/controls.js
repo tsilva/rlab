@@ -51,10 +51,6 @@ export function mount({ definition, services }) {
           <p data-next-episode-hint class="control-hint">Available after the current episode ends</p>
         </div>
       </section>
-      <section class="control-section policy-inspection" aria-labelledby="policy-inspection-heading">
-        <h3 id="policy-inspection-heading" class="control-label">Policy</h3>
-        <button data-command="inspect" class="quiet button-with-icon" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg><span>Inspect policy</span></button>
-      </section>
     `,
   });
 
@@ -69,7 +65,6 @@ export function mount({ definition, services }) {
   const nextEpisodeHint = element.querySelector("[data-next-episode-hint]");
   const seedField = element.querySelector(".next-episode-seed");
   const playbackSampling = element.querySelector(".playback-sampling");
-  const policyInspection = element.querySelector(".policy-inspection");
   const driverSwitch = element.querySelector(".driver-switch");
   const driverOptions = [...element.querySelectorAll("[data-driver-option]")];
   let nextDriver = "policy";
@@ -86,7 +81,6 @@ export function mount({ definition, services }) {
       driver: nextDriver,
     }),
     "set-fps": () => services.command("set_fps", { fps: Number(fps.value) }),
-    inspect: () => services.command("inspect_policy"),
   };
   element.querySelectorAll("[data-command]").forEach((button) => {
     button.addEventListener("click", () => commands[button.dataset.command]());
@@ -179,7 +173,6 @@ export function mount({ definition, services }) {
       playbackSampling.hidden = recording;
       nextEpisode.hidden = recording;
       nextEpisodeHint.hidden = recording;
-      policyInspection.hidden = recording;
       nextEpisode.title = session.can_start_next_episode
         ? "Start the prepared next episode"
         : (session.awaiting_next_episode
@@ -194,7 +187,7 @@ export function mount({ definition, services }) {
       element.querySelector("#playback-fps-hint").textContent = recording
         ? "Recording FPS must be at least 1"
         : "0 runs playback uncapped";
-      ["step", "step-ten", "continue-event", "inspect"].forEach((name) => {
+      ["step", "step-ten", "continue-event"].forEach((name) => {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;
       });
       const policy = element.querySelector('[data-driver-option="policy"]');

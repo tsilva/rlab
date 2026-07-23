@@ -54,6 +54,7 @@ const state = {
   hasControl: false,
   frameSequence: new Map(),
   receivedFrameSequence: new Map(),
+  retainedEpisode: null,
   pendingSnapshot: null,
   mode: null,
   lastStatus: null,
@@ -197,6 +198,7 @@ function handleMessage(message) {
     return;
   }
   if (message.type === "snapshot") {
+    prepareRetainedEpisode(message);
     const frameKind = requiredFrameKind(message);
     if (frameKind && (state.frameSequence.get(frameKind) ?? -1) < message.sequence) {
       state.pendingSnapshot = message;
@@ -207,16 +209,6 @@ function handleMessage(message) {
   }
   if (message.type === "command_result") {
     if (!message.ok) showToast(message.error || "Command failed", true);
-    else if (message.inspection?.kind === "policy") {
-      panelRuntime.invoke("policy", "inspect", message.inspection.decision);
-      workspaceChannel?.postMessage({
-        type: "panel-inspection",
-        source: state.windowId,
-        panel: "policy",
-        method: "inspect",
-        value: message.inspection.decision,
-      });
-    }
     return;
   }
   if (message.type === "error") showToast(message.error || "Player error", true);
@@ -225,7 +217,6 @@ function handleMessage(message) {
 function rememberFrame(kind, sequence, blob) {
   const frames = state.frameBlobs.get(kind);
   frames.set(sequence, blob);
-  while (frames.size > 1024) frames.delete(frames.keys().next().value);
 }
 
 async function handleFrame(buffer) {
@@ -258,21 +249,40 @@ function episodeForSnapshot(snapshot) {
   return episode === undefined || episode === null ? null : Number(episode);
 }
 
+function clearRetainedEpisode() {
+  state.snapshots.clear();
+  state.frameBlobs.forEach((frames) => frames.clear());
+  state.frameSequence.clear();
+  state.receivedFrameSequence.clear();
+  state.timelineSequences = [];
+}
+
+function prepareRetainedEpisode(snapshot) {
+  const episode = episodeForSnapshot(snapshot);
+  if (episode === null) return;
+  if (state.retainedEpisode !== null && state.retainedEpisode !== episode) {
+    clearRetainedEpisode();
+  }
+  state.retainedEpisode = episode;
+}
+
 function applySnapshot(snapshot) {
   state.pendingSnapshot = null;
   const previousEnvironmentId = state.liveSnapshot?.session?.env_id;
   const previousEpisode = episodeForSnapshot(state.liveSnapshot);
   const nextEpisode = episodeForSnapshot(snapshot);
+  const episodeChanged = (
+    previousEpisode !== null
+    && nextEpisode !== null
+    && previousEpisode !== nextEpisode
+  );
   state.liveSnapshot = snapshot;
   if (snapshot.session?.env_id !== previousEnvironmentId) updateLayoutTitle();
   state.snapshots.set(Number(snapshot.sequence), snapshot);
-  while (state.snapshots.size > 1024) state.snapshots.delete(state.snapshots.keys().next().value);
   state.hasControl = Boolean(snapshot.control?.has_control);
   if (
     state.inspectionSequence !== null
-    && previousEpisode !== null
-    && nextEpisode !== null
-    && previousEpisode !== nextEpisode
+    && episodeChanged
   ) {
     stopInspectionReplay({ render: false });
     state.inspectionSequence = null;
@@ -529,6 +539,7 @@ function renderTimeline() {
   const interesting = state.history.filter((point) =>
     Number(point.sequence) >= minimum
     && Number(point.sequence) <= maximum
+    && (currentEpisode === null || Number(point.episode) === currentEpisode)
     && (point.boundary || point.events?.length)
   );
   markers.replaceChildren(...interesting.slice(-120).map((point) => {
@@ -1205,13 +1216,6 @@ function bindWorkspaceSync() {
       } else if (message.type === "panel-drag-end" && state.remoteDrag?.id === message.drag) {
         state.remoteDrag = null;
         setPanelDragUi(false);
-      } else if (
-        message.type === "panel-inspection"
-        && message.source !== state.windowId
-        && message.panel === "policy"
-        && message.method === "inspect"
-      ) {
-        panelRuntime.invoke("policy", "inspect", message.value);
       } else if (message.type === "window-closing" && state.windowId === "main") {
         setTimeout(() => {
           const lastSeen = state.activeWindows.get(message.window) || 0;

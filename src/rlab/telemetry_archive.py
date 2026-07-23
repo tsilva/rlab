@@ -457,6 +457,46 @@ def build_archive_root_document(
     }
 
 
+def _verify_producer_ledger_claims(
+    cur,
+    *,
+    train_job_id: int,
+    generation: int,
+    producers: Sequence[Mapping[str, Any]],
+) -> None:
+    for producer in producers:
+        cur.execute(
+            """
+            SELECT source_sequence, event_sha256, predecessor_sha256
+            FROM telemetry_events
+            WHERE train_job_id=%(run)s
+              AND telemetry_generation=%(generation)s
+              AND producer_ordinal=%(ordinal)s
+            ORDER BY source_sequence
+            """,
+            {
+                "run": int(train_job_id),
+                "generation": int(generation),
+                "ordinal": int(producer["producer_ordinal"]),
+            },
+        )
+        chain: str | None = None
+        sequence = 0
+        for event in cur.fetchall():
+            sequence += 1
+            if int(event["source_sequence"]) != sequence:
+                raise RuntimeError("canonical producer ledger contains a sequence gap")
+            if event["predecessor_sha256"] != chain:
+                raise RuntimeError("canonical producer predecessor chain conflicts")
+            chain = sha256_bytes(
+                ((chain or "") + str(event["event_sha256"])).encode("utf-8")
+            )
+        if sequence != int(producer["final_sequence"]) or chain != str(
+            producer["final_sha256"]
+        ):
+            raise RuntimeError("canonical producer terminal digest claim does not verify")
+
+
 def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
     """Atomically freeze and root a run only after exact closure and receipt proof."""
 
@@ -510,6 +550,12 @@ def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
             producers = [dict(row) for row in cur.fetchall()]
             if not producers or any(row["final_sequence"] is None for row in producers):
                 raise RuntimeError("not every expected telemetry producer has a final claim")
+            _verify_producer_ledger_claims(
+                cur,
+                train_job_id=int(train_job_id),
+                generation=int(job["telemetry_generation"]),
+                producers=producers,
+            )
             cur.execute(
                 """
                 SELECT * FROM telemetry_expected_obligations
@@ -832,6 +878,12 @@ def finalize_legacy_loss_adjudicated_root(
             producers = [dict(row) for row in cur.fetchall()]
             if not producers or any(row["final_sequence"] is None for row in producers):
                 raise RuntimeError("legacy forensic producers are not terminal")
+            _verify_producer_ledger_claims(
+                cur,
+                train_job_id=int(train_job_id),
+                generation=1,
+                producers=producers,
+            )
             cur.execute(
                 """
                 SELECT

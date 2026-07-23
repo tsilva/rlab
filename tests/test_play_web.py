@@ -557,6 +557,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert '$("#timeline-label").textContent' in script
     assert 'state.inspectionSequence === null ? null : "INSPECTING"' in script
     assert "function episodeForSnapshot(snapshot)" in script
+    assert "function clearRetainedEpisode()" in script
+    assert "prepareRetainedEpisode(message);" in script
+    assert "state.frameBlobs.forEach((frames) => frames.clear());" in script
+    assert "while (frames.size > 1024)" not in script
+    assert "while (state.snapshots.size > 1024)" not in script
     assert "`EP ${" not in script
     assert "grid-template-columns: minmax(0, 1fr)" in styles
     assert ".timeline-labels { min-width: 0; overflow: hidden;" in styles
@@ -571,6 +576,7 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "timelineWindow" not in script
     assert "const currentEpisode = episodeForSnapshot(state.liveSnapshot);" in script
     assert "currentEpisode === null || episodeForSnapshot(snapshot) === currentEpisode" in script
+    assert "currentEpisode === null || Number(point.episode) === currentEpisode" in script
     assert "previousEpisode !== nextEpisode" in script
     assert 'scrubber.step = "1";' in script
     assert "if (index === state.timelineSequences.length - 1) returnToLive();" in script
@@ -644,6 +650,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "ti-device-desktop-share" not in icons
     assert "Control from this window" not in controls_markup
     assert "data-acquire" not in controls_markup
+    assert "Inspect policy" not in controls_markup
+    assert 'data-command="inspect"' not in controls_markup
+    assert "inspect_policy" not in controls_markup
+    assert "panel-inspection" not in script
+    assert "ti-search" not in icons
     assert 'class="driver-switch" role="group" aria-label="Driver selection"' in controls_markup
     assert 'data-driver-option="policy"' in controls_markup
     assert 'data-driver-option="human"' in controls_markup

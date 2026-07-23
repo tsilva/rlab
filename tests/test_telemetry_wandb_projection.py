@@ -92,6 +92,20 @@ class WandbProjectionTests(unittest.TestCase):
         )
         self.assertFalse(conflict.exact)
         self.assertEqual("past_step_hole_or_foreign_step", conflict.reason)
+        digest_conflict = verify_exact_prefix(
+            self.expected(),
+            [{**observed[0], "_rlab_payload_sha256": "f" * 64}],
+            step_offset=10,
+        )
+        self.assertFalse(digest_conflict.exact)
+        self.assertEqual("payload_digest_conflict", digest_conflict.reason)
+        foreign_suffix = verify_exact_prefix(
+            self.expected(),
+            [observed[0], {}, {}],
+            step_offset=10,
+        )
+        self.assertFalse(foreign_suffix.exact)
+        self.assertEqual("foreign_or_duplicate_suffix", foreign_suffix.reason)
 
     def test_publish_is_one_explicit_committed_sdk_call_then_ambiguous(self):
         conn = _Connection()

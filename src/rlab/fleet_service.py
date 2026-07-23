@@ -1924,6 +1924,11 @@ def _default_reconcile_eval(
     else:
         detail = {"status": "unconfigured"}
     from rlab.fleet_wandb_publisher import drain_cycle_parallel
+    from rlab.telemetry_v2_controller import (
+        archive_once as archive_v2_once,
+        finalize_roots_once,
+        project_once as project_v2_once,
+    )
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
         discard_disabled_metric_batches,
@@ -1942,6 +1947,21 @@ def _default_reconcile_eval(
             max_runs=100,
             deadline_monotonic=deadline_monotonic,
         )
+        if (
+            os.environ.get("TELEMETRY_ARCHIVE_PRIMARY_URI")
+            and os.environ.get("TELEMETRY_ARCHIVE_BACKUP_URI")
+        ):
+            detail["telemetry_v2_archived_segments"] = archive_v2_once(conn, limit=100)
+            detail["telemetry_v2_finalized_roots"] = finalize_roots_once(conn, limit=100)
+        else:
+            detail["telemetry_v2_archive_status"] = "unconfigured_fail_closed"
+        if (
+            os.environ.get("RLAB_WANDB_SERVICE_IDENTITY")
+            and os.environ.get("RLAB_WANDB_SERVICE_CREDENTIAL_GENERATION")
+        ):
+            detail["telemetry_v2_projected_rows"] = project_v2_once(conn, limit=100)
+        else:
+            detail["telemetry_v2_projection_status"] = "unconfigured_fail_closed"
         storage_bytes = mailbox_storage_bytes(conn)
         detail["metric_mailbox_bytes"] = storage_bytes
         detail["metric_mailbox_pressure"] = (

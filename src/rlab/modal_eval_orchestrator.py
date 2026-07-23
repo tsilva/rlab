@@ -1036,6 +1036,28 @@ def _mark_attempt_failure(
             )
             cur.execute(
                 """
+                SELECT rlab_append_canonical_telemetry_event(
+                  %(attempt_id)s,
+                  'evaluation-failure:' || %(attempt_id)s,
+                  'evaluation_attempt_failure',
+                  'canonical_json_v1',
+                  convert_to(
+                    jsonb_build_object('error', %(error)s)::text,
+                    'UTF8'
+                  ),
+                  TRUE
+                )
+                FROM telemetry_producers p
+                WHERE p.attempt_id=%(attempt_id)s
+                  AND p.state IN ('registered','active')
+                """,
+                {
+                    "attempt_id": str(attempt["attempt_id"]),
+                    "error": error[:4000],
+                },
+            )
+            cur.execute(
+                """
                 UPDATE worker_attempts
                 SET status = 'failed', error = %(error)s, finished_at = now()
                 WHERE attempt_id = %(attempt_id)s
@@ -2199,6 +2221,7 @@ def terminalize_artifact_only_runs(conn) -> int:
                   FROM eval_runs r
                   JOIN train_jobs t ON t.id = r.train_job_id
                   WHERE t.status = 'finalizing'
+                    AND t.telemetry_protocol_version = 1
                     AND t.process_exited_at IS NOT NULL
                     AND COALESCE(r.contract_json->>'checkpoint_eval_backend', 'local') <> 'modal'
                     AND r.complete_announcement_seen = TRUE
@@ -2270,6 +2293,7 @@ def terminalize_artifact_only_runs(conn) -> int:
                       JOIN metric_streams s ON s.stream_id = b.stream_id
                       JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                       WHERE a.train_job_id = r.train_job_id
+                        AND b.wandb_confirmed_at IS NULL
                     )
                     AND NOT EXISTS (
                       SELECT 1 FROM metric_streams s
@@ -2277,7 +2301,7 @@ def terminalize_artifact_only_runs(conn) -> int:
                       WHERE a.train_job_id = r.train_job_id
                         AND (
                           s.final_sequence IS NULL
-                          OR s.published_sequence < s.final_sequence
+                          OR s.submitted_sequence < s.final_sequence
                         )
                     )
                     AND t.live_publication_status IN ('complete', 'disabled')
@@ -2325,7 +2349,125 @@ def terminalize_artifact_only_runs(conn) -> int:
                   AND t.status = 'finalizing'
                 """
             )
-            return cur.rowcount
+            return int(cur.rowcount)
+
+
+def _terminalize_v2_runs(cur) -> int:
+    cur.execute(
+        """
+        WITH ready AS (
+          SELECT
+            r.train_job_id,
+            CASE
+              WHEN r.outcome='canceled' THEN 'canceled'
+              WHEN r.outcome='unknown' THEN 'finalization_failed'
+              WHEN r.outcome='accepted' AND r.acceptance_committed_at IS NULL
+                THEN 'finalization_failed'
+              WHEN r.outcome='accepted'
+                AND r.acceptance_committed_at < t.process_exited_at
+                AND (
+                  t.learner_stop_observed_at IS NULL
+                  OR r.stop_delivery_slo_met IS NOT TRUE
+                ) THEN 'finalization_failed'
+              ELSE 'succeeded'
+            END AS terminal_status,
+            CASE
+              WHEN r.outcome='unknown'
+                THEN COALESCE(r.error, 'acceptance outcome is unknown')
+              WHEN r.outcome='accepted' AND r.acceptance_committed_at IS NULL
+                THEN 'accepted outcome is missing its commit timestamp'
+              WHEN r.outcome='accepted'
+                AND r.acceptance_committed_at < t.process_exited_at
+                AND t.learner_stop_observed_at IS NULL
+                THEN 'accepted checkpoint was not observed by the learner stop callback'
+              WHEN r.outcome='accepted'
+                AND r.acceptance_committed_at < t.process_exited_at
+                AND r.stop_delivery_slo_met IS NOT TRUE
+                THEN 'acceptance stop delivery exceeded five seconds'
+              ELSE NULL
+            END AS terminal_error
+          FROM eval_runs r
+          JOIN train_jobs t ON t.id=r.train_job_id
+          WHERE t.status='finalizing'
+            AND t.telemetry_protocol_version=2
+            AND t.process_exited_at IS NOT NULL
+            AND r.complete_announcement_seen=TRUE
+            AND r.outcome IN ('accepted','not_accepted','unknown','canceled')
+            AND NOT EXISTS (
+              SELECT 1 FROM eval_jobs j
+              WHERE j.train_job_id=r.train_job_id
+                AND j.status IN ('pending','dispatching','submitted','blocked_budget')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM artifact_announcement_ledger ledger
+              WHERE ledger.train_job_id=r.train_job_id
+                AND ledger.disposition='ready'
+                AND (
+                  NOT EXISTS (
+                    SELECT 1 FROM artifact_durability_receipts receipt
+                    WHERE receipt.train_job_id=ledger.train_job_id
+                      AND receipt.ledger_id=ledger.ledger_id
+                      AND receipt.object_kind='model'
+                  )
+                  OR NOT EXISTS (
+                    SELECT 1 FROM artifact_durability_receipts receipt
+                    WHERE receipt.train_job_id=ledger.train_job_id
+                      AND receipt.ledger_id=ledger.ledger_id
+                      AND receipt.object_kind='metadata'
+                  )
+                  OR (
+                    ledger.recipe_uri IS NOT NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM artifact_durability_receipts receipt
+                      WHERE receipt.train_job_id=ledger.train_job_id
+                        AND receipt.ledger_id=ledger.ledger_id
+                        AND receipt.object_kind='recipe'
+                    )
+                  )
+                )
+            )
+            AND (
+              r.outcome <> 'accepted'
+              OR EXISTS (
+                SELECT 1
+                FROM eval_jobs promoted
+                JOIN telemetry_evidence_scopes evidence
+                  ON evidence.train_job_id=promoted.train_job_id
+                 AND evidence.scope_kind='eval_scope_exact'
+                 AND evidence.state='exact'
+                 AND evidence.root_sha256=promoted.checkpoint_sha256
+                WHERE promoted.id=r.promoted_eval_job_id
+              )
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM telemetry_producers producer
+              WHERE producer.train_job_id=r.train_job_id
+                AND producer.telemetry_generation=t.telemetry_generation
+                AND producer.state IN ('registered','active')
+            )
+          FOR UPDATE OF r, t
+        ), completed AS (
+          UPDATE eval_runs r
+          SET status=CASE
+                WHEN ready.terminal_status='canceled' THEN 'canceled'
+                WHEN ready.terminal_status='finalization_failed' THEN 'failed'
+                ELSE 'complete'
+              END,
+              updated_at=now(),
+              error=ready.terminal_error
+          FROM ready
+          WHERE r.train_job_id=ready.train_job_id
+          RETURNING r.train_job_id, ready.terminal_status, ready.terminal_error
+        )
+        UPDATE train_jobs t
+        SET status=completed.terminal_status,
+            finished_at=now(),
+            error=completed.terminal_error
+        FROM completed
+        WHERE t.id=completed.train_job_id AND t.status='finalizing'
+        """
+    )
+    return int(cur.rowcount)
 
 
 def terminalize_runs(conn) -> int:
@@ -2340,6 +2482,7 @@ def terminalize_runs(conn) -> int:
 
     with conn:
         with conn.cursor() as cur:
+            v2_terminalized = _terminalize_v2_runs(cur)
             cur.execute(
                 """
                 WITH ready AS (
@@ -2379,6 +2522,7 @@ def terminalize_runs(conn) -> int:
                   FROM eval_runs r
                   JOIN train_jobs t ON t.id = r.train_job_id
                   WHERE t.status = 'finalizing'
+                    AND t.telemetry_protocol_version = 1
                     AND t.process_exited_at IS NOT NULL
                     AND r.complete_announcement_seen = TRUE
                     AND (
@@ -2488,6 +2632,7 @@ def terminalize_runs(conn) -> int:
                       JOIN metric_streams s ON s.stream_id = b.stream_id
                       JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                       WHERE a.train_job_id = r.train_job_id
+                        AND b.wandb_confirmed_at IS NULL
                     )
                     AND NOT EXISTS (
                       SELECT 1 FROM metric_streams s
@@ -2495,7 +2640,7 @@ def terminalize_runs(conn) -> int:
                       WHERE a.train_job_id = r.train_job_id
                         AND (
                           s.final_sequence IS NULL
-                          OR s.published_sequence < s.final_sequence
+                          OR s.submitted_sequence < s.final_sequence
                         )
                     )
                     AND t.live_publication_status IN ('complete', 'disabled')
@@ -2526,7 +2671,7 @@ def terminalize_runs(conn) -> int:
                   AND t.status = 'finalizing'
                 """
             )
-            return cur.rowcount
+            return v2_terminalized + int(cur.rowcount)
 
 
 def reconcile_publication_finishing(conn) -> int:
@@ -2544,6 +2689,7 @@ def reconcile_publication_finishing(conn) -> int:
                 FROM eval_runs r
                 WHERE r.train_job_id = t.id
                   AND t.status = 'finalizing'
+                  AND t.telemetry_protocol_version = 1
                   AND (
                     t.telemetry_transport = 'neon_mailbox_v1'
                     OR EXISTS (
@@ -2631,18 +2777,19 @@ def reconcile_publication_finishing(conn) -> int:
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM metric_batches b
-                    JOIN metric_streams s ON s.stream_id = b.stream_id
-                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
-                    WHERE a.train_job_id = t.id
+                      JOIN metric_streams s ON s.stream_id = b.stream_id
+                      JOIN worker_attempts a ON a.attempt_id = s.attempt_id
+                      WHERE a.train_job_id = t.id
+                        AND b.wandb_confirmed_at IS NULL
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM metric_streams s
                     JOIN worker_attempts a ON a.attempt_id = s.attempt_id
-                    WHERE a.train_job_id = t.id
-                      AND (
-                        s.final_sequence IS NULL
-                        OR s.published_sequence < s.final_sequence
-                      )
+                      WHERE a.train_job_id = t.id
+                        AND (
+                          s.final_sequence IS NULL
+                          OR s.submitted_sequence < s.final_sequence
+                        )
                   )
                 """
             )

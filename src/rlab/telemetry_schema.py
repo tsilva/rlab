@@ -592,6 +592,9 @@ CREATE INDEX IF NOT EXISTS telemetry_run_facts_comparison_idx
   ON telemetry_run_facts (
     comparability_sha256, cohort_manifest_sha256, rank_metric, seed
   );
+CREATE UNIQUE INDEX IF NOT EXISTS telemetry_first_training_success_unique_idx
+  ON telemetry_evidence_scopes (train_job_id)
+  WHERE scope_kind = 'training_success_scope_exact' AND state = 'exact';
 CREATE INDEX IF NOT EXISTS metric_batches_archive_due_idx
   ON metric_batches (archived_at, archive_lease_expires_at, created_at);
 CREATE INDEX IF NOT EXISTS telemetry_events_archive_idx

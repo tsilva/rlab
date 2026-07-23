@@ -338,7 +338,6 @@ select {
 .next-episode-seed input { width: 100%; min-width: 0; }
 .next-episode-settings .driver-switch { margin-top: .08rem; }
 .next-episode-settings [data-next-episode] { width: 100%; margin-top: .12rem; }
-.policy-inspection button { width: 100%; }
 .playback-settings { margin-top: .5rem; border-top: 1px solid rgba(49, 80, 94, .45); padding-top: .5rem; }
 .playback-settings summary { color: var(--muted); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; }
 .playback-settings-body { display: grid; gap: .4rem; margin-top: .5rem; }

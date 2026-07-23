@@ -1726,7 +1726,9 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         self.assertIn("artifact_announcement_ledger", finishing)
         self.assertIn("artifact_publication_receipts", finishing)
         self.assertIn("receipt.role = 'promotion'", finishing)
-        self.assertIn("s.published_sequence < s.final_sequence", finishing)
+        self.assertIn("s.submitted_sequence < s.final_sequence", finishing)
+        self.assertIn("b.wandb_confirmed_at IS NULL", finishing)
+        self.assertIn("t.telemetry_protocol_version = 1", finishing)
         self.assertIn("artifact_stream.stream_id LIKE 'artifact-v2-%%'", finishing)
 
 

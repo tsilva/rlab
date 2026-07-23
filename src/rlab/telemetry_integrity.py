@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 
 CANONICAL_FORMAT_VERSION: Final = "canonical-jsonl-v1"
@@ -65,6 +65,32 @@ def canonical_json_bytes(value: object) -> bytes:
 
 def sha256_json(value: object) -> str:
     return sha256_bytes(canonical_json_bytes(value))
+
+
+def require_exact_contract_match(
+    expected: Mapping[str, object],
+    observed: Mapping[str, object],
+    *,
+    label: str = "contract",
+) -> None:
+    expected_sha256 = sha256_json(expected)
+    observed_sha256 = sha256_json(observed)
+    if expected_sha256 != observed_sha256:
+        differing = sorted(
+            {
+                *expected.keys(),
+                *observed.keys(),
+            }
+            - {
+                key
+                for key in set(expected) & set(observed)
+                if expected[key] == observed[key]
+            }
+        )
+        raise TelemetryContractError(
+            f"{label} mismatch: fields={differing} "
+            f"expected={expected_sha256} observed={observed_sha256}"
+        )
 
 
 def _canonical_float(value: float) -> dict[str, str]:

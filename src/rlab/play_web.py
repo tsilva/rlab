@@ -570,14 +570,6 @@ class WebPlaybackRunner:
                 self.target_fps = fps
                 self.revision += 1
                 self._publish(self.session.last_transition)
-            elif command.name == "inspect_policy":
-                decision = self.session.inspect_policy()
-                self._response(
-                    command,
-                    ok=True,
-                    inspection={"kind": "policy", "decision": _decision_payload(decision)},
-                )
-                return
             elif command.name == "stop":
                 self._response(command, ok=True)
                 self._stop.set()
