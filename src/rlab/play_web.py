@@ -331,6 +331,7 @@ class WebPlaybackRunner:
         self.continue_target: str | None = None
         self.continue_count = 0
         self.boundaries = 0
+        self.awaiting_next_episode = False
         self._input_lock = threading.Lock()
         self._pressed: tuple[str, ...] = ()
         self._input_updated_at = 0.0
@@ -417,6 +418,8 @@ class WebPlaybackRunner:
                 "sampling_mode": self.sampling_mode,
                 "target_fps": self.target_fps,
                 "episodes_limit": int(self.args.episodes),
+                "awaiting_next_episode": self.awaiting_next_episode,
+                "can_start_next_episode": self._can_start_next_episode(),
                 "history_size": len(self.history),
                 "config": self.config_text,
             },
@@ -457,6 +460,14 @@ class WebPlaybackRunner:
         self.revision += 1
         self._publish(self.session.last_transition)
 
+    def _can_start_next_episode(self) -> bool:
+        limit = int(self.args.episodes)
+        return self.awaiting_next_episode and (limit <= 0 or self.boundaries < limit)
+
+    def _require_active_episode(self) -> None:
+        if self.awaiting_next_episode:
+            raise ValueError("episode complete; choose Play next episode")
+
     def _apply(self, command: PlaybackCommand) -> None:
         if (
             bool(command.payload.get("strict_revision", False))
@@ -477,11 +488,13 @@ class WebPlaybackRunner:
                 self.clear_input()
                 self._set_state("paused", message="paused at a completed transition")
             elif command.name == "play":
+                self._require_active_episode()
                 self.driver = str(command.payload.get("driver") or self.driver)
                 if self.driver not in {"policy", "human"}:
                     raise ValueError(f"unsupported driver {self.driver!r}")
                 self._set_state("playing")
             elif command.name == "step":
+                self._require_active_episode()
                 count = int(command.payload.get("count", 1))
                 if not 1 <= count <= 100:
                     raise ValueError("step count must be in [1, 100]")
@@ -489,16 +502,30 @@ class WebPlaybackRunner:
                 self.continue_target = None
                 self._set_state("stepping")
             elif command.name == "continue":
+                self._require_active_episode()
                 self.driver = "policy"
                 self.continue_target = str(command.payload.get("target") or "any")
                 self.continue_count = 0
                 self.remaining_steps = 0
                 self._set_state("continuing")
+            elif command.name == "next_episode":
+                if not self.awaiting_next_episode:
+                    raise ValueError("the current episode is still active")
+                if not self._can_start_next_episode():
+                    raise ValueError(f"episode limit reached ({self.boundaries})")
+                self.awaiting_next_episode = False
+                self.remaining_steps = 0
+                self.continue_target = None
+                self._set_state(
+                    "playing",
+                    message=f"playing episode {self.session.episode}",
+                )
             elif command.name == "reset":
                 seed_value = command.payload.get("seed")
                 seed = self.session.initial_seed if seed_value in {None, ""} else int(seed_value)
                 self.session.restart(seed)
                 self.boundaries = 0
+                self.awaiting_next_episode = False
                 self.driver = "policy"
                 self._set_state("paused", message=f"reset to seed {seed}")
             elif command.name == "set_fps":
@@ -575,7 +602,17 @@ class WebPlaybackRunner:
         self.revision += 1
         if transition.boundary:
             self.boundaries += 1
-        if self.run_state == "stepping":
+            self.awaiting_next_episode = True
+            self.remaining_steps = 0
+            self.continue_target = None
+            self.run_state = "paused"
+            if self._can_start_next_episode():
+                self._status_message = (
+                    f"episode {transition.episode} complete · choose Play next episode"
+                )
+            else:
+                self._status_message = f"episode limit reached ({self.boundaries})"
+        elif self.run_state == "stepping":
             self.remaining_steps -= 1
             if self.remaining_steps <= 0:
                 self.run_state = "paused"
@@ -593,9 +630,6 @@ class WebPlaybackRunner:
                 self.run_state = "paused"
                 if self.continue_count >= 10_000 and not matched:
                     self._status_message = "continue reached the 10,000-step safety limit"
-        if int(self.args.episodes) > 0 and self.boundaries >= int(self.args.episodes):
-            self.run_state = "paused"
-            self._status_message = f"episode limit reached ({self.boundaries})"
         self._publish(transition)
         return transition
 
@@ -754,6 +788,8 @@ class HumanRecordingRunner:
                     "sampling_mode": None,
                     "target_fps": self.target_fps,
                     "episodes_limit": int(getattr(self.args, "episodes", None) or 0),
+                    "awaiting_next_episode": False,
+                    "can_start_next_episode": False,
                     "history_size": len(self.history),
                     "config": (
                         "Human dataset recording. Browser input is translated through the "

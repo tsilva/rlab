@@ -84,6 +84,59 @@ def test_web_playback_sampling_mode_selects_policy_action_path() -> None:
     session.step.assert_called_once_with(deterministic=True)
 
 
+def test_web_playback_requires_explicit_command_after_episode_boundary() -> None:
+    transition = argparse.Namespace(boundary=True, events=(), episode=1)
+    session = argparse.Namespace(
+        config={"game": "Game-v0"},
+        episode=2,
+        last_transition=transition,
+        step=Mock(return_value=transition),
+    )
+    runner = WebPlaybackRunner(session, human_args(episodes=0), config_text="")
+    runner._publish = Mock()
+    runner.run_state = "playing"
+
+    runner._step_once()
+
+    assert runner.run_state == "paused"
+    assert runner.awaiting_next_episode is True
+    assert runner._can_start_next_episode() is True
+    assert runner.remaining_steps == 0
+
+    runner._apply(PlaybackCommand("play", "client", "play", {}, None))
+    blocked = runner.responses.get_nowait().payload
+    assert blocked["ok"] is False
+    assert blocked["error"] == "episode complete; choose Play next episode"
+    assert runner.awaiting_next_episode is True
+
+    runner._apply(
+        PlaybackCommand("next", "client", "next_episode", {}, runner.revision)
+    )
+    accepted = runner.responses.get_nowait().payload
+    assert accepted["ok"] is True
+    assert runner.awaiting_next_episode is False
+    assert runner.run_state == "playing"
+
+
+def test_web_playback_episode_limit_disables_next_episode() -> None:
+    transition = argparse.Namespace(boundary=True, events=(), episode=1)
+    session = argparse.Namespace(
+        config={"game": "Game-v0"},
+        episode=2,
+        last_transition=transition,
+        step=Mock(return_value=transition),
+    )
+    runner = WebPlaybackRunner(session, human_args(episodes=1), config_text="")
+    runner._publish = Mock()
+    runner.run_state = "playing"
+
+    runner._step_once()
+
+    assert runner.awaiting_next_episode is True
+    assert runner._can_start_next_episode() is False
+    assert runner._status_message == "episode limit reached (1)"
+
+
 def test_human_dataset_recording_defaults_to_web_dashboard() -> None:
     args = build_dataset_parser().parse_args(
         ["record", "local-session", "--env-id", "Game-v0"]
@@ -418,8 +471,8 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert ".icon-only" in styles
     assert 'id="timeline-scrubber"' in markup
     assert "data-return-chart" in reward_markup
-    assert controls_markup.count("data-playback-toggle class=") == 1
-    assert 'data-command="play" data-playback-toggle class="primary icon-only"' in controls_markup
+    assert controls_markup.count("data-playback-toggle data-requires-active-episode class=") == 1
+    assert 'data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only"' in controls_markup
     assert 'data-command="pause" class="icon-only"' not in controls_markup
     assert "services.getState().liveSnapshot?.driver" in controls_markup
     assert "if (view.inspection) snapshot = services.getState().liveSnapshot || snapshot;" in controls_markup
@@ -427,7 +480,11 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "if (playbackToggle.dataset.command === command) return;" in controls_markup
     assert 'playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`)' in controls_markup
     assert "repeat(5, minmax(0, 1fr))" in styles
-    assert 'data-command="step-ten" class="icon-only" aria-label="Step 10 times"' in controls_markup
+    assert 'data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times"' in controls_markup
+    assert 'data-command="next-episode" data-next-episode' in controls_markup
+    assert 'services.command("next_episode")' in controls_markup
+    assert "Boolean(session.awaiting_next_episode)" in controls_markup
+    assert "nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode" in controls_markup
     assert '<label for="playback-fps">Play FPS</label>' in controls_markup
     assert 'id="playback-fps" data-fps type="number" min="0"' in controls_markup
     assert 'data-command="set-fps"' in controls_markup

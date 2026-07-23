@@ -12,11 +12,12 @@ export function mount({ definition, services }) {
       <section class="control-section" aria-labelledby="playback-controls-heading">
         <h3 id="playback-controls-heading" class="control-label">Playback</h3>
         <div class="control-grid transport-grid">
-          <button data-command="play" data-playback-toggle class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use data-playback-icon href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
-          <button data-command="step" class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
-          <button data-command="step-ten" class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
-          <button data-command="continue-event" class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
-          <button data-command="continue-done" class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
+          <button data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use data-playback-icon href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
+          <button data-command="step" data-requires-active-episode class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
+          <button data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
+          <button data-command="continue-event" data-requires-active-episode class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
+          <button data-command="continue-done" data-requires-active-episode class="icon-only" aria-label="Continue to episode boundary" title="Continue to episode boundary"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-flag-3"></use></svg></button>
+          <button data-command="next-episode" data-next-episode class="primary button-with-icon control-wide" aria-label="Play next episode" title="Start the prepared next episode" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play next episode</span></button>
         </div>
         <div class="playback-fps">
           <label for="playback-fps">Play FPS</label>
@@ -61,6 +62,7 @@ export function mount({ definition, services }) {
   const acquire = element.querySelector("[data-acquire]");
   const playbackToggle = element.querySelector("[data-playback-toggle]");
   const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
+  const nextEpisode = element.querySelector("[data-next-episode]");
   const commands = {
     pause: () => services.command("pause"),
     play: () => services.command("play", {
@@ -72,6 +74,7 @@ export function mount({ definition, services }) {
     "step-ten": () => services.command("step", { count: 10 }),
     "continue-event": () => services.command("continue", { target: "any" }),
     "continue-done": () => services.command("continue", { target: "done" }),
+    "next-episode": () => services.command("next_episode"),
     reset: () => services.command("reset", { seed: seed.value }),
     "set-fps": () => services.command("set_fps", { fps: Number(fps.value) }),
     "set-sampling-mode": () => services.command("set_sampling_mode", { mode: sampling.value }),
@@ -95,6 +98,12 @@ export function mount({ definition, services }) {
     const state = services.getState();
     element.querySelectorAll("button:not([data-acquire]):not([data-panel-menu]):not([data-drag-handle]):not(.panel-resize)")
       .forEach((button) => { button.disabled = !state.hasControl; });
+    const session = state.liveSnapshot?.session || state.snapshot?.session || {};
+    element.querySelectorAll("[data-requires-active-episode]")
+      .forEach((button) => {
+        button.disabled = !state.hasControl || Boolean(session.awaiting_next_episode);
+      });
+    nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode;
     sampling.disabled = !state.hasControl;
     acquire.disabled = !state.connected || state.hasControl;
   };
@@ -128,6 +137,10 @@ export function mount({ definition, services }) {
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
       renderPlaybackToggle(snapshot.run_state);
       const recording = snapshot.mode === "recording";
+      nextEpisode.hidden = recording || !session.awaiting_next_episode;
+      nextEpisode.title = session.can_start_next_episode
+        ? "Start the prepared next episode"
+        : "The configured episode limit has been reached";
       fps.min = recording ? "1" : "0";
       element.querySelector("#playback-fps-hint").textContent = recording
         ? "Recording FPS must be at least 1"
