@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -562,6 +562,7 @@ def compose_train_document(
     *,
     recipe_overrides: Sequence[str] = (),
     env_provider: str | None = None,
+    prepare_materialized: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     expected_recipe_dir = goal_path.resolve().parent / "recipes"
     resolved_recipe_path = recipe_path.resolve()
@@ -676,6 +677,8 @@ def compose_train_document(
             "recipe_root_path": str(recipe_path.resolve()),
             "source_files": _recipe_source_metadata(sources),
         }
+    if prepare_materialized is not None:
+        prepare_materialized(document)
     label = f"goal file {goal_path} with recipe file {recipe_path}"
     validate_materialized_train_recipe(document, label=label)
     assert_no_template_vars(document, label=label)

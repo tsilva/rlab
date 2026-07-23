@@ -5058,10 +5058,10 @@ def cmd_enqueue_train(args: argparse.Namespace) -> int:
         args.recipe_file,
         recipe_overrides=args.recipe_overrides,
         env_provider=args.env_provider,
-    )
-    _prepare_queue_resume_input(
-        document,
-        root=default_repo_root() / "runs" / "queue-resume-sources",
+        prepare_materialized=lambda value: _prepare_queue_resume_input(
+            value,
+            root=default_repo_root() / "runs" / "queue-resume-sources",
+        ),
     )
     backend = resolve_checkpoint_eval_backend(
         dict(document.get("train_config") or {}),

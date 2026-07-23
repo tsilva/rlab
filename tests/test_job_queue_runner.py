@@ -1376,6 +1376,33 @@ class JobQueueTests(unittest.TestCase):
             1,
         )
 
+    def test_queue_resume_preparation_runs_before_materialized_validation(self) -> None:
+        model_sha256 = "a" * 64
+        locator = f"object-store:models/sha256/{model_sha256}/model.zip"
+
+        def prepare(document: dict) -> None:
+            backend_config = document["train_config"]["training_backend"]["config"]
+            self.assertEqual(backend_config["resume"], locator)
+            backend_config["resume_approval_hash"] = "b" * 64
+            backend_config["resume_manifest"] = [
+                {
+                    "path": "model.zip",
+                    "sha256": model_sha256,
+                    "size_bytes": 1,
+                }
+            ]
+
+        document = compose_train_document(
+            BREAKOUT_GOAL,
+            BREAKOUT_GOAL.parent / "recipes/ppo-snapshot-curriculum.yaml",
+            recipe_overrides=[f"train.backend.config.resume={locator}"],
+            prepare_materialized=prepare,
+        )
+
+        backend_config = document["train_config"]["training_backend"]["config"]
+        self.assertEqual(backend_config["resume"], locator)
+        self.assertEqual(backend_config["resume_approval_hash"], "b" * 64)
+
     def test_compose_train_document_overrides_breakout_provider_atomically(self) -> None:
         document = compose_train_document(
             BREAKOUT_GOAL,
