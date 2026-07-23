@@ -96,7 +96,11 @@ CREATE TABLE IF NOT EXISTS metric_frames (
   last_error TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
-  published_at REAL
+  published_at REAL,
+  relayed_at REAL,
+  mailbox_batch_sequence INTEGER,
+  archived_at REAL,
+  archive_root_sha256 TEXT
 );
 
 CREATE INDEX IF NOT EXISTS metric_frames_status_idx
@@ -116,9 +120,20 @@ CREATE TABLE IF NOT EXISTS telemetry_state (
   published_step INTEGER,
   mailbox_accepted_sequence INTEGER NOT NULL DEFAULT 0,
   outbox_closed_at REAL,
+  producer_terminal_sequence INTEGER,
+  producer_terminal_sha256 TEXT,
   publisher_heartbeat REAL,
   retry_count INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_recovery_manifest (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  manifest_sha256 TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending',
+  created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
 """
@@ -166,6 +181,25 @@ class MetricStore:
                 )
             if "outbox_closed_at" not in telemetry_columns:
                 conn.execute("ALTER TABLE telemetry_state ADD COLUMN outbox_closed_at REAL")
+            if "producer_terminal_sequence" not in telemetry_columns:
+                conn.execute(
+                    "ALTER TABLE telemetry_state ADD COLUMN producer_terminal_sequence INTEGER"
+                )
+            if "producer_terminal_sha256" not in telemetry_columns:
+                conn.execute(
+                    "ALTER TABLE telemetry_state ADD COLUMN producer_terminal_sha256 TEXT"
+                )
+            frame_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(metric_frames)")
+            }
+            for name, declaration in (
+                ("relayed_at", "REAL"),
+                ("mailbox_batch_sequence", "INTEGER"),
+                ("archived_at", "REAL"),
+                ("archive_root_sha256", "TEXT"),
+            ):
+                if name not in frame_columns:
+                    conn.execute(f"ALTER TABLE metric_frames ADD COLUMN {name} {declaration}")
             conn.execute("BEGIN IMMEDIATE")
             legacy_metrics = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metric_observations'"
@@ -307,15 +341,59 @@ class MetricStore:
     def close_metric_outbox(self) -> int:
         now = time.time()
         with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT outbox_closed_at FROM telemetry_state WHERE singleton = 1"
+            ).fetchone()
+            if existing is None or existing[0] is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, event_id, kind, payload_json
+                    FROM metric_frames ORDER BY id
+                    """
+                ).fetchall()
+                chain = hashlib.sha256()
+                for row in rows:
+                    chain.update(
+                        json.dumps(
+                            {
+                                "id": int(row["id"]),
+                                "event_id": str(row["event_id"]),
+                                "kind": str(row["kind"]),
+                                "payload_json": str(row["payload_json"]),
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    )
+                terminal_sequence = int(rows[-1]["id"]) if rows else 0
+                terminal_sha256 = chain.hexdigest()
+            else:
+                terminal = conn.execute(
+                    """
+                    SELECT producer_terminal_sequence, producer_terminal_sha256
+                    FROM telemetry_state WHERE singleton = 1
+                    """
+                ).fetchone()
+                terminal_sequence = int((terminal or [0])[0] or 0)
+                terminal_sha256 = str((terminal or [None, ""])[1] or "")
             conn.execute(
                 """
-                INSERT INTO telemetry_state (singleton, outbox_closed_at, updated_at)
-                VALUES (1, ?, ?)
+                INSERT INTO telemetry_state (
+                  singleton, outbox_closed_at, producer_terminal_sequence,
+                  producer_terminal_sha256, updated_at
+                )
+                VALUES (1, ?, ?, ?, ?)
                 ON CONFLICT(singleton) DO UPDATE SET
                   outbox_closed_at = COALESCE(outbox_closed_at, excluded.outbox_closed_at),
+                  producer_terminal_sequence = COALESCE(
+                    producer_terminal_sequence, excluded.producer_terminal_sequence
+                  ),
+                  producer_terminal_sha256 = COALESCE(
+                    producer_terminal_sha256, excluded.producer_terminal_sha256
+                  ),
                   updated_at = excluded.updated_at
                 """,
-                (now, now),
+                (now, terminal_sequence, terminal_sha256, now),
             )
             row = conn.execute(
                 "SELECT COUNT(*) FROM metric_frames "
@@ -342,8 +420,13 @@ class MetricStore:
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 conn.execute(
-                    f"DELETE FROM metric_frames WHERE id IN ({placeholders})",
-                    ids,
+                    f"""
+                    UPDATE metric_frames
+                    SET status = 'relayed', relayed_at = ?,
+                        mailbox_batch_sequence = ?, last_error = NULL, updated_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    [now, int(batch_sequence), now, *ids],
                 )
             conn.execute(
                 """
@@ -380,6 +463,73 @@ class MetricStore:
             "frames": int(row[0] if row else 0),
             "bytes": int(row[1] if row else 0),
         }
+
+    def register_recovery_manifest(self, manifest: Mapping[str, object]) -> str:
+        """Persist a secret-free recovery contract before external credentials are used."""
+
+        forbidden = {
+            key
+            for key in manifest
+            if any(token in str(key).lower() for token in ("token", "secret", "password", "api_key"))
+        }
+        if forbidden:
+            raise ValueError(f"recovery manifest contains secret-like fields: {sorted(forbidden)}")
+        normalized = dict(manifest)
+        payload = json.dumps(
+            normalized, sort_keys=True, separators=(",", ":"), default=str
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO telemetry_recovery_manifest (
+                  singleton, manifest_sha256, manifest_json, state, created_at, updated_at
+                ) VALUES (1, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                  manifest_sha256 = CASE
+                    WHEN telemetry_recovery_manifest.manifest_sha256 = excluded.manifest_sha256
+                    THEN excluded.manifest_sha256
+                    ELSE telemetry_recovery_manifest.manifest_sha256
+                  END,
+                  updated_at = excluded.updated_at
+                """,
+                (digest, payload, now, now),
+            )
+            row = conn.execute(
+                "SELECT manifest_sha256 FROM telemetry_recovery_manifest WHERE singleton = 1"
+            ).fetchone()
+            if not row or str(row[0]) != digest:
+                raise RuntimeError("recovery manifest conflicts with the registered run")
+        return digest
+
+    def authorize_archived_frame_cleanup(self, *, archive_root_sha256: str) -> int:
+        digest = str(archive_root_sha256).strip().lower()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise ValueError("archive root must be a lowercase SHA-256")
+        now = time.time()
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE metric_frames
+                SET archived_at = COALESCE(archived_at, ?),
+                    archive_root_sha256 = ?
+                WHERE status IN ('relayed', 'published', 'failed_terminal')
+                """,
+                (now, digest),
+            )
+        return int(cursor.rowcount)
+
+    def delete_archived_frames(self, *, archive_root_sha256: str) -> int:
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM metric_frames
+                WHERE archived_at IS NOT NULL AND archive_root_sha256 = ?
+                """,
+                (str(archive_root_sha256),),
+            )
+        return int(cursor.rowcount)
 
     def pending_mailbox_frames(self, *, limit: int = 100) -> list[dict[str, Any]]:
         with self.connection() as conn:

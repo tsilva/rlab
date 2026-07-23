@@ -1339,57 +1339,47 @@ def fetch_training_evidence(
     mode: str = EVIDENCE_SUCCESS,
     return_tail_fraction: float = RETURN_TAIL_FRACTION,
 ) -> dict[str, Any]:
-    import wandb
+    from rlab.job_queue import connect
+    from rlab.telemetry_evidence import training_facts_by_wandb_run_id
 
-    remote = wandb.Api(timeout=30).run(_wandb_run_path(url))
-    if str(remote.id) != str(expected_run_id):
-        raise RuntimeError("W&B run identity does not match the terminal event")
-    if str(remote.state) != "finished":
-        raise RuntimeError(f"W&B run is not remotely finished: {remote.state}")
-    summary = remote.summary
+    database_url = str(os.environ.get("DATABASE_URL") or "").strip()
+    if not database_url:
+        raise RuntimeError("autoresearch evidence requires DATABASE_URL")
+    conn = connect(database_url)
+    try:
+        facts = training_facts_by_wandb_run_id(
+            conn, wandb_run_id=str(expected_run_id)
+        )
+    finally:
+        conn.close()
+    metrics = dict(facts.get("metrics") or {})
+    dimensions = dict(facts.get("dimensions") or {})
     counts: dict[str, int] = {}
     for start in starts:
         metric = f"train/outcome/success/from/{start}/count"
-        raw = _summary_scalar(summary.get(metric))
+        raw = metrics.get(metric)
         counts[start] = int(raw or 0)
     all_starts_succeeded = all(value > 0 for value in counts.values())
-
-    peak: float | None = None
-    first_strong_step: int | None = None
-    observed_max_step = int(_summary_scalar(summary.get(GLOBAL_STEP)) or 0)
-    for row in remote.scan_history(
-        keys=[GLOBAL_STEP, TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN],
-        page_size=1000,
-    ):
-        step = row.get(GLOBAL_STEP)
-        value = row.get(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN)
-        if step is None or value is None:
-            continue
-        step = int(step)
-        value = float(value)
-        observed_max_step = max(observed_max_step, step)
-        peak = value if peak is None else max(peak, value)
-        if first_strong_step is None and value >= strong_threshold:
-            first_strong_step = step
-
-    return_rows: list[tuple[int, float]] = []
-    for row in remote.scan_history(
-        keys=[GLOBAL_STEP, TRAIN_EPISODE_RETURN_SHAPED_MEAN],
-        page_size=1000,
-    ):
-        step = row.get(GLOBAL_STEP)
-        value = row.get(TRAIN_EPISODE_RETURN_SHAPED_MEAN)
-        if step is None or value is None:
-            continue
-        step = int(step)
-        value = float(value)
-        if not math.isfinite(value):
-            continue
-        observed_max_step = max(observed_max_step, step)
-        return_rows.append((step, value))
-    tail_start = int(observed_max_step * (1.0 - float(return_tail_fraction)))
-    tail_values = [value for step, value in return_rows if step >= tail_start]
-    return_valid = bool(return_rows) and len(tail_values) >= 10
+    peak_raw = metrics.get(
+        f"{TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN}/peak",
+        metrics.get(TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN),
+    )
+    peak = None if peak_raw is None else float(peak_raw)
+    first_step_raw = metrics.get(
+        f"{TRAIN_OUTCOME_SUCCESS_WINDOW_100_RATE_MIN}/first_threshold_step"
+    )
+    first_strong_step = None if first_step_raw is None else int(first_step_raw)
+    observed_max_step = int(metrics.get(GLOBAL_STEP) or 0)
+    tail_mean_raw = metrics.get(
+        f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_{return_tail_fraction:g}_mean"
+    )
+    tail_count = int(
+        metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_count") or 0
+    )
+    return_valid = tail_mean_raw is not None and tail_count >= 10
+    return_points = int(
+        metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/points") or 0
+    )
     result = {
         "evidence_mode": mode,
         "all_starts_succeeded": all_starts_succeeded,
@@ -1399,20 +1389,28 @@ def fetch_training_evidence(
         "strong": first_strong_step is not None,
         "observed_max_step": observed_max_step,
         "strong_threshold": strong_threshold,
-        "wandb_run_id": str(remote.id),
-        "wandb_url": str(remote.url or url),
-        "wandb_state": str(remote.state),
+        "wandb_run_id": str(expected_run_id),
+        "wandb_url": str(facts.get("wandb_url") or url),
+        "wandb_state": "diagnostic_only",
+        "authority": "run_final_exact",
+        "scope_sha256": str(facts["scope_sha256"]),
+        "comparability_sha256": str(facts["comparability_sha256"]),
+        "rank_direction": str(dimensions["rank_direction"]),
         "collected_at": utc_now(),
         "return_metric": TRAIN_EPISODE_RETURN_SHAPED_MEAN,
-        "return_points": len(return_rows),
+        "return_points": return_points,
         "return_tail_fraction": float(return_tail_fraction),
-        "return_tail_points": len(tail_values),
+        "return_tail_points": tail_count,
         "return_evidence_valid": return_valid,
-        "return_peak": max((value for _, value in return_rows), default=None),
-        "return_last": return_rows[-1][1] if return_rows else None,
-        "return_tail_mean": float(mean(tail_values)) if tail_values else None,
-        "return_tail_p05": percentile(tail_values, 0.05) if tail_values else None,
-        "return_tail_std": float(pstdev(tail_values)) if tail_values else None,
+        "return_peak": metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/peak"),
+        "return_last": metrics.get(f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/last"),
+        "return_tail_mean": tail_mean_raw,
+        "return_tail_p05": metrics.get(
+            f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_p05"
+        ),
+        "return_tail_std": metrics.get(
+            f"{TRAIN_EPISODE_RETURN_SHAPED_MEAN}/tail_std"
+        ),
     }
     if mode == EVIDENCE_RETURN and not return_valid:
         result["strong"] = False

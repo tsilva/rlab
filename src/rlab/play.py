@@ -844,7 +844,13 @@ class _PlaybackSession:
         if next_state is not None:
             self.active_task_state = next_state
 
-    def restart(self, seed: int | None = None) -> None:
+    def restart(
+        self,
+        seed: int | None = None,
+        *,
+        reset_episode_index: bool = True,
+    ) -> None:
+        episode = 1 if reset_episode_index else self.episode
         seed = self.initial_seed if seed is None else seed
         torch.manual_seed(seed)
         if bool(getattr(self.model, "use_sde", False)):
@@ -857,7 +863,7 @@ class _PlaybackSession:
         reset_info = dict(self.env.reset_infos[0])
         self._set_initial_conditioning(reset_info)
         self.active_seed = seed
-        self.episode = 1
+        self.episode = episode
         self.step_index = 0
         self.total_reward = 0.0
         self.max_x_pos = 0

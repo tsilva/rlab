@@ -123,7 +123,7 @@ COMMANDS: dict[str, tuple[str, Callable[[Sequence[str]], int]]] = {
     "env": ("list, inspect, and preflight environment providers", _env),
     "rom": ("provision, verify, and warm immutable ROM assets", _rom),
     "dataset": ("record, inspect, verify, migrate, and publish gameplay datasets", _dataset),
-    "leaders": ("query W&B run and checkpoint leaderboards", _leaders),
+    "leaders": ("query authoritative exact run and checkpoint evidence", _leaders),
     "reports": ("plan, synchronize, and verify declarative W&B reports", _reports),
     "fleet": ("manage one-job Docker containers from queue state", _fleet),
     "run-job": ("run one claimed job payload inside a container", _run_job),

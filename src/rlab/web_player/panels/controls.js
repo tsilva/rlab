@@ -12,11 +12,10 @@ export function mount({ definition, services }) {
       <section class="control-section" aria-labelledby="playback-controls-heading">
         <h3 id="playback-controls-heading" class="control-label">Playback</h3>
         <div class="control-grid transport-grid">
-          <button data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use data-playback-icon href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
+          <button data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only" aria-label="Play" title="Play current episode"><svg class="icon" aria-hidden="true"><use data-playback-icon href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
           <button data-command="step" data-requires-active-episode class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
           <button data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
           <button data-command="continue-event" data-requires-active-episode class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
-          <button data-command="next-episode" data-next-episode class="primary button-with-icon control-wide" aria-label="Play next episode" title="Start the prepared next episode" hidden><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play next episode</span></button>
         </div>
         <details class="playback-settings">
           <summary>Playback settings</summary>
@@ -27,35 +26,34 @@ export function mount({ definition, services }) {
               <button data-command="set-fps" class="quiet icon-only" aria-label="Apply play FPS" title="Apply play FPS"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-check"></use></svg></button>
             </div>
             <p id="playback-fps-hint" class="control-hint">0 runs playback uncapped</p>
-            <div class="playback-sampling">
-              <label for="playback-sampling">Sampling</label>
-              <select id="playback-sampling" data-sampling aria-describedby="playback-sampling-hint">
-                <option value="stochastic">Stochastic</option>
-                <option value="deterministic">Deterministic</option>
-              </select>
-            </div>
-            <p id="playback-sampling-hint" class="control-hint">Playback only · evaluation remains stochastic</p>
           </div>
         </details>
       </section>
-      <details class="control-section session-settings">
-        <summary>Session settings</summary>
-        <div class="session-settings-body">
-          <div class="control-field-row">
-            <label>Seed <input data-seed inputmode="numeric"></label>
-            <button data-command="reset" class="icon-only" aria-label="Reset with this seed" title="Reset with this seed"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-refresh"></use></svg></button>
+      <section class="control-section next-episode-settings" aria-labelledby="next-episode-heading">
+        <h3 id="next-episode-heading" data-next-episode-heading class="control-label">Next episode</h3>
+        <div class="next-episode-settings-body">
+          <label class="next-episode-seed" for="next-episode-seed">Seed
+            <input id="next-episode-seed" data-seed inputmode="numeric">
+          </label>
+          <div class="playback-sampling">
+            <label for="playback-sampling">Sampling</label>
+            <select id="playback-sampling" data-sampling aria-describedby="playback-sampling-hint">
+              <option value="stochastic">Stochastic</option>
+              <option value="deterministic">Deterministic</option>
+            </select>
           </div>
-        </div>
-      </details>
-      <section class="control-section" aria-labelledby="driver-controls-heading">
-        <h3 id="driver-controls-heading" class="control-label">Driver</h3>
-        <div class="driver-controls">
           <div class="driver-switch" role="group" aria-label="Driver selection">
-            <button data-command="policy" data-driver-option="policy" class="quiet button-with-icon driver-option" aria-pressed="true" aria-label="Use policy driver" title="Use policy driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg><span>Policy</span></button>
-            <button data-command="human" data-driver-option="human" class="quiet button-with-icon driver-option" aria-pressed="false" aria-label="Take human control" title="Take human control"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg><span>Human</span></button>
+            <button type="button" data-driver-option="policy" class="quiet button-with-icon driver-option" aria-pressed="true" aria-label="Use policy driver for next episode" title="Use policy driver for next episode"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-brain"></use></svg><span>Policy</span></button>
+            <button type="button" data-driver-option="human" class="quiet button-with-icon driver-option" aria-pressed="false" aria-label="Use human driver for next episode" title="Use human driver for next episode"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-hand-grab"></use></svg><span>Human</span></button>
           </div>
-          <button data-command="inspect" class="quiet icon-only" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg></button>
+          <p id="playback-sampling-hint" class="control-hint">Applies to the next playback episode only · evaluation remains stochastic</p>
+          <button data-command="next-episode" data-next-episode class="primary button-with-icon control-wide" aria-label="Play next episode" title="Available after the current episode ends"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg><span>Play next episode</span></button>
+          <p data-next-episode-hint class="control-hint">Available after the current episode ends</p>
         </div>
+      </section>
+      <section class="control-section policy-inspection" aria-labelledby="policy-inspection-heading">
+        <h3 id="policy-inspection-heading" class="control-label">Policy</h3>
+        <button data-command="inspect" class="quiet button-with-icon" aria-label="Inspect policy" title="Inspect policy"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-search"></use></svg><span>Inspect policy</span></button>
       </section>
     `,
   });
@@ -66,25 +64,28 @@ export function mount({ definition, services }) {
   const playbackToggle = element.querySelector("[data-playback-toggle]");
   const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
   const nextEpisode = element.querySelector("[data-next-episode]");
-  const driverControls = element.querySelector(".driver-controls");
+  const nextEpisodeSettings = element.querySelector(".next-episode-settings");
+  const nextEpisodeHeading = element.querySelector("[data-next-episode-heading]");
+  const nextEpisodeHint = element.querySelector("[data-next-episode-hint]");
+  const seedField = element.querySelector(".next-episode-seed");
+  const playbackSampling = element.querySelector(".playback-sampling");
+  const policyInspection = element.querySelector(".policy-inspection");
   const driverSwitch = element.querySelector(".driver-switch");
   const driverOptions = [...element.querySelectorAll("[data-driver-option]")];
+  let nextDriver = "policy";
+  let wasAwaitingNextEpisode = false;
   const commands = {
     pause: () => services.pauseCurrentPlayback(),
-    play: () => services.playFromCurrentPosition(
-      services.getState().liveSnapshot?.driver
-        || services.getState().snapshot?.driver
-        || "policy",
-    ),
+    play: () => services.playFromCurrentPosition(),
     step: () => services.command("step", { count: 1 }),
     "step-ten": () => services.command("step", { count: 10 }),
     "continue-event": () => services.command("continue", { target: "any" }),
-    "next-episode": () => services.command("next_episode"),
-    reset: () => services.command("reset", { seed: seed.value }),
+    "next-episode": () => services.command("next_episode", {
+      seed: seed.value,
+      sampling_mode: sampling.value,
+      driver: nextDriver,
+    }),
     "set-fps": () => services.command("set_fps", { fps: Number(fps.value) }),
-    "set-sampling-mode": () => services.command("set_sampling_mode", { mode: sampling.value }),
-    policy: () => services.command("set_driver", { driver: "policy" }),
-    human: () => services.command("set_driver", { driver: "human" }),
     inspect: () => services.command("inspect_policy"),
   };
   element.querySelectorAll("[data-command]").forEach((button) => {
@@ -95,7 +96,14 @@ export function mount({ definition, services }) {
     event.preventDefault();
     commands["set-fps"]();
   });
-  sampling.addEventListener("change", commands["set-sampling-mode"]);
+  driverOptions.forEach((option) => {
+    option.addEventListener("click", () => {
+      nextDriver = option.dataset.driverOption;
+      driverOptions.forEach((candidate) => {
+        candidate.setAttribute("aria-pressed", String(candidate === option));
+      });
+    });
+  });
 
   const updateControl = () => {
     const state = services.getState();
@@ -111,8 +119,17 @@ export function mount({ definition, services }) {
       && !state.replayingInspection
       && !services.canReplayInspection()
     );
-    nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode;
-    sampling.disabled = !state.hasControl;
+    const recording = (state.liveSnapshot?.mode || state.snapshot?.mode) === "recording";
+    const canPrepareNextEpisode = (
+      !recording && state.hasControl && Boolean(session.can_start_next_episode)
+    );
+    nextEpisode.disabled = !canPrepareNextEpisode;
+    seed.disabled = !canPrepareNextEpisode;
+    sampling.disabled = !canPrepareNextEpisode;
+    driverOptions.forEach((option) => {
+      option.disabled = recording || !canPrepareNextEpisode;
+    });
+    nextEpisodeSettings.classList.toggle("available", canPrepareNextEpisode);
   };
 
   const renderPlaybackToggle = (runState) => {
@@ -123,7 +140,7 @@ export function mount({ definition, services }) {
       ? "Pause after the current transition"
       : (services.canReplayInspection()
         ? "Replay from the selected step"
-        : "Play with the selected driver");
+        : "Play current episode");
     if (playbackToggle.dataset.command === command) return;
     const label = running ? "Pause" : "Play";
     playbackToggle.dataset.command = command;
@@ -139,39 +156,52 @@ export function mount({ definition, services }) {
       if (view.inspection) snapshot = services.getState().liveSnapshot || snapshot;
       if (!snapshot) { updateControl(); return; }
       const session = snapshot.session || {};
-      seed.value = text(session.seed, "");
       if (document.activeElement !== fps) fps.value = Number(session.target_fps || 0);
-      if (document.activeElement !== sampling) {
+      const awaitingNextEpisode = Boolean(session.awaiting_next_episode);
+      if (!awaitingNextEpisode || !wasAwaitingNextEpisode) {
+        if (document.activeElement !== seed) seed.value = text(session.seed, "");
         sampling.value = session.sampling_mode || "stochastic";
+        nextDriver = snapshot.driver || "policy";
       }
+      wasAwaitingNextEpisode = awaitingNextEpisode;
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
       renderPlaybackToggle(snapshot.run_state);
       driverOptions.forEach((option) => {
         option.setAttribute(
           "aria-pressed",
-          String(option.dataset.driverOption === snapshot.driver),
+          String(option.dataset.driverOption === nextDriver),
         );
       });
       const recording = snapshot.mode === "recording";
-      driverControls.classList.toggle("recording", recording);
       driverSwitch.classList.toggle("single-option", recording);
-      nextEpisode.hidden = recording || !session.awaiting_next_episode;
+      nextEpisodeHeading.textContent = recording ? "Driver" : "Next episode";
+      seedField.hidden = recording;
+      playbackSampling.hidden = recording;
+      nextEpisode.hidden = recording;
+      nextEpisodeHint.hidden = recording;
+      policyInspection.hidden = recording;
       nextEpisode.title = session.can_start_next_episode
         ? "Start the prepared next episode"
-        : "The configured episode limit has been reached";
+        : (session.awaiting_next_episode
+          ? "The configured episode limit has been reached"
+          : "Available after the current episode ends");
+      nextEpisodeHint.textContent = session.can_start_next_episode
+        ? "Dispatches Seed, Sampling, and Driver together"
+        : (session.awaiting_next_episode
+          ? "The configured episode limit has been reached"
+          : "Available after the current episode ends");
       fps.min = recording ? "1" : "0";
       element.querySelector("#playback-fps-hint").textContent = recording
         ? "Recording FPS must be at least 1"
         : "0 runs playback uncapped";
-      ["step", "step-ten", "continue-event", "reset", "policy", "inspect"].forEach((name) => {
+      ["step", "step-ten", "continue-event", "inspect"].forEach((name) => {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;
       });
-      element.querySelector(".session-settings").hidden = recording;
-      element.querySelector(".playback-sampling").hidden = recording;
-      element.querySelector("#playback-sampling-hint").hidden = recording;
-      seed.closest("label").hidden = recording;
-      const human = element.querySelector('[data-command="human"]');
-      const humanLabel = recording ? "Human controls" : "Take human control";
+      const policy = element.querySelector('[data-driver-option="policy"]');
+      policy.hidden = recording;
+      nextDriver = recording ? "human" : nextDriver;
+      const human = element.querySelector('[data-driver-option="human"]');
+      const humanLabel = recording ? "Human controls" : "Use human driver for next episode";
       human.setAttribute("aria-label", humanLabel);
       human.title = humanLabel;
       updateControl();

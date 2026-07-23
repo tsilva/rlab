@@ -99,7 +99,7 @@ class MetricStoreTests(unittest.TestCase):
                     source="late_callback",
                 )
 
-    def test_mailbox_ack_deletes_only_delivered_frames_and_advances_cursor(self) -> None:
+    def test_mailbox_ack_retains_delivered_frames_and_advances_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")
             store.init()
@@ -119,6 +119,31 @@ class MetricStoreTests(unittest.TestCase):
             self.assertEqual([int(row["step"]) for row in remaining], [20])
             self.assertEqual(store.next_mailbox_batch_sequence(), 2)
             self.assertEqual(store.metric_outbox_stats()["frames"], 1)
+            with store.connection() as conn:
+                retained = conn.execute(
+                    """
+                    SELECT status, mailbox_batch_sequence
+                    FROM metric_frames WHERE id = ?
+                    """,
+                    (int(frames[0]["id"]),),
+                ).fetchone()
+            self.assertEqual("relayed", retained["status"])
+            self.assertEqual(1, retained["mailbox_batch_sequence"])
+
+    def test_recovery_manifest_is_secret_free_and_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            digest = store.register_recovery_manifest(
+                {
+                    "version": "telemetry-recovery-manifest-v1",
+                    "run_name": "run",
+                    "absolute_source_paths": [str(Path(tmp).resolve())],
+                }
+            )
+            self.assertEqual(64, len(digest))
+            with self.assertRaisesRegex(ValueError, "secret-like"):
+                store.register_recovery_manifest({"api_key": "never"})
 
     def test_writer_waits_for_bounded_concurrent_lock_instead_of_failing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

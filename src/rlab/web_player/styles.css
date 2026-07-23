@@ -311,9 +311,6 @@ select {
 .control-grid .icon-only { width: 100%; height: 2.15rem; padding: .45rem; }
 .control-grid .icon-only .icon { width: 1rem; height: 1rem; }
 .control-wide { grid-column: 1 / -1; }
-.driver-controls { display: grid; grid-template-columns: minmax(0, 2fr) minmax(2.15rem, 1fr); gap: .38rem; }
-.driver-controls.recording { grid-template-columns: 1fr; }
-.driver-controls > .icon-only { width: 100%; height: 2.15rem; padding: .45rem; }
 .driver-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -334,6 +331,14 @@ select {
 .driver-option + .driver-option { border-left: 1px solid #31505e; }
 .driver-option[aria-pressed="true"] { color: var(--text); background: #0c665f; }
 .driver-option .icon { width: .95rem; height: .95rem; }
+.next-episode-settings { border-top: 1px solid rgba(49, 80, 94, .45); padding-top: .62rem; }
+.next-episode-settings.available { border-top-color: rgba(45, 168, 150, .7); }
+.next-episode-settings-body { display: grid; gap: .42rem; }
+.next-episode-seed { display: grid; gap: .22rem; color: var(--muted); font-size: .7rem; }
+.next-episode-seed input { width: 100%; min-width: 0; }
+.next-episode-settings .driver-switch { margin-top: .08rem; }
+.next-episode-settings [data-next-episode] { width: 100%; margin-top: .12rem; }
+.policy-inspection button { width: 100%; }
 .playback-settings { margin-top: .5rem; border-top: 1px solid rgba(49, 80, 94, .45); padding-top: .5rem; }
 .playback-settings summary { color: var(--muted); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; }
 .playback-settings-body { display: grid; gap: .4rem; margin-top: .5rem; }
@@ -360,11 +365,6 @@ select {
 .control-field-row label { display: grid; gap: .22rem; min-width: 0; }
 .control-field-row input { width: 100%; min-width: 0; }
 .control-field-row button { min-width: 0; }
-.session-settings { border-top: 1px solid rgba(49, 80, 94, .45); padding-top: .5rem; }
-.session-settings summary { color: var(--muted); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; }
-.session-settings-body { display: grid; gap: .4rem; margin-top: .5rem; }
-.session-settings-body .control-field-row + .control-field-row { margin-top: 0; }
-
 .empty-state { color: var(--muted); font-size: .8rem; }
 .panel-foot { color: var(--muted); font-size: .7rem; margin: .55rem 0 0; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(4rem, 1fr)); gap: .5rem; margin-bottom: .58rem; padding-bottom: .5rem; border-bottom: 1px solid rgba(49, 80, 94, .45); }

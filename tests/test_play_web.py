@@ -58,30 +58,73 @@ def test_playback_environment_title_uses_configured_env_id() -> None:
     assert _session_environment_id(session, human_args()) == "BreakoutTurbo-v0"
 
 
-def test_web_playback_sampling_mode_selects_policy_action_path() -> None:
+def test_next_episode_dispatches_seed_sampling_and_driver_atomically() -> None:
     transition = argparse.Namespace(boundary=False, events=())
     session = argparse.Namespace(
         config={"game": "Game-v0"},
+        episode=2,
         last_transition=None,
+        restart=Mock(),
         step=Mock(return_value=transition),
     )
-    runner = WebPlaybackRunner(session, human_args(), config_text="")
+    runner = WebPlaybackRunner(session, human_args(episodes=0), config_text="")
     runner._publish = Mock()
+    runner.awaiting_next_episode = True
+    runner.boundaries = 1
+    runner.driver = "human"
 
     runner._apply(
         PlaybackCommand(
-            "sampling",
+            "next",
             "client",
-            "set_sampling_mode",
-            {"mode": "deterministic"},
+            "next_episode",
+            {
+                "seed": "42",
+                "sampling_mode": "deterministic",
+                "driver": "policy",
+            },
             None,
         )
     )
-    runner.run_state = "playing"
+
+    session.restart.assert_called_once_with(42, reset_episode_index=False)
+    assert runner.awaiting_next_episode is False
+    assert runner.sampling_mode == "deterministic"
+    assert runner.driver == "policy"
+    assert runner.run_state == "playing"
+
     runner._step_once()
 
-    assert runner.sampling_mode == "deterministic"
     session.step.assert_called_once_with(deterministic=True)
+
+
+def test_play_does_not_mutate_active_episode_dispatch_settings() -> None:
+    session = argparse.Namespace(
+        config={"game": "Game-v0"},
+        last_transition=None,
+    )
+    runner = WebPlaybackRunner(session, human_args(episodes=0), config_text="")
+    runner._publish = Mock()
+    runner.sampling_mode = "stochastic"
+    runner.driver = "policy"
+
+    runner._apply(
+        PlaybackCommand(
+            "play",
+            "client",
+            "play",
+            {
+                "sampling_mode": "deterministic",
+                "driver": "human",
+                "seed": "42",
+            },
+            None,
+        )
+    )
+
+    assert runner.run_state == "playing"
+    assert runner.sampling_mode == "stochastic"
+    assert runner.driver == "policy"
 
 
 def test_web_playback_requires_explicit_command_after_episode_boundary() -> None:
@@ -473,11 +516,13 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'class="game-actions panel-actions"' in game_markup
     assert "game-overlay" not in game_markup
     assert ".game-overlay" not in styles
-    assert 'id="timeline-label">EP — · STEP — · SEQ —' in markup
+    assert 'id="timeline-label">STEP — · SEQ —' in markup
     assert 'id="timeline-step"' not in markup
     assert 'id="timeline-sequence"' not in markup
     assert '$("#timeline-label").textContent' in script
     assert 'state.inspectionSequence === null ? null : "INSPECTING"' in script
+    assert "function episodeForSnapshot(snapshot)" in script
+    assert "`EP ${" not in script
     assert "grid-template-columns: minmax(0, 1fr)" in styles
     assert ".timeline-labels { min-width: 0; overflow: hidden;" in styles
     assert "aspect-ratio: 256 / 240" in styles
@@ -489,15 +534,18 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'id="timeline-zoom-in"' not in markup
     assert 'id="timeline-zoom-label"' not in markup
     assert "timelineWindow" not in script
-    assert "state.timelineSequences = all;" in script
+    assert "const currentEpisode = episodeForSnapshot(state.liveSnapshot);" in script
+    assert "currentEpisode === null || episodeForSnapshot(snapshot) === currentEpisode" in script
+    assert "previousEpisode !== nextEpisode" in script
     assert 'scrubber.step = "1";' in script
     assert "if (index === state.timelineSequences.length - 1) returnToLive();" in script
     assert "data-return-chart" in reward_markup
     assert controls_markup.count("data-playback-toggle data-requires-active-episode class=") == 1
     assert 'data-command="play" data-playback-toggle data-requires-active-episode class="primary icon-only"' in controls_markup
     assert 'data-command="pause" class="icon-only"' not in controls_markup
-    assert "services.getState().liveSnapshot?.driver" in controls_markup
-    assert "services.playFromCurrentPosition(" in controls_markup
+    assert "services.playFromCurrentPosition()" in controls_markup
+    assert "function playFromCurrentPosition()" in script
+    assert 'command("play");' in script
     assert "services.pauseCurrentPlayback()" in controls_markup
     assert "services.canReplayInspection()" in controls_markup
     assert "state.replayingInspection" in controls_markup
@@ -521,9 +569,15 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert "ti-power" not in icons
     assert 'data-command="step-ten" data-requires-active-episode class="icon-only" aria-label="Step 10 times"' in controls_markup
     assert 'data-command="next-episode" data-next-episode' in controls_markup
-    assert 'services.command("next_episode")' in controls_markup
+    assert 'services.command("next_episode", {' in controls_markup
+    assert "seed: seed.value" in controls_markup
+    assert "sampling_mode: sampling.value" in controls_markup
+    assert "driver: nextDriver" in controls_markup
     assert "Boolean(session.awaiting_next_episode)" in controls_markup
-    assert "nextEpisode.disabled = !state.hasControl || !session.can_start_next_episode" in controls_markup
+    assert "nextEpisode.disabled = !canPrepareNextEpisode" in controls_markup
+    assert "seed.disabled = !canPrepareNextEpisode" in controls_markup
+    assert "sampling.disabled = !canPrepareNextEpisode" in controls_markup
+    assert "option.disabled = recording || !canPrepareNextEpisode" in controls_markup
     assert '<label for="playback-fps">Play FPS</label>' in controls_markup
     assert '<details class="playback-settings">' in controls_markup
     assert "<summary>Playback settings</summary>" in controls_markup
@@ -534,13 +588,20 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert '<select id="playback-sampling" data-sampling' in controls_markup
     assert '<option value="stochastic">Stochastic</option>' in controls_markup
     assert '<option value="deterministic">Deterministic</option>' in controls_markup
-    assert 'services.command("set_sampling_mode", { mode: sampling.value })' in controls_markup
+    assert '<h3 id="next-episode-heading"' in controls_markup
+    assert 'class="next-episode-settings-body"' in controls_markup
+    assert 'class="next-episode-seed"' in controls_markup
+    assert "set_sampling_mode" not in controls_markup
+    assert 'data-command="reset"' not in controls_markup
+    assert 'services.command("set_driver"' not in controls_markup
     assert 'fps.addEventListener("keydown"' in controls_markup
     assert 'commands["set-fps"]();' in controls_markup
-    assert 'element.querySelector(".session-settings").hidden = recording' in controls_markup
+    assert "Session settings" not in controls_markup
     assert ".playback-fps" in styles
     assert ".playback-sampling" in styles
     assert ".playback-settings-body" in styles
+    assert ".next-episode-settings-body" in styles
+    assert "ti-refresh" not in icons
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert 'id="save-layout" class="primary button-with-icon" type="button" title="Save layout"' in markup
     assert 'id="reset-layout" class="quiet button-with-icon" type="button" title="Reset default layout"' in markup
@@ -551,16 +612,15 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert 'class="driver-switch" role="group" aria-label="Driver selection"' in controls_markup
     assert 'data-driver-option="policy"' in controls_markup
     assert 'data-driver-option="human"' in controls_markup
-    assert 'aria-pressed="true" aria-label="Use policy driver"' in controls_markup
-    assert 'aria-pressed="false" aria-label="Take human control"' in controls_markup
-    assert 'option.dataset.driverOption === snapshot.driver' in controls_markup
+    assert 'aria-pressed="true" aria-label="Use policy driver for next episode"' in controls_markup
+    assert 'aria-pressed="false" aria-label="Use human driver for next episode"' in controls_markup
+    assert "option.dataset.driverOption === nextDriver" in controls_markup
     assert '.driver-option[aria-pressed="true"]' in styles
     assert "separate scale" not in markup
     assert "shared scale" not in markup
     assert "Research workspace" not in markup
     assert "panel-kicker" not in markup
     assert 'id="workspace-sequence"' not in markup
-    assert '<details class="control-section session-settings">' in controls_markup
     assert '#workspace-sequence' not in script
     assert "panel-shelf-title" not in script
     assert "scrollIntoView" not in script

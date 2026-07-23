@@ -69,7 +69,7 @@ def archive_policy_sha256(policy_name: str, copies: Sequence[ArchiveCopy]) -> st
     )
 
 
-def _event_from_row(row: Mapping[str, Any]) -> CanonicalEvent:
+def canonical_event_from_ledger_row(row: Mapping[str, Any]) -> CanonicalEvent:
     encoding = str(row["payload_encoding"])
     raw = bytes(row["payload"])
     if sha256_bytes(raw) != str(row["payload_sha256"]):
@@ -212,7 +212,9 @@ def claim_next_segment(
                 producer["first_unarchived"]
             ):
                 raise RuntimeError("canonical telemetry archive coverage contains a gap")
-            segment = build_canonical_segment(_event_from_row(row) for row in rows)
+            segment = build_canonical_segment(
+                canonical_event_from_ledger_row(row) for row in rows
+            )
             first_sequence = int(rows[0]["source_sequence"])
             last_sequence = int(rows[-1]["source_sequence"])
             cur.execute(
@@ -458,6 +460,7 @@ def build_archive_root_document(
 def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
     """Atomically freeze and root a run only after exact closure and receipt proof."""
 
+    finalized: dict[str, Any]
     with conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -620,7 +623,11 @@ def finalize_exact_archive_root(conn, *, train_job_id: int) -> dict[str, Any]:
                 """,
                 {"run": int(train_job_id), "root_sha256": root_sha256},
             )
-            return {**root, "root_sha256": root_sha256}
+            finalized = {**root, "root_sha256": root_sha256}
+    from rlab.telemetry_reducer import reduce_run_integrity
+
+    reduce_run_integrity(conn, train_job_id=int(train_job_id))
+    return finalized
 
 
 def delete_rooted_operational_batches(

@@ -447,32 +447,62 @@ def normalize_wandb_rows(
     if first_ordinal < 0:
         raise TelemetryContractError("W&B output ordinal must not be negative")
     document = event.document(registry)
-    payload = {
-        "_rlab_event_id": event.stable_identity,
-        "_rlab_adapter_version": ADAPTER_VERSION,
-        "_rlab_normalization_version": NORMALIZATION_VERSION,
-        "_rlab_output_index": 0,
-        "_rlab_output_ordinal": first_ordinal,
-        "global_step": event.global_step,
-        "kind": event.kind,
-        "payload": document["payload"],
-    }
-    return [
-        {
-            "stable_key": (
-                f"{event.stable_identity}:{ADAPTER_VERSION}:"
-                f"{NORMALIZATION_VERSION}:event:0"
-            ),
-            "source_event_id": event.stable_identity,
-            "adapter_version": ADAPTER_VERSION,
-            "normalization_version": NORMALIZATION_VERSION,
-            "output_kind": "event",
-            "output_index": 0,
-            "ordinal": first_ordinal,
-            "payload": payload,
-            "payload_sha256": sha256_json(payload),
+    frames = event.payload.get("frames") if isinstance(event.payload, Mapping) else None
+    raw_outputs: list[tuple[str, Mapping[str, object], int | None]]
+    if event.kind == "metric_batch" and isinstance(frames, Sequence):
+        raw_outputs = []
+        for frame in frames:
+            if not isinstance(frame, Mapping):
+                raise TelemetryContractError("metric batch frames must be mappings")
+            frame_payload = frame.get("payload")
+            if not isinstance(frame_payload, Mapping):
+                raise TelemetryContractError("metric batch frame payload must be a mapping")
+            step = frame.get("global_step")
+            raw_outputs.append(
+                (
+                    str(frame.get("kind") or "history"),
+                    dict(frame_payload),
+                    None if step is None else int(step),
+                )
+            )
+    else:
+        raw_outputs = [
+            (
+                event.kind,
+                {"telemetry/event": document["payload"]},
+                event.global_step,
+            )
+        ]
+    rows: list[dict[str, object]] = []
+    for index, (output_kind, output_payload, global_step) in enumerate(raw_outputs):
+        ordinal = first_ordinal + index
+        payload = {
+            **dict(output_payload),
+            "_rlab_event_id": event.stable_identity,
+            "_rlab_adapter_version": ADAPTER_VERSION,
+            "_rlab_normalization_version": NORMALIZATION_VERSION,
+            "_rlab_output_index": index,
+            "_rlab_output_ordinal": ordinal,
+            "global_step": global_step,
+            "telemetry/output_kind": output_kind,
         }
-    ]
+        rows.append(
+            {
+                "stable_key": (
+                    f"{event.stable_identity}:{ADAPTER_VERSION}:"
+                    f"{NORMALIZATION_VERSION}:{output_kind}:{index}"
+                ),
+                "source_event_id": event.stable_identity,
+                "adapter_version": ADAPTER_VERSION,
+                "normalization_version": NORMALIZATION_VERSION,
+                "output_kind": output_kind,
+                "output_index": index,
+                "ordinal": ordinal,
+                "payload": payload,
+                "payload_sha256": sha256_json(payload),
+            }
+        )
+    return rows
 
 
 def _required_contract_mapping(value: Mapping[str, object], key: str) -> Mapping[str, object]:

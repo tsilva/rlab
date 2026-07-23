@@ -253,14 +253,31 @@ function requiredFrameKind(snapshot) {
   return null;
 }
 
+function episodeForSnapshot(snapshot) {
+  const episode = snapshot?.transition?.episode ?? snapshot?.session?.episode;
+  return episode === undefined || episode === null ? null : Number(episode);
+}
+
 function applySnapshot(snapshot) {
   state.pendingSnapshot = null;
   const previousEnvironmentId = state.liveSnapshot?.session?.env_id;
+  const previousEpisode = episodeForSnapshot(state.liveSnapshot);
+  const nextEpisode = episodeForSnapshot(snapshot);
   state.liveSnapshot = snapshot;
   if (snapshot.session?.env_id !== previousEnvironmentId) updateLayoutTitle();
   state.snapshots.set(Number(snapshot.sequence), snapshot);
   while (state.snapshots.size > 1024) state.snapshots.delete(state.snapshots.keys().next().value);
   state.hasControl = Boolean(snapshot.control?.has_control);
+  if (
+    state.inspectionSequence !== null
+    && previousEpisode !== null
+    && nextEpisode !== null
+    && previousEpisode !== nextEpisode
+  ) {
+    stopInspectionReplay({ render: false });
+    state.inspectionSequence = null;
+    state.snapshot = snapshot;
+  }
   if (state.inspectionSequence === null) {
     state.snapshot = snapshot;
     renderSnapshot();
@@ -300,13 +317,10 @@ function command(name, payload = {}) {
 function inspectionEpisodeSequences() {
   if (state.inspectionSequence === null) return [];
   const selected = state.snapshots.get(Number(state.inspectionSequence));
-  const episode = selected?.transition?.episode ?? selected?.session?.episode;
-  if (episode === undefined || episode === null) return [];
+  const episode = episodeForSnapshot(selected);
+  if (episode === null) return [];
   return state.timelineSequences.filter(
-    (sequence) => {
-      const snapshot = state.snapshots.get(Number(sequence));
-      return (snapshot?.transition?.episode ?? snapshot?.session?.episode) === episode;
-    },
+    (sequence) => episodeForSnapshot(state.snapshots.get(Number(sequence))) === episode,
   );
 }
 
@@ -351,14 +365,14 @@ function scheduleInspectionReplay() {
   }, inspectionReplayDelay());
 }
 
-function playFromCurrentPosition(driver) {
+function playFromCurrentPosition() {
   if (canReplayInspection()) {
     state.replayingInspection = true;
     renderSnapshot();
     scheduleInspectionReplay();
     return;
   }
-  command("play", { driver });
+  command("play");
 }
 
 function pauseCurrentPlayback() {
@@ -386,7 +400,6 @@ function renderWorkspaceStatus() {
   samplingStatus.className = `badge ${samplingMode === "deterministic" ? "warning" : "muted"}`;
   const timelineContext = [
     state.inspectionSequence === null ? null : "INSPECTING",
-    `EP ${text(shown?.session?.episode)}`,
     `STEP ${text(shown?.session?.step)}`,
     `SEQ ${text(shown?.sequence)}`,
     state.inspectionSequence === null ? null : `LIVE ${text(live?.sequence)}`,
@@ -491,8 +504,13 @@ function returnToLive() {
 function renderTimeline() {
   const scrubber = $("#timeline-scrubber");
   if (!scrubber) return;
-  const all = [...state.snapshots.keys()].sort((a, b) => a - b);
-  state.timelineSequences = all;
+  const currentEpisode = episodeForSnapshot(state.liveSnapshot);
+  state.timelineSequences = [...state.snapshots.entries()]
+    .filter(([, snapshot]) => (
+      currentEpisode === null || episodeForSnapshot(snapshot) === currentEpisode
+    ))
+    .map(([sequence]) => Number(sequence))
+    .sort((a, b) => a - b);
   const sequences = state.timelineSequences;
   scrubber.min = "0";
   scrubber.max = String(Math.max(0, sequences.length - 1));

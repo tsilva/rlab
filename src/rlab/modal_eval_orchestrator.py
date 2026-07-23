@@ -1211,6 +1211,79 @@ def accept_attempt_result(
                     "job_id": int(attempt["eval_job_id"]),
                 },
             )
+            if (
+                int(train_config.get("telemetry_protocol_version") or 1) == 2
+                and bool(passed)
+            ):
+                from rlab.checkpoint_acceptance import build_episode_manifest
+                from rlab.telemetry_evidence import (
+                    exact_evaluation_contract,
+                    insert_evidence_scope,
+                )
+                from rlab.telemetry_integrity import build_eval_scope_exact
+
+                cur.execute(
+                    """
+                    SELECT receipt_json
+                    FROM artifact_durability_receipts
+                    WHERE train_job_id = %(run)s
+                      AND ledger_id = %(ledger_id)s
+                      AND object_kind = 'model'
+                      AND full_read_verified_at IS NOT NULL
+                      AND non_expiring_write_once = TRUE
+                      AND runtime_delete_denied = TRUE
+                      AND runtime_overwrite_denied = TRUE
+                    """,
+                    {
+                        "run": int(attempt["train_job_id"]),
+                        "ledger_id": int(attempt["ledger_id"]),
+                    },
+                )
+                durability_receipts = [
+                    dict(row["receipt_json"]) for row in cur.fetchall()
+                ]
+                exact_contract = exact_evaluation_contract(
+                    train_config=train_config,
+                    execution_contract=contract,
+                )
+                episode_manifest = contract.get("manifest")
+                if not isinstance(episode_manifest, Mapping):
+                    episode_manifest = build_episode_manifest(
+                        episodes=int(contract["episodes"]),
+                        n_envs=int(contract["n_envs"]),
+                        seed=int(contract["seed"]),
+                        environment=dict(contract["environment"]),
+                    )
+                evidence = build_eval_scope_exact(
+                    checkpoint={
+                        "sha256": str(attempt["checkpoint_sha256"]),
+                        "uri": str(attempt["checkpoint_uri"]),
+                        "durability_receipts": durability_receipts,
+                    },
+                    evaluation_contract=exact_contract,
+                    episode_manifest=dict(episode_manifest),
+                    results=[
+                        dict(episode) for episode in validated["episode_results"]
+                    ],
+                    acceptance_rule={
+                        "purpose": str(attempt["purpose"]),
+                        "rules": [dict(rule) for rule in rules],
+                        "verdict": "accepted",
+                    },
+                    execution_key=str(attempt["execution_key"]),
+                    attestation={
+                        "attempt_id": str(attempt["attempt_id"]),
+                        "result_uri": str(attempt["result_uri"]),
+                        "receipt": dict(attempt.get("receipt_json") or {}),
+                        "validator": "modal-eval-protocol-v1",
+                    },
+                )
+                insert_evidence_scope(
+                    cur,
+                    train_job_id=int(attempt["train_job_id"]),
+                    evidence=evidence,
+                    root_sha256=str(attempt["checkpoint_sha256"]),
+                )
             promotion_won = False
             if acceptance and bool(decision.get("passed")):
                 promotion = {
@@ -1700,7 +1773,8 @@ def dispatch_pending(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT j.* FROM eval_jobs j
+            SELECT j.*, t.telemetry_protocol_version, t.telemetry_generation
+            FROM eval_jobs j
             JOIN train_jobs t ON t.id = j.train_job_id
             JOIN eval_runs r ON r.train_job_id = j.train_job_id
             WHERE j.status IN ('pending', 'blocked_budget')
@@ -1852,19 +1926,72 @@ def dispatch_pending(
                     """
                     INSERT INTO worker_attempts (
                       attempt_id, train_job_id, eval_job_id, task_kind, provider,
-                      status, started_at
-                    ) VALUES (
-                      %(attempt_id)s, %(train_job_id)s, %(job_id)s, 'eval', 'modal',
-                      'launching', now()
+                      status, started_at, protocol_version, telemetry_generation,
+                      producer_ordinal, producer_identity
                     )
+                    SELECT
+                      %(attempt_id)s, %(train_job_id)s, %(job_id)s, 'eval', 'modal',
+                      'launching', now(), %(protocol_version)s, %(generation)s,
+                      CASE WHEN %(protocol_version)s = 2 THEN (
+                        SELECT COALESCE(max(producer_ordinal), -1) + 1
+                        FROM telemetry_producers
+                        WHERE train_job_id = %(train_job_id)s
+                          AND telemetry_generation = %(generation)s
+                      ) ELSE NULL END,
+                      CASE WHEN %(protocol_version)s = 2
+                        THEN 'eval:' || %(job_id)s::text || ':' || %(attempt_id)s
+                        ELSE NULL
+                      END
                     ON CONFLICT (attempt_id) DO NOTHING
+                    RETURNING producer_ordinal, producer_identity
                     """,
                     {
                         "attempt_id": attempt_id,
                         "train_job_id": int(job["train_job_id"]),
                         "job_id": int(job["id"]),
+                        "protocol_version": int(job.get("telemetry_protocol_version") or 1),
+                        "generation": int(job.get("telemetry_generation") or 1),
                     },
                 )
+                worker_attempt = cur.fetchone()
+                if (
+                    int(job.get("telemetry_protocol_version") or 1) == 2
+                    and worker_attempt is not None
+                ):
+                    cur.execute(
+                        """
+                        INSERT INTO telemetry_producers (
+                          train_job_id, telemetry_generation, producer_ordinal,
+                          producer_identity, attempt_id, producer_kind, state
+                        ) VALUES (
+                          %(run)s, %(generation)s, %(ordinal)s, %(identity)s,
+                          %(attempt_id)s, 'evaluation', 'registered'
+                        )
+                        """,
+                        {
+                            "run": int(job["train_job_id"]),
+                            "generation": int(job.get("telemetry_generation") or 1),
+                            "ordinal": int(worker_attempt["producer_ordinal"]),
+                            "identity": str(worker_attempt["producer_identity"]),
+                            "attempt_id": attempt_id,
+                        },
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO telemetry_expected_obligations (
+                          train_job_id, telemetry_generation, obligation_key,
+                          obligation_kind, producer_ordinal
+                        ) VALUES (
+                          %(run)s, %(generation)s, %(key)s, 'evaluation', %(ordinal)s
+                        )
+                        """,
+                        {
+                            "run": int(job["train_job_id"]),
+                            "generation": int(job.get("telemetry_generation") or 1),
+                            "key": f"eval-attempt:{attempt_id}",
+                            "ordinal": int(worker_attempt["producer_ordinal"]),
+                        },
+                    )
                 cur.execute(
                     "UPDATE eval_jobs SET status = 'dispatching', updated_at = now(), error = NULL WHERE id = %(id)s",
                     {"id": int(job["id"])},

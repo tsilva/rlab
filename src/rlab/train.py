@@ -6,6 +6,8 @@ import argparse
 import os
 import signal
 import sys
+import hashlib
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -137,6 +139,30 @@ def main(argv: list[str] | None = None) -> int:
     (run_dir / "learner_ready.json").unlink(missing_ok=True)
     store = MetricStore(metric_store_path(run_dir))
     store.init()
+    store.register_recovery_manifest(
+        {
+            "version": "telemetry-recovery-manifest-v1",
+            "queue_train_job_id": int(getattr(args, "queue_train_job_id", 0) or 0),
+            "run_name": str(args.run_name),
+            "telemetry_protocol_version": int(args.telemetry_protocol_version),
+            "telemetry_generation": int(args.telemetry_generation),
+            "archive_policy": str(args.telemetry_durability_policy),
+            "parser_version": "metric-store-v2",
+            "adapter_version": "telemetry-adapters-v1",
+            "configuration_sha256": hashlib.sha256(
+                json.dumps(train_config, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+            "absolute_source_paths": [
+                str(metric_store_path(run_dir).resolve()),
+                str(run_dir.resolve()),
+            ],
+            "wandb_routing": {
+                "project": str(getattr(args, "wandb_project", "") or ""),
+                "run_id": str(getattr(args, "wandb_run_id", "") or ""),
+            },
+            "recovery_owner": "rlab-telemetry-recovery",
+        }
+    )
     write_run_description(args, str(run_dir))
     if args.run_description.strip():
         print(f"run description: {args.run_description.strip()}", flush=True)

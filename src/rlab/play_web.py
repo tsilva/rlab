@@ -489,9 +489,6 @@ class WebPlaybackRunner:
                 self._set_state("paused", message="paused at a completed transition")
             elif command.name == "play":
                 self._require_active_episode()
-                self.driver = str(command.payload.get("driver") or self.driver)
-                if self.driver not in {"policy", "human"}:
-                    raise ValueError(f"unsupported driver {self.driver!r}")
                 self._set_state("playing")
             elif command.name == "step":
                 self._require_active_episode()
@@ -503,7 +500,6 @@ class WebPlaybackRunner:
                 self._set_state("stepping")
             elif command.name == "continue":
                 self._require_active_episode()
-                self.driver = "policy"
                 self.continue_target = str(command.payload.get("target") or "any")
                 self.continue_count = 0
                 self.remaining_steps = 0
@@ -513,21 +509,28 @@ class WebPlaybackRunner:
                     raise ValueError("the current episode is still active")
                 if not self._can_start_next_episode():
                     raise ValueError(f"episode limit reached ({self.boundaries})")
+                mode = str(command.payload.get("sampling_mode") or self.sampling_mode)
+                if mode not in {"stochastic", "deterministic"}:
+                    raise ValueError(f"unsupported sampling mode {mode!r}")
+                driver = str(command.payload.get("driver") or self.driver)
+                if driver not in {"policy", "human"}:
+                    raise ValueError(f"unsupported driver {driver!r}")
+                seed_value = command.payload.get("seed")
+                if seed_value not in {None, ""}:
+                    self.session.restart(
+                        int(seed_value),
+                        reset_episode_index=False,
+                    )
+                self.sampling_mode = mode
+                self.driver = driver
+                self.clear_input()
                 self.awaiting_next_episode = False
                 self.remaining_steps = 0
                 self.continue_target = None
                 self._set_state(
                     "playing",
-                    message=f"playing episode {self.session.episode}",
+                    message="playing next episode",
                 )
-            elif command.name == "reset":
-                seed_value = command.payload.get("seed")
-                seed = self.session.initial_seed if seed_value in {None, ""} else int(seed_value)
-                self.session.restart(seed)
-                self.boundaries = 0
-                self.awaiting_next_episode = False
-                self.driver = "policy"
-                self._set_state("paused", message=f"reset to seed {seed}")
             elif command.name == "set_fps":
                 fps = float(command.payload.get("fps", 0.0))
                 if fps < 0 or not np.isfinite(fps):
@@ -535,25 +538,6 @@ class WebPlaybackRunner:
                 self.target_fps = fps
                 self.revision += 1
                 self._publish(self.session.last_transition)
-            elif command.name == "set_sampling_mode":
-                mode = str(command.payload.get("mode") or "")
-                if mode not in {"stochastic", "deterministic"}:
-                    raise ValueError(f"unsupported sampling mode {mode!r}")
-                self.sampling_mode = mode
-                self._status_message = (
-                    "deterministic playback selected · non-evidence"
-                    if mode == "deterministic"
-                    else "stochastic playback selected"
-                )
-                self.revision += 1
-                self._publish(self.session.last_transition)
-            elif command.name == "set_driver":
-                driver = str(command.payload.get("driver") or "policy")
-                if driver not in {"policy", "human"}:
-                    raise ValueError(f"unsupported driver {driver!r}")
-                self.driver = driver
-                self.clear_input()
-                self._set_state("paused", message=f"{driver} control selected")
             elif command.name == "inspect_policy":
                 decision = self.session.inspect_policy()
                 self._response(
@@ -607,9 +591,7 @@ class WebPlaybackRunner:
             self.continue_target = None
             self.run_state = "paused"
             if self._can_start_next_episode():
-                self._status_message = (
-                    f"episode {transition.episode} complete · choose Play next episode"
-                )
+                self._status_message = "episode complete · choose Play next episode"
             else:
                 self._status_message = f"episode limit reached ({self.boundaries})"
         elif self.run_state == "stepping":

@@ -405,6 +405,7 @@ def claim_run_metric_batches(
             JOIN train_jobs t ON t.id = a.train_job_id
             WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
               AND b.wandb_confirmed_at IS NULL
+              AND t.telemetry_protocol_version = 1
               AND (
                 t.telemetry_transport = 'neon_mailbox_v1'
                 OR (
@@ -494,6 +495,7 @@ def claim_run_metric_batches(
                       )
                       AND (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
                       AND b.wandb_confirmed_at IS NULL
+                      AND t.telemetry_protocol_version = 1
                     ORDER BY b.created_at, b.id
                     FOR UPDATE OF b SKIP LOCKED
                     LIMIT %(limit)s
@@ -536,6 +538,7 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
               JOIN train_jobs t ON t.id = a.train_job_id
               WHERE (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
                 AND b.wandb_confirmed_at IS NULL
+                AND t.telemetry_protocol_version = 1
                 AND (
                   t.telemetry_transport = 'neon_mailbox_v1'
                   OR (
