@@ -954,8 +954,44 @@ class BatchRuntime:
             "signal": curriculum.config.signal,
             "cell_id": restored_cell,
             "preflight_lanes": self.num_envs,
+            "restore_snapshots": True,
             "observation_exact": True,
             "one_step_continuation_exact": True,
+            "masked_capture": True,
+            "deterministic_continuation_declared": True,
+        }
+
+    def preflight_snapshot_capture(self, *, seed: int) -> dict[str, Any]:
+        """Prove masked live capture without restoring a snapshot."""
+
+        curriculum = self.snapshot_curriculum
+        if curriculum is None:
+            raise RuntimeError("snapshot curriculum is disabled")
+        self.reset(seed=seed)
+        lane = 0
+        expected_cell = str(self._curriculum_previous_cells[lane])
+        mask = np.zeros(self.num_envs, dtype=np.bool_)
+        mask[lane] = True
+        capture = getattr(self.provider, "capture_snapshots", None)
+        if not callable(capture):
+            raise RuntimeError("snapshot-capable provider lost capture_snapshots")
+        handles = tuple(capture(mask))
+        if len(handles) != self.num_envs:
+            raise ValueError(
+                f"provider returned {len(handles)} snapshot handles for {self.num_envs} lanes"
+            )
+        if handles[lane] is None:
+            raise ValueError("provider returned no snapshot for the selected preflight lane")
+        if any(handles[index] is not None for index in range(1, self.num_envs)):
+            raise ValueError("provider captured snapshots for unselected preflight lanes")
+        return {
+            "schema_version": 1,
+            "semantic_id": curriculum.config.semantic_id,
+            "provider_id": self.descriptor.provider_id,
+            "signal": curriculum.config.signal,
+            "cell_id": expected_cell,
+            "preflight_lanes": self.num_envs,
+            "restore_snapshots": False,
             "masked_capture": True,
             "deterministic_continuation_declared": True,
         }

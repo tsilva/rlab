@@ -478,7 +478,13 @@ def _snapshot_curriculum_preflight_child(
             rom_binding=rom_binding,
             snapshot_curriculum=snapshot_curriculum,
         )
-        connection.send(("ok", runtime.preflight_snapshot_round_trip(seed=seed)))
+        if runtime.snapshot_curriculum is None:
+            raise RuntimeError("snapshot curriculum preflight runtime is disabled")
+        if runtime.snapshot_curriculum.config.restore_snapshots:
+            payload = runtime.preflight_snapshot_round_trip(seed=seed)
+        else:
+            payload = runtime.preflight_snapshot_capture(seed=seed)
+        connection.send(("ok", payload))
     except BaseException as exc:
         connection.send(
             (

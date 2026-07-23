@@ -18,6 +18,7 @@ train:
     snapshot_share: 0.20
     # PPO supplies mean absolute raw GAE per completed restored-state trajectory.
     priority_metric: value_error
+    restore_snapshots: true
   backend:
     config:
       n_steps: 64

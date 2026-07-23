@@ -251,6 +251,7 @@ required_metrics: [train/throughput/not_real]
         self.assertNotIn("snapshot_curriculum", baseline)
         self.assertEqual(candidate["snapshot_curriculum"]["cell"]["signal"], "score")
         self.assertEqual(candidate["snapshot_curriculum"]["priority_metric"], "value_error")
+        self.assertTrue(candidate["snapshot_curriculum"]["restore_snapshots"])
         self.assertEqual(candidate["snapshot_curriculum"]["resolved_snapshot_lanes"], 3)
 
     def test_queue_backed_benchmark_commands_include_goal_and_recipe(self) -> None:

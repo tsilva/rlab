@@ -467,7 +467,7 @@ class ConfigValidationTests(unittest.TestCase):
                 str(recipe),
             )
 
-    def test_breakout_snapshot_curriculum_recipe_is_opt_in_and_resolves(self) -> None:
+    def test_breakout_snapshot_curriculum_is_fully_opt_in(self) -> None:
         recipe = self.BREAKOUT_GOAL.parent / "recipes" / "ppo-snapshot-curriculum.yaml"
         document = compose_train_document(self.BREAKOUT_GOAL, recipe)
 
@@ -478,6 +478,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "cell": {"signal": "score", "bucket_size": 50},
                 "snapshot_share": 0.2,
                 "priority_metric": "value_error",
+                "restore_snapshots": True,
             },
         )
         self.assertNotIn(

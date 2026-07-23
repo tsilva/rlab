@@ -10,6 +10,7 @@ import numpy as np
 
 SNAPSHOT_CURRICULUM_SEMANTIC_ID = "snapshot_curriculum_v1"
 _DEFAULTS: dict[str, Any] = {
+    "restore_snapshots": False,
     "representatives_per_cell": 4,
     "max_snapshots": 1024,
     "feedback_ema_alpha": 0.10,
@@ -86,6 +87,8 @@ def normalize_snapshot_curriculum_config(
         **_DEFAULTS,
     }
     normalized.update({key: value[key] for key in _DEFAULTS if key in value})
+    if not isinstance(normalized["restore_snapshots"], bool):
+        raise ValueError(f"{label}.restore_snapshots must be a boolean")
     integer_fields = ("representatives_per_cell", "max_snapshots")
     for key in integer_fields:
         item = normalized[key]
@@ -163,6 +166,7 @@ class SnapshotCurriculumConfig:
     bucket_size: float
     snapshot_share: float
     priority_metric: str
+    restore_snapshots: bool
     representatives_per_cell: int
     max_snapshots: int
     feedback_ema_alpha: float
@@ -181,6 +185,7 @@ class SnapshotCurriculumConfig:
             bucket_size=float(normalized["cell"]["bucket_size"]),
             snapshot_share=float(normalized["snapshot_share"]),
             priority_metric=str(normalized["priority_metric"]),
+            restore_snapshots=bool(normalized["restore_snapshots"]),
             representatives_per_cell=int(normalized["representatives_per_cell"]),
             max_snapshots=int(normalized["max_snapshots"]),
             feedback_ema_alpha=float(normalized["feedback_ema_alpha"]),
@@ -245,7 +250,8 @@ class SnapshotCurriculum:
     @property
     def snapshot_lane_mask(self) -> np.ndarray:
         mask = np.zeros(self.n_envs, dtype=np.bool_)
-        mask[: self.config.resolved_snapshot_lanes] = True
+        if self.config.restore_snapshots:
+            mask[: self.config.resolved_snapshot_lanes] = True
         return mask
 
     @property
@@ -368,7 +374,12 @@ class SnapshotCurriculum:
         return True
 
     def schedule_activation(self) -> bool:
-        if self.activated or self.activation_scheduled or not self.ready:
+        if (
+            not self.config.restore_snapshots
+            or self.activated
+            or self.activation_scheduled
+            or not self.ready
+        ):
             return False
         self.activation_scheduled = True
         return True

@@ -18,12 +18,17 @@ from rlab.task_kernels import IdentityTaskDefinition
 from rlab.training.sb3_vec_env import RlabVecEnv
 
 
-def curriculum_config(*, n_envs: int = 3) -> dict[str, Any]:
+def curriculum_config(
+    *,
+    n_envs: int = 3,
+    restore_snapshots: bool = True,
+) -> dict[str, Any]:
     value = normalize_snapshot_curriculum_config(
         {
             "cell": {"signal": "score", "bucket_size": 50},
             "snapshot_share": 0.2,
             "priority_metric": "value_error",
+            "restore_snapshots": restore_snapshots,
         },
         n_envs=n_envs,
     )
@@ -122,6 +127,19 @@ class SnapshotProvider:
 
 
 class SnapshotCurriculumConfigTests(unittest.TestCase):
+    def test_snapshot_restoring_is_disabled_by_default(self) -> None:
+        normalized = normalize_snapshot_curriculum_config(
+            {
+                "cell": {"signal": "score", "bucket_size": 50},
+                "snapshot_share": 0.2,
+                "priority_metric": "value_error",
+            },
+            n_envs=128,
+        )
+
+        assert normalized is not None
+        self.assertIs(normalized["restore_snapshots"], False)
+
     def test_breakout_defaults_resolve_twenty_percent_of_128_lanes(self) -> None:
         normalized = curriculum_config(n_envs=128)
 
@@ -215,6 +233,46 @@ class SnapshotCurriculumRuntimeTests(unittest.TestCase):
         self.assertTrue(receipt["masked_capture"])
         self.assertEqual(provider.capture_masks[-1].tolist(), [True, False, False])
         self.assertEqual(provider.reset_calls[-1]["mask"].tolist(), [True, True, True])
+        env.close()
+
+    def test_capture_only_archive_never_schedules_snapshot_restores(self) -> None:
+        provider = SnapshotProvider()
+        descriptor = ProviderDescriptor(
+            provider_id="breakout-turbo-env",
+            native_observation_space=provider.single_observation_space,
+            native_action_space=provider.single_action_space,
+            signal_schema={"score": SignalSpec("score", np.int64)},
+            start_catalog=("Start",),
+            supports_live_snapshots=True,
+            live_snapshots_deterministic=True,
+        )
+        kernel = IdentityTaskDefinition(signals={"score": "score"}).bind(
+            descriptor, provider.num_envs
+        )
+        runtime = BatchRuntime(
+            provider,
+            descriptor,
+            kernel,
+            run_seed=17,
+            snapshot_curriculum=curriculum_config(restore_snapshots=False),
+        )
+        env = RlabVecEnv(runtime)
+        receipt = runtime.preflight_snapshot_capture(seed=17)
+        self.assertIs(receipt["restore_snapshots"], False)
+        self.assertTrue(receipt["masked_capture"])
+        self.assertTrue(all(value is None for value in provider.reset_calls[-1]["snapshots"]))
+        env.seed(17)
+        env.reset()
+        runtime.curriculum_begin_rollout()
+        provider.queue_step(score=[50, 0, 0])
+        env.step(np.zeros(3, dtype=np.int64))
+
+        metrics = runtime.curriculum_complete_rollout()
+
+        self.assertEqual(metrics["archive_cell_count"], 1.0)
+        self.assertFalse(runtime.snapshot_curriculum.activation_scheduled)
+        self.assertFalse(np.any(runtime.snapshot_curriculum.snapshot_lane_mask))
+        self.assertFalse(runtime._has_pending_resets)
         env.close()
 
     def test_score_crossing_activates_snapshot_lane_without_fake_episode(self) -> None:
