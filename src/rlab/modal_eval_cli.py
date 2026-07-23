@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import tempfile
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -336,6 +337,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
 def cmd_recover(args: argparse.Namespace) -> int:
     from rlab.docker_host import DockerRunnerHost, run_checkpoint_coordinator_container
     from rlab.machines import load_machine_registry, resolve_machine
+    from rlab.telemetry_mailbox import (
+        ATTEMPT_ID_ENV,
+        ATTEMPT_TOKEN_ENV,
+        issue_worker_attempt_token,
+    )
 
     conn = _conn()
     try:
@@ -375,6 +381,77 @@ def cmd_recover(args: argparse.Namespace) -> int:
         machine = resolve_machine(load_machine_registry(), str(row["machine"]))
         host = DockerRunnerHost(machine)
         run_name = str(row.get("run_name") or f"train_job_{row['id']}")
+        recovery_attempt_id = (
+            f"checkpoint-recovery-{int(row['id'])}-{uuid.uuid4().hex}"
+        )
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(
+                      hashtextextended(
+                        'rlab-checkpoint-events:' || %(train_job_id)s::text, 0
+                      )
+                    )
+                    """,
+                    {"train_job_id": int(row["id"])},
+                )
+                cur.execute(
+                    """
+                    SELECT attempt_id
+                    FROM worker_attempts
+                    WHERE train_job_id = %(train_job_id)s
+                      AND task_kind = 'train'
+                      AND status IN ('launching', 'running')
+                    FOR UPDATE
+                    """,
+                    {"train_job_id": int(row["id"])},
+                )
+                active = cur.fetchone()
+                if active:
+                    raise RuntimeError(
+                        "checkpoint artifact recovery already has an active producer"
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO worker_attempts (
+                      attempt_id, train_job_id, task_kind, provider, status, started_at
+                    ) VALUES (
+                      %(attempt_id)s, %(train_job_id)s, 'train',
+                      'checkpoint-recovery', 'running', now()
+                    )
+                    """,
+                    {
+                        "attempt_id": recovery_attempt_id,
+                        "train_job_id": int(row["id"]),
+                    },
+                )
+        token = issue_worker_attempt_token(
+            conn,
+            attempt_id=recovery_attempt_id,
+            lifetime=timedelta(minutes=20),
+        )
+        try:
+            recovery_env_path = host.write_attempt_env(
+                recovery_attempt_id,
+                {
+                    ATTEMPT_ID_ENV: recovery_attempt_id,
+                    ATTEMPT_TOKEN_ENV: token,
+                },
+            )
+        except Exception as exc:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE worker_attempts
+                        SET status = 'failed', finished_at = now(),
+                            token_expires_at = now(), error = %(error)s
+                        WHERE attempt_id = %(attempt_id)s
+                        """,
+                        {"attempt_id": recovery_attempt_id, "error": str(exc)},
+                    )
+            raise
         from rlab.workspace_gc import (
             finish_host_operation_lease,
             register_host_operation_lease,
@@ -394,14 +471,17 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 launch_id=str(row["launch_id"]),
                 lifecycle_generation=int(row["lifecycle_generation"]),
             )
+        recovery_error: str | None = None
         try:
             run_checkpoint_coordinator_container(
                 host,
                 launch_id=str(row["launch_id"]),
                 run_name=run_name,
                 runtime_image_ref=str(row["runtime_image_ref"]),
+                attempt_env_path=recovery_env_path,
             )
         except Exception as exc:
+            recovery_error = str(exc)
             if operation_id:
                 finish_host_operation_lease(
                     conn, operation_id=operation_id, error=str(exc), evidence={}
@@ -414,6 +494,36 @@ def cmd_recover(args: argparse.Namespace) -> int:
                     operation_id=operation_id,
                     evidence={"container_absent": True},
                 )
+        finally:
+            host.remove_attempt_env(recovery_attempt_id)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT pg_advisory_xact_lock(
+                          hashtextextended(
+                            'rlab-checkpoint-events:' || %(train_job_id)s::text, 0
+                          )
+                        )
+                        """,
+                        {"train_job_id": int(row["id"])},
+                    )
+                    cur.execute(
+                        """
+                        UPDATE worker_attempts
+                        SET status = %(status)s,
+                            finished_at = now(),
+                            token_expires_at = now(),
+                            error = %(error)s
+                        WHERE attempt_id = %(attempt_id)s
+                          AND status IN ('launching', 'running')
+                        """,
+                        {
+                            "attempt_id": recovery_attempt_id,
+                            "status": "failed" if recovery_error else "succeeded",
+                            "error": recovery_error,
+                        },
+                    )
         with conn:
             with conn.cursor() as cur:
                 cur.execute(

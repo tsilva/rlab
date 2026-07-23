@@ -449,7 +449,7 @@ def _preferred_run_artifact_ref(run: Any) -> str | None:
     for artifact in candidates:
         metadata = dict(getattr(artifact, "metadata", {}) or {})
         if (
-            str(metadata.get("artifact_publication_schema") or "") == "v2"
+            str(metadata.get("artifact_publication_schema") or "") in {"v2", "v3"}
             and str(metadata.get("publication_role") or "") == "promotion"
             and int(metadata.get("promotion_revision") or 0) >= 1
         ):

@@ -218,7 +218,7 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     document = _bandit_recipe_document()
-    recipe_path = _write_versioned_recipe(tmp_path, document)
+    recipe_path = tmp_path / "recipe.json"
     config = dict(document["train_config"])
     config.update(
         {
@@ -241,6 +241,8 @@ def test_bandit_runs_through_sb3_backend_and_records_backend_metadata(
     backend_config.update({"device": "cpu", "n_epochs": 1})
     backend["config"] = backend_config
     config["training_backend"] = backend
+    document["train_config"] = config
+    recipe_path = _write_versioned_recipe(tmp_path, document)
     path = tmp_path / "train.json"
     path.write_text(json.dumps(config), encoding="utf-8")
 
@@ -260,7 +262,7 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
     document = _bandit_recipe_document()
-    recipe_path = _write_versioned_recipe(tmp_path, document)
+    recipe_path = tmp_path / "recipe.json"
     config = dict(document["train_config"])
     config.update(
         {
@@ -287,6 +289,8 @@ def test_bandit_runs_through_a2c_backend_and_round_trips_checkpoint(
             },
         }
     )
+    document["train_config"] = config
+    recipe_path = _write_versioned_recipe(tmp_path, document)
     path = tmp_path / "a2c-train.json"
     path.write_text(json.dumps(config), encoding="utf-8")
 

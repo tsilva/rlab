@@ -323,7 +323,6 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
         discard_disabled_metric_batches,
-        finalize_mailbox_runs_without_eval,
     )
 
     assertion = SleepAssertion()
@@ -361,7 +360,6 @@ def run_evaluation_controller(repo_root: Path, *, once: bool = False) -> int:
                 try:
                     consume_attempt_events(conn)
                     discard_disabled_metric_batches(conn)
-                    finalize_mailbox_runs_without_eval(conn)
                 finally:
                     conn.close()
             except Exception as exc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from rlab.fleet_wandb_publisher import (
+    WandbArtifactConflictError,
     WandbArtifactVisibilityError,
     WandbCursorConfirmationError,
     WandbFinalizationVerificationError,
@@ -19,7 +21,6 @@ from rlab.fleet_wandb_publisher import (
     _partition_batches,
     _publication_is_pristine,
     _record_committed_effects,
-    _reconcile_non_modal_publication_finishing,
     _reconcile_terminal_artifact_publication,
     _repair_artifact_projection_identity,
     _raise_for_stalled_confirmations,
@@ -37,9 +38,18 @@ from rlab.metric_names import (
     LEADER_CHECKPOINT_STEP,
 )
 from rlab.metric_store import MetricStore
+from rlab.policy_bundle import (
+    CHECKPOINT_FILENAME,
+    MODEL_FILENAME,
+    RECIPE_FILENAME,
+    build_model_document,
+    write_canonical_json,
+)
+from rlab.training_backend import training_backend_config_hash
 from rlab.wandb_publisher import project_payload_to_run, publish_pending_frames
 from rlab import wandb_publisher
 from rlab.wandb_utils import configure_wandb_metrics
+from tests.test_policy_bundle import RUNTIME, level1_1_recipe_document
 
 
 class FakeRun:
@@ -267,6 +277,130 @@ class WandbPublisherTests(unittest.TestCase):
             summary="max",
         )
 
+    def test_v3_artifact_embeds_the_complete_policy_bundle_as_native_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recipe_document = level1_1_recipe_document()
+            train_config = dict(recipe_document["recipe"]["train_config"])
+            checkpoint_path = root / CHECKPOINT_FILENAME
+            recipe_path = write_canonical_json(root / RECIPE_FILENAME, recipe_document)
+            checkpoint_path.write_bytes(b"checkpoint")
+            model_path = write_canonical_json(
+                root / MODEL_FILENAME,
+                build_model_document(
+                    checkpoint_path,
+                    recipe_path,
+                    {
+                        "kind": "checkpoint",
+                        "checkpoint_step": 100,
+                        "queue_train_job_id": 9,
+                        "runtime_image_ref": RUNTIME,
+                        "algorithm_id": "ppo",
+                        "model_class": "stable_baselines3.ppo.ppo.PPO",
+                        "training_backend_id": "sb3.ppo",
+                        "training_backend_config_hash": training_backend_config_hash(
+                            train_config
+                        ),
+                        "training_metadata": {
+                            "environment": recipe_document["recipe"]["environment"],
+                            "environment_hash": recipe_document["recipe"][
+                                "environment_hash"
+                            ],
+                        },
+                    },
+                ),
+            )
+            uris = {
+                "s3://bucket/model.zip": checkpoint_path.read_bytes(),
+                "s3://bucket/model.json": model_path.read_bytes(),
+                "s3://bucket/recipe.json": recipe_path.read_bytes(),
+            }
+
+            class FakeObjectStore:
+                def __init__(self, _base_uri: str) -> None:
+                    pass
+
+                def get_bytes(self, uri: str) -> bytes:
+                    return uris[uri]
+
+            class NativeArtifact:
+                def __init__(self, name: str, *, type: str, metadata: dict) -> None:
+                    self.name = name
+                    self.type = type
+                    self.metadata = metadata
+                    self.files: dict[str, bytes] = {}
+
+                def add_file(self, path: str, *, name: str) -> None:
+                    self.files[name] = Path(path).read_bytes()
+
+                def add_reference(self, *_args, **_kwargs) -> None:
+                    raise AssertionError("v3 publication must not create external references")
+
+            run = mock.MagicMock()
+            logged_artifact = mock.MagicMock()
+            run.log_artifact.return_value = logged_artifact
+            payload = {
+                "projection_kind": "artifact_reference",
+                "artifact_publication_schema": "v3",
+                "content_mode": "wandb_native_v1",
+                "train_config": {"wandb_run_id": "rlab-native"},
+                "train_job_id": 9,
+                "ledger_id": 1,
+                "artifact_kind": "checkpoint",
+                "publication_role": "availability",
+                "promotion_revision": 0,
+                "publication_stream_id": "artifact-v3-9-1-availability-r0",
+                "announcement_sha256": "f" * 64,
+                "checkpoint_step": 100,
+                "checkpoint_uri": "s3://bucket/model.zip",
+                "checkpoint_sha256": hashlib.sha256(uris["s3://bucket/model.zip"]).hexdigest(),
+                "metadata_uri": "s3://bucket/model.json",
+                "metadata_sha256": hashlib.sha256(uris["s3://bucket/model.json"]).hexdigest(),
+                "recipe_uri": "s3://bucket/recipe.json",
+                "recipe_sha256": hashlib.sha256(uris["s3://bucket/recipe.json"]).hexdigest(),
+                "artifact_aliases": ["latest", "step-100"],
+            }
+
+            with (
+                mock.patch.dict(
+                    "sys.modules",
+                    {"wandb": SimpleNamespace(Artifact=NativeArtifact)},
+                ),
+                mock.patch.object(wandb_publisher, "ObjectStore", FakeObjectStore),
+                mock.patch.object(
+                    wandb_publisher,
+                    "object_store_base_uri",
+                    return_value="s3://bucket",
+                ),
+            ):
+                result = project_payload_to_run(run, payload)
+
+            self.assertIs(result, logged_artifact)
+            logged_artifact.wait.assert_called_once_with()
+            artifact = run.log_artifact.call_args.args[0]
+            self.assertEqual(
+                artifact.files,
+                {
+                    CHECKPOINT_FILENAME: uris["s3://bucket/model.zip"],
+                    MODEL_FILENAME: uris["s3://bucket/model.json"],
+                    RECIPE_FILENAME: uris["s3://bucket/recipe.json"],
+                },
+            )
+            self.assertEqual(
+                artifact.metadata["artifact_members"],
+                {
+                    name: {
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                    for name, data in artifact.files.items()
+                },
+            )
+            self.assertEqual(
+                run.log_artifact.call_args.kwargs["aliases"],
+                ["latest", "step-100"],
+            )
+
     def test_publisher_actor_survives_idle_gaps_until_remote_completion(self) -> None:
         conn = mock.MagicMock()
         with (
@@ -464,21 +598,6 @@ class WandbPublisherTests(unittest.TestCase):
         remote_state.assert_not_called()
         self.assertTrue(resume.call_args.kwargs["allow_create"])
         submitted.assert_called_once_with(conn, batches)
-
-    def test_non_modal_terminal_outbox_moves_to_finishing_only_when_drained(self) -> None:
-        conn = mock.MagicMock()
-        cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.rowcount = 1
-
-        self.assertTrue(_reconcile_non_modal_publication_finishing(conn, 70))
-
-        statement, params = cursor.execute.call_args.args
-        self.assertIn("t.process_exited_at IS NOT NULL", statement)
-        self.assertIn("checkpoint_eval_backend", statement)
-        self.assertIn("<> 'modal'", statement)
-        self.assertIn("s.final_sequence IS NULL", statement)
-        self.assertIn("s.published_sequence < s.final_sequence", statement)
-        self.assertEqual(params, {"train_job_id": 70})
 
     def test_pristine_zero_batch_finalization_creates_preassigned_run(self) -> None:
         conn = mock.MagicMock()
@@ -760,7 +879,7 @@ class WandbPublisherTests(unittest.TestCase):
         self.assertEqual(receipt["artifact_ref"], "tsilva/project/rlab-7-checkpoint:v4")
         self.assertEqual(receipt["artifact_version"], "v4")
         artifact.metadata["metadata_sha256"] = "wrong"
-        with self.assertRaises(WandbArtifactVisibilityError):
+        with self.assertRaises(WandbArtifactConflictError):
             _artifact_receipts_from_remote(remote, [payload])
 
     def test_deduplicated_promotion_artifact_confirms_availability_receipt(self) -> None:

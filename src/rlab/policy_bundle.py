@@ -77,7 +77,7 @@ _EVAL_FIELDS = frozenset(
         "asset",
     }
 )
-_PLAYBACK_FIELDS = frozenset({"environment", "seed"})
+_PLAYBACK_FIELDS = frozenset({"environment", "seed", "asset"})
 _RECIPE_PROVENANCE_FIELDS = frozenset({"source_commit", "source_files", "runtime", "asset"})
 _MODEL_PROVENANCE_FIELDS_V1 = frozenset(
     {
@@ -396,6 +396,7 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
     if playback is not None:
         _reject_unknown(playback, _PLAYBACK_FIELDS, label=f"{source}.recipe.playback")
     from rlab.env_identity import validate_task_config
+    from rlab.env_registry import resolve_env_provider
     from rlab.goal_schema import validate_goal_document_shape
     from rlab.train_config import (
         TRAIN_CONFIG_FIELDS,
@@ -476,6 +477,38 @@ def _validate_recipe_v1(document: Mapping[str, Any], source: str) -> dict[str, A
             manifest_index(evaluation)
         except ValueError as exc:
             raise PolicyDocumentError(f"{source}.recipe.eval manifest is invalid: {exc}") from exc
+    if playback is not None and "asset" in playback:
+        playback_environment = _required_mapping(
+            playback.get("environment"),
+            label=f"{source}.recipe.playback.environment",
+        )
+        provider = _required_text(
+            playback_environment.get("env_provider"),
+            label=f"{source}.recipe.playback.environment.env_provider",
+        )
+        requires_asset = resolve_env_provider(provider).requires_external_rom_asset
+        asset = playback.get("asset")
+        if requires_asset:
+            if not isinstance(asset, Mapping):
+                raise PolicyDocumentError(
+                    f"{source}.recipe.playback.asset must contain portable ROM identity"
+                )
+            _required_sha256(
+                asset.get("sha256"),
+                label=f"{source}.recipe.playback.asset.sha256",
+            )
+            _required_text(
+                asset.get("provider_rom_identity"),
+                label=f"{source}.recipe.playback.asset.provider_rom_identity",
+            )
+        elif asset is not None:
+            raise PolicyDocumentError(
+                f"{source}.recipe.playback.asset must be null for a ROM-free provider"
+            )
+        if provenance.get("asset") != asset:
+            raise PolicyDocumentError(
+                f"{source}.recipe.playback.asset disagrees with provenance.asset"
+            )
     runtime = _required_mapping(provenance.get("runtime"), label=f"{source}.provenance.runtime")
     _reject_unknown(runtime, frozenset({"image_ref", "packages"}), label=f"{source}.runtime")
     image_ref = _required_text(runtime.get("image_ref"), label=f"{source} runtime image_ref")
@@ -559,9 +592,9 @@ def _validate_model(
         raise PolicyDocumentError(f"{source}.checkpoint.filename must be {CHECKPOINT_FILENAME!r}")
     _required_sha256(checkpoint.get("sha256"), label=f"{source}.checkpoint.sha256")
     _required_size(checkpoint.get("size_bytes"), label=f"{source}.checkpoint.size_bytes")
-    if checkpoint.get("kind") not in {"checkpoint", "best", "final"}:
+    if checkpoint.get("kind") not in {"checkpoint", "best", "final", "interrupted"}:
         raise PolicyDocumentError(
-            f"{source}.checkpoint.kind must be 'checkpoint', 'best', or 'final'"
+            f"{source}.checkpoint.kind must be 'checkpoint', 'best', 'final', or 'interrupted'"
         )
     step = checkpoint.get("step")
     if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 0):
@@ -705,7 +738,10 @@ def build_recipe_document(
     )
     recipe["environment"] = effective_training_metadata["environment"]
     recipe["environment_hash"] = effective_training_metadata["environment_hash"]
-    from rlab.checkpoint_acceptance import CheckpointEvalContractCompiler
+    from rlab.checkpoint_acceptance import (
+        CheckpointEvalContractCompiler,
+        portable_asset_from_train_config,
+    )
 
     training_only = str(train_config.get("checkpoint_eval_backend") or "") == "none"
     eval_compiler = None
@@ -714,13 +750,19 @@ def build_recipe_document(
     if training_only:
         from rlab.seeds import EVAL_SEED_START
 
+        playback_environment = {
+            key: deepcopy(value)
+            for key, value in train_config.items()
+            if key in env_config_allowed_keys()
+        }
+        portable_asset = portable_asset_from_train_config(
+            train_config,
+            environment=playback_environment,
+        )
         playback = {
-            "environment": {
-                key: deepcopy(value)
-                for key, value in train_config.items()
-                if key in env_config_allowed_keys()
-            },
+            "environment": playback_environment,
             "seed": int(train_config.get("checkpoint_eval_seed", EVAL_SEED_START)),
+            "asset": portable_asset,
         }
     else:
         eval_compiler = CheckpointEvalContractCompiler.from_train_config(
@@ -1034,6 +1076,7 @@ def playback_contract(recipe_document: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "environment": deepcopy(dict(evaluation["environment"])),
         "seed": int(evaluation["seed"]),
+        "asset": deepcopy(evaluation.get("asset")),
     }
 
 

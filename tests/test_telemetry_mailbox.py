@@ -14,7 +14,6 @@ from rlab.telemetry_mailbox import (
     claim_run_metric_batches,
     decode_metric_batch,
     encode_metric_batch,
-    finalize_mailbox_runs_without_eval,
     mark_submitted_batches,
     pending_metric_run_ids,
     schedule_artifact_publications,
@@ -111,11 +110,12 @@ class TelemetryBatchTests(unittest.TestCase):
         stream_insert = next(call for call in calls if "INSERT INTO metric_streams" in call.args[0])
         self.assertEqual(
             stream_insert.args[1]["stream_id"],
-            "artifact-v2-7-3-availability-r0",
+            "artifact-v3-7-3-availability-r0",
         )
         batch_insert = next(call for call in calls if "INSERT INTO metric_batches" in call.args[0])
         frames = decode_metric_batch(bytes(batch_insert.args[1]["payload"].adapted))
-        self.assertEqual(frames[0]["payload"]["artifact_publication_schema"], "v2")
+        self.assertEqual(frames[0]["payload"]["artifact_publication_schema"], "v3")
+        self.assertEqual(frames[0]["payload"]["content_mode"], "wandb_native_v1")
         self.assertEqual(frames[0]["payload"]["ledger_id"], 3)
 
     def test_legacy_null_wandb_column_preserves_immutable_config_run_id(self) -> None:
@@ -156,20 +156,6 @@ class TelemetryBatchTests(unittest.TestCase):
         statements = [call.args[0] for call in cursor.execute.call_args_list]
         self.assertTrue(any("'opted_out'" in statement for statement in statements))
         self.assertFalse(any("INSERT INTO metric_batches" in statement for statement in statements))
-
-    def test_non_modal_finalization_uses_authoritative_launch_result(self) -> None:
-        conn = mock.MagicMock()
-        cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.rowcount = 3
-
-        changed = finalize_mailbox_runs_without_eval(conn)
-
-        self.assertEqual(changed, 3)
-        statement = cursor.execute.call_args.args[0]
-        self.assertIn("WHEN l.state = 'canceled' THEN 'canceled'", statement)
-        self.assertIn("WHEN l.state = 'failed' THEN 'failed'", statement)
-        self.assertIn("FROM job_launches l", statement)
-        self.assertIn("l.state IN ('succeeded', 'failed', 'canceled')", statement)
 
     def test_terminal_publications_are_not_claimable(self) -> None:
         conn = mock.MagicMock()

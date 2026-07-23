@@ -1907,7 +1907,6 @@ def _default_reconcile_eval(
     from rlab.telemetry_mailbox import (
         consume_attempt_events,
         discard_disabled_metric_batches,
-        finalize_mailbox_runs_without_eval,
         mailbox_storage_bytes,
     )
 
@@ -1923,7 +1922,6 @@ def _default_reconcile_eval(
             max_runs=100,
             deadline_monotonic=deadline_monotonic,
         )
-        detail["finalized_mailbox_runs_without_eval"] = finalize_mailbox_runs_without_eval(conn)
         storage_bytes = mailbox_storage_bytes(conn)
         detail["metric_mailbox_bytes"] = storage_bytes
         detail["metric_mailbox_pressure"] = (

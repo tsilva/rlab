@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import time
-import uuid
 from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any
 import numpy as np
 from gymnasium import spaces
 
-from rlab.artifacts import write_model_metadata
+from rlab.artifacts import install_model_bundle
 from rlab.action_contract import configured_action_meanings
 from rlab.batch_runtime import EpisodeRecord
 from rlab.early_stop import evaluate_early_stop_config
@@ -178,15 +177,12 @@ def _save_policy_bundle(
     kind: str,
     step: int,
 ) -> Path:
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}.zip"
-    search.policy().save(temporary)
-    temporary.replace(model_path)
-    metadata_path = write_model_metadata(
+    model_path, metadata_path = install_model_bundle(
         model_path,
-        context.args,
-        context.environment,
-        kind,
+        save_checkpoint=lambda path: search.policy().save(path),
+        args=context.args,
+        config=context.environment,
+        kind=kind,
         checkpoint_step_value=step,
     )
     checkpoint_id = context.metric_store.record_checkpoint(

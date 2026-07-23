@@ -16,6 +16,7 @@ from rlab.checkpoint_acceptance import (
     aggregates_match,
     evaluate_acceptance,
     manifest_index,
+    portable_asset_from_train_config,
     validate_checkpoint_eval_contract,
     validate_episode_rows,
 )
@@ -74,6 +75,15 @@ def validate_announcement(
             raise ValueError("training-only checkpoint announcement is missing playback contract")
         if canonical_json_sha256(dict(playback)) != playback_hash:
             raise ValueError("checkpoint announcement playback contract hash mismatch")
+        playback_environment = playback.get("environment")
+        if not isinstance(playback_environment, Mapping):
+            raise ValueError("training-only playback environment is missing")
+        expected_asset = portable_asset_from_train_config(
+            materialized_train_config,
+            environment=playback_environment,
+        )
+        if playback.get("asset") != expected_asset:
+            raise ValueError("training-only playback asset identity mismatch")
         if announcement.get("evaluation_contract_sha256") not in (None, ""):
             raise ValueError(
                 "training-only checkpoint announcement must not claim an evaluation contract"
@@ -86,8 +96,8 @@ def validate_announcement(
     if int(announcement.get("recipe_format_version") or 0) < 1:
         raise ValueError("checkpoint announcement recipe format version is invalid")
     if training_only:
-        if announcement.get("eval") is not None:
-            raise ValueError("training-only checkpoint announcement must not include eval contract")
+        if announcement.get("eval") != {}:
+            raise ValueError("training-only checkpoint announcement eval contract must be empty")
         return dict(announcement)
     eval_contract = announcement.get("eval")
     if not isinstance(eval_contract, Mapping):

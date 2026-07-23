@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import re
-import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from gymnasium import spaces
 
-from rlab.artifacts import write_model_metadata
+from rlab.artifacts import install_model_bundle
 from rlab.snapshot_curriculum import snapshot_curriculum_artifact_summary
 from rlab.training_backend import BackendContext
 
@@ -168,15 +167,12 @@ def save_model_bundle(
     kind: str,
     step: int | None,
 ) -> Path:
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = model_path.parent / f".{model_path.stem}.{uuid.uuid4().hex}.zip"
-    model.save(str(temp_path))
-    temp_path.replace(model_path)
-    metadata_path = write_model_metadata(
+    model_path, metadata_path = install_model_bundle(
         model_path,
-        context.args,
-        context.environment,
-        kind,
+        save_checkpoint=lambda path: model.save(str(path)),
+        args=context.args,
+        config=context.environment,
+        kind=kind,
         checkpoint_step_value=step,
         snapshot_curriculum_session=snapshot_curriculum_artifact_summary(
             getattr(model, "env", None)

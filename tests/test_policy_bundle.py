@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from collections import Counter
 from copy import deepcopy
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from rlab.artifacts import install_model_bundle
 from rlab.env import resolve_env_config
 from rlab.env_config import env_config_from_mapping
 from rlab.env_metadata import training_metadata
@@ -23,6 +25,7 @@ from rlab.policy_bundle import (
     playback_contract_sha256,
     playback_contract,
     load_policy_bundle,
+    load_policy_bundle_from_checkpoint,
     load_recipe_document,
     validate_recipe_document,
     write_canonical_json,
@@ -74,6 +77,66 @@ def test_breakout_bundle_is_playable_but_has_no_evaluation_contract(
     assert len(playback_contract_sha256(document)) == 64
     with pytest.raises(PolicyDocumentError, match="no evaluation contract"):
         evaluation_contract(document)
+
+
+def test_atomic_bundle_install_commits_only_a_complete_replayable_bundle(
+    tmp_path: Path,
+) -> None:
+    recipe_document = level1_1_recipe_document()
+    recipe_path = write_canonical_json(tmp_path / "recipe.json", recipe_document)
+    train_config = dict(recipe_document["recipe"]["train_config"])
+    config = resolve_env_config(env_config_from_mapping(train_config))
+    model_path = tmp_path / "checkpoints" / "model_100_steps.zip"
+    args = argparse.Namespace(
+        **{
+            **train_config,
+            "recipe_json_path": str(recipe_path),
+            "run_name": "atomic-bundle",
+            "run_description": "Atomic bundle regression.",
+            "queue_train_job_id": 9,
+            "runtime_image_ref": RUNTIME,
+            "source_sha": "a" * 40,
+            "algorithm_id": "ppo",
+            "model_class": "stable_baselines3.ppo.ppo.PPO",
+            "training_backend_id": "sb3.ppo",
+            "training_backend_config_hash": training_backend_config_hash(train_config),
+        }
+    )
+
+    install_model_bundle(
+        model_path,
+        save_checkpoint=lambda path: path.write_bytes(b"checkpoint"),
+        args=args,
+        config=config,
+        kind="checkpoint",
+        checkpoint_step_value=100,
+    )
+
+    bundle = load_policy_bundle_from_checkpoint(model_path)
+    assert bundle is not None
+    assert bundle.model["checkpoint"]["step"] == 100
+    assert bundle.checkpoint_path.read_bytes() == b"checkpoint"
+
+    # An exact producer replay is accepted, but the same destination can never
+    # be rebound to different checkpoint bytes.
+    install_model_bundle(
+        model_path,
+        save_checkpoint=lambda path: path.write_bytes(b"checkpoint"),
+        args=args,
+        config=config,
+        kind="checkpoint",
+        checkpoint_step_value=100,
+    )
+    with pytest.raises(FileExistsError, match="conflicts with an existing committed bundle"):
+        install_model_bundle(
+            model_path,
+            save_checkpoint=lambda path: path.write_bytes(b"different"),
+            args=args,
+            config=config,
+            kind="checkpoint",
+            checkpoint_step_value=100,
+        )
+    assert not list(model_path.parent.glob(".*.zip"))
 
 
 def test_post400_acceptance_assigns_every_snapshot_to_a_fixed_lane() -> None:

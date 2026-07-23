@@ -22,6 +22,10 @@ from rlab.task_kernels import MarioTaskConfig, MarioTaskDefinition
 from packaging.version import Version
 
 
+BREAKOUT_NO_NOOP_ACTIONS = [["BUTTON"], ["RIGHT"], ["LEFT"]]
+BREAKOUT_NO_NOOP_HASH = "a1f69721fbf7ef8a00084b9426767b0bce61f39ee0880b932a954c7d5789ee15"
+
+
 class RegisteredNativeVectorEnv(gym.vector.VectorEnv):
     metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
 
@@ -349,7 +353,91 @@ class BreakoutTurboProviderTests(unittest.TestCase):
 
             kernel = _bound_task_kernel(config, descriptor, 2)
             self.assertIsNone(kernel._observation_mask)
+            self.assertEqual(kernel.action_space, gym.spaces.Discrete(4))
             self.assertTrue(kernel.observation_encoding_is_view)
+        finally:
+            env.close()
+
+    def test_rl_zoo_noop_resets_are_seeded_and_keep_live_snapshots_deterministic(
+        self,
+    ) -> None:
+        config = self.config(
+            game="Breakout-Atari2600-v0",
+            state="Start",
+            env_args={
+                **self.config().env_args,
+                "noop_reset_max": 30,
+            },
+        )
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=2,
+            native_obs_crop=lambda value: value.obs_crop,
+            state_weight_mapping=lambda _config: {},
+        )
+        env = make_provider_vec_env(config, native_kwargs=kwargs)
+        try:
+            descriptor = provider_descriptor(
+                config,
+                env,
+                state_weight_mapping=lambda _config: {},
+            )
+            _, infos = env.reset(seed=[7, 8])
+            expected = np.asarray(
+                [np.random.default_rng(seed).integers(1, 31, dtype=np.uint64) for seed in (7, 8)],
+                dtype=np.uint32,
+            )
+            np.testing.assert_array_equal(infos["noop_reset_count"], expected)
+            self.assertTrue(descriptor.supports_live_snapshots)
+            self.assertTrue(descriptor.live_snapshots_deterministic)
+        finally:
+            env.close()
+
+    def test_inline_table_without_noop_exposes_three_native_actions(self) -> None:
+        config = self.config(
+            game="Breakout-Atari2600-v0",
+            state="Start",
+            env_args={
+                **self.config().env_args,
+                "use_restricted_actions": BREAKOUT_NO_NOOP_ACTIONS,
+            },
+        )
+        kwargs = provider_native_vec_kwargs(
+            config,
+            n_envs=2,
+            native_obs_crop=lambda value: value.obs_crop,
+            state_weight_mapping=lambda _config: {},
+        )
+
+        env = make_provider_vec_env(config, native_kwargs=kwargs)
+        try:
+            descriptor = provider_descriptor(
+                config,
+                env,
+                state_weight_mapping=lambda _config: {},
+            )
+            kernel = _bound_task_kernel(config, descriptor, 2)
+
+            self.assertEqual(env.single_action_space, gym.spaces.Discrete(3))
+            self.assertEqual(descriptor.native_action_space, gym.spaces.Discrete(3))
+            self.assertEqual(kernel.action_space, gym.spaces.Discrete(3))
+            self.assertEqual(descriptor.action_mode, "custom_discrete")
+            self.assertEqual(descriptor.action_meanings, ("button", "right", "left"))
+            self.assertEqual(descriptor.action_table_hash, BREAKOUT_NO_NOOP_HASH)
+
+            env.reset(
+                seed=[1, 2],
+                options={
+                    "reset_mask": np.ones(2, dtype=np.bool_),
+                    "start_ids": np.asarray(["Start", "full"], dtype=object),
+                },
+            )
+            for actions in (
+                np.asarray([0, 0], dtype=np.int64),
+                np.asarray([1, 1], dtype=np.int64),
+                np.asarray([2, 2], dtype=np.int64),
+            ):
+                env.step(actions)
         finally:
             env.close()
 
@@ -466,6 +554,137 @@ class MarioNativeProviderTests(unittest.TestCase):
         )
 
         self.assertIs(kwargs["use_restricted_actions"], retro.Actions.ALL)
+
+    def test_stable_retro_breakout_uses_one_task_codec_for_named_and_inline_tables(
+        self,
+    ) -> None:
+        class ManualRetroVectorEnv:
+            metadata = {"autoreset_mode": gym.vector.AutoresetMode.DISABLED}
+
+            def __init__(self, game, *, num_envs, **kwargs):
+                self.game = game
+                self.num_envs = num_envs
+                self.kwargs = kwargs
+                self.autoreset_mode = gym.vector.AutoresetMode.DISABLED
+                self.state_catalog = ("Start",)
+                self.single_observation_space = gym.spaces.Box(
+                    0, 255, shape=(4, 84, 84), dtype=np.uint8
+                )
+                self.single_action_space = gym.spaces.MultiBinary(8)
+                self.observation_space = gym.vector.utils.batch_space(
+                    self.single_observation_space, num_envs
+                )
+                self.action_space = gym.vector.utils.batch_space(
+                    self.single_action_space, num_envs
+                )
+                self.last_actions = None
+
+            def reset(self, *, seed=None, options=None):
+                del seed
+                mask = np.asarray(options["reset_mask"], dtype=np.bool_)
+                state_indices = np.asarray(options["state_indices"], dtype=np.int32)
+                return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), {
+                    "state_index": state_indices,
+                    "_state_index": mask,
+                }
+
+            def step(self, actions):
+                self.last_actions = np.asarray(actions).copy()
+                return (
+                    np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8),
+                    np.zeros(self.num_envs, dtype=np.float32),
+                    np.zeros(self.num_envs, dtype=np.bool_),
+                    np.zeros(self.num_envs, dtype=np.bool_),
+                    {},
+                )
+
+            def close(self):
+                return None
+
+        for action_request, expected_actions, expected_hash in (
+            (
+                "simple",
+                np.asarray(
+                    [
+                        [0, 0, 0, 0, 0, 0, 0, 0],
+                        [1, 0, 0, 0, 0, 0, 0, 0],
+                        [0, 0, 0, 0, 0, 0, 0, 1],
+                        [0, 0, 0, 0, 0, 0, 1, 0],
+                    ],
+                    dtype=np.int8,
+                ),
+                "ae2fea9e05910b0db9ba3980c162573a8ad9ad562e077babfeb5f6144d94a091",
+            ),
+            (
+                BREAKOUT_NO_NOOP_ACTIONS,
+                np.asarray(
+                    [
+                        [1, 0, 0, 0, 0, 0, 0, 0],
+                        [0, 0, 0, 0, 0, 0, 0, 1],
+                        [0, 0, 0, 0, 0, 0, 1, 0],
+                    ],
+                    dtype=np.int8,
+                ),
+                BREAKOUT_NO_NOOP_HASH,
+            ),
+        ):
+            with self.subTest(action_request=action_request):
+                num_envs = len(expected_actions)
+                config = EnvConfig(
+                    env_provider="stable-retro-turbo",
+                    game="Breakout-Atari2600-v0",
+                    state="Start",
+                    max_pool_frames=False,
+                    env_args={
+                        "players": 1,
+                        "use_restricted_actions": action_request,
+                    },
+                    task={
+                        "id": "identity",
+                        "action": {"set": "native"},
+                        "signals": {},
+                        "events": {},
+                        "termination": {},
+                        "reward": {"reward_mode": "native"},
+                    },
+                )
+                kwargs = provider_native_vec_kwargs(
+                    config,
+                    n_envs=num_envs,
+                    native_obs_crop=lambda _config: None,
+                    state_weight_mapping=lambda _config: {},
+                )
+                self.assertIs(kwargs["use_restricted_actions"], retro.Actions.ALL)
+
+                env = make_provider_vec_env(
+                    config,
+                    native_kwargs=kwargs,
+                    retro_vec_env_type=ManualRetroVectorEnv,
+                )
+                try:
+                    descriptor = provider_descriptor(
+                        config,
+                        env,
+                        state_weight_mapping=lambda _config: {},
+                    )
+                    kernel = _bound_task_kernel(config, descriptor, num_envs)
+                    self.assertEqual(
+                        kernel.action_space,
+                        gym.spaces.Discrete(len(expected_actions)),
+                    )
+                    self.assertIsInstance(
+                        descriptor.native_action_space,
+                        gym.spaces.MultiBinary,
+                    )
+                    self.assertEqual(descriptor.action_table_hash, expected_hash)
+
+                    policy_actions = np.arange(num_envs, dtype=np.int64)
+                    native_actions = kernel.map_actions(policy_actions)
+                    np.testing.assert_array_equal(native_actions, expected_actions)
+                    env.step(native_actions)
+                    np.testing.assert_array_equal(env.env.last_actions, expected_actions)
+                finally:
+                    env.close()
 
     def test_constructs_with_disabled_autoreset_and_describes_starts_and_signals(self) -> None:
         class FakeMarioVectorEnv:

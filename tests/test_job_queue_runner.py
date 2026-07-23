@@ -43,6 +43,8 @@ ROM_ASSET_MANIFEST = {
 MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
 MARIO_SINGLE_PPO = MARIO_L11_GOAL.parent / "recipes/ppo.yaml"
 BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
+BREAKOUT_NO_NOOP_GOAL = BREAKOUT_GOAL.parent / "no-noop/_goal.yaml"
+TRAINING_ONLY_GOALS = frozenset({BREAKOUT_GOAL, BREAKOUT_NO_NOOP_GOAL})
 SUPPORTED_RECIPE_PAIRS = tuple(
     (recipe_path.parent.parent / "_goal.yaml", recipe_path)
     for recipe_path in sorted(Path("experiments/goals").rglob("recipes/*.yaml"))
@@ -350,7 +352,7 @@ class JobQueueTests(unittest.TestCase):
                 )
                 expected_eval_backend = (
                     "none"
-                    if expected_backend == "rlab.jerk" or goal_path == BREAKOUT_GOAL
+                    if expected_backend == "rlab.jerk" or goal_path in TRAINING_ONLY_GOALS
                     else "modal"
                 )
                 self.assertEqual(train_config["checkpoint_eval_backend"], expected_eval_backend)
@@ -723,6 +725,16 @@ class JobQueueTests(unittest.TestCase):
         self.assertIn("next_retry_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("last_ready_at TIMESTAMPTZ", job_queue.SCHEMA_SQL)
         self.assertIn("job_id BIGINT NOT NULL UNIQUE REFERENCES train_jobs", job_queue.SCHEMA_SQL)
+        self.assertIn(
+            "hashtextextended('rlab-checkpoint-events:' || derived_train_job_id::text, 0)",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn(
+            "p_payload->>'_mailbox_event_id' IS DISTINCT FROM p_event_id",
+            job_queue.SCHEMA_SQL,
+        )
+        self.assertIn("attempt_row.provider = 'checkpoint-recovery'", job_queue.SCHEMA_SQL)
+        self.assertIn("provider <> 'checkpoint-recovery'", job_queue.SCHEMA_SQL)
         self.assertNotIn("max_attempts", job_queue.SCHEMA_SQL)
 
     def test_quiescence_count_includes_orphaned_active_execution_records(self) -> None:
@@ -1618,7 +1630,7 @@ class JobQueueTests(unittest.TestCase):
             "state": "running",
             "cancel_requested": False,
         }
-        conn = FakeConnection(results=[{"row": launch}])
+        conn = FakeConnection(results=[{"row": {"job_id": 7}}, {"row": launch}])
 
         with self.assertRaisesRegex(ValueError, "result machine mismatch"):
             job_queue.finish_train_launch_from_result(
@@ -1636,12 +1648,10 @@ class JobQueueTests(unittest.TestCase):
                 },
             )
 
-        statements = [
-            statement
-            for statement in conn.cursor_obj.executed_sqls
-            if "pg_advisory_xact_lock_shared" not in statement
-        ]
-        self.assertEqual(len(statements), 1)
+        statements = conn.cursor_obj.executed_sqls
+        self.assertEqual(len(statements), 2)
+        self.assertIn("pg_advisory_xact_lock", statements[0])
+        self.assertIn("FOR UPDATE OF launch, job", statements[1])
 
     def test_successful_modal_launch_releases_capacity_while_job_finalizes(self) -> None:
         launch = {
@@ -1659,7 +1669,15 @@ class JobQueueTests(unittest.TestCase):
         }
         terminal_launch = {**launch, "state": "succeeded"}
         job = {"id": 7, "run_name": "run", "status": "finalizing"}
-        conn = FakeConnection(results=[{"row": launch}, {"row": terminal_launch}, {"row": job}, {}])
+        conn = FakeConnection(
+            results=[
+                {"row": {"job_id": 7}},
+                {"row": launch},
+                {"row": terminal_launch},
+                {"row": job},
+                {},
+            ]
+        )
 
         job_queue.finish_train_launch_from_result(
             conn,
@@ -1677,8 +1695,8 @@ class JobQueueTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(conn.cursor_obj.executed_params_list[1]["state"], "succeeded")
-        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "finalizing")
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["state"], "succeeded")
+        self.assertEqual(conn.cursor_obj.executed_params_list[3]["status"], "finalizing")
 
     def test_retry_finalization_preserves_successful_launch(self) -> None:
         source = {
@@ -1886,6 +1904,7 @@ class JobQueueTests(unittest.TestCase):
         job = {"id": 7, "run_name": "run"}
         conn = FakeConnection(
             results=[
+                {"row": {"job_id": 7}},
                 {"row": launch},
                 {"row": terminal_launch},
                 {"row": job},
@@ -1908,9 +1927,9 @@ class JobQueueTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(conn.cursor_obj.executed_params_list[1]["state"], "canceled")
-        self.assertEqual(conn.cursor_obj.executed_params_list[2]["status"], "finalizing")
-        self.assertIn("outcome = 'canceled'", conn.cursor_obj.executed_sqls[3])
+        self.assertEqual(conn.cursor_obj.executed_params_list[2]["state"], "canceled")
+        self.assertEqual(conn.cursor_obj.executed_params_list[3]["status"], "finalizing")
+        self.assertIn("outcome = 'canceled'", conn.cursor_obj.executed_sqls[4])
 
     def test_prestart_cancel_skips_publication_and_finalization(self) -> None:
         launch = {
@@ -1931,6 +1950,7 @@ class JobQueueTests(unittest.TestCase):
         job = {"id": 7, "run_name": "run", "status": "canceled"}
         conn = FakeConnection(
             results=[
+                {"row": {"job_id": 7}},
                 {"row": launch},
                 {"row": terminal_launch},
                 {"row": job},
@@ -1953,10 +1973,10 @@ class JobQueueTests(unittest.TestCase):
             },
         )
 
-        job_params = conn.cursor_obj.executed_params_list[2]
+        job_params = conn.cursor_obj.executed_params_list[3]
         self.assertEqual(job_params["status"], "canceled")
         self.assertEqual(job_params["publication_status"], "disabled")
-        eval_params = conn.cursor_obj.executed_params_list[3]
+        eval_params = conn.cursor_obj.executed_params_list[4]
         self.assertEqual(eval_params["eval_status"], "canceled")
         self.assertEqual(eval_params["eval_error"], "training canceled before container start")
 

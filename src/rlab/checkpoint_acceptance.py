@@ -23,6 +23,38 @@ EVIDENCE_POLICY_VERSION = 1
 SEED_PROTOCOL = "vector-lane-v1"
 
 
+def portable_asset_from_train_config(
+    train_config: Mapping[str, Any],
+    *,
+    environment: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return the portable asset identity shared by eval and playback recipes."""
+
+    selected_environment = environment or train_config
+    provider = str(selected_environment.get("env_provider") or "").strip()
+    game = str(selected_environment.get("game") or "").strip()
+    if not provider or not game:
+        raise ValueError("portable asset environment identity is not materialized")
+    asset_value = manifest_from_train_config(train_config, expected_game=game)
+    requires_asset = resolve_env_provider(provider).requires_external_rom_asset
+    if not requires_asset:
+        if asset_value is not None and not isinstance(asset_value, Mapping):
+            raise ValueError("environment asset manifest must be an object or null")
+        return None
+    if not isinstance(asset_value, Mapping):
+        raise ValueError("environment asset manifest is not materialized")
+    asset = validate_rom_asset_manifest(
+        asset_value,
+        expected_game=game,
+        allow_legacy=True,
+    )
+    return {
+        key: value
+        for key, value in asset.items()
+        if key not in {"object_uri", "local_path"}
+    }
+
+
 def _required_int(
     value: Mapping[str, Any],
     key: str,

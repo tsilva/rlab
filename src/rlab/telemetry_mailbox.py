@@ -328,6 +328,23 @@ def issue_worker_attempt_token(
     with conn:
         with conn.cursor() as cur:
             cur.execute(
+                "SELECT train_job_id FROM worker_attempts WHERE attempt_id = %(attempt_id)s",
+                {"attempt_id": str(attempt_id)},
+            )
+            attempt = cur.fetchone()
+            if not attempt:
+                raise RuntimeError(f"worker attempt cannot receive a token: {attempt_id}")
+            cur.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(
+                    'rlab-checkpoint-events:' || %(train_job_id)s::text, 0
+                  )
+                )
+                """,
+                {"train_job_id": int(attempt["train_job_id"])},
+            )
+            cur.execute(
                 """
                 UPDATE worker_attempts
                 SET token_sha256 = %(digest)s, token_expires_at = %(expires_at)s
@@ -376,7 +393,10 @@ def claim_run_metric_batches(
                   t.status IN (
                     'finalizing', 'succeeded', 'failed', 'canceled', 'finalization_failed'
                   )
-                  AND s.stream_id LIKE 'artifact-v2-%%'
+                  AND (
+                    s.stream_id LIKE 'artifact-v2-%%'
+                    OR s.stream_id LIKE 'artifact-v3-%%'
+                  )
                 )
               )
               AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
@@ -385,7 +405,10 @@ def claim_run_metric_batches(
                 OR (
                   t.status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')
                   AND t.live_publication_status = 'complete'
-                  AND s.stream_id LIKE 'artifact-v2-%%'
+                  AND (
+                    s.stream_id LIKE 'artifact-v2-%%'
+                    OR s.stream_id LIKE 'artifact-v3-%%'
+                  )
                 )
               )
               AND (t.live_publication_next_retry_at IS NULL
@@ -432,7 +455,10 @@ def claim_run_metric_batches(
                             'finalizing', 'succeeded', 'failed', 'canceled',
                             'finalization_failed'
                           )
-                          AND s.stream_id LIKE 'artifact-v2-%%'
+                          AND (
+                            s.stream_id LIKE 'artifact-v2-%%'
+                            OR s.stream_id LIKE 'artifact-v3-%%'
+                          )
                         )
                       )
                       AND (
@@ -442,7 +468,10 @@ def claim_run_metric_batches(
                             'succeeded', 'failed', 'canceled', 'finalization_failed'
                           )
                           AND t.live_publication_status = 'complete'
-                          AND s.stream_id LIKE 'artifact-v2-%%'
+                          AND (
+                            s.stream_id LIKE 'artifact-v2-%%'
+                            OR s.stream_id LIKE 'artifact-v3-%%'
+                          )
                         )
                       )
                       AND (b.lease_expires_at IS NULL OR b.lease_expires_at <= now())
@@ -493,7 +522,10 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
                     t.status IN (
                       'finalizing', 'succeeded', 'failed', 'canceled', 'finalization_failed'
                     )
-                    AND s.stream_id LIKE 'artifact-v2-%%'
+                    AND (
+                      s.stream_id LIKE 'artifact-v2-%%'
+                      OR s.stream_id LIKE 'artifact-v3-%%'
+                    )
                   )
                 )
                 AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
@@ -502,7 +534,10 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
                   OR (
                     t.status IN ('succeeded', 'failed', 'canceled', 'finalization_failed')
                     AND t.live_publication_status = 'complete'
-                    AND s.stream_id LIKE 'artifact-v2-%%'
+                    AND (
+                      s.stream_id LIKE 'artifact-v2-%%'
+                      OR s.stream_id LIKE 'artifact-v3-%%'
+                    )
                   )
                 )
                 AND (t.live_publication_next_retry_at IS NULL
@@ -518,7 +553,10 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
                     SELECT 1 FROM metric_streams s
                     JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                     WHERE a.train_job_id = t.id
-                      AND s.stream_id LIKE 'artifact-v2-%%'
+                      AND (
+                        s.stream_id LIKE 'artifact-v2-%%'
+                        OR s.stream_id LIKE 'artifact-v3-%%'
+                      )
                   )
                 )
                 AND (t.live_publication_next_retry_at IS NULL
@@ -534,7 +572,10 @@ def pending_metric_run_ids(conn, *, limit: int = 100) -> list[int]:
                   SELECT 1 FROM metric_streams s
                   JOIN worker_attempts a ON a.attempt_id = s.attempt_id
                   WHERE a.train_job_id = t.id
-                    AND s.stream_id LIKE 'artifact-v2-%%'
+                    AND (
+                      s.stream_id LIKE 'artifact-v2-%%'
+                      OR s.stream_id LIKE 'artifact-v3-%%'
+                    )
                 )
               UNION ALL
               SELECT t.id, COALESCE(t.process_exited_at, t.created_at) AS ready_at
@@ -701,49 +742,6 @@ def discard_disabled_metric_batches(conn) -> int:
             return cur.rowcount
 
 
-def finalize_mailbox_runs_without_eval(conn) -> int:
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE train_jobs t
-                SET status = CASE
-                      WHEN l.state = 'canceled' THEN 'canceled'
-                      WHEN l.state = 'failed' THEN 'failed'
-                      ELSE 'succeeded'
-                    END,
-                    finished_at = now(),
-                    error = CASE
-                      WHEN l.state = 'failed' THEN COALESCE(l.error, t.error)
-                      ELSE NULL
-                    END,
-                    live_publication_error = NULL,
-                    live_publication_next_retry_at = NULL
-                FROM job_launches l
-                WHERE t.status = 'finalizing'
-                  AND l.job_id = t.id
-                  AND l.state IN ('succeeded', 'failed', 'canceled')
-                  AND t.telemetry_transport = 'neon_mailbox_v1'
-                  AND COALESCE(t.train_config->>'checkpoint_eval_backend', 'local') <> 'modal'
-                  AND t.live_publication_status IN ('complete', 'disabled')
-                  AND NOT EXISTS (
-                    SELECT 1 FROM metric_batches b
-                    JOIN metric_streams s ON s.stream_id = b.stream_id
-                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
-                    WHERE a.train_job_id = t.id
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM metric_streams s
-                    JOIN worker_attempts a ON a.attempt_id = s.attempt_id
-                    WHERE a.train_job_id = t.id
-                      AND (s.final_sequence IS NULL
-                           OR s.published_sequence < s.final_sequence)
-                  )
-                """
-            )
-            return cur.rowcount
-
-
 def enqueue_projection_payload(
     conn,
     *,
@@ -867,7 +865,7 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_try_advisory_xact_lock(hashtextextended(%(key)s, 0)) AS acquired",
-                {"key": "rlab-artifact-publication-scheduler-v2"},
+                {"key": "rlab-artifact-publication-scheduler-v3"},
             )
             if not bool(cur.fetchone()["acquired"]):
                 return {"scheduled": 0, "opted_out": 0}
@@ -896,9 +894,12 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM metric_streams stream
-                    WHERE stream.stream_id =
+                    WHERE stream.stream_id IN (
                       'artifact-v2-' || l.train_job_id::text || '-' || l.ledger_id::text ||
-                      '-availability-r0'
+                        '-availability-r0',
+                      'artifact-v3-' || l.train_job_id::text || '-' || l.ledger_id::text ||
+                        '-availability-r0'
+                    )
                   )
                 ORDER BY l.verified_at, l.train_job_id, l.ledger_id
                 LIMIT %(limit)s
@@ -936,9 +937,12 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM metric_streams stream
-                    WHERE stream.stream_id =
+                    WHERE stream.stream_id IN (
                       'artifact-v2-' || l.train_job_id::text || '-' || l.ledger_id::text ||
-                      '-promotion-r' || r.promotion_revision::text
+                        '-promotion-r' || r.promotion_revision::text,
+                      'artifact-v3-' || l.train_job_id::text || '-' || l.ledger_id::text ||
+                        '-promotion-r' || r.promotion_revision::text
+                    )
                   )
                 ORDER BY r.updated_at, l.train_job_id, l.ledger_id
                 LIMIT %(limit)s
@@ -977,7 +981,7 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
                 disabled = not bool(train_config.get("wandb", False)) or bool(
                     train_config.get("no_wandb_artifacts", False)
                 )
-                stream_id = f"artifact-v2-{train_job_id}-{ledger_id}-{role}-r{revision}"
+                stream_id = f"artifact-v3-{train_job_id}-{ledger_id}-{role}-r{revision}"
                 if disabled:
                     cur.execute(
                         """
@@ -1018,7 +1022,8 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
                     continue
                 payload = {
                     "projection_kind": "artifact_reference",
-                    "artifact_publication_schema": "v2",
+                    "artifact_publication_schema": "v3",
+                    "content_mode": "wandb_native_v1",
                     "train_config": train_config,
                     "train_job_id": train_job_id,
                     "ledger_id": ledger_id,
@@ -1049,7 +1054,7 @@ def schedule_artifact_publications(conn, *, limit: int = 10) -> dict[str, int]:
                         }
                     ]
                 )
-                attempt_id = f"fleet-artifact-v2-{train_job_id}"
+                attempt_id = f"fleet-artifact-v3-{train_job_id}"
                 cur.execute(
                     """
                     INSERT INTO worker_attempts (

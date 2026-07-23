@@ -106,7 +106,8 @@ train:
           obs_grayscale: true
           obs_layout: chw
           frame_stack: 4
-          noop_reset_max: 0
+          # Static resets match RL Zoo; snapshot restores bypass reset noops.
+          noop_reset_max: 30
           reward_clip: false
           use_fire_reset: false
           snapshot_bank_uri: >-

@@ -15,7 +15,6 @@ from stable_retro import RetroVecEnv as DEFAULT_RETRO_VEC_ENV
 
 from rlab.bandit_env import BanditVectorEnv
 from rlab.action_contract import (
-    BUILTIN_ACTION_MODES,
     declared_action_contract,
     normalize_action_configuration,
 )
@@ -222,97 +221,6 @@ class _StartInfoAdapter:
         return self.env.close()
 
 
-class _CanonicalBreakoutAdapter:
-    """Expose one provider-neutral Atari Breakout action and start contract."""
-
-    def __init__(self, env: Any):
-        self.env = env
-        self.num_envs = int(env.num_envs)
-        self.single_action_space = gym.spaces.Discrete(4)
-        self.action_space = gym.spaces.MultiDiscrete(np.full(self.num_envs, 4, dtype=np.int64))
-        raw_catalog = _native_start_catalog(env)
-        self._canonical_to_native: dict[str, str] = {}
-        canonical_catalog: list[str] = []
-        for native_name in raw_catalog:
-            canonical_name = "Start" if native_name == "full" else native_name
-            self._canonical_to_native.setdefault(canonical_name, native_name)
-            if canonical_name not in canonical_catalog:
-                canonical_catalog.append(canonical_name)
-        self.state_catalog = tuple(canonical_catalog)
-        self.initial_state_names = self.state_catalog
-        self._uses_button_actions = isinstance(
-            getattr(env, "single_action_space", None), gym.spaces.MultiBinary
-        )
-        self._button_actions = np.zeros((self.num_envs, 8), dtype=np.int8)
-
-    def __getattr__(self, name: str) -> Any:
-        if name == "env":
-            raise AttributeError(name)
-        return getattr(self.env, name)
-
-    def reset(self, *, seed=None, options=None):
-        native_options = dict(options or {})
-        start_ids = native_options.get("start_ids")
-        if start_ids is not None:
-            native_ids = np.asarray(start_ids, dtype=object).copy()
-            if native_ids.shape != (self.num_envs,):
-                raise ValueError(
-                    f"start_ids must have shape ({self.num_envs},), got {native_ids.shape}"
-                )
-            for lane, value in enumerate(native_ids):
-                if value is None:
-                    continue
-                canonical = "Start" if str(value) == "full" else str(value)
-                try:
-                    native_ids[lane] = self._canonical_to_native[canonical]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"unknown provider start id {value!r}; expected one of {self.state_catalog}"
-                    ) from exc
-            native_options["start_ids"] = native_ids
-        observations, infos = self.env.reset(seed=seed, options=native_options)
-        return observations, self._canonical_infos(infos)
-
-    def step(self, actions):
-        action_ids = np.asarray(actions, dtype=np.int64)
-        if action_ids.shape != (self.num_envs,):
-            raise ValueError(f"actions must have shape ({self.num_envs},)")
-        if np.any((action_ids < 0) | (action_ids > 3)):
-            raise ValueError("Breakout actions must be in [0, 3]")
-        native_actions: Any = action_ids
-        if self._uses_button_actions:
-            self._button_actions.fill(0)
-            self._button_actions[:, 0] = action_ids == 1
-            self._button_actions[:, 7] = action_ids == 2
-            self._button_actions[:, 6] = action_ids == 3
-            native_actions = self._button_actions
-        observations, rewards, terminated, truncated, infos = self.env.step(native_actions)
-        return observations, rewards, terminated, truncated, self._canonical_infos(infos)
-
-    @staticmethod
-    def _canonical_infos(infos: Any) -> Any:
-        if not isinstance(infos, Mapping):
-            return infos
-        result = dict(infos)
-        for key in ("start_id", "state", "start_state"):
-            values = result.get(key)
-            if values is None:
-                continue
-            canonical = np.asarray(values, dtype=object).copy()
-            canonical[canonical == "full"] = "Start"
-            result[key] = canonical
-        return result
-
-    def get_images(self):
-        get_images = getattr(self.env, "get_images", None)
-        if callable(get_images):
-            return get_images()
-        return self.env.render()
-
-    def close(self):
-        return self.env.close()
-
-
 class _BreakoutSnapshotBankAdapter:
     """Expose persisted Breakout states as deterministic provider start IDs."""
 
@@ -412,7 +320,10 @@ class _BreakoutSnapshotBankAdapter:
         return self.env.step(actions)
 
     def get_images(self):
-        return self.env.get_images()
+        get_images = getattr(self.env, "get_images", None)
+        if callable(get_images):
+            return get_images()
+        return self.env.render()
 
     def close(self):
         return self.env.close()
@@ -492,19 +403,15 @@ def provider_native_vec_kwargs(
         }
         for key, attribute_path in enum_args.items():
             value = native_kwargs.get(key)
-            if not isinstance(value, str):
-                continue
-            if (
-                key == "use_restricted_actions"
-                and value.strip().casefold() not in BUILTIN_ACTION_MODES
-            ):
+            if key == "use_restricted_actions":
                 declared_action = declared_action_contract(config)
-                if declared_action is None or declared_action.get("table") is None:
-                    raise ValueError(f"cannot resolve provider action preset {value!r}")
-                if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
-                    native_kwargs[key] = retro.Actions.ALL
-                else:
-                    native_kwargs[key] = declared_action["table"]
+                if declared_action is not None and declared_action.get("table") is not None:
+                    if provider.provider_id == STABLE_RETRO_TURBO_PROVIDER.provider_id:
+                        native_kwargs[key] = retro.Actions.ALL
+                    elif isinstance(value, str):
+                        native_kwargs[key] = declared_action["table"]
+                    continue
+            if not isinstance(value, str):
                 continue
             enum_type: Any = retro
             for attribute in attribute_path:
@@ -824,9 +731,7 @@ def provider_descriptor(
         and callable(getattr(native_env, "capture_snapshots", None))
     )
     deterministic_snapshots = bool(
-        supports_live_snapshots
-        and float(config.sticky_action_prob) == 0.0
-        and int(config.env_args.get("noop_reset_max", 0)) == 0
+        supports_live_snapshots and float(config.sticky_action_prob) == 0.0
     )
     return ProviderDescriptor(
         provider_id=provider.provider_id,
@@ -970,10 +875,7 @@ def _stable_retro_turbo_make_vec_env(
     kwargs = dict(native_kwargs)
     env = env_type(config.game, **kwargs)
     env = _require_disabled_autoreset_mode(env, STABLE_RETRO_TURBO_PROVIDER.provider_id)
-    env = _StartInfoAdapter(env)
-    if config.game == "Breakout-Atari2600-v0":
-        return _CanonicalBreakoutAdapter(env)
-    return env
+    return _StartInfoAdapter(env)
 
 
 def _super_mario_bros_nes_turbo_make_vec_env(
@@ -1046,7 +948,6 @@ def _breakout_turbo_make_vec_env(
             **{key: value for key, value in kwargs.items() if key not in legacy_unsupported}
         )
     env = _require_disabled_autoreset_mode(env, BREAKOUT_TURBO_ENV_PROVIDER.provider_id)
-    env = _CanonicalBreakoutAdapter(env)
     if snapshot_bank_uri:
         from rlab.snapshot_banks import (
             load_breakout_snapshot_bank,

@@ -1,0 +1,18 @@
+defaults:
+- ../../../../recipes/_presets/atari-ppo@_global_
+- _self_
+recipe_id: ppo
+description: >-
+  Seed {seed} trains the three-action no-NOOP Breakout ablation for {goal_id} with the baseline
+  128 environments, 64-step rollouts, resource cap, optimizer schedule, and otherwise unchanged
+  goal-owned training contract.
+train:
+  timesteps: 500000000
+  backend:
+    config:
+      n_steps: 64
+      learning_rate: 2.5e-4
+      learning_rate_final: 5.0e-5
+      learning_rate_schedule_timesteps: 40001536
+      ent_coef_final: 0.002
+      ent_coef_schedule_timesteps: 40001536

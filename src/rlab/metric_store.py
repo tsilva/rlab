@@ -620,34 +620,53 @@ class MetricStore:
         path_text = str(path)
         metadata_text = str(metadata_path) if metadata_path is not None else None
         with self.connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO checkpoints
-                  (run_name, kind, step, path, metadata_path, sha256, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                  run_name = excluded.run_name,
-                  kind = excluded.kind,
-                  step = excluded.step,
-                  metadata_path = excluded.metadata_path,
-                  sha256 = COALESCE(excluded.sha256, checkpoints.sha256),
-                  status = excluded.status,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    run_name,
-                    kind,
-                    step,
-                    path_text,
-                    metadata_text,
-                    sha256,
-                    status,
-                    now,
-                    now,
-                ),
-            )
-            row = conn.execute("SELECT id FROM checkpoints WHERE path = ?", (path_text,)).fetchone()
-            checkpoint_id = int(row["id"])
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM checkpoints WHERE path = ?",
+                (path_text,),
+            ).fetchone()
+            if row is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO checkpoints
+                      (run_name, kind, step, path, metadata_path, sha256, status,
+                       created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_name,
+                        kind,
+                        step,
+                        path_text,
+                        metadata_text,
+                        sha256,
+                        status,
+                        now,
+                        now,
+                    ),
+                )
+                checkpoint_id = int(cursor.lastrowid)
+            else:
+                expected = {
+                    "run_name": str(run_name),
+                    "kind": str(kind),
+                    "step": step,
+                    "metadata_path": metadata_text,
+                    "status": str(status),
+                }
+                mismatches = [
+                    key
+                    for key, value in expected.items()
+                    if row[key] != value
+                ]
+                if sha256 is not None and row["sha256"] not in (None, sha256):
+                    mismatches.append("sha256")
+                if mismatches:
+                    raise ValueError(
+                        "checkpoint ledger replay conflicts for "
+                        f"{path_text}: {', '.join(sorted(set(mismatches)))}"
+                    )
+                checkpoint_id = int(row["id"])
             conn.execute(
                 """
                 INSERT INTO artifact_uploads (checkpoint_id, status, created_at, updated_at)

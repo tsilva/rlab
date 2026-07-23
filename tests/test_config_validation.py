@@ -28,6 +28,8 @@ from rlab.recipe_schema import validate_materialized_train_recipe
 class ConfigValidationTests(unittest.TestCase):
     BREAKOUT_GOAL = Path("experiments/goals/Breakout-Atari2600-v0/_goal.yaml")
     BREAKOUT_RECIPE = BREAKOUT_GOAL.parent / "recipes/ppo.yaml"
+    BREAKOUT_NO_NOOP_GOAL = BREAKOUT_GOAL.parent / "no-noop/_goal.yaml"
+    BREAKOUT_NO_NOOP_RECIPE = BREAKOUT_NO_NOOP_GOAL.parent / "recipes/ppo.yaml"
     MARIO_L11_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/Level1-1/_goal.yaml")
     MARIO_END_TO_END_GOAL = Path("experiments/goals/SuperMarioBros-Nes-v0/EndToEnd/_goal.yaml")
     MARIO_SINGLE_RECIPES = MARIO_L11_GOAL.parent / "recipes"
@@ -99,6 +101,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(train_config["task"]["action"]["set"], "native")
         self.assertFalse(train_config["max_pool_frames"])
         self.assertEqual(train_config["sticky_action_prob"], 0.0)
+        self.assertEqual(train_config["env_args"]["noop_reset_max"], 30)
         self.assertEqual(train_config["obs_crop"], [17, 0, 0, 0])
         self.assertEqual(train_config["obs_crop_mode"], "mask")
         self.assertEqual(
@@ -145,6 +148,50 @@ class ConfigValidationTests(unittest.TestCase):
             self.assertEqual(train_config[key], stable_train[key])
         self.assertEqual(document["goal"]["objective"], stable_retro["goal"]["objective"])
         self.assertNotIn("eval", stable_retro["goal"])
+
+    def test_breakout_no_noop_ablation_changes_only_goal_identity_and_action_table(self) -> None:
+        baseline = compose_train_document(
+            self.BREAKOUT_GOAL,
+            self.BREAKOUT_RECIPE,
+        )
+        ablation = compose_train_document(
+            self.BREAKOUT_NO_NOOP_GOAL,
+            self.BREAKOUT_NO_NOOP_RECIPE,
+        )
+        stable_ablation = compose_train_document(
+            self.BREAKOUT_NO_NOOP_GOAL,
+            self.BREAKOUT_NO_NOOP_RECIPE,
+            env_provider="stable-retro-turbo",
+        )
+
+        expected_actions = [["BUTTON"], ["RIGHT"], ["LEFT"]]
+        self.assertEqual(ablation["goal"]["goal_id"], "no-noop")
+        self.assertEqual(
+            ablation["goal"]["title"],
+            "Atari 2600 Breakout no-NOOP action ablation",
+        )
+        self.assertIn("three-action no-NOOP", ablation["description"])
+        self.assertEqual(
+            ablation["train_config"]["env_args"]["use_restricted_actions"],
+            expected_actions,
+        )
+        self.assertEqual(
+            stable_ablation["train_config"]["env_args"]["use_restricted_actions"],
+            expected_actions,
+        )
+        self.assertEqual(
+            stable_ablation["train_config"]["env_provider"],
+            "stable-retro-turbo",
+        )
+        self.assertNotEqual(baseline["environment_hash"], ablation["environment_hash"])
+
+        baseline_config = deepcopy(baseline["train_config"])
+        ablation_config = deepcopy(ablation["train_config"])
+        for config in (baseline_config, ablation_config):
+            config.pop("goal_contract_sha256")
+            config.pop("effective_goal_contract_sha256")
+            config["env_args"].pop("use_restricted_actions")
+        self.assertEqual(baseline_config, ablation_config)
 
     def test_goal_environment_rejects_implicit_provider_defaults(self) -> None:
         environment = {
@@ -299,7 +346,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(report.counts["json_files"], 0)
         self.assertGreaterEqual(report.counts["yaml_files"], 15)
         self.assertGreaterEqual(report.counts["goals"], 1)
-        self.assertEqual(report.counts["train_recipes"], 29)
+        self.assertEqual(report.counts["train_recipes"], 30)
         self.assertGreaterEqual(report.counts["env_configs"], 0)
         self.assertEqual(report.counts["benchmark_profiles"], 4)
 
@@ -344,7 +391,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "obs_grayscale": True,
                 "obs_layout": "chw",
                 "frame_stack": 4,
-                "noop_reset_max": 0,
+                "noop_reset_max": 30,
                 "reward_clip": False,
                 "use_fire_reset": False,
             },
@@ -406,6 +453,19 @@ class ConfigValidationTests(unittest.TestCase):
             "stable-retro-turbo:Breakout-Atari2600-v0",
         )
         self.assertEqual(document["environment"]["preprocessing"]["frame_skip"], 4)
+
+    def test_all_breakout_recipes_inherit_rl_zoo_noop_reset_max(self) -> None:
+        recipe_root = self.BREAKOUT_GOAL.parent
+        recipes = sorted(recipe_root.glob("**/recipes/*.yaml"))
+        self.assertTrue(recipes)
+        for recipe in recipes:
+            goal = recipe.parent.parent / "_goal.yaml"
+            document = compose_train_document(goal, recipe)
+            self.assertEqual(
+                document["train_config"]["env_args"]["noop_reset_max"],
+                30,
+                str(recipe),
+            )
 
     def test_breakout_snapshot_curriculum_recipe_is_opt_in_and_resolves(self) -> None:
         recipe = self.BREAKOUT_GOAL.parent / "recipes" / "ppo-snapshot-curriculum.yaml"

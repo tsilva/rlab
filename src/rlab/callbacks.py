@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass
 from numbers import Integral
@@ -14,7 +13,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import KVWriter
 
-from rlab.artifacts import write_model_metadata
+from rlab.artifacts import install_model_bundle
 from rlab.early_stop import (
     evaluate_early_stop_config,
     flat_metric_rule_from_early_stop,
@@ -131,14 +130,12 @@ class LedgerCheckpointHelper(CallbackHelper):
     def save_checkpoint(self, step: int, *, kind: str) -> Path:
         started = time.perf_counter()
         final_path = self.save_path / f"{self.name_prefix}_{step}_steps.zip"
-        temp_path = self.save_path / f".{final_path.stem}.{uuid.uuid4().hex}.zip"
-        self.model.save(str(temp_path))
-        temp_path.replace(final_path)
-        metadata_path = write_model_metadata(
+        final_path, metadata_path = install_model_bundle(
             final_path,
-            self.args,
-            self.config,
-            kind,
+            save_checkpoint=lambda path: self.model.save(str(path)),
+            args=self.args,
+            config=self.config,
+            kind=kind,
             checkpoint_step_value=step,
             snapshot_curriculum_session=snapshot_curriculum_artifact_summary(
                 getattr(self.model, "env", None)

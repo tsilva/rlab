@@ -220,6 +220,7 @@ def test_runtime_resets_from_persisted_snapshot_distribution(tmp_path: Path) -> 
         ]
         for lane, state_id in enumerate(starts):
             assert _sha256(observations[lane].tobytes(order="C")) == observation_hashes[state_id]
+        assert runtime.provider.get_images().shape == (210, 160, 3)
         step = runtime.step(np.asarray([0, 1], dtype=np.int64))
         assert step.observations.shape == (2, 4, 84, 84)
     finally:

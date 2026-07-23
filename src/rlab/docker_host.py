@@ -1420,6 +1420,7 @@ def run_checkpoint_coordinator_container(
     launch_id: str,
     run_name: str,
     runtime_image_ref: str,
+    attempt_env_path: str | None = None,
 ) -> None:
     container_output = host.output_container_path(launch_id)
     result = _run_machine_docker(
@@ -1431,6 +1432,11 @@ def run_checkpoint_coordinator_container(
             f"rlab-checkpoint-recovery-{launch_id}",
             "--env-file",
             host.machine.paths.env_file,
+            *(
+                ["--env-file", attempt_env_path]
+                if attempt_env_path is not None
+                else []
+            ),
             "--mount",
             exact_bind_mount(
                 host.output_host_path(launch_id),
@@ -1446,6 +1452,7 @@ def run_checkpoint_coordinator_container(
             "--train-config-json",
             f"{container_output}/train_config.json",
             "--drain-and-exit",
+            "--recovery-mode",
         ],
         capture=True,
         timeout=900,

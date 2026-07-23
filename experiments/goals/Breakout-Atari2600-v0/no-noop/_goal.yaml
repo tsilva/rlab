@@ -1,0 +1,14 @@
+defaults:
+- ../_goal@_global_
+- _self_
+
+goal_id: no-noop
+title: Atari 2600 Breakout no-NOOP action ablation
+train:
+  environment:
+    env_config:
+      env_args:
+        use_restricted_actions:
+        - [BUTTON]
+        - [RIGHT]
+        - [LEFT]

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -32,6 +34,14 @@ from rlab.metric_names import (
     EVAL_SCREEN_PREVIEW,
     LEADER_CHECKPOINT_ACCEPTANCE_PASS,
     validate_metric_payload,
+)
+from rlab.modal_eval_storage import ObjectStore, object_store_base_uri
+from rlab.policy_bundle import (
+    CHECKPOINT_FILENAME,
+    MODEL_FILENAME,
+    RECIPE_FILENAME,
+    load_policy_bundle,
+    model_document_as_metadata,
 )
 from rlab.train_config import materialized_train_args
 from rlab.wandb_utils import (
@@ -124,60 +134,110 @@ def project_payload_to_run(
             return None
         kind = str(payload["artifact_kind"])
         checkpoint_step = int(payload["checkpoint_step"])
-        model_metadata = dict(payload["model_metadata"])
-        if not isinstance(model_metadata.get("training_metadata"), dict):
-            raise ValueError("artifact projection requires checkpoint training_metadata")
+        publication_schema = str(payload.get("artifact_publication_schema") or "")
         checkpoint_uri = str(payload["checkpoint_uri"])
         versioned_bundle = bool(payload.get("recipe_uri"))
-        artifact = wandb.Artifact(
-            artifact_collection_name(kind, run_id=run_id),
-            type="model",
-            metadata={
-                **model_metadata,
-                "source_filename": model_metadata.get("filename", ""),
-                "filename": "model.zip",
-                "checkpoint_sha256": payload["checkpoint_sha256"],
-                "metadata_sha256": payload["metadata_sha256"],
-                "checkpoint_step": checkpoint_step,
-                "metadata_uri": payload["metadata_uri"],
-                **(
-                    {
-                        "recipe_uri": payload["recipe_uri"],
-                        "recipe_sha256": payload["recipe_sha256"],
-                    }
-                    if versioned_bundle
-                    else {}
-                ),
-                "artifact_storage_uri": checkpoint_uri,
-                **(
-                    {
-                        "artifact_publication_schema": "v2",
-                        "train_job_id": int(payload["train_job_id"]),
-                        "ledger_id": int(payload["ledger_id"]),
-                        "artifact_kind": kind,
-                        "publication_role": str(payload["publication_role"]),
-                        "promotion_revision": int(payload.get("promotion_revision") or 0),
-                        "publication_stream_id": str(payload["publication_stream_id"]),
-                        "announcement_sha256": str(payload["announcement_sha256"]),
-                    }
-                    if str(payload.get("artifact_publication_schema") or "") == "v2"
-                    else {}
-                ),
-            },
-        )
-        if versioned_bundle:
-            artifact.add_reference(checkpoint_uri, name="model.zip")
-            artifact.add_reference(str(payload["metadata_uri"]), name="model.json")
-            artifact.add_reference(str(payload["recipe_uri"]), name="recipe.json")
-        else:
-            artifact.add_reference(checkpoint_uri)
         raw_aliases = payload.get("artifact_aliases")
         aliases = (
             [str(alias) for alias in raw_aliases]
             if isinstance(raw_aliases, list) and raw_aliases
             else artifact_write_aliases(kind, checkpoint_step)
         )
-        return run.log_artifact(artifact, aliases=aliases)
+        with tempfile.TemporaryDirectory(prefix="rlab-wandb-artifact-") as temporary:
+            root = Path(temporary)
+            members: dict[str, dict[str, int | str]] | None = None
+            if publication_schema == "v3":
+                if payload.get("content_mode") != "wandb_native_v1" or not versioned_bundle:
+                    raise ValueError("v3 artifact publication requires a native policy bundle")
+                store = ObjectStore(object_store_base_uri())
+                member_specs = (
+                    (
+                        CHECKPOINT_FILENAME,
+                        checkpoint_uri,
+                        str(payload["checkpoint_sha256"]),
+                    ),
+                    (
+                        MODEL_FILENAME,
+                        str(payload["metadata_uri"]),
+                        str(payload["metadata_sha256"]),
+                    ),
+                    (
+                        RECIPE_FILENAME,
+                        str(payload["recipe_uri"]),
+                        str(payload["recipe_sha256"]),
+                    ),
+                )
+                members = {}
+                for filename, uri, expected_sha256 in member_specs:
+                    data = store.get_bytes(uri)
+                    observed_sha256 = hashlib.sha256(data).hexdigest()
+                    if observed_sha256 != expected_sha256:
+                        raise ValueError(f"W&B native artifact member hash mismatch: {filename}")
+                    member_path = root / filename
+                    member_path.write_bytes(data)
+                    members[filename] = {
+                        "sha256": observed_sha256,
+                        "size_bytes": len(data),
+                    }
+                bundle = load_policy_bundle(root)
+                model_metadata = model_document_as_metadata(bundle.model)
+            else:
+                model_metadata = dict(payload["model_metadata"])
+            if not isinstance(model_metadata.get("training_metadata"), dict):
+                raise ValueError("artifact projection requires checkpoint training_metadata")
+            artifact = wandb.Artifact(
+                artifact_collection_name(kind, run_id=run_id),
+                type="model",
+                metadata={
+                    **model_metadata,
+                    "source_filename": model_metadata.get("filename", ""),
+                    "filename": CHECKPOINT_FILENAME,
+                    "checkpoint_sha256": payload["checkpoint_sha256"],
+                    "metadata_sha256": payload["metadata_sha256"],
+                    "checkpoint_step": checkpoint_step,
+                    "metadata_uri": payload["metadata_uri"],
+                    **(
+                        {
+                            "recipe_uri": payload["recipe_uri"],
+                            "recipe_sha256": payload["recipe_sha256"],
+                        }
+                        if versioned_bundle
+                        else {}
+                    ),
+                    "artifact_storage_uri": checkpoint_uri,
+                    **(
+                        {
+                            "artifact_publication_schema": publication_schema,
+                            "content_mode": payload.get("content_mode"),
+                            "artifact_members": members,
+                            "train_job_id": int(payload["train_job_id"]),
+                            "ledger_id": int(payload["ledger_id"]),
+                            "artifact_kind": kind,
+                            "publication_role": str(payload["publication_role"]),
+                            "promotion_revision": int(payload.get("promotion_revision") or 0),
+                            "publication_stream_id": str(payload["publication_stream_id"]),
+                            "announcement_sha256": str(payload["announcement_sha256"]),
+                        }
+                        if publication_schema in {"v2", "v3"}
+                        else {}
+                    ),
+                },
+            )
+            if publication_schema == "v3":
+                for filename in (CHECKPOINT_FILENAME, MODEL_FILENAME, RECIPE_FILENAME):
+                    artifact.add_file(str(root / filename), name=filename)
+            elif versioned_bundle:
+                artifact.add_reference(checkpoint_uri, name=CHECKPOINT_FILENAME)
+                artifact.add_reference(str(payload["metadata_uri"]), name=MODEL_FILENAME)
+                artifact.add_reference(str(payload["recipe_uri"]), name=RECIPE_FILENAME)
+            else:
+                artifact.add_reference(checkpoint_uri)
+            logged_artifact = run.log_artifact(artifact, aliases=aliases)
+            if publication_schema == "v3":
+                wait = getattr(logged_artifact, "wait", None)
+                if callable(wait):
+                    wait()
+            return logged_artifact
     decision = dict(payload["decision"])
     purpose = str(payload["purpose"])
     checkpoint_uri = str(payload["checkpoint_uri"])

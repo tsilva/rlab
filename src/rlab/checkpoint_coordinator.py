@@ -1,21 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rlab.artifacts import (
-    checkpoint_step,
-    load_model_metadata,
-    model_metadata_path,
-    write_model_metadata,
-)
-from rlab.env import resolve_env_config
-from rlab.env_config import env_config_from_args
+from rlab.artifacts import checkpoint_step
 from rlab.metric_names import (
     CHECKPOINT_EVAL_CANDIDATE_CHECKPOINT_STEP,
     CHECKPOINT_EVAL_CANDIDATE_EPISODES,
@@ -31,8 +27,9 @@ from rlab.modal_eval_protocol import (
 )
 from rlab.modal_eval_storage import ObjectStore, file_sha256, object_store_base_uri
 from rlab.policy_bundle import (
+    PolicyDocumentError,
     evaluation_contract_sha256,
-    load_model_document,
+    load_policy_bundle_from_checkpoint,
     load_recipe_document,
     model_document_path,
     playback_contract,
@@ -43,38 +40,174 @@ from rlab.train_config import materialized_train_args
 
 
 MAX_UPLOAD_ATTEMPTS = 3
+CHECKPOINT_EVENT_SCHEMA_VERSION = 1
+CHECKPOINT_EVENT_DIRECTORY = "checkpoint-events"
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str) + "\n"
+    ).encode("utf-8")
+
+
+def checkpoint_event_path(run_dir: Path, event_id: str) -> Path:
+    digest = hashlib.sha256(str(event_id).encode("utf-8")).hexdigest()
+    return run_dir / CHECKPOINT_EVENT_DIRECTORY / f"{digest}.json"
+
+
+def _load_checkpoint_event(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"checkpoint event outbox entry is not an object: {path}")
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError(f"checkpoint event outbox payload is not an object: {path}")
+    observed = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+    if observed != str(value.get("payload_sha256") or ""):
+        raise ValueError(f"checkpoint event outbox payload hash mismatch: {path}")
+    return value
+
+
+def prepare_checkpoint_event(
+    run_dir: Path,
+    *,
+    event_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Durably freeze one event before its first remote append attempt."""
+
+    path = checkpoint_event_path(run_dir, event_id)
+    if path.is_file():
+        existing = _load_checkpoint_event(path)
+        if (
+            str(existing.get("event_id") or "") != event_id
+            or str(existing.get("event_type") or "") != event_type
+        ):
+            raise ValueError(f"checkpoint event outbox identity conflict: {path}")
+        return existing
+    stable_payload = dict(payload)
+    stable_payload.pop("_mailbox_event_id", None)
+    stable_payload.pop("_outbox_sha256", None)
+    content_hash = hashlib.sha256(_canonical_json_bytes(stable_payload)).hexdigest()
+    stable_payload["_mailbox_event_id"] = event_id
+    stable_payload["_outbox_sha256"] = content_hash
+    envelope = {
+        "schema_version": CHECKPOINT_EVENT_SCHEMA_VERSION,
+        "event_id": event_id,
+        "event_type": event_type,
+        "payload": stable_payload,
+        "payload_sha256": hashlib.sha256(_canonical_json_bytes(stable_payload)).hexdigest(),
+    }
+    data = _canonical_json_bytes(envelope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            existing = _load_checkpoint_event(path)
+            if (
+                str(existing.get("event_id") or "") != event_id
+                or str(existing.get("event_type") or "") != event_type
+            ):
+                raise ValueError(f"checkpoint event outbox identity conflict: {path}")
+            return existing
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return envelope
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def deliver_checkpoint_event(
+    run_dir: Path,
+    *,
+    event_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    object_store: ObjectStore,
+    telemetry_transport: str,
+) -> dict[str, Any]:
+    envelope = prepare_checkpoint_event(
+        run_dir,
+        event_id=event_id,
+        event_type=event_type,
+        payload=payload,
+    )
+    stable_payload = dict(envelope["payload"])
+    if telemetry_transport == "neon_mailbox_v1":
+        from rlab.telemetry_mailbox import WorkerMailbox
+
+        WorkerMailbox.from_env().append_event(
+            event_type,
+            stable_payload,
+            event_id=event_id,
+        )
+    else:
+        train_job_id = int(stable_payload["train_job_id"])
+        if event_type == "checkpoint_stream_closed":
+            key = f"artifact-announcements/{train_job_id}/complete.json"
+        else:
+            key = (
+                f"artifact-announcements/{train_job_id}/"
+                f"{int(stable_payload['ledger_id']):08d}.json"
+            )
+        existing = object_store.get_json_optional(key)
+        if existing is None:
+            object_store.put_json(key, stable_payload, create_only=True)
+        elif existing != stable_payload:
+            raise ValueError(f"checkpoint event object-store replay conflict: {key}")
+    return envelope
 
 
 def reconcile_orphan_models(store: MetricStore, args, run_dir: Path) -> int:
     known = {Path(str(row["path"])).resolve() for row in store.checkpoints()}
-    config = None
     recovered = 0
-    for model_path in sorted(run_dir.glob("*.zip")):
+    roots = (run_dir, run_dir / "checkpoints")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in (".*.zip", ".*.metadata.json", ".*.model.json", ".*.recipe.json"):
+            for residue in root.glob(pattern):
+                residue.unlink(missing_ok=True)
+        for sidecar in (*root.glob("*.model.json"), *root.glob("*.recipe.json")):
+            if not sidecar.with_name(sidecar.name.rsplit(".", 2)[0] + ".zip").is_file():
+                sidecar.unlink(missing_ok=True)
+    model_paths = sorted(
+        {
+            path
+            for root in roots
+            if root.is_dir()
+            for path in root.glob("*.zip")
+        }
+    )
+    for model_path in model_paths:
         if model_path.name.startswith(".") or model_path.resolve() in known:
             continue
-        metadata = load_model_metadata(model_path)
-        kind = str(metadata.get("kind") or "")
-        if not kind:
-            kind = (
-                "final"
-                if model_path.stem == "final_model"
-                else "interrupted"
-                if "interrupted" in model_path.stem
-                else "checkpoint"
-            )
-        step_value = metadata.get("checkpoint_step")
+        try:
+            bundle = load_policy_bundle_from_checkpoint(model_path)
+        except (OSError, PolicyDocumentError, ValueError) as exc:
+            print(f"ignoring incomplete orphan checkpoint {model_path}: {exc}", flush=True)
+            continue
+        if bundle is None:
+            print(f"ignoring legacy orphan checkpoint without complete bundle: {model_path}", flush=True)
+            continue
+        kind = str(bundle.model["checkpoint"]["kind"])
+        step_value = bundle.model["checkpoint"].get("step")
         step = int(step_value) if step_value is not None else checkpoint_step(model_path)
-        metadata_path = model_metadata_path(model_path)
-        if not metadata_path.is_file():
-            if config is None:
-                config = resolve_env_config(env_config_from_args(args, include_states=True))
-            metadata_path = write_model_metadata(
-                model_path,
-                args,
-                config,
-                kind,
-                checkpoint_step_value=step,
-            )
+        metadata_path = bundle.model_path
         store.record_checkpoint(
             run_name=str(getattr(args, "run_name", run_dir.name)),
             kind=kind,
@@ -93,6 +226,8 @@ def _storage_uri(args) -> str:
 
 
 def _eval_payload(args) -> dict[str, Any]:
+    if str(getattr(args, "checkpoint_eval_backend", "local")) == "none":
+        return {}
     return checkpoint_announcement_eval_payload(vars(args))
 
 
@@ -127,10 +262,9 @@ def checkpoint_announcement(
             float(row["created_at"]), tz=UTC
         ).isoformat().replace("+00:00", "Z"),
         "upload_completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "eval": _eval_payload(args),
     }
-    if playback_contract_value is None:
-        announcement["eval"] = _eval_payload(args)
-    else:
+    if playback_contract_value is not None:
         announcement["playback"] = playback_contract_value
     if recipe_uri is not None:
         announcement.update(
@@ -163,15 +297,56 @@ def process_upload(
         if versioned_bundle
         else Path(str(row.get("metadata_path") or ""))
     )
+    run_dir = store.path.parent
+    train_job_id = int(getattr(args, "queue_train_job_id", 0))
+    telemetry_transport = str(getattr(args, "telemetry_transport", "legacy_local"))
+    ready_event_id = f"checkpoint-ready:{train_job_id}:{checkpoint_id}"
+    ready_event_path = checkpoint_event_path(run_dir, ready_event_id)
     try:
+        if ready_event_path.is_file():
+            envelope = _load_checkpoint_event(ready_event_path)
+            deliver_checkpoint_event(
+                run_dir,
+                event_id=ready_event_id,
+                event_type="checkpoint_ready",
+                payload=dict(envelope["payload"]),
+                object_store=object_store,
+                telemetry_transport=telemetry_transport,
+            )
+            store.mark_artifact_uploaded(
+                checkpoint_id,
+                artifact_ref=None,
+                storage_uri=str(envelope["payload"].get("model_uri") or ""),
+            )
+            return True
         sha256 = str(row.get("sha256") or "") or file_sha256(model_path)
         store.set_checkpoint_sha256(checkpoint_id, sha256)
         if not metadata_path.is_file():
             raise FileNotFoundError(f"checkpoint model document is missing: {metadata_path}")
         if versioned_bundle and not recipe_path.is_file():
             raise FileNotFoundError(f"checkpoint recipe is missing: {recipe_path}")
-        model_document = load_model_document(metadata_path) if versioned_bundle else None
-        recipe_document = load_recipe_document(recipe_path) if versioned_bundle else None
+        bundle = load_policy_bundle_from_checkpoint(model_path)
+        if versioned_bundle and bundle is None:
+            raise ValueError("checkpoint versioned bundle is incomplete")
+        if (
+            train_job_id > 0
+            and bool(getattr(args, "wandb", False))
+            and not bool(getattr(args, "no_wandb_artifacts", False))
+            and bundle is None
+        ):
+            raise ValueError(
+                "queued W&B checkpoint requires a complete versioned policy bundle"
+            )
+        model_document = bundle.model if bundle is not None else None
+        recipe_document = bundle.recipe if bundle is not None else None
+        expected_runtime = str(getattr(args, "runtime_image_ref", "") or "")
+        if bundle is not None:
+            provenance = dict(bundle.model.get("provenance") or {})
+            if expected_runtime and str(provenance.get("runtime_image_ref") or "") != expected_runtime:
+                raise ValueError("checkpoint model document runtime identity mismatch")
+            expected_job_id = int(getattr(args, "queue_train_job_id", 0) or 0)
+            if expected_job_id and int(provenance.get("queue_train_job_id") or 0) != expected_job_id:
+                raise ValueError("checkpoint model document train-job identity mismatch")
         metadata_sha = file_sha256(metadata_path)
         recipe_sha = file_sha256(recipe_path) if versioned_bundle else None
         prefix = f"checkpoints/{int(getattr(args, 'queue_train_job_id', 0))}/{sha256}"
@@ -225,52 +400,52 @@ def process_upload(
                 else None
             ),
         )
-        store.append_metrics(
-            {TRAIN_ARTIFACT_UPLOAD_SECONDS: time.perf_counter() - upload_started},
-            step=int(row.get("step") or 0),
-            source=f"checkpoint-upload:{checkpoint_id}",
-            publish=bool(getattr(args, "wandb", True)),
+        if not bool(getattr(args, "checkpoint_recovery_mode", False)):
+            try:
+                store.append_metrics(
+                    {TRAIN_ARTIFACT_UPLOAD_SECONDS: time.perf_counter() - upload_started},
+                    step=int(row.get("step") or 0),
+                    source=f"checkpoint-upload:{checkpoint_id}",
+                    publish=bool(getattr(args, "wandb", True)),
+                )
+            except RuntimeError as exc:
+                print(f"checkpoint upload metric skipped: {exc}", flush=True)
+        deliver_checkpoint_event(
+            run_dir,
+            event_id=ready_event_id,
+            event_type="checkpoint_ready",
+            payload=announcement,
+            object_store=object_store,
+            telemetry_transport=telemetry_transport,
         )
-        if str(getattr(args, "telemetry_transport", "legacy_local")) == "neon_mailbox_v1":
-            from rlab.telemetry_mailbox import WorkerMailbox
-
-            WorkerMailbox.from_env().append_event(
-                "checkpoint_ready",
-                announcement,
-                event_id=f"checkpoint-ready:{announcement['train_job_id']}:{checkpoint_id}",
-            )
-        else:
-            object_store.put_json(
-                f"artifact-announcements/{announcement['train_job_id']}/{checkpoint_id:08d}.json",
-                announcement,
-                create_only=True,
-            )
         store.mark_artifact_uploaded(checkpoint_id, artifact_ref=None, storage_uri=model_uri)
         return True
     except Exception as exc:
+        if ready_event_path.exists():
+            store.mark_artifact_failed(checkpoint_id, f"ready event delivery failed: {exc!r}")
+            print(
+                f"checkpoint coordinator ready-event delivery failed id={checkpoint_id}: {exc}",
+                flush=True,
+            )
+            return False
         attempts = int(row.get("attempts") or 0) + 1
         if attempts >= MAX_UPLOAD_ATTEMPTS:
             tombstone = {
                 "schema_version": PROTOCOL_SCHEMA_VERSION,
-                "train_job_id": int(getattr(args, "queue_train_job_id", 0)),
+                "train_job_id": train_job_id,
                 "ledger_id": checkpoint_id,
                 "kind": "tombstone",
                 "error": repr(exc)[:1000],
             }
-            tombstone_key = (
-                f"artifact-announcements/{tombstone['train_job_id']}/{checkpoint_id:08d}.json"
-            )
             try:
-                if str(getattr(args, "telemetry_transport", "legacy_local")) == ("neon_mailbox_v1"):
-                    from rlab.telemetry_mailbox import WorkerMailbox
-
-                    WorkerMailbox.from_env().append_event(
-                        "checkpoint_tombstone",
-                        tombstone,
-                        event_id=f"checkpoint-tombstone:{tombstone['train_job_id']}:{checkpoint_id}",
-                    )
-                elif object_store.get_json_optional(tombstone_key) is None:
-                    object_store.put_json(tombstone_key, tombstone, create_only=True)
+                deliver_checkpoint_event(
+                    run_dir,
+                    event_id=f"checkpoint-tombstone:{train_job_id}:{checkpoint_id}",
+                    event_type="checkpoint_tombstone",
+                    payload=tombstone,
+                    object_store=object_store,
+                    telemetry_transport=telemetry_transport,
+                )
             except Exception as tombstone_exc:
                 store.mark_artifact_failed(
                     checkpoint_id,
@@ -401,31 +576,31 @@ def write_complete_marker(store: MetricStore, object_store: ObjectStore, args) -
     )
     if pending:
         return False
+    ledger_ids = sorted(int(row["id"]) for row in rows)
+    expected_ids = list(range(1, len(ledger_ids) + 1))
+    if ledger_ids != expected_ids:
+        raise RuntimeError(
+            f"checkpoint ledger is not contiguous: expected={expected_ids} observed={ledger_ids}"
+        )
     train_job_id = int(getattr(args, "queue_train_job_id", 0))
     payload = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
         "train_job_id": train_job_id,
-        "last_ledger_id": max((int(row["id"]) for row in rows), default=0),
+        "last_ledger_id": ledger_ids[-1] if ledger_ids else 0,
         "checkpoint_count": len(rows),
     }
-    if str(getattr(args, "telemetry_transport", "legacy_local")) == "neon_mailbox_v1":
-        from rlab.telemetry_mailbox import WorkerMailbox
-
-        try:
-            WorkerMailbox.from_env().append_event(
-                "checkpoint_stream_closed",
-                payload,
-                event_id=f"checkpoint-stream-closed:{train_job_id}",
-            )
-        except Exception as exc:
-            print(f"checkpoint stream closure delivery failed; retrying: {exc}", flush=True)
-            return False
-    else:
-        object_store.put_json(
-            f"artifact-announcements/{train_job_id}/complete.json",
-            payload,
-            create_only=True,
+    try:
+        deliver_checkpoint_event(
+            store.path.parent,
+            event_id=f"checkpoint-stream-closed:{train_job_id}",
+            event_type="checkpoint_stream_closed",
+            payload=payload,
+            object_store=object_store,
+            telemetry_transport=str(getattr(args, "telemetry_transport", "legacy_local")),
         )
+    except Exception as exc:
+        print(f"checkpoint stream closure delivery failed; retrying: {exc}", flush=True)
+        return False
     return True
 
 
@@ -438,6 +613,7 @@ def build_parser() -> argparse.ArgumentParser:
     exit_mode = parser.add_mutually_exclusive_group(required=True)
     exit_mode.add_argument("--stop-file", type=Path)
     exit_mode.add_argument("--drain-and-exit", action="store_true")
+    parser.add_argument("--recovery-mode", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--limit", type=int, default=4)
     return parser
@@ -450,8 +626,10 @@ def main(argv: list[str] | None = None) -> int:
     except AttributeError, OSError:
         pass
     args = materialized_train_args(cli.train_config_json)
+    setattr(args, "checkpoint_recovery_mode", bool(cli.recovery_mode))
     store = MetricStore(metric_store_path(cli.run_dir))
     store.init()
+    store.reset_interrupted_artifact_uploads()
     object_store = ObjectStore(_storage_uri(args))
     while True:
         activity = reconcile_orphan_models(store, args, cli.run_dir)

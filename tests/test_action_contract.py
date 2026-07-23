@@ -12,6 +12,10 @@ from rlab.action_contract import (
 from rlab.targets import target_for_game
 
 
+BREAKOUT_NO_NOOP_ACTIONS = [["BUTTON"], ["RIGHT"], ["LEFT"]]
+BREAKOUT_NO_NOOP_HASH = "a1f69721fbf7ef8a00084b9426767b0bce61f39ee0880b932a954c7d5789ee15"
+
+
 def test_legacy_mario_action_set_moves_to_provider_contract():
     env_args, task = normalize_action_configuration(
         provider_id="supermariobrosnes-turbo",
@@ -99,6 +103,36 @@ def test_stable_retro_mario_preset_compiles_to_native_button_masks():
     assert values[0] == (0, 0, 0, 0, 0, 0, 0, 0, 0)
     assert values[1] == (0, 0, 0, 0, 0, 0, 0, 1, 0)
     assert values[2] == (1, 0, 0, 0, 0, 0, 0, 1, 0)
+
+
+@pytest.mark.parametrize("provider", ["breakout-turbo-env", "stable-retro-turbo"])
+def test_breakout_inline_table_without_noop_preserves_order_and_semantic_hash(provider):
+    config = SimpleNamespace(
+        env_provider=provider,
+        game="Breakout-Atari2600-v0",
+        env_args={
+            "players": 1,
+            "use_restricted_actions": BREAKOUT_NO_NOOP_ACTIONS,
+        },
+        task={"action": {"set": "native"}},
+    )
+
+    contract = declared_action_contract(config)
+    values = configured_action_values(config)
+
+    assert contract == {
+        "mode": "custom_discrete",
+        "preset": None,
+        "table": BREAKOUT_NO_NOOP_ACTIONS,
+        "meanings": ["button", "right", "left"],
+        "table_hash": BREAKOUT_NO_NOOP_HASH,
+    }
+    assert values == (
+        (1, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 1),
+        (0, 0, 0, 0, 0, 0, 1, 0),
+    )
+    assert configured_action_meanings(config) == ("button", "right", "left")
 
 
 @pytest.mark.parametrize(

@@ -291,6 +291,53 @@ class MetricStoreTests(unittest.TestCase):
             self.assertEqual(len(store.pending_artifact_uploads()), 1)
             self.assertEqual(store.pending_evals(), [])
 
+    def test_checkpoint_replay_is_idempotent_without_consuming_ledger_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MetricStore(Path(tmp) / "rlab.sqlite")
+            store.init()
+            first_path = Path(tmp) / "model_100_steps.zip"
+            second_path = Path(tmp) / "model_200_steps.zip"
+
+            first_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=100,
+                path=first_path,
+                metadata_path=first_path.with_suffix(".model.json"),
+                sha256="a" * 64,
+                eval_required=False,
+            )
+            replay_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=100,
+                path=first_path,
+                metadata_path=first_path.with_suffix(".model.json"),
+                sha256="a" * 64,
+                eval_required=False,
+            )
+            second_id = store.record_checkpoint(
+                run_name="run",
+                kind="checkpoint",
+                step=200,
+                path=second_path,
+                metadata_path=second_path.with_suffix(".model.json"),
+                sha256="b" * 64,
+                eval_required=False,
+            )
+
+            self.assertEqual((first_id, replay_id, second_id), (1, 1, 2))
+            with self.assertRaisesRegex(ValueError, "ledger replay conflicts"):
+                store.record_checkpoint(
+                    run_name="run",
+                    kind="checkpoint",
+                    step=101,
+                    path=first_path,
+                    metadata_path=first_path.with_suffix(".model.json"),
+                    sha256="a" * 64,
+                    eval_required=False,
+                )
+
     def test_checkpoint_scoped_eval_metric_latest_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MetricStore(Path(tmp) / "rlab.sqlite")

@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -190,6 +191,122 @@ def write_policy_bundle_sidecars(
     )
     load_model_document(model_sidecar)
     return model_sidecar, recipe_sidecar
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def install_model_bundle(
+    model_path: Path,
+    *,
+    save_checkpoint: Callable[[Path], None],
+    args: argparse.Namespace,
+    config: EnvConfig,
+    kind: str,
+    checkpoint_step_value: int | None,
+    snapshot_curriculum_session: Mapping[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    """Install one checkpoint and its complete sidecar closure atomically.
+
+    The checkpoint ZIP is the commit marker and is therefore renamed only after
+    every sidecar is durable in the destination directory.
+    """
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    staged_checkpoint = model_path.parent / f".{model_path.stem}.{token}.zip"
+    staged_paths: list[Path] = [staged_checkpoint]
+    try:
+        save_checkpoint(staged_checkpoint)
+        if not staged_checkpoint.is_file():
+            raise FileNotFoundError(f"checkpoint saver did not create {staged_checkpoint}")
+        _fsync_file(staged_checkpoint)
+        metadata = build_model_metadata(
+            args,
+            config,
+            model_path,
+            kind,
+            checkpoint_step_value=checkpoint_step_value,
+            snapshot_curriculum_session=snapshot_curriculum_session,
+        )
+        staged_metadata = write_model_metadata_payload(staged_checkpoint, metadata)
+        staged_paths.append(staged_metadata)
+        recipe_source = Path(str(getattr(args, "recipe_json_path", "") or ""))
+        staged_model_document: Path | None = None
+        staged_recipe: Path | None = None
+        if recipe_source.is_file():
+            staged_model_document = model_document_path(staged_checkpoint)
+            staged_recipe = recipe_document_path(staged_checkpoint)
+            staged_paths.extend((staged_model_document, staged_recipe))
+            write_policy_bundle_sidecars(
+                staged_checkpoint,
+                recipe_source,
+                metadata,
+            )
+            bundle = load_policy_bundle_from_checkpoint(staged_checkpoint)
+            if bundle is None:
+                raise ValueError(f"checkpoint bundle validation failed: {staged_checkpoint}")
+        elif (
+            int(getattr(args, "queue_train_job_id", 0) or 0) > 0
+            and bool(getattr(args, "wandb", False))
+            and not bool(getattr(args, "no_wandb_artifacts", False))
+        ):
+            raise FileNotFoundError(
+                "queued W&B artifact publication requires an immutable recipe.json"
+            )
+        for staged in staged_paths:
+            _fsync_file(staged)
+
+        destinations: list[tuple[Path, Path]] = [
+            (staged_metadata, model_metadata_path(model_path)),
+        ]
+        if staged_model_document is not None and staged_recipe is not None:
+            destinations.extend(
+                (
+                    (staged_recipe, recipe_document_path(model_path)),
+                    (staged_model_document, model_document_path(model_path)),
+                )
+            )
+
+        if model_path.exists():
+            expected = [(staged_checkpoint, model_path), *destinations]
+            mismatches = [
+                destination
+                for staged, destination in expected
+                if not destination.is_file() or staged.read_bytes() != destination.read_bytes()
+            ]
+            if mismatches:
+                raise FileExistsError(
+                    "checkpoint destination conflicts with an existing committed bundle: "
+                    + ", ".join(str(path) for path in mismatches)
+                )
+            return model_path, model_metadata_path(model_path)
+
+        # With no ZIP commit marker, destination sidecars are crash residue and
+        # may be replaced by the newly validated complete closure.
+        for staged, destination in destinations:
+            os.replace(staged, destination)
+            staged_paths.remove(staged)
+        _fsync_directory(model_path.parent)
+        os.replace(staged_checkpoint, model_path)
+        staged_paths.remove(staged_checkpoint)
+        _fsync_directory(model_path.parent)
+        load_policy_bundle_from_checkpoint(model_path)
+        return model_path, model_metadata_path(model_path)
+    finally:
+        for staged in staged_paths:
+            staged.unlink(missing_ok=True)
 
 
 def write_model_metadata_payload(

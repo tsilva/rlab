@@ -84,7 +84,12 @@ def deterministic_eval_failure(error: object) -> bool:
     )
 
 
-def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, Any]) -> None:
+def _verify_checkpoint_artifacts(
+    store: ObjectStore,
+    announcement: Mapping[str, Any],
+    *,
+    queued_recipe_document: Mapping[str, Any] | None = None,
+) -> None:
     versioned_bundle = "model_document_sha256" in announcement
     artifacts = [
         (str(announcement["model_uri"]), str(announcement["sha256"])),
@@ -122,6 +127,16 @@ def _verify_checkpoint_artifacts(store: ObjectStore, announcement: Mapping[str, 
         store.get_json(str(announcement["recipe_uri"])),
         source=str(announcement["recipe_uri"]),
     )
+    if (
+        isinstance(queued_recipe_document, Mapping)
+        and queued_recipe_document.get("document_type") == "rlab.recipe"
+    ):
+        queued = validate_recipe_document(
+            queued_recipe_document,
+            source="train_jobs.recipe_payload_json",
+        )
+        if recipe != queued:
+            raise ValueError("checkpoint recipe does not exactly match the queued recipe")
     if str(model_document["checkpoint"]["sha256"]) != str(announcement["sha256"]):
         raise ValueError("model document checkpoint binding mismatch")
     if str(model_document["recipe"]["sha256"]) != str(announcement["recipe_sha256"]):
@@ -593,6 +608,7 @@ def ingest_mailbox_announcements(
         cur.execute(
             """
             SELECT e.*, r.contract_json, r.next_announcement_id,
+              t.recipe_payload_json AS queued_recipe_document,
               r.train_job_id AS authoritative_train_job_id
             FROM attempt_events e
             JOIN worker_attempts a ON a.attempt_id = e.attempt_id
@@ -644,51 +660,95 @@ def ingest_mailbox_announcements(
         if event_type == "checkpoint_stream_closed":
             try:
                 last_id = int(payload.get("last_ledger_id") or 0)
-            except (TypeError, ValueError) as exc:
-                _defer_attempt_event(conn, event, exc)
-                continue
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT next_announcement_id FROM eval_runs "
-                        "WHERE train_job_id = %(train_job_id)s FOR UPDATE",
-                        {"train_job_id": train_job_id},
-                    )
-                    current = cur.fetchone()
-                    if not current or int(current["next_announcement_id"]) <= last_id:
-                        continue
-                    cur.execute(
-                        """
-                        UPDATE eval_runs
-                        SET complete_announcement_seen = TRUE,
-                            status = 'finalizing',
-                            error = NULL,
-                            updated_at = now()
-                        WHERE train_job_id = %(train_job_id)s
-                        """,
-                        {"train_job_id": train_job_id, "last_id": last_id},
-                    )
-                    if cur.rowcount:
+                checkpoint_count = int(payload.get("checkpoint_count") or 0)
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT pg_advisory_xact_lock(
+                              hashtextextended(
+                                'rlab-checkpoint-events:' || %(train_job_id)s::text, 0
+                              )
+                            )
+                            """,
+                            {"train_job_id": train_job_id},
+                        )
+                        cur.execute(
+                            "SELECT next_announcement_id, complete_announcement_seen, "
+                            "contract_json->'checkpoint_close_fence' AS close_fence "
+                            "FROM eval_runs "
+                            "WHERE train_job_id = %(train_job_id)s FOR UPDATE",
+                            {"train_job_id": train_job_id},
+                        )
+                        current = cur.fetchone()
+                        if not current:
+                            raise ValueError("checkpoint close has no authoritative eval run")
+                        if bool(current["complete_announcement_seen"]):
+                            if current.get("close_fence") != payload:
+                                raise ValueError(
+                                    "checkpoint close fence conflicts with accepted close"
+                                )
+                        else:
+                            cur.execute(
+                                """
+                                SELECT count(*) AS ledger_count,
+                                  COALESCE(min(ledger_id), 0) AS first_id,
+                                  COALESCE(max(ledger_id), 0) AS last_id
+                                FROM artifact_announcement_ledger
+                                WHERE train_job_id = %(train_job_id)s
+                                """,
+                                {"train_job_id": train_job_id},
+                            )
+                            closure = cur.fetchone() or {}
+                            if (
+                                last_id < 0
+                                or checkpoint_count != last_id
+                                or int(current["next_announcement_id"]) != last_id + 1
+                                or int(closure.get("ledger_count") or 0) != checkpoint_count
+                                or (
+                                    checkpoint_count > 0
+                                    and (
+                                        int(closure.get("first_id") or 0) != 1
+                                        or int(closure.get("last_id") or 0) != last_id
+                                    )
+                                )
+                            ):
+                                raise ValueError(
+                                    "checkpoint close does not exactly match ledger closure"
+                                )
+                            cur.execute(
+                                """
+                                UPDATE eval_runs
+                                SET complete_announcement_seen = TRUE,
+                                    contract_json = jsonb_set(
+                                      contract_json,
+                                      '{checkpoint_close_fence}',
+                                      %(close_fence)s,
+                                      TRUE
+                                    ),
+                                    status = 'finalizing',
+                                    error = NULL,
+                                    updated_at = now()
+                                WHERE train_job_id = %(train_job_id)s
+                                """,
+                                {
+                                    "train_job_id": train_job_id,
+                                    "close_fence": json_arg(payload),
+                                },
+                            )
                         cur.execute(
                             "DELETE FROM attempt_events WHERE id = %(id)s",
                             {"id": int(event["id"])},
                         )
-            ingested += 1
+            except (TypeError, ValueError) as exc:
+                _defer_attempt_event(conn, event, exc)
+            else:
+                ingested += 1
             continue
         try:
             ledger_id = int(payload.get("ledger_id") or 0)
         except (TypeError, ValueError) as exc:
             _defer_attempt_event(conn, event, exc)
-            continue
-        expected_ledger_id = next_announcement_ids.setdefault(
-            train_job_id, int(event["next_announcement_id"])
-        )
-        if ledger_id != expected_ledger_id:
-            _defer_attempt_event(
-                conn,
-                event,
-                f"checkpoint mailbox ledger gap: expected={expected_ledger_id} got={ledger_id}",
-            )
             continue
         announcement: Mapping[str, Any] = payload
         contract = event.get("contract_json") or {}
@@ -703,7 +763,15 @@ def ingest_mailbox_announcements(
                     payload,
                     materialized_train_config=dict(event["contract_json"]),
                 )
-                _verify_checkpoint_artifacts(store, announcement)
+                _verify_checkpoint_artifacts(
+                    store,
+                    announcement,
+                    queued_recipe_document=(
+                        event.get("queued_recipe_document")
+                        if isinstance(event.get("queued_recipe_document"), Mapping)
+                        else None
+                    ),
+                )
             except Exception as exc:
                 attempts = _defer_attempt_event(conn, event, exc)
                 with conn:
@@ -723,50 +791,108 @@ def ingest_mailbox_announcements(
                                 },
                             )
                 continue
+        replayed = False
+        sequence_error: str | None = None
         with conn:
-            _persist_artifact_announcement(
-                conn,
-                train_job_id=train_job_id,
-                ledger_id=ledger_id,
-                event_type=event_type,
-                announcement=announcement,
-            )
-            if (
-                eval_backend == "modal"
-                and event_type == "checkpoint_ready"
-                and str(announcement.get("kind"))
-                in {
-                    "checkpoint",
-                    "final",
-                }
-            ):
-                eval_contract = announcement.get("eval", {})
-                stages = eval_contract.get("stages") or []
-                descriptor = (
-                    acceptance_job_descriptor(announcement)
-                    if "acceptance" in eval_contract
-                    else stage_job_descriptor(announcement, stage_index=0)
-                    if stages
-                    else promotion_job_descriptor(announcement)
-                )
-                _insert_eval_job(conn, announcement, descriptor)
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE eval_runs
-                    SET next_announcement_id = next_announcement_id + 1,
-                        status = 'active', error = NULL, updated_at = now()
-                    WHERE train_job_id = %(train_job_id)s
-                      AND next_announcement_id = %(ledger_id)s
-                    """,
-                    {"train_job_id": train_job_id, "ledger_id": ledger_id},
-                )
-                if cur.rowcount:
-                    cur.execute(
-                        "DELETE FROM attempt_events WHERE id = %(id)s",
-                        {"id": int(event["id"])},
+                    SELECT pg_advisory_xact_lock(
+                      hashtextextended(
+                        'rlab-checkpoint-events:' || %(train_job_id)s::text, 0
+                      )
                     )
-                    next_announcement_ids[train_job_id] = ledger_id + 1
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+                cur.execute(
+                    """
+                    SELECT next_announcement_id
+                    FROM eval_runs
+                    WHERE train_job_id = %(train_job_id)s
+                    FOR UPDATE
+                    """,
+                    {"train_job_id": train_job_id},
+                )
+                current = cur.fetchone()
+                current_id = int((current or {}).get("next_announcement_id") or 0)
+                if current_id < 1:
+                    sequence_error = "checkpoint mailbox eval run is missing"
+                elif ledger_id < current_id:
+                    cur.execute(
+                        """
+                        SELECT announcement_json
+                        FROM artifact_announcement_ledger
+                        WHERE train_job_id = %(train_job_id)s
+                          AND ledger_id = %(ledger_id)s
+                        FOR UPDATE
+                        """,
+                        {"train_job_id": train_job_id, "ledger_id": ledger_id},
+                    )
+                    existing = cur.fetchone()
+                    if existing and existing.get("announcement_json") == dict(announcement):
+                        cur.execute(
+                            "DELETE FROM attempt_events WHERE id = %(id)s",
+                            {"id": int(event["id"])},
+                        )
+                        replayed = True
+                    else:
+                        sequence_error = (
+                            "checkpoint mailbox replay conflicts with authoritative ledger: "
+                            f"ledger_id={ledger_id}"
+                        )
+                elif ledger_id > current_id:
+                    sequence_error = (
+                        f"checkpoint mailbox ledger gap: expected={current_id} got={ledger_id}"
+                    )
+                else:
+                    _persist_artifact_announcement(
+                        conn,
+                        train_job_id=train_job_id,
+                        ledger_id=ledger_id,
+                        event_type=event_type,
+                        announcement=announcement,
+                    )
+                    if (
+                        eval_backend == "modal"
+                        and event_type == "checkpoint_ready"
+                        and str(announcement.get("kind"))
+                        in {"checkpoint", "final"}
+                    ):
+                        eval_contract = announcement.get("eval", {})
+                        stages = eval_contract.get("stages") or []
+                        descriptor = (
+                            acceptance_job_descriptor(announcement)
+                            if "acceptance" in eval_contract
+                            else stage_job_descriptor(announcement, stage_index=0)
+                            if stages
+                            else promotion_job_descriptor(announcement)
+                        )
+                        _insert_eval_job(conn, announcement, descriptor)
+                    cur.execute(
+                        """
+                        UPDATE eval_runs
+                        SET next_announcement_id = next_announcement_id + 1,
+                            status = 'active', error = NULL, updated_at = now()
+                        WHERE train_job_id = %(train_job_id)s
+                          AND next_announcement_id = %(ledger_id)s
+                        """,
+                        {"train_job_id": train_job_id, "ledger_id": ledger_id},
+                    )
+                    if cur.rowcount:
+                        cur.execute(
+                            "DELETE FROM attempt_events WHERE id = %(id)s",
+                            {"id": int(event["id"])},
+                        )
+                        next_announcement_ids[train_job_id] = ledger_id + 1
+        if sequence_error is not None:
+            _defer_attempt_event(conn, event, sequence_error)
+            continue
+        if replayed:
+            next_announcement_ids[train_job_id] = max(
+                next_announcement_ids.get(train_job_id, 1),
+                ledger_id + 1,
+            )
         ingested += 1
     return ingested
 
@@ -1893,6 +2019,12 @@ def terminalize_artifact_only_runs(conn) -> int:
                     CASE
                       WHEN t.cancel_requested OR r.outcome = 'canceled' THEN 'canceled'
                       WHEN EXISTS (
+                        SELECT 1 FROM job_launches launch
+                        WHERE launch.job_id = r.train_job_id
+                          AND launch.job_kind = 'train'
+                          AND launch.state = 'failed'
+                      ) THEN 'failed'
+                      WHEN EXISTS (
                         SELECT 1 FROM artifact_announcement_ledger tombstone
                         WHERE tombstone.train_job_id = r.train_job_id
                           AND tombstone.disposition = 'tombstone'
@@ -1918,9 +2050,55 @@ def terminalize_artifact_only_runs(conn) -> int:
                           SELECT 1 FROM artifact_publication_receipts receipt
                           WHERE receipt.train_job_id = ledger.train_job_id
                             AND receipt.ledger_id = ledger.ledger_id
-                            AND receipt.role = 'availability'
-                            AND receipt.promotion_revision = 0
+                          AND receipt.role = 'availability'
+                          AND receipt.promotion_revision = 0
+                          AND (
+                            (
+                              COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                              AND NOT COALESCE(
+                                (t.train_config->>'no_wandb_artifacts')::boolean,
+                                FALSE
+                              )
+                              AND receipt.disposition = 'confirmed'
+                              AND (
+                                receipt.stream_id LIKE 'artifact-v3-%%'
+                                OR receipt.stream_id LIKE 'artifact-v2-%%'
+                              )
+                            )
+                            OR (
+                              (
+                                NOT COALESCE(
+                                  (t.train_config->>'wandb')::boolean,
+                                  FALSE
+                                )
+                                OR COALESCE(
+                                  (t.train_config->>'no_wandb_artifacts')::boolean,
+                                  FALSE
+                                )
+                              )
+                              AND receipt.disposition = 'opted_out'
+                            )
+                          )
                         )
+                    )
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM job_launches launch
+                        WHERE launch.job_id = r.train_job_id
+                          AND launch.job_kind = 'train'
+                          AND launch.state IN ('failed', 'canceled')
+                      )
+                      OR EXISTS (
+                        SELECT 1 FROM artifact_announcement_ledger tombstone
+                        WHERE tombstone.train_job_id = r.train_job_id
+                          AND tombstone.disposition = 'tombstone'
+                      )
+                      OR EXISTS (
+                        SELECT 1 FROM artifact_announcement_ledger final_artifact
+                        WHERE final_artifact.train_job_id = r.train_job_id
+                          AND final_artifact.disposition = 'ready'
+                          AND final_artifact.artifact_kind = 'final'
+                      )
                     )
                     AND NOT EXISTS (
                       SELECT 1 FROM metric_batches b
@@ -1943,13 +2121,16 @@ def terminalize_artifact_only_runs(conn) -> int:
                   UPDATE eval_runs r
                   SET status = CASE
                         WHEN ready.terminal_status = 'canceled' THEN 'canceled'
-                        WHEN ready.terminal_status = 'finalization_failed' THEN 'failed'
+                        WHEN ready.terminal_status IN ('failed', 'finalization_failed')
+                          THEN 'failed'
                         ELSE 'complete'
                       END,
                       updated_at = now(),
                       error = CASE
                         WHEN ready.terminal_status = 'canceled'
                           THEN COALESCE(r.error, 'training finalization canceled')
+                        WHEN ready.terminal_status = 'failed'
+                          THEN COALESCE(r.error, 'training failed')
                         WHEN ready.terminal_status = 'finalization_failed'
                           THEN COALESCE(r.error, 'checkpoint artifact upload exhausted retries')
                         ELSE NULL
@@ -1965,6 +2146,8 @@ def terminalize_artifact_only_runs(conn) -> int:
                     WHEN completed.terminal_status = 'succeeded' THEN NULL
                     WHEN completed.terminal_status = 'canceled'
                       THEN COALESCE(t.error, 'training finalization canceled')
+                    WHEN completed.terminal_status = 'failed'
+                      THEN COALESCE(t.error, 'training failed')
                     ELSE COALESCE(t.error, 'checkpoint artifact upload exhausted retries')
                   END,
                   live_publication_next_retry_at = NULL,
@@ -2049,7 +2232,43 @@ def terminalize_runs(conn) -> int:
                             AND receipt.ledger_id = ledger.ledger_id
                             AND receipt.role = 'availability'
                             AND receipt.promotion_revision = 0
+                            AND (
+                              (
+                                COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                                AND NOT COALESCE(
+                                  (t.train_config->>'no_wandb_artifacts')::boolean,
+                                  FALSE
+                                )
+                                AND receipt.disposition = 'confirmed'
+                                AND (
+                                  receipt.stream_id LIKE 'artifact-v3-%%'
+                                  OR receipt.stream_id LIKE 'artifact-v2-%%'
+                                )
+                              )
+                              OR (
+                                (
+                                  NOT COALESCE(
+                                    (t.train_config->>'wandb')::boolean,
+                                    FALSE
+                                  )
+                                  OR COALESCE(
+                                    (t.train_config->>'no_wandb_artifacts')::boolean,
+                                    FALSE
+                                  )
+                                )
+                                AND receipt.disposition = 'opted_out'
+                              )
+                            )
                         )
+                    )
+                    AND (
+                      r.outcome = 'canceled'
+                      OR EXISTS (
+                        SELECT 1 FROM artifact_announcement_ledger final_artifact
+                        WHERE final_artifact.train_job_id = r.train_job_id
+                          AND final_artifact.disposition = 'ready'
+                          AND final_artifact.artifact_kind = 'final'
+                      )
                     )
                     AND (
                       r.promoted_eval_job_id IS NULL
@@ -2060,6 +2279,29 @@ def terminalize_runs(conn) -> int:
                          AND receipt.ledger_id = promoted.ledger_id
                          AND receipt.role = 'promotion'
                          AND receipt.promotion_revision = r.promotion_revision
+                         AND (
+                           (
+                             COALESCE((t.train_config->>'wandb')::boolean, FALSE)
+                             AND NOT COALESCE(
+                               (t.train_config->>'no_wandb_artifacts')::boolean,
+                               FALSE
+                             )
+                             AND receipt.disposition = 'confirmed'
+                           )
+                           OR (
+                             (
+                               NOT COALESCE(
+                                 (t.train_config->>'wandb')::boolean,
+                                 FALSE
+                               )
+                               OR COALESCE(
+                                 (t.train_config->>'no_wandb_artifacts')::boolean,
+                                 FALSE
+                               )
+                             )
+                             AND receipt.disposition = 'opted_out'
+                           )
+                         )
                         WHERE promoted.id = r.promoted_eval_job_id
                       )
                     )
@@ -2144,7 +2386,10 @@ def reconcile_publication_finishing(conn) -> int:
                       JOIN worker_attempts artifact_attempt
                         ON artifact_attempt.attempt_id = artifact_stream.attempt_id
                       WHERE artifact_attempt.train_job_id = t.id
-                        AND artifact_stream.stream_id LIKE 'artifact-v2-%%'
+                        AND (
+                          artifact_stream.stream_id LIKE 'artifact-v2-%%'
+                          OR artifact_stream.stream_id LIKE 'artifact-v3-%%'
+                        )
                     )
                   )
                   AND COALESCE((t.train_config->>'wandb')::boolean, FALSE)
@@ -2169,7 +2414,31 @@ def reconcile_publication_finishing(conn) -> int:
                           AND receipt.ledger_id = ledger.ledger_id
                           AND receipt.role = 'availability'
                           AND receipt.promotion_revision = 0
+                          AND receipt.disposition = 'confirmed'
+                          AND (
+                            receipt.stream_id LIKE 'artifact-v3-%%'
+                            OR receipt.stream_id LIKE 'artifact-v2-%%'
+                          )
                       )
+                  )
+                  AND (
+                    EXISTS (
+                      SELECT 1 FROM job_launches launch
+                      WHERE launch.job_id = r.train_job_id
+                        AND launch.job_kind = 'train'
+                        AND launch.state IN ('failed', 'canceled')
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM artifact_announcement_ledger tombstone
+                      WHERE tombstone.train_job_id = r.train_job_id
+                        AND tombstone.disposition = 'tombstone'
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM artifact_announcement_ledger final_artifact
+                      WHERE final_artifact.train_job_id = r.train_job_id
+                        AND final_artifact.disposition = 'ready'
+                        AND final_artifact.artifact_kind = 'final'
+                    )
                   )
                   AND (
                     r.promoted_eval_job_id IS NULL
@@ -2180,6 +2449,7 @@ def reconcile_publication_finishing(conn) -> int:
                        AND receipt.ledger_id = promoted.ledger_id
                        AND receipt.role = 'promotion'
                        AND receipt.promotion_revision = r.promotion_revision
+                       AND receipt.disposition = 'confirmed'
                       WHERE promoted.id = r.promoted_eval_job_id
                     )
                   )

@@ -340,6 +340,14 @@ def _jerk_context(tmp_path, *, timesteps: int):
     )
 
 
+def _install_test_bundle(model_path, *, save_checkpoint, **_kwargs):
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    save_checkpoint(model_path)
+    metadata_path = model_path.with_suffix(".metadata.json")
+    metadata_path.write_text("{}\n", encoding="utf-8")
+    return model_path, metadata_path
+
+
 def test_first_training_success_saves_playable_checkpoint_and_stops(tmp_path) -> None:
     env = _FakeJerkEnv(success=True)
     context = _jerk_context(tmp_path, timesteps=10)
@@ -353,8 +361,8 @@ def test_first_training_success_saves_playable_checkpoint_and_stops(tmp_path) ->
         ),
         mock.patch.object(
             jerk_training,
-            "write_model_metadata",
-            side_effect=lambda path, *_args, **_kwargs: path.with_suffix(".metadata.json"),
+            "install_model_bundle",
+            side_effect=_install_test_bundle,
         ),
     ):
         jerk_training.run_jerk(context)
@@ -383,8 +391,8 @@ def test_first_training_success_budget_exhaustion_is_unsuccessful(tmp_path) -> N
         ),
         mock.patch.object(
             jerk_training,
-            "write_model_metadata",
-            side_effect=lambda path, *_args, **_kwargs: path.with_suffix(".metadata.json"),
+            "install_model_bundle",
+            side_effect=_install_test_bundle,
         ),
         pytest.raises(RuntimeError, match="exhausted 2 transitions"),
     ):

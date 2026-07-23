@@ -725,19 +725,32 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+  derived_train_job_id BIGINT;
   attempt_row worker_attempts%ROWTYPE;
   stream_row metric_streams%ROWTYPE;
   commands JSONB;
 BEGIN
+  SELECT train_job_id INTO derived_train_job_id
+  FROM worker_attempts WHERE attempt_id = p_attempt_id;
+  IF derived_train_job_id IS NULL THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('rlab-checkpoint-events:' || derived_train_job_id::text, 0)
+  );
   SELECT * INTO attempt_row FROM worker_attempts
   WHERE attempt_id = p_attempt_id FOR UPDATE;
   IF NOT FOUND
+     OR attempt_row.train_job_id <> derived_train_job_id
      OR attempt_row.protocol_version <> p_protocol_version
      OR attempt_row.status NOT IN ('launching', 'running')
      OR attempt_row.token_expires_at IS NULL
      OR attempt_row.token_expires_at <= now()
      OR attempt_row.token_sha256 IS DISTINCT FROM encode(digest(p_token, 'sha256'), 'hex') THEN
     RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  IF attempt_row.provider = 'checkpoint-recovery' THEN
+    RAISE EXCEPTION 'checkpoint recovery credential cannot submit metric batches';
   END IF;
   IF p_batch_sequence < 1
      OR p_frame_count < 0 OR p_frame_count > 1000
@@ -827,6 +840,14 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
+DECLARE
+  derived_train_job_id BIGINT;
+  attempt_row worker_attempts%ROWTYPE;
+  existing_event RECORD;
+  existing_ledger JSONB;
+  close_fence JSONB;
+  ledger_id BIGINT;
+  inserted_id BIGINT;
 BEGIN
   IF p_event_type NOT IN (
        'mailbox_preflight', 'metric_stream_closed',
@@ -837,18 +858,126 @@ BEGIN
      OR octet_length(p_payload::text) > 1048576 THEN
     RAISE EXCEPTION 'worker attempt event exceeds protocol limits';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM worker_attempts
-    WHERE attempt_id = p_attempt_id
-      AND status IN ('launching', 'running')
-      AND token_expires_at > now()
-      AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
-  ) THEN
+  SELECT train_job_id INTO derived_train_job_id
+  FROM worker_attempts WHERE attempt_id = p_attempt_id;
+  IF derived_train_job_id IS NULL THEN
     RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('rlab-checkpoint-events:' || derived_train_job_id::text, 0)
+  );
+  SELECT * INTO attempt_row FROM worker_attempts
+  WHERE attempt_id = p_attempt_id FOR UPDATE;
+  IF NOT FOUND
+     OR attempt_row.train_job_id <> derived_train_job_id
+     OR attempt_row.status NOT IN ('launching', 'running')
+     OR attempt_row.token_expires_at IS NULL
+     OR attempt_row.token_expires_at <= now()
+     OR attempt_row.token_sha256 IS DISTINCT FROM
+        encode(digest(p_token, 'sha256'), 'hex') THEN
+    RAISE EXCEPTION 'worker mailbox authentication failed';
+  END IF;
+  IF attempt_row.provider = 'checkpoint-recovery'
+     AND p_event_type NOT IN (
+       'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+     ) THEN
+    RAISE EXCEPTION 'checkpoint recovery credential cannot use this mailbox operation';
+  END IF;
+  IF p_event_type IN (
+       'checkpoint_ready', 'checkpoint_tombstone', 'checkpoint_stream_closed'
+    ) THEN
+    IF attempt_row.task_kind <> 'train'
+       OR (p_payload->>'train_job_id')::bigint IS DISTINCT FROM derived_train_job_id
+       OR p_payload->>'_mailbox_event_id' IS DISTINCT FROM p_event_id
+       OR COALESCE(p_payload->>'_outbox_sha256', '') !~
+          '^[0-9a-f]{64}$' THEN
+      RAISE EXCEPTION 'checkpoint event is not bound to its authenticated producer';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM worker_attempts active
+      WHERE active.train_job_id = derived_train_job_id
+        AND active.task_kind = 'train'
+        AND active.attempt_id <> p_attempt_id
+        AND active.status IN ('launching', 'running')
+    ) THEN
+      RAISE EXCEPTION 'checkpoint event producer fence is owned by another attempt';
+    END IF;
+    PERFORM 1 FROM eval_runs
+    WHERE train_job_id = derived_train_job_id FOR UPDATE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'checkpoint event has no authoritative eval run';
+    END IF;
+    IF p_event_type = 'checkpoint_stream_closed' THEN
+      SELECT contract_json->'checkpoint_close_fence' INTO close_fence
+      FROM eval_runs WHERE train_job_id = derived_train_job_id;
+      IF close_fence IS NOT NULL THEN
+        IF close_fence = p_payload THEN
+          RETURN TRUE;
+        END IF;
+        RAISE EXCEPTION 'checkpoint close fence conflicts with accepted payload';
+      END IF;
+    ELSE
+      ledger_id := (p_payload->>'ledger_id')::bigint;
+      SELECT announcement_json INTO existing_ledger
+      FROM artifact_announcement_ledger
+      WHERE train_job_id = derived_train_job_id AND ledger_id = ledger_id
+      FOR UPDATE;
+      IF FOUND THEN
+        IF existing_ledger = p_payload THEN
+          RETURN TRUE;
+        END IF;
+        RAISE EXCEPTION 'checkpoint ledger replay conflicts with accepted payload';
+      END IF;
+      SELECT e.event_id, e.event_type, e.payload_json, a.train_job_id
+      INTO existing_event
+      FROM attempt_events e
+      JOIN worker_attempts a ON a.attempt_id = e.attempt_id
+      WHERE a.train_job_id = derived_train_job_id
+        AND e.event_type IN ('checkpoint_ready', 'checkpoint_tombstone')
+        AND (e.payload_json->>'ledger_id')::bigint = ledger_id
+      FOR UPDATE OF e;
+      IF FOUND THEN
+        IF existing_event.event_id = p_event_id
+           AND existing_event.event_type = p_event_type
+           AND existing_event.payload_json = p_payload THEN
+          RETURN TRUE;
+        END IF;
+        RAISE EXCEPTION 'checkpoint ledger ordinal is already pending with other payload';
+      END IF;
+    END IF;
+  END IF;
+  SELECT e.event_id, e.event_type, e.payload_json, a.train_job_id
+  INTO existing_event
+  FROM attempt_events e
+  JOIN worker_attempts a ON a.attempt_id = e.attempt_id
+  WHERE e.event_id = p_event_id
+  FOR UPDATE OF e;
+  IF FOUND THEN
+    IF existing_event.train_job_id = derived_train_job_id
+       AND existing_event.event_type = p_event_type
+       AND existing_event.payload_json = p_payload THEN
+      RETURN TRUE;
+    END IF;
+    RAISE EXCEPTION 'worker attempt event id conflicts with accepted payload';
   END IF;
   INSERT INTO attempt_events (event_id, attempt_id, event_type, payload_json)
   VALUES (p_event_id, p_attempt_id, p_event_type, COALESCE(p_payload, '{}'::jsonb))
-  ON CONFLICT (event_id) DO NOTHING;
+  ON CONFLICT (event_id) DO NOTHING
+  RETURNING id INTO inserted_id;
+  IF inserted_id IS NULL THEN
+    SELECT e.event_id, e.event_type, e.payload_json, a.train_job_id
+    INTO existing_event
+    FROM attempt_events e
+    JOIN worker_attempts a ON a.attempt_id = e.attempt_id
+    WHERE e.event_id = p_event_id
+    FOR UPDATE OF e;
+    IF NOT FOUND
+       OR existing_event.train_job_id <> derived_train_job_id
+       OR existing_event.event_type <> p_event_type
+       OR existing_event.payload_json <> p_payload THEN
+      RAISE EXCEPTION 'worker attempt event insert race conflicts with accepted payload';
+    END IF;
+  END IF;
   UPDATE worker_attempts SET last_heartbeat_at = now()
   WHERE attempt_id = p_attempt_id;
   RETURN TRUE;
@@ -870,6 +999,7 @@ BEGIN
     SELECT 1 FROM worker_attempts
     WHERE attempt_id = p_attempt_id
       AND status IN ('launching', 'running')
+      AND provider <> 'checkpoint-recovery'
       AND token_expires_at > now()
       AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
   ) THEN
@@ -904,6 +1034,7 @@ BEGIN
     SELECT 1 FROM worker_attempts
     WHERE attempt_id = p_attempt_id
       AND status IN ('launching', 'running')
+      AND provider <> 'checkpoint-recovery'
       AND token_expires_at > now()
       AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
   ) THEN
@@ -932,6 +1063,7 @@ BEGIN
     SELECT 1 FROM worker_attempts
     WHERE attempt_id = p_attempt_id
       AND status IN ('launching', 'running')
+      AND provider <> 'checkpoint-recovery'
       AND token_expires_at > now()
       AND token_sha256 = encode(digest(p_token, 'sha256'), 'hex')
   ) THEN
@@ -4440,6 +4572,27 @@ def finish_train_launch_from_result(
     live_publication = dict(live_publication) if isinstance(live_publication, Mapping) else {}
     with conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH launch_identity AS MATERIALIZED (
+                  SELECT job_id
+                  FROM job_launches
+                  WHERE launch_id = %(launch_id)s
+                )
+                SELECT
+                  job_id,
+                  pg_advisory_xact_lock(
+                    hashtextextended(
+                      'rlab-checkpoint-events:' || job_id::text, 0
+                    )
+                  )
+                FROM launch_identity
+                """,
+                {"launch_id": launch_id},
+            )
+            identity = cur.fetchone()
+            if not identity:
+                raise RuntimeError(f"unknown launch_id {launch_id}")
             cur.execute(
                 """
                 SELECT

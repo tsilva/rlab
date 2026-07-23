@@ -63,7 +63,12 @@ from rlab.policy_bundle import (
 )
 from rlab.recipe_documents import compose_train_document
 from rlab.rom_assets import install_rom_file
-from rlab.checkpoint_coordinator import process_upload, reconcile_orphan_models
+from rlab.checkpoint_coordinator import (
+    checkpoint_event_path,
+    prepare_checkpoint_event,
+    process_upload,
+    reconcile_orphan_models,
+)
 from rlab.metric_store import MetricStore
 from rlab.training_backend import training_backend_config_hash
 from rlab import checkpoint_coordinator, modal_eval_cli
@@ -802,6 +807,7 @@ class ModalEvalRecoveryTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        store.reset_interrupted_artifact_uploads.assert_called_once_with()
         self.assertEqual(marker.call_count, 2)
         sleep.assert_called_once()
 
@@ -835,7 +841,7 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                     modal_eval_cli.cmd_recover(SimpleNamespace(train_job_id=13))
                 recover.assert_not_called()
 
-    def test_recover_uses_drain_mode_without_host_writes(self) -> None:
+    def test_recover_uses_fresh_checkpoint_only_attempt(self) -> None:
         runtime_ref = "docker:example.invalid/rlab@sha256:" + "b" * 64
         conn = FakeConnection(
             results=[
@@ -851,6 +857,11 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                         "run_name": "run-13",
                     }
                 },
+                {"row": None},
+                {"row": None},
+                {"row": None},
+                {"row": None},
+                {"row": None},
                 {"row": {"train_job_id": 13}},
             ]
         )
@@ -861,10 +872,18 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                 outputs_dir="/host/outputs",
             )
         )
+        recovery_host = mock.MagicMock()
+        recovery_host.write_attempt_env.return_value = "/host/recovery.env"
         with (
             mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
             mock.patch("rlab.machines.load_machine_registry", return_value=object()),
             mock.patch("rlab.machines.resolve_machine", return_value=machine),
+            mock.patch("rlab.docker_host.DockerRunnerHost", return_value=recovery_host),
+            mock.patch(
+                "rlab.telemetry_mailbox.issue_worker_attempt_token",
+                return_value="recovery-token",
+            ),
+            mock.patch("rlab.workspace_gc.workspace_protocol_mode", return_value="dormant"),
             mock.patch("rlab.docker_host.run_checkpoint_coordinator_container") as recover,
             mock.patch.object(modal_eval_cli, "_kick"),
         ):
@@ -874,20 +893,34 @@ class ModalEvalRecoveryTests(unittest.TestCase):
         self.assertEqual(recover.call_args.kwargs["launch_id"], "train-13")
         self.assertEqual(recover.call_args.kwargs["run_name"], "run-13")
         self.assertEqual(recover.call_args.kwargs["runtime_image_ref"], runtime_ref)
+        self.assertEqual(recover.call_args.kwargs["attempt_env_path"], "/host/recovery.env")
+        recovery_host.write_attempt_env.assert_called_once()
+        recovery_host.remove_attempt_env.assert_called_once()
         self.assertTrue(any("UPDATE eval_runs" in sql for sql in conn.cursor_obj.executed_sqls))
 
     def test_failed_recovery_preserves_awaiting_state(self) -> None:
         conn = FakeConnection(
-            row={
-                "id": 13,
-                "status": "failed",
-                "eval_run_status": "awaiting_artifact_recovery",
-                "launch_id": "train-13",
-                "output_uri": "/host/outputs/train-13",
-                "machine": "beast-3",
-                "runtime_image_ref": "docker:example.invalid/rlab@sha256:" + "b" * 64,
-                "run_name": "run-13",
-            }
+            results=[
+                {
+                    "row": {
+                        "id": 13,
+                        "status": "failed",
+                        "eval_run_status": "awaiting_artifact_recovery",
+                        "launch_id": "train-13",
+                        "output_uri": "/host/outputs/train-13",
+                        "machine": "beast-3",
+                        "runtime_image_ref": (
+                            "docker:example.invalid/rlab@sha256:" + "b" * 64
+                        ),
+                        "run_name": "run-13",
+                    }
+                },
+                {"row": None},
+                {"row": None},
+                {"row": None},
+                {"row": None},
+                {"row": None},
+            ]
         )
         machine = SimpleNamespace(
             paths=SimpleNamespace(
@@ -896,10 +929,18 @@ class ModalEvalRecoveryTests(unittest.TestCase):
                 outputs_dir="/host/outputs",
             )
         )
+        recovery_host = mock.MagicMock()
+        recovery_host.write_attempt_env.return_value = "/host/recovery.env"
         with (
             mock.patch.object(modal_eval_cli, "_conn", return_value=conn),
             mock.patch("rlab.machines.load_machine_registry", return_value=object()),
             mock.patch("rlab.machines.resolve_machine", return_value=machine),
+            mock.patch("rlab.docker_host.DockerRunnerHost", return_value=recovery_host),
+            mock.patch(
+                "rlab.telemetry_mailbox.issue_worker_attempt_token",
+                return_value="recovery-token",
+            ),
+            mock.patch("rlab.workspace_gc.workspace_protocol_mode", return_value="dormant"),
             mock.patch(
                 "rlab.docker_host.run_checkpoint_coordinator_container",
                 side_effect=RuntimeError("recovery failed"),
@@ -1098,6 +1139,14 @@ class ModalEvalSchedulingTests(unittest.TestCase):
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = events
+        cursor.fetchone.side_effect = [
+            {"next_announcement_id": 1},
+            {"announcement_sha256": "a" * 64},
+            {"next_announcement_id": 2},
+            {"announcement_sha256": "b" * 64},
+            {"next_announcement_id": 3},
+            {"announcement_sha256": "c" * 64},
+        ]
         cursor.rowcount = 1
 
         count = ingest_mailbox_announcements(conn, mock.MagicMock())
@@ -2236,7 +2285,7 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
         self.assertEqual(config.signature_version, "s3v4")
         self.assertEqual(config.s3["addressing_style"], "path")
 
-    def test_coordinator_reconciles_an_orphan_model_with_metadata(self) -> None:
+    def test_coordinator_ignores_legacy_orphan_without_complete_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)
             model = run_dir / "model_500_steps.zip"
@@ -2252,8 +2301,42 @@ class ModalEvalStorageAndWorkerTests(unittest.TestCase):
                 SimpleNamespace(run_name="smoke"),
                 run_dir,
             )
-            self.assertEqual(recovered, 1)
-            self.assertEqual(store.checkpoints()[0]["step"], 500)
+            self.assertEqual(recovered, 0)
+            self.assertEqual(store.checkpoints(), [])
+
+    def test_checkpoint_event_outbox_freezes_exact_replay_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            event_id = "checkpoint-ready:9:1"
+            first = prepare_checkpoint_event(
+                run_dir,
+                event_id=event_id,
+                event_type="checkpoint_ready",
+                payload={"train_job_id": 9, "ledger_id": 1, "step": 100},
+            )
+            replay = prepare_checkpoint_event(
+                run_dir,
+                event_id=event_id,
+                event_type="checkpoint_ready",
+                payload={"train_job_id": 9, "ledger_id": 1, "step": 999},
+            )
+
+            self.assertEqual(replay, first)
+            self.assertEqual(replay["payload"]["step"], 100)
+            self.assertEqual(replay["payload"]["_mailbox_event_id"], event_id)
+            self.assertEqual(len(replay["payload"]["_outbox_sha256"]), 64)
+
+            path = checkpoint_event_path(run_dir, event_id)
+            corrupted = json.loads(path.read_text(encoding="utf-8"))
+            corrupted["payload"]["step"] = 101
+            path.write_text(json.dumps(corrupted), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "payload hash mismatch"):
+                prepare_checkpoint_event(
+                    run_dir,
+                    event_id=event_id,
+                    event_type="checkpoint_ready",
+                    payload={"train_job_id": 9, "ledger_id": 1, "step": 100},
+                )
 
     def test_permanent_upload_failure_emits_ordered_tombstone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
