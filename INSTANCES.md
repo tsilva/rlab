@@ -218,6 +218,12 @@ On 2026-07-21 the forward Breakout runtime baseline moved to
 `breakout-turbo-env==0.4.0`. This is the first rlab baseline used by the bounded live-snapshot
 curriculum; deterministic continuation requires `sticky_action_prob=0` and `noop_reset_max=0`.
 
+On 2026-07-23 the forward Breakout runtime baseline moved from
+`breakout-turbo-env==0.4.0` to `breakout-turbo-env==0.4.1`.
+
+On 2026-07-23 the forward Mario runtime baseline moved from
+`supermariobrosnes-turbo==0.4.3` to `supermariobrosnes-turbo==0.4.4`.
+
 On 2026-07-22 a source-dirty local MPS implementation benchmark ran the checked-in
 `train-loop-comparison-breakout-snapshot-curriculum` AB/BA profile at 16 environments, 64 rollout
 steps, one PPO epoch, and 8,192 transitions per sample. Baseline loop throughput averaged 1,954.8

@@ -212,7 +212,7 @@ rlab play <wandb-run-url>                             # promoted model, else new
 rlab play <run-name>                                  # same resolution for a unique historical display name
 rlab play <entity>/<project>/rlab-<run-id>-checkpoint:latest
 rlab play hf://tsilva/NES-SuperMarioBros_Level1-2_gray84-hudcrop-stack4-basic_ppo
-rlab play <checkpoint> --debug --no-open             # start paused; print the browser URL
+rlab play <checkpoint> --debug --no-open             # start paused; print both browser URLs
 rlab play <checkpoint> --ui pygame                   # temporary native compatibility UI
 rlab dataset record human-play --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent human
 rlab dataset record mario-level1-1 --env-id SuperMarioBros-Nes-v0 --provider supermariobrosnes-turbo --agent random --episodes 1 --headless
@@ -257,10 +257,12 @@ The command surface is intentionally one binary:
   and explicitly labelled W&B-disabled core microbenchmarks.
 - `rlab eval run` runs local/scripted or explicit-model evaluation. Queue-backed experiments evaluate saved checkpoints asynchronously; Modal uses bounded remote CPU workers, while explicit `rlab eval run` stays local.
 - `rlab play` replays a local model path, W&B checkpoint artifact, or Hugging Face model repo in a
-  loopback browser workbench. The workbench keeps the game, policy input, sampled decision,
-  rewards, action histogram, events, and live numeric infos on one transition sequence. Panels can
-  detach into separate windows and the game can enter fullscreen without creating another
-  environment. One browser holds the control lease; other windows remain synchronized observers.
+  loopback browser workbench. It opens a play window with the game, controls, and trajectory
+  scrubber plus a synchronized stats window with every analysis panel loaded. Both windows keep the
+  game, policy input, sampled decision, rewards, action histogram, events, and live numeric infos on
+  one transition sequence. Panels can move between windows and the game can enter fullscreen
+  without creating another environment. One browser workspace holds the control lease; other
+  workspaces remain synchronized observers.
   The bounded latest-frame stream uses binary PNG frames while reliable commands and telemetry use
   JSON over the same authenticated WebSocket. `--ui pygame` preserves the previous viewer during
   rollout. A model source is always explicit; bare `rlab play` does not guess from stale local
@@ -296,7 +298,7 @@ env_args:
 The value may be a Stable Retro built-in mode (`all`, `filtered`, `discrete`,
 or `multi_discrete`), a preset from the selected game provider's packaged
 `metadata.json`, or an inline exact table of controller-label combinations.
-Mario runtime 0.4.3 provides the canonical `basic`, `standard`, `right-jump`,
+Mario runtime 0.4.4 provides the canonical `basic`, `standard`, `right-jump`,
 and `basic-start` presets; `standard` extends `basic` with `DOWN` for
 pipe-dependent levels.
 rlab records the resolved ordered table, action meanings, preset, and semantic

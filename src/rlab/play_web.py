@@ -911,9 +911,16 @@ class WebClient:
 
 
 class PlaybackWebServer:
-    def __init__(self, runner: Any, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        runner: Any,
+        args: argparse.Namespace,
+        *,
+        paired_windows: bool = False,
+    ) -> None:
         self.runner = runner
         self.args = args
+        self.paired_windows = paired_windows
         self.token = secrets.token_urlsafe(32)
         self.origin = ""
         self.clients: dict[str, WebClient] = {}
@@ -928,6 +935,15 @@ class PlaybackWebServer:
     @property
     def asset_root(self) -> Path:
         return Path(__file__).with_name("web_player")
+
+    def dashboard_urls(self) -> tuple[str, ...]:
+        if self.paired_windows:
+            query = "?workspace=paired"
+            return (
+                f"{self.origin}/{query}#token={self.token}",
+                f"{self.origin}/workspace/stats{query}#token={self.token}",
+            )
+        return (f"{self.origin}/#token={self.token}",)
 
     @web.middleware
     async def security_headers(self, request: web.Request, handler):
@@ -1241,13 +1257,16 @@ class PlaybackWebServer:
             raise RuntimeError("player web server did not bind a socket")
         port = int(sockets[0].getsockname()[1])
         self.origin = f"http://127.0.0.1:{port}"
-        url = f"{self.origin}/#token={self.token}"
+        urls = self.dashboard_urls()
         dashboard_label = str(getattr(self.args, "dashboard_label", "Player dashboard"))
-        print(f"{dashboard_label}: {url}", flush=True)
+        print(f"{dashboard_label}: {urls[0]}", flush=True)
+        if self.paired_windows:
+            print(f"Player stats: {urls[1]}", flush=True)
         self.runner.start()
         pump = asyncio.create_task(self.pump())
         if not bool(getattr(self.args, "no_open", False)):
-            webbrowser.open(url, new=1, autoraise=True)
+            for url in urls:
+                webbrowser.open(url, new=1, autoraise=True)
         try:
             await self.stop_event.wait()
         finally:
@@ -1267,7 +1286,7 @@ def run_web_playback(
     config_text: str,
 ) -> int:
     runner = WebPlaybackRunner(session, args, config_text=config_text)
-    server = PlaybackWebServer(runner, args)
+    server = PlaybackWebServer(runner, args, paired_windows=True)
     try:
         return asyncio.run(server.run())
     except KeyboardInterrupt:

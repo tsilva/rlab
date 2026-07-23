@@ -12,8 +12,7 @@ export function mount({ definition, services }) {
       <section class="control-section" aria-labelledby="playback-controls-heading">
         <h3 id="playback-controls-heading" class="control-label">Playback</h3>
         <div class="control-grid transport-grid">
-          <button data-command="pause" class="icon-only" aria-label="Pause" title="Pause after the current transition"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-pause"></use></svg></button>
-          <button data-command="play" class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
+          <button data-command="play" data-playback-toggle class="primary icon-only" aria-label="Play" title="Play with the selected driver"><svg class="icon" aria-hidden="true"><use data-playback-icon href="/assets/tabler-icons.svg#ti-player-play"></use></svg></button>
           <button data-command="step" class="icon-only" aria-label="Step once" title="Step once"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-skip-forward"></use></svg></button>
           <button data-command="step-ten" class="icon-only" aria-label="Step 10 times" title="Step 10 times"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-player-track-next"></use></svg></button>
           <button data-command="continue-event" class="icon-only" aria-label="Continue to next event" title="Continue to next event"><svg class="icon" aria-hidden="true"><use href="/assets/tabler-icons.svg#ti-activity-heartbeat"></use></svg></button>
@@ -49,6 +48,8 @@ export function mount({ definition, services }) {
   const seed = element.querySelector("[data-seed]");
   const fps = element.querySelector("[data-fps]");
   const acquire = element.querySelector("[data-acquire]");
+  const playbackToggle = element.querySelector("[data-playback-toggle]");
+  const playbackIcon = playbackToggle.querySelector("[data-playback-icon]");
   const commands = {
     pause: () => services.command("pause"),
     play: () => services.command("play", { driver: services.getState().snapshot?.driver || "policy" }),
@@ -75,6 +76,19 @@ export function mount({ definition, services }) {
     acquire.disabled = !state.connected || state.hasControl;
   };
 
+  const renderPlaybackToggle = (runState) => {
+    const running = ["playing", "stepping", "continuing"].includes(runState);
+    const command = running ? "pause" : "play";
+    const label = running ? "Pause" : "Play";
+    playbackToggle.dataset.command = command;
+    playbackToggle.classList.toggle("primary", !running);
+    playbackToggle.setAttribute("aria-label", label);
+    playbackToggle.title = running
+      ? "Pause after the current transition"
+      : "Play with the selected driver";
+    playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`);
+  };
+
   return {
     element,
     updateControl,
@@ -84,6 +98,7 @@ export function mount({ definition, services }) {
       seed.value = text(session.seed, "");
       if (document.activeElement !== fps) fps.value = Number(session.target_fps || 0);
       element.querySelector("[data-session-summary]").textContent = `${snapshot.run_state.toUpperCase()} · ${snapshot.driver.toUpperCase()}`;
+      renderPlaybackToggle(snapshot.run_state);
       const recording = snapshot.mode === "recording";
       ["step", "step-ten", "continue-event", "continue-done", "reset", "policy", "inspect"].forEach((name) => {
         element.querySelector(`[data-command="${name}"]`).hidden = recording;

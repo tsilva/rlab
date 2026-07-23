@@ -1,6 +1,18 @@
 export const FRAME_GAME = 1;
 export const FRAME_OBSERVATION = 2;
 
+const PAIRED_PANEL_LAYOUT = Object.freeze({
+  game: { col: 1, row: 1, w: 9, h: 15, visible: true, window: "main" },
+  controls: { col: 10, row: 1, w: 3, h: 15, visible: true, window: "main" },
+  policy: { col: 1, row: 1, w: 4, h: 7, visible: true, window: "stats" },
+  reward: { col: 5, row: 1, w: 4, h: 8, visible: true, window: "stats" },
+  actions: { col: 9, row: 1, w: 4, h: 8, visible: true, window: "stats" },
+  observation: { col: 1, row: 9, w: 6, h: 8, visible: true, window: "stats" },
+  signals: { col: 7, row: 9, w: 3, h: 8, visible: true, window: "stats" },
+  events: { col: 10, row: 9, w: 3, h: 8, visible: true, window: "stats" },
+  raw: { col: 1, row: 17, w: 12, h: 7, visible: true, window: "stats" },
+});
+
 export const PANEL_CATALOG = Object.freeze({
   game: {
     label: "Game",
@@ -82,9 +94,12 @@ export function panelLabels() {
   );
 }
 
-export function defaultPanelLayout() {
+export function defaultPanelLayout({ paired = false } = {}) {
   return Object.fromEntries(
-    Object.entries(PANEL_CATALOG).map(([name, definition]) => [name, { ...definition.layout }]),
+    Object.entries(PANEL_CATALOG).map(([name, definition]) => [
+      name,
+      { ...(paired ? PAIRED_PANEL_LAYOUT[name] : definition.layout) },
+    ]),
   );
 }
 

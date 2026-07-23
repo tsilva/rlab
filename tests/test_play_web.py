@@ -5,6 +5,7 @@ import asyncio
 import io
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 from aiohttp import ClientSession, WSServerHandshakeError, WSMsgType
@@ -21,6 +22,7 @@ from rlab.play_web import (
     HumanRecordingRunner,
     PlaybackCommand,
     PlaybackWebServer,
+    run_web_playback,
     transition_payload,
 )
 
@@ -53,6 +55,51 @@ def test_human_dataset_recording_defaults_to_web_dashboard() -> None:
     assert args.ui == "web"
     assert args.port == 0
     assert args.no_open is False
+
+
+def test_run_web_playback_requests_paired_browser_windows() -> None:
+    args = human_args()
+    runner = object()
+    server = AsyncMock()
+    server.run.return_value = 0
+    with (
+        patch("rlab.play_web.WebPlaybackRunner", return_value=runner),
+        patch("rlab.play_web.PlaybackWebServer", return_value=server) as server_type,
+    ):
+        assert run_web_playback(object(), args, config_text="config") == 0
+
+    server_type.assert_called_once_with(runner, args, paired_windows=True)
+
+
+def test_paired_playback_server_opens_play_and_stats_windows() -> None:
+    async def scenario() -> None:
+        runner = HumanRecordingRunner(FakeHumanSession(), human_args())
+        server = PlaybackWebServer(
+            runner,
+            human_args(no_open=False),
+            paired_windows=True,
+        )
+        with patch("rlab.play_web.webbrowser.open") as open_browser:
+            task = asyncio.create_task(server.run())
+            try:
+                deadline = asyncio.get_running_loop().time() + 3.0
+                while (
+                    (not server.origin or open_browser.call_count < 2)
+                    and asyncio.get_running_loop().time() < deadline
+                ):
+                    await asyncio.sleep(0.01)
+                urls = server.dashboard_urls()
+                assert urls == (
+                    f"{server.origin}/?workspace=paired#token={server.token}",
+                    f"{server.origin}/workspace/stats?workspace=paired#token={server.token}",
+                )
+                assert [call.args[0] for call in open_browser.call_args_list] == list(urls)
+                assert all(call.kwargs == {"new": 1, "autoraise": True} for call in open_browser.call_args_list)
+            finally:
+                runner.stop()
+                await asyncio.wait_for(task, timeout=3.0)
+
+    asyncio.run(scenario())
 
 
 def test_browser_button_chords_map_to_declared_discrete_actions() -> None:
@@ -327,7 +374,12 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert ".icon-only" in styles
     assert 'id="timeline-scrubber"' in markup
     assert "data-return-chart" in reward_markup
-    assert 'data-command="pause" class="icon-only" aria-label="Pause"' in controls_markup
+    assert controls_markup.count("data-playback-toggle class=") == 1
+    assert 'data-command="play" data-playback-toggle class="primary icon-only"' in controls_markup
+    assert 'data-command="pause" class="icon-only"' not in controls_markup
+    assert 'playbackToggle.dataset.command = command' in controls_markup
+    assert 'playbackIcon.setAttribute("href", `/assets/tabler-icons.svg#ti-player-${command}`)' in controls_markup
+    assert "repeat(5, minmax(0, 1fr))" in styles
     assert 'data-command="step-ten" class="icon-only" aria-label="Step 10 times"' in controls_markup
     assert 'id="layouts-toggle" class="quiet icon-only"' in markup
     assert "ti-device-desktop-share" in icons
@@ -375,9 +427,16 @@ def test_web_dashboard_assets_are_packaged_beside_server() -> None:
     assert ".dashboard.drag-receiving" in styles
     assert "visibilitychange" in game_markup
     assert "PANEL_CATALOG" in catalog
+    assert "const PAIRED_PANEL_LAYOUT" in catalog
+    assert 'window: "stats"' in catalog
+    assert "defaultPanelLayout({ paired = false } = {})" in catalog
     assert 'module: "./game.js"' in catalog
     assert "defaultPanelLayout" in catalog
     assert "import(definition.module)" in runtime
     assert "async ensureMounted" in runtime
     assert "this.unmount(name)" in runtime
     assert "new PanelRuntime" in script
+    assert 'new URLSearchParams(location.search).get("workspace") === "paired"' in script
+    assert '"rlab.player.workspace.layout.v2"' in script
+    assert "pairedWorkspace && closedWindow === STATS_WINDOW_ID" in script
+    assert "body.stats-window #timeline" in styles

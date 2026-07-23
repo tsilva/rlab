@@ -16,10 +16,14 @@ const panelName = location.pathname.startsWith("/panel/")
 const workspaceWindowName = location.pathname.startsWith("/workspace/")
   ? location.pathname.slice("/workspace/".length)
   : null;
+const pairedWorkspace = new URLSearchParams(location.search).get("workspace") === "paired";
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const WORKSPACE_ID_KEY = "rlab.player.workspace.id";
-const LAYOUT_KEY = "rlab.player.workspace.layout.v1";
+const LAYOUT_KEY = pairedWorkspace
+  ? "rlab.player.workspace.layout.v2"
+  : "rlab.player.workspace.layout.v1";
 const SAVED_LAYOUTS_KEY = "rlab.player.workspace.saved.v1";
+const STATS_WINDOW_ID = "stats";
 const workspaceId = localStorage.getItem(WORKSPACE_ID_KEY) || crypto.randomUUID();
 localStorage.setItem(WORKSPACE_ID_KEY, workspaceId);
 const windowId = panelName ? `panel-${panelName}` : (workspaceWindowName || "main");
@@ -27,10 +31,10 @@ const PANEL_LABELS = panelLabels();
 
 function defaultLayout() {
   return {
-    version: 1,
+    version: pairedWorkspace ? 2 : 1,
     revision: 0,
     name: "Mario debug",
-    panels: defaultPanelLayout(),
+    panels: defaultPanelLayout({ paired: pairedWorkspace }),
   };
 }
 
@@ -95,7 +99,7 @@ function normalizeLayout(value) {
     };
   });
   return {
-    version: 1,
+    version: fallback.version,
     revision: Number(source.revision) || 0,
     name: typeof source.name === "string" && source.name.trim() ? source.name.trim().slice(0, 48) : fallback.name,
     panels,
@@ -124,6 +128,10 @@ function subscriptions() {
 function setDetachedLayout() {
   const secondary = state.windowId !== "main";
   document.body.classList.toggle("secondary-window", secondary);
+  document.body.classList.toggle(
+    "stats-window",
+    pairedWorkspace && state.windowId === STATS_WINDOW_ID,
+  );
 }
 
 function showToast(message, error = false) {
@@ -472,11 +480,14 @@ function persistLayout({ announce = true } = {}) {
 }
 
 function updateLayoutTitle() {
-  $("#page-title").textContent = panelName
+  const title = panelName
     ? `${PANEL_LABELS[panelName] || panelName} window`
-    : state.layout.name;
+    : pairedWorkspace && state.windowId === STATS_WINDOW_ID
+      ? `${state.layout.name} stats`
+      : state.layout.name;
+  $("#page-title").textContent = title;
   $("#layout-name-input").value = state.layout.name;
-  document.title = `${state.layout.name} · rlab player`;
+  document.title = `${title} · rlab player`;
 }
 
 async function applyLayout() {
@@ -911,7 +922,7 @@ function openPanelMenu(name, anchor) {
 }
 
 function windowUrl(targetWindow) {
-  return `${location.origin}/workspace/${encodeURIComponent(targetWindow)}#token=${encodeURIComponent(token)}`;
+  return `${location.origin}/workspace/${encodeURIComponent(targetWindow)}${location.search}#token=${encodeURIComponent(token)}`;
 }
 
 function movePanelToNewWindow(name) {
@@ -1021,6 +1032,7 @@ function bindWorkspaceMenus() {
 
 function reclaimWindow(closedWindow) {
   if (state.windowId !== "main") return;
+  if (pairedWorkspace && closedWindow === STATS_WINDOW_ID) return;
   let changed = false;
   Object.entries(state.layout.panels).forEach(([name, panel]) => {
     if (panel.visible && panel.window === closedWindow) {

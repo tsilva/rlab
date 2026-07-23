@@ -19,8 +19,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-supermariobrosnes-turbo = "2026-07-22T11:42:53Z"
-breakout-turbo-env = "2026-07-21T07:46:17Z"
+supermariobrosnes-turbo = "2026-07-23T11:52:37Z"
+breakout-turbo-env = "2026-07-23T11:27:02Z"
 stable-retro-turbo = "2026-07-22T17:30:25Z"
 
 [manifest]
@@ -207,16 +207,16 @@ wheels = [
 
 [[package]]
 name = "breakout-turbo-env"
-version = "0.4.0"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gymnasium", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/7d/83596b406d2894cd8ad111aa72d9e7d1f37c80f073f9584aa705329a6887/breakout_turbo_env-0.4.0.tar.gz", hash = "sha256:b87739408dc53ceaacab1e2ae621a2273724e7eedbae70be7ff247ec6431e7f0", size = 10299551, upload-time = "2026-07-21T07:46:18.803Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/8a/6b56d98a7e03e5413abe211f85c7262ebf2346b22cdc21fcfd0bb452d85a/breakout_turbo_env-0.4.1.tar.gz", hash = "sha256:2b8c096409dbf564a6a4d1af6dac70065a94547ad8823bd927d7f8a394c3e489", size = 10301922, upload-time = "2026-07-23T11:27:03.086Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/0c/a51250f7c0074ccb484f049a14748d62b89a591bffa705f0abdc1770797a/breakout_turbo_env-0.4.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:f97821784eaa5aba75f8f7c1c9ea3c43281036a522953b8cd7deeb4795e2e6a8", size = 288406, upload-time = "2026-07-21T07:46:15.038Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/1c/69764ebf9ed0f785fa06aae3428a1619b77e8dbe4910b76aa521c4f329ee/breakout_turbo_env-0.4.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:9b535af9cea573303e67bb0c24cee9e8d0e93e1a91d69d1e20e82d6ecabc989a", size = 325744, upload-time = "2026-07-21T07:46:16.759Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/5d/6fa24f854a6a79018d15c1cfda7ff485b8b23c776baff6911b2edefbea74/breakout_turbo_env-0.4.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:1583a2526b8740cc2075e363973202397303fbcf540a2a565597d3ef05d0a4f4", size = 289940, upload-time = "2026-07-23T11:27:00.174Z" },
+    { url = "https://files.pythonhosted.org/packages/76/52/588152a94de90b75786a4be1db21f2f965c94806d41151d7af22f914dc15/breakout_turbo_env-0.4.1-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:bf72635923b62fc97b1b425918ed052e03ec7492435767dfcf79bf3f855eb95a", size = 327568, upload-time = "2026-07-23T11:27:01.676Z" },
 ]
 
 [[package]]
@@ -1806,8 +1806,8 @@ train-runtime = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14,<4" },
     { name = "boto3", specifier = ">=1.34,<2" },
-    { name = "breakout-turbo-env", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4.0" },
-    { name = "breakout-turbo-env", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.0" },
+    { name = "breakout-turbo-env", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4.1" },
+    { name = "breakout-turbo-env", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.1" },
     { name = "captum", specifier = ">=0.9,<1" },
     { name = "datasets", marker = "extra == 'dataset'", specifier = ">=5,<6" },
     { name = "datasets", marker = "extra == 'dataset-minari'", specifier = ">=5,<6" },
@@ -1826,8 +1826,8 @@ requires-dist = [
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
     { name = "stable-retro-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==1.0.1.post35" },
     { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post35" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4.3" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.3" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4.4" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.4" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "textual", specifier = ">=8.2.8,<9" },
     { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==2.11.0" },
@@ -1849,7 +1849,7 @@ modal-deploy = [
 train-image-build = [{ name = "packaging", specifier = ">=25,<26" }]
 train-runtime = [
     { name = "boto3", specifier = ">=1.34,<2" },
-    { name = "breakout-turbo-env", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.0" },
+    { name = "breakout-turbo-env", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.1" },
     { name = "captum", specifier = ">=0.9,<1" },
     { name = "huggingface-hub", specifier = ">=1.0,<2" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
@@ -1859,7 +1859,7 @@ train-runtime = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.3,<3" },
     { name = "stable-retro-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.0.1.post35" },
-    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.3" },
+    { name = "supermariobrosnes-turbo", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.4.4" },
     { name = "tensorboard", specifier = ">=2.16,<3" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.12.0" },
     { name = "wandb", specifier = ">=0.18,<0.23" },
@@ -1997,17 +1997,17 @@ wheels = [
 
 [[package]]
 name = "supermariobrosnes-turbo"
-version = "0.4.3"
+version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gymnasium", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "textual", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/a7/8f098496a91434db1d2af956c71eee9d36b0e37ef3911258bace2d35621e/supermariobrosnes_turbo-0.4.3.tar.gz", hash = "sha256:c05ec3e4987143921ec49a095c11acdd2465de322796a90d126fc18f9509247e", size = 18335542, upload-time = "2026-07-22T11:42:52.771Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/cf/48899af52111b88d03a1a0d3f576b7ee910794e38c095f4b58d9194a8008/supermariobrosnes_turbo-0.4.4.tar.gz", hash = "sha256:8c2ac252f43afc13d3e267b1bf27670583566ea8bed08fdd8c1a4d03a6ffa912", size = 18344504, upload-time = "2026-07-23T11:52:36.892Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/20/8d41bd7ca894ac5b3a399067a0ed7b423cf678b6057124db76dbd991d5c0/supermariobrosnes_turbo-0.4.3-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:5394d18d224362208d2d1292172e412d5cc6443da802251b51ef3ddba5769429", size = 529906, upload-time = "2026-07-22T11:42:45.975Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/69/a0d9ce4afc9af971e0cbd7a6869c44ec1285d74e165d3ac7e57b5c4129f2/supermariobrosnes_turbo-0.4.3-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0f64307b772accf5bab0ccfbe7f729dde4b445feb35c0e0099fa0c9c3600961e", size = 576915, upload-time = "2026-07-22T11:42:49.123Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/be/55931401b3bfef6a2738ed37aa08249d80040fc08e9465688bb0863c4112/supermariobrosnes_turbo-0.4.4-cp39-abi3-macosx_14_0_arm64.whl", hash = "sha256:812e48cb0a6536cfe3be97265cbe5a3e43c3c4a3a162f29f74fec2bfdcbb742a", size = 530802, upload-time = "2026-07-23T11:52:31.716Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/59/c4e9dac8460c3d10d641ab428ff94d506884cbb3a0e66ceb33583e45273e/supermariobrosnes_turbo-0.4.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d17fcc35eaa17f1940841b945162e942b05c578c94d7d24455a163d647b602f6", size = 577843, upload-time = "2026-07-23T11:52:34.151Z" },
 ]
 
 [[package]]

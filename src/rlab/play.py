@@ -476,7 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-open",
         action="store_true",
-        help="Print the dashboard URL without opening the default browser.",
+        help="Print the play and stats dashboard URLs without opening the default browser.",
     )
     parser.add_argument(
         "--debug",
