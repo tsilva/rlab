@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -18,6 +19,7 @@ from rlab.dstack_backend import (
     ComputeRequest,
     DstackBackend,
     TaskRequest,
+    DstackTask,
 )
 from rlab.env_registry import resolve_env_provider
 from rlab.file_utils import file_sha256
@@ -442,6 +444,25 @@ def _latest_attempt_terminal(state: dict[str, Any]) -> dict[str, Any] | None:
     return dict(terminals[-1]) if terminals else None
 
 
+def _public_dstack_state(task: DstackTask) -> dict[str, Any]:
+    raw = dict(task.raw or {})
+    fleet = raw.get("fleet")
+    fleet_name = (
+        str(fleet.get("name") or "")
+        if isinstance(fleet, Mapping)
+        else ""
+    )
+    return {
+        "project": task.project,
+        "task": task.name,
+        "status": task.status,
+        "terminal": task.terminal,
+        "fleet": fleet_name or None,
+        "submitted_at": str(raw.get("submitted_at") or "") or None,
+        "termination_reason": str(raw.get("termination_reason") or "") or None,
+    }
+
+
 def _status(root: Path, run_id: str) -> dict[str, Any]:
     _storage_config, authority = _storage(root)
     semantic = authority.semantic_state(run_id)
@@ -449,13 +470,7 @@ def _status(root: Path, run_id: str) -> dict[str, Any]:
     task_name = str(attempt["compute"]["dstack_task"])
     try:
         dstack = DstackBackend().status(task_name)
-        dstack_value: dict[str, Any] = {
-            "project": dstack.project,
-            "task": dstack.name,
-            "status": dstack.status,
-            "terminal": dstack.terminal,
-            "raw": dstack.raw,
-        }
+        dstack_value = _public_dstack_state(dstack)
     except KeyError:
         dstack_value = {
             "project": DstackBackend().project,

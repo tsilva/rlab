@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from rlab.dstack_backend import DstackTask
 from rlab.experiment_cli import (
     _bind_launch_contract,
     _compute,
+    _public_dstack_state,
     _stage_rom,
     _task_name,
     _task_request,
@@ -71,6 +74,34 @@ def test_auto_without_cloud_budget_stays_local() -> None:
     assert compute.kind == "auto"
     assert compute.max_price is None
     assert compute.bounded_duration_seconds == 3600
+
+
+def test_public_dstack_state_never_exposes_raw_task_environment() -> None:
+    value = _public_dstack_state(
+        DstackTask(
+            project="main",
+            name="run-one",
+            status="running",
+            raw={
+                "fleet": {"name": "b3"},
+                "submitted_at": "2026-07-24T16:00:00Z",
+                "run_spec": {
+                    "configuration": {
+                        "env": {
+                            "WANDB_API_KEY": "should-never-appear",
+                            "RLAB_CONTROL_R2_SECRET_ACCESS_KEY": "also-secret",
+                        }
+                    }
+                },
+            },
+        )
+    )
+
+    encoded = json.dumps(value, sort_keys=True)
+    assert value["fleet"] == "b3"
+    assert "raw" not in value
+    assert "should-never-appear" not in encoded
+    assert "also-secret" not in encoded
 
 
 def test_on_demand_requires_explicit_permission() -> None:
