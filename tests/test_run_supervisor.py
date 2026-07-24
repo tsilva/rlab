@@ -92,9 +92,7 @@ class RunSupervisorTests(unittest.TestCase):
             source_sha=SOURCE_SHA,
             image_digest=IMAGE,
             goal_slug="SuperMarioBros-Nes-v0/Level1-1",
-            goal_sha256=str(
-                document["train_config"]["effective_goal_contract_sha256"]
-            ),
+            goal_sha256=str(document["train_config"]["effective_goal_contract_sha256"]),
             recipe_slug="ppo",
             recipe_sha256=canonical_json_sha256(portable_recipe),
             recipe_overrides=(),
@@ -147,9 +145,7 @@ class RunSupervisorTests(unittest.TestCase):
     def supervisor(self) -> RunSupervisor:
         root = Path(self.temporary.name)
         return RunSupervisor(
-            manifest_uri=self.authority.control.uri(
-                f"runs/{self.run_id}/manifest.json"
-            ),
+            manifest_uri=self.authority.control.uri(f"runs/{self.run_id}/manifest.json"),
             storage=self.storage,
             eval_backend=FailingSpawnBackend(),
             repo_root=Path.cwd(),
@@ -201,6 +197,33 @@ class RunSupervisorTests(unittest.TestCase):
 
         self.assertEqual(_summary_scalar(SummarySubDictLike()), 10)
 
+    def test_wandb_remote_probe_survives_sdk_finish(self) -> None:
+        class RemoteRun:
+            summary = {"orchestration/event_seq": {"max": 10}}
+
+        class Api:
+            def flush(self) -> None:
+                return None
+
+            def run(self, path: str) -> RemoteRun:
+                self.path = path
+                return RemoteRun()
+
+        supervisor = self.supervisor()
+        supervisor.ledger.init()
+        supervisor.projector = None
+        supervisor.wandb_run_path = f"entity/project/{self.run_id}"
+        api = Api()
+        with patch("wandb.Api", return_value=api):
+            supervisor._probe_wandb_remote(
+                10.0,
+                local_high_water=10,
+                force=True,
+            )
+
+        self.assertEqual(api.path, supervisor.wandb_run_path)
+        self.assertEqual(supervisor.wandb_remote_high_water, 10)
+
     def test_materializes_exact_mario_acceptance_contract(self) -> None:
         supervisor = self.supervisor()
         with patch("rlab.run_supervisor.verify_rom_file"):
@@ -241,9 +264,7 @@ class RunSupervisorTests(unittest.TestCase):
             goal_sha256=self.manifest.goal_sha256,
             recipe_sha256=self.manifest.recipe_sha256,
             environment_sha256=self.manifest.environment_sha256,
-            evaluation_contract_sha256=evaluation_contract_sha256(
-                supervisor.recipe_document
-            ),
+            evaluation_contract_sha256=evaluation_contract_sha256(supervisor.recipe_document),
             recovery_sidecar_key="recovery.json",
             created_at=utc_now(),
         )
@@ -256,9 +277,7 @@ class RunSupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor._submit_pending_evals(), 0)
         self.assertEqual(supervisor.ledger.evals()[0]["attempt"], 1)
         with supervisor.ledger.connection() as connection:
-            connection.execute(
-                "UPDATE eval_dispatches SET attempt_expires_at = 1000"
-            )
+            connection.execute("UPDATE eval_dispatches SET attempt_expires_at = 1000")
         with patch("rlab.run_supervisor.time.time", return_value=1001):
             self.assertEqual(supervisor._poll_evals(10.0), 0)
         self.assertEqual(supervisor.ledger.evals()[0]["status"], "pending")

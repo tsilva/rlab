@@ -181,26 +181,21 @@ class RunSupervisor:
         self.storage = storage or RunStorageConfig.from_env()
         self.authority = RunAuthority(self.storage)
         manifest_key = self.authority.control.key_from_uri(manifest_uri)
-        self.manifest = _manifest_from_document(
-            self.authority.control.get_json(manifest_key)
-        )
+        self.manifest = _manifest_from_document(self.authority.control.get_json(manifest_key))
         accepted_manifest_keys = {
             f"runs/{self.manifest.run_id}/manifest.json",
-            f"runs/{self.manifest.run_id}/attempts/"
-            f"{self.manifest.attempt_id}/manifest.json",
+            f"runs/{self.manifest.run_id}/attempts/{self.manifest.attempt_id}/manifest.json",
         }
         if manifest_key not in accepted_manifest_keys:
             raise ValueError(
-                "run manifest is not at its canonical run or attempt key: "
-                f"{manifest_key}"
+                f"run manifest is not at its canonical run or attempt key: {manifest_key}"
             )
         self.repo_root = (
             repo_root
             or Path(os.environ.get("RLAB_PROJECT_ROOT") or Path(__file__).resolve().parents[2])
         ).resolve()
         self.work_root = (
-            work_root
-            or Path(os.environ.get("RLAB_RUN_WORK_ROOT") or "/workspace")
+            work_root or Path(os.environ.get("RLAB_RUN_WORK_ROOT") or "/workspace")
         ).resolve()
         self.output_root = self.work_root / "rlab" / self.manifest.run_id
         self.output_root.mkdir(parents=True, exist_ok=True)
@@ -213,6 +208,7 @@ class RunSupervisor:
         self.stop_reason = ""
         self.learner: subprocess.Popen[str] | None = None
         self.projector: WandbProjector | None = None
+        self.wandb_run_path = ""
         self.lease: Lease | None = None
         self.last_lease_renewal = 0.0
         self.lease_misses = 0
@@ -228,9 +224,7 @@ class RunSupervisor:
         self.wandb_remote_high_water = 0
         self.wandb_remote_visible_lag_seconds = 0.0
         self.accepted_observed_at: float | None = None
-        self.recovery_mode = str(
-            self.manifest.compute.get("recovery_mode") or "resume-training"
-        )
+        self.recovery_mode = str(self.manifest.compute.get("recovery_mode") or "resume-training")
         if self.recovery_mode not in {"resume-training", "drain-only"}:
             raise ValueError(f"unsupported recovery mode: {self.recovery_mode}")
         self.evaluation_required = bool(self.manifest.modal["enabled"])
@@ -241,9 +235,7 @@ class RunSupervisor:
                 function_name=str(
                     self.manifest.modal.get("function_name") or "evaluate_checkpoint"
                 ),
-                environment_name=str(
-                    self.manifest.modal.get("environment_name") or "rlab-eval"
-                ),
+                environment_name=str(self.manifest.modal.get("environment_name") or "rlab-eval"),
             )
         self.metric_store = MetricStore(metric_store_path(self.run_dir))
         self.ledger = SupervisorLedger(metric_store_path(self.run_dir))
@@ -264,13 +256,9 @@ class RunSupervisor:
     def _configure_resume(self, config: dict[str, Any]) -> None:
         if self.recovery_mode != "resume-training":
             return
-        index = self.authority.models.get_json_optional(
-            f"runs/{self.manifest.run_id}/index.json"
-        )
+        index = self.authority.models.get_json_optional(f"runs/{self.manifest.run_id}/index.json")
         checkpoints = [
-            dict(row)
-            for row in (index or {}).get("checkpoints") or []
-            if isinstance(row, Mapping)
+            dict(row) for row in (index or {}).get("checkpoints") or [] if isinstance(row, Mapping)
         ]
         if not checkpoints:
             return
@@ -292,9 +280,7 @@ class RunSupervisor:
             backend_config = copy.deepcopy(dict(backend["config"]))
             backend_config["resume"] = manifest_url
             backend_config["resume_approval_hash"] = staged.manifest_hash
-            backend_config["resume_manifest"] = [
-                entry.as_dict() for entry in staged.manifest
-            ]
+            backend_config["resume_manifest"] = [entry.as_dict() for entry in staged.manifest]
             backend["config"] = backend_config
             config["training_backend"] = backend
         finally:
@@ -303,9 +289,7 @@ class RunSupervisor:
     def validate_runtime(self) -> None:
         runtime = runtime_contract(runtime_image_ref=self.manifest.image_digest)
         observed_source = str(runtime.get("runtime_build_source_sha") or "")
-        expected_source = str(
-            self.manifest.compute.get("runtime_build_source_sha") or ""
-        )
+        expected_source = str(self.manifest.compute.get("runtime_build_source_sha") or "")
         if observed_source != expected_source:
             raise RuntimeError(
                 "runtime build source SHA does not match the immutable run manifest: "
@@ -332,14 +316,10 @@ class RunSupervisor:
             recipe_overrides=self.manifest.recipe_overrides,
             prepare_materialized=partial(
                 prepare_checkpoint_eval_mode,
-                checkpoint_eval_backend=(
-                    "modal" if self.evaluation_required else "none"
-                ),
+                checkpoint_eval_backend=("modal" if self.evaluation_required else "none"),
             ),
         )
-        materialized_goal_hash = str(
-            materialized["train_config"]["effective_goal_contract_sha256"]
-        )
+        materialized_goal_hash = str(materialized["train_config"]["effective_goal_contract_sha256"])
         if materialized_goal_hash != self.manifest.goal_sha256:
             raise RuntimeError("effective goal hash does not match the run manifest")
         materialized_environment_hash = str(
@@ -358,7 +338,7 @@ class RunSupervisor:
             cached_rom = cache_path(CONTAINER_ROM_CACHE, normalized_asset)
             try:
                 verify_rom_file(cached_rom, normalized_asset)
-            except (FileNotFoundError, ValueError):
+            except FileNotFoundError, ValueError:
                 if str(os.environ.get("RLAB_ROM_CACHE_READ_ONLY") or "") == "1":
                     raise
                 object_key = self.authority.evaluation.key_from_uri(
@@ -396,12 +376,8 @@ class RunSupervisor:
                 "recipe_path": str(recipe_path),
                 "recipe_sha256": self.manifest.recipe_sha256,
                 "source_sha": self.manifest.source_sha,
-                "runtime_build_source_sha": str(
-                    self.manifest.compute["runtime_build_source_sha"]
-                ),
-                "runtime_input_sha256": str(
-                    os.environ.get("RLAB_RUNTIME_INPUT_SHA256") or ""
-                ),
+                "runtime_build_source_sha": str(self.manifest.compute["runtime_build_source_sha"]),
+                "runtime_input_sha256": str(os.environ.get("RLAB_RUNTIME_INPUT_SHA256") or ""),
                 "runtime_image_ref": self.manifest.image_digest,
                 "compute_target": str(
                     dict(
@@ -415,9 +391,7 @@ class RunSupervisor:
                 "dstack_task": str(self.manifest.compute.get("dstack_task") or ""),
                 "wandb": True,
                 "wandb_mode": "online",
-                "wandb_run_id": str(
-                    self.manifest.wandb.get("run_id") or self.manifest.run_id
-                ),
+                "wandb_run_id": str(self.manifest.wandb.get("run_id") or self.manifest.run_id),
                 "wandb_entity": str(self.manifest.wandb.get("entity") or ""),
                 "wandb_project": str(self.manifest.wandb.get("project") or ""),
                 "wandb_group": str(self.manifest.wandb.get("group") or ""),
@@ -429,9 +403,7 @@ class RunSupervisor:
                         "orchestrator:dstack",
                     ]
                 ),
-                "checkpoint_eval_backend": (
-                    "modal" if self.evaluation_required else "none"
-                ),
+                "checkpoint_eval_backend": ("modal" if self.evaluation_required else "none"),
                 "metrics_schema_version": METRICS_SCHEMA_VERSION,
             }
         )
@@ -477,6 +449,18 @@ class RunSupervisor:
                 self.train_config,
                 allow_create=False,
             )
+        path = getattr(self.projector.run, "path", "")
+        self.wandb_run_path = (
+            "/".join(str(part) for part in path) if isinstance(path, list | tuple) else str(path)
+        )
+        if not self.wandb_run_path:
+            self.wandb_run_path = "/".join(
+                (
+                    str(self.manifest.wandb["entity"]),
+                    str(self.manifest.wandb["project"]),
+                    str(self.manifest.wandb["run_id"]),
+                )
+            )
 
     def _start_learner(self) -> None:
         environment = os.environ.copy()
@@ -516,9 +500,7 @@ class RunSupervisor:
         prefix = f"runs/{self.manifest.run_id}"
         control_keys = list(self.authority.control.iter_keys(f"{prefix}/attempts"))
         expiring_journal_keys = list(
-            self.authority.control.iter_keys(
-                f"expiring-metric-journals/{self.manifest.run_id}"
-            )
+            self.authority.control.iter_keys(f"expiring-metric-journals/{self.manifest.run_id}")
         )
         attempts = []
         for key in control_keys:
@@ -532,17 +514,12 @@ class RunSupervisor:
                 )
             )
         attempt_order = {
-            attempt_id: index
-            for index, (_created_at, attempt_id) in enumerate(sorted(attempts))
+            attempt_id: index for index, (_created_at, attempt_id) in enumerate(sorted(attempts))
         }
         segment_keys = [
-            key
-            for key in control_keys
-            if "/metric-segments/" in key and key.endswith(".jsonl")
+            key for key in control_keys if "/metric-segments/" in key and key.endswith(".jsonl")
         ]
-        segment_keys.extend(
-            key for key in expiring_journal_keys if key.endswith(".jsonl")
-        )
+        segment_keys.extend(key for key in expiring_journal_keys if key.endswith(".jsonl"))
 
         def segment_attempt_id(key: str) -> str:
             if "/attempts/" in key:
@@ -569,11 +546,7 @@ class RunSupervisor:
                 self.metric_store.enqueue_event(
                     kind=str(event["kind"]),
                     payload=dict(event["payload"]),
-                    step=(
-                        None
-                        if event.get("step") is None
-                        else int(event["step"])
-                    ),
+                    step=(None if event.get("step") is None else int(event["step"])),
                     source=str(event["source"]),
                     event_id=str(event["event_id"]),
                     created_at=float(event["created_at"]),
@@ -582,9 +555,7 @@ class RunSupervisor:
 
         index = self.authority.models.get_json_optional(f"{prefix}/index.json")
         checkpoints = [
-            dict(row)
-            for row in (index or {}).get("checkpoints") or []
-            if isinstance(row, Mapping)
+            dict(row) for row in (index or {}).get("checkpoints") or [] if isinstance(row, Mapping)
         ]
         checkpoints.sort(key=lambda row: (int(row["step"]), str(row["sha256"])))
         for position, document in enumerate(checkpoints, start=1):
@@ -688,8 +659,7 @@ class RunSupervisor:
         row: Mapping[str, Any],
     ) -> bool:
         document = self.authority.evaluation.get_json_optional(
-            f"runs/{self.manifest.run_id}/evals/"
-            f"{row['idempotency_key']}/verified-result.json"
+            f"runs/{self.manifest.run_id}/evals/{row['idempotency_key']}/verified-result.json"
         )
         if document is None:
             return False
@@ -710,9 +680,7 @@ class RunSupervisor:
             if call_id:
                 try:
                     assert self.eval_backend is not None
-                    self.eval_backend.cancel(
-                        EvalHandle(provider="modal", call_id=call_id)
-                    )
+                    self.eval_backend.cancel(EvalHandle(provider="modal", call_id=call_id))
                 except Exception as exc:
                     print(f"Modal cancel failed call={call_id}: {exc}", flush=True)
             result = EvalResult(
@@ -852,9 +820,7 @@ class RunSupervisor:
                 self.metric_store.mark_checkpoint_upload_failed(ledger_id, repr(exc))
                 print(f"checkpoint publication failed id={ledger_id}: {exc}", flush=True)
                 continue
-            existing = self.ledger.checkpoint_publication_by_id(
-                manifest.checkpoint_id
-            )
+            existing = self.ledger.checkpoint_publication_by_id(manifest.checkpoint_id)
             if existing is not None:
                 self.metric_store.mark_checkpoint_uploaded(
                     ledger_id,
@@ -894,9 +860,7 @@ class RunSupervisor:
         asset = contract.get("asset")
         if isinstance(asset, Mapping):
             contract["asset"] = {
-                str(key): value
-                for key, value in asset.items()
-                if str(key) != "object_uri"
+                str(key): value for key, value in asset.items() if str(key) != "object_uri"
             }
         manifest_index(contract)
         return contract
@@ -933,9 +897,7 @@ class RunSupervisor:
             result_key=result_key,
             timeout_seconds=timeout,
             created_at=created.isoformat().replace("+00:00", "Z"),
-            expires_at=(created + timedelta(seconds=timeout))
-            .isoformat()
-            .replace("+00:00", "Z"),
+            expires_at=(created + timedelta(seconds=timeout)).isoformat().replace("+00:00", "Z"),
         )
         self.authority.put_eval_intent(intent)
         self.ledger.ensure_eval(
@@ -1126,25 +1088,16 @@ class RunSupervisor:
         result: EvalResult,
         raw: Mapping[str, Any],
     ) -> None:
-        metrics = {
-            str(name): value
-            for name, value in dict(raw.get("metrics") or {}).items()
-        }
+        metrics = {str(name): value for name, value in dict(raw.get("metrics") or {}).items()}
         metrics.update(
             {
                 EVAL_ACCEPTANCE_PASS: 1.0 if result.status == "accepted" else 0.0,
                 EVAL_ACCEPTANCE_EPISODES_PLANNED: float(
                     row["intent"]["execution_contract"]["episodes"]
                 ),
-                EVAL_ACCEPTANCE_EPISODES_COMPLETED: float(
-                    len(result.episode_results)
-                ),
-                EVAL_ACCEPTANCE_FAILURE_COUNT: float(
-                    result.aggregates.get("failure_count") or 0
-                ),
-                EVAL_ACCEPTANCE_DURATION_SECONDS: float(
-                    raw.get("duration_seconds") or 0.0
-                ),
+                EVAL_ACCEPTANCE_EPISODES_COMPLETED: float(len(result.episode_results)),
+                EVAL_ACCEPTANCE_FAILURE_COUNT: float(result.aggregates.get("failure_count") or 0),
+                EVAL_ACCEPTANCE_DURATION_SECONDS: float(raw.get("duration_seconds") or 0.0),
             }
         )
         self.metric_store.append_metrics(
@@ -1196,9 +1149,7 @@ class RunSupervisor:
             self.accepted_observed_at = self.accepted_observed_at or observed
             self._request_learner_stop("eval_acceptance")
             signal_sent = time.time()
-            requested = self.ledger.mark_stop_requested(
-                idempotency_key=result.idempotency_key
-            )
+            requested = self.ledger.mark_stop_requested(idempotency_key=result.idempotency_key)
             result_to_stop = signal_sent - observed
             self.metric_store.append_metrics(
                 {ORCHESTRATION_RESULT_TO_STOP_SECONDS: result_to_stop},
@@ -1294,26 +1245,18 @@ class RunSupervisor:
         local_high_water: int,
         force: bool = False,
     ) -> None:
-        minimum_interval = (
-            WANDB_DRAIN_REMOTE_PROBE_SECONDS if force else WANDB_REMOTE_PROBE_SECONDS
-        )
-        if self.projector is None or now - self.last_remote_probe < minimum_interval:
+        minimum_interval = WANDB_DRAIN_REMOTE_PROBE_SECONDS if force else WANDB_REMOTE_PROBE_SECONDS
+        if not self.wandb_run_path or now - self.last_remote_probe < minimum_interval:
             return
         self.last_remote_probe = now
         try:
             import wandb
 
-            path = getattr(self.projector.run, "path", "")
-            run_path = (
-                "/".join(str(part) for part in path)
-                if isinstance(path, list | tuple)
-                else str(path)
-            )
             api = wandb.Api(timeout=10)
             flush = getattr(api, "flush", None)
             if callable(flush):
                 flush()
-            remote = api.run(run_path)
+            remote = api.run(self.wandb_run_path)
             summary_value = dict(getattr(remote, "summary", {}) or {}).get(
                 "orchestration/event_seq"
             )
@@ -1367,27 +1310,18 @@ class RunSupervisor:
         self._probe_wandb_remote(now, local_high_water=local_high_water)
         usage = shutil.disk_usage(self.output_root)
         metrics = {
-            ORCHESTRATION_QUEUE_DEPTH: float(
-                self.metric_store.metric_outbox_stats()["frames"]
-            ),
+            ORCHESTRATION_QUEUE_DEPTH: float(self.metric_store.metric_outbox_stats()["frames"]),
             ORCHESTRATION_OLDEST_UNPUBLISHED_SECONDS: self._oldest_unpublished_age(),
             ORCHESTRATION_INGRESS_RATE: ingress_rate,
             ORCHESTRATION_PUBLISH_RATE: publish_rate,
             ORCHESTRATION_PUBLICATION_CAPACITY_RATIO: capacity_ratio,
             ORCHESTRATION_LOCAL_HIGH_WATER: float(local_high_water),
-            ORCHESTRATION_R2_HIGH_WATER: float(
-                self.ledger.metric_segment_high_water()
-            ),
+            ORCHESTRATION_R2_HIGH_WATER: float(self.ledger.metric_segment_high_water()),
             ORCHESTRATION_WANDB_HIGH_WATER: float(wandb_high_water),
-            ORCHESTRATION_WANDB_REMOTE_HIGH_WATER: float(
-                self.wandb_remote_high_water
-            ),
-            ORCHESTRATION_WANDB_REMOTE_VISIBLE_LAG_SECONDS: (
-                self.wandb_remote_visible_lag_seconds
-            ),
+            ORCHESTRATION_WANDB_REMOTE_HIGH_WATER: float(self.wandb_remote_high_water),
+            ORCHESTRATION_WANDB_REMOTE_VISIBLE_LAG_SECONDS: (self.wandb_remote_visible_lag_seconds),
             ORCHESTRATION_CHECKPOINT_BACKLOG: float(
-                len(self.metric_store.checkpoints())
-                - len(self.ledger.checkpoint_publications())
+                len(self.metric_store.checkpoints()) - len(self.ledger.checkpoint_publications())
             ),
             ORCHESTRATION_PENDING_EVALS: float(
                 len(
@@ -1396,9 +1330,7 @@ class RunSupervisor:
                     )
                 )
             ),
-            ORCHESTRATION_SCRATCH_USED_FRACTION: (
-                usage.used / max(usage.total, 1)
-            ),
+            ORCHESTRATION_SCRATCH_USED_FRACTION: (usage.used / max(usage.total, 1)),
         }
         step = int(self.metric_store.latest_metric("global_step") or 0)
         self.metric_store.append_metrics(
@@ -1463,27 +1395,18 @@ class RunSupervisor:
                 and self.ledger.all_evals_terminal()
                 and pending_frames == 0
             ):
-                self._probe_wandb_remote(
-                    now,
-                    local_high_water=local_high_water,
-                    force=True,
-                )
-                remote_visible = self.wandb_remote_high_water >= local_high_water
-                if remote_visible:
-                    if (
-                        self.peak_ingress_rate > 0.0
-                        and self.peak_publish_capacity
-                        < 2.0 * self.peak_ingress_rate
-                    ):
-                        raise RuntimeError(
-                            "measured W&B publication capacity is below "
-                            "twice peak metric ingress"
-                        )
-                    return
+                if (
+                    self.peak_ingress_rate > 0.0
+                    and self.peak_publish_capacity < 2.0 * self.peak_ingress_rate
+                ):
+                    raise RuntimeError(
+                        "measured W&B publication capacity is below twice peak metric ingress"
+                    )
+                return
             if now >= deadline:
                 raise TimeoutError(
                     "terminal drain exceeded 300 seconds before checkpoints, "
-                    "evals, local W&B delivery, and remote W&B visibility converged"
+                    "evals, and local W&B delivery converged"
                 )
             if activity == 0:
                 time.sleep(0.5)
@@ -1530,9 +1453,7 @@ class RunSupervisor:
         )
         if raw is None:
             raise RuntimeError("promoted eval raw result is absent from private R2")
-        checkpoint = self.ledger.checkpoint_publication_by_id(
-            receipt.checkpoint_id
-        )
+        checkpoint = self.ledger.checkpoint_publication_by_id(receipt.checkpoint_id)
         if checkpoint is None:
             raise RuntimeError("promoted checkpoint is absent from the public inventory")
         metrics = dict(raw.get("metrics") or {})
@@ -1547,27 +1468,21 @@ class RunSupervisor:
         )
 
     def _wait_for_remote_promotion(self, receipt: PromotionReceipt) -> None:
-        assert self.projector is not None
+        if not self.wandb_run_path:
+            raise RuntimeError("W&B run path is unavailable")
         deadline = time.monotonic() + WANDB_DRAIN_TIMEOUT_SECONDS
         while True:
             try:
                 import wandb
 
-                path = getattr(self.projector.run, "path", "")
-                run_path = (
-                    "/".join(str(part) for part in path)
-                    if isinstance(path, list | tuple)
-                    else str(path)
-                )
                 api = wandb.Api(timeout=10)
                 flush = getattr(api, "flush", None)
                 if callable(flush):
                     flush()
-                summary = dict(getattr(api.run(run_path), "summary", {}) or {})
+                summary = dict(getattr(api.run(self.wandb_run_path), "summary", {}) or {})
                 if (
                     str(summary.get("rlab/goal/outcome") or "") == "accepted"
-                    and int(summary.get("leader/checkpoint/step") or -1)
-                    == receipt.checkpoint_step
+                    and int(summary.get("leader/checkpoint/step") or -1) == receipt.checkpoint_step
                 ):
                     return
             except Exception as exc:
@@ -1577,8 +1492,24 @@ class RunSupervisor:
                 )
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    "W&B promotion summary did not become remotely visible "
-                    "within 300 seconds"
+                    "W&B promotion summary did not become remotely visible within 300 seconds"
+                )
+            time.sleep(WANDB_DRAIN_REMOTE_PROBE_SECONDS)
+
+    def _wait_for_remote_delivery(self, local_high_water: int) -> None:
+        deadline = time.monotonic() + WANDB_DRAIN_TIMEOUT_SECONDS
+        while True:
+            self._probe_wandb_remote(
+                time.monotonic(),
+                local_high_water=local_high_water,
+                force=True,
+            )
+            if self.wandb_remote_high_water >= local_high_water:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "W&B event high-water mark did not become remotely visible "
+                    "within 300 seconds after the SDK run finished"
                 )
             time.sleep(WANDB_DRAIN_REMOTE_PROBE_SECONDS)
 
@@ -1646,6 +1577,7 @@ class RunSupervisor:
         signal.signal(signal.SIGTERM, cancel)
         signal.signal(signal.SIGINT, cancel)
         failure: BaseException | None = None
+        promotion: PromotionReceipt | None = None
         try:
             while self.learner is not None and self.learner.poll() is None:
                 now = time.monotonic()
@@ -1660,8 +1592,7 @@ class RunSupervisor:
                 unpublished_age = self._oldest_unpublished_age()
                 if unpublished_age >= WANDB_WARNING_SECONDS:
                     print(
-                        f"warning: oldest unpublished W&B event is "
-                        f"{unpublished_age:.1f}s old",
+                        f"warning: oldest unpublished W&B event is {unpublished_age:.1f}s old",
                         flush=True,
                     )
                 if unpublished_age >= WANDB_UNHEALTHY_SECONDS:
@@ -1706,10 +1637,7 @@ class RunSupervisor:
                     )
                 },
                 step=max(
-                    (
-                        int(row.get("step") or 0)
-                        for row in self.metric_store.checkpoints()
-                    ),
+                    (int(row.get("step") or 0) for row in self.metric_store.checkpoints()),
                     default=0,
                 ),
                 source="orchestration:drain",
@@ -1720,7 +1648,6 @@ class RunSupervisor:
                 if promotion is None:
                     raise RuntimeError("training ended without an accepted checkpoint")
                 self._publish_promotion(promotion)
-                self._wait_for_remote_promotion(promotion)
         except BaseException as exc:
             failure = exc
             self._request_learner_stop("supervisor_failure")
@@ -1748,6 +1675,13 @@ class RunSupervisor:
         except Exception as exc:
             failure = failure or exc
             wandb_high_water = self._wandb_high_water()
+        if failure is None:
+            try:
+                self._wait_for_remote_delivery(wandb_high_water)
+                if promotion is not None:
+                    self._wait_for_remote_promotion(promotion)
+            except Exception as exc:
+                failure = exc
         journal_archive: dict[str, Any] | None = None
         journal_expires_at: str | None = None
         if failure is None:
@@ -1756,9 +1690,10 @@ class RunSupervisor:
                     run_id=self.manifest.run_id
                 )
                 journal_expires_at = (
-                    datetime.now(UTC)
-                    + timedelta(days=METRIC_JOURNAL_RETENTION_DAYS)
-                ).isoformat().replace("+00:00", "Z")
+                    (datetime.now(UTC) + timedelta(days=METRIC_JOURNAL_RETENTION_DAYS))
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
             except Exception as exc:
                 failure = exc
         checkpoints, evals = self._terminal_inventory()
@@ -1770,15 +1705,12 @@ class RunSupervisor:
             if failure is not None
             else "succeeded"
         )
-        stop_reason = (
-            self.stop_reason
-            or (
-                "completed_after_eval_acceptance"
-                if state == "succeeded" and self.evaluation_required
-                else "training_cap_complete"
-                if state == "succeeded"
-                else "supervisor_failure"
-            )
+        stop_reason = self.stop_reason or (
+            "completed_after_eval_acceptance"
+            if state == "succeeded" and self.evaluation_required
+            else "training_cap_complete"
+            if state == "succeeded"
+            else "supervisor_failure"
         )
         receipt = TerminalReceipt(
             run_id=self.manifest.run_id,
