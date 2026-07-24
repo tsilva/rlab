@@ -156,6 +156,16 @@ def _bind_evaluation_contract(
     return {}
 
 
+def _summary_scalar(value: Any) -> Any:
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        for key in ("max", "last"):
+            nested = getter(key)
+            if nested is not None:
+                return nested
+    return value
+
+
 class RunSupervisor:
     """Own all network-side effects for one learner container."""
 
@@ -1307,8 +1317,7 @@ class RunSupervisor:
             summary_value = dict(getattr(remote, "summary", {}) or {}).get(
                 "orchestration/event_seq"
             )
-            if isinstance(summary_value, Mapping):
-                summary_value = summary_value.get("max") or summary_value.get("last")
+            summary_value = _summary_scalar(summary_value)
             remote_high_water = int(summary_value or 0)
             self.wandb_remote_high_water = max(
                 self.wandb_remote_high_water,

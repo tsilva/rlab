@@ -21,7 +21,11 @@ from rlab.run_contracts import (
     new_run_id,
     utc_now,
 )
-from rlab.run_supervisor import RunSupervisor, _bind_evaluation_contract
+from rlab.run_supervisor import (
+    RunSupervisor,
+    _bind_evaluation_contract,
+    _summary_scalar,
+)
 
 
 SOURCE_SHA = "a" * 40
@@ -189,6 +193,13 @@ class RunSupervisorTests(unittest.TestCase):
 
         self.assertEqual(contract, {})
         self.assertNotIn("checkpoint_eval_contract", config)
+
+    def test_wandb_summary_subdict_is_normalized(self) -> None:
+        class SummarySubDictLike:
+            def get(self, key):
+                return {"max": 10}.get(key)
+
+        self.assertEqual(_summary_scalar(SummarySubDictLike()), 10)
 
     def test_materializes_exact_mario_acceptance_contract(self) -> None:
         supervisor = self.supervisor()
