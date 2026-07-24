@@ -166,6 +166,24 @@ def _summary_scalar(value: Any) -> Any:
     return value
 
 
+def _terminal_outcome(
+    *,
+    cancel_requested: bool,
+    failure: BaseException | None,
+    evaluation_required: bool,
+    promotion: PromotionReceipt | None,
+) -> tuple[str, str]:
+    if cancel_requested:
+        return "canceled", "canceled"
+    if failure is not None:
+        return "resumable_failure", "supervisor_failure"
+    if evaluation_required and promotion is None:
+        return "failed", "training_cap_without_acceptance"
+    if evaluation_required:
+        return "succeeded", "completed_after_eval_acceptance"
+    return "succeeded", "training_cap_complete"
+
+
 class RunSupervisor:
     """Own all network-side effects for one learner container."""
 
@@ -1646,9 +1664,8 @@ class RunSupervisor:
             self._drain()
             if self.evaluation_required:
                 promotion = self._create_promotion()
-                if promotion is None:
-                    raise RuntimeError("training ended without an accepted checkpoint")
-                self._publish_promotion(promotion)
+                if promotion is not None:
+                    self._publish_promotion(promotion)
         except BaseException as exc:
             failure = exc
             self._request_learner_stop("supervisor_failure")
@@ -1699,20 +1716,13 @@ class RunSupervisor:
                 failure = exc
         checkpoints, evals = self._terminal_inventory()
         final_step = max((int(row["step"]) for row in checkpoints), default=0)
-        state = (
-            "canceled"
-            if self.cancel_requested
-            else "resumable_failure"
-            if failure is not None
-            else "succeeded"
+        state, default_stop_reason = _terminal_outcome(
+            cancel_requested=self.cancel_requested,
+            failure=failure,
+            evaluation_required=self.evaluation_required,
+            promotion=promotion,
         )
-        stop_reason = self.stop_reason or (
-            "completed_after_eval_acceptance"
-            if state == "succeeded" and self.evaluation_required
-            else "training_cap_complete"
-            if state == "succeeded"
-            else "supervisor_failure"
-        )
+        stop_reason = self.stop_reason or default_stop_reason
         receipt = TerminalReceipt(
             run_id=self.manifest.run_id,
             attempt_id=self.manifest.attempt_id,
@@ -1743,8 +1753,15 @@ class RunSupervisor:
         if failure is not None:
             print(f"run failed: {failure!r}", flush=True)
             return 1
-        if self.evaluation_required:
+        if self.evaluation_required and state == "succeeded":
             self.authority.create_terminal(receipt)
+        if state == "failed":
+            print(
+                f"run completed without acceptance: run_id={self.manifest.run_id} "
+                f"final_step={final_step} dstack={DSTACK_VERSION}",
+                flush=True,
+            )
+            return 0
         print(
             f"{'run accepted' if self.evaluation_required else 'training-only run completed'}: "
             f"run_id={self.manifest.run_id} "

@@ -25,6 +25,7 @@ from rlab.run_supervisor import (
     RunSupervisor,
     _bind_evaluation_contract,
     _summary_scalar,
+    _terminal_outcome,
 )
 
 
@@ -196,6 +197,28 @@ class RunSupervisorTests(unittest.TestCase):
                 return {"max": 10}.get(key)
 
         self.assertEqual(_summary_scalar(SummarySubDictLike()), 10)
+
+    def test_unaccepted_goal_is_a_clean_scientific_failure(self) -> None:
+        state, stop_reason = _terminal_outcome(
+            cancel_requested=False,
+            failure=None,
+            evaluation_required=True,
+            promotion=None,
+        )
+
+        self.assertEqual(state, "failed")
+        self.assertEqual(stop_reason, "training_cap_without_acceptance")
+
+    def test_supervisor_fault_remains_resumable(self) -> None:
+        state, stop_reason = _terminal_outcome(
+            cancel_requested=False,
+            failure=RuntimeError("network failure"),
+            evaluation_required=True,
+            promotion=None,
+        )
+
+        self.assertEqual(state, "resumable_failure")
+        self.assertEqual(stop_reason, "supervisor_failure")
 
     def test_wandb_remote_probe_survives_sdk_finish(self) -> None:
         class RemoteRun:
