@@ -16,6 +16,8 @@ from rlab.recipe_documents import compose_train_document
 from rlab.run_authority import RunAuthority
 from rlab.run_contracts import (
     CheckpointManifest,
+    EvalResult,
+    PromotionReceipt,
     RunManifest,
     new_attempt_id,
     new_run_id,
@@ -190,6 +192,29 @@ class RunSupervisorTests(unittest.TestCase):
 
         self.assertEqual(contract, {})
         self.assertNotIn("checkpoint_eval_contract", config)
+
+    def test_generic_eval_receipts_do_not_hardcode_mario_episode_count(self) -> None:
+        EvalResult(
+            run_id=self.run_id,
+            checkpoint_id="checkpoint-1-" + "a" * 16,
+            idempotency_key="b" * 64,
+            modal_call_id="fc-bandit",
+            status="accepted",
+            episode_results=[{}] * 256,
+            aggregates={},
+            timings={},
+            evidence_sha256=[],
+            completed_at=utc_now(),
+        ).validate()
+        PromotionReceipt(
+            run_id=self.run_id,
+            checkpoint_id="checkpoint-1-" + "a" * 16,
+            checkpoint_step=1,
+            eval_idempotency_key="b" * 64,
+            eval_result_sha256="c" * 64,
+            accepted_episode_count=256,
+            promoted_at=utc_now(),
+        ).validate()
 
     def test_wandb_summary_subdict_is_normalized(self) -> None:
         class SummarySubDictLike:

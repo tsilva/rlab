@@ -146,9 +146,7 @@ class RunManifest:
                 raise ValueError(f"compute.{label}.kind is invalid")
             duration = value.get("max_duration_seconds")
             if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
-                raise ValueError(
-                    f"compute.{label}.max_duration_seconds must be positive"
-                )
+                raise ValueError(f"compute.{label}.max_duration_seconds must be positive")
         _require_text(self.compute.get("dstack_task"), "compute.dstack_task")
         _require_text(
             self.compute.get("runtime_workflow_run_id"),
@@ -163,9 +161,7 @@ class RunManifest:
             "compute.runtime_build_source_sha",
         )
         if re.fullmatch(r"[0-9a-f]{40,64}", runtime_build_source_sha) is None:
-            raise ValueError(
-                "compute.runtime_build_source_sha must be a full lowercase Git SHA"
-            )
+            raise ValueError("compute.runtime_build_source_sha must be a full lowercase Git SHA")
         if str(self.wandb.get("run_id") or "") != self.run_id:
             raise ValueError("wandb.run_id must equal run_id")
         _require_text(self.wandb.get("entity"), "wandb.entity")
@@ -347,8 +343,8 @@ class EvalResult:
         _require_text(self.modal_call_id, "modal_call_id")
         if self.status not in {"accepted", "rejected", "failed", "expired", "canceled"}:
             raise ValueError(f"invalid terminal eval status: {self.status}")
-        if self.status == "accepted" and len(self.episode_results) != 100:
-            raise ValueError("accepted evaluation must contain all 100 episode results")
+        if self.status == "accepted" and not self.episode_results:
+            raise ValueError("accepted evaluation must contain episode results")
         for index, digest in enumerate(self.evidence_sha256):
             _require_sha256(digest, f"evidence_sha256[{index}]")
         _require_text(self.completed_at, "completed_at")
@@ -376,8 +372,8 @@ class PromotionReceipt:
             raise ValueError("checkpoint_step must be non-negative")
         _require_sha256(self.eval_idempotency_key, "eval_idempotency_key")
         _require_sha256(self.eval_result_sha256, "eval_result_sha256")
-        if int(self.accepted_episode_count) != 100:
-            raise ValueError("promotion requires 100 accepted episodes")
+        if int(self.accepted_episode_count) <= 0:
+            raise ValueError("promotion requires accepted episodes")
         _require_text(self.promoted_at, "promoted_at")
 
     def to_dict(self) -> dict[str, Any]:
