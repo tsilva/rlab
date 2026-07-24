@@ -21,7 +21,7 @@ from rlab.run_contracts import (
     new_run_id,
     utc_now,
 )
-from rlab.run_supervisor import RunSupervisor
+from rlab.run_supervisor import RunSupervisor, _bind_evaluation_contract
 
 
 SOURCE_SHA = "a" * 40
@@ -178,6 +178,17 @@ class RunSupervisorTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "runtime build source SHA"),
         ):
             supervisor.validate_runtime()
+
+    def test_training_only_contract_omits_null_eval_contract(self) -> None:
+        config = {"checkpoint_eval_contract": None}
+        contract = _bind_evaluation_contract(
+            config,
+            recipe_document={},
+            evaluation_required=False,
+        )
+
+        self.assertEqual(contract, {})
+        self.assertNotIn("checkpoint_eval_contract", config)
 
     def test_materializes_exact_mario_acceptance_contract(self) -> None:
         supervisor = self.supervisor()

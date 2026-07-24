@@ -142,6 +142,20 @@ def _manifest_from_document(value: Mapping[str, Any]) -> RunManifest:
     return manifest
 
 
+def _bind_evaluation_contract(
+    config: dict[str, Any],
+    *,
+    recipe_document: Mapping[str, Any],
+    evaluation_required: bool,
+) -> dict[str, Any]:
+    if evaluation_required:
+        contract = evaluation_contract(recipe_document)
+        config["checkpoint_eval_contract"] = contract
+        return contract
+    config.pop("checkpoint_eval_contract", None)
+    return {}
+
+
 class RunSupervisor:
     """Own all network-side effects for one learner container."""
 
@@ -413,12 +427,11 @@ class RunSupervisor:
         )
         materialized["train_config"] = config
         write_canonical_json(self.recipe_path, self.recipe_document)
-        if self.evaluation_required:
-            self.eval_contract = evaluation_contract(self.recipe_document)
-            config["checkpoint_eval_contract"] = self.eval_contract
-        else:
-            self.eval_contract = {}
-            config["checkpoint_eval_contract"] = None
+        self.eval_contract = _bind_evaluation_contract(
+            config,
+            recipe_document=self.recipe_document,
+            evaluation_required=self.evaluation_required,
+        )
         config["recipe_json_path"] = str(self.recipe_path)
         config["recipe_composition"] = dict(materialized.get("_composition") or {})
         self._configure_resume(config)

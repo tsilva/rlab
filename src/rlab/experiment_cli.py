@@ -273,6 +273,23 @@ def _wandb_identity(document: dict[str, Any], run_id: str) -> dict[str, Any]:
     }
 
 
+def _bind_launch_contract(
+    document: dict[str, Any],
+    *,
+    asset: dict[str, Any] | None,
+    checkpoint_eval_backend: str,
+) -> dict[str, Any]:
+    contract_document = dict(document)
+    contract_config = dict(contract_document["train_config"])
+    if asset is None:
+        contract_config.pop("rom_asset_manifest", None)
+    else:
+        contract_config["rom_asset_manifest"] = asset
+    contract_config["checkpoint_eval_backend"] = checkpoint_eval_backend
+    contract_document["train_config"] = contract_config
+    return contract_document
+
+
 def cmd_launch(args: argparse.Namespace) -> int:
     root = repository_root()
     _load_environment(root)
@@ -318,11 +335,11 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if checkpoint_eval_backend == "modal" and not modal_app:
         raise RuntimeError("exact-source runtime has no immutable Modal deployment receipt")
     modal_config = load_modal_eval_config(root / "experiments" / "modal_eval.yaml")
-    contract_document = dict(document)
-    contract_config = dict(contract_document["train_config"])
-    contract_config["rom_asset_manifest"] = asset
-    contract_config["checkpoint_eval_backend"] = checkpoint_eval_backend
-    contract_document["train_config"] = contract_config
+    contract_document = _bind_launch_contract(
+        document,
+        asset=asset,
+        checkpoint_eval_backend=checkpoint_eval_backend,
+    )
     portable_recipe = build_recipe_document(
         contract_document,
         repo_root=root,

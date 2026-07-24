@@ -71,8 +71,13 @@ therefore mask the RTX 4090. The installed shim drop-in removes only the unused
 `/dev/kfd` compute node and regenerates host inventory before each probe; it
 does not remove `/dev/dri`.
 
-The pinned CUDA smoke completed successfully and reported one RTX 4090. B3 was
-idle after that verification.
+On 2026-07-24, dstack ran exact-source runtime digest
+`sha256:758060ec0e55a1b6de6911fa435201f2b33f9541183784ba7f81b7ea8e010e9f`
+on B3. The smoke verified the embedded source/runtime-input hashes, Python
+3.14.6, `stable-retro-turbo==1.0.1.post35`, SB3 2.8.0, Torch 2.12.0, CUDA,
+and the RTX 4090, then released the host. A 4 GiB diagnostic container was
+OOM-killed while importing the CUDA runtime; use the production 40 GiB memory
+floor for runtime smokes as well as training.
 
 ## B2
 

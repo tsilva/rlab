@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from rlab.experiment_cli import (
+    _bind_launch_contract,
     _compute,
     _stage_rom,
     _task_name,
     _task_request,
     build_parser,
 )
+from rlab.policy_bundle import build_recipe_document
+from rlab.recipe_documents import compose_train_document
 from rlab.run_contracts import new_attempt_id, new_run_id
 
 
@@ -152,4 +156,24 @@ def test_rom_free_provider_does_not_require_or_stage_an_asset() -> None:
             rom_path=None,
         )
         is None
+    )
+
+
+def test_rom_free_launch_contract_omits_null_asset() -> None:
+    goal = Path("experiments/goals/rlab__bandit/_goal.yaml")
+    document = compose_train_document(goal, goal.parent / "recipes/ppo.yaml")
+    contract = _bind_launch_contract(
+        document,
+        asset=None,
+        checkpoint_eval_backend="none",
+    )
+
+    assert "rom_asset_manifest" not in contract["train_config"]
+    build_recipe_document(
+        contract,
+        repo_root=Path.cwd(),
+        source_commit="a" * 40,
+        run_description="ROM-free launch contract regression",
+        seed=123,
+        runtime_image_ref="docker:example/rlab@sha256:" + "b" * 64,
     )
