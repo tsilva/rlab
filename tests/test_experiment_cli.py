@@ -10,6 +10,7 @@ from rlab.dstack_backend import DstackTask
 from rlab.experiment_cli import (
     _bind_launch_contract,
     _compute,
+    _follow_fingerprint,
     _public_dstack_state,
     _stage_rom,
     _task_name,
@@ -49,9 +50,7 @@ def test_launch_parser_exposes_bounded_compute_and_hash_bound_overrides() -> Non
         ]
     )
 
-    assert args.recipe_overrides == [
-        "train.backend.config.learning_rate=0.0002"
-    ]
+    assert args.recipe_overrides == ["train.backend.config.learning_rate=0.0002"]
     assert args.checkpoint_eval_backend == "modal"
     compute = _compute(args)
     assert compute.kind == "spot"
@@ -102,6 +101,27 @@ def test_public_dstack_state_never_exposes_raw_task_environment() -> None:
     assert "raw" not in value
     assert "should-never-appear" not in encoded
     assert "also-secret" not in encoded
+
+
+def test_follow_fingerprint_ignores_only_poll_observation_time() -> None:
+    first = {
+        "run_id": "rlab-" + "a" * 32,
+        "semantic": {
+            "observed_at": 1.0,
+            "attempts": [{"attempt_id": "attempt-" + "b" * 16}],
+        },
+    }
+    second = {
+        **first,
+        "semantic": {**first["semantic"], "observed_at": 2.0},
+    }
+
+    assert _follow_fingerprint(first) == _follow_fingerprint(second)
+    second["semantic"]["attempts"] = [
+        {"attempt_id": "attempt-" + "b" * 16},
+        {"attempt_id": "attempt-" + "c" * 16},
+    ]
+    assert _follow_fingerprint(first) != _follow_fingerprint(second)
 
 
 def test_on_demand_requires_explicit_permission() -> None:

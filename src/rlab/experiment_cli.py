@@ -173,9 +173,7 @@ def _stage_rom(
 ) -> dict[str, Any] | None:
     if not resolve_env_provider(env_provider).requires_external_rom_asset:
         if rom_path is not None:
-            raise ValueError(
-                f"--rom-path is invalid for ROM-free provider {env_provider!r}"
-            )
+            raise ValueError(f"--rom-path is invalid for ROM-free provider {env_provider!r}")
         return None
     source = discover_rom_path(game, rom_path=rom_path)
     digest = file_sha256(source)
@@ -357,9 +355,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         source_sha=source_sha,
         image_digest=release.runtime_image_ref,
         goal_slug=goal_path.parent.relative_to(root / "experiments" / "goals").as_posix(),
-        goal_sha256=str(
-            document["train_config"]["effective_goal_contract_sha256"]
-        ),
+        goal_sha256=str(document["train_config"]["effective_goal_contract_sha256"]),
         recipe_slug=recipe_path.stem,
         recipe_sha256=canonical_json_sha256(portable_recipe),
         recipe_overrides=recipe_overrides,
@@ -447,11 +443,7 @@ def _latest_attempt_terminal(state: dict[str, Any]) -> dict[str, Any] | None:
 def _public_dstack_state(task: DstackTask) -> dict[str, Any]:
     raw = dict(task.raw or {})
     fleet = raw.get("fleet")
-    fleet_name = (
-        str(fleet.get("name") or "")
-        if isinstance(fleet, Mapping)
-        else ""
-    )
+    fleet_name = str(fleet.get("name") or "") if isinstance(fleet, Mapping) else ""
     return {
         "project": task.project,
         "task": task.name,
@@ -502,6 +494,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _follow_fingerprint(value: Mapping[str, Any]) -> str:
+    stable = dict(value)
+    semantic = dict(stable.get("semantic") or {})
+    semantic.pop("observed_at", None)
+    stable["semantic"] = semantic
+    return json.dumps(json_safe(stable), sort_keys=True, separators=(",", ":"))
+
+
 def cmd_follow(args: argparse.Namespace) -> int:
     root = repository_root()
     deadline = time.monotonic() + float(args.timeout)
@@ -509,9 +509,10 @@ def cmd_follow(args: argparse.Namespace) -> int:
     while True:
         value = _status(root, args.run_id)
         encoded = json.dumps(json_safe(value), sort_keys=True, separators=(",", ":"))
-        if encoded != previous:
+        fingerprint = _follow_fingerprint(value)
+        if fingerprint != previous:
             print(encoded, flush=True)
-            previous = encoded
+            previous = fingerprint
         if value["completed"]:
             return 0
         if time.monotonic() >= deadline:
@@ -586,10 +587,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
     if state.get("terminal") is not None:
         raise RuntimeError("a scientifically successful run must not be retried")
     attempt_terminal = _latest_attempt_terminal(state)
-    if (
-        attempt_terminal is not None
-        and str(attempt_terminal.get("state") or "") == "succeeded"
-    ):
+    if attempt_terminal is not None and str(attempt_terminal.get("state") or "") == "succeeded":
         raise RuntimeError("a successfully drained training-only run must not be retried")
     previous = _latest_attempt(state)
     dstack_backend = DstackBackend()
